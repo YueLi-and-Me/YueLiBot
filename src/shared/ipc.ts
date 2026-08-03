@@ -199,6 +199,12 @@ export interface YueliConfig {
   tts: {
     enabled: boolean; base_url: string; api_key: string; model: string; voice: string
     format: 'mp3' | 'wav' | 'opus'; speed: number
+    /** openai = 兼容 /audio/speech；volcengine = 豆包语音私有协议 */
+    client_type: 'openai' | 'volcengine'
+    /** 仅 volcengine：App ID，与 api_key（Access Token）成对使用 */
+    app_id: string
+    /** 仅 volcengine：集群名，默认 volcano_tts */
+    cluster: string
   }
   vision: {
     enabled: boolean; model: string; api_key: string; base_url: string

@@ -83,3 +83,66 @@ api_key = "sk-legacy"
     expect(() => readConfigDirectory(directory)).toThrow('缺少配置文件')
   })
 })
+
+describe('豆包语音 TTS', () => {
+  it('保存后不再把 client_type 和 app_id 抹回 openai', () => {
+    // 回归：serializeProviders 里 tts 那条曾经硬编码 client_type: 'openai' 且
+    // 不写 app_id。手改成豆包语音后，只要在设置窗口保存一次（哪怕只改昵称），
+    // 这两项就会被静默抹掉，TTS 悄悄退回 OpenAI 协议然后失败。
+    const root = makeTemporaryDirectory()
+    const directory = join(root, 'config')
+    const config = structuredClone(DEFAULT_CONFIG)
+    config.tts.enabled = true
+    config.tts.client_type = 'volcengine'
+    config.tts.app_id = 'my-app-id'
+    config.tts.api_key = 'my-access-token'
+    config.tts.voice = 'zh_female_test'
+    config.tts.cluster = 'volcano_tts'
+
+    writeConfigDirectory(directory, config)
+    const readBack = readConfigDirectory(directory)
+
+    expect(readBack.tts.client_type).toBe('volcengine')
+    expect(readBack.tts.app_id).toBe('my-app-id')
+    expect(readBack.tts.cluster).toBe('volcano_tts')
+    expect(readBack).toEqual(config)
+
+    // 再存一次也不能漂移——设置窗口每次保存都会整份重写
+    writeConfigDirectory(directory, readBack)
+    expect(readConfigDirectory(directory)).toEqual(config)
+  })
+
+  it('providers.toml 里出现 volcengine 时不再拒绝启动', () => {
+    // 回归：parseProviders 曾经对 client_type !== 'openai' 直接 throw，
+    // 手写豆包语音配置会让 Electron 启动就失败，而不只是保存时被覆盖。
+    const root = makeTemporaryDirectory()
+    const directory = join(root, 'config')
+    const config = structuredClone(DEFAULT_CONFIG)
+    config.tts.enabled = true
+    config.tts.client_type = 'volcengine'
+    config.tts.app_id = 'appid'
+    config.tts.voice = 'zh_female_test'
+    writeConfigDirectory(directory, config)
+
+    const providers = readFileSync(join(directory, 'providers.toml'), 'utf-8')
+    expect(providers).toContain('client_type = "volcengine"')
+    expect(providers).toContain('app_id = "appid"')
+    expect(() => readConfigDirectory(directory)).not.toThrow()
+  })
+
+  it('默认仍是 openai 协议，且不写出无关的 app_id', () => {
+    const root = makeTemporaryDirectory()
+    const directory = join(root, 'config')
+    const config = structuredClone(DEFAULT_CONFIG)
+    config.tts.enabled = true
+    config.tts.base_url = 'https://api.example.com/v1'
+    config.tts.model = 'tts-1'
+    config.tts.voice = 'alloy'
+    writeConfigDirectory(directory, config)
+
+    expect(readConfigDirectory(directory).tts.client_type).toBe('openai')
+    // app_id 只对 volcengine 有意义，openai 连接不该冒出这一行
+    const providers = readFileSync(join(directory, 'providers.toml'), 'utf-8')
+    expect(providers).not.toContain('app_id')
+  })
+})

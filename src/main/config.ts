@@ -91,7 +91,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
     provider: 'ark', model: '', base_url: '', api_key: '', thinking: 'disabled',
     timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
   },
-  tts: { enabled: false, base_url: '', api_key: '', model: '', voice: '', format: 'mp3', speed: 0.95 },
+  tts: {
+    enabled: false, base_url: '', api_key: '', model: '', voice: '', format: 'mp3', speed: 0.95,
+    client_type: 'openai', app_id: '', cluster: 'volcano_tts',
+  },
   vision: {
     enabled: false, model: '', api_key: '', base_url: '',
     timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
@@ -113,6 +116,8 @@ interface ApiProvider {
   base_url: string
   api_key: string
   client_type: string
+  /** 豆包语音要 App ID + Access Token 两个凭证；其余厂商留空 */
+  app_id?: string
   timeout_ms: number
   max_retries: number
   retry_interval_ms: number
@@ -168,6 +173,13 @@ function numberAtOr(
   return numberAt(record, key, path)
 }
 
+function stringAtOr(
+  record: Record<string, unknown>, key: string, defaultValue: string, path: string,
+): string {
+  if (record[key] === undefined) return defaultValue
+  return stringAt(record, key, path)
+}
+
 function booleanAt(record: Record<string, unknown>, key: string, path: string): boolean {
   const value = record[key]
   if (typeof value !== 'boolean') throw new Error(`${path} 的 ${key} 必须是布尔值`)
@@ -198,13 +210,18 @@ function parseProviders(path: string): ApiProvider[] {
     const itemPath = `${path} 的 api_providers[${index}]`
     if (!isRecord(value)) throw new Error(`${itemPath} 必须是表`)
     const clientType = stringAt(value, 'client_type', itemPath)
-    if (clientType !== 'openai') throw new Error(`${itemPath} 的 client_type 当前只支持 openai`)
+    // volcengine = 豆包语音私有协议，只能承载 tts；Python 侧的 loader 会拦截
+    // 把它指到 chat/vision/embedding 的配置，这里只负责别把它判成非法。
+    if (clientType !== 'openai' && clientType !== 'volcengine') {
+      throw new Error(`${itemPath} 的 client_type 当前只支持 openai 或 volcengine`)
+    }
     return {
       name: stringAt(value, 'name', itemPath),
       kind: stringAt(value, 'kind', itemPath),
       base_url: stringAt(value, 'base_url', itemPath),
       api_key: stringAt(value, 'api_key', itemPath),
       client_type: clientType,
+      app_id: stringAtOr(value, 'app_id', '', itemPath),
       timeout_ms: numberAt(value, 'timeout_ms', itemPath),
       max_retries: numberAtOr(value, 'max_retries', DEFAULT_CONFIG.llm.max_retries, itemPath),
       retry_interval_ms: numberAtOr(
@@ -405,6 +422,11 @@ function readSplitConfig(directory: string): YueliConfig {
       voice: stringAt(tts, 'voice', featuresPath),
       format: ttsFormat as YueliConfig['tts']['format'],
       speed: numberAt(tts, 'speed', featuresPath),
+      // 协议和 App ID 跟着 tts 那条厂商连接走；cluster 属于功能参数。
+      client_type: (ttsProvider.client_type === 'volcengine'
+        ? 'volcengine' : 'openai') as YueliConfig['tts']['client_type'],
+      app_id: ttsProvider.app_id ?? '',
+      cluster: stringAtOr(tts, 'cluster', DEFAULT_CONFIG.tts.cluster, featuresPath),
     },
     vision: {
       enabled: booleanAt(vision, 'enabled', featuresPath),
@@ -508,9 +530,13 @@ kind = ${tomlString(provider.kind)}
 # OpenAI 兼容 API 根地址，不要包含 /chat/completions；末尾斜杠会自动移除
 base_url = ${tomlString(provider.base_url)}
 # API 密钥，运行时配置为明文；不要提交 config 目录或把它贴进日志
+# 豆包语音填 Access Token（不是方舟的 API Key）
 api_key = ${tomlString(provider.api_key)}
-# 请求协议适配器；当前只实现 openai
-client_type = ${tomlString(provider.client_type)}
+# 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音，只能用于 tts
+client_type = ${tomlString(provider.client_type)}${provider.client_type === 'volcengine' ? `
+# 豆包语音的 App ID，与 api_key（Access Token）成对使用
+# 取自控制台：豆包语音 → 语音合成大模型 → 页面下方「服务接口认证信息」
+app_id = ${tomlString(provider.app_id ?? '')}` : ''}
 # 单次 HTTP 连接与流式读取超时，单位毫秒；本地大模型可适当调大
 timeout_ms = ${provider.timeout_ms}
 # 首次请求失败后最多重试次数；0 表示不重试
@@ -561,8 +587,13 @@ function serializeProviders(cfg: YueliConfig): string {
     })
   }
   providers.push({
-    name: 'tts', kind: 'openai', base_url: cfg.tts.base_url,
-    api_key: cfg.tts.api_key, client_type: 'openai', timeout_ms: cfg.llm.timeout_ms,
+    // ★ 这三项以前是写死的 openai —— 手改成豆包语音后，只要在设置窗口保存一次
+    //   （哪怕只改了昵称）就会被静默抹回去，TTS 悄悄退回 OpenAI 协议然后失败。
+    name: 'tts', kind: cfg.tts.client_type === 'volcengine' ? 'volcengine' : 'openai',
+    base_url: cfg.tts.base_url,
+    api_key: cfg.tts.api_key, client_type: cfg.tts.client_type,
+    app_id: cfg.tts.app_id,
+    timeout_ms: cfg.llm.timeout_ms,
     max_retries: cfg.llm.max_retries, retry_interval_ms: cfg.llm.retry_interval_ms,
   })
   if (cfg.vector.embedding_base_url || cfg.vector.embedding_api_key) {
@@ -704,12 +735,14 @@ version = ${tomlString(CONFIG_VERSION)}
 [tts]
 # 是否启用语音合成；关闭时保持纯文字回复
 enabled = ${tomlValue(cfg.tts.enabled)}
-# 厂商提供的音色 ID；不是显示名称
+# 厂商提供的音色 ID；不是显示名称。豆包语音这里填 voice_type
 voice = ${tomlValue(cfg.tts.voice)}
 # 返回音频格式：mp3 / wav / opus
 format = ${tomlValue(cfg.tts.format)}
 # 语速倍率，范围 0.25~4.0；陪伴场景建议略低于 1
 speed = ${tomlValue(cfg.tts.speed)}
+# 仅 client_type = "volcengine" 时生效：豆包语音的集群名
+cluster = ${tomlValue(cfg.tts.cluster)}
 
 [vision]
 # 该功能会把前台窗口截图发送给视觉模型，默认关闭
