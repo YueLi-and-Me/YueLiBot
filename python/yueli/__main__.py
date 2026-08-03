@@ -120,8 +120,10 @@ def main() -> None:
         from yueli.services.tts import TtsService
         tts = TtsService(cfg, _push_event)
         app_state.chat._speak_audio = tts.speak
+        app_state.chat._cancel_audio = tts.cancel
         app_state.tts = tts
-        logger.info("tts_ready", model=cfg.tts.model)
+        logger.info("tts_ready", client=cfg.tts.client_type,
+                    model=cfg.tts.model or cfg.tts.voice)
 
     # 初始化 DayPlanService（可选；失败则 schedule 留 None，AwarenessService 退到 fallback 日程）
     schedule = None
@@ -132,9 +134,11 @@ def main() -> None:
         class _LLMGenerator:
             async def generate(self, prompt: str) -> str:
                 raw = ''
+                generation = cfg.generation.schedule
                 async for chunk in provider.stream(
                     messages=[{'role': 'user', 'content': prompt}],
-                    temperature=0.95, max_tokens=700,
+                    temperature=generation.temperature,
+                    max_tokens=generation.token_limit,
                 ):
                     if chunk.get('text'):
                         raw += chunk['text']

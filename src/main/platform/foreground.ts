@@ -59,7 +59,7 @@ function isFullscreen(bounds?: { x: number; y: number; width: number; height: nu
   }
 }
 
-export async function readForeground(): Promise<ForegroundInfo | null> {
+export async function readForeground(fullscreenSilent: boolean): Promise<ForegroundInfo | null> {
   const activeWin = await load()
   if (!activeWin) return null
 
@@ -77,7 +77,7 @@ export async function readForeground(): Promise<ForegroundInfo | null> {
       ...(w.title ? { title: w.title } : {}),
       // active-win 只能通过 bounds 猜全屏，分不出真全屏和无边框窗口化。
       // 默认静默以保守保护直播/录屏；用户主动关掉开关后不把 fullscreen 上报给 classify。
-      fullscreen: process.env.AWARENESS_FULLSCREEN_SILENT !== '0' && isFullscreen(w.bounds),
+      fullscreen: fullscreenSilent && isFullscreen(w.bounds),
     }
   } catch {
     // 单次读取失败（窗口正在切换、权限瞬时不足）不该拉黑整个功能

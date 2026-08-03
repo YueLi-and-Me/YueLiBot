@@ -83,7 +83,7 @@ async def test_vision_service_sends_image_to_injected_provider() -> None:
     provider = RecordingVisionProvider()
     service = VisionService(Config(), _noop_push, provider)
 
-    result = await service._call_vision_model(b'jpeg bytes', 'gameplay')
+    result = await service._call_vision_model([b'jpeg bytes'], 'gameplay')
 
     assert result == '正在打开装备菜单'
     content = provider.messages[0]['content']
@@ -96,8 +96,8 @@ async def test_text_only_protocol_error_stops_repeated_calls() -> None:
     provider = TextOnlyProvider()
     service = VisionService(Config(), _noop_push, provider)
 
-    first = await service._call_vision_model(b'first frame', 'gameplay')
-    second = await service._call_vision_model(b'second frame', 'gameplay')
+    first = await service._call_vision_model([b'first frame'], 'gameplay')
+    second = await service._call_vision_model([b'second frame'], 'gameplay')
 
     assert first is None
     assert second is None

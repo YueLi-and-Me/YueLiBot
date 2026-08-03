@@ -14,7 +14,8 @@
  *   路径该由调用方决定，监护器不该猜。
  */
 
-import { ChildProcess, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 
@@ -28,7 +29,7 @@ export interface SupervisorEvents {
 export interface SupervisorOptions {
   /** memory.db 所在目录。 */
   dataDir: string
-  /** config.toml 的完整路径（含文件名）。 */
+  /** 配置目录的完整路径；Python 加载器也兼容迁移前的单文件路径。 */
   configPath: string
   /** python 包的工作目录（含 yueli/ 的那一层）。 */
   cwd: string

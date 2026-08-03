@@ -41,7 +41,7 @@ python/
     __main__.py            uvicorn 启动 + --selftest CLI
     config/
       schema.py            pydantic 配置模型（替代散落的 process.env 读取）
-      loader.py            .env + config.toml，字段级校验与报错
+      loader.py            四文件配置组合加载，字段与跨文件引用校验
       upgrade.py            配置版本升级钩子（借鉴 MaiBot config_upgrade_hooks）
     common/
       logger.py            structlog

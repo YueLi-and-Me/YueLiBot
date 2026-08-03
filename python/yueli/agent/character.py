@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import Optional
+from typing import List, Optional
 
 CHARACTER_NAME = '月璃'
 
@@ -60,15 +60,20 @@ TONE_VARIANTS = [
 TONE_PROBABILITY = 0.25
 
 
-def pick_tone(rng: Optional[random.Random] = None, probability: float = TONE_PROBABILITY) -> Optional[str]:
+def pick_tone(
+    rng: Optional[random.Random] = None,
+    probability: float = TONE_PROBABILITY,
+    variants: Optional[List[str]] = None,
+) -> Optional[str]:
     """按概率抽一个只影响这一轮的语调。没抽中返回 None。"""
 
-    if probability <= 0 or not TONE_VARIANTS:
+    available_variants = TONE_VARIANTS if variants is None else variants
+    if probability <= 0 or not available_variants:
         return None
     picker = rng or random
     if picker.random() > probability:
         return None
-    return picker.choice(TONE_VARIANTS)
+    return picker.choice(available_variants)
 
 
 # 保留聚合常量，供只需要完整静态设定的调用方使用。

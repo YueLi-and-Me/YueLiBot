@@ -63,9 +63,9 @@ export const IPC = {
   Observability: 'observability:get',
   /** 观察窗口 → 主进程：增量拉取运行时调试追踪（用户输入/LLM 请求/流式增量/最终响应等）。 */
   DebugTrace: 'debug:trace',
-  /** 设置窗口 → 主进程：读取当前 config.toml（不存在则返回默认值）。 */
+  /** 设置窗口 → 主进程：读取拆分后的配置目录（不存在则返回默认值）。 */
   ReadConfig: 'settings:read-config',
-  /** 设置窗口 → 主进程：写 config.toml；首次启动时这个调用成功后才会继续正常启动流程。 */
+  /** 设置窗口 → 主进程：写入拆分配置；首次启动时这个调用成功后才会继续正常启动流程。 */
   SaveConfig: 'settings:save-config',
   /** 设置窗口 → 主进程：重启 Python 后端，使刚保存的配置生效。 */
   RestartBackend: 'settings:restart-backend',
@@ -160,15 +160,41 @@ export interface ObservabilityBridge {
 }
 
 /**
- * config.toml 的形状，字段名和 TOML/Python 侧的 pydantic 模型一一对应
- * （snake_case，不转 camelCase——这份数据直接从表单写进 TOML，不经过任何
- * 面向渲染层的转译层，保持字段名一致能少一类"改了 Python 忘了改这里"的 bug）。
+ * 设置页使用的任务视图。持久化层会把它拆成 providers/models/bot/features
+ * 四份 TOML，Python 侧再组合成同样的运行时结构。
  */
 export interface YueliConfig {
-  bot: { user_nickname: string; relationship: string }
+  bot: { name: string; user_nickname: string; relationship: string }
+  personality: {
+    identity: string
+    behavior: string
+    reply_style: string
+    attention: string
+    boundaries: string
+    tone_probability: number
+    tone_variants: string[]
+  }
+  conversation: {
+    working_memory_messages: number
+    summarize_trigger_messages: number
+    summarize_batch_messages: number
+    session_gap_minutes: number
+    fact_recall_limit: number
+    recalled_episode_limit: number
+    recent_episode_limit: number
+    episode_context_limit: number
+  }
+  generation: {
+    chat: { temperature: number; max_tokens: number }
+    proactive: { temperature: number; max_tokens: number }
+    summary: { temperature: number; max_tokens: number }
+    schedule: { temperature: number; max_tokens: number }
+    vision: { temperature: number; max_tokens: number }
+  }
   llm: {
     provider: string; model: string; base_url: string; api_key: string
     thinking: 'disabled' | 'enabled' | 'auto'; timeout_ms: number
+    max_retries: number; retry_interval_ms: number
   }
   tts: {
     enabled: boolean; base_url: string; api_key: string; model: string; voice: string
@@ -176,18 +202,22 @@ export interface YueliConfig {
   }
   vision: {
     enabled: boolean; model: string; api_key: string; base_url: string
-    folder_enabled: boolean; fullscreen_silent: boolean
+    timeout_ms: number; max_retries: number; retry_interval_ms: number
+    frames: number; folder_enabled: boolean; fullscreen_silent: boolean
   }
   vector: {
     enabled: boolean; embedding_base_url: string; embedding_api_key: string
     embedding_model: string; embedding_dim: number
   }
-  advanced: { log_level: string; https_proxy: string }
+  advanced: {
+    log_level: string; https_proxy: string
+    trace_content: boolean; trace_max_bytes: number
+  }
 }
 
 /** 设置窗口的 bridge：首次启动引导和后续编辑共用同一套。 */
 export interface SettingsBridge {
-  /** 读取当前配置；文件不存在时返回全字段的默认值（对应 Python 侧 Config() 的默认值）。 */
+  /** 读取当前配置；配置目录不存在时返回 Python 侧 Config() 对应的默认值。 */
   read(): Promise<YueliConfig>
   save(config: YueliConfig): Promise<{ ok: boolean; error?: string }>
   /** 重启 Python 后端，让刚保存的配置生效。 */

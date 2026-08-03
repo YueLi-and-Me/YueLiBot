@@ -2,7 +2,7 @@
 v4 → v5 迁移：为 facts 表加 embedding 列，供向量混合召回使用。
 
 embedding 存原始 float32 packed bytes；NULL 表示尚未计算。
-Python 启动时如果 config.toml 里 [vector].enabled = true 且存在 NULL 行，
+Python 启动时如果 features.toml 里 [vector].enabled = true 且存在 NULL 行，
 会在后台异步补算，不阻塞启动。
 """
 

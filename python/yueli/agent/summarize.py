@@ -67,7 +67,12 @@ def parse_episode(raw: str) -> Optional[Episode]:
         return None
 
 
-async def summarize(provider: Any, messages: List[Dict[str, str]]) -> Optional[Episode]:
+async def summarize(
+    provider: Any,
+    messages: List[Dict[str, str]],
+    temperature: float = 0.3,
+    max_tokens: int | None = None,
+) -> Optional[Episode]:
     body = _render(messages)
     if len(body) < 40:
         return None
@@ -78,7 +83,8 @@ async def summarize(provider: Any, messages: List[Dict[str, str]]) -> Optional[E
                 {'role': 'system', 'content': _SYSTEM_PROMPT},
                 {'role': 'user', 'content': f'要整理的对话：\n{body}'},
             ],
-            temperature=0.3,
+            temperature=temperature,
+            max_tokens=max_tokens,
         ):
             if chunk.get('text'):
                 raw += chunk['text']

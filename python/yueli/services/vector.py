@@ -6,7 +6,7 @@
   · 为每条新事实在写入后调度 embedding 计算
   · 为查询文本实时计算 embedding，注入 store.recall_facts()
 
-config.toml 里 [vector].enabled = false（默认）时整个服务不运行，所有方法都是 no-op。
+features.toml 里 [vector].enabled = false（默认）时整个服务不运行，所有方法都是 no-op。
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 Embedding 客户端。
 
 走 OpenAI 兼容的 POST /embeddings，默认复用对话的 Key 和 Base URL。
-只有 config.toml 里 [vector].enabled = true 时才会被调用；否则整个模块不执行任何网络请求。
+只有 features.toml 里 [vector].enabled = true 时才会被调用；否则整个模块不执行任何网络请求。
 
 设计约束：
   · 异步，不阻塞事件循环

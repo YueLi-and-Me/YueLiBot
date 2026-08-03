@@ -75,15 +75,38 @@ class AwarenessService:
         )
 
     def _activity_text(self) -> str:
+        """注入给 ChatService 的情境文本。
+
+        ★ 视觉描述从这里进正常对话：ChatService 通过 set_activity_provider
+          拿情境，所以只要在这儿把描述拼进去，chat.py 完全不需要知道 vision
+          的存在。此前视觉描述只在主动搭话路径被消费，用户打字聊天时她手里
+          只有「他在写代码」这种粗粒度标签——等于配了眼睛却没接上。
+        """
         if not self._last_classified:
             return ''
         minutes = max(0, (current_time() - self._last_activity_since) // 60_000)
-        return describe_activity(self._last_classified, minutes)
+        return self._with_vision(describe_activity(self._last_classified, minutes))
+
+    def _with_vision(self, situation: str) -> str:
+        """把最近一次屏幕描述拼到情境文本上。过期或没有就原样返回。"""
+        if not self._vision or not self._vision_context:
+            return situation
+        description = self._vision.recent_description(self._vision_context)
+        if not description:
+            return situation
+        return f'{situation}\n（你刚瞥了一眼屏幕：{description}）'
 
     # ------------------------------------------------------------ 对外只读（供 http.py 用）
 
-    def vision_context(self) -> str:
-        return self._vision_context or 'gameplay'
+    def vision_context(self) -> VisionContext | None:
+        """当前该用哪套视觉提示词；没有合适场景就是 None。
+
+        ★ 这里曾经把 None 兜底成 'gameplay'，而消费端（_with_vision）又要求
+          它非空。结果是写代码、浏览网页时截图照样上传、用「这是游戏画面」
+          的提示词描述、然后结果永远不被读取——隐私和钱都付了，价值全丢。
+          现在如实返回 None，由 http.py 直接跳过。
+        """
+        return self._vision_context
 
     def window_changed(self) -> bool:
         return self._window_changed
@@ -205,16 +228,14 @@ class AwarenessService:
         if not decision.allow:
             return
         minutes = max(0, (now - self._last_activity_since) // 60_000)
-        situation = describe_activity(classified, minutes)
-        description = (self._vision.recent_description(self._vision_context)
-                       if self._vision and self._vision_context else None)
-        if description:
-            situation = f'{situation}\n（你刚瞥了一眼屏幕：{description}）'
+        base = describe_activity(classified, minutes)
+        situation = self._with_vision(base)
+        description_used = situation != base
         lines = await self.chat.compose_proactive(situation)
         if not lines:
             return
         self.chat.speak(lines)
-        if description:
+        if description_used:
             self._vision_spoke_count += 1
         self._budget = after_speak(self._budget, ctx)
 

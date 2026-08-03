@@ -29,15 +29,20 @@ pip install "rembg[cli]" onnxruntime
 
 ### 2. 配置
 
-复制 `.env.example` 为 `.env` 填好。最少只要两项：
+第一次运行会打开设置窗口。保存后，运行时配置固定写入项目根目录的
+`config\`，按职责拆成四份：
 
-```bash
-SPRITE_PROVIDER=seedream
-ARK_API_KEY=<火山引擎方舟的 Key>
-LLM_MODEL=doubao-seed-character-260628
-```
+- `providers.toml`：API 厂商、地址、密钥、超时与安全重试；
+- `models.toml`：具体模型、任务引用，以及各任务的温度和输出上限；
+- `bot.toml`：Bot 名字、用户关系、完整人格提示词与会话记忆策略；
+- `features.toml`：语音、视觉、向量召回和调试开关。
 
-> `.env` 已在 `.gitignore` 里。**不要把 Key 贴进聊天、截图或提交记录。**
+数据库、日志和 Electron 缓存统一放在项目根目录的 `data\`。程序启动时会拒绝
+把运行时根目录解析到 C 盘；特殊启动方式可用 `YUELI_PROJECT_ROOT` 明确指定其它盘。
+项目根目录若存在旧版 `config.toml`，会自动迁移为四文件结构并保留原文件。
+字段说明、引用关系和手工编辑示例见[配置指南](docs/configuration.md)。
+
+> `providers.toml` 当前仍包含明文 Key。`config\` 和 `data\` 已被 Git 忽略，仍不要把 Key、相关截图或日志提交到版本库。
 
 先验通后端链路：
 

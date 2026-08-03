@@ -11,12 +11,13 @@ from datetime import datetime
 from typing import Any, Callable
 
 import asyncio
+import inspect
 import random
 
 from .trace import trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
-from yueli.agent.character import CHARACTER_NAME, pick_tone
+from yueli.agent.character import pick_tone
 from yueli.agent.expression import render_expression_habits, select_expression_habits
 from yueli.agent.history import close_dangling_say, fit_char_budget, normalize_history
 from yueli.agent.parser import (
@@ -48,8 +49,8 @@ SUMMARIZE_BATCH = 16
 SESSION_GAP_MS = 30 * 60_000
 
 _HINTS: dict[str, str] = {
-    'auth': 'API Key 无效，检查 .env',
-    'model': '模型 ID 不对，检查 .env 里的 LLM_MODEL',
+    'auth': 'API Key 无效，检查 providers.toml',
+    'model': '模型 ID 不对，检查 models.toml',
     'quota': '限流或余额不足，稍等一下',
     'network': '连不上模型接口，检查网络或代理',
     'blocked': '这句被内容审核拦了，换个说法',
@@ -77,8 +78,44 @@ class ChatService:
         self._provider = provider
         self._push_event = push_event
         self._speak_audio = speak_audio
+        # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
+        self._cancel_audio: Callable[[int], Any] | None = None
+        # 流式解析时攒当前这句 <say> 的正文，收完整句才送去合成。
+        self._speech_buffer: list[str] = []
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
+        if cfg is None:
+            self._working_memory_messages = WINDOW
+            self._summarize_trigger_messages = SUMMARIZE_AT
+            self._summarize_batch_messages = SUMMARIZE_BATCH
+            self._session_gap_ms = SESSION_GAP_MS
+            self._fact_recall_limit = 6
+            self._recalled_episode_limit = 2
+            self._recent_episode_limit = 2
+            self._episode_context_limit = 3
+            self._chat_temperature = 0.85
+            self._chat_max_tokens = None
+            self._proactive_temperature = 0.9
+            self._proactive_max_tokens = 200
+            self._summary_temperature = 0.3
+            self._summary_max_tokens = None
+        else:
+            conversation = cfg.conversation
+            generation = cfg.generation
+            self._working_memory_messages = conversation.working_memory_messages
+            self._summarize_trigger_messages = conversation.summarize_trigger_messages
+            self._summarize_batch_messages = conversation.summarize_batch_messages
+            self._session_gap_ms = conversation.session_gap_minutes * 60_000
+            self._fact_recall_limit = conversation.fact_recall_limit
+            self._recalled_episode_limit = conversation.recalled_episode_limit
+            self._recent_episode_limit = conversation.recent_episode_limit
+            self._episode_context_limit = conversation.episode_context_limit
+            self._chat_temperature = generation.chat.temperature
+            self._chat_max_tokens = generation.chat.token_limit
+            self._proactive_temperature = generation.proactive.temperature
+            self._proactive_max_tokens = generation.proactive.token_limit
+            self._summary_temperature = generation.summary.temperature
+            self._summary_max_tokens = generation.summary.token_limit
         self.memory = MemoryStore(db)
         self.persona = Persona(db)
         self.persona.snapshot_daily()
@@ -139,7 +176,8 @@ class ChatService:
 
         if not self._provider:
             await self._emit('chat.error', {'turnId': turn, 'kind': 'error',
-                                             'message': '对话未初始化', 'hint': '检查 .env 里的 LLM_* 配置'})
+                                             'message': '对话未初始化',
+                                             'hint': '检查 providers.toml 和 models.toml'})
             return turn
 
         now = current_time()
@@ -164,8 +202,18 @@ class ChatService:
             from yueli.llm.openai import LlmError
             try:
                 messages = await self._build_messages_with_vector(trimmed, now)
-                trace.emit('llm_request', turnId=turn, messages=messages, temperature=0.85)
-                async for chunk in self._provider.stream(messages=messages, temperature=0.85):
+                trace.emit(
+                    'llm_request',
+                    turnId=turn,
+                    messages=messages,
+                    temperature=self._chat_temperature,
+                    maxTokens=self._chat_max_tokens,
+                )
+                async for chunk in self._provider.stream(
+                    messages=messages,
+                    temperature=self._chat_temperature,
+                    max_tokens=self._chat_max_tokens,
+                ):
                     if cancel_event.is_set():
                         interrupted = True
                         break
@@ -236,9 +284,16 @@ class ChatService:
         last = self.memory.last_message_at()
         if (self._session_started_at is None
                 or last is None
-                or now - last > SESSION_GAP_MS):
+                or now - last > self._session_gap_ms):
             self._session_started_at = now
-            self._session_tone = pick_tone()
+            if self._cfg is None:
+                self._session_tone = pick_tone()
+            else:
+                personality = self._cfg.personality
+                self._session_tone = pick_tone(
+                    probability=personality.tone_probability,
+                    variants=personality.tone_variants,
+                )
             self._session_seed = random.randrange(1 << 30)
 
     def _session_rng(self) -> random.Random:
@@ -269,6 +324,15 @@ class ChatService:
             if cancel_ev:
                 cancel_ev.set()
         self._inflight = None
+        # 半截台词的缓冲不能留到下一轮，否则会把上一句的尾巴念进新回复里。
+        self._speech_buffer = []
+        if self._cancel_audio:
+            try:
+                result = self._cancel_audio(self._turn_id)
+                if inspect.isawaitable(result):
+                    asyncio.create_task(result)
+            except Exception as exc:
+                logger.warning('cancel_audio_failed', error=str(exc))
 
     def speak(self, lines: list[dict]) -> int:
         if not lines:
@@ -280,8 +344,7 @@ class ChatService:
             asyncio.create_task(self._emit_parse_event(turn, SayEvent(emotion=line.get('emotion'))))
             asyncio.create_task(self._emit_parse_event(turn, TextEvent(value=line['text'])))
             asyncio.create_task(self._emit_parse_event(turn, SayEndEvent()))
-            if self._speak_audio:
-                asyncio.create_task(self._speak_audio(line['text'], turn))
+            self._dispatch_speech(line['text'], turn)
             texts.append(f'<say>{line["text"]}</say>')
         asyncio.create_task(self._emit('chat.done', {'turnId': turn, 'kind': 'done'}))
         self.memory.append_message('assistant', ''.join(texts))
@@ -299,7 +362,6 @@ class ChatService:
         schedule_desc = (self._schedule.describe(now, self.current_sleep())
                          if self._schedule else '')
         base_prompt = build_system_prompt(
-            name=CHARACTER_NAME,
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
             acquaintance=acquaintance,
@@ -310,14 +372,15 @@ class ChatService:
                 select_expression_habits(situation, proactive=True, limit=3, rng=self._session_rng())
             ),
             tone=self._session_tone,
-            **self._relationship_kwargs(),
+            **self._prompt_config_kwargs(),
         )
         system = build_proactive_prompt(base_prompt, situation)
         raw = ''
         try:
             async for chunk in self._provider.stream(
                 messages=[{'role': 'system', 'content': system}],
-                temperature=0.9, max_tokens=200,
+                temperature=self._proactive_temperature,
+                max_tokens=self._proactive_max_tokens,
             ):
                 if chunk.get('text'):
                     raw += chunk['text']
@@ -366,24 +429,42 @@ class ChatService:
             'relationship': bot_cfg.relationship,
         }
 
+    def _prompt_config_kwargs(self) -> dict:
+        """把 bot.toml 中的身份、人格和用户关系一次性注入系统提示词。"""
+        if self._cfg is None:
+            return {}
+        bot = self._cfg.bot
+        personality = self._cfg.personality
+        return {
+            'name': bot.name,
+            'user_nickname': bot.user_nickname,
+            'relationship': bot.relationship,
+            'identity': personality.identity,
+            'behavior': personality.behavior,
+            'reply_style': personality.reply_style,
+            'attention': personality.attention,
+            'boundaries': personality.boundaries,
+        }
+
     async def _build_messages_with_vector(self, query: str, now: int) -> list[dict]:
         """向量召回版本的消息构建。_build_messages 的异步替代。"""
         query_embedding = await self._vector.embed_query(query)
-        facts = self.memory.recall_facts(query, 6, now, query_embedding=query_embedding)
-        recalled = self.memory.recall_episodes(query, 2)
-        recent = self.memory.recent_episodes(2)
+        facts = self.memory.recall_facts(
+            query, self._fact_recall_limit, now, query_embedding=query_embedding
+        )
+        recalled = self.memory.recall_episodes(query, self._recalled_episode_limit)
+        recent = self.memory.recent_episodes(self._recent_episode_limit)
         seen_ids: set[int] = set()
         episodes = []
         for e in [*recalled, *recent]:
             if e.id not in seen_ids:
                 seen_ids.add(e.id)
                 episodes.append(e)
-        episodes = episodes[:3]
+        episodes = episodes[:self._episode_context_limit]
         persona_desc = describe_persona(self.persona.get())
         acquaintance = describe_acquaintance(self.memory.first_seen_at, now)
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
         system = build_system_prompt(
-            name=CHARACTER_NAME,
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
             acquaintance=acquaintance,
@@ -395,12 +476,12 @@ class ChatService:
                 select_expression_habits(query, rng=self._session_rng())
             ),
             tone=self._session_tone,
-            **self._relationship_kwargs(),
+            **self._prompt_config_kwargs(),
         )
         # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
         #   都损坏过一轮）只能在这里救回来，写入端的修复管不到已经写坏的部分。
         #   幂等，对干净历史没有副作用。
-        wm = self.memory.working_memory(WINDOW)
+        wm = self.memory.working_memory(self._working_memory_messages)
         history = normalize_history({'role': m.role, 'content': m.content} for m in wm)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
@@ -419,10 +500,44 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'mood_delta', 'favor': event.favor, 'energy': event.energy})
 
-    def _track_speech(self, event: ParseEvent, turn: int) -> None:
+    def _dispatch_speech(self, text: str, turn: int) -> None:
+        """把一句台词送去合成。
+
+        ★ 这里必须容忍同步和协程两种回调：注入进来的 TtsService.speak 是同步的
+          （它自己内部起 task），而此前调用点写的是
+          `asyncio.create_task(self._speak_audio(...))` —— 对同步函数来说等于
+          `create_task(None)`，直接抛 TypeError。主动搭话那条语音链路一直是
+          这么坏掉的。
+        """
         if not self._speak_audio:
             return
-        # speech tracking handled externally (TTS service injects speak_audio)
+        line = text.strip()
+        if not line:
+            return
+        try:
+            result = self._speak_audio(line, turn)
+            if inspect.isawaitable(result):
+                asyncio.create_task(result)
+        except Exception as exc:
+            logger.warning('speak_audio_failed', turnId=turn, error=str(exc))
+
+    def _track_speech(self, event: ParseEvent, turn: int) -> None:
+        """在流式解析过程中攒出完整台词，每收完一个 <say> 就送去合成。
+
+        ★ 此前这里是个空 stub，导致正常对话**完全不发声**——_speak_audio
+          全仓库只在 speak()（主动搭话）里被调用过。按 <say> 分句送，而不是
+          等整段回复收完，是为了让她开口的延迟和字幕对得上。
+        """
+        if not self._speak_audio:
+            return
+        if isinstance(event, SayEvent):
+            self._speech_buffer = []
+        elif isinstance(event, TextEvent):
+            self._speech_buffer.append(event.value)
+        elif isinstance(event, SayEndEvent):
+            line = ''.join(self._speech_buffer)
+            self._speech_buffer = []
+            self._dispatch_speech(line, turn)
 
     async def _emit(self, channel: str, payload: Any) -> None:
         try:
@@ -455,15 +570,20 @@ class ChatService:
     async def _maybe_summarize(self) -> None:
         if self._summarizing or not self._provider:
             return
-        if self.memory.pending_count() < SUMMARIZE_AT:
+        if self.memory.pending_count() < self._summarize_trigger_messages:
             return
         self._summarizing = True
         try:
-            batch = self.memory.oldest_pending(SUMMARIZE_BATCH)
+            batch = self.memory.oldest_pending(self._summarize_batch_messages)
             if len(batch) < 4:
                 return
             msgs = [{'role': m['role'], 'content': m['content']} for m in batch]
-            episode = await summarize(self._provider, msgs)
+            episode = await summarize(
+                self._provider,
+                msgs,
+                temperature=self._summary_temperature,
+                max_tokens=self._summary_max_tokens,
+            )
             if not episode:
                 return
             self.memory.add_episode(EpisodeInput(

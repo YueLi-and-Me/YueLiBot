@@ -9,11 +9,10 @@
  *   · Python：通过 PythonSupervisor/PythonClient（HTTP + WS on 127.0.0.1）
  */
 
-import { appendFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import 'dotenv/config'
-import sharp from 'sharp'
 
 import {
   APP_CAPTURE_URL, APP_DIARY_URL, APP_INDEX_URL, APP_OBSERVABILITY_URL, APP_SETTINGS_URL,
@@ -31,10 +30,13 @@ import {
 import { closeObservabilityWindow, observabilityWindowOpen, openObservabilityWindow } from './platform/observabilityWindow.ts'
 import { closeSettingsWindow, openSettingsWindow } from './platform/settingsWindow.ts'
 import { createTray, destroyTray, resetPetPosition, togglePet, trayIconEmpty } from './platform/tray.ts'
-import { configIsComplete, readConfigFile, tryPrefillFromLegacyEnv, writeConfigFile } from './config.ts'
+import {
+  configIsComplete, readConfigDirectory, tryPrefillFromLegacyEnv, writeConfigDirectory,
+} from './config.ts'
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
 import { PythonSupervisor } from './python/supervisor.ts'
 import { PythonClient, windowSink } from './python/client.ts'
+import { resolveRuntimePaths } from './runtimePaths.ts'
 
 const PET_W = 440
 const PET_H = 480
@@ -46,6 +48,23 @@ const SCREENSHOT_POLL_MS = 12_000
 
 if (process.env.YUELI_DISABLE_GPU === '1') app.disableHardwareAcceleration()
 
+const runtimePaths = resolveRuntimePaths(app.getAppPath(), process.env.YUELI_PROJECT_ROOT)
+for (const directory of [
+  runtimePaths.dataDir,
+  runtimePaths.electronUserDataDir,
+  runtimePaths.electronSessionDataDir,
+  runtimePaths.electronTempDir,
+  runtimePaths.electronCrashDumpsDir,
+]) {
+  mkdirSync(directory, { recursive: true })
+}
+// 必须在 app.ready 之前改写 Electron 的路径，否则 Chromium 会先在 C 盘 AppData
+// 建 Cache、Local Storage、崩溃转储和临时文件。
+app.setPath('userData', runtimePaths.electronUserDataDir)
+app.setPath('sessionData', runtimePaths.electronSessionDataDir)
+app.setPath('temp', runtimePaths.electronTempDir)
+app.setPath('crashDumps', runtimePaths.electronCrashDumpsDir)
+
 let petWindow: BrowserWindow | null = null
 let supervisor: PythonSupervisor | null = null
 let client: PythonClient | null = null
@@ -54,8 +73,9 @@ let client: PythonClient | null = null
 let currentCfg: YueliConfig | null = null
 registerAppScheme()
 
-const dataDir = join(app.getPath('userData'), 'data')
-const configPath = join(app.getPath('userData'), 'config.toml')
+const dataDir = runtimePaths.dataDir
+const configDir = runtimePaths.configDir
+const legacyConfigPath = runtimePaths.legacyConfigPath
 /** 首次启动等设置窗口保存完成时要 resolve 的回调；非首次启动场景下始终为 null。 */
 let firstRunResolve: (() => void) | null = null
 
@@ -64,10 +84,10 @@ app.whenReady().then(async () => {
   if (!devUrl) serveAppScheme(resolveRendererRoot())
 
   // ── 配置读写 IPC（设置窗口首次启动和后续编辑共用）───────────────────
-  ipcMain.handle(IPC.ReadConfig, async () => readConfigFile(configPath))
+  ipcMain.handle(IPC.ReadConfig, async () => readConfigDirectory(configDir, legacyConfigPath))
   ipcMain.handle(IPC.SaveConfig, async (_e, config: YueliConfig) => {
     try {
-      writeConfigFile(configPath, config)
+      writeConfigDirectory(configDir, config)
       if (firstRunResolve) {
         const resolve = firstRunResolve
         firstRunResolve = null
@@ -81,7 +101,7 @@ app.whenReady().then(async () => {
   ipcMain.on(IPC.RestartBackend, () => {
     if (!supervisor) return
     console.log('[main] 收到重启指令，重启 Python 后端…')
-    currentCfg = readConfigFile(configPath)
+    currentCfg = readConfigDirectory(configDir, legacyConfigPath)
     supervisor.stop()
     supervisor.start()
   })
@@ -93,21 +113,21 @@ app.whenReady().then(async () => {
   })
 
   // ── 首次启动：模型/API Key 没填就先弹设置窗口，桌宠和 Python 都先不起 ──
-  if (!configIsComplete(readConfigFile(configPath))) {
+  if (!configIsComplete(readConfigDirectory(configDir, legacyConfigPath))) {
     await runFirstRunWizard(devUrl)
   }
 
-  await startApp(devUrl, readConfigFile(configPath))
+  await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath))
 })
 
-/** 老用户从仓库根目录的 .env 迁移；prefill 直接写进 config.toml，
+/** 老用户从仓库根目录的 .env 迁移；prefill 直接写进拆分配置目录，
  * 这样设置窗口的 read() 首次读到的就是这些值，不用另开一条 IPC 通道传初值。 */
 function runFirstRunWizard(devUrl?: string): Promise<void> {
   const legacyEnvPath = join(app.getAppPath(), '.env')
   const prefill = tryPrefillFromLegacyEnv(legacyEnvPath)
   if (prefill) {
-    const base = readConfigFile(configPath)
-    writeConfigFile(configPath, { ...base, ...prefill, llm: { ...base.llm, ...prefill.llm } })
+    const base = readConfigDirectory(configDir, legacyConfigPath)
+    writeConfigDirectory(configDir, { ...base, ...prefill, llm: { ...base.llm, ...prefill.llm } })
   }
 
   return new Promise<void>((resolve) => {
@@ -142,7 +162,7 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   // ── Python 后端监护 ─────────────────────────────────────────────────
   supervisor = new PythonSupervisor({
     dataDir,
-    configPath,
+    configPath: configDir,
     cwd: join(app.getAppPath(), 'python'),
     pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
   })
@@ -184,9 +204,9 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   // Electron 保持对前台窗口的读取特权；Python 侧做分类和感知判断。
   let lastTitle = ''
   const pollForeground = async () => {
-    if (!client) return
+    if (!client || !currentCfg) return
     try {
-      const fg = await readForeground()
+      const fg = await readForeground(currentCfg.vision.fullscreen_silent)
       if (!fg || isSelfProcess(fg.process)) return
       await client.foreground({
         process: fg.process,

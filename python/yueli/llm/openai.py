@@ -56,19 +56,56 @@ def _classify_code(code: str) -> str:
 class OpenAiChatProvider:
     def __init__(self, base_url: str, api_key: str, model: str,
                  headers: dict | None = None, extra_body: dict | None = None,
-                 timeout_ms: int = 120_000) -> None:
+                 timeout_ms: int = 120_000, max_retries: int = 2,
+                 retry_interval_ms: int = 800) -> None:
         if not model.strip():
-            raise LlmError('model', '未指定模型 ID（LLM_MODEL）')
+            raise LlmError('model', '未指定模型 ID，请检查 models.toml')
         self.model = model.strip()
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key.strip()
         self._headers = headers or {}
         self._extra_body = extra_body or {}
         self._timeout = timeout_ms / 1000
+        self._max_retries = max_retries
+        self._retry_interval = retry_interval_ms / 1000
 
     async def stream(self, messages: list[dict], temperature: float = 0.85,
                      max_tokens: int | None = None,
                      signal: asyncio.Event | None = None) -> AsyncIterator[dict]:
+        """发起流式请求；只在尚未输出内容时重试可恢复错误。
+
+        流已经交给上层后再重放请求会产生重复文本和重复副作用，因此无论错误
+        类型如何，一旦 yield 过内容就立即向上抛出。
+        """
+        for attempt in range(self._max_retries + 1):
+            yielded_content = False
+            try:
+                async for chunk in self._stream_once(messages, temperature, max_tokens, signal):
+                    yielded_content = True
+                    yield chunk
+                return
+            except LlmError as exc:
+                retryable = exc.kind in ('network', 'quota')
+                if yielded_content or not retryable or attempt >= self._max_retries:
+                    raise
+                logger.warning(
+                    'llm_request_retry',
+                    attempt=attempt + 1,
+                    max_retries=self._max_retries,
+                    reason=str(exc),
+                )
+                if self._retry_interval:
+                    await asyncio.sleep(self._retry_interval)
+                if signal and signal.is_set():
+                    raise LlmError('aborted', '生成已中断')
+
+    async def _stream_once(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int | None,
+        signal: asyncio.Event | None,
+    ) -> AsyncIterator[dict]:
         headers = {
             'Content-Type': 'application/json',
             **({'Authorization': f'Bearer {self.api_key}'} if self.api_key else {}),
@@ -93,11 +130,17 @@ class OpenAiChatProvider:
                         msg = ''
                         try:
                             j = json.loads(body_text)
-                            code = j.get('error', ).get('code', '') or j.get('error', {}).get('type', '')
-                            msg = j.get('error', {}).get('message', '')
+                            error = j.get('error', {})
+                            code = error.get('code', '') or error.get('type', '')
+                            msg = error.get('message', '')
                         except Exception:
                             pass
-                        kind = _classify_code(code) if code else _classify_status(resp.status_code)
+                        code_kind = _classify_code(code) if code else 'unknown'
+                        kind = (
+                            _classify_status(resp.status_code)
+                            if code_kind == 'unknown'
+                            else code_kind
+                        )
                         suffix = f'：{msg}' if msg else ''
                         raise LlmError(kind, f'模型接口返回 HTTP {resp.status_code}{suffix}', body_text[:400])
 
@@ -169,6 +212,8 @@ def create_chat_provider(config: Any) -> OpenAiChatProvider:
         base_url=base_url, api_key=api_key, model=model,
         extra_body=extra if extra else None,
         timeout_ms=llm.timeout_ms,
+        max_retries=llm.max_retries,
+        retry_interval_ms=llm.retry_interval_ms,
     )
 
 
@@ -193,5 +238,7 @@ def create_vision_provider(config: Any) -> OpenAiChatProvider:
         base_url=base_url,
         api_key=api_key,
         model=model,
-        timeout_ms=llm.timeout_ms,
+        timeout_ms=vision.timeout_ms,
+        max_retries=vision.max_retries,
+        retry_interval_ms=vision.retry_interval_ms,
     )

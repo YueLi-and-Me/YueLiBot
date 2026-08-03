@@ -91,6 +91,11 @@ def build_system_prompt(
     schedule: Optional[str] = None,
     user_nickname: Optional[str] = None,
     relationship: Optional[str] = None,
+    identity: str = IDENTITY_PROMPT,
+    behavior: str = BEHAVIOR_PROMPT,
+    reply_style: str = REPLY_STYLE_PROMPT,
+    attention: str = ATTENTION_PROMPT,
+    boundaries: str = BOUNDARIES_PROMPT,
     expression_habits: Optional[str] = None,
     tone: Optional[str] = None,
 ) -> str:
@@ -103,7 +108,7 @@ def build_system_prompt(
         f'你是「{name}」。',
         '',
         '# 你是谁',
-        IDENTITY_PROMPT,
+        identity,
     ]
     if acquaintance:
         parts.extend(['', '# 你们的关系走到哪里了', acquaintance])
@@ -138,12 +143,12 @@ def build_system_prompt(
     parts.extend([
         '',
         '# 这一刻怎么接话',
-        BEHAVIOR_PROMPT,
+        behavior,
         '',
         '# 说话的味道',
-        REPLY_STYLE_PROMPT,
+        reply_style,
         '',
-        ATTENTION_PROMPT,
+        attention,
     ])
     if tone:
         parts.extend(['', tone])
@@ -155,7 +160,7 @@ def build_system_prompt(
     parts.extend([
         '',
         '# 边界',
-        BOUNDARIES_PROMPT,
+        boundaries,
         '',
         '# 输出格式',
         _PROTOCOL,

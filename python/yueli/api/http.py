@@ -63,6 +63,11 @@ async def platform_screenshot(request: Request) -> dict:
     # 真实的视觉上下文由 AwarenessService 根据最近一次前台分类算出——
     # Electron 没有 classify() 逻辑，不该指望它填对请求头。
     ctx = app_state.awareness.vision_context()
+    # ★ 没有匹配的场景就直接丢弃这张截图：不调模型、不产生费用。
+    #   此前这里会拿到伪造的 'gameplay'，导致写代码时也照样上传，
+    #   还用游戏提示词去描述，而结果根本没有消费方。
+    if ctx is None:
+        return {"ok": True}
     window_changed = app_state.awareness.window_changed()
     asyncio.create_task(app_state.awareness.vision.process_screenshot(jpeg_bytes, ctx, window_changed))
     return {"ok": True}

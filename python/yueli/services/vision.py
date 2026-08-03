@@ -21,7 +21,7 @@ import base64
 import hashlib
 
 from yueli.awareness.look import within_look_cooldown
-from yueli.awareness.look_state import VisionLookState
+from yueli.awareness.look_state import MAX_KEYFRAMES, VisionLookState
 from yueli.common.clock import now as current_time
 from yueli.common.logger import get_logger
 from yueli.config.schema import Config
@@ -33,6 +33,10 @@ logger = get_logger(__name__)
 FRAME_CHANGE_THRESHOLD = 0.18
 # 视觉描述缓存的有效期——超过这个时长的描述不再喂进主动搭话的情境文本
 DESCRIPTION_TTL_MS = 5 * 60_000
+# 帧变化超过这个比例才收进关键帧序列。比 FRAME_CHANGE_THRESHOLD 低得多：
+# 那个门限决定「值不值得叫模型」，这个只决定「这帧算不算新画面」——
+# 攒序列要的是画面动过的证据，不是大动作。
+KEYFRAME_DELTA = 0.02
 
 
 class VisionProvider(Protocol):
@@ -88,9 +92,14 @@ class VisionService:
         self._looks = 0
         self._reason_counts: Counter[str] = Counter()
 
+    def _frame_limit(self) -> int:
+        """一次送几帧。默认 1 保持单帧快照行为，本地推理时建议调到 3。"""
+        return max(1, min(MAX_KEYFRAMES, self._cfg.vision.frames))
+
     def stats(self) -> dict[str, Any]:
         return {
             'enabled': self._cfg.vision.enabled,
+            'frames': self._frame_limit(),
             'available': self._protocol_error is None,
             'error': self._protocol_error,
             'looks': self._looks,
@@ -119,6 +128,12 @@ class VisionService:
         delta = _frame_delta(prev, jpeg_bytes)
         self._last_frames[context] = jpeg_bytes
 
+        # ★ 关键帧抽取。只有相对上一帧真的变了才收进序列——静止画面重复入列，
+        #   等于拿 N 张一模一样的图去问模型「画面在发生什么变化」。这是本地版
+        #   的「动态帧率采样」：画面动得快就多收，静止就不收。
+        if prev is None or delta >= KEYFRAME_DELTA:
+            self._look.push_keyframe(context, jpeg_bytes, self._frame_limit())
+
         now = current_time()
         self._look.enter(context, now)
         # game-folder 是文件夹切换这种低频真实动作，不受全局瞥视冷却限制；
@@ -139,29 +154,41 @@ class VisionService:
 
         await self._push_event('vision.watching', {'watching': True})
         try:
-            description = await self._call_vision_model(jpeg_bytes, context)
+            # 有攒够的关键帧就送序列，否则退回单帧——行为与改动前一致。
+            frames = self._look.keyframes(context) or [jpeg_bytes]
+            if frames[-1] is not jpeg_bytes:
+                frames = [*frames, jpeg_bytes]
+            description = await self._call_vision_model(frames[-self._frame_limit():], context)
             if description:
                 self._descriptions[context] = (description, current_time())
                 logger.info('vision_description', context=context, chars=len(description))
         finally:
             await self._push_event('vision.watching', {'watching': False})
 
-    async def _call_vision_model(self, jpeg_bytes: bytes, context: str) -> str | None:
-        if not self._provider or self._protocol_error:
+    async def _call_vision_model(self, frames: list[bytes], context: str) -> str | None:
+        """把关键帧序列交给模型。frames 按时间从旧到新。
+
+        模型本身只会读单图，帧间关系得靠我们把序列按顺序摆好、并在提示词里
+        点明「这是连续画面」——这正是妹居物语那条链路在服务端做的事，只是
+        它靠 RTC 把流送到云端抽帧，我们的画面本来就在本机，省掉了传输层。
+        """
+        if not self._provider or self._protocol_error or not frames:
             return None
         try:
-            b64 = base64.b64encode(jpeg_bytes).decode('ascii')
-            prompt = self._build_vision_prompt(context)
+            prompt = self._build_vision_prompt(context, len(frames))
+            content: list[dict] = [{'type': 'text', 'text': prompt}]
+            for frame in frames:
+                b64 = base64.b64encode(frame).decode('ascii')
+                content.append({
+                    'type': 'image_url',
+                    'image_url': {'url': f'data:image/jpeg;base64,{b64}', 'detail': 'low'},
+                })
             raw = ''
+            generation = self._cfg.generation.vision
             async for chunk in self._provider.stream(
-                messages=[{
-                    'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': prompt},
-                        {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{b64}', 'detail': 'low'}},
-                    ],
-                }],
-                temperature=0.3, max_tokens=120,
+                messages=[{'role': 'user', 'content': content}],
+                temperature=generation.temperature,
+                max_tokens=generation.token_limit,
             ):
                 if chunk.get('text'):
                     raw += chunk['text']
@@ -186,17 +213,43 @@ class VisionService:
             return None
 
     @staticmethod
-    def _build_vision_prompt(context: str) -> str:
+    def _build_vision_prompt(context: str, frame_count: int = 1) -> str:
+        """单帧问「是什么」，多帧问「在发生什么」。
+
+        ★ 多帧才是「看懂动态」的关键。模型只会读单图，所以必须在提示词里
+          说清这几张是按时间顺序的连续画面，它才会去比对帧间差异，而不是
+          把最后一张当成孤立截图来描述。
+        """
+        # 文件夹是一次性的静态判断，多送帧没有意义。
+        if context == 'game-folder':
+            return '这是文件夹截图。只输出「有游戏文件夹」或「没有游戏文件夹」，不要写文件名、路径或其他内容。'
+
+        if frame_count <= 1:
+            if context == 'steam-library':
+                return (
+                    '给月璃提取一条客观情境线索。这是 Steam 库页面：看得清时只写一到两个最显眼的游戏名，'
+                    '总共不超过十个字；看不清就只写「看不清」。不要描述界面，不要猜。'
+                )
+            if context == 'gameplay':
+                return (
+                    '给月璃提取一条客观情境线索。这是游戏画面：用不超过十五个字写眼下能直接看见的状态，'
+                    '例如「正在打首领」或「停在装备菜单」。不要猜游戏名、剧情或玩家感受。'
+                )
+            return '用不超过十五个字写一条从截图中直接看见的情境事实。不要推测，不要加开场白。'
+
+        order = f'下面 {frame_count} 张图是同一个画面按时间先后的连续截图，最后一张最新。'
         if context == 'steam-library':
             return (
-                '给月璃提取一条客观情境线索。这是 Steam 库页面：看得清时只写一到两个最显眼的游戏名，'
+                f'{order}给月璃提取一条客观情境线索：看得清时只写一到两个最显眼的游戏名，'
                 '总共不超过十个字；看不清就只写「看不清」。不要描述界面，不要猜。'
             )
         if context == 'gameplay':
             return (
-                '给月璃提取一条客观情境线索。这是游戏画面：用不超过十五个字写眼下能直接看见的状态，'
-                '例如「正在打首领」或「停在装备菜单」。不要猜游戏名、剧情或玩家感受。'
+                f'{order}给月璃提取一条客观情境线索：对比这几帧，用不超过二十个字写画面正在发生什么，'
+                '例如「正在打首领，血量掉了一半」或「一直停在装备菜单没动」。'
+                '几帧之间没有明显变化就直接说画面没怎么动。不要猜游戏名、剧情或玩家感受。'
             )
-        if context == 'game-folder':
-            return '这是文件夹截图。只输出「有游戏文件夹」或「没有游戏文件夹」，不要写文件名、路径或其他内容。'
-        return '用不超过十五个字写一条从截图中直接看见的情境事实。不要推测，不要加开场白。'
+        return (
+            f'{order}用不超过二十个字写这几帧之间画面在做什么或有什么变化，'
+            '没变化就说没怎么动。只写直接看得见的，不要推测，不要加开场白。'
+        )
