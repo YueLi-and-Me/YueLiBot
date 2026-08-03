@@ -11,12 +11,14 @@ from datetime import datetime
 from typing import Any, Callable
 
 import asyncio
+import random
 
 from .trace import trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
 from yueli.agent.character import CHARACTER_NAME, pick_tone
 from yueli.agent.expression import render_expression_habits, select_expression_habits
+from yueli.agent.history import close_dangling_say, fit_char_budget, normalize_history
 from yueli.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
@@ -32,11 +34,18 @@ from yueli.schedule.plan import DayPlanService, ScheduleSleepState
 logger = get_logger(__name__)
 
 # 工作记忆窗口：进 context 的最近消息条数
-WINDOW = 24
+WINDOW = 40
 # 待压缩消息超过这个数就触发一次 L2 摘要
-SUMMARIZE_AT = 30
+SUMMARIZE_AT = 48
 # 每次摘要吃掉多少条最老的消息
 SUMMARIZE_BATCH = 16
+# 真正的天花板是 min(WINDOW, pending_count)——working_memory() 只取
+# episode_id IS NULL 的消息。所以 SUMMARIZE_AT 必须跟着 WINDOW 一起调，
+# 否则摘要一跑 pending 就掉到 SUMMARIZE_AT - SUMMARIZE_BATCH，
+# 单调 WINDOW 完全无效。当前下限 48-16=32 条 ≈ 16 轮。
+
+# 两次对话间隔超过这个时长，视为新一段对话：重新抽语气、重新播种表达样本。
+SESSION_GAP_MS = 30 * 60_000
 
 _HINTS: dict[str, str] = {
     'auth': 'API Key 无效，检查 .env',
@@ -79,6 +88,11 @@ class ChatService:
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
         self._schedule: DayPlanService | None = None
+        # 会话级人设状态。逐轮重掷会让她的语气一轮一个样，读起来就像每轮
+        # 换了个人——这正是「像单次对话」的一部分。
+        self._session_started_at: int | None = None
+        self._session_tone: str | None = None
+        self._session_seed: int = 0
 
     @property
     def ready(self) -> bool:
@@ -135,6 +149,10 @@ class ChatService:
         if self._schedule:
             await self._schedule.ensure(now)
 
+        # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
+        #   间隔恒为 0，会话永远不会翻页。
+        self._refresh_session(now)
+
         user_msg_id = self.memory.append_message('user', trimmed, now)
         cancel_event = asyncio.Event()
 
@@ -142,50 +160,68 @@ class ChatService:
             parser = ResponseParser()
             assistant_raw = ''
             side_effects: list[dict] = []
+            interrupted = False
             from yueli.llm.openai import LlmError
             try:
                 messages = await self._build_messages_with_vector(trimmed, now)
                 trace.emit('llm_request', turnId=turn, messages=messages, temperature=0.85)
                 async for chunk in self._provider.stream(messages=messages, temperature=0.85):
                     if cancel_event.is_set():
-                        return
+                        interrupted = True
+                        break
                     trace.emit('llm_chunk', turnId=turn, text=chunk.get('text'), reasoning=chunk.get('reasoning'))
                     if not chunk.get('text'):
                         continue
                     assistant_raw += chunk['text']
                     for event in parser.push(chunk['text']):
                         if cancel_event.is_set():
-                            return
+                            interrupted = True
+                            break
+                        self._handle_side_effects(event, now, turn, side_effects)
+                        self._track_speech(event, turn)
+                        await self._emit_parse_event(turn, event)
+                    if interrupted:
+                        break
+
+                if not interrupted:
+                    for event in parser.flush():
+                        if cancel_event.is_set():
+                            interrupted = True
+                            break
                         self._handle_side_effects(event, now, turn, side_effects)
                         self._track_speech(event, turn)
                         await self._emit_parse_event(turn, event)
 
-                for event in parser.flush():
-                    if cancel_event.is_set():
-                        return
-                    self._handle_side_effects(event, now, turn, side_effects)
-                    self._track_speech(event, turn)
-                    await self._emit_parse_event(turn, event)
+                # ★ 中断也要落库。这段话已经显示（甚至念）给用户了，历史里
+                #   不能当它没发生过——否则下一轮就是连着两条 user 消息，
+                #   模型看不到自己上一句说了什么。副作用（<memory>/<mood>）
+                #   在流式过程中已经写库了，话本身更不该丢。
+                self._persist_reply(assistant_raw)
+                if interrupted:
+                    return
 
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
                 render_turn(turn, trimmed, messages, assistant_raw, side_effects)
-                if assistant_raw.strip():
-                    self.memory.append_message('assistant', assistant_raw, current_time())
-                self.persona.apply_turn(current_time())
+                try:
+                    self.persona.apply_turn(current_time())
+                except Exception as exc:
+                    # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
+                    logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
                 await self._emit('chat.done', {'turnId': turn, 'kind': 'done'})
                 asyncio.create_task(self._maybe_summarize())
 
             except LlmError as exc:
                 if exc.kind == 'aborted':
+                    self._persist_reply(assistant_raw)
                     return
-                self.memory.delete_message(user_msg_id)
+                self._rollback_or_keep(user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
                 render_turn_error(turn, trimmed, exc.kind, str(exc))
                 await self._emit('chat.error', {'turnId': turn, 'kind': 'error',
                                                  'message': str(exc), 'hint': hint})
             except Exception as exc:
-                self.memory.delete_message(user_msg_id)
+                self._rollback_or_keep(user_msg_id, assistant_raw)
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
                 render_turn_error(turn, trimmed, 'unknown', str(exc))
                 await self._emit('chat.error', {'turnId': turn, 'kind': 'error', 'message': str(exc)})
@@ -194,6 +230,38 @@ class ChatService:
         task._cancel_event = cancel_event  # type: ignore[attr-defined]
         self._inflight = task
         return turn
+
+    def _refresh_session(self, now: int) -> None:
+        """跨过静默间隔就开一段新会话，重抽语气和表达样本的随机种子。"""
+        last = self.memory.last_message_at()
+        if (self._session_started_at is None
+                or last is None
+                or now - last > SESSION_GAP_MS):
+            self._session_started_at = now
+            self._session_tone = pick_tone()
+            self._session_seed = random.randrange(1 << 30)
+
+    def _session_rng(self) -> random.Random:
+        """同一会话内给出同一批表达样本；情境识别仍然逐轮进行。"""
+        return random.Random(self._session_seed)
+
+    def _persist_reply(self, assistant_raw: str) -> None:
+        """把已经吐出去的回复落进历史，补齐流式中断留下的悬空 <say>。"""
+        text = close_dangling_say(assistant_raw)
+        if text:
+            self.memory.append_message('assistant', text, current_time())
+
+    def _rollback_or_keep(self, user_msg_id: int, assistant_raw: str) -> None:
+        """出错时决定这一轮留不留。
+
+        一个字都没吐出来 → 整轮回滚，用户那句话也删掉（保持原有意图：
+        这轮相当于没发生）。已经有内容显示给用户了 → 两条都留下，
+        删掉用户消息反而会让历史里出现「凭空的回复」。
+        """
+        if close_dangling_say(assistant_raw):
+            self._persist_reply(assistant_raw)
+        else:
+            self.memory.delete_message(user_msg_id)
 
     def interrupt(self) -> None:
         if self._inflight and not self._inflight.done():
@@ -223,6 +291,7 @@ class ChatService:
         if not self._provider:
             return None
         now = current_time()
+        self._refresh_session(now)
         if self._schedule:
             await self._schedule.ensure(now)
         persona_desc = describe_persona(self.persona.get())
@@ -238,9 +307,9 @@ class ChatService:
             episodes=[episode.summary for episode in self.memory.recent_episodes(2)],
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
-                select_expression_habits(situation, proactive=True, limit=3)
+                select_expression_habits(situation, proactive=True, limit=3, rng=self._session_rng())
             ),
-            tone=pick_tone(),
+            tone=self._session_tone,
             **self._relationship_kwargs(),
         )
         system = build_proactive_prompt(base_prompt, situation)
@@ -322,14 +391,18 @@ class ChatService:
             episodes=[e.summary for e in episodes],
             activity=(self._activity() if self._activity else None),
             schedule=schedule_desc,
-            expression_habits=render_expression_habits(select_expression_habits(query)),
-            tone=pick_tone(),
+            expression_habits=render_expression_habits(
+                select_expression_habits(query, rng=self._session_rng())
+            ),
+            tone=self._session_tone,
             **self._relationship_kwargs(),
         )
+        # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
+        #   都损坏过一轮）只能在这里救回来，写入端的修复管不到已经写坏的部分。
+        #   幂等，对干净历史没有副作用。
         wm = self.memory.working_memory(WINDOW)
-        msgs = [{'role': 'system', 'content': system}]
-        msgs.extend({'role': m.role, 'content': m.content} for m in wm)
-        return msgs
+        history = normalize_history({'role': m.role, 'content': m.content} for m in wm)
+        return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
     def _handle_side_effects(
         self, event: ParseEvent, now: int, turn: int, sink: list[dict] | None = None,
