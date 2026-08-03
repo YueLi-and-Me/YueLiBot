@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yueli"
+version = "0.1.0"
+description = "YueLiBot Python backend"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.116.0",
+    "uvicorn[standard]>=0.35.0",
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.4.0",
+    "structlog>=25.4.0",
+    "jieba>=0.42.1",
+    "httpx>=0.27.0",
+    "pillow>=11.3.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+vector = [
+    "faiss-cpu>=1.11.0",
+    "numpy>=2.2.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "anyio[trio]>=4.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["yueli*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.pyright]
+pythonVersion = "3.11"

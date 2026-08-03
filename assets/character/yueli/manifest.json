@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "name": "yueli",
+  "generatedAt": "2026-07-31T00:56:09.936Z",
+  "canvas": {
+    "width": 888,
+    "height": 2107
+  },
+  "anchor": {
+    "x": 444,
+    "y": 24
+  },
+  "base": "base.png",
+  "expressions": {
+    "normal": {
+      "file": "face/normal.png",
+      "blink": "eyes/normal.png"
+    },
+    "happy": {
+      "file": "face/happy.png",
+      "blink": "eyes/happy.png"
+    },
+    "smile": {
+      "file": "face/smile.png",
+      "blink": "eyes/smile.png"
+    },
+    "shy": {
+      "file": "face/shy.png",
+      "blink": "eyes/shy.png"
+    },
+    "sad": {
+      "file": "face/sad.png"
+    },
+    "cry": {
+      "file": "face/cry.png"
+    },
+    "angry": {
+      "file": "face/angry.png"
+    },
+    "pout": {
+      "file": "face/pout.png"
+    },
+    "surprised": {
+      "file": "face/surprised.png"
+    },
+    "sleepy": {
+      "file": "face/sleepy.png"
+    },
+    "speechless": {
+      "file": "face/speechless.png"
+    },
+    "dizzy": {
+      "file": "face/dizzy.png"
+    },
+    "starry_eyes": {
+      "file": "face/starry_eyes.png"
+    },
+    "heart_eyes": {
+      "file": "face/heart_eyes.png"
+    },
+    "smug": {
+      "file": "face/smug.png"
+    },
+    "thinking": {
+      "file": "face/thinking.png"
+    }
+  },
+  "mouth": {
+    "closed": "mouth/closed.png",
+    "half": "mouth/half.png",
+    "open": "mouth/open.png"
+  },
+  "regions": {
+    "mouth": {
+      "x": 345,
+      "y": 320,
+      "width": 90,
+      "height": 50
+    },
+    "eyes": {
+      "x": 295,
+      "y": 235,
+      "width": 180,
+      "height": 65
+    },
+    "face": {
+      "x": 280,
+      "y": 210,
+      "width": 210,
+      "height": 200
+    }
+  }
+}

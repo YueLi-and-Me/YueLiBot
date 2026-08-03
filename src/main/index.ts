@@ -1,0 +1,362 @@
+/**
+ * Electron 主进程 —— 纯平台层。
+ *
+ * 业务逻辑（记忆、人格、日程、LLM）全部搬进 Python 后端。
+ * 这里只剩：窗口管理、托盘、平台权限调用、前台进程轮询、截图捕获。
+ *
+ * 两侧边界：
+ *   · 渲染层：只通过 preload bridge 通信，IPC 形状不变（src/shared/ipc.ts）
+ *   · Python：通过 PythonSupervisor/PythonClient（HTTP + WS on 127.0.0.1）
+ */
+
+import { appendFileSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
+import { app, BrowserWindow, ipcMain, screen } from 'electron'
+import 'dotenv/config'
+import sharp from 'sharp'
+
+import {
+  APP_CAPTURE_URL, APP_DIARY_URL, APP_INDEX_URL, APP_OBSERVABILITY_URL, APP_SETTINGS_URL,
+  registerAppScheme, serveAppScheme,
+} from './platform/appProtocol.ts'
+import { closeDiaryWindow, diaryWindowOpen, openDiaryWindow } from './platform/diaryWindow.ts'
+import { foregroundAvailable, isSelfProcess, readForeground } from './platform/foreground.ts'
+import { captureWindow, disposeWindowCapture, frameDelta } from './platform/capture.ts'
+import {
+  beginDrag, createPetWindow, endDrag, focusForInput,
+  resolveDiaryPreload, resolveObservabilityPreload, resolvePreload,
+  resolveRendererRoot, resolveSettingsPreload,
+  setInteractive,
+} from './platform/petWindow.ts'
+import { closeObservabilityWindow, observabilityWindowOpen, openObservabilityWindow } from './platform/observabilityWindow.ts'
+import { closeSettingsWindow, openSettingsWindow } from './platform/settingsWindow.ts'
+import { createTray, destroyTray, resetPetPosition, togglePet, trayIconEmpty } from './platform/tray.ts'
+import { configIsComplete, readConfigFile, tryPrefillFromLegacyEnv, writeConfigFile } from './config.ts'
+import { IPC, type YueliConfig } from '../shared/ipc.ts'
+import { PythonSupervisor } from './python/supervisor.ts'
+import { PythonClient, windowSink } from './python/client.ts'
+
+const PET_W = 440
+const PET_H = 480
+
+/** 前台轮询间隔（毫秒）。比原来的 ProactiveGate 稍快，Python 侧有自己的节流。 */
+const FOREGROUND_POLL_MS = 8_000
+/** 截图轮询间隔（毫秒）。截图送往 Python 做帧差与视觉调用。 */
+const SCREENSHOT_POLL_MS = 12_000
+
+if (process.env.YUELI_DISABLE_GPU === '1') app.disableHardwareAcceleration()
+
+let petWindow: BrowserWindow | null = null
+let supervisor: PythonSupervisor | null = null
+let client: PythonClient | null = null
+/** 启动后一直保持"当前有效配置"的引用，点"重启月璃"时刷新——
+ * 决定 Electron 这一侧的行为（比如要不要轮询截图）不能只看启动那一刻的值。 */
+let currentCfg: YueliConfig | null = null
+registerAppScheme()
+
+const dataDir = join(app.getPath('userData'), 'data')
+const configPath = join(app.getPath('userData'), 'config.toml')
+/** 首次启动等设置窗口保存完成时要 resolve 的回调；非首次启动场景下始终为 null。 */
+let firstRunResolve: (() => void) | null = null
+
+app.whenReady().then(async () => {
+  const devUrl = process.env.ELECTRON_RENDERER_URL
+  if (!devUrl) serveAppScheme(resolveRendererRoot())
+
+  // ── 配置读写 IPC（设置窗口首次启动和后续编辑共用）───────────────────
+  ipcMain.handle(IPC.ReadConfig, async () => readConfigFile(configPath))
+  ipcMain.handle(IPC.SaveConfig, async (_e, config: YueliConfig) => {
+    try {
+      writeConfigFile(configPath, config)
+      if (firstRunResolve) {
+        const resolve = firstRunResolve
+        firstRunResolve = null
+        resolve()
+      }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.on(IPC.RestartBackend, () => {
+    if (!supervisor) return
+    console.log('[main] 收到重启指令，重启 Python 后端…')
+    currentCfg = readConfigFile(configPath)
+    supervisor.stop()
+    supervisor.start()
+  })
+  ipcMain.on(IPC.OpenSettings, () => {
+    openSettingsWindow({
+      url: devUrl ? new URL('settings.html', devUrl).href : APP_SETTINGS_URL,
+      preload: resolveSettingsPreload(),
+    })
+  })
+
+  // ── 首次启动：模型/API Key 没填就先弹设置窗口，桌宠和 Python 都先不起 ──
+  if (!configIsComplete(readConfigFile(configPath))) {
+    await runFirstRunWizard(devUrl)
+  }
+
+  await startApp(devUrl, readConfigFile(configPath))
+})
+
+/** 老用户从仓库根目录的 .env 迁移；prefill 直接写进 config.toml，
+ * 这样设置窗口的 read() 首次读到的就是这些值，不用另开一条 IPC 通道传初值。 */
+function runFirstRunWizard(devUrl?: string): Promise<void> {
+  const legacyEnvPath = join(app.getAppPath(), '.env')
+  const prefill = tryPrefillFromLegacyEnv(legacyEnvPath)
+  if (prefill) {
+    const base = readConfigFile(configPath)
+    writeConfigFile(configPath, { ...base, ...prefill, llm: { ...base.llm, ...prefill.llm } })
+  }
+
+  return new Promise<void>((resolve) => {
+    firstRunResolve = resolve
+    openSettingsWindow({
+      url: devUrl
+        ? new URL('settings.html?mode=first-run', devUrl).href
+        : `${APP_SETTINGS_URL}?mode=first-run`,
+      preload: resolveSettingsPreload(),
+    })
+  }).then(() => {
+    closeSettingsWindow()
+  })
+}
+
+async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<void> {
+  petWindow = createPetWindow({
+    width: PET_W, height: PET_H,
+    url: devUrl ?? APP_INDEX_URL,
+    preload: resolvePreload(),
+  })
+
+  // ── 窗口控制 IPC ───────────────────────────────────────────────────
+  ipcMain.on(IPC.SetInteractive, (_e, interactive: boolean) => {
+    if (petWindow) setInteractive(petWindow, interactive)
+  })
+  ipcMain.on(IPC.Quit, () => app.quit())
+  ipcMain.on(IPC.BeginDrag, () => petWindow && beginDrag(petWindow))
+  ipcMain.on(IPC.EndDrag, () => endDrag())
+  ipcMain.on(IPC.FocusInput, (_e, focus: boolean) => petWindow && focusForInput(petWindow, focus))
+
+  // ── Python 后端监护 ─────────────────────────────────────────────────
+  supervisor = new PythonSupervisor({
+    dataDir,
+    configPath,
+    cwd: join(app.getAppPath(), 'python'),
+    pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
+  })
+  supervisor.on('ready', (port) => {
+    if (!petWindow || petWindow.isDestroyed() || !supervisor) return
+    client?.stop()
+    client = new PythonClient(port, supervisor.token, windowSink(petWindow))
+    client.connect()
+  })
+  supervisor.on('failed', (err) => {
+    console.warn('[supervisor] Python 后端不可用：', err.message)
+  })
+  supervisor.start()
+  app.on('before-quit', () => { supervisor?.stop(); client?.stop(); disposeWindowCapture() })
+
+  const isVisible = () => !!petWindow && !petWindow.isDestroyed() && petWindow.isVisible()
+
+  // ── 业务 IPC（全部转发给 Python，无降级）──────────────────────────
+  ipcMain.on(IPC.UserInteracted, () => { /* Python 侧通过 WS 事件流感知活跃 */ })
+  ipcMain.handle(IPC.Send, async (_e, text: string) => {
+    if (!client) return 0
+    return client.send(text)
+  })
+  ipcMain.on(IPC.Interrupt, () => client?.interrupt())
+  ipcMain.handle(IPC.Diary, async () => {
+    if (client) return client.diary()
+    return { entries: [], memories: [], now: Date.now() }
+  })
+  ipcMain.handle(IPC.Observability, async () => {
+    if (client) return client.observability()
+    return {}
+  })
+  ipcMain.handle(IPC.DebugTrace, async (_e, since: number) => {
+    if (client) return client.debugTrace(since ?? 0)
+    return []
+  })
+
+  // ── 前台进程轮询 → Python ───────────────────────────────────────────
+  // Electron 保持对前台窗口的读取特权；Python 侧做分类和感知判断。
+  let lastTitle = ''
+  const pollForeground = async () => {
+    if (!client) return
+    try {
+      const fg = await readForeground()
+      if (!fg || isSelfProcess(fg.process)) return
+      await client.foreground({
+        process: fg.process,
+        title: fg.title ?? '',
+        fullscreen: fg.fullscreen ?? false,
+        visible: isVisible(),
+      })
+      lastTitle = fg.title ?? ''
+    } catch { /* 前台读取可能因权限失败，静默 */ }
+  }
+  const fgTimer = setInterval(pollForeground, FOREGROUND_POLL_MS)
+  fgTimer.unref()
+  app.on('before-quit', () => clearInterval(fgTimer))
+
+  // ── 截图捕获 → Python（仅视觉功能开启时才捕获）─────────────────────
+  // ★ 开关读的是模块级 currentCfg（点"重启月璃"时会刷新，见顶部那个 handler），
+  //   不是启动时捕获的常量——否则在设置窗口里打开视觉功能、点重启，
+  //   Electron 这一侧的轮询永远不会跟着起来，得整个应用重启才生效，
+  //   和"重启月璃"这个按钮承诺的效果对不上。
+  currentCfg = cfg
+
+  let lastFrame: Buffer | null = null
+  const capturePageUrl = devUrl ? new URL('capture.html', devUrl).href : APP_CAPTURE_URL
+  const pollScreenshot = async () => {
+    if (!currentCfg?.vision.enabled || !client || !lastTitle) return
+    try {
+      const capture = await captureWindow(lastTitle, capturePageUrl)
+      if (!capture) return
+      const delta = frameDelta(lastFrame, capture.jpeg)
+      lastFrame = capture.jpeg
+      if (delta < 0.04 && lastFrame !== null) return
+      await client.screenshot(capture.jpeg)
+    } catch { /* 截图可能因权限或窗口已关闭而失败 */ }
+  }
+  const ssTimer = setInterval(pollScreenshot, SCREENSHOT_POLL_MS)
+  ssTimer.unref()
+  app.on('before-quit', () => clearInterval(ssTimer))
+
+  // ── 托盘 ────────────────────────────────────────────────────────────
+  createTray(petWindow, {
+    talk: () => {
+      const win = petWindow
+      if (!win || win.isDestroyed()) return
+      if (!win.isVisible()) togglePet(win, true)
+      win.focus()
+      win.webContents.send(IPC.OpenComposer)
+    },
+    resetPosition: () => petWindow && resetPetPosition(petWindow),
+    openDiary: () =>
+      openDiaryWindow({
+        url: devUrl ? new URL('diary.html', devUrl).href : APP_DIARY_URL,
+        preload: resolveDiaryPreload(),
+      }),
+    openObservability: () =>
+      openObservabilityWindow({
+        url: devUrl ? new URL('observability.html', devUrl).href : APP_OBSERVABILITY_URL,
+        preload: resolveObservabilityPreload(),
+      }),
+    openSettings: () =>
+      openSettingsWindow({
+        url: devUrl ? new URL('settings.html', devUrl).href : APP_SETTINGS_URL,
+        preload: resolveSettingsPreload(),
+      }),
+    restartBackend: () => { supervisor?.stop(); supervisor?.start() },
+  })
+
+  petWindow.on('closed', () => { petWindow = null })
+
+  // ── 自检 ─────────────────────────────────────────────────────────────
+  if (SELFTEST) runSelfTest(petWindow)
+}
+
+// ── 自检常量 ───────────────────────────────────────────────────────────
+const SELFTEST = process.env.YUELI_SELFTEST === '1' || process.argv.includes('--selftest')
+
+function report(tag: string, payload: unknown): void {
+  const line = `${tag} ${JSON.stringify(payload)}`
+  console.log(line)
+  const out = process.env.YUELI_SELFTEST_OUT
+  if (out) appendFileSync(out, `${line}\n`, { encoding: 'utf8' })
+}
+
+/**
+ * 无头自检 —— 只验 Electron 侧的窗口和渲染机制。
+ * SELFTEST-CHAT / REFLECT / AWARE 的逻辑已移至 Python CLI 自检（python -m yueli --selftest）。
+ */
+function runSelfTest(win: BrowserWindow): void {
+  win.webContents.once('did-finish-load', async () => {
+    await new Promise((r) => setTimeout(r, 2500))
+    try {
+      const canvas = await win.webContents.executeJavaScript(`(() => {
+        const c = document.getElementById('character')
+        const err = document.getElementById('error')
+        if (!c) return { ok: false, reason: 'canvas 元素不存在' }
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data
+        let opaque = 0
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 24) opaque++
+        return {
+          ok: opaque > 0 && err.style.display !== 'flex',
+          canvas: c.width + 'x' + c.height,
+          opaquePixels: opaque,
+          opaqueRatio: +(opaque / (c.width * c.height) * 100).toFixed(1),
+          errorVisible: err.style.display === 'flex',
+          bridgeAvailable: typeof window.pet?.setInteractive === 'function',
+        }
+      })()`)
+      report('SELFTEST', canvas)
+      report('SELFTEST-WINDOW', probeWindow(win))
+      report('SELFTEST-HIT', await probeHitRegions(win))
+      report('SELFTEST-TRAY', probeTray(win))
+      report('SELFTEST-DIARY', await probeDiary())
+    } catch (err) {
+      report('SELFTEST', { ok: false, reason: String(err) })
+    }
+    app.quit()
+  })
+}
+
+function probeWindow(win: BrowserWindow) {
+  const bounds = win.getBounds()
+  const pos = win.getPosition()
+  const orig = [...pos]
+  win.setPosition(pos[0]! + 10, pos[1]! + 10)
+  const moved = win.getPosition()
+  win.setPosition(orig[0]!, orig[1]!)
+  return {
+    ok: win.isFocusable() && moved[0] !== orig[0],
+    focusable: win.isFocusable(),
+    alwaysOnTop: win.isAlwaysOnTop(),
+    bounds,
+  }
+}
+
+async function probeHitRegions(win: BrowserWindow) {
+  await win.webContents.executeJavaScript(`window.pet?.setInteractive(false)`)
+  await new Promise((r) => setTimeout(r, 150))
+  await win.webContents.executeJavaScript(`window.pet?.setInteractive(true)`)
+  return { ok: true, note: '点击穿透切换未抛错' }
+}
+
+function probeTray(win: BrowserWindow) {
+  return {
+    ok: !trayIconEmpty(),
+    iconLoaded: !trayIconEmpty(),
+    windowVisible: win.isVisible(),
+  }
+}
+
+async function probeDiary() {
+  const devUrl = process.env.ELECTRON_RENDERER_URL
+  const url = devUrl ? new URL('diary.html', devUrl).href : APP_DIARY_URL
+  const win = openDiaryWindow({ url, preload: resolveDiaryPreload() })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('日记窗口加载超时')), 10_000)
+      win.webContents.once('did-finish-load', () => { clearTimeout(timer); resolve() })
+      win.webContents.once('did-fail-load', (_e, code, desc) => {
+        clearTimeout(timer); reject(new Error(`加载失败 ${code} ${desc}`))
+      })
+    })
+    await new Promise((r) => setTimeout(r, 1200))
+    const dom = await win.webContents.executeJavaScript(`(() => ({
+      entries: document.getElementById('list')?.querySelectorAll('.entry').length ?? 0,
+      bridgeAvailable: typeof window.diary?.read === 'function',
+      windowOpen: true,
+    }))()`)
+    return { ok: dom.bridgeAvailable === true, windowOpen: diaryWindowOpen(), ...dom }
+  } catch (err) {
+    return { ok: false, reason: String(err) }
+  } finally {
+    closeDiaryWindow()
+  }
+}

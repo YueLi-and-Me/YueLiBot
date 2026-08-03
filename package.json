@@ -1,0 +1,41 @@
+{
+  "name": "yueli-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI 桌面陪伴 —— Live2D / AI 立绘差分桌宠",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
+    "build": "electron-vite build",
+    "selftest": "electron . --selftest",
+    "sprite:test": "tsx scripts/sprite/test.ts",
+    "sprite:diagnose": "tsx scripts/sprite/diagnose.ts",
+    "sprite:base": "tsx scripts/sprite/base.ts",
+    "sprite:gen": "tsx scripts/sprite/gen.ts",
+    "sprite:preview": "tsx scripts/sprite/preview.ts",
+    "sprite:process": "tsx scripts/sprite/process.ts",
+    "sprite:fixture": "tsx scripts/sprite/fixture.ts",
+    "sprite:process:fixture": "tsx scripts/sprite/process.ts --naive --name fixture",
+    "sprite:preview:fixture": "tsx scripts/sprite/preview.ts --name fixture",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "active-win": "^8.2.1",
+    "dotenv": "^17.2.3",
+    "sharp": "^0.34.4",
+    "smol-toml": "^1.7.1",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "electron": "^43.2.0",
+    "electron-vite": "^5.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10"
+  }
+}

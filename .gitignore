@@ -1,0 +1,31 @@
+# 密钥 —— 绝不入库
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+*.log
+
+# 生图管线中间产物（体积大且可重跑）
+scratch/
+.sprite-work/
+
+# 自检用的合成素材，由 npm run sprite:fixture 重新生成
+assets/character/fixture/
+
+# Electron 构建产物
+out/
+
+# Live2D 预处理产物（可由 scripts/prepare-model.ts 重新生成）
+assets/model/
+
+# Python 运行期产物与缓存
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.uv-cache/
+
+# IDE
+.idea/

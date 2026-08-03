@@ -1,0 +1,169 @@
+<!doctype html>
+  <html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'" />
+    <title>月璃设置</title>
+    <link rel="stylesheet" href="./styles/tokens.css" />
+    <link rel="stylesheet" href="./styles/settings.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <p class="eyebrow">YUELI / SETTINGS</p>
+        <h1 id="page-title">月璃设置</h1>
+        <p id="page-subtitle" class="subtitle">配置对话模型、语音、视觉，随时可以回来改。</p>
+      </header>
+
+      <form id="settings-form">
+        <section class="panel-card">
+          <header class="section-heading"><h2>你和月璃</h2></header>
+          <div class="section-body">
+            <label class="field">
+              <span class="field-label">你希望她怎么称呼你</span>
+              <input type="text" name="bot.user_nickname" placeholder="留空则不特别用名字称呼你" />
+            </label>
+            <label class="field">
+              <span class="field-label">她和你的关系</span>
+              <input list="relationship-presets" type="text" name="bot.relationship" placeholder="留空则不设定这层关系" />
+              <datalist id="relationship-presets">
+                <option value="哥哥"></option>
+                <option value="姐姐"></option>
+                <option value="朋友"></option>
+                <option value="主人"></option>
+              </datalist>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading"><h2>对话模型</h2></header>
+          <div class="section-body">
+            <label class="field">
+              <span class="field-label">服务商</span>
+              <select name="llm.provider">
+                <option value="ark">方舟（火山引擎）</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="dashscope">通义千问</option>
+                <option value="moonshot">月之暗面</option>
+                <option value="openai">OpenAI</option>
+                <option value="ollama">Ollama（本地）</option>
+              </select>
+            </label>
+            <label class="field required">
+              <span class="field-label">模型 ID</span>
+              <input type="text" name="llm.model" placeholder="例如 doubao-seed-character-260628" required />
+            </label>
+            <label class="field required">
+              <span class="field-label">API Key</span>
+              <input type="password" name="llm.api_key" required />
+            </label>
+            <details class="advanced-fields">
+              <summary>高级</summary>
+              <label class="field">
+                <span class="field-label">Base URL（留空用预设官方地址）</span>
+                <input type="text" name="llm.base_url" />
+              </label>
+              <label class="field">
+                <span class="field-label">深度思考</span>
+                <select name="llm.thinking">
+                  <option value="disabled">关闭（推荐，速度快）</option>
+                  <option value="enabled">开启</option>
+                  <option value="auto">自动</option>
+                </select>
+              </label>
+              <p class="hint">⚠ 开启后实测首字延迟从 3 秒涨到 26~31 秒，桌宠场景不推荐。</p>
+            </details>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading">
+            <h2>语音合成</h2>
+            <label class="toggle"><input type="checkbox" name="tts.enabled" /> 启用</label>
+          </header>
+          <div class="section-body toggle-body" data-toggle-target="tts.enabled">
+            <label class="field">
+              <span class="field-label">Base URL</span>
+              <input type="text" name="tts.base_url" />
+            </label>
+            <label class="field">
+              <span class="field-label">API Key</span>
+              <input type="password" name="tts.api_key" />
+            </label>
+            <label class="field">
+              <span class="field-label">模型</span>
+              <input type="text" name="tts.model" />
+            </label>
+            <label class="field">
+              <span class="field-label">音色</span>
+              <input type="text" name="tts.voice" />
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading">
+            <h2>看屏幕</h2>
+            <label class="toggle"><input type="checkbox" name="vision.enabled" /> 启用</label>
+          </header>
+          <div class="section-body toggle-body" data-toggle-target="vision.enabled">
+            <p class="hint warn">
+              ⚠ 全项目唯一会把屏幕内容送上云的功能。只截前台那一个窗口、绝不落盘，
+              但截图里仍可能有明文密码、私信、银行页面、公司文档——开启前想清楚。
+            </p>
+            <p class="hint">
+              对话接口接受图片时可以留空复用；若接口只接受文本，请在下面填写另一套多模态接口。
+            </p>
+            <label class="field">
+              <span class="field-label">API 地址（留空复用对话地址）</span>
+              <input type="url" name="vision.base_url" placeholder="例如 https://ark.cn-beijing.volces.com/api/v3" />
+            </label>
+            <label class="field">
+              <span class="field-label">视觉模型（必须支持 image_url）</span>
+              <input type="text" name="vision.model" />
+            </label>
+            <label class="field">
+              <span class="field-label">API Key（留空复用对话 Key）</span>
+              <input type="password" name="vision.api_key" />
+            </label>
+            <label class="field checkbox-field">
+              <input type="checkbox" name="vision.folder_enabled" />
+              <span>也识别文件夹截图（隐私风险更高，默认关）</span>
+            </label>
+            <label class="field checkbox-field">
+              <input type="checkbox" name="vision.fullscreen_silent" />
+              <span>疑似全屏时静默（避免直播/录屏把她的声音带进去）</span>
+            </label>
+          </div>
+        </section>
+
+        <details class="panel-card advanced-section">
+          <summary class="section-heading"><h2>高级设置</h2></summary>
+          <div class="section-body">
+            <label class="field">
+              <span class="field-label">日志级别</span>
+              <select name="advanced.log_level">
+                <option value="INFO">INFO（默认）</option>
+                <option value="DEBUG">DEBUG（调试用，输出更详细）</option>
+                <option value="WARNING">WARNING</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">HTTP(S) 代理</span>
+              <input type="text" name="advanced.https_proxy" placeholder="例如 http://127.0.0.1:7890" />
+            </label>
+          </div>
+        </details>
+
+        <footer class="form-footer">
+          <span id="status-text" class="status-text"></span>
+          <button id="restart-button" class="button secondary" type="button" hidden>重启月璃使配置生效</button>
+          <button id="save-button" class="button" type="submit">保存</button>
+        </footer>
+      </form>
+    </div>
+    <script type="module" src="./settings.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' app:; img-src 'self' app: data:; style-src 'self' app: 'unsafe-inline'; connect-src 'self' app:"
+    />
+    <title>YueLi</title>
+    <style>
+      /* 配色取自 UI 素材 frame-3：淡蓝描边 + 白底，保持整体风格一致 */
+      :root {
+        --line: #a8c2e8;
+        --ink: #3f4a5f;
+        --paper: rgba(255, 255, 255, 0.96);
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        /* 拖角色时不该变成拖图片 */
+        user-select: none;
+        -webkit-user-drag: none;
+        cursor: default;
+        font: 14px/1.65 system-ui, "Microsoft YaHei", sans-serif;
+        color: var(--ink);
+      }
+
+      /* 角色靠右：左侧腾出来给气泡。空白区域反正是点击穿透的 */
+      #stage {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: flex-end;
+        justify-content: flex-end;
+      }
+      #character { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+      /* 视觉请求中的知情提示：一个落在角色身上的微弱光点，不打断操作。 */
+      #visionIndicator {
+        position: absolute;
+        right: 88px;
+        bottom: 166px;
+        width: 9px;
+        height: 9px;
+        border: 1px solid rgba(255, 255, 255, 0.92);
+        border-radius: 50%;
+        background: #8ed8ff;
+        box-shadow: 0 0 0 0 rgba(142, 216, 255, 0.55);
+        opacity: 0;
+        pointer-events: none;
+        transform: scale(0.7);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+      }
+      #visionIndicator.show {
+        opacity: 0.92;
+        transform: scale(1);
+        animation: vision-pulse 1.1s ease-in-out infinite;
+      }
+      @keyframes vision-pulse {
+        50% { box-shadow: 0 0 0 6px rgba(142, 216, 255, 0); }
+      }
+
+      /* 气泡贴在她头部左侧 */
+      #bubble {
+        position: absolute;
+        left: 10px;
+        top: 8%;
+        width: 214px;
+        padding: 11px 14px;
+        background: var(--paper);
+        border: 2px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 3px 14px rgba(90, 120, 170, 0.22);
+        opacity: 0;
+        transform: translateY(6px) scale(0.97);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+        pointer-events: none;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #bubble.show { opacity: 1; transform: none; }
+      #bubble.error { border-color: #e0a0a0; background: rgba(255, 246, 246, 0.97); color: #8a3b3b; }
+      /* 指向她嘴巴方向的小尖角 */
+      #bubble::after {
+        content: "";
+        position: absolute;
+        right: -9px;
+        top: 22px;
+        width: 14px;
+        height: 14px;
+        background: var(--paper);
+        border-right: 2px solid var(--line);
+        border-bottom: 2px solid var(--line);
+        transform: rotate(-45deg);
+      }
+      #bubble.error::after { background: rgba(255, 246, 246, 0.97); border-color: #e0a0a0; }
+
+      /*
+       * 输入栏。
+       *
+       * 贴在她**脚下**、与她水平居中对齐，而不是丢在左边那片空地上 ——
+       * 独立漂在角落会显得跟角色没关系，像另开了一个聊天窗。
+       * 她是右对齐的（宽约 202px），所以这里也按右侧对齐算中线。
+       *
+       * 背景用素材 frame-3：它本身就是横条形状，不需要九宫格拉伸。
+       * 但它原生比例是 530×140（约 3.8），拉太扁圆角端会明显变形，
+       * 所以宽高比控制在 5 左右，形变还看不出来。
+       */
+      #composer {
+        position: absolute;
+        /* left/width 由 ui/layout.ts 按角色实际渲染框实时算 ——
+           角色是 object-fit: contain，宽度随窗口高度变，写死必然在某个尺寸下偏掉。
+           这里只给一个首帧的兜底值 */
+        right: 6px;
+        bottom: 6px;
+        width: 190px;
+        height: 38px;
+        display: flex;
+        align-items: center;
+        background: url("/ui/frame-3.png") no-repeat center / 100% 100%;
+        /* 右侧留白避开素材上的贝壳装饰，别让文字压上去 */
+        padding: 0 40px 2px 14px;
+        /* 用 visibility 而不是 display 切换：display 的变化不可过渡，
+           配 transition 只会瞬现。visibility 可以，配 pointer-events
+           保证隐藏时不挡点击 */
+        visibility: hidden;
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(4px);
+        transition: opacity 0.14s ease, transform 0.14s ease;
+      }
+      #composer.show { visibility: visible; pointer-events: auto; opacity: 1; transform: none; }
+      #input {
+        flex: 1;
+        min-width: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        font: 12.5px/1.4 inherit;
+        color: var(--ink);
+      }
+      #input::placeholder { color: #b3bccb; }
+
+      #error {
+        position: absolute;
+        inset: 12px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 14px;
+        font-size: 13px;
+        color: #ffd7d7;
+        background: rgba(120, 20, 20, 0.9);
+        border-radius: 12px;
+        text-align: center;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="character"></canvas>
+    </div>
+    <div id="visionIndicator" aria-hidden="true"></div>
+
+    <div id="bubble"><span id="bubbleText"></span></div>
+
+    <!--
+      data-hit 告诉命中检测「这块要能点」。
+      漏了它的话，光标移到输入栏上窗口会立刻恢复整体穿透，
+      点击穿到桌面上，输入框永远打不进字。
+    -->
+    <div id="composer" data-hit>
+      <input id="input" type="text" placeholder="说点什么…" autocomplete="off" spellcheck="false" />
+    </div>
+
+    <div id="error"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

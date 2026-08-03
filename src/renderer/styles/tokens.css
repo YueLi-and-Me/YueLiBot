@@ -1,0 +1,97 @@
+:root {
+  color-scheme: light;
+  --primary: 28.9 94.8% 45.1%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 188.5 35% 96%;
+  --muted: 188.5 12% 96%;
+  --muted-foreground: 188.5 20% 46.9%;
+  --accent: 112.7 40.2% 47.8%;
+  --destructive: 0 84.2% 45%;
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+  --card: 188.5 14% 98.6%;
+  --border: 188.5 20% 91.4%;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Monaco", "Courier New", monospace;
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.75;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --shadow-sm: 0 1px 2px 0 hsl(222.2 84% 4.9% / 0.06);
+  --shadow-md: 0 4px 12px hsl(222.2 84% 4.9% / 0.08);
+  --shadow-lg: 0 12px 30px hsl(222.2 84% 4.9% / 0.12);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --primary: 28.9 94.8% 52%;
+    --primary-foreground: 222.2 84% 4.9%;
+    --secondary: 217.2 32.6% 17.5%;
+    --muted: 217.2 32.6% 15%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 217.2 32.6% 12%;
+    --border: 217.2 32.6% 20%;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --primary: 28.9 94.8% 52%;
+  --primary-foreground: 222.2 84% 4.9%;
+  --secondary: 217.2 32.6% 17.5%;
+  --muted: 217.2 32.6% 15%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 217.2 32.6% 12%;
+  --border: 217.2 32.6% 20%;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --primary: 28.9 94.8% 45.1%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 188.5 35% 96%;
+  --muted: 188.5 12% 96%;
+  --muted-foreground: 188.5 20% 46.9%;
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+  --card: 188.5 14% 98.6%;
+  --border: 188.5 20% 91.4%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+button,
+input {
+  font: inherit;
+}
