@@ -20,7 +20,8 @@
     "sprite:process:fixture": "tsx scripts/sprite/process.ts --naive --name fixture",
     "sprite:preview:fixture": "tsx scripts/sprite/preview.ts --name fixture",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "tsx tests/integration/supervisor_client.ts"
   },
   "dependencies": {
     "active-win": "^8.2.1",

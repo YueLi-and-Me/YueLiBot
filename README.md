@@ -124,7 +124,8 @@ scripts/sprite/     生图管线
 | `npm run selftest` | **无头自检**，8 段断言 |
 | `npm test` | Electron 端单元测试（4 个） |
 | `npm run typecheck` | 类型检查 |
-| `cd python && python -m pytest tests/ -q` | Python 后端测试（153 个），业务逻辑主要在这边 |
+| `cd python && python -m pytest tests/ -q` | Python 后端测试（155 个），业务逻辑主要在这边 |
+| `npm run test:integration` | 真实拉起 Python 后端的集成测试（需要可用的 Python 环境） |
 | `npm run sprite:*` | 生图管线，见上 |
 
 ### 自检

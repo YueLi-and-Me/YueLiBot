@@ -94,6 +94,9 @@ async function main(): Promise<void> {
 
   const sup = new PythonSupervisor({
     dataDir: tmpDir,
+    // 临时目录里没有 config.toml，后端会退回默认配置——集成测试要验的是
+    // 拉起/端口宣告/令牌链路，不依赖具体配置内容。
+    configPath: join(tmpDir, 'config.toml'),
     cwd: PYTHON_CWD,
     pythonExe: PYTHON_EXE,
   })
