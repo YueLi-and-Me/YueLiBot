@@ -55,7 +55,14 @@ def main() -> None:
     db_path = data_dir / "memory.db"
 
     from yueli.services.trace import trace
-    trace.configure(data_dir / "logs" / "trace.jsonl")
+    trace.configure(
+        data_dir / "logs" / "trace.jsonl",
+        record_content=cfg.advanced.trace_content,
+        max_bytes=cfg.advanced.trace_max_bytes,
+    )
+    if cfg.advanced.trace_content:
+        logger.warning("trace_content_enabled",
+                       note="trace.jsonl 会明文记录对话正文与完整提示词，排查完请关掉")
 
     from yueli.common.db.connection import open_db
     from yueli.common.db.migrations.manager import run_migrations

@@ -39,10 +39,10 @@ LLM_MODEL=doubao-seed-character-260628
 
 > `.env` 已在 `.gitignore` 里。**不要把 Key 贴进聊天、截图或提交记录。**
 
-先验通对话链路：
+先验通后端链路：
 
 ```bash
-npm run chat:test
+cd python && python -m pytest tests/ -q
 ```
 
 ### 3. 跑起来
@@ -80,28 +80,37 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 
 ## 架构
 
+业务域已经从 TypeScript 迁到 Python：Electron 只做平台层和进程治理，
+对话、记忆、人格、日程、主动行为全在 Python 后端。
+
 ```
-src/
-  core/           纯 TS，零 Electron 依赖，可单测
-    agent/        人设、提示词、增量标签解析、反思
-    llm/          OpenAI 兼容的流式对话
-    tts/          OpenAI 兼容的语音合成
-    memory/       三层记忆、分词、遗忘曲线
-    persona/      四条人格轴 → 自然语言行为指令
-    awareness/    前台归类、打扰预算
-    schedule/     24h 日程
-  main/           Electron 主进程（持有 API Key）
-    platform/     ★ 系统调用适配层，迁移 Tauri 只需重写这里
-  renderer/       画面（不可信内容的运行环境，无凭证）
-    character/    CharacterView 接口 + 立绘差分实现
-  shared/         两端共用的类型与 IPC 契约
-scripts/sprite/   生图管线
+src/                Electron 端（TypeScript）
+  main/             主进程（持有 API Key）
+    platform/       ★ 系统调用适配层，迁移 Tauri 只需重写这里
+    python/         Python 后端的 supervisor 与 HTTP/WS 客户端
+  preload/          最小化 IPC 桥
+  renderer/         画面（不可信内容的运行环境，无凭证）
+    character/      CharacterView 接口 + 立绘差分实现
+  shared/           两端共用的类型与 IPC 契约
+
+python/yueli/       业务真源（Python）
+  agent/            人设、提示词、表达习惯、增量标签解析、历史修复、反思
+  llm/              OpenAI 兼容的流式对话
+  memory/           三层记忆、分词、遗忘曲线
+  persona/          四条人格轴 → 自然语言行为指令
+  awareness/        前台归类、打扰预算、睡眠状态
+  schedule/         24h 生成式日程
+  services/         对话编排、主动感知、视觉、TTS、追踪
+  api/              FastAPI 路由与 WebSocket
+
+scripts/sprite/     生图管线
 ```
 
-两条硬性边界：
+三条硬性边界：
 
-- `src/core/` **不得** import 任何 Electron API
-- API Key 只存在于主进程。渲染层要显示模型生成的内容，给它凭证等于把 Key 放进不可信环境
+- Python 后端**不得**依赖任何 Electron API
+- API Key 只存在于主进程和 Python 后端。渲染层要显示模型生成的内容，给它凭证等于把 Key 放进不可信环境
+- Python 只监听 `127.0.0.1`，且所有接口都要过 token 鉴权
 
 ---
 
@@ -113,9 +122,9 @@ scripts/sprite/   生图管线
 | `npm run dev:renderer` | 只起渲染层（浏览器里调画面，比重启 Electron 快得多） |
 | `npm run build` | 生产构建 |
 | `npm run selftest` | **无头自检**，8 段断言 |
-| `npm test` | 单元测试（122 个） |
+| `npm test` | Electron 端单元测试（4 个） |
 | `npm run typecheck` | 类型检查 |
-| `npm run chat:test` | 对话链路冒烟测试 |
+| `cd python && python -m pytest tests/ -q` | Python 后端测试（153 个），业务逻辑主要在这边 |
 | `npm run sprite:*` | 生图管线，见上 |
 
 ### 自检
