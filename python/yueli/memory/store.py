@@ -21,7 +21,7 @@ from yueli.common.clock import now as current_time
 from yueli.common.db.schema import DDL, SCHEMA_VERSION, SEED
 from .decay import (
     FREEZE, DecayState, evaluate, freeze_due_at, half_life_for,
-    reinforce, retention, score,
+    reinforce, relevance_from_bm25, retention, retention_weight, score,
 )
 from .similarity import exact_key, is_same_fact
 from .tokenize import index_tokens, match_query
@@ -314,12 +314,17 @@ class MemoryStore:
         scored = []
         for r in rows:
             ret = retention(r[3], r[4], r[5], now)
-            bm25_score = score(r[7], ret)
-            final_score = bm25_score
+            relevance = relevance_from_bm25(r[7])
             # ── 向量融合 ───────────────────────────────────────────────────
             # 只有查询向量和事实向量都存在时才做混合，任意一方缺失就纯 BM25。
             # 权重 0.4 BM25 + 0.6 向量：向量召回「换个说法也能找到」的收益更高，
             # 但 BM25 精确词面匹配仍有价值（专名、数字、代码关键字）。
+            #
+            # ★ 融合发生在**相关度**层面，留存度权重最后统一乘上去。
+            #   此前是 0.4*score(bm25, ret) + 0.6*vec_score——留存度只作用于
+            #   BM25 那 40%，向量那 60% 完全不受遗忘曲线约束，等于一条已经
+            #   衰减到该被忘掉的事实，只要语义相近就能满血召回，跟三层记忆
+            #   「会遗忘」的设计意图直接冲突。
             fact_embedding = r[8]
             if query_embedding is not None and fact_embedding is not None:
                 try:
@@ -328,9 +333,10 @@ class MemoryStore:
                     cos = cosine(query_embedding, fact_embedding, dim)
                     # cos 归一化到 [0,1]（L2 归一化向量的内积已在[-1,1]，+1后/2）
                     vec_score = (cos + 1) / 2
-                    final_score = 0.4 * bm25_score + 0.6 * vec_score
+                    relevance = 0.4 * relevance + 0.6 * vec_score
                 except Exception:
                     pass   # 向量打分失败静默降级，不影响 BM25 结果
+            final_score = relevance * retention_weight(ret)
             scored.append(RecalledFact(id=r[0], kind=r[1], content=r[2],
                                         retention=ret, score=final_score))
         scored.sort(key=lambda x: x.score, reverse=True)

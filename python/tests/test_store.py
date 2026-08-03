@@ -38,7 +38,14 @@ class TestDecayCurve:
 
     def test_score_favors_better_retention(self):
         assert score(-2, 0.9) > score(-2, 0.1)
-        assert score(-1, 0.5) > score(-8, 0.5)
+
+    def test_score_favors_better_bm25_match(self):
+        # ★ 这条原本写反：断言 score(-1, .5) > score(-8, .5)，即「弱匹配得分更高」，
+        #   把 score() 的取反 bug 一起钉住了。FTS5 的 bm25() 越相关值越小（负得越多），
+        #   所以 -8 才是更好的匹配。可观察的召回顺序另见 test_recall_golden.py。
+        assert score(-8, 0.5) > score(-1, 0.5)
+        # 词太常见导致 IDF<0（bm25 为正）时不该拿满分——旧式子会给 1.0。
+        assert score(0.5, 1.0) == 0.0
 
 
 @pytest.fixture

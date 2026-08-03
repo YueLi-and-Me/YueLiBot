@@ -60,14 +60,32 @@ def reinforce(current: float, boost: float = 0.35) -> float:
     return clamp_unit(current + boost * (1 - current))
 
 
+def relevance_from_bm25(bm25: float) -> float:
+    """把 FTS5 的 bm25() 归一成 [0,1) 的词面相关度，越相关越大。"""
+    r = max(0.0, -bm25)
+    return r / (1.0 + r)
+
+
+def retention_weight(retention_value: float) -> float:
+    """留存度权重。抽出来是为了让向量融合也能吃到遗忘曲线，而不是只有 BM25 那一半。"""
+    return 0.35 + 0.65 * retention_value
+
+
 def score(bm25: float, retention_value: float) -> float:
     """
     检索排序分数：词面相关度 × 留存度权重。
 
-    bm25() 在 SQLite 里越小越相关（负值），先翻正再归一。
+    SQLite FTS5 的 bm25() 越相关值越小（负得越多），所以先取 -bm25 翻正，
+    再用 r/(1+r) 归一到 [0,1)——这条曲线对匹配质量单调**递增**。
+
+    ★ 这里曾经写成 1/(1+r)，方向正好是反的：越相关的事实分越低，配合
+      recall_facts() 里的 sort(reverse=True)，实际召回的是候选池里匹配
+      最差的那几条。同一处符号混淆还有第二个表现：bm25 为正时（词太常见
+      导致 IDF<0）会被 max(0.0, ...) 钳成 0，旧式子给出 1.0 满分，即最烂
+      的匹配拿最高分。现在这两种情况都归到 0 分。
+      排序方向由 tests/test_recall_golden.py 用可观察的召回结果钉住。
     """
-    relevance = 1 / (1 + max(0.0, -bm25))
-    return relevance * (0.35 + 0.65 * retention_value)
+    return relevance_from_bm25(bm25) * retention_weight(retention_value)
 
 
 @dataclass
