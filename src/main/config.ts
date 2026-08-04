@@ -98,7 +98,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   vision: {
     enabled: false, model: '', api_key: '', base_url: '',
     timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
-    frames: 1, folder_enabled: false, fullscreen_silent: true,
+    fullscreen_silent: true, capture_mode: 'window',
   },
   vector: {
     enabled: false, embedding_base_url: '', embedding_api_key: '',
@@ -178,6 +178,19 @@ function stringAtOr(
 ): string {
   if (record[key] === undefined) return defaultValue
   return stringAt(record, key, path)
+}
+
+/**
+ * 截图范围。写错值要在加载期就报出来——运行时才发现的话，表现是「她看到的
+ * 东西不对」，那是最难往回追的一类问题。
+ */
+function captureModeAt(record: Record<string, unknown>, path: string): 'window' | 'screen' {
+  const value = record['capture_mode']
+  if (value === undefined) return DEFAULT_CONFIG.vision.capture_mode
+  if (value !== 'window' && value !== 'screen') {
+    throw new Error(`${path} 的 capture_mode 只能是 "window" 或 "screen"`)
+  }
+  return value
 }
 
 function booleanAt(record: Record<string, unknown>, key: string, path: string): boolean {
@@ -436,9 +449,8 @@ function readSplitConfig(directory: string): YueliConfig {
       timeout_ms: visionProvider.timeout_ms,
       max_retries: visionProvider.max_retries,
       retry_interval_ms: visionProvider.retry_interval_ms,
-      frames: numberAtOr(vision, 'frames', DEFAULT_CONFIG.vision.frames, featuresPath),
-      folder_enabled: booleanAt(vision, 'folder_enabled', featuresPath),
       fullscreen_silent: booleanAt(vision, 'fullscreen_silent', featuresPath),
+      capture_mode: captureModeAt(vision, featuresPath),
     },
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
@@ -745,14 +757,14 @@ speed = ${tomlValue(cfg.tts.speed)}
 cluster = ${tomlValue(cfg.tts.cluster)}
 
 [vision]
-# 该功能会把前台窗口截图发送给视觉模型，默认关闭
+# 他问起屏幕时截一帧发给视觉模型；不问就完全不截。默认关闭
 enabled = ${tomlValue(cfg.vision.enabled)}
-# 一次发送的连续关键帧数，范围 1~4；云端模型通常按图片数量计费
-frames = ${tomlValue(cfg.vision.frames)}
-# 是否允许检查资源管理器中的游戏文件夹；可能暴露文件名和路径，默认关闭
-folder_enabled = ${tomlValue(cfg.vision.folder_enabled)}
 # 检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报
 fullscreen_silent = ${tomlValue(cfg.vision.fullscreen_silent)}
+# 截什么："window" 只截前台那一个窗口；"screen" 截整个主屏。
+# screen 能让她看到桌面全貌，但会连带截到其它窗口、后台聊天、没关的网页——
+# 送往云端模型时尤其要想清楚。
+capture_mode = ${tomlValue(cfg.vision.capture_mode)}
 
 [vector]
 # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖

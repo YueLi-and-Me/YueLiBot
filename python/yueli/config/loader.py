@@ -147,9 +147,8 @@ def _load_split_config(directory: Path) -> Config:
             timeout_ms=vision_provider.timeout_ms,
             max_retries=vision_provider.max_retries,
             retry_interval_ms=vision_provider.retry_interval_ms,
-            frames=features_vision.frames,
-            folder_enabled=features_vision.folder_enabled,
             fullscreen_silent=features_vision.fullscreen_silent,
+            capture_mode=features_vision.capture_mode,
         ),
         vector=VectorConfig(
             enabled=features_vector.enabled,

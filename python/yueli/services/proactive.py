@@ -17,10 +17,7 @@ from yueli.api.ws import push
 from yueli.awareness.budget import (
     InterruptContext, ProactiveState, after_speak, decide, decide_scene, describe_budget, initial_state,
 )
-from yueli.awareness.classify import (
-    Classified, ForegroundInfo, VisionContext, classify, describe_activity, vision_context_for,
-)
-from yueli.awareness.look_state import VisionLookState
+from yueli.awareness.classify import Classified, ForegroundInfo, classify, describe_activity
 from yueli.awareness.monitor import ForegroundProcessMonitor
 from yueli.awareness.sleep import SleepInputs, SleepStateController
 from yueli.common.clock import now as current_time
@@ -49,13 +46,10 @@ class AwarenessService:
         self._monitor = ForegroundProcessMonitor()
         self._sleep = SleepStateController(input_source=self._sleep_inputs, state_store=chat.memory)
         self._budget: ProactiveState = initial_state(current_time())
-        self._look = VisionLookState()
         self._vision: VisionService | None = None
 
         self._last_classified: Classified | None = None
         self._last_activity_since: int = current_time()
-        self._vision_context: VisionContext | None = None
-        self._window_changed = False
         self._last_visible = True
         self._last_pushed_asleep: bool | None = None
         self._vision_spoke_count = 0
@@ -88,28 +82,28 @@ class AwarenessService:
         return self._with_vision(describe_activity(self._last_classified, minutes))
 
     def _with_vision(self, situation: str) -> str:
-        """把最近一次屏幕描述拼到情境文本上。过期或没有就原样返回。"""
-        if not self._vision or not self._vision_context:
+        """把最近一次屏幕描述拼到情境文本上。
+
+        ★ 视觉功能开着却没拿到描述时，必须明说「这会儿看不到」，不能什么都不说。
+          什么都不说的后果实测过：她会从对话历史和旧记忆里翻出以前看到的界面，
+          当成现在的屏幕讲得有鼻子有眼。没看到就说没看到，比编一个强。
+        """
+        if not self._vision:
             return situation
-        description = self._vision.recent_description(self._vision_context)
+        description = self._vision.chat_glance()
         if not description:
-            return situation
-        return f'{situation}\n（你刚瞥了一眼屏幕：{description}）'
+            return f'{situation}\n（你这会儿看不到他的屏幕。他要是问起，就直说这会儿没看清，别拿以前看到过的界面充数。）'
+        return (
+            f'{situation}\n（你刚瞥了一眼屏幕，看到的就是这些：{description}。'
+            '问到屏幕上有什么，只能依据这一句；以前看到过的界面、文件夹属于回忆，'
+            '别当成现在还在那儿。）'
+        )
 
     # ------------------------------------------------------------ 对外只读（供 http.py 用）
 
-    def vision_context(self) -> VisionContext | None:
-        """当前该用哪套视觉提示词；没有合适场景就是 None。
-
-        ★ 这里曾经把 None 兜底成 'gameplay'，而消费端（_with_vision）又要求
-          它非空。结果是写代码、浏览网页时截图照样上传、用「这是游戏画面」
-          的提示词描述、然后结果永远不被读取——隐私和钱都付了，价值全丢。
-          现在如实返回 None，由 http.py 直接跳过。
-        """
-        return self._vision_context
-
-    def window_changed(self) -> bool:
-        return self._window_changed
+    def current_app(self) -> str:
+        """当前前台程序名，喂给视觉模型当先验。没有分类结果就是空串。"""
+        return self._last_classified.app if self._last_classified else ''
 
     @property
     def vision(self) -> VisionService | None:
@@ -141,7 +135,7 @@ class AwarenessService:
                 'minutes': minutes,
                 'silent': self._last_classified.silent if self._last_classified else False,
                 'visionStats': ({**self._vision.stats(), 'spoke': self._vision_spoke_count}
-                               if self._vision else {'enabled': False, 'looks': 0, 'spoke': 0, 'byReason': {}}),
+                               if self._vision else {'enabled': False, 'looks': 0, 'spoke': 0}),
             },
         }
 
@@ -152,12 +146,7 @@ class AwarenessService:
         self.chat.set_sleep_state_provider(lambda: self._sleep.current())
         if self._cfg.vision.ready and self._vision_provider:
             from yueli.services.vision import VisionService
-            self._vision = VisionService(
-                self._cfg,
-                push,
-                self._vision_provider,
-                look_state=self._look,
-            )
+            self._vision = VisionService(self._cfg, push, self._vision_provider)
             logger.info('vision_service_ready', model=self._vision_provider.model)
         elif self._cfg.vision.ready:
             logger.warning('vision_service_disabled', reason='视觉模型配置无效，请检查后端启动日志')
@@ -192,12 +181,6 @@ class AwarenessService:
         if obs.process_changed or self._last_classified is None or classified.activity != self._last_classified.activity:
             self._last_activity_since = now
         self._last_classified = classified
-        self._window_changed = obs.window_changed
-
-        ctx = vision_context_for(info, classified)
-        self._vision_context = ctx
-        if ctx:
-            self._look.enter(ctx, now)
 
         # ★ 不带 title——classify() 已经把标题吃掉了，trace 不能把它漏出来。
         trace.emit('foreground', process=info.process, activity=classified.activity,

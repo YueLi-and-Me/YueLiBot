@@ -20,7 +20,7 @@ import {
 } from './platform/appProtocol.ts'
 import { closeDiaryWindow, diaryWindowOpen, openDiaryWindow } from './platform/diaryWindow.ts'
 import { foregroundAvailable, isSelfProcess, readForeground } from './platform/foreground.ts'
-import { captureWindow, disposeWindowCapture, frameDelta } from './platform/capture.ts'
+import { captureScreen, captureWindow, disposeWindowCapture } from './platform/capture.ts'
 import {
   beginDrag, createPetWindow, endDrag, focusForInput,
   resolveDiaryPreload, resolveObservabilityPreload, resolvePreload,
@@ -34,6 +34,7 @@ import {
   configIsComplete, readConfigDirectory, tryPrefillFromLegacyEnv, writeConfigDirectory,
 } from './config.ts'
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
+import { mentionsScreen } from './screenIntent.ts'
 import { PythonSupervisor } from './python/supervisor.ts'
 import { PythonClient, windowSink } from './python/client.ts'
 import { resolveRuntimePaths } from './runtimePaths.ts'
@@ -43,8 +44,6 @@ const PET_H = 480
 
 /** 前台轮询间隔（毫秒）。比原来的 ProactiveGate 稍快，Python 侧有自己的节流。 */
 const FOREGROUND_POLL_MS = 8_000
-/** 截图轮询间隔（毫秒）。截图送往 Python 做帧差与视觉调用。 */
-const SCREENSHOT_POLL_MS = 12_000
 
 if (process.env.YUELI_DISABLE_GPU === '1') app.disableHardwareAcceleration()
 
@@ -71,6 +70,12 @@ let client: PythonClient | null = null
 /** 启动后一直保持"当前有效配置"的引用，点"重启月璃"时刷新——
  * 决定 Electron 这一侧的行为（比如要不要轮询截图）不能只看启动那一刻的值。 */
 let currentCfg: YueliConfig | null = null
+/**
+ * 托盘「让她看着屏幕」开关。开着＝每条消息都截一帧；关着＝只在他问起屏幕时
+ * 才截（见 screenIntent.ts）。只存在于本次运行，重启回到关——持续截屏是个
+ * 应该每次主动开启的动作，不该悄悄地跨会话生效。
+ */
+let watchScreen = false
 registerAppScheme()
 
 const dataDir = runtimePaths.dataDir
@@ -184,6 +189,10 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   ipcMain.on(IPC.UserInteracted, () => { /* Python 侧通过 WS 事件流感知活跃 */ })
   ipcMain.handle(IPC.Send, async (_e, text: string) => {
     if (!client) return 0
+    // ★ 只有他真的问起屏幕（或自己把托盘开关打开）时才截。闲聊时一张图都不截，
+    //   零延迟零费用，画面也不出本机。是他主动问的，那就同步等——Python 侧
+    //   有 8 秒截止线兜底，超时她会如实说看不清。
+    if (watchScreen || mentionsScreen(text)) await glanceForChat()
     return client.send(text)
   })
   ipcMain.on(IPC.Interrupt, () => client?.interrupt())
@@ -221,29 +230,64 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   fgTimer.unref()
   app.on('before-quit', () => clearInterval(fgTimer))
 
-  // ── 截图捕获 → Python（仅视觉功能开启时才捕获）─────────────────────
   // ★ 开关读的是模块级 currentCfg（点"重启月璃"时会刷新，见顶部那个 handler），
   //   不是启动时捕获的常量——否则在设置窗口里打开视觉功能、点重启，
-  //   Electron 这一侧的轮询永远不会跟着起来，得整个应用重启才生效，
+  //   Electron 这一侧永远不会跟着生效，得整个应用重启才行，
   //   和"重启月璃"这个按钮承诺的效果对不上。
   currentCfg = cfg
 
-  let lastFrame: Buffer | null = null
   const capturePageUrl = devUrl ? new URL('capture.html', devUrl).href : APP_CAPTURE_URL
-  const pollScreenshot = async () => {
-    if (!currentCfg?.vision.enabled || !client || !lastTitle) return
+  /** 按配置决定截前台窗口还是整屏。截整屏时不需要窗口标题。 */
+  const captureByMode = async (title: string) => (
+    currentCfg?.vision.capture_mode === 'screen'
+      ? captureScreen(capturePageUrl)
+      : captureWindow(title, capturePageUrl)
+  )
+
+  // ── 屏幕感知：只在他问起时跑 ────────────────────────────────────────
+  // ★ 曾经还有一条每 12s 的后台轮询链路做「全时态感知」。它和现抓两条路加起来
+  //   有九个互相牵制的时间常量横跨两种语言，排错要同时记住九个数字，实际表现
+  //   却是她拿几分钟前的旧描述当现在讲。整条删掉了：他不问，就不看。
+  //   于是这里可以放心同步等——是他主动问的，等几秒天经地义。
+  // 失败、超时、没截到都直接放行，视觉不能成为聊天的单点故障。
+  const glanceForChat = async () => {
+    if (!currentCfg?.vision.enabled || !client) {
+      console.debug('[vision] 现抓跳过：', {
+        visionEnabled: !!currentCfg?.vision.enabled, hasClient: !!client,
+      })
+      return
+    }
+    // ★ 先刷新一次前台标题再截，不要直接用 lastTitle：前台轮询最长有 8s 延迟，
+    //   而终端、浏览器这类窗口标题一直在变，标题一漂 desktopCapturer 就匹配不上，
+    //   截图整个失败。实测就是这么丢掉一次现抓的（lastTitle 停在一个已经改掉的
+    //   终端标题上）。当前前台是桌宠自己时保留 lastTitle——那正是他转头跟她说话
+    //   之前在看的窗口。
+    let title = lastTitle
     try {
-      const capture = await captureWindow(lastTitle, capturePageUrl)
-      if (!capture) return
-      const delta = frameDelta(lastFrame, capture.jpeg)
-      lastFrame = capture.jpeg
-      if (delta < 0.04 && lastFrame !== null) return
-      await client.screenshot(capture.jpeg)
-    } catch { /* 截图可能因权限或窗口已关闭而失败 */ }
+      const fg = await readForeground(currentCfg.vision.fullscreen_silent)
+      if (fg && !isSelfProcess(fg.process) && fg.title) title = fg.title
+    } catch { /* 前台读取失败就沿用 lastTitle */ }
+    // 截整屏时不需要标题，标题为空也照样能截。
+    if (!title && currentCfg.vision.capture_mode !== 'screen') {
+      console.debug('[vision] 现抓跳过：还没拿到任何前台窗口标题')
+      return
+    }
+    try {
+      const capture = await captureByMode(title)
+      if (!capture) {
+        console.warn('[vision] 现抓失败：没截到画面', {
+          mode: currentCfg.vision.capture_mode, title,
+        })
+        return
+      }
+      await client.screenshotChat(capture.jpeg)
+    } catch (error) {
+      // 视觉是锦上添花，失败不能拖累发消息——但必须留痕，否则没法诊断
+      // "现抓到底有没有跑"。
+      console.warn('[vision] 现抓请求失败：', error)
+    }
   }
-  const ssTimer = setInterval(pollScreenshot, SCREENSHOT_POLL_MS)
-  ssTimer.unref()
-  app.on('before-quit', () => clearInterval(ssTimer))
+
 
   // ── 托盘 ────────────────────────────────────────────────────────────
   createTray(petWindow, {
@@ -254,6 +298,8 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
       win.focus()
       win.webContents.send(IPC.OpenComposer)
     },
+    watchingScreen: () => watchScreen,
+    setWatchingScreen: (on: boolean) => { watchScreen = on },
     resetPosition: () => petWindow && resetPetPosition(petWindow),
     openDiary: () =>
       openDiaryWindow({
@@ -344,7 +390,35 @@ async function probeHitRegions(win: BrowserWindow) {
   await win.webContents.executeJavaScript(`window.pet?.setInteractive(false)`)
   await new Promise((r) => setTimeout(r, 150))
   await win.webContents.executeJavaScript(`window.pet?.setInteractive(true)`)
-  return { ok: true, note: '点击穿透切换未抛错' }
+  const overlays = await win.webContents.executeJavaScript(`(() => {
+    const composer = document.getElementById('composer')
+    const bubble = document.getElementById('bubble')
+    if (!composer || !bubble) return null
+    const composerRect = composer.getBoundingClientRect()
+    const bubbleRect = bubble.getBoundingClientRect()
+    return {
+      composer: {
+        top: Math.round(composerRect.top),
+        left: Math.round(composerRect.left),
+        width: Math.round(composerRect.width),
+        height: Math.round(composerRect.height),
+        nearHead: composerRect.top < window.innerHeight * 0.25,
+      },
+      bubble: {
+        top: Math.round(bubbleRect.top),
+        left: Math.round(bubbleRect.left),
+        width: Math.round(bubbleRect.width),
+        height: Math.round(bubbleRect.height),
+        nearHead: bubbleRect.top < window.innerHeight * 0.25,
+      },
+      separated: bubbleRect.right <= composerRect.left || composerRect.right <= bubbleRect.left,
+    }
+  })()`)
+  return {
+    ok: overlays?.composer.nearHead === true && overlays.bubble.nearHead === true && overlays.separated === true,
+    note: '点击穿透切换未抛错，消息框和输入栏均位于角色头顶且互不遮挡',
+    overlays,
+  }
 }
 
 function probeTray(win: BrowserWindow) {

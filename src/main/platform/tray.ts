@@ -24,6 +24,10 @@ export interface TrayHandlers {
   openSettings(): void
   /** 重启 Python 后端（她卡住了，或者刚在设置里改完配置）。 */
   restartBackend(): void
+  /** 她是不是正持续盯着屏幕看。 */
+  watchingScreen(): boolean
+  /** 打开/关闭持续屏幕感知——不想靠关键词猜的时候用它。 */
+  setWatchingScreen(on: boolean): void
 }
 
 let tray: Tray | null = null
@@ -73,6 +77,17 @@ export function createTray(win: BrowserWindow, handlers: TrayHandlers): Tray {
           },
         },
         { label: '跟她说话', click: handlers.talk, enabled: visible },
+        {
+          // 平时只在他问起屏幕时才看一眼；打开这个就是持续看着，
+          // 适合打游戏、看视频想让她陪着聊的场景。
+          label: '让她看着屏幕',
+          type: 'checkbox',
+          checked: handlers.watchingScreen(),
+          click: (item) => {
+            handlers.setWatchingScreen(item.checked)
+            rebuild()
+          },
+        },
         // 日记不依赖她显不显示 —— 想翻的时候她可能正被收着
         { label: '看她的日记…', click: handlers.openDiary },
         { type: 'separator' },

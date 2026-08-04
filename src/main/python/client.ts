@@ -45,6 +45,13 @@ export class PythonClient {
   private static readonly RECONNECT_DELAY = 3_000
   /** HTTP 超时。没有它，Python 挂住会让 ipcMain.handle 永远 pending，输入栏直接卡死。 */
   private static readonly HTTP_TIMEOUT = 130_000
+  /**
+   * 对话现抓一帧的超时。★ 必须明显大于 Python 侧的 CHAT_GLANCE_DEADLINE_S（8s）：
+   * 让那边自己按时收工、正常返回；这里先 abort 的话请求被掐断，Python 会抛
+   * CancelledError，在 uvicorn 里表现成一整屏 ASGI 报错。
+   * 所以这个值只是兜住"后端完全不回"的情况，正常永远轮不到它生效。
+   */
+  private static readonly CHAT_GLANCE_TIMEOUT = 20_000
 
   constructor(
     private readonly port: number,
@@ -123,21 +130,22 @@ export class PythonClient {
     })
   }
 
-  async screenshot(jpeg: Buffer | Uint8Array): Promise<void> {
-    await this._fetch('/platform/screenshot', {
+  /** 他问起屏幕时截的那一帧。同步等视觉模型跑完，Python 侧有 8 秒截止线。 */
+  async screenshotChat(jpeg: Buffer | Uint8Array): Promise<void> {
+    await this._fetch('/platform/screenshot/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'image/jpeg' },
       body: jpeg as unknown as BodyInit,
-    })
+    }, PythonClient.CHAT_GLANCE_TIMEOUT)
   }
 
   // ──────────────────────────────────────────────────────────────────
   // 内部
   // ──────────────────────────────────────────────────────────────────
 
-  private async _fetch(path: string, init: RequestInit): Promise<Response> {
+  private async _fetch(path: string, init: RequestInit, timeoutMs: number = PythonClient.HTTP_TIMEOUT): Promise<Response> {
     const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), PythonClient.HTTP_TIMEOUT)
+    const timer = setTimeout(() => ctl.abort(), timeoutMs)
     try {
       return await fetch(`http://127.0.0.1:${this.port}${path}`, {
         ...init,

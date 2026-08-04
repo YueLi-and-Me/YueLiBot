@@ -209,7 +209,9 @@ export interface YueliConfig {
   vision: {
     enabled: boolean; model: string; api_key: string; base_url: string
     timeout_ms: number; max_retries: number; retry_interval_ms: number
-    frames: number; folder_enabled: boolean; fullscreen_silent: boolean
+    fullscreen_silent: boolean
+    /** window = 只截前台那一个窗口；screen = 截整个主屏（能看到桌面，但会连带截到别的窗口） */
+    capture_mode: 'window' | 'screen'
   }
   vector: {
     enabled: boolean; embedding_base_url: string; embedding_api_key: string

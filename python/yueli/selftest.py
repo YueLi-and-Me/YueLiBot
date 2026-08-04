@@ -116,18 +116,20 @@ async def _check_aware(chat: ChatService, cfg: Any) -> bool:
         activity = awareness._last_classified.activity if awareness._last_classified else None
         activity_ok = activity == "coding"
 
+        # 视觉 context 那套判定随后台截图链路一起删了（现在只在他问起时看一眼），
+        # 这里改查程序名——它是喂给视觉模型的先验，也是情境文本的一部分。
         awareness.on_foreground({"process": "steam.exe", "title": "Steam", "fullscreen": False})
-        vision_ctx = awareness.vision_context()
-        vision_ok = vision_ctx == "steam-library"
+        app = awareness.current_app()
+        app_ok = app == "Steam"
 
         sleep_state = awareness._sleep.current(current_time())
         sleep_ok = sleep_state is not None and isinstance(sleep_state.asleep, bool)
 
         await asyncio.sleep(0.05)   # 让 on_foreground 里起的后台 task 收尾，避免残留 pending task 警告
 
-        ok = activity_ok and vision_ok and sleep_ok
+        ok = activity_ok and app_ok and sleep_ok
         _report("SELFTEST-AWARE", {
-            "ok": ok, "activity": activity, "visionContext": vision_ctx,
+            "ok": ok, "activity": activity, "app": app,
             "asleep": sleep_state.asleep if sleep_state else None,
         })
         return ok

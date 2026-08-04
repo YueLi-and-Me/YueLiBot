@@ -4,8 +4,6 @@ HTTP 路由（已接通各 service）。
 
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
@@ -54,22 +52,23 @@ async def platform_foreground(request: Request) -> dict:
     return {"ok": True}
 
 
-@router.post("/platform/screenshot", dependencies=[Depends(_auth)])
-async def platform_screenshot(request: Request) -> dict:
-    """截图 JPEG（Electron 缩放压缩后推来，供帧差与视觉调用）。"""
+@router.post("/platform/screenshot/chat", dependencies=[Depends(_auth)])
+async def platform_screenshot_chat(request: Request) -> dict:
+    """他问起屏幕时截的那一帧。
+
+    ★ 这是视觉的**唯一**入口。曾经还有个 /platform/screenshot 走后台轮询，
+      每 12s 推一张图进来做帧差和关键帧序列；整条链路连同它的九个时间常量
+      一起删掉了——他不问，就不看。
+    这里用 await 而不是 create_task：调用方要等它完成之后才发 /chat/send，
+    好让这一轮的情境文本能读到刚生成的描述。
+    """
     if not get_config().vision.ready or not app_state.awareness or not app_state.awareness.vision:
         return {"ok": True}
     jpeg_bytes = await request.body()
-    # 真实的视觉上下文由 AwarenessService 根据最近一次前台分类算出——
-    # Electron 没有 classify() 逻辑，不该指望它填对请求头。
-    ctx = app_state.awareness.vision_context()
-    # ★ 没有匹配的场景就直接丢弃这张截图：不调模型、不产生费用。
-    #   此前这里会拿到伪造的 'gameplay'，导致写代码时也照样上传，
-    #   还用游戏提示词去描述，而结果根本没有消费方。
-    if ctx is None:
-        return {"ok": True}
-    window_changed = app_state.awareness.window_changed()
-    asyncio.create_task(app_state.awareness.vision.process_screenshot(jpeg_bytes, ctx, window_changed))
+    if jpeg_bytes:
+        # 带上前台程序名：视觉模型认不出界面时，「这是 PyCharm」这个先验
+        # 比让它对着截图硬猜有用得多。窗口标题仍然不传。
+        await app_state.awareness.vision.glance(jpeg_bytes, app=app_state.awareness.current_app())
     return {"ok": True}
 
 

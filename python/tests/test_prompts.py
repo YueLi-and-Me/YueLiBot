@@ -198,7 +198,10 @@ def test_summary_agent_keeps_a_specific_anchor_for_later_recall() -> None:
 
 
 def test_vision_agent_returns_observation_instead_of_assumptions() -> None:
-    prompt = VisionService._build_vision_prompt('gameplay')
+    """按 context 分四套提示词的写法没了——只剩「他问起时看一眼」这一种场景。
+    要守住的还是同一条：只写看见的，认不出就说看不清，别猜。"""
+    prompt = VisionService._build_vision_prompt()
 
-    assert '客观情境线索' in prompt
-    assert '不要猜游戏名、剧情或玩家感受' in prompt
+    assert '正在做什么' in prompt
+    assert '认不出来就直说看不清' in prompt
+    assert '不要猜' in prompt

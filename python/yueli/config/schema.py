@@ -158,8 +158,9 @@ class TtsConfig(BaseModel):
 
 class VisionConfig(BaseModel):
     # ⚠ 除非 base_url 指向本机，否则这是全项目唯一会把屏幕内容送出去的功能。
-    #   开启前想清楚：只截前台那一个窗口、绝不落盘、缩到 768px 宽再传，但截图
-    #   里仍可能有明文密码、私信、银行页面、公司文档。
+    #   开启前想清楚：绝不落盘、缩到 768px 宽再传，但截图里仍可能有明文密码、
+    #   私信、银行页面、公司文档。capture_mode = 'screen' 时风险显著更高，
+    #   见下面那个字段的说明。
     #   base_url 填本地推理服务（如 Ollama 的 http://127.0.0.1:11434/v1）时，
     #   画面不出本机，上面这条顾虑不成立。
     enabled: bool = False
@@ -171,14 +172,15 @@ class VisionConfig(BaseModel):
     timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
     max_retries: int = Field(default=2, ge=0, le=10)
     retry_interval_ms: int = Field(default=800, ge=0, le=60_000)
-    # 一次送给模型几张关键帧。1 = 单张快照，模型拿不到任何帧间信息，
-    # 只能描述「此刻是什么」；≥2 才谈得上「画面在发生什么变化」。
-    # 云端按图计费，调大直接乘倍数；本地推理几乎无额外成本，建议 3。
-    frames: int = Field(default=1, ge=1, le=4)
-    # 资源管理器截图常带路径、文档名和下载记录，隐私风险更高，默认关
-    folder_enabled: bool = False
     # 疑似全屏时静默，避免直播/录屏把桌宠声音带进去
     fullscreen_silent: bool = True
+    # 截什么：
+    #   'window' = 只截前台那一个窗口（默认）。她看不到「桌面上有什么」，
+    #              因为桌面本身、其它窗口都不在画面里。
+    #   'screen' = 截整个主屏。她能看到桌面全貌，代价是会连带截到第二个窗口、
+    #              后台的聊天窗、没关的网页——凡是当时屏幕上有的都会被送走。
+    #              指向云端模型时尤其要想清楚。
+    capture_mode: Literal['window', 'screen'] = 'window'
 
     @property
     def local(self) -> bool:

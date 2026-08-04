@@ -2,6 +2,7 @@ import {
   BrowserWindow,
   desktopCapturer,
   type DesktopCapturerSource,
+  screen,
   session,
   type Session,
 } from 'electron'
@@ -13,8 +14,11 @@ import {
  *   它拿到的东西比别处都多，所以约束全部写在这里，不散到调用方。
  *
  * 三条硬规矩：
- *  1. **只截前台那一个窗口**，不截整个桌面 —— 全屏截会捎上第二屏、
- *     后台的聊天窗、没关的银行页面
+ *  1. **默认只截前台那一个窗口**，不截整个桌面 —— 全屏截会捎上第二屏、
+ *     后台的聊天窗、没关的银行页面。
+ *     ★ 用户可以用 vision.capture_mode = 'screen' 显式放开这一条：那样她才
+ *       看得到「桌面上有什么」（只截窗口时桌面本身根本不在画面里）。放开之后
+ *       上面列的那些东西都会进画面，所以它是配置项而不是默认值。
  *  2. **绝不落盘**。返回 Buffer，用完即弃；不进缓存、不进日记、不进记忆
  *  3. **截完就缩**。视觉模型看 768px 宽足够判断「发生了什么」，
  *     原分辨率既慢又贵，还平白多传一堆能认出细节的像素
@@ -203,6 +207,49 @@ export async function captureWindow(title: string | undefined, capturePageUrl: s
   }
 }
 
+/**
+ * 截整个主屏。
+ *
+ * ★ 只在 vision.capture_mode = 'screen' 时才会走到这里。与 captureWindow 的
+ *   区别不只是范围：桌面本身、任务栏、以及所有当时可见的窗口都会进画面——
+ *   「我桌面上有什么」这个问题只有这条路径答得了，代价也在这儿。
+ *   多显示器只截主屏：把每块屏都截了传上去，代价和暴露面都翻倍。
+ */
+export async function captureScreen(capturePageUrl: string): Promise<Capture | null> {
+  if (captureInProgress) return null
+  captureInProgress = true
+
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 0, height: 0 },
+      fetchWindowIcons: false,
+    })
+    if (!sources.length) return null
+
+    // display_id 与 Electron 的 Display.id 对得上，用它锁定主屏；
+    // 匹配不上时退回第一块（单显示器场景下两者本来就是同一个）。
+    const primaryId = String(screen.getPrimaryDisplay().id)
+    const hit = sources.find((s) => s.display_id === primaryId) ?? sources[0]!
+
+    const renderer = await ensureCaptureRenderer(capturePageUrl)
+    selectedSource = hit
+    const frame = await renderer.webContents.executeJavaScript(CAPTURE_FRAME_SCRIPT, true) as CapturedFrame
+    const prefix = 'data:image/jpeg;base64,'
+    if (!frame.dataUrl.startsWith(prefix)) throw new Error('捕获页返回了无效的 JPEG 数据')
+    const jpeg = Buffer.from(frame.dataUrl.slice(prefix.length), 'base64')
+    if (!jpeg.length) throw new Error('捕获页返回了空 JPEG')
+
+    return { jpeg, width: frame.width, height: frame.height, sourceName: hit.name }
+  } catch (error) {
+    console.warn('[capture] 整屏截图失败：', error)
+    return null
+  } finally {
+    selectedSource = null
+    captureInProgress = false
+  }
+}
+
 async function ensureCaptureRenderer(capturePageUrl: string): Promise<BrowserWindow> {
   if (captureRenderer && !captureRenderer.isDestroyed()) return captureRenderer
 
@@ -244,39 +291,4 @@ export function disposeWindowCapture(): void {
   captureSession = null
   if (captureRenderer && !captureRenderer.isDestroyed()) captureRenderer.destroy()
   captureRenderer = null
-}
-
-/**
- * 画面变化程度（0~1）。
- *
- * 用来避免「没事也一直调用视觉模型」—— 那既烧钱又慢。
- * 死亡画面、结算界面这类值得开口的时刻，视觉上都很突兀，
- * 正好能被这种粗粒度的变化量抓住。
- *
- * 刻意做得很糙：JPEG 字节流的分块均值。不需要精确，只需要
- * 「有没有大变化」这一个比特的信息，而精确的感知哈希要多引一个库。
- */
-export function frameDelta(a: Buffer | null, b: Buffer): number {
-  if (!a || !a.length || !b.length) return 1
-
-  const BUCKETS = 64
-  const mean = (buf: Buffer): number[] => {
-    const out = new Array<number>(BUCKETS).fill(0)
-    const step = Math.max(1, Math.floor(buf.length / BUCKETS))
-    for (let i = 0; i < BUCKETS; i++) {
-      let sum = 0
-      const start = i * step
-      const end = Math.min(buf.length, start + step)
-      for (let j = start; j < end; j += 7) sum += buf[j]!
-      out[i] = sum / Math.max(1, Math.ceil((end - start) / 7))
-    }
-    return out
-  }
-
-  const ma = mean(a)
-  const mb = mean(b)
-  let diff = 0
-  for (let i = 0; i < BUCKETS; i++) diff += Math.abs(ma[i]! - mb[i]!)
-  // 归一到 0~1。除数是经验值：整屏换画面大约落在 0.3 以上
-  return Math.min(1, diff / (BUCKETS * 40))
 }

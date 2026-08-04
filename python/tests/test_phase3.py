@@ -1,15 +1,18 @@
-"""Phase 3 tests — awareness: classify, budget, look, monitor."""
+"""Phase 3 tests — awareness: classify, budget, monitor.
+
+Look 那一段连同 look.py / look_state.py 一起删了：屏幕感知现在只在他问起时
+跑一次，不再有后台轮询，也就不需要瞥视冷却、帧差门限和关键帧序列那套判定。
+"""
 
 from __future__ import annotations
 
 import pytest
-from yueli.awareness.classify import ForegroundInfo, classify, describe_activity, vision_context_for
+from yueli.awareness.classify import ForegroundInfo, classify, describe_activity
 from yueli.awareness.budget import (
     COOLDOWN_MS, DAILY_BUDGET, IGNORE_LIMIT,
     after_speak, after_user_spoke, cooldown_for, decide, decide_scene,
     describe_budget, initial_state, InterruptContext,
 )
-from yueli.awareness.look import FRAME_CHANGE_THRESHOLD, IDLE_GLANCE_AFTER_MS, IDLE_GLANCE_INTERVAL_MS, LOOK_COOLDOWN_MS, LookInput, should_look, within_look_cooldown
 from yueli.awareness.monitor import ForegroundInfo as FI, ForegroundProcessMonitor
 
 T0 = int(__import__('datetime').datetime(2026, 7, 15, 14, 0).timestamp() * 1000)  # local 14:00, +8h stays same day
@@ -64,14 +67,6 @@ class TestClassify:
         assert classify(ForegroundInfo('Code.exe', fullscreen=True)).silent is True
         assert classify(ForegroundInfo('Code.exe', fullscreen=False)).silent is False
 
-    def test_vision_context(self):
-        steam = ForegroundInfo('steam.exe', title='Steam')
-        game = ForegroundInfo('GenshinImpact.exe', title='原神')
-        folder = ForegroundInfo('explorer.exe', title='D:\\Games')
-        assert vision_context_for(steam, classify(steam)) == 'steam-library'
-        assert vision_context_for(game, classify(game)) == 'gameplay'
-        assert vision_context_for(folder, classify(folder)) == 'game-folder'
-
     def test_describe_activity_no_digits_for_long_session(self):
         coding = classify(ForegroundInfo('Code.exe'))
         text = describe_activity(coding, 137)
@@ -80,7 +75,19 @@ class TestClassify:
 
     def test_describe_activity_short_session_no_span(self):
         coding = classify(ForegroundInfo('Code.exe'))
-        assert describe_activity(coding, 5) == '他在写代码。'
+        assert describe_activity(coding, 5) == '他在用 VS Code 写代码。'
+
+    def test_describe_activity_names_the_app(self):
+        """程序名要具体到「用什么」——认不出画面时这是她唯一靠得住的依据。"""
+        assert classify(ForegroundInfo('pycharm64.exe')).app == 'PyCharm'
+        assert describe_activity(classify(ForegroundInfo('pycharm64.exe')), 5) == '他在用 PyCharm 写代码。'
+        # 没收录的程序退回进程名本身，写成「某个程序」等于什么都没说
+        assert classify(ForegroundInfo('SomeTool.exe')).app == 'sometool'
+
+    def test_idle_has_no_app_name(self):
+        idle = classify(None)
+        assert idle.app == ''
+        assert describe_activity(idle, 5) == '他现在没在操作电脑。'
 
 
 # ─── Budget ──────────────────────────────────────────────────────────────────
@@ -166,45 +173,6 @@ class TestBudget:
         assert d.allow is False and d.reason == 'scene-reserve'
         assert decide(tight, _ctx()).allow is True
 
-
-# ─── Look ─────────────────────────────────────────────────────────────────────
-
-NOW = 1_000_000
-
-
-def _look_input(**kw) -> LookInput:
-    defaults = dict(context='steam-library', now=NOW, last_call_at=0,
-                    context_since=NOW - 30_000, delta=0.0, window_changed=False)
-    defaults.update(kw)
-    return LookInput(**defaults)
-
-
-class TestLook:
-    def test_idle_glance_after_3min(self):
-        d = should_look(_look_input(context_since=NOW - IDLE_GLANCE_AFTER_MS - 60_000))
-        assert d.look is True and d.reason == 'idle-glance'
-
-    def test_no_immediate_glance_on_enter(self):
-        d = should_look(_look_input(context_since=NOW - 30_000))
-        assert d.look is False
-
-    def test_glance_has_interval(self):
-        d = should_look(_look_input(context_since=NOW - 30 * 60_000,
-                                    last_call_at=NOW - IDLE_GLANCE_INTERVAL_MS + 1))
-        assert d.look is False
-
-    def test_cooldown_boundary(self):
-        assert within_look_cooldown(NOW, NOW - LOOK_COOLDOWN_MS) is False
-        assert within_look_cooldown(NOW, NOW - LOOK_COOLDOWN_MS + 1) is True
-
-    def test_frame_change_triggers(self):
-        d = should_look(_look_input(delta=FRAME_CHANGE_THRESHOLD + 0.1))
-        assert d.look is True and d.reason == 'frame-change'
-
-    def test_game_folder_only_on_window_change(self):
-        assert should_look(_look_input(context='game-folder',
-                                       context_since=NOW - 60 * 60_000)).look is False
-        assert should_look(_look_input(context='game-folder', window_changed=True)).reason == 'folder-switch'
 
 
 # ─── Monitor ─────────────────────────────────────────────────────────────────

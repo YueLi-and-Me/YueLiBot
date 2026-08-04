@@ -36,6 +36,7 @@ describe('拆分配置', () => {
     config.generation.chat.temperature = 0.42
     config.llm.max_retries = 4
     config.vision.max_retries = 4
+    config.vision.capture_mode = 'screen'
 
     writeConfigDirectory(directory, config)
 
@@ -47,7 +48,23 @@ describe('拆分配置', () => {
     expect(readFileSync(join(directory, 'models.toml'), 'utf-8')).toContain('temperature = 0.42')
     expect(readFileSync(join(directory, 'providers.toml'), 'utf-8')).toContain('max_retries = 4')
     expect(readFileSync(join(directory, 'features.toml'), 'utf-8')).toContain('enabled = true')
-    expect(readFileSync(join(directory, 'features.toml'), 'utf-8')).toContain('frames = 1')
+    expect(readFileSync(join(directory, 'features.toml'), 'utf-8')).toContain('capture_mode = "screen"')
+  })
+
+  it('capture_mode 缺省时退回只截窗口，写错值当场报错', () => {
+    const root = makeTemporaryDirectory()
+    const directory = join(root, 'config')
+    writeConfigDirectory(directory, structuredClone(DEFAULT_CONFIG))
+    const featuresPath = join(directory, 'features.toml')
+    const original = readFileSync(featuresPath, 'utf-8')
+
+    // 老配置里没有这个字段，不能因此起不来
+    writeFileSync(featuresPath, original.replace(/capture_mode = .*/, ''), 'utf-8')
+    expect(readConfigDirectory(directory).vision.capture_mode).toBe('window')
+
+    // 写错值必须在加载期炸出来——运行时才发现的表现是「她看到的东西不对」
+    writeFileSync(featuresPath, original.replace(/capture_mode = .*/, 'capture_mode = "fullscreen"'), 'utf-8')
+    expect(() => readConfigDirectory(directory)).toThrow(/capture_mode/)
   })
 
   it('自动迁移旧 config.toml 并保留旧文件', () => {

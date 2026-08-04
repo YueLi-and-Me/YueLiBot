@@ -1,8 +1,11 @@
 """
 前台窗口 → 活动类别。直接移植自 src/core/awareness/classify.ts。
 
-★ 隐私红线：绝不把原始窗口标题送进 LLM。
-输出只有类别和时长，标题在这里被吃掉，不往外传。
+★ 隐私红线：绝不把原始窗口标题送进 LLM。标题在这里被吃掉，不往外传——
+  它带的是文档名、网页地址、聊天对象这些真正敏感的东西。
+  进程名（app 字段）是另一回事，会送出去：它只是可执行文件名，而「他开的是
+  PyCharm」这个先验能显著改善视觉模型对画面的判断——认不出界面时，知道这是
+  什么程序比瞎猜强得多。
 """
 
 from __future__ import annotations
@@ -15,7 +18,6 @@ Activity = Literal[
     'work', 'coding', 'gaming', 'video', 'music',
     'browsing', 'chat', 'reading', 'files', 'idle', 'other'
 ]
-VisionContext = Literal['steam-library', 'gameplay', 'game-folder']
 
 
 @dataclass
@@ -30,6 +32,8 @@ class Classified:
     activity: Activity
     label: str
     silent: bool
+    # 展示用的程序名，例如 'PyCharm'。未知程序退回进程名本身（去掉 .exe）。
+    app: str = ''
 
 
 _PROCESS_RULES: list[tuple[Activity, frozenset[str]]] = [
@@ -72,8 +76,37 @@ _LABELS: dict[Activity, str] = {
     'idle': '没在操作电脑', 'other': '在用电脑做别的事',
 }
 
-_STEAM = frozenset(['steam', 'steamwebhelper'])
-_FILE_MGR = frozenset(['explorer'])
+# 进程名 → 人看得懂的程序名。没收录的程序退回进程名本身，因为"他开的是什么"
+# 本身就是这里要传达的信息，写成「某个程序」等于什么都没说。
+_APP_NAMES: dict[str, str] = {
+    'code': 'VS Code', 'code - insiders': 'VS Code', 'cursor': 'Cursor',
+    'devenv': 'Visual Studio', 'idea64': 'IntelliJ IDEA', 'pycharm64': 'PyCharm',
+    'webstorm64': 'WebStorm', 'goland64': 'GoLand', 'clion64': 'CLion',
+    'rider64': 'Rider', 'studio64': 'Android Studio', 'rustrover64': 'RustRover',
+    'sublime_text': 'Sublime Text', 'windsurf': 'Windsurf', 'zed': 'Zed',
+    'winword': 'Word', 'excel': 'Excel', 'powerpnt': 'PowerPoint',
+    'onenote': 'OneNote', 'wps': 'WPS', 'et': 'WPS 表格', 'wpp': 'WPS 演示',
+    'acad': 'AutoCAD', 'notion': 'Notion', 'obsidian': 'Obsidian', 'typora': 'Typora',
+    'steam': 'Steam', 'steamwebhelper': 'Steam', 'epicgameslauncher': 'Epic Games',
+    'battle.net': '战网', 'genshinimpact': '原神', 'yuanshen': '原神',
+    'starrail': '崩坏：星穹铁道', 'zenlesszonezero': '绝区零', 'minecraft': 'Minecraft',
+    'potplayermini64': 'PotPlayer', 'vlc': 'VLC', 'mpv': 'mpv', 'mpc-hc64': 'MPC-HC',
+    'bilibili': '哔哩哔哩', 'iqiyi': '爱奇艺', 'youku': '优酷', 'tencentvideo': '腾讯视频',
+    'cloudmusic': '网易云音乐', 'qqmusic': 'QQ 音乐', 'spotify': 'Spotify',
+    'foobar2000': 'foobar2000', 'kugou': '酷狗音乐', 'kuwo': '酷我音乐', 'aimp': 'AIMP',
+    'wechat': '微信', 'weixin': '微信', 'qq': 'QQ', 'tim': 'TIM',
+    'dingtalk': '钉钉', 'feishu': '飞书', 'lark': '飞书', 'telegram': 'Telegram',
+    'discord': 'Discord', 'slack': 'Slack', 'whatsapp': 'WhatsApp',
+    'sumatrapdf': 'SumatraPDF', 'acrobat': 'Acrobat', 'acrord32': 'Acrobat Reader',
+    'foxitreader': '福昕阅读器', 'calibre': 'calibre', 'neat reader': 'Neat Reader',
+    'explorer': '文件资源管理器',
+    'chrome': 'Chrome', 'msedge': 'Edge', 'firefox': 'Firefox', 'brave': 'Brave',
+    'opera': 'Opera', 'vivaldi': 'Vivaldi', 'arc': 'Arc', '360se': '360 浏览器',
+    'qqbrowser': 'QQ 浏览器',
+    'powershell': 'PowerShell', 'pwsh': 'PowerShell', 'cmd': '命令提示符',
+    'windowsterminal': 'Windows 终端', 'wt': 'Windows 终端',
+    'alacritty': 'Alacritty', 'wezterm': 'WezTerm', 'mintty': 'mintty',
+}
 
 _BROWSER_HINTS: list[tuple[Activity, re.Pattern]] = [
     ('video', re.compile(r'bilibili|哔哩哔哩|youtube|爱奇艺|优酷|腾讯视频|netflix|抖音|douyin', re.IGNORECASE)),
@@ -92,8 +125,9 @@ def classify(info: ForegroundInfo | None) -> Classified:
     if not info or not info.process:
         return Classified(activity='idle', label=_LABELS['idle'], silent=False)
     proc = _normalize(info.process)
+    app = _APP_NAMES.get(proc, proc)
     if proc in _MEETING:
-        return Classified(activity='other', label=_LABELS['other'], silent=True)
+        return Classified(activity='other', label=_LABELS['other'], silent=True, app=app)
     activity: Activity = 'other'
     for act, names in _PROCESS_RULES:
         if proc in names:
@@ -105,20 +139,8 @@ def classify(info: ForegroundInfo | None) -> Classified:
             if pat.search(info.title):
                 activity = act
                 break
-    return Classified(activity=activity, label=_LABELS[activity], silent=bool(info.fullscreen))
-
-
-def vision_context_for(info: ForegroundInfo | None, classified: Classified) -> VisionContext | None:
-    if not info or classified.silent:
-        return None
-    proc = _normalize(info.process)
-    if proc in _STEAM:
-        return 'steam-library'
-    if proc in _FILE_MGR:
-        return 'game-folder'
-    if classified.activity == 'gaming':
-        return 'gameplay'
-    return None
+    return Classified(activity=activity, label=_LABELS[activity],
+                      silent=bool(info.fullscreen), app=app)
 
 
 LONG_SESSION_MINUTES = 110
@@ -137,4 +159,7 @@ def describe_activity(c: Classified, minutes: int) -> str:
         span = '两个多小时了'
     else:
         span = '很久了'
-    return f'他{c.label}，已经{span}。' if span else f'他{c.label}。'
+    # 带上程序名：「他在用 PyCharm 写代码」比「他在写代码」具体得多，
+    # 视觉描述认不出界面时，这一句就是她唯一靠得住的依据。
+    label = f'在用 {c.app} {c.label[1:]}' if c.app and c.label.startswith('在') else c.label
+    return f'他{label}，已经{span}。' if span else f'他{label}。'

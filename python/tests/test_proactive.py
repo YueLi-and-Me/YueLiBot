@@ -35,21 +35,19 @@ def _make_ready_chat(db) -> ChatService:
     return chat
 
 
-async def test_on_foreground_updates_classification_and_window_changed(db):
+async def test_on_foreground_updates_classification(db):
+    """window_changed() 那几条断言随后台截图链路一起删了——它只有那个端点在读。
+    窗口切换本身仍然驱动主动搭话，走的是 monitor 的 obs.window_changed。"""
     svc = AwarenessService(chat=_make_chat(db), schedule=None, cfg=Config())
 
     svc.on_foreground({'process': 'Code.exe', 'title': 'a.py', 'fullscreen': False})
     await asyncio.sleep(0.02)
     assert svc._last_classified.activity == 'coding'
-    assert svc.window_changed() is True
+    assert svc.current_app() == 'VS Code'
 
-    svc.on_foreground({'process': 'Code.exe', 'title': 'a.py', 'fullscreen': False})
+    svc.on_foreground({'process': 'chrome.exe', 'title': '某网页', 'fullscreen': False})
     await asyncio.sleep(0.02)
-    assert svc.window_changed() is False
-
-    svc.on_foreground({'process': 'Code.exe', 'title': 'b.py', 'fullscreen': False})
-    await asyncio.sleep(0.02)
-    assert svc.window_changed() is True
+    assert svc._last_classified.activity == 'browsing'
 
 
 async def test_meeting_process_does_not_trigger_speak(db):
