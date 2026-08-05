@@ -1,7 +1,7 @@
 """
 对话编排服务。直接移植自 src/main/chat.ts。
 
-持有所有后端资源：LLM provider、MemoryStore、Persona、DayPlanService。
+持有所有后端资源：按角色拆分的 LLM provider、MemoryStore、Persona、DayPlanService。
 通过 WebSocket push 推事件给 Electron 主进程。
 """
 
@@ -17,6 +17,7 @@ import random
 from .trace import trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
+
 from src.agent.character import pick_tone
 from src.agent.expression import render_expression_habits, select_expression_habits
 from src.agent.history import close_dangling_say, fit_char_budget, normalize_history
@@ -68,14 +69,18 @@ class ChatService:
     def __init__(
         self,
         db: Any,
-        provider: Any | None,
+        chat_provider: Any | None,
+        proactive_provider: Any | None,
+        summary_provider: Any | None,
         push_event: Callable[[str, Any], Any],
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
         cfg: Any | None = None,
     ) -> None:
         self._db = db
-        self._provider = provider
+        self._chat_provider = chat_provider
+        self._proactive_provider = proactive_provider
+        self._summary_provider = summary_provider
         self._push_event = push_event
         self._speak_audio = speak_audio
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
@@ -134,7 +139,7 @@ class ChatService:
 
     @property
     def ready(self) -> bool:
-        return self._provider is not None
+        return self._chat_provider is not None
 
     def set_schedule(self, svc: DayPlanService) -> None:
         self._schedule = svc
@@ -179,7 +184,7 @@ class ChatService:
         mark_turn_start(turn)
         trace.emit('user_input', turnId=turn, text=trimmed)
 
-        if not self._provider:
+        if not self._chat_provider:
             await self._emit('chat.error', {'turnId': turn, 'kind': 'error',
                                              'message': '对话未初始化',
                                              'hint': '检查 providers.toml 和 models.toml'})
@@ -214,7 +219,7 @@ class ChatService:
                     temperature=self._chat_temperature,
                     maxTokens=self._chat_max_tokens,
                 )
-                async for chunk in self._provider.stream(
+                async for chunk in self._chat_provider.stream(
                     messages=messages,
                     temperature=self._chat_temperature,
                     max_tokens=self._chat_max_tokens,
@@ -356,7 +361,7 @@ class ChatService:
         return turn
 
     async def compose_proactive(self, situation: str) -> list[dict] | None:
-        if not self._provider:
+        if not self._proactive_provider:
             return None
         now = current_time()
         self._refresh_session(now)
@@ -382,7 +387,7 @@ class ChatService:
         system = build_proactive_prompt(base_prompt, situation)
         raw = ''
         try:
-            async for chunk in self._provider.stream(
+            async for chunk in self._proactive_provider.stream(
                 messages=[{'role': 'system', 'content': system}],
                 temperature=self._proactive_temperature,
                 max_tokens=self._proactive_max_tokens,
@@ -584,7 +589,7 @@ class ChatService:
         await self._emit('chat.event', ev)
 
     async def _maybe_summarize(self) -> None:
-        if self._summarizing or not self._provider:
+        if self._summarizing or not self._summary_provider:
             return
         if self.memory.pending_count() < self._summarize_trigger_messages:
             return
@@ -595,7 +600,7 @@ class ChatService:
                 return
             msgs = [{'role': m['role'], 'content': m['content']} for m in batch]
             episode = await summarize(
-                self._provider,
+                self._summary_provider,
                 msgs,
                 temperature=self._summary_temperature,
                 max_tokens=self._summary_max_tokens,

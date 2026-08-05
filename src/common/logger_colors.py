@@ -31,6 +31,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "api.ws": ("#00d7ff", False),
     # 基础设施
     "common.logger": ("#808080", False),
+    "config.loader": ("#5f5faf", False),
     "common.db.migrations.bootstrap": ("#875f00", False),
     "common.db.migrations.manager": ("#d78700", False),
     "common.db.migrations.v3_to_v4": ("#af8700", False),
@@ -57,6 +58,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "api.http": "HTTP接口",
     "api.ws": "事件推流",
     "common.logger": "日志",
+    "config.loader": "配置加载",
     "common.db.migrations.bootstrap": "建库",
     "common.db.migrations.manager": "数据库迁移",
     "common.db.migrations.v3_to_v4": "迁移v3→v4",

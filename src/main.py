@@ -10,11 +10,37 @@ import os
 import socket
 import sys
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 
 from src.common.logger import get_logger, initialize_logging
 from src.config.loader import load_config
+
+
+class _LLMGenerator:
+    """把明确注入的日程路由适配为 DayPlanService 需要的生成接口。"""
+
+    def __init__(
+        self,
+        schedule_provider: Any,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> None:
+        self._schedule_provider = schedule_provider
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+
+    async def generate(self, prompt: str) -> str:
+        raw = ''
+        async for chunk in self._schedule_provider.stream(
+            messages=[{'role': 'user', 'content': prompt}],
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+        ):
+            if chunk.get('text'):
+                raw += chunk['text']
+        return raw
 
 
 def _pick_port() -> int:
@@ -75,15 +101,18 @@ def main() -> None:
     from src.api.ws import push
     from src.services.chat import ChatService
 
-    # 四个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
+    # 七个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
     from src.llm_models.router import create_routers
     routers = create_routers(cfg)
     app_state.routers = routers
 
-    provider = routers.chat if routers.chat.ready else None
-    if provider:
-        logger.info("llm_ready", model=provider.model,
-                    candidates=len(provider.candidates), strategy=cfg.routing.chat.strategy)
+    chat_provider = routers.chat if routers.chat.ready else None
+    proactive_provider = routers.proactive if routers.proactive.ready else None
+    summary_provider = routers.summary if routers.summary.ready else None
+    schedule_provider = routers.schedule if routers.schedule.ready else None
+    if chat_provider:
+        logger.info("llm_ready", model=chat_provider.model,
+                    candidates=len(chat_provider.candidates), strategy=cfg.routing.chat.strategy)
     else:
         logger.warning("llm_init_failed",
                        error="model_tasks.chat.model_list 是空的，她这轮说不出话")
@@ -99,7 +128,9 @@ def main() -> None:
 
     app_state.chat = ChatService(
         db=db,
-        provider=provider,
+        chat_provider=chat_provider,
+        proactive_provider=proactive_provider,
+        summary_provider=summary_provider,
         push_event=_push_event,
         cfg=cfg,
     )
@@ -134,20 +165,16 @@ def main() -> None:
         from src.schedule.plan import DayPlanService, ScheduleSleepState
         from src.persona.state import describe_persona
 
-        class _LLMGenerator:
-            async def generate(self, prompt: str) -> str:
-                raw = ''
-                generation = cfg.generation.schedule
-                async for chunk in provider.stream(
-                    messages=[{'role': 'user', 'content': prompt}],
-                    temperature=generation.temperature,
-                    max_tokens=generation.token_limit,
-                ):
-                    if chunk.get('text'):
-                        raw += chunk['text']
-                return raw
-
         chat_svc = app_state.chat
+        schedule_generation = cfg.generation.schedule
+        schedule_generator = (
+            _LLMGenerator(
+                schedule_provider,
+                schedule_generation.temperature,
+                schedule_generation.token_limit,
+            )
+            if schedule_provider else None
+        )
         schedule = DayPlanService(
             store=chat_svc.memory,
             persona_description=lambda: describe_persona(chat_svc.persona.get()),
@@ -155,7 +182,7 @@ def main() -> None:
             anniversary_at=lambda: chat_svc.memory.first_seen_at,
             energy=lambda: chat_svc.persona.get().energy,
             last_interaction_at=lambda: chat_svc.memory.last_message_at(),
-            generator=_LLMGenerator() if provider else None,
+            generator=schedule_generator,
         )
         chat_svc.set_schedule(schedule)
         logger.info("schedule_service_ready")

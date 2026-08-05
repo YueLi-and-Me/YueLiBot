@@ -221,7 +221,14 @@ class TaskRoutingConfig(BaseModel):
 
 
 class ModelTaskConfig(BaseModel):
+    # 段名写错必须炸在加载期。留空继承 chat 是合法语义，段名打错不是——
+    # 没有这一条，[model_tasks.summry] 会静默变成「跟 chat 一样」。
+    model_config = ConfigDict(extra='forbid')
+
     chat: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    proactive: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    summary: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    schedule: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     vision: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
@@ -264,9 +271,12 @@ class TaskRouting(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    """四类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
+    """七类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
 
     chat: TaskRouting = Field(default_factory=lambda: TaskRouting(task='chat'))
+    proactive: TaskRouting = Field(default_factory=lambda: TaskRouting(task='proactive'))
+    summary: TaskRouting = Field(default_factory=lambda: TaskRouting(task='summary'))
+    schedule: TaskRouting = Field(default_factory=lambda: TaskRouting(task='schedule'))
     vision: TaskRouting = Field(default_factory=lambda: TaskRouting(task='vision'))
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
@@ -299,7 +309,7 @@ class Config(BaseModel):
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
-    # 四类任务的候选模型与轮询策略；连接细节都收在候选里
+    # 七类任务的候选模型与轮询策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)

@@ -7,8 +7,6 @@ from typing import Dict
 
 import sys
 
-from src.llm_models.openai import resolve_base_url
-
 from .schema import (
     ApiProviderConfig,
     BotDocument,
@@ -23,11 +21,16 @@ from .schema import (
 )
 from .toml_io import read_versioned_toml
 
+from src.common.logger import get_logger
+from src.llm_models.openai import resolve_base_url
+
 _config: Config | None = None
+logger = get_logger(__name__)
 
 
 CONFIG_VERSION = '1.1.0'
 _VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
+CHAT_INHERITING_TASKS = ('proactive', 'summary', 'schedule')
 
 
 def _providers_by_name(catalog: ProviderCatalog) -> Dict[str, ApiProviderConfig]:
@@ -69,9 +72,20 @@ def _build_routing(
     models_document: ModelCatalog,
     models: Dict[str, ModelDefinitionConfig],
     providers: Dict[str, ApiProviderConfig],
+    chat_routing: TaskRouting | None,
 ) -> TaskRouting:
     """把一个任务的 model_list 解析成有序候选。顺序就是 TOML 里写的顺序。"""
     routing = getattr(models_document.model_tasks, task)
+    if task in CHAT_INHERITING_TASKS and not routing.model_list:
+        if chat_routing is None:
+            raise ValueError(f'model_tasks.{task} 缺少可继承的 chat 路由')
+        logger.info('model_task_inherits_chat', task=task)
+        return TaskRouting(
+            task=task,
+            candidates=chat_routing.candidates,
+            strategy=chat_routing.strategy,
+        )
+
     candidates = []
     for model_name in routing.model_list:
         try:
@@ -137,11 +151,15 @@ def _load_split_config(directory: Path) -> Config:
     for model in models.values():
         _selected_provider(model, providers)
 
+    chat_routing = _build_routing('chat', models_document, models, providers, None)
     routing = RoutingConfig(
-        chat=_build_routing('chat', models_document, models, providers),
-        vision=_build_routing('vision', models_document, models, providers),
-        tts=_build_routing('tts', models_document, models, providers),
-        embedding=_build_routing('embedding', models_document, models, providers),
+        chat=chat_routing,
+        proactive=_build_routing('proactive', models_document, models, providers, chat_routing),
+        summary=_build_routing('summary', models_document, models, providers, chat_routing),
+        schedule=_build_routing('schedule', models_document, models, providers, chat_routing),
+        vision=_build_routing('vision', models_document, models, providers, None),
+        tts=_build_routing('tts', models_document, models, providers, None),
+        embedding=_build_routing('embedding', models_document, models, providers, None),
     )
 
     features_tts = features_document.tts

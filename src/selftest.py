@@ -50,14 +50,23 @@ async def run_selftest(cfg: Any) -> int:
 
         from src.llm_models.router import create_routers
         routers = create_routers(cfg)
-        provider = routers.chat if routers.chat.ready else None
-        if provider is None:
+        chat_provider = routers.chat if routers.chat.ready else None
+        proactive_provider = routers.proactive if routers.proactive.ready else None
+        summary_provider = routers.summary if routers.summary.ready else None
+        if chat_provider is None:
             logger.info("selftest_no_provider", reason="model_tasks.chat.model_list 是空的")
 
-        chat = ChatService(db=db, provider=provider, push_event=_push_event, cfg=cfg)
+        chat = ChatService(
+            db=db,
+            chat_provider=chat_provider,
+            proactive_provider=proactive_provider,
+            summary_provider=summary_provider,
+            push_event=_push_event,
+            cfg=cfg,
+        )
 
-        chat_ok = await _check_chat(chat, provider, events)
-        reflect_ok = await _check_reflect(chat, provider)
+        chat_ok = await _check_chat(chat, chat_provider, events)
+        reflect_ok = await _check_reflect(chat, summary_provider)
         aware_ok = await _check_aware(chat, cfg, _push_event)
         return 0 if (chat_ok and reflect_ok and aware_ok) else 1
     finally:
