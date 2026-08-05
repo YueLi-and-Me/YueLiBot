@@ -1,14 +1,13 @@
 """
 控制台日志的模块色表、中文别名与 ANSI 转换。
 
-照 MaiBot 的 `src/common/logger_color_and_mapping.py` 的形态做：每个模块一种固定
-颜色 + 一个中文别名，这样一屏日志滚过去，凭颜色就能分出哪几行是感知、哪几行是模型
-路由，不用逐行读模块名。
+每个模块一种固定颜色 + 一个中文别名，这样一屏日志滚过去，凭颜色就能分出哪几行是
+感知、哪几行是模型路由，不用逐行读模块名。
 
-与 MaiBot 的两点差异：
-  · 它的色表有 100+ 条（插件生态、多用户后台），这里只登记本仓库真实存在的 logger。
+两处刻意从简：
+  · 色表只登记本仓库真实存在的 logger，不为将来预留条目。
     漏登记不靠运行时兜底发现，由 pytests/test_logger.py 扫 src/ 断言覆盖率。
-  · 它的色值元组是三元（前景、背景、粗体）。本仓库没有任何模块需要背景色，砍成二元。
+  · 色值元组是二元（前景、粗体）。没有任何模块需要背景色，就不为它留一位。
 """
 
 from __future__ import annotations
@@ -190,7 +189,7 @@ def level_color(level: str) -> str:
     return _LEVEL_COLORS.get(level.lower(), "")
 
 
-# 级别色照 MaiBot 抄：debug 橙、info 天蓝、warning 黄、error 红、critical 紫。
+# 级别色：debug 橙、info 天蓝、warning 黄、error 红、critical 紫。
 _LEVEL_COLORS: Dict[str, str] = {
     "debug": "\033[38;5;208m",
     "info": "\033[38;5;117m",

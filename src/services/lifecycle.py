@@ -1,9 +1,8 @@
 """
 服务生命周期编排。
 
-借鉴 MaiBot src/common/runtime_loop 的思路，但粒度适配这个项目体量：
-4 个 service 而不是 26 个。各 service 注册 startup/shutdown 回调，
-manager 按注册顺序启动、逆序关停。
+粒度按这个项目的体量定：只有 4 个 service，不再往下分层。各 service 注册
+startup/shutdown 回调，manager 按注册顺序启动、逆序关停。
 """
 
 from __future__ import annotations

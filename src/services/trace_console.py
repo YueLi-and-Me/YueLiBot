@@ -1,10 +1,9 @@
 """
 每轮对话结束时在终端打印一个分区的 rich 面板——不是逐条扁平日志。
 
-参考 MaiBot 的思路（每个推理周期渲染一棵 Panel/Group 树），但按这个项目的
-量级简化：对话轮次比它的多阶段流水线简单得多，用一层 Group 摊平展示就够，
-不需要嵌套 Panel。完整 prompt/逐 chunk 细节已经写进 trace.jsonl
-（services/trace.py），这里只给一眼能扫完的摘要。
+一轮对话是单阶段的，用一层 Group 摊平展示就够，不需要嵌套 Panel。
+完整 prompt/逐 chunk 细节已经写进 trace.jsonl（services/trace.py），
+这里只给一眼能扫完的摘要。
 
 ★ 不是 TTY（打包后台跑、日志重定向到文件）时全部函数变成空操作——
   这一层是叠加在 structlog 之上的，不能在非交互环境下污染输出。

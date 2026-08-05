@@ -4,8 +4,7 @@ structlog 日志封装。
 所有模块通过 get_logger(__name__) 拿到绑定了模块名的 logger，
 不直接调 print() / logging.warning()。
 
-控制台排版照 MaiBot：时间戳按级别着色、模块名换成带色的中文别名、级别本身不占
-一列（对应它 log_level_style="lite" + color_text="full" 的默认组合）。
+控制台排版：时间戳按级别着色、模块名换成带色的中文别名、级别本身不占一列。
 色表与别名在 logger_colors.py。
 """
 
@@ -51,8 +50,8 @@ class ModuleColoredConsoleRenderer:
 
         {时间戳，按级别着色} {[中文别名]，按模块着色} {event 与 k=v，按模块着色}
 
-    级别不单独占一列 —— 它只体现在时间戳的颜色上，这是 MaiBot 控制台最显眼的
-    特征，也让一行里留给正文的宽度多出八九个字符。
+    级别不单独占一列 —— 它只体现在时间戳的颜色上。级别是一眼扫过去的信息，
+    值不得一整列宽度；省下来的八九个字符全给正文。
     """
 
     def __init__(self, colors: bool = True) -> None:
@@ -136,8 +135,8 @@ def initialize_logging(level: str = "INFO") -> None:
         #   模块名改由 get_logger() 用 .bind(logger=name) 显式绑定，
         #   与 logger_factory 的选择解耦。
         structlog.stdlib.add_log_level,
-        # 照 MaiBot 的 date_style 默认值 "m-d H:i:s"：跨天跑的进程里，
-        # 只有时分秒会让人分不清昨天今天。
+        # 时间戳带月日：桌宠是长期挂着的进程，跨天之后只有时分秒
+        # 会让人分不清昨天今天。
         structlog.processors.TimeStamper(fmt="%m-%d %H:%M:%S", utc=False),
         structlog.processors.StackInfoRenderer(),
     ]

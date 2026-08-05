@@ -1,8 +1,7 @@
 """回灌历史的读时修复。
 
-借鉴 MaiBot 的 `src/maisaka/context/post_processor.py`：它把「历史结构可能是
-坏的」当成常态，每一轮组装请求前都跑一遍 `_normalize_history_structure`，
-而不是指望写入端永远不出错。这个取向对我们尤其重要——
+把「历史结构可能是坏的」当成常态：每一轮组装请求前都重新规范化一遍，
+而不是指望写入端永远不出错。这个取向在这里尤其重要——
 
   · 中断、崩溃、进程被杀，都会在写入端留下半截历史；
   · 更关键的是，用户库里**已经存在**的历史就是坏的（每一次打断都损坏了
@@ -93,8 +92,7 @@ def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:
 def fit_char_budget(messages: List[dict], budget: int = DEFAULT_CHAR_BUDGET) -> List[dict]:
     """超出字符预算时从最老的开始丢，丢完再修一次结构。
 
-    对应 MaiBot 的 `_trim_history_to_context_target`：裁切之后必须重新
-    normalize，否则可能裁出一个 assistant 开头的历史。
+    裁切之后必须重新 normalize，否则可能裁出一个 assistant 开头的历史。
     """
 
     if budget <= 0:

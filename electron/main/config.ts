@@ -9,7 +9,7 @@ import type {
 } from '../shared/ipc.ts'
 
 /**
- * 持久化配置借鉴 MaiBot 的分层关系：API 厂商 → 具体模型 → 任务引用。
+ * 持久化配置是分层的：API 厂商 → 具体模型 → 任务引用。
  * 设置页仍使用便于表单编辑的 YueliConfig，读写边界负责双向转换。
  */
 

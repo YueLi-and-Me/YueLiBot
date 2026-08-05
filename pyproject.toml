@@ -39,7 +39,7 @@ include = ["src*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# tests/ 是 TypeScript 侧的测试目录，Python 用例统一放 pytests/（照 MaiBot 的分法）
+# tests/ 是 TypeScript 侧的测试目录，Python 用例统一放 pytests/，两侧互不干扰
 testpaths = ["pytests"]
 
 [tool.pyright]
