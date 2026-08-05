@@ -2,7 +2,7 @@
  * Python 后端进程监护。
  *
  * 职责：
- *  · 拉起 `python -m yueli` 子进程
+ *  · 拉起 `python bot.py` 子进程（仓库根的入口，业务在 src/ 下）
  *  · 解析 stdout 里的 YUELI_PORT=<n>，通知 client.ts 建立连接
  *  · stderr 转发到 console（structlog 的输出）
  *  · 异常退出时按退避策略重启
@@ -10,8 +10,8 @@
  *
  * ★ 刻意不 import electron。
  *   一是为了能在无头 Node 里做真实联调测试（拉起真的 Python 再断言），
- *   二是 app.getAppPath() 在打包后指向 app.asar，而 python/ 不在 asar 里 ——
- *   路径该由调用方决定，监护器不该猜。
+ *   二是 app.getAppPath() 在打包后指向 app.asar，而 Python 侧（bot.py 与 src/）
+ *   不在 asar 里 —— 路径该由调用方决定，监护器不该猜。
  */
 
 import { spawn } from 'node:child_process'
@@ -31,7 +31,7 @@ export interface SupervisorOptions {
   dataDir: string
   /** 配置目录的完整路径；Python 加载器也兼容迁移前的单文件路径。 */
   configPath: string
-  /** python 包的工作目录（含 yueli/ 的那一层）。 */
+  /** Python 侧的工作目录：含 bot.py 与 src/ 的那一层，也就是仓库根。 */
   cwd: string
   pythonExe?: string
 }
@@ -85,10 +85,22 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     if (!child || child.exitCode !== null) return
     // Windows 没有真正的 SIGTERM；Node 会退化成 TerminateProcess，
     // 但 uvicorn 若已经 fork 出 reloader 子进程就会留孤儿。
-    // 用 taskkill /T 杀整棵树才干净
+    // 优先用 taskkill /T 杀整棵树；Windows 的 taskkill 偶尔会迟迟不返回，
+    // 不能让已知的 Python 父进程一直活着阻塞 Electron 退出，所以保留直接终止兜底。
     if (process.platform === 'win32' && child.pid) {
-      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
-        .on('error', () => child.kill())
+      const terminateDirectly = () => {
+        if (child.exitCode === null) child.kill()
+      }
+      const fallback = setTimeout(terminateDirectly, 2_000)
+      const taskkill = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      })
+      const finish = () => {
+        clearTimeout(fallback)
+        terminateDirectly()
+      }
+      taskkill.on('error', finish)
+      taskkill.on('close', finish)
     } else {
       child.kill('SIGTERM')
     }
@@ -96,7 +108,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
 
   private _spawn(): void {
     const args = [
-      '-m', 'yueli',
+      'bot.py',
       '--data-dir', this.dataDir,
       '--config-path', this.configPath,
       '--token', this.token,

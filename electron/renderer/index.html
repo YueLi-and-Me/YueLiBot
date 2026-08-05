@@ -63,11 +63,11 @@
         50% { box-shadow: 0 0 0 6px rgba(142, 216, 255, 0); }
       }
 
-      /* 气泡贴在她头部左侧 */
+      /* 气泡贴在她头顶左侧，具体位置由 ui/layout.ts 跟随角色计算 */
       #bubble {
         position: absolute;
-        left: 10px;
-        top: 8%;
+        left: 6px;
+        top: 6px;
         width: 214px;
         padding: 11px 14px;
         background: var(--paper);
@@ -83,7 +83,7 @@
       }
       #bubble.show { opacity: 1; transform: none; }
       #bubble.error { border-color: #e0a0a0; background: rgba(255, 246, 246, 0.97); color: #8a3b3b; }
-      /* 指向她嘴巴方向的小尖角 */
+      /* 指向她头部方向的小尖角 */
       #bubble::after {
         content: "";
         position: absolute;
@@ -101,9 +101,9 @@
       /*
        * 输入栏。
        *
-       * 贴在她**脚下**、与她水平居中对齐，而不是丢在左边那片空地上 ——
-       * 独立漂在角落会显得跟角色没关系，像另开了一个聊天窗。
-       * 她是右对齐的（宽约 202px），所以这里也按右侧对齐算中线。
+       * 贴在她**头上**、与她水平居中对齐，而不是留在脚边 ——
+       * 这样点开输入时，视线会自然落在角色的脸和输入框之间。
+       * 角色是右对齐的，所以这里也按角色实际渲染框算中线。
        *
        * 背景用素材 frame-3：它本身就是横条形状，不需要九宫格拉伸。
        * 但它原生比例是 530×140（约 3.8），拉太扁圆角端会明显变形，
@@ -115,7 +115,8 @@
            角色是 object-fit: contain，宽度随窗口高度变，写死必然在某个尺寸下偏掉。
            这里只给一个首帧的兜底值 */
         right: 6px;
-        bottom: 6px;
+        top: 6px;
+        bottom: auto;
         width: 190px;
         height: 38px;
         display: flex;

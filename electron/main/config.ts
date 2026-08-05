@@ -3,15 +3,24 @@ import { join } from 'node:path'
 import { parse as parseDotenv } from 'dotenv'
 import * as TOML from 'smol-toml'
 
-import type { YueliConfig } from '../shared/ipc.ts'
+import type {
+  ApiProviderConfig, ClientType, ModelDefinitionConfig, SelectionStrategy,
+  TaskRoutingConfig, YueliConfig,
+} from '../shared/ipc.ts'
 
 /**
  * 持久化配置借鉴 MaiBot 的分层关系：API 厂商 → 具体模型 → 任务引用。
  * 设置页仍使用便于表单编辑的 YueliConfig，读写边界负责双向转换。
  */
 
-const CONFIG_VERSION = '1.0.0'
+/**
+ * 1.1.0 起 model_tasks 从「一个任务一个模型名」改成「一个任务一串候选模型 +
+ * 轮询策略」。读到 1.0.0 会按旧形态解析并在下次保存时升级，不会拒绝启动。
+ */
+const CONFIG_VERSION = '1.1.0'
+const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
+export const MODEL_TASKS = ['chat', 'vision', 'tts', 'embedding'] as const
 
 const DEFAULT_IDENTITY = `你住在他的电脑桌面一角，从他第一次把你叫醒起，就把这里当成了自己的住处。
 来这里之前的事你不记得，也不打算给自己编一个来历。你有自己的作息和兴致：他不在时你看东西、发呆、琢磨没做完的小事，不是在待机等命令。
@@ -59,6 +68,12 @@ const DEFAULT_TONE_VARIANTS = [
   '这一轮你莫名有点较真，会为一个细节多问一句。',
 ]
 
+/** 新装时的唯一一条连接。用户可以在设置页继续添加备用厂商。 */
+const DEFAULT_PROVIDER: ApiProviderConfig = {
+  name: '主力', kind: 'ark', base_url: '', api_key: '', client_type: 'openai',
+  app_id: '', timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
+}
+
 export const DEFAULT_CONFIG: YueliConfig = {
   bot: { name: '月璃', user_nickname: '', relationship: '' },
   personality: {
@@ -82,27 +97,30 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
-    proactive: { temperature: 0.9, max_tokens: 200 },
+    proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
     summary: { temperature: 0.3, max_tokens: 0 },
     schedule: { temperature: 0.95, max_tokens: 700 },
     vision: { temperature: 0.3, max_tokens: 120 },
   },
-  llm: {
-    provider: 'ark', model: '', base_url: '', api_key: '', thinking: 'disabled',
-    timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
+  api_providers: [DEFAULT_PROVIDER],
+  models: [{
+    name: 'chat', model_identifier: '', api_provider: '主力',
+    thinking: 'disabled', embedding_dim: 0,
+  }],
+  model_tasks: {
+    chat: { model_list: ['chat'], selection_strategy: 'sequential' },
+    vision: { model_list: [], selection_strategy: 'sequential' },
+    tts: { model_list: [], selection_strategy: 'sequential' },
+    embedding: { model_list: [], selection_strategy: 'sequential' },
   },
   tts: {
-    enabled: false, base_url: '', api_key: '', model: '', voice: '', format: 'mp3', speed: 0.95,
-    client_type: 'openai', app_id: '', cluster: 'volcano_tts',
+    enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
   },
   vision: {
-    enabled: false, model: '', api_key: '', base_url: '',
-    timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
-    fullscreen_silent: true, capture_mode: 'window',
+    enabled: false, fullscreen_silent: true, capture_mode: 'window',
   },
   vector: {
-    enabled: false, embedding_base_url: '', embedding_api_key: '',
-    embedding_model: 'text-embedding-3-small', embedding_dim: 1536,
+    enabled: false,
   },
   advanced: {
     log_level: 'INFO', https_proxy: '', trace_content: false,
@@ -110,34 +128,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
 }
 
-interface ApiProvider {
-  name: string
-  kind: string
-  base_url: string
-  api_key: string
-  client_type: string
-  /** 豆包语音要 App ID + Access Token 两个凭证；其余厂商留空 */
-  app_id?: string
-  timeout_ms: number
-  max_retries: number
-  retry_interval_ms: number
-}
-
-interface ModelDefinition {
-  name: string
-  model_identifier: string
-  api_provider: string
-  thinking: YueliConfig['llm']['thinking']
-  embedding_dim: number
-}
-
-interface ModelTasks {
-  chat: string
-  vision: string
-  tts: string
-  embedding: string
-}
-
+type ModelTask = (typeof MODEL_TASKS)[number]
 type GenerationConfig = YueliConfig['generation']
 
 function cloneDefaults(): YueliConfig {
@@ -199,7 +190,7 @@ function booleanAt(record: Record<string, unknown>, key: string, path: string): 
   return value
 }
 
-function parseToml(path: string): Record<string, unknown> {
+function parseToml(path: string): { document: Record<string, unknown>; version: string } {
   let parsed: unknown
   try {
     parsed = TOML.parse(readFileSync(path, 'utf-8'))
@@ -209,14 +200,16 @@ function parseToml(path: string): Record<string, unknown> {
   if (!isRecord(parsed)) throw new Error(`${path} 的顶层必须是 TOML 表`)
   const inner = recordAt(parsed, 'inner', path)
   const version = stringAt(inner, 'version', path)
-  if (version !== CONFIG_VERSION) {
-    throw new Error(`${path} 的配置版本为 ${version}，当前仅支持 ${CONFIG_VERSION}`)
+  if (!SUPPORTED_VERSIONS.includes(version as (typeof SUPPORTED_VERSIONS)[number])) {
+    throw new Error(
+      `${path} 的配置版本为 ${version}，当前支持 ${SUPPORTED_VERSIONS.join(' / ')}`,
+    )
   }
-  return parsed
+  return { document: parsed, version }
 }
 
-function parseProviders(path: string): ApiProvider[] {
-  const document = parseToml(path)
+function parseProviders(path: string): ApiProviderConfig[] {
+  const { document } = parseToml(path)
   const definitions = document.api_providers
   if (!Array.isArray(definitions)) throw new Error(`${path} 缺少 [[api_providers]]`)
   const providers = definitions.map((value, index) => {
@@ -233,12 +226,12 @@ function parseProviders(path: string): ApiProvider[] {
       kind: stringAt(value, 'kind', itemPath),
       base_url: stringAt(value, 'base_url', itemPath),
       api_key: stringAt(value, 'api_key', itemPath),
-      client_type: clientType,
+      client_type: clientType as ClientType,
       app_id: stringAtOr(value, 'app_id', '', itemPath),
       timeout_ms: numberAt(value, 'timeout_ms', itemPath),
-      max_retries: numberAtOr(value, 'max_retries', DEFAULT_CONFIG.llm.max_retries, itemPath),
+      max_retries: numberAtOr(value, 'max_retries', DEFAULT_PROVIDER.max_retries, itemPath),
       retry_interval_ms: numberAtOr(
-        value, 'retry_interval_ms', DEFAULT_CONFIG.llm.retry_interval_ms, itemPath,
+        value, 'retry_interval_ms', DEFAULT_PROVIDER.retry_interval_ms, itemPath,
       ),
     }
   })
@@ -253,7 +246,7 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
   for (const task of ['chat', 'proactive', 'summary', 'schedule', 'vision'] as const) {
     if (generation[task] === undefined) continue
     const taskConfig = recordAt(generation, task, `${path} 的 generation`)
-    result[task] = {
+    const parsed = {
       temperature: numberAtOr(
         taskConfig, 'temperature', result[task].temperature, `${path} 的 generation.${task}`,
       ),
@@ -261,27 +254,72 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
         taskConfig, 'max_tokens', result[task].max_tokens, `${path} 的 generation.${task}`,
       ),
     }
+    if (task === 'proactive') {
+      result.proactive = {
+        ...parsed,
+        enabled: taskConfig.enabled === undefined
+          ? result.proactive.enabled
+          : booleanAt(taskConfig, 'enabled', `${path} 的 generation.proactive`),
+      }
+    } else {
+      result[task] = parsed
+    }
   }
   return result
 }
 
+/**
+ * 解析一个任务的候选模型。
+ *
+ * 1.0.0 写成 `chat = "chat"`（一个任务一个模型），1.1.0 写成
+ * `[model_tasks.chat] model_list = [...]`。两种都读得进来，写出去永远是新的。
+ */
+function parseTaskRouting(
+  taskRecord: Record<string, unknown>, task: ModelTask, path: string,
+): TaskRoutingConfig {
+  const value = taskRecord[task]
+  if (value === undefined) return { model_list: [], selection_strategy: 'sequential' }
+  if (typeof value === 'string') {
+    return { model_list: value ? [value] : [], selection_strategy: 'sequential' }
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${path} 的 model_tasks.${task} 必须是模型名或 [model_tasks.${task}] 配置段`)
+  }
+  const itemPath = `${path} 的 model_tasks.${task}`
+  const modelList = value.model_list
+  if (!Array.isArray(modelList) || !modelList.every((item) => typeof item === 'string')) {
+    throw new Error(`${itemPath} 的 model_list 必须是模型名数组`)
+  }
+  const strategy = stringAtOr(value, 'selection_strategy', 'sequential', itemPath)
+  if (strategy !== 'sequential' && strategy !== 'random') {
+    throw new Error(`${itemPath} 的 selection_strategy 只能是 sequential 或 random`)
+  }
+  // 同一个模型在列表里出现两次只会让轮询白撞一次，属于明显的手误。
+  const seen = new Set<string>()
+  for (const name of modelList as string[]) {
+    if (seen.has(name)) throw new Error(`${itemPath} 的 model_list 存在重复模型：${name}`)
+    seen.add(name)
+  }
+  return { model_list: [...(modelList as string[])], selection_strategy: strategy }
+}
+
 function parseModels(
   path: string,
-): { models: ModelDefinition[]; tasks: ModelTasks; generation: GenerationConfig } {
-  const document = parseToml(path)
+): { models: ModelDefinitionConfig[]; tasks: YueliConfig['model_tasks']; generation: GenerationConfig } {
+  const { document } = parseToml(path)
   const taskRecord = recordAt(document, 'model_tasks', path)
   const tasks = {
-    chat: stringAt(taskRecord, 'chat', path),
-    vision: stringAt(taskRecord, 'vision', path),
-    tts: stringAt(taskRecord, 'tts', path),
-    embedding: stringAt(taskRecord, 'embedding', path),
+    chat: parseTaskRouting(taskRecord, 'chat', path),
+    vision: parseTaskRouting(taskRecord, 'vision', path),
+    tts: parseTaskRouting(taskRecord, 'tts', path),
+    embedding: parseTaskRouting(taskRecord, 'embedding', path),
   }
   const definitions = document.models
   if (!Array.isArray(definitions)) throw new Error(`${path} 缺少 [[models]]`)
   const models = definitions.map((value, index) => {
     const itemPath = `${path} 的 models[${index}]`
     if (!isRecord(value)) throw new Error(`${itemPath} 必须是表`)
-    const thinking = stringAt(value, 'thinking', itemPath)
+    const thinking = stringAtOr(value, 'thinking', 'disabled', itemPath)
     if (!['disabled', 'enabled', 'auto'].includes(thinking)) {
       throw new Error(`${itemPath} 的 thinking 必须是 disabled、enabled 或 auto`)
     }
@@ -289,8 +327,8 @@ function parseModels(
       name: stringAt(value, 'name', itemPath),
       model_identifier: stringAt(value, 'model_identifier', itemPath),
       api_provider: stringAt(value, 'api_provider', itemPath),
-      thinking: thinking as YueliConfig['llm']['thinking'],
-      embedding_dim: numberAt(value, 'embedding_dim', itemPath),
+      thinking: thinking as ModelDefinitionConfig['thinking'],
+      embedding_dim: numberAtOr(value, 'embedding_dim', 0, itemPath),
     }
   })
   assertUniqueNames(models, path, 'models')
@@ -340,24 +378,31 @@ function assertUniqueNames(items: Array<{ name: string }>, path: string, section
   }
 }
 
-function selectedModel(
-  task: keyof ModelTasks,
-  tasks: ModelTasks,
-  models: ModelDefinition[],
-  path: string,
-): ModelDefinition {
-  const modelName = tasks[task]
-  const model = models.find((candidate) => candidate.name === modelName)
-  if (!model) throw new Error(`${path} 的 model_tasks.${task} 引用了不存在的模型：${modelName}`)
-  return model
-}
-
-function selectedProvider(model: ModelDefinition, providers: ApiProvider[], path: string): ApiProvider {
-  const provider = providers.find((candidate) => candidate.name === model.api_provider)
-  if (!provider) {
-    throw new Error(`${path} 中模型 ${model.name} 引用了不存在的 API 厂商：${model.api_provider}`)
+/**
+ * 引用完整性检查。未被任何任务选中的坏模型同样是配置错误——不能等轮询切到
+ * 它头上、用户正等着回话的时候才炸。
+ */
+function assertReferencesResolve(
+  models: ModelDefinitionConfig[],
+  tasks: YueliConfig['model_tasks'],
+  providers: ApiProviderConfig[],
+  modelsPath: string,
+  providersPath: string,
+): void {
+  for (const model of models) {
+    if (!providers.some((provider) => provider.name === model.api_provider)) {
+      throw new Error(
+        `${providersPath} 中不存在模型 ${model.name} 引用的 API 厂商：${model.api_provider}`,
+      )
+    }
   }
-  return provider
+  for (const task of MODEL_TASKS) {
+    for (const name of tasks[task].model_list) {
+      if (!models.some((model) => model.name === name)) {
+        throw new Error(`${modelsPath} 的 model_tasks.${task} 引用了不存在的模型：${name}`)
+      }
+    }
+  }
 }
 
 function readSplitConfig(directory: string): YueliConfig {
@@ -367,17 +412,9 @@ function readSplitConfig(directory: string): YueliConfig {
   const featuresPath = join(directory, 'features.toml')
   const providers = parseProviders(providersPath)
   const { models, tasks, generation } = parseModels(modelsPath)
-  const chatModel = selectedModel('chat', tasks, models, modelsPath)
-  const visionModel = selectedModel('vision', tasks, models, modelsPath)
-  const ttsModel = selectedModel('tts', tasks, models, modelsPath)
-  const embeddingModel = selectedModel('embedding', tasks, models, modelsPath)
-  for (const model of models) selectedProvider(model, providers, providersPath)
-  const chatProvider = selectedProvider(chatModel, providers, providersPath)
-  const visionProvider = selectedProvider(visionModel, providers, providersPath)
-  const ttsProvider = selectedProvider(ttsModel, providers, providersPath)
-  const embeddingProvider = selectedProvider(embeddingModel, providers, providersPath)
+  assertReferencesResolve(models, tasks, providers, modelsPath, providersPath)
 
-  const botDocument = parseToml(botPath)
+  const { document: botDocument } = parseToml(botPath)
   const bot = recordAt(botDocument, 'bot', botPath)
   const personality = recordAt(botDocument, 'personality', botPath)
   const conversation = parseConversation(botDocument, botPath)
@@ -390,7 +427,7 @@ function readSplitConfig(directory: string): YueliConfig {
     throw new Error(`${botPath} 的 personality.tone_probability 必须在 0 到 1 之间`)
   }
 
-  const features = parseToml(featuresPath)
+  const { document: features } = parseToml(featuresPath)
   const tts = recordAt(features, 'tts', featuresPath)
   const vision = recordAt(features, 'vision', featuresPath)
   const vector = recordAt(features, 'vector', featuresPath)
@@ -417,47 +454,23 @@ function readSplitConfig(directory: string): YueliConfig {
     },
     conversation,
     generation,
-    llm: {
-      provider: chatProvider.kind,
-      model: chatModel.model_identifier,
-      base_url: chatProvider.base_url,
-      api_key: chatProvider.api_key,
-      thinking: chatModel.thinking,
-      timeout_ms: chatProvider.timeout_ms,
-      max_retries: chatProvider.max_retries,
-      retry_interval_ms: chatProvider.retry_interval_ms,
-    },
+    api_providers: providers,
+    models,
+    model_tasks: tasks,
     tts: {
       enabled: booleanAt(tts, 'enabled', featuresPath),
-      base_url: ttsProvider.base_url,
-      api_key: ttsProvider.api_key,
-      model: ttsModel.model_identifier,
       voice: stringAt(tts, 'voice', featuresPath),
       format: ttsFormat as YueliConfig['tts']['format'],
       speed: numberAt(tts, 'speed', featuresPath),
-      // 协议和 App ID 跟着 tts 那条厂商连接走；cluster 属于功能参数。
-      client_type: (ttsProvider.client_type === 'volcengine'
-        ? 'volcengine' : 'openai') as YueliConfig['tts']['client_type'],
-      app_id: ttsProvider.app_id ?? '',
       cluster: stringAtOr(tts, 'cluster', DEFAULT_CONFIG.tts.cluster, featuresPath),
     },
     vision: {
       enabled: booleanAt(vision, 'enabled', featuresPath),
-      model: visionModel.model_identifier,
-      api_key: visionProvider.name === chatProvider.name ? '' : visionProvider.api_key,
-      base_url: visionProvider.name === chatProvider.name ? '' : visionProvider.base_url,
-      timeout_ms: visionProvider.timeout_ms,
-      max_retries: visionProvider.max_retries,
-      retry_interval_ms: visionProvider.retry_interval_ms,
       fullscreen_silent: booleanAt(vision, 'fullscreen_silent', featuresPath),
       capture_mode: captureModeAt(vision, featuresPath),
     },
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
-      embedding_base_url: embeddingProvider.name === chatProvider.name ? '' : embeddingProvider.base_url,
-      embedding_api_key: embeddingProvider.name === chatProvider.name ? '' : embeddingProvider.api_key,
-      embedding_model: embeddingModel.model_identifier,
-      embedding_dim: embeddingModel.embedding_dim,
     },
     advanced: {
       log_level: stringAt(advanced, 'log_level', featuresPath),
@@ -468,6 +481,42 @@ function readSplitConfig(directory: string): YueliConfig {
   }
 }
 
+/** 旧版扁平配置里的一段连接信息，用来生成一条 api_provider。 */
+interface LegacyConnection {
+  providerName: string
+  kind: string
+  base_url: string
+  api_key: string
+  client_type: ClientType
+  app_id: string
+  timeout_ms: number
+  max_retries: number
+  retry_interval_ms: number
+}
+
+function legacyConnection(
+  section: Record<string, unknown>, providerName: string, fallback: LegacyConnection | null,
+): LegacyConnection {
+  return {
+    providerName,
+    kind: typeof section.provider === 'string' ? section.provider : 'openai',
+    base_url: typeof section.base_url === 'string' ? section.base_url : '',
+    api_key: typeof section.api_key === 'string' ? section.api_key : '',
+    client_type: section.client_type === 'volcengine' ? 'volcengine' : 'openai',
+    app_id: typeof section.app_id === 'string' ? section.app_id : '',
+    timeout_ms: typeof section.timeout_ms === 'number'
+      ? section.timeout_ms : fallback?.timeout_ms ?? DEFAULT_PROVIDER.timeout_ms,
+    max_retries: typeof section.max_retries === 'number'
+      ? section.max_retries : fallback?.max_retries ?? DEFAULT_PROVIDER.max_retries,
+    retry_interval_ms: typeof section.retry_interval_ms === 'number'
+      ? section.retry_interval_ms : fallback?.retry_interval_ms ?? DEFAULT_PROVIDER.retry_interval_ms,
+  }
+}
+
+/**
+ * 把旧版「一个任务一套地址密钥」的扁平配置摊成厂商 + 模型 + 任务三层。
+ * 迁移出来的每个任务都只有一条候选，用户想加备用 API 时再自己在设置页添。
+ */
 function readLegacyConfig(path: string): YueliConfig {
   let parsed: unknown
   try {
@@ -477,20 +526,107 @@ function readLegacyConfig(path: string): YueliConfig {
   }
   if (!isRecord(parsed)) throw new Error(`旧配置 ${path} 的顶层必须是 TOML 表`)
   const config = cloneDefaults()
-  for (const section of [
-    'bot', 'personality', 'conversation', 'generation', 'llm', 'tts', 'vision', 'vector', 'advanced',
-  ] as const) {
+  for (const section of ['bot', 'personality', 'conversation', 'generation', 'advanced'] as const) {
     const value = parsed[section]
     if (value === undefined) continue
     if (!isRecord(value)) throw new Error(`旧配置 ${path} 的 [${section}] 必须是表`)
     Object.assign(config[section], value)
   }
+
+  const llm = isRecord(parsed.llm) ? parsed.llm : {}
+  const tts = isRecord(parsed.tts) ? parsed.tts : {}
+  const vision = isRecord(parsed.vision) ? parsed.vision : {}
+  const vector = isRecord(parsed.vector) ? parsed.vector : {}
+
+  const chat = legacyConnection(llm, '主力', null)
+  const providers: ApiProviderConfig[] = []
+  const models: ModelDefinitionConfig[] = []
+  const tasks = structuredClone(DEFAULT_CONFIG.model_tasks)
+
+  const pushProvider = (connection: LegacyConnection): string => {
+    if (!providers.some((provider) => provider.name === connection.providerName)) {
+      const { providerName, ...rest } = connection
+      providers.push({ name: providerName, ...rest })
+    }
+    return connection.providerName
+  }
+  pushProvider(chat)
+  models.push({
+    name: 'chat',
+    model_identifier: typeof llm.model === 'string' ? llm.model : '',
+    api_provider: chat.providerName,
+    thinking: llm.thinking === 'enabled' || llm.thinking === 'auto' ? llm.thinking : 'disabled',
+    embedding_dim: 0,
+  })
+  tasks.chat = { model_list: ['chat'], selection_strategy: 'sequential' }
+
+  // 旧配置里 vision/vector 的地址留空就意味着复用对话连接，这里如实还原成
+  // 「同一个 api_provider」而不是复制一份地址，避免改一处漏一处。
+  if (typeof vision.model === 'string' && vision.model) {
+    const separate = Boolean(vision.base_url || vision.api_key)
+    const connection = separate ? legacyConnection(vision, '视觉', chat) : chat
+    models.push({
+      name: 'vision', model_identifier: vision.model,
+      api_provider: pushProvider(connection), thinking: 'disabled', embedding_dim: 0,
+    })
+    tasks.vision = { model_list: ['vision'], selection_strategy: 'sequential' }
+  }
+  if (typeof tts.model === 'string' || typeof tts.voice === 'string') {
+    const connection = legacyConnection(tts, '语音', chat)
+    connection.kind = connection.client_type === 'volcengine' ? 'volcengine' : 'openai'
+    models.push({
+      name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
+      api_provider: pushProvider(connection), thinking: 'disabled', embedding_dim: 0,
+    })
+    tasks.tts = { model_list: ['tts'], selection_strategy: 'sequential' }
+  }
+  if (typeof vector.embedding_model === 'string' && vector.embedding_model) {
+    const separate = Boolean(vector.embedding_base_url || vector.embedding_api_key)
+    const connection = separate
+      ? legacyConnection({
+        base_url: vector.embedding_base_url, api_key: vector.embedding_api_key,
+      }, '向量', chat)
+      : chat
+    models.push({
+      name: 'embedding', model_identifier: vector.embedding_model,
+      api_provider: pushProvider(connection), thinking: 'disabled',
+      embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
+    })
+    tasks.embedding = { model_list: ['embedding'], selection_strategy: 'sequential' }
+  }
+
+  config.api_providers = providers
+  config.models = models
+  config.model_tasks = tasks
+  if (typeof tts.enabled === 'boolean') config.tts.enabled = tts.enabled
+  if (typeof tts.voice === 'string') config.tts.voice = tts.voice
+  if (tts.format === 'mp3' || tts.format === 'wav' || tts.format === 'opus') {
+    config.tts.format = tts.format
+  }
+  if (typeof tts.speed === 'number') config.tts.speed = tts.speed
+  if (typeof tts.cluster === 'string') config.tts.cluster = tts.cluster
+  if (typeof vision.enabled === 'boolean') config.vision.enabled = vision.enabled
+  if (typeof vision.fullscreen_silent === 'boolean') {
+    config.vision.fullscreen_silent = vision.fullscreen_silent
+  }
+  if (vision.capture_mode === 'window' || vision.capture_mode === 'screen') {
+    config.vision.capture_mode = vision.capture_mode
+  }
+  if (typeof vector.enabled === 'boolean') config.vector.enabled = vector.enabled
   return config
+}
+
+/** 目录里还有旧版本的文件吗。Python 侧只认当前版本，读到旧的要就地升级。 */
+function directoryIsStale(directory: string): boolean {
+  return CONFIG_FILES.some((name) => parseToml(join(directory, name)).version !== CONFIG_VERSION)
 }
 
 /**
  * 读取配置目录。旧 config.toml 存在时会自动生成四份新配置，旧文件原样保留。
  * 配置目录一旦存在就必须完整、可解析；损坏时直接暴露具体文件，不能静默用默认值。
+ *
+ * ★ 读到旧版本会立刻重写一遍：Python 侧只解析当前版本，不留一份两边理解不
+ *   一致的配置在磁盘上——那种情况下 Electron 一切正常，后端却起不来。
  */
 export function readConfigDirectory(directory: string, legacyPath?: string): YueliConfig {
   if (!existsSync(directory)) {
@@ -505,12 +641,22 @@ export function readConfigDirectory(directory: string, legacyPath?: string): Yue
   if (!statSync(directory).isDirectory()) throw new Error(`${directory} 存在，但不是配置目录`)
   const missing = CONFIG_FILES.filter((name) => !existsSync(join(directory, name)))
   if (missing.length > 0) throw new Error(`${directory} 缺少配置文件：${missing.join('、')}`)
-  return readSplitConfig(directory)
+  const config = readSplitConfig(directory)
+  if (directoryIsStale(directory)) {
+    writeConfigDirectory(directory, config)
+    console.log(`[config] ${directory} 已升级到 ${CONFIG_VERSION}`)
+  }
+  return config
 }
 
-/** 首次启动判定：模型和 Key 都填了才算配置完整。 */
+/** 首次启动判定：对话任务至少有一条候选把模型 ID 和 Key 都填齐了。 */
 export function configIsComplete(cfg: YueliConfig): boolean {
-  return cfg.llm.model.trim() !== '' && cfg.llm.api_key.trim() !== ''
+  return cfg.model_tasks.chat.model_list.some((name) => {
+    const model = cfg.models.find((candidate) => candidate.name === name)
+    if (!model || !model.model_identifier.trim()) return false
+    const provider = cfg.api_providers.find((candidate) => candidate.name === model.api_provider)
+    return Boolean(provider && provider.api_key.trim())
+  })
 }
 
 function tomlString(value: string): string {
@@ -533,7 +679,11 @@ function tomlMultiline(value: string, field: string): string {
   return `'''${value}'''`
 }
 
-function providerBlock(provider: ApiProvider): string {
+function tomlStringArray(values: string[]): string {
+  return `[${values.map(tomlString).join(', ')}]`
+}
+
+function providerBlock(provider: ApiProviderConfig): string {
   return `[[api_providers]]
 # 配置内部引用名，必须唯一；models.toml 的 api_provider 写这个值
 name = ${tomlString(provider.name)}
@@ -548,20 +698,20 @@ api_key = ${tomlString(provider.api_key)}
 client_type = ${tomlString(provider.client_type)}${provider.client_type === 'volcengine' ? `
 # 豆包语音的 App ID，与 api_key（Access Token）成对使用
 # 取自控制台：豆包语音 → 语音合成大模型 → 页面下方「服务接口认证信息」
-app_id = ${tomlString(provider.app_id ?? '')}` : ''}
+app_id = ${tomlString(provider.app_id)}` : ''}
 # 单次 HTTP 连接与流式读取超时，单位毫秒；本地大模型可适当调大
 timeout_ms = ${provider.timeout_ms}
-# 首次请求失败后最多重试次数；0 表示不重试
+# 同一条连接内的重试次数；重试用尽仍失败才算这个厂商挂了，轮询切下一条
 max_retries = ${provider.max_retries}
 # 两次重试之间的固定等待时间，单位毫秒
 retry_interval_ms = ${provider.retry_interval_ms}`
 }
 
-function modelBlock(model: ModelDefinition): string {
+function modelBlock(model: ModelDefinitionConfig): string {
   return `[[models]]
-# 配置内部模型名，必须唯一；上方 model_tasks 引用这个值
+# 配置内部模型名，必须唯一；上方 model_tasks 的 model_list 引用这个值
 name = ${tomlString(model.name)}
-# 发给厂商接口的真实模型 ID；视觉模型留空时会沿用聊天模型 ID
+# 发给厂商接口的真实模型 ID
 model_identifier = ${tomlString(model.model_identifier)}
 # 引用 providers.toml 中 api_providers.name
 api_provider = ${tomlString(model.api_provider)}
@@ -576,79 +726,53 @@ function generationBlock(
   config: GenerationConfig[keyof GenerationConfig],
   description: string,
 ): string {
+  const enabled = task === 'proactive'
+    ? `# 是否开启主动感知与主动搭话；关闭时不安装全局键鼠钩子
+enabled = ${(config as GenerationConfig['proactive']).enabled}
+`
+    : ''
   return `[generation.${task}]
 # ${description}；temperature 越低越稳定，越高越发散，范围 0~2
-temperature = ${config.temperature}
+${enabled}temperature = ${config.temperature}
 # 最大输出 token 数；0 表示不额外限制，交给模型厂商决定
 max_tokens = ${config.max_tokens}`
 }
 
 function serializeProviders(cfg: YueliConfig): string {
-  const providers: ApiProvider[] = [{
-    name: 'chat', kind: cfg.llm.provider, base_url: cfg.llm.base_url,
-    api_key: cfg.llm.api_key, client_type: 'openai', timeout_ms: cfg.llm.timeout_ms,
-    max_retries: cfg.llm.max_retries, retry_interval_ms: cfg.llm.retry_interval_ms,
-  }]
-  if (cfg.vision.base_url || cfg.vision.api_key) {
-    providers.push({
-      name: 'vision', kind: 'openai',
-      base_url: cfg.vision.base_url || cfg.llm.base_url,
-      api_key: cfg.vision.api_key || cfg.llm.api_key,
-      client_type: 'openai', timeout_ms: cfg.vision.timeout_ms,
-      max_retries: cfg.vision.max_retries, retry_interval_ms: cfg.vision.retry_interval_ms,
-    })
-  }
-  providers.push({
-    // ★ 这三项以前是写死的 openai —— 手改成豆包语音后，只要在设置窗口保存一次
-    //   （哪怕只改了昵称）就会被静默抹回去，TTS 悄悄退回 OpenAI 协议然后失败。
-    name: 'tts', kind: cfg.tts.client_type === 'volcengine' ? 'volcengine' : 'openai',
-    base_url: cfg.tts.base_url,
-    api_key: cfg.tts.api_key, client_type: cfg.tts.client_type,
-    app_id: cfg.tts.app_id,
-    timeout_ms: cfg.llm.timeout_ms,
-    max_retries: cfg.llm.max_retries, retry_interval_ms: cfg.llm.retry_interval_ms,
-  })
-  if (cfg.vector.embedding_base_url || cfg.vector.embedding_api_key) {
-    providers.push({
-      name: 'embedding', kind: 'openai',
-      base_url: cfg.vector.embedding_base_url || cfg.llm.base_url,
-      api_key: cfg.vector.embedding_api_key || cfg.llm.api_key,
-      client_type: 'openai', timeout_ms: cfg.llm.timeout_ms,
-      max_retries: cfg.llm.max_retries, retry_interval_ms: cfg.llm.retry_interval_ms,
-    })
-  }
   return `# API 厂商与连接策略。具体模型不要写在这里。
 # 一个厂商可供多个模型复用；api_key 当前为明文，请勿提交 config 目录。
+# 想让某个任务在厂商挂掉时自动切换，就在这里多写几条连接，再到 models.toml
+# 里为每条连接建一个模型，最后把它们一起写进 model_tasks 的 model_list。
 
 [inner]
 # 配置结构版本；手工修改为未知版本会拒绝启动，避免错误解释字段
 version = ${tomlString(CONFIG_VERSION)}
 
-${providers.map(providerBlock).join('\n\n')}
+${cfg.api_providers.map(providerBlock).join('\n\n')}
 `
 }
 
+const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
+  chat: '用户聊天与主动搭话',
+  vision: '前台窗口图片理解；模型和接口都必须接受图片消息',
+  tts: '语音合成',
+  embedding: '向量记忆召回',
+}
+
+/**
+ * 一个任务的候选模型与轮询策略。列表里排第一的是主力，其余是它挂掉之后
+ * 依次顶上的备用；列表为空表示这个任务没有可用模型（功能关掉时的正常状态）。
+ */
+function taskBlock(task: ModelTask, routing: TaskRoutingConfig): string {
+  return `[model_tasks.${task}]
+# ${TASK_DESCRIPTIONS[task]}使用的模型定义名，按优先级从前往后写
+model_list = ${tomlStringArray(routing.model_list)}
+# 挑选顺序：sequential = 永远优先第一条（主备）；random = 每次随机起点（分摊额度）
+# 无论哪种，刚失败过的厂商都会在冷却期内被排到最后
+selection_strategy = ${tomlString(routing.selection_strategy)}`
+}
+
 function serializeModels(cfg: YueliConfig): string {
-  const models: ModelDefinition[] = [
-    {
-      name: 'chat', model_identifier: cfg.llm.model, api_provider: 'chat',
-      thinking: cfg.llm.thinking, embedding_dim: 0,
-    },
-    {
-      name: 'vision', model_identifier: cfg.vision.model,
-      api_provider: cfg.vision.base_url || cfg.vision.api_key ? 'vision' : 'chat',
-      thinking: 'disabled', embedding_dim: 0,
-    },
-    {
-      name: 'tts', model_identifier: cfg.tts.model, api_provider: 'tts',
-      thinking: 'disabled', embedding_dim: 0,
-    },
-    {
-      name: 'embedding', model_identifier: cfg.vector.embedding_model,
-      api_provider: cfg.vector.embedding_base_url || cfg.vector.embedding_api_key ? 'embedding' : 'chat',
-      thinking: 'disabled', embedding_dim: cfg.vector.embedding_dim,
-    },
-  ]
   const generationDescriptions: Record<keyof GenerationConfig, string> = {
     chat: '用户主动聊天的回复参数',
     proactive: '桌宠主动搭话的回复参数',
@@ -659,26 +783,19 @@ function serializeModels(cfg: YueliConfig): string {
   const generation = (Object.keys(generationDescriptions) as Array<keyof GenerationConfig>)
     .map((task) => generationBlock(task, cfg.generation[task], generationDescriptions[task]))
     .join('\n\n')
-  return `# 具体模型、任务选择与各任务生成参数。
+  const tasks = MODEL_TASKS.map((task) => taskBlock(task, cfg.model_tasks[task])).join('\n\n')
+  return `# 具体模型、任务的候选模型列表与各任务生成参数。
 # 模型只引用 providers.toml 的连接名，不在这里重复地址和密钥。
 
 [inner]
 # 配置结构版本
 version = ${tomlString(CONFIG_VERSION)}
 
-[model_tasks]
-# 用户聊天与主动搭话当前使用的模型定义名
-chat = "chat"
-# 前台窗口图片理解使用的模型定义名；模型和接口都必须接受图片消息
-vision = "vision"
-# 语音合成使用的模型定义名
-tts = "tts"
-# 向量记忆召回使用的模型定义名
-embedding = "embedding"
+${tasks}
 
 ${generation}
 
-${models.map(modelBlock).join('\n\n')}
+${cfg.models.map(modelBlock).join('\n\n')}
 `
 }
 
@@ -782,6 +899,70 @@ trace_max_bytes = ${tomlValue(cfg.advanced.trace_max_bytes)}
 `
 }
 
+/**
+ * 用户编辑的结构自检，由保存入口（IPC SaveConfig）调用。设置页只负责把这里
+ * 的错误显示出来，不再自己维护一套规则——两套规则迟早会对不上。
+ *
+ * ★ 不放进 writeConfigDirectory：那个函数还承担版本迁移，写的是它刚读进来的
+ *   东西。旧配置里「四个任务槽位都填着、其中几个是空模型」很常见，用用户编辑
+ *   的标准去卡迁移，结果是老用户升级后直接启动不了。
+ *
+ * 只管「结构是否自洽」，不管「填完了没有」：后者是 configIsComplete 的事，
+ * 首次启动向导本来就允许先存一半再回来补。
+ */
+export function assertConfigConsistent(cfg: YueliConfig): void {
+  const providerNames = cfg.api_providers.map((provider) => provider.name.trim())
+  if (providerNames.some((name) => !name)) throw new Error('每个服务商都要有名称')
+  if (new Set(providerNames).size !== providerNames.length) {
+    throw new Error('服务商名称不能重复')
+  }
+  const modelNames = cfg.models.map((model) => model.name.trim())
+  if (modelNames.some((name) => !name)) throw new Error('每个模型都要有名称')
+  if (new Set(modelNames).size !== modelNames.length) throw new Error('模型名称不能重复')
+
+  for (const model of cfg.models) {
+    if (!cfg.api_providers.some((provider) => provider.name === model.api_provider)) {
+      throw new Error(`模型 ${model.name} 挂在不存在的服务商 ${model.api_provider} 上`)
+    }
+  }
+  for (const task of MODEL_TASKS) {
+    const routing = cfg.model_tasks[task]
+    if (new Set(routing.model_list).size !== routing.model_list.length) {
+      throw new Error(`${TASK_DESCRIPTIONS[task]}的候选里有重复模型`)
+    }
+    for (const name of routing.model_list) {
+      const model = cfg.models.find((candidate) => candidate.name === name)
+      if (!model) throw new Error(`${TASK_DESCRIPTIONS[task]}引用了不存在的模型：${name}`)
+      const provider = cfg.api_providers.find((item) => item.name === model.api_provider)!
+      // 豆包语音是私有协议，指到别的任务上只会在运行时抛难定位的错。
+      if (task !== 'tts' && provider.client_type !== 'openai') {
+        throw new Error(
+          `${TASK_DESCRIPTIONS[task]}不能用豆包语音协议的服务商（${provider.name}）`,
+        )
+      }
+      if (provider.client_type === 'openai' && !model.model_identifier.trim()) {
+        throw new Error(`模型 ${name} 还没填模型 ID`)
+      }
+    }
+  }
+
+  // 开着却没有候选，等于「开了但不工作」——比直接拦下来难查得多。
+  for (const [enabled, task] of [
+    [cfg.tts.enabled, 'tts'], [cfg.vision.enabled, 'vision'], [cfg.vector.enabled, 'embedding'],
+  ] as const) {
+    if (enabled && cfg.model_tasks[task].model_list.length === 0) {
+      throw new Error(`启用了${TASK_DESCRIPTIONS[task]}，就要给它至少一个候选模型`)
+    }
+  }
+  if (cfg.tts.enabled && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
+
+  // 备用向量模型换上来之后维度不一样，新旧向量根本没法比，召回会莫名其妙地坏掉。
+  const dims = new Set(cfg.model_tasks.embedding.model_list.map(
+    (name) => cfg.models.find((model) => model.name === name)!.embedding_dim,
+  ))
+  if (dims.size > 1) throw new Error('向量记忆的候选模型必须是同一个向量维度')
+}
+
 /** 将设置页的任务视图拆成四份职责单一的配置。 */
 export function writeConfigDirectory(directory: string, cfg: YueliConfig): void {
   if (existsSync(directory) && !statSync(directory).isDirectory()) {
@@ -807,16 +988,30 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
   try {
     const parsed = parseDotenv(readFileSync(envPath))
     if (!parsed.LLM_API_KEY && !parsed.LLM_MODEL) return null
+    const thinking = parsed.LLM_THINKING
     return {
-      llm: {
-        provider: parsed.LLM_PROVIDER || DEFAULT_CONFIG.llm.provider,
-        model: parsed.LLM_MODEL || '',
+      api_providers: [{
+        ...DEFAULT_PROVIDER,
+        kind: parsed.LLM_PROVIDER || DEFAULT_PROVIDER.kind,
         base_url: parsed.LLM_BASE_URL || '',
         api_key: parsed.LLM_API_KEY || '',
-        thinking: (parsed.LLM_THINKING as YueliConfig['llm']['thinking']) || 'disabled',
-        timeout_ms: Number(parsed.LLM_TIMEOUT_MS) || DEFAULT_CONFIG.llm.timeout_ms,
-        max_retries: DEFAULT_CONFIG.llm.max_retries,
-        retry_interval_ms: DEFAULT_CONFIG.llm.retry_interval_ms,
+        timeout_ms: Number(parsed.LLM_TIMEOUT_MS) || DEFAULT_PROVIDER.timeout_ms,
+      }],
+      // .env 里没有模型 ID 时不建这条候选：一个没填模型 ID 的候选写不进磁盘，
+      // 而这条路径的任务只是把已有的值捎带过去，不该因此拦住启动。
+      models: parsed.LLM_MODEL ? [{
+        name: 'chat',
+        model_identifier: parsed.LLM_MODEL,
+        api_provider: DEFAULT_PROVIDER.name,
+        thinking: thinking === 'enabled' || thinking === 'auto' ? thinking : 'disabled',
+        embedding_dim: 0,
+      }] : [],
+      model_tasks: {
+        ...structuredClone(DEFAULT_CONFIG.model_tasks),
+        chat: {
+          model_list: parsed.LLM_MODEL ? ['chat'] : [],
+          selection_strategy: 'sequential',
+        },
       },
     }
   } catch (error) {

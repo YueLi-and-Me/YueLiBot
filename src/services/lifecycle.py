@@ -12,7 +12,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
 
 logger = get_logger(__name__)
 

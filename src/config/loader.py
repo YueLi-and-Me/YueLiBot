@@ -8,26 +8,39 @@ from typing import Any, Dict
 import sys
 import tomllib
 
+from src.llm_models.openai import resolve_base_url
+
 from .schema import (
     ApiProviderConfig,
     BotDocument,
     Config,
     FeatureDocument,
-    LlmConfig,
+    ModelCandidate,
     ModelCatalog,
     ModelDefinitionConfig,
     ProviderCatalog,
-    TtsConfig,
-    VectorConfig,
-    VisionConfig,
+    RoutingConfig,
+    TaskRouting,
 )
 
 _config: Config | None = None
 
 
+CONFIG_VERSION = '1.1.0'
+
+
 def _read_toml(path: Path) -> Dict[str, Any]:
     with open(path, 'rb') as file:
-        return tomllib.load(file)
+        document = tomllib.load(file)
+    # 版本对不上就不要往下解释字段了：同一个 model_tasks 在 1.0.0 里是模型名、
+    # 在 1.1.0 里是候选列表，硬读只会给出一堆看不懂的类型错误。
+    version = document.get('inner', {}).get('version')
+    if version != CONFIG_VERSION:
+        raise ValueError(
+            f'{path.name} 的配置版本是 {version!r}，当前需要 {CONFIG_VERSION}；'
+            '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
+        )
+    return document
 
 
 def _providers_by_name(catalog: ProviderCatalog) -> Dict[str, ApiProviderConfig]:
@@ -52,17 +65,6 @@ def _models_by_name(catalog: ModelCatalog) -> Dict[str, ModelDefinitionConfig]:
     return models
 
 
-def _selected_model(
-    task: str,
-    model_name: str,
-    models: Dict[str, ModelDefinitionConfig],
-) -> ModelDefinitionConfig:
-    try:
-        return models[model_name]
-    except KeyError as exc:
-        raise ValueError(f'models.toml 的 model_tasks.{task} 引用了不存在的模型：{model_name}') from exc
-
-
 def _selected_provider(
     model: ModelDefinitionConfig,
     providers: Dict[str, ApiProviderConfig],
@@ -75,6 +77,58 @@ def _selected_provider(
         ) from exc
 
 
+def _build_routing(
+    task: str,
+    models_document: ModelCatalog,
+    models: Dict[str, ModelDefinitionConfig],
+    providers: Dict[str, ApiProviderConfig],
+) -> TaskRouting:
+    """把一个任务的 model_list 解析成有序候选。顺序就是 TOML 里写的顺序。"""
+    routing = getattr(models_document.model_tasks, task)
+    candidates = []
+    for model_name in routing.model_list:
+        try:
+            model = models[model_name]
+        except KeyError as exc:
+            raise ValueError(
+                f'models.toml 的 model_tasks.{task}.model_list 引用了不存在的模型：{model_name}'
+            ) from exc
+        provider = _selected_provider(model, providers)
+        # 豆包语音是私有协议，只能承载 tts。指到别的任务上只会在运行时抛出
+        # 难以定位的错误，不如在加载阶段就说清楚。
+        if task != 'tts' and provider.client_type != 'openai':
+            raise ValueError(
+                f'model_tasks.{task} 的候选 {model_name} 指向厂商 {provider.name}，其 '
+                f'client_type={provider.client_type}，该协议只支持 tts 任务'
+            )
+        # 豆包语音不吃 model_identifier（音色由 voice 决定），其余任务必须有模型 ID。
+        if provider.client_type == 'openai' and not model.model_identifier.strip():
+            raise ValueError(
+                f'models.toml 中模型 {model_name} 没有填 model_identifier，'
+                f'model_tasks.{task} 无法使用它'
+            )
+        # 地址在加载期就解析一次。留到第一次请求才发现「这个 kind 没有内置地址」，
+        # 表现是轮询把每条候选都撞一遍然后整轮失败，根因藏在最后一条报错里。
+        if provider.client_type == 'openai':
+            resolve_base_url(provider.kind, provider.base_url)
+        candidates.append(ModelCandidate(
+            name=model.name,
+            provider=provider.name,
+            kind=provider.kind,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            identifier=model.model_identifier.strip(),
+            thinking=model.thinking,
+            client_type=provider.client_type,
+            app_id=provider.app_id,
+            embedding_dim=model.embedding_dim,
+            timeout_ms=provider.timeout_ms,
+            max_retries=provider.max_retries,
+            retry_interval_ms=provider.retry_interval_ms,
+        ))
+    return TaskRouting(task=task, candidates=candidates, strategy=routing.selection_strategy)
+
+
 def _load_split_config(directory: Path) -> Config:
     providers_document = ProviderCatalog.model_validate(
         _read_toml(directory / 'providers.toml')
@@ -85,102 +139,72 @@ def _load_split_config(directory: Path) -> Config:
 
     providers = _providers_by_name(providers_document)
     models = _models_by_name(models_document)
-    # 不只校验当前任务引用；未选中的坏模型同样属于配置错误，不能等切换后才暴露。
+    # 不只校验当前任务引用；未选中的坏模型同样属于配置错误，不能等轮询切到
+    # 它头上、用户正等着回话的时候才暴露。
     for model in models.values():
         _selected_provider(model, providers)
 
-    tasks = models_document.model_tasks
-    chat_model = _selected_model('chat', tasks.chat, models)
-    vision_model = _selected_model('vision', tasks.vision, models)
-    tts_model = _selected_model('tts', tasks.tts, models)
-    embedding_model = _selected_model('embedding', tasks.embedding, models)
-    chat_provider = _selected_provider(chat_model, providers)
-    vision_provider = _selected_provider(vision_model, providers)
-    tts_provider = _selected_provider(tts_model, providers)
-    embedding_provider = _selected_provider(embedding_model, providers)
-
-    # 豆包语音是私有协议，只能承载 tts。指到别的任务上只会在运行时抛出
-    # 难以定位的错误，不如在加载阶段就说清楚。
-    for task, provider in (('chat', chat_provider), ('vision', vision_provider),
-                            ('embedding', embedding_provider)):
-        if provider.client_type != 'openai':
-            raise ValueError(
-                f'model_tasks.{task} 指向的厂商 {provider.name} 的 '
-                f'client_type={provider.client_type}，该协议只支持 tts 任务'
-            )
+    routing = RoutingConfig(
+        chat=_build_routing('chat', models_document, models, providers),
+        vision=_build_routing('vision', models_document, models, providers),
+        tts=_build_routing('tts', models_document, models, providers),
+        embedding=_build_routing('embedding', models_document, models, providers),
+    )
 
     features_tts = features_document.tts
     features_vision = features_document.vision
     features_vector = features_document.vector
+    # 功能开着却一个候选都没有，是明确的配置错误：开了却不工作比直接报错更难查。
+    for enabled, task in ((features_tts.enabled, 'tts'),
+                          (features_vision.enabled, 'vision'),
+                          (features_vector.enabled, 'embedding')):
+        if enabled and not getattr(routing, task).ready:
+            raise ValueError(
+                f'features.toml 里启用了该功能，但 models.toml 的 '
+                f'model_tasks.{task}.model_list 是空的'
+            )
+    if features_tts.enabled and not features_tts.voice.strip():
+        raise ValueError('features.toml 里启用了 tts，但没有填 voice（音色 ID）')
+    # 备用向量模型必须和主力同维度，否则换厂商之后新旧向量根本没法比较，
+    # 表现是召回突然变得毫无道理——比直接报错难查得多。
+    dims = {candidate.embedding_dim for candidate in routing.embedding.candidates}
+    if len(dims) > 1:
+        raise ValueError(
+            f'model_tasks.embedding 的候选模型 embedding_dim 不一致：{sorted(dims)}；'
+            '备用向量模型必须和主力输出同样的维度'
+        )
+
     return Config(
         bot=bot_document.bot,
         personality=bot_document.personality,
         conversation=bot_document.conversation,
         generation=models_document.generation,
-        llm=LlmConfig(
-            provider=chat_provider.kind,
-            model=chat_model.model_identifier,
-            base_url=chat_provider.base_url,
-            api_key=chat_provider.api_key,
-            thinking=chat_model.thinking,
-            timeout_ms=chat_provider.timeout_ms,
-            max_retries=chat_provider.max_retries,
-            retry_interval_ms=chat_provider.retry_interval_ms,
-        ),
-        tts=TtsConfig(
-            enabled=features_tts.enabled,
-            base_url=tts_provider.base_url,
-            api_key=tts_provider.api_key,
-            model=tts_model.model_identifier,
-            voice=features_tts.voice,
-            format=features_tts.format,
-            speed=features_tts.speed,
-            client_type=tts_provider.client_type,
-            app_id=tts_provider.app_id,
-            cluster=features_tts.cluster,
-        ),
-        vision=VisionConfig(
-            enabled=features_vision.enabled,
-            model=vision_model.model_identifier,
-            api_key='' if vision_provider.name == chat_provider.name else vision_provider.api_key,
-            base_url='' if vision_provider.name == chat_provider.name else vision_provider.base_url,
-            timeout_ms=vision_provider.timeout_ms,
-            max_retries=vision_provider.max_retries,
-            retry_interval_ms=vision_provider.retry_interval_ms,
-            fullscreen_silent=features_vision.fullscreen_silent,
-            capture_mode=features_vision.capture_mode,
-        ),
-        vector=VectorConfig(
-            enabled=features_vector.enabled,
-            embedding_base_url=(
-                '' if embedding_provider.name == chat_provider.name else embedding_provider.base_url
-            ),
-            embedding_api_key=(
-                '' if embedding_provider.name == chat_provider.name else embedding_provider.api_key
-            ),
-            embedding_model=embedding_model.model_identifier,
-            embedding_dim=embedding_model.embedding_dim,
-        ),
+        routing=routing,
+        tts=features_tts,
+        vision=features_vision,
+        vector=features_vector,
         advanced=features_document.advanced,
     )
 
 
 def load_config(path: Path) -> Config:
     """
-    从显式路径加载并返回全局配置单例。
+    从配置目录加载并返回全局配置单例。同一进程内只加载一次。
 
-    目录使用新版四文件结构；普通文件继续按旧版 config.toml 读取，供迁移前
-    启动探针和第三方调用方平滑过渡。同一进程内只加载一次。
+    只接受四文件结构的目录。旧版单文件 config.toml 由 Electron 侧在启动前
+    迁移成目录——放在这里再读一次只会得到一份把 [llm] 静默忽略掉的配置，
+    表现是「她起来了但一句话也说不出」，比直接报错难查得多。
     """
     global _config
     if _config is not None:
         return _config
 
     try:
-        if path.is_dir():
-            _config = _load_split_config(path)
-        else:
-            _config = Config.model_validate(_read_toml(path))
+        if not path.is_dir():
+            raise ValueError(
+                f'{path} 不是配置目录；需要包含 providers/models/bot/features 四份 TOML'
+            )
+        _config = _load_split_config(path)
     except Exception as exc:
         print(f'[yueli] 配置错误，请检查 {path}：\n{exc}', file=sys.stderr)
         sys.exit(1)

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from yueli.services.lifecycle import lifecycle
+from src.services.lifecycle import lifecycle
 from .ws import router as ws_router
 from .http import router as http_router
 

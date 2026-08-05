@@ -17,14 +17,17 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from yueli.common.clock import now as current_time
-from yueli.common.db.schema import DDL, SCHEMA_VERSION, SEED
+from src.common.clock import now as current_time
+from src.common.db.schema import DDL, SCHEMA_VERSION, SEED
 from .decay import (
     FREEZE, DecayState, evaluate, freeze_due_at, half_life_for,
     reinforce, relevance_from_bm25, retention, retention_weight, score,
 )
 from .similarity import exact_key, is_same_fact
 from .tokenize import index_tokens, match_query
+
+
+_PENDING_PROMISES_KEY = 'pending_promises'
 
 
 @dataclass
@@ -466,6 +469,17 @@ class MemoryStore:
         return row[0] if row else 0
 
     # ------------------------------------------------------------------ meta JSON 键值
+    def load_pending_promises(self) -> list[dict[str, Any]]:
+        """读取跨重启保留的约定；短期情境意图不在这里存储。"""
+        raw = self.read_json(_PENDING_PROMISES_KEY, [])
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+
+    def save_pending_promises(self, promises: list[dict[str, Any]]) -> None:
+        """整批覆盖约定快照，队列的其余意图在进程内自然过期。"""
+        self.write_json(_PENDING_PROMISES_KEY, promises)
+
     def read_json(self, key: str, fallback: Any) -> Any:
         row = self._db.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()
         if not row:

@@ -19,8 +19,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from yueli.common.clock import now as current_time
-from yueli.common.logger import get_logger
+from src.common.clock import now as current_time
+from src.common.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import List, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from yueli.agent.character import (
+from src.agent.character import (
     ATTENTION_PROMPT,
     BEHAVIOR_PROMPT,
     BOUNDARIES_PROMPT,
@@ -28,7 +28,9 @@ from yueli.agent.character import (
 
 
 class InnerConfig(BaseModel):
-    version: Literal['1.0.0'] = '1.0.0'
+    # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
+    # 旧配置由 Electron 侧在读取时就地升级，Python 只解析当前版本。
+    version: Literal['1.1.0'] = '1.1.0'
 
 
 class BotConfig(BaseModel):
@@ -88,12 +90,18 @@ class GenerationTaskConfig(BaseModel):
         return self.max_tokens or None
 
 
+class ProactiveGenerationTaskConfig(GenerationTaskConfig):
+    """主动系统的采样参数和总开关。关闭时 Electron 不安装全局键鼠钩子。"""
+
+    enabled: bool = True
+
+
 class GenerationConfig(BaseModel):
     """按任务拆分参数，避免改视觉模型时意外改变普通聊天。"""
 
     chat: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
-    proactive: GenerationTaskConfig = Field(
-        default_factory=lambda: GenerationTaskConfig(temperature=0.9, max_tokens=200)
+    proactive: ProactiveGenerationTaskConfig = Field(
+        default_factory=lambda: ProactiveGenerationTaskConfig(temperature=0.9, max_tokens=200)
     )
     summary: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=0)
@@ -106,54 +114,17 @@ class GenerationConfig(BaseModel):
     )
 
 
-class LlmConfig(BaseModel):
-    # 预设：ark | deepseek | dashscope | moonshot | openai | ollama
-    provider: str = 'ark'
-    # 模型 ID，留空则用预设的默认模型（部分厂商没有默认值，必须填）
-    model: str = ''
-    # 留空则用预设的官方地址
-    base_url: str = ''
-    api_key: str = ''
-    # 深度思考：disabled（默认，推荐）| enabled | auto
-    # ⚠ 开启后实测首字延迟从 3 秒涨到 26~31 秒，桌宠场景里这等于产品报废
-    thinking: Literal['disabled', 'enabled', 'auto'] = 'disabled'
-    timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
-    # 仅在还没有输出任何内容时重试网络错误、HTTP 429 和 5xx，避免重复文本。
-    max_retries: int = Field(default=2, ge=0, le=10)
-    retry_interval_ms: int = Field(default=800, ge=0, le=60_000)
-
-    @field_validator('provider')
-    @classmethod
-    def _normalize_provider(cls, v: str) -> str:
-        return v.strip().lower()
-
-
 class TtsConfig(BaseModel):
+    """语音合成的功能参数。地址、密钥、协议都在它的候选模型里，不在这里。"""
+
     # 不开就是纯文字，其余功能不受影响
     enabled: bool = False
-    base_url: str = ''
-    api_key: str = ''
-    model: str = ''
     voice: str = ''
     format: Literal['mp3', 'wav', 'opus'] = 'mp3'
     # 陪伴场景略慢一点更自然，太快像播报
     speed: float = Field(default=0.95, ge=0.25, le=4.0)
-    # 走哪套协议。openai = 兼容 /audio/speech；volcengine = 豆包语音。
-    # 豆包语音官方不提供 OpenAI 兼容接口，认证是 App ID + Access Token，
-    # 请求体也是另一套嵌套结构，所以只能单独走一条分支。
-    client_type: Literal['openai', 'volcengine'] = 'openai'
-    # ↓ 仅 volcengine 用：控制台「豆包语音 → 语音合成大模型 → 服务接口认证信息」
-    app_id: str = ''
+    # 仅 volcengine 协议使用：豆包语音的集群名
     cluster: str = 'volcano_tts'
-
-    @property
-    def ready(self) -> bool:
-        if not self.enabled:
-            return False
-        if self.client_type == 'volcengine':
-            # 豆包语音不吃 model，声音由 voice_type 决定；appid 和 token 缺一不可。
-            return bool(self.app_id and self.api_key and self.voice)
-        return bool(self.base_url and self.model and self.voice)
 
 
 class VisionConfig(BaseModel):
@@ -164,14 +135,6 @@ class VisionConfig(BaseModel):
     #   base_url 填本地推理服务（如 Ollama 的 http://127.0.0.1:11434/v1）时，
     #   画面不出本机，上面这条顾虑不成立。
     enabled: bool = False
-    # 留空则复用对话模型（仅当对话接口本身接受 image_url 时可用）
-    model: str = ''
-    api_key: str = ''
-    base_url: str = ''
-    # 这三个字段来自视觉模型所引用的 api_provider，不写在 features.toml。
-    timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
-    max_retries: int = Field(default=2, ge=0, le=10)
-    retry_interval_ms: int = Field(default=800, ge=0, le=60_000)
     # 疑似全屏时静默，避免直播/录屏把桌宠声音带进去
     fullscreen_silent: bool = True
     # 截什么：
@@ -183,23 +146,14 @@ class VisionConfig(BaseModel):
     capture_mode: Literal['window', 'screen'] = 'window'
 
     @property
-    def local(self) -> bool:
-        """base_url 指向本机——用来决定要不要提示隐私风险。"""
-        return any(host in self.base_url for host in ('127.0.0.1', 'localhost', '::1'))
-
-    @property
     def ready(self) -> bool:
         return self.enabled
 
 
 class VectorConfig(BaseModel):
     # 向量混合召回，默认关；还需 pip install yueli[vector]
+    # 用哪个 embedding 模型由 model_tasks.embedding 决定，不在这里重复。
     enabled: bool = False
-    # 留空则复用 llm.base_url / llm.api_key
-    embedding_base_url: str = ''
-    embedding_api_key: str = ''
-    embedding_model: str = 'text-embedding-3-small'
-    embedding_dim: int = 1536
 
 
 class AdvancedConfig(BaseModel):
@@ -245,11 +199,77 @@ class ModelDefinitionConfig(BaseModel):
     embedding_dim: int = 0
 
 
+class TaskRoutingConfig(BaseModel):
+    """一个任务的候选模型与轮询策略。
+
+    model_list 排第一的是主力，其余是它挂掉之后依次顶上的备用。
+    sequential = 永远优先第一条；random = 每次随机起点，把流量摊到多家。
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_list: List[str] = Field(default_factory=list)
+    selection_strategy: Literal['sequential', 'random'] = 'sequential'
+
+    @field_validator('model_list')
+    @classmethod
+    def _reject_duplicates(cls, v: List[str]) -> List[str]:
+        # 同一个模型写两遍只会让轮询白撞一次，属于明显的手误。
+        if len(set(v)) != len(v):
+            raise ValueError(f'model_list 存在重复模型：{v}')
+        return v
+
+
 class ModelTaskConfig(BaseModel):
-    chat: str
-    vision: str
-    tts: str
-    embedding: str
+    chat: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    vision: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+
+
+class ModelCandidate(BaseModel):
+    """把「模型定义 + 它引用的厂商连接」合成一条，是轮询的最小单位。
+
+    运行时视图：由 loader 组装，不直接对应任何一段 TOML。
+    """
+
+    # 配置内部模型名，出现在日志里，方便对照 models.toml
+    name: str
+    # 引用的厂商名。熔断按厂商记——一个厂商挂了，它下面所有模型都别再撞。
+    provider: str
+    kind: str = ''
+    base_url: str = ''
+    api_key: str = ''
+    # 发给厂商接口的真实模型 ID
+    identifier: str = ''
+    thinking: Literal['disabled', 'enabled', 'auto'] = 'disabled'
+    client_type: Literal['openai', 'volcengine'] = 'openai'
+    app_id: str = ''
+    embedding_dim: int = 0
+    timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
+    max_retries: int = Field(default=0, ge=0, le=10)
+    retry_interval_ms: int = Field(default=0, ge=0, le=60_000)
+
+
+class TaskRouting(BaseModel):
+    """一个任务解析完成后的候选序列。candidates 为空表示这个任务没有模型。"""
+
+    task: str
+    candidates: List[ModelCandidate] = Field(default_factory=list)
+    strategy: Literal['sequential', 'random'] = 'sequential'
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.candidates)
+
+
+class RoutingConfig(BaseModel):
+    """四类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
+
+    chat: TaskRouting = Field(default_factory=lambda: TaskRouting(task='chat'))
+    vision: TaskRouting = Field(default_factory=lambda: TaskRouting(task='vision'))
+    tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
+    embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
 
 
 class ModelCatalog(BaseModel):
@@ -279,7 +299,8 @@ class Config(BaseModel):
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
-    llm: LlmConfig = Field(default_factory=LlmConfig)
+    # 四类任务的候选模型与轮询策略；连接细节都收在候选里
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)

@@ -57,6 +57,7 @@ export class PythonClient {
     private readonly port: number,
     private readonly token: string,
     private readonly sink: EventSink,
+    private readonly onCaptureRequest?: (reason: string) => void,
   ) {}
 
   connect(): void {
@@ -192,6 +193,13 @@ export class PythonClient {
     try {
       msg = JSON.parse(raw)
     } catch {
+      return
+    }
+    // 这是发给主进程的请求，不是渲染事件。桌宠窗口藏起来时仍要能截图，
+    // 所以必须在 sink.isAlive() 的早返回之前处理。
+    if (msg.channel === 'vision.capture_request') {
+      const payload = msg.payload as { reason?: unknown } | undefined
+      this.onCaptureRequest?.(typeof payload?.reason === 'string' ? payload.reason : '')
       return
     }
     if (!this.sink.isAlive()) return

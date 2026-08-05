@@ -1,4 +1,9 @@
-"""TTS 服务：调 OpenAI 兼容 /audio/speech，经 WS 推 base64 音频给 Electron。"""
+"""TTS 服务：调 OpenAI 兼容 /audio/speech，经 WS 推 base64 音频给 Electron。
+
+语音同样走轮询：model_tasks.tts 里写几条候选，前面的厂商挂了就换后面的。
+连续失败到 GIVE_UP_AFTER 之后整个服务停掉——那时问题多半不在某一家厂商，
+而是音色名或协议配错了，继续每轮重试只会白等。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,9 @@ from typing import Any, Callable
 
 import httpx
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
+from src.config.schema import ModelCandidate
+from src.llm_models.router import ModelRouter
 
 logger = get_logger(__name__)
 
@@ -17,9 +24,10 @@ GIVE_UP_AFTER = 3
 
 
 class TtsService:
-    def __init__(self, cfg: Any, push_event: Callable) -> None:
+    def __init__(self, cfg: Any, push_event: Callable, router: ModelRouter) -> None:
         self._cfg = cfg
         self._push_event = push_event
+        self._router = router
         self._failures = 0
         self._cache_hits = 0
         self._cache_misses = 0
@@ -27,7 +35,7 @@ class TtsService:
 
     @property
     def enabled(self) -> bool:
-        return self._cfg.tts.ready and self._failures < GIVE_UP_AFTER
+        return self._cfg.tts.enabled and self._router.ready and self._failures < GIVE_UP_AFTER
 
     def speak(self, text: str, turn_id: int) -> None:
         if not self.enabled or not text.strip():
@@ -38,7 +46,9 @@ class TtsService:
         asyncio.create_task(self._push_event('voice.play', {'turnId': turn_id, 'kind': 'stop'}))
 
     async def _run(self, text: str, turn_id: int) -> None:
-        cache_key = f'{self._cfg.tts.model}:{self._cfg.tts.voice}:{text}'
+        # 缓存按音色而不是按候选模型——同一句话换厂商合成出来仍然是同一个人在说，
+        # 没必要因为主力挂过一次就重合成一遍。
+        cache_key = f'{self._cfg.tts.voice}:{text}'
         if cache_key in self._cache:
             self._cache_hits += 1
             data = self._cache[cache_key]
@@ -60,20 +70,24 @@ class TtsService:
         })
 
     async def _synth(self, text: str) -> bytes:
-        if self._cfg.tts.client_type == 'volcengine':
-            return await self._synth_volcengine(text)
-        return await self._synth_openai(text)
+        """交给路由器挑候选；某个厂商失败就换下一条连接再合成一次。"""
+        async def call(candidate: ModelCandidate) -> bytes:
+            if candidate.client_type == 'volcengine':
+                return await self._synth_volcengine(candidate, text)
+            return await self._synth_openai(candidate, text)
 
-    async def _synth_openai(self, text: str) -> bytes:
+        return await self._router.run(call)
+
+    async def _synth_openai(self, candidate: ModelCandidate, text: str) -> bytes:
         async with httpx.AsyncClient(timeout=30.0) as client:
             headers: dict = {'Content-Type': 'application/json'}
-            if self._cfg.tts.api_key:
-                headers['Authorization'] = f'Bearer {self._cfg.tts.api_key}'
+            if candidate.api_key:
+                headers['Authorization'] = f'Bearer {candidate.api_key}'
             resp = await client.post(
-                f'{self._cfg.tts.base_url.rstrip("/")}/audio/speech',
+                f'{candidate.base_url.rstrip("/")}/audio/speech',
                 headers=headers,
                 json={
-                    'model': self._cfg.tts.model,
+                    'model': candidate.identifier,
                     'voice': self._cfg.tts.voice,
                     'input': text,
                     'response_format': self._cfg.tts.format,
@@ -87,7 +101,7 @@ class TtsService:
                 raise RuntimeError('TTS returned empty audio')
             return data
 
-    async def _synth_volcengine(self, text: str) -> bytes:
+    async def _synth_volcengine(self, candidate: ModelCandidate, text: str) -> bytes:
         """豆包语音（火山引擎）合成。
 
         和 OpenAI 兼容接口完全是两套东西：
@@ -101,9 +115,13 @@ class TtsService:
           万一某个字段对不上，日志里直接能看到是哪个字段的问题，而不是静默失败。
         """
         cfg = self._cfg.tts
-        base = (cfg.base_url or 'https://openspeech.bytedance.com').rstrip('/')
+        base = (candidate.base_url or 'https://openspeech.bytedance.com').rstrip('/')
         payload = {
-            'app': {'appid': cfg.app_id, 'token': cfg.api_key, 'cluster': cfg.cluster},
+            'app': {
+                'appid': candidate.app_id,
+                'token': candidate.api_key,
+                'cluster': cfg.cluster,
+            },
             'user': {'uid': 'yueli'},
             'audio': {
                 'voice_type': cfg.voice,
@@ -118,7 +136,7 @@ class TtsService:
                 headers={
                     'Content-Type': 'application/json',
                     # ★ 分号，不是空格。
-                    'Authorization': f'Bearer;{cfg.api_key}',
+                    'Authorization': f'Bearer;{candidate.api_key}',
                 },
                 json=payload,
             )
@@ -138,11 +156,11 @@ class TtsService:
     def inspect(self) -> dict:
         return {
             'enabled': self.enabled,
-            'configured': self._cfg.tts.ready,
-            'model': self._cfg.tts.model,
+            'configured': self._cfg.tts.enabled and self._router.ready,
             'voice': self._cfg.tts.voice,
             'format': self._cfg.tts.format,
             'failures': self._failures,
             'cacheHits': self._cache_hits,
             'cacheMisses': self._cache_misses,
+            'routing': self._router.inspect(),
         }

@@ -159,6 +159,51 @@ export interface ObservabilityBridge {
   openSettings(): void
 }
 
+/** 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音私有协议，只能用于 tts。 */
+export type ClientType = 'openai' | 'volcengine'
+
+/**
+ * 任务在多个候选模型之间的挑选顺序。
+ *   sequential = 按列表顺序，永远优先第一条（主备）
+ *   random     = 每次随机起点，把流量摊到多家（分摊额度）
+ * 两种策略都遵守同一条熔断规则：刚失败过的厂商在冷却期内排到最后。
+ */
+export type SelectionStrategy = 'sequential' | 'random'
+
+/** providers.toml 里的一条可复用连接。一个厂商可供多个模型引用。 */
+export interface ApiProviderConfig {
+  /** 配置内部引用名，必须唯一；模型的 api_provider 写这个值 */
+  name: string
+  /** 厂商预设名，base_url 留空时用于选择内置官方地址 */
+  kind: string
+  base_url: string
+  api_key: string
+  client_type: ClientType
+  /** 仅 volcengine：App ID，与 api_key（Access Token）成对使用 */
+  app_id: string
+  timeout_ms: number
+  max_retries: number
+  retry_interval_ms: number
+}
+
+/** models.toml 里的一个具体模型，只引用厂商名，不重复地址和密钥。 */
+export interface ModelDefinitionConfig {
+  /** 配置内部模型名，必须唯一；任务的 model_list 写这个值 */
+  name: string
+  /** 发给厂商接口的真实模型 ID */
+  model_identifier: string
+  api_provider: string
+  thinking: 'disabled' | 'enabled' | 'auto'
+  /** 向量维度，仅 embedding 模型使用 */
+  embedding_dim: number
+}
+
+/** 一个任务的候选模型列表与轮询策略。列表里排第一的是主力。 */
+export interface TaskRoutingConfig {
+  model_list: string[]
+  selection_strategy: SelectionStrategy
+}
+
 /**
  * 设置页使用的任务视图。持久化层会把它拆成 providers/models/bot/features
  * 四份 TOML，Python 侧再组合成同样的运行时结构。
@@ -186,36 +231,36 @@ export interface YueliConfig {
   }
   generation: {
     chat: { temperature: number; max_tokens: number }
-    proactive: { temperature: number; max_tokens: number }
+    proactive: { enabled: boolean; temperature: number; max_tokens: number }
     summary: { temperature: number; max_tokens: number }
     schedule: { temperature: number; max_tokens: number }
     vision: { temperature: number; max_tokens: number }
   }
-  llm: {
-    provider: string; model: string; base_url: string; api_key: string
-    thinking: 'disabled' | 'enabled' | 'auto'; timeout_ms: number
-    max_retries: number; retry_interval_ms: number
+  /** 所有可用连接。轮询就是在这些连接之间换。 */
+  api_providers: ApiProviderConfig[]
+  /** 所有模型定义。同一个厂商可以有多个模型，同一个模型 ID 也能挂在多个厂商下。 */
+  models: ModelDefinitionConfig[]
+  /** 四类任务各自的候选模型与轮询策略。 */
+  model_tasks: {
+    chat: TaskRoutingConfig
+    vision: TaskRoutingConfig
+    tts: TaskRoutingConfig
+    embedding: TaskRoutingConfig
   }
   tts: {
-    enabled: boolean; base_url: string; api_key: string; model: string; voice: string
+    enabled: boolean; voice: string
     format: 'mp3' | 'wav' | 'opus'; speed: number
-    /** openai = 兼容 /audio/speech；volcengine = 豆包语音私有协议 */
-    client_type: 'openai' | 'volcengine'
-    /** 仅 volcengine：App ID，与 api_key（Access Token）成对使用 */
-    app_id: string
     /** 仅 volcengine：集群名，默认 volcano_tts */
     cluster: string
   }
   vision: {
-    enabled: boolean; model: string; api_key: string; base_url: string
-    timeout_ms: number; max_retries: number; retry_interval_ms: number
+    enabled: boolean
     fullscreen_silent: boolean
     /** window = 只截前台那一个窗口；screen = 截整个主屏（能看到桌面，但会连带截到别的窗口） */
     capture_mode: 'window' | 'screen'
   }
   vector: {
-    enabled: boolean; embedding_base_url: string; embedding_api_key: string
-    embedding_model: string; embedding_dim: number
+    enabled: boolean
   }
   advanced: {
     log_level: string; https_proxy: string

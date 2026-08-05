@@ -11,8 +11,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from yueli.common.clock import now as current_time
-from yueli.schedule.plan import planned_sleep_window
+from src.common.clock import now as current_time
+from src.schedule.plan import planned_sleep_window
 
 WAKE_GRACE_MS = 10 * 60_000
 WAKE_TRANSITION_MS = 40 * 60_000
@@ -82,10 +82,10 @@ def evaluate_sleep(
     wake_hysteresis: float | None = None,
     sleep_started_at: int | None = None,
 ) -> SleepEvaluation:
-    from yueli.schedule.plan import DayPlan, DayPlanSlot, clock_minutes
+    from src.schedule.plan import DayPlan, DayPlanSlot, clock_minutes
     # Re-use planned_sleep_window by constructing a minimal DayPlan
     # We need bedtime_hint and wake_hint from SleepInputs
-    from yueli.schedule.plan import fallback_day_plan
+    from src.schedule.plan import fallback_day_plan
     plan = fallback_day_plan(inputs.date)
     plan.bedtime_hint = inputs.bedtime_hint
     plan.wake_hint = inputs.wake_hint

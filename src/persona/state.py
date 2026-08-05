@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import sqlite3
 
-from yueli.common.clock import now as current_time, snapshot_date
+from src.common.clock import now as current_time, snapshot_date
 
 
 @dataclass

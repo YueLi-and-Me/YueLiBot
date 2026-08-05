@@ -3,30 +3,129 @@ structlog 日志封装。
 
 所有模块通过 get_logger(__name__) 拿到绑定了模块名的 logger，
 不直接调 print() / logging.warning()。
+
+控制台排版照 MaiBot：时间戳按级别着色、模块名换成带色的中文别名、级别本身不占
+一列（对应它 log_level_style="lite" + color_text="full" 的默认组合）。
+色表与别名在 logger_colors.py。
 """
 
 from __future__ import annotations
 
+from typing import Any, Dict, MutableMapping
+
+import json
 import logging
-import os
-import sys
 
 import structlog
+
+from .logger_colors import (
+    RESET_COLOR,
+    enable_windows_ansi,
+    is_color_enabled,
+    level_color,
+    module_alias,
+    module_color,
+    normalize_logger_name,
+)
+
+# 显式查表，不用 getattr(logging, ...) 兜底：log_level 在 config/schema.py 里是个
+# 无校验的 str，写错成 "INF0" 时必须当场报错，而不是悄悄降级成 INFO 让人以为
+# 配置生效了。这里是它唯一的把关点。
+_LEVELS: Dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+# 这几个键在渲染时已经被单独消费掉了，不再重复进 key=value 那一段。
+_CONSUMED_KEYS = frozenset({"timestamp", "level", "logger", "logger_name", "event", "exception"})
+
+
+class ModuleColoredConsoleRenderer:
+    """
+    按模块着色的控制台渲染器，取代 structlog.dev.ConsoleRenderer。
+
+    一行的构成：
+
+        {时间戳，按级别着色} {[中文别名]，按模块着色} {event 与 k=v，按模块着色}
+
+    级别不单独占一列 —— 它只体现在时间戳的颜色上，这是 MaiBot 控制台最显眼的
+    特征，也让一行里留给正文的宽度多出八九个字符。
+    """
+
+    def __init__(self, colors: bool = True) -> None:
+        self._colors = colors
+
+    def __call__(self, logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> str:
+        timestamp = str(event_dict.get("timestamp", ""))
+        level = str(event_dict.get("level", "info"))
+        raw_name = str(event_dict.get("logger", ""))
+        name = normalize_logger_name(raw_name)
+
+        color = module_color(name) if self._colors else ""
+        parts: list[str] = []
+
+        # 时间戳：按级别着色，warning 变黄、error 变红，扫一眼就能定位问题行
+        if timestamp:
+            tint = level_color(level) if self._colors else ""
+            parts.append(f"{tint}{timestamp}{RESET_COLOR}" if tint else timestamp)
+
+        if name:
+            alias = module_alias(name)
+            parts.append(f"{color}[{alias}]{RESET_COLOR}" if color else f"[{alias}]")
+
+        body = _stringify(event_dict.get("event", ""))
+        parts.append(f"{color}{body}{RESET_COLOR}" if color else body)
+
+        # 结构化字段：logger.info("db_ready", path=...) 里的那些 kwargs
+        extras = [
+            f"{key}={_stringify(value)}"
+            for key, value in event_dict.items()
+            if key not in _CONSUMED_KEYS
+        ]
+        if extras:
+            joined = " ".join(extras)
+            parts.append(f"{color}{joined}{RESET_COLOR}" if color else joined)
+
+        rendered = " ".join(parts)
+        # StackInfoRenderer / format_exc_info 之后异常文本仍在 event_dict 里，
+        # 单独换行附在后面，不塞进 key=value 那一段挤成一坨
+        exception = event_dict.get("exception")
+        if exception:
+            return f"{rendered}\n{exception}"
+        return rendered
+
+
+def _stringify(value: Any) -> str:
+    """
+    值转字符串。
+
+    dict / list 走 json.dumps 且 ensure_ascii=False —— 本项目日志大量带中文
+    （人格描述、日程、召回的事实），转义成 \\uXXXX 就没法看了。
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def initialize_logging(level: str = "INFO") -> None:
     """
     应用启动时调用一次。
 
-    开发模式输出彩色人类可读格式；生产/管道模式输出 JSON（方便日志收集）。
-    判断依据：stdout 是否为 tty，**或** YUELI_FORCE_COLOR=1。
-
-    ★ 后者是必须的：被 Electron 的 PythonSupervisor 拉起时，stdout 永远是
-      管道（`sys.stdout.isatty()` 恒为 False），但这个管道最终确实会被
-      逐行转发进一个真终端（`src/main/python/supervisor.ts` 的 `_onLine`）。
-      不加这个环境变量信号，`npm run dev` 里永远只能看到未着色的 JSON。
+    交互模式（真终端，或被 supervisor 拉起并设了 YUELI_FORCE_COLOR=1）输出上面那套
+    彩色人类可读格式；其余情况输出 JSON，方便日志收集与事后 grep。
+    判断依据统一走 logger_colors.is_color_enabled()。
     """
-    is_tty = sys.stdout.isatty() or os.environ.get("YUELI_FORCE_COLOR") == "1"
+    if level.upper() not in _LEVELS:
+        raise ValueError(
+            f"未知的日志等级 {level!r}，可选：{'、'.join(_LEVELS)}（见 features.toml 的 advanced.log_level）"
+        )
+
+    colored = is_color_enabled()
 
     shared_processors: list = [
         structlog.contextvars.merge_contextvars,
@@ -37,21 +136,26 @@ def initialize_logging(level: str = "INFO") -> None:
         #   模块名改由 get_logger() 用 .bind(logger=name) 显式绑定，
         #   与 logger_factory 的选择解耦。
         structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="%H:%M:%S", utc=False),
+        # 照 MaiBot 的 date_style 默认值 "m-d H:i:s"：跨天跑的进程里，
+        # 只有时分秒会让人分不清昨天今天。
+        structlog.processors.TimeStamper(fmt="%m-%d %H:%M:%S", utc=False),
         structlog.processors.StackInfoRenderer(),
     ]
 
-    if is_tty:
-        renderer = structlog.dev.ConsoleRenderer(colors=True)
+    renderer: Any
+    if colored:
+        # structlog 自带的 ConsoleRenderer 会在背后 init colorama；换成自己的
+        # 渲染器之后得显式做这件事，否则 Windows conhost 下全是转义序列乱码。
+        enable_windows_ansi()
+        shared_processors.append(structlog.processors.format_exc_info)
+        renderer = ModuleColoredConsoleRenderer(colors=True)
     else:
         shared_processors.append(structlog.processors.dict_tracebacks)
         renderer = structlog.processors.JSONRenderer()
 
     structlog.configure(
         processors=shared_processors + [renderer],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, level.upper(), logging.INFO)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(_LEVELS[level.upper()]),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
 
 logger = get_logger(__name__)
 

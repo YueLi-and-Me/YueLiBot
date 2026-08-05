@@ -5,7 +5,7 @@ import { BrowserWindow, screen } from 'electron'
  * 桌宠窗口。
  *
  * ★ 这个文件属于 platform 适配层：所有 Electron / Windows 特有的调用都关在这里。
- *   将来若迁到 Tauri，重写的只有 src/main/platform/ 下这几个文件，
+ *   将来若迁到 Tauri，重写的只有 electron/main/platform/ 下这几个文件，
  *   渲染层和 core 层一行不动。
  */
 

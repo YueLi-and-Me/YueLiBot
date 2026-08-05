@@ -5,13 +5,13 @@
  * 这里只剩：窗口管理、托盘、平台权限调用、前台进程轮询、截图捕获。
  *
  * 两侧边界：
- *   · 渲染层：只通过 preload bridge 通信，IPC 形状不变（src/shared/ipc.ts）
+ *   · 渲染层：只通过 preload bridge 通信，IPC 形状不变（electron/shared/ipc.ts）
  *   · Python：通过 PythonSupervisor/PythonClient（HTTP + WS on 127.0.0.1）
  */
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { app, BrowserWindow, ipcMain, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, powerMonitor, screen } from 'electron'
 import 'dotenv/config'
 
 import {
@@ -31,10 +31,12 @@ import { closeObservabilityWindow, observabilityWindowOpen, openObservabilityWin
 import { closeSettingsWindow, openSettingsWindow } from './platform/settingsWindow.ts'
 import { createTray, destroyTray, resetPetPosition, togglePet, trayIconEmpty } from './platform/tray.ts'
 import {
-  configIsComplete, readConfigDirectory, tryPrefillFromLegacyEnv, writeConfigDirectory,
+  assertConfigConsistent, configIsComplete, readConfigDirectory, tryPrefillFromLegacyEnv,
+  writeConfigDirectory,
 } from './config.ts'
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
 import { mentionsScreen } from './screenIntent.ts'
+import { InputActivity } from './inputActivity.ts'
 import { PythonSupervisor } from './python/supervisor.ts'
 import { PythonClient, windowSink } from './python/client.ts'
 import { resolveRuntimePaths } from './runtimePaths.ts'
@@ -70,6 +72,7 @@ let client: PythonClient | null = null
 /** 启动后一直保持"当前有效配置"的引用，点"重启月璃"时刷新——
  * 决定 Electron 这一侧的行为（比如要不要轮询截图）不能只看启动那一刻的值。 */
 let currentCfg: YueliConfig | null = null
+let inputActivity: InputActivity | null = null
 /**
  * 托盘「让她看着屏幕」开关。开着＝每条消息都截一帧；关着＝只在他问起屏幕时
  * 才截（见 screenIntent.ts）。只存在于本次运行，重启回到关——持续截屏是个
@@ -77,6 +80,15 @@ let currentCfg: YueliConfig | null = null
  */
 let watchScreen = false
 registerAppScheme()
+
+function syncInputActivity(): void {
+  if (!inputActivity) return
+  if (currentCfg?.generation.proactive.enabled) {
+    inputActivity.start()
+  } else {
+    inputActivity.stop()
+  }
+}
 
 const dataDir = runtimePaths.dataDir
 const configDir = runtimePaths.configDir
@@ -92,6 +104,9 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.ReadConfig, async () => readConfigDirectory(configDir, legacyConfigPath))
   ipcMain.handle(IPC.SaveConfig, async (_e, config: YueliConfig) => {
     try {
+      // 结构自检只卡用户编辑这一条路径：迁移写回的是刚读进来的旧配置，
+      // 用同一把尺子量会让老用户升级后直接起不来。
+      assertConfigConsistent(config)
       writeConfigDirectory(configDir, config)
       if (firstRunResolve) {
         const resolve = firstRunResolve
@@ -107,6 +122,7 @@ app.whenReady().then(async () => {
     if (!supervisor) return
     console.log('[main] 收到重启指令，重启 Python 后端…')
     currentCfg = readConfigDirectory(configDir, legacyConfigPath)
+    syncInputActivity()
     supervisor.stop()
     supervisor.start()
   })
@@ -132,7 +148,7 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
   const prefill = tryPrefillFromLegacyEnv(legacyEnvPath)
   if (prefill) {
     const base = readConfigDirectory(configDir, legacyConfigPath)
-    writeConfigDirectory(configDir, { ...base, ...prefill, llm: { ...base.llm, ...prefill.llm } })
+    writeConfigDirectory(configDir, { ...base, ...prefill })
   }
 
   return new Promise<void>((resolve) => {
@@ -149,6 +165,9 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
 }
 
 async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<void> {
+  currentCfg = cfg
+  inputActivity = new InputActivity()
+  syncInputActivity()
   petWindow = createPetWindow({
     width: PET_W, height: PET_H,
     url: devUrl ?? APP_INDEX_URL,
@@ -168,20 +187,27 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   supervisor = new PythonSupervisor({
     dataDir,
     configPath: configDir,
-    cwd: join(app.getAppPath(), 'python'),
+    cwd: app.getAppPath(),
     pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
   })
   supervisor.on('ready', (port) => {
     if (!petWindow || petWindow.isDestroyed() || !supervisor) return
     client?.stop()
-    client = new PythonClient(port, supervisor.token, windowSink(petWindow))
+    client = new PythonClient(port, supervisor.token, windowSink(petWindow), (reason) => {
+      void glanceForChat(reason)
+    })
     client.connect()
   })
   supervisor.on('failed', (err) => {
     console.warn('[supervisor] Python 后端不可用：', err.message)
   })
   supervisor.start()
-  app.on('before-quit', () => { supervisor?.stop(); client?.stop(); disposeWindowCapture() })
+  app.on('before-quit', () => {
+    supervisor?.stop()
+    client?.stop()
+    inputActivity?.stop()
+    disposeWindowCapture()
+  })
 
   const isVisible = () => !!petWindow && !petWindow.isDestroyed() && petWindow.isVisible()
 
@@ -222,6 +248,11 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
         title: fg.title ?? '',
         fullscreen: fg.fullscreen ?? false,
         visible: isVisible(),
+        input: {
+          ...inputActivity?.drain(),
+          idleSeconds: powerMonitor.getSystemIdleTime(),
+          spanMs: FOREGROUND_POLL_MS,
+        },
       })
       lastTitle = fg.title ?? ''
     } catch { /* 前台读取可能因权限失败，静默 */ }
@@ -250,9 +281,10 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   //   却是她拿几分钟前的旧描述当现在讲。整条删掉了：他不问，就不看。
   //   于是这里可以放心同步等——是他主动问的，等几秒天经地义。
   // 失败、超时、没截到都直接放行，视觉不能成为聊天的单点故障。
-  const glanceForChat = async () => {
+  const glanceForChat = async (reason: string = 'user_request') => {
     if (!currentCfg?.vision.enabled || !client) {
-      console.debug('[vision] 现抓跳过：', {
+      console.debug('[vision] 截图请求跳过：', {
+        reason,
         visionEnabled: !!currentCfg?.vision.enabled, hasClient: !!client,
       })
       return
@@ -337,7 +369,7 @@ function report(tag: string, payload: unknown): void {
 
 /**
  * 无头自检 —— 只验 Electron 侧的窗口和渲染机制。
- * SELFTEST-CHAT / REFLECT / AWARE 的逻辑已移至 Python CLI 自检（python -m yueli --selftest）。
+ * SELFTEST-CHAT / REFLECT / AWARE 的逻辑已移至 Python CLI 自检（python bot.py --selftest）。
  */
 function runSelfTest(win: BrowserWindow): void {
   win.webContents.once('did-finish-load', async () => {

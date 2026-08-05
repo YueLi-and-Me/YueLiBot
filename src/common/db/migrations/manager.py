@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
 from .registry import get_registry
 
 logger = get_logger(__name__)

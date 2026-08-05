@@ -16,16 +16,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import asyncio
 import base64
+import re
 
-from yueli.common.clock import now as current_time
-from yueli.common.logger import get_logger
-from yueli.config.schema import Config
-from yueli.llm.openai import LlmError
-from yueli.services.trace import trace
+from src.common.clock import now as current_time
+from src.common.logger import get_logger
+from src.config.schema import Config
+from src.llm_models.openai import LlmError
+from src.services.trace import trace
 
 logger = get_logger(__name__)
 
@@ -43,6 +45,53 @@ CHAT_GLANCE_TTL_MS = 60_000
 # CHAT_GLANCE_TIMEOUT，否则那边先 abort，请求被掐断会让这里抛
 # CancelledError，在 uvicorn 里表现成一整屏 ASGI 报错。
 CHAT_GLANCE_DEADLINE_S = 8.0
+
+
+@dataclass(frozen=True)
+class VisionFailure:
+    """一次视觉调用没有得到描述时的可回放诊断。"""
+
+    error_type: str
+    error_kind: str = ''
+    status_code: int | None = None
+    response_excerpt: str = ''
+
+    def as_trace(self) -> dict[str, str | int | None]:
+        return {
+            'errorType': self.error_type,
+            'errorKind': self.error_kind or None,
+            'statusCode': self.status_code,
+            'responseExcerpt': self.response_excerpt or None,
+        }
+
+
+@dataclass(frozen=True)
+class VisionCallResult:
+    """模型输出与失败诊断必须成对返回，不能靠 logger 猜原因。"""
+
+    description: str | None
+    failure: VisionFailure | None = None
+
+
+def _safe_response_excerpt(value: str) -> str:
+    """错误响应进 trace 前去掉可能出现的凭证，并限制体积。"""
+    redacted = re.sub(
+        r'(?i)(authorization["\']?\s*[:=]\s*["\']?bearer\s+|bearer\s+)[^\s,;"\']+',
+        r'\1[REDACTED_SECRET]',
+        value.strip(),
+    )
+    return redacted[:400]
+
+
+def _llm_failure(exc: LlmError) -> VisionFailure:
+    """把客户端已分类的错误带进 trace，供现场排障而不是猜测。"""
+    status_match = re.search(r'HTTP\s+(\d{3})', str(exc))
+    return VisionFailure(
+        error_type=type(exc).__name__,
+        error_kind=exc.kind,
+        status_code=int(status_match.group(1)) if status_match else None,
+        response_excerpt=_safe_response_excerpt(exc.detail or str(exc)),
+    )
 
 
 class VisionProvider(Protocol):
@@ -108,7 +157,7 @@ class VisionService:
 
         await self._push_event('vision.watching', {'watching': True})
         try:
-            description = await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._call_vision_model(jpeg_bytes, app),
                 timeout=CHAT_GLANCE_DEADLINE_S,
             )
@@ -116,10 +165,18 @@ class VisionService:
             logger.warning('chat_glance_timeout', seconds=CHAT_GLANCE_DEADLINE_S,
                            hint='视觉接口太慢，这一轮她会如实说看不到；持续出现就换视觉模型')
             trace.emit('vision_glance', result='timeout', seconds=CHAT_GLANCE_DEADLINE_S, app=app)
-            description = None
+            result = VisionCallResult(
+                description=None,
+                failure=VisionFailure(
+                    error_type='TimeoutError',
+                    error_kind='network',
+                    response_excerpt=f'视觉调用超过 {CHAT_GLANCE_DEADLINE_S:g} 秒截止时间',
+                ),
+            )
         finally:
             await self._push_event('vision.watching', {'watching': False})
 
+        description = result.description
         if description:
             self._chat_glance = (description, now)
             self._glances += 1
@@ -127,13 +184,22 @@ class VisionService:
             trace.emit('vision_glance', result='ok', app=app, text=description)
         else:
             logger.info('chat_glance_empty', reason='模型返回空描述或调用失败，详见上一条 vision_call_failed')
-            trace.emit('vision_glance', result='empty', app=app)
+            failure = result.failure or VisionFailure(error_type='EmptyResponse')
+            trace.emit('vision_glance', result='empty', app=app, **failure.as_trace())
         # ★ 失败时返回 None 而不是退回旧缓存——调用方需要知道这次没看成。
         return description
 
-    async def _call_vision_model(self, jpeg_bytes: bytes, app: str = '') -> str | None:
-        if not self._provider or self._protocol_error:
-            return None
+    async def _call_vision_model(self, jpeg_bytes: bytes, app: str = '') -> VisionCallResult:
+        if not self._provider:
+            return VisionCallResult(None, VisionFailure(error_type='ProviderUnavailable'))
+        if self._protocol_error:
+            return VisionCallResult(
+                None,
+                VisionFailure(
+                    error_type='ProtocolError',
+                    response_excerpt=_safe_response_excerpt(self._protocol_error),
+                ),
+            )
         try:
             b64 = base64.b64encode(jpeg_bytes).decode('ascii')
             content: list[dict] = [
@@ -150,8 +216,12 @@ class VisionService:
             ):
                 if chunk.get('text'):
                     raw += chunk['text']
-            return raw.strip() or None
+            description = raw.strip()
+            if description:
+                return VisionCallResult(description)
+            return VisionCallResult(None, VisionFailure(error_type='EmptyResponse'))
         except LlmError as exc:
+            failure = _llm_failure(exc)
             message = str(exc)
             if 'unknown variant `image_url`' in message or 'expected `text`' in message:
                 self._protocol_error = (
@@ -160,12 +230,18 @@ class VisionService:
                 )
                 logger.warning('vision_model_not_multimodal',
                                model=self._provider.model, error=self._protocol_error)
-                return None
+                return VisionCallResult(None, failure)
             logger.warning('vision_call_failed', model=self._provider.model, error=message)
-            return None
+            return VisionCallResult(None, failure)
         except Exception as exc:
             logger.warning('vision_call_failed', error=str(exc))
-            return None
+            return VisionCallResult(
+                None,
+                VisionFailure(
+                    error_type=type(exc).__name__,
+                    response_excerpt=_safe_response_excerpt(str(exc)),
+                ),
+            )
 
     @staticmethod
     def _build_vision_prompt(app: str = '') -> str:

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, Union
 
 # ─────────────────────────────────────────────────────────────────────
@@ -58,12 +59,19 @@ class MoodEvent:
     energy: float | None = None
 
 
-ParseEvent = Union[SayEvent, TextEvent, SayEndEvent, MemoryEvent, MoodEvent]
+@dataclass
+class PromiseEvent:
+    type: str = 'promise'
+    at: int = 0
+    what: str = ''
+
+
+ParseEvent = Union[SayEvent, TextEvent, SayEndEvent, MemoryEvent, MoodEvent, PromiseEvent]
 
 # ─────────────────────────────────────────────────────────────────────
 # 内部会处理的标签名。其余一律当普通文本。
 # ─────────────────────────────────────────────────────────────────────
-_KNOWN = frozenset(['say', 'memory', 'mood', 'think', 'thinking'])
+_KNOWN = frozenset(['say', 'memory', 'mood', 'promise', 'think', 'thinking'])
 
 _State = Literal['outside', 'say', 'memory', 'skip']
 
@@ -233,6 +241,15 @@ class ResponseParser:
                 out.append(MoodEvent(favor=favor, energy=energy))
             return
 
+        if name == 'promise':
+            if closing:
+                return
+            at = _parse_promise_at(attrs.get('at'))
+            what = attrs.get('what', '').strip()
+            if at is not None and what:
+                out.append(PromiseEvent(at=at, what=what))
+            return
+
         # think / thinking: discard
         if not closing and not self_closing:
             self._skip_until = f'</{name}>'
@@ -281,3 +298,13 @@ class ResponseParser:
                 self._say_open = True
             self._state = 'say'
         out.append(TextEvent(value=text))
+
+
+def _parse_promise_at(value: str | None) -> int | None:
+    """只接受精确绝对时间；无法解析就丢弃标签，绝不替模型猜日期。"""
+    if not value:
+        return None
+    try:
+        return int(datetime.strptime(value, '%Y-%m-%d %H:%M').timestamp() * 1000)
+    except ValueError:
+        return None

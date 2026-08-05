@@ -15,11 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
-from typing import Any
 
 import httpx
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
+from src.config.schema import ModelCandidate
+from src.llm_models.router import ModelRouter
 
 logger = get_logger(__name__)
 
@@ -27,11 +28,15 @@ _BATCH = 96
 
 
 class EmbeddingClient:
-    def __init__(self, base_url: str, api_key: str, model: str, dim: int) -> None:
-        self._base_url = base_url.rstrip('/')
-        self._api_key = api_key
-        self._model = model
-        self._dim = dim
+    """向量化客户端。候选之间轮询，某个厂商挂了自动换下一条连接。
+
+    ★ 维度取第一条候选的 embedding_dim。备用模型必须输出同样的维度，
+      否则新旧向量没法比——所以 loader 会拒绝维度不一致的候选列表。
+    """
+
+    def __init__(self, router: ModelRouter) -> None:
+        self._router = router
+        self._dim = router.candidates[0].embedding_dim
 
     @property
     def dim(self) -> int:
@@ -59,19 +64,22 @@ class EmbeddingClient:
         return results[0]
 
     async def _call(self, texts: list[str]) -> list[list[float]]:
-        headers = {'Content-Type': 'application/json'}
-        if self._api_key:
-            headers['Authorization'] = f'Bearer {self._api_key}'
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f'{self._base_url}/embeddings',
-                headers=headers,
-                json={'input': texts, 'model': self._model},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        items = sorted(data['data'], key=lambda x: x['index'])
-        return [item['embedding'] for item in items]
+        async def request(candidate: ModelCandidate) -> list[list[float]]:
+            headers = {'Content-Type': 'application/json'}
+            if candidate.api_key:
+                headers['Authorization'] = f'Bearer {candidate.api_key}'
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f'{candidate.base_url.rstrip("/")}/embeddings',
+                    headers=headers,
+                    json={'input': texts, 'model': candidate.identifier},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            items = sorted(data['data'], key=lambda x: x['index'])
+            return [item['embedding'] for item in items]
+
+        return await self._router.run(request)
 
 
 def _pack(vec: list[float]) -> bytes:
@@ -90,9 +98,7 @@ def cosine(a: bytes, b: bytes, dim: int) -> float:
     return dot
 
 
-def build_client_from_config(cfg: Any) -> EmbeddingClient:
-    base_url = cfg.vector.embedding_base_url or cfg.llm.base_url
-    api_key = cfg.vector.embedding_api_key or cfg.llm.api_key
-    if not base_url:
-        raise ValueError('vector.embedding_base_url 和 llm.base_url 都没有配置')
-    return EmbeddingClient(base_url, api_key, cfg.vector.embedding_model, cfg.vector.embedding_dim)
+def build_client(router: ModelRouter) -> EmbeddingClient:
+    if not router.ready:
+        raise ValueError('model_tasks.embedding.model_list 是空的，无法启用向量召回')
+    return EmbeddingClient(router)

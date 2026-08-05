@@ -15,8 +15,8 @@ from .character import (
 )
 from .expression import render_expression_habits, select_expression_habits
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
-from yueli.common.clock import now as current_time
-from yueli.schedule.daily import describe_schedule
+from src.common.clock import now as current_time
+from src.schedule.daily import describe_schedule
 
 _PROTOCOL = f"""只输出下列标签，不要在标签外写正文：
 
@@ -36,6 +36,10 @@ _PROTOCOL = f"""只输出下列标签，不要在标签外写正文：
 <mood favor="+1" energy="-1"/>
 只在这一轮确实改变了你对他的亲近感、或消耗了明显精力时写。favor 与 energy 都在 -3 到 +3，
 没变化的属性可以省略；普通寒暄不用硬凑 mood 标签。
+
+<promise at="2026-08-08 20:00" what="一起打游戏"/>
+只有他明确提出一个未来安排、且你确实答应了，才可以追加。at 必须是确切的本地日期和时间，
+what 只写他提议的事；不确定日期、他只是随口说说、你没有答应时都不写。绝不编造约定。
 
 标签只是外壳。先自然地把话说出来，再套上标签，别为了填标签改掉你本来想说的那句话。"""
 

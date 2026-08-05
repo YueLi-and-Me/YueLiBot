@@ -12,12 +12,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 Activity = Literal[
     'work', 'coding', 'gaming', 'video', 'music',
     'browsing', 'chat', 'reading', 'files', 'idle', 'other'
 ]
+InputIntensity = Literal['away', 'light', 'busy']
+
+# 这两个值各自只回答一个问题：多久无输入算离开、每分钟敲多少键算手头正忙。
+# 不从键鼠去猜活动类型，进程名已经能更准确地回答那件事。
+AWAY_SECONDS = 5 * 60
+BUSY_KEYS_PER_MIN = 120
 
 
 @dataclass
@@ -34,6 +40,8 @@ class Classified:
     silent: bool
     # 展示用的程序名，例如 'PyCharm'。未知程序退回进程名本身（去掉 .exe）。
     app: str = ''
+    # 人在不在、手头忙不忙。与 activity 分工，不复刻进程名分类。
+    intensity: InputIntensity = 'light'
 
 
 _PROCESS_RULES: list[tuple[Activity, frozenset[str]]] = [
@@ -143,10 +151,29 @@ def classify(info: ForegroundInfo | None) -> Classified:
                       silent=bool(info.fullscreen), app=app)
 
 
+def classify_input(keys: int, clicks: int, distance: float, idle_seconds: int,
+                   span_ms: int) -> InputIntensity:
+    """把 Electron 汇总的键鼠数量与系统空闲时间归成三档。
+
+    clicks / distance 只随快照一并传递，方便保持采集口径完整；忙碌阈值刻意只看
+    键盘速率，避免再引入一套鼠标距离、点击次数等活动类型猜测规则。
+    """
+    if span_ms <= 0:
+        raise ValueError('键鼠采样窗口必须大于 0')
+    if idle_seconds >= AWAY_SECONDS:
+        return 'away'
+    keys_per_minute = keys * 60_000 / span_ms
+    if keys_per_minute >= BUSY_KEYS_PER_MIN:
+        return 'busy'
+    return 'light'
+
+
 LONG_SESSION_MINUTES = 110
 
 
 def describe_activity(c: Classified, minutes: int) -> str:
+    if c.intensity == 'away':
+        return '他人不在电脑前。'
     if c.activity == 'idle':
         return '他现在没在操作电脑。'
     if minutes < 20:
@@ -162,4 +189,5 @@ def describe_activity(c: Classified, minutes: int) -> str:
     # 带上程序名：「他在用 PyCharm 写代码」比「他在写代码」具体得多，
     # 视觉描述认不出界面时，这一句就是她唯一靠得住的依据。
     label = f'在用 {c.app} {c.label[1:]}' if c.app and c.label.startswith('在') else c.label
-    return f'他{label}，已经{span}。' if span else f'他{label}。'
+    text = f'他{label}，已经{span}。' if span else f'他{label}。'
+    return f'{text}手头正忙。' if c.intensity == 'busy' else text

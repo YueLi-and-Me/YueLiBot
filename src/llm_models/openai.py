@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -188,57 +188,19 @@ def _parse_sse_line(line: str) -> dict | str | None:
     return result
 
 
-def create_chat_provider(config: Any) -> OpenAiChatProvider:
-    """从 pydantic Config 对象构造 OpenAI 兼容客户端。"""
-    llm = config.llm
-    preset = _PRESETS.get(llm.provider, {})
-    base_url = llm.base_url or preset.get('base_url', '')
-    if not base_url:
-        raise LlmError('unknown', f'未知的 llm.provider：{llm.provider}')
-    api_key = llm.api_key or ''
-    model = llm.model or preset.get('default_model', '')
-    if not model:
-        raise LlmError('model', '未指定模型 ID，在设置窗口里填 llm.model')
+def resolve_base_url(kind: str, base_url: str) -> str:
+    """厂商地址：填了就用填的，留空才回落到预设里的官方地址。
 
-    extra: dict = {}
-    if llm.provider == 'ark':
-        mode = (llm.thinking or 'disabled').lower()
-        if mode in ('enabled', 'auto'):
-            extra['thinking'] = {'type': mode}
-        else:
-            extra['thinking'] = {'type': 'disabled'}
-
-    return OpenAiChatProvider(
-        base_url=base_url, api_key=api_key, model=model,
-        extra_body=extra if extra else None,
-        timeout_ms=llm.timeout_ms,
-        max_retries=llm.max_retries,
-        retry_interval_ms=llm.retry_interval_ms,
-    )
-
-
-def create_vision_provider(config: Any) -> OpenAiChatProvider:
-    """构造视觉客户端；vision.* 留空的字段才复用 llm.*。"""
-    llm = config.llm
-    vision = config.vision
-    preset = _PRESETS.get(llm.provider, {})
-
-    base_url = vision.base_url.strip() or llm.base_url.strip() or preset.get('base_url', '')
-    if not base_url:
-        raise LlmError('unknown', '视觉模型没有可用的 API 地址，请填写 vision.base_url')
-    if vision.base_url.strip() and not vision.model.strip():
-        raise LlmError('model', '填写 vision.base_url 时必须同时填写 vision.model')
-
-    model = vision.model.strip() or llm.model.strip() or preset.get('default_model', '')
-    if not model:
-        raise LlmError('model', '未指定视觉模型，请填写 vision.model')
-
-    api_key = vision.api_key.strip() or llm.api_key.strip()
-    return OpenAiChatProvider(
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        timeout_ms=vision.timeout_ms,
-        max_retries=vision.max_retries,
-        retry_interval_ms=vision.retry_interval_ms,
-    )
+    两者都没有说明 kind 是个没见过的名字，直接报出来——静默拼一个空地址
+    只会让后面的请求报「连不上 /chat/completions」，那时已经看不出根因了。
+    """
+    explicit = base_url.strip()
+    if explicit:
+        return explicit
+    preset_url = _PRESETS.get(kind.strip().lower(), {}).get('base_url', '')
+    if not preset_url:
+        raise LlmError(
+            'unknown',
+            f'厂商 kind={kind} 没有内置官方地址，请在 providers.toml 里填 base_url',
+        )
+    return preset_url

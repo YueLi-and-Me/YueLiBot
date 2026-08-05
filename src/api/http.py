@@ -7,9 +7,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
-from yueli.common.logger import get_logger
-from yueli.config.loader import get_config
-from yueli.services.trace import trace
+from src.common.logger import get_logger
+from src.config.loader import get_config
+from src.services.trace import trace
 from .auth import require_token
 from .state import app_state   # 全局服务状态
 

@@ -15,7 +15,7 @@ import json
 import re
 
 from .daily import SCHEDULE
-from yueli.common.clock import now as current_time
+from src.common.clock import now as current_time
 
 PLAN_PREFIX = 'day_plan:'
 MAX_HOURS_FOR_HISTORY = 48

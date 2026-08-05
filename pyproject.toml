@@ -13,6 +13,9 @@ dependencies = [
     "pydantic>=2.11.0",
     "pydantic-settings>=2.4.0",
     "structlog>=25.4.0",
+    # 自写的控制台渲染器要自己开 Windows 的 VT 处理（原先由 structlog 的
+    # ConsoleRenderer 在背后 init colorama 代劳），所以从传递依赖提为直接依赖
+    "colorama>=0.4.6",
     "jieba>=0.42.1",
     "httpx>=0.27.0",
     "pillow>=11.3.0",
@@ -32,11 +35,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["yueli*"]
+include = ["src*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+# tests/ 是 TypeScript 侧的测试目录，Python 用例统一放 pytests/（照 MaiBot 的分法）
+testpaths = ["pytests"]
 
 [tool.pyright]
 pythonVersion = "3.11"

@@ -56,8 +56,12 @@ async function main(): Promise<void> {
     },
   })
 
-  // 输入栏贴在她脚下、与她同中线。按实际渲染框算，不写死坐标
-  syncComposerToCharacter(canvas, document.getElementById('composer') as HTMLElement)
+  // 输入栏和消息气泡一起贴在她头上，按实际渲染框算，不写死坐标
+  syncComposerToCharacter(
+    canvas,
+    document.getElementById('composer') as HTMLElement,
+    document.getElementById('bubble') as HTMLElement,
+  )
 
   setupDebugKeys(view)
   setupChat({

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import uvicorn
 
-from yueli.common.logger import get_logger, initialize_logging
-from yueli.config.loader import load_config
+from src.common.logger import get_logger, initialize_logging
+from src.config.loader import load_config
 
 
 def _pick_port() -> int:
@@ -46,7 +46,7 @@ def main() -> None:
     if args.selftest:
         # ★ 自检必须用独立临时目录，绝不能碰 --data-dir 指向的真实 memory.db——
         #   REFLECT 检查会塞假消息触发摘要，写进真实库就是污染用户数据。
-        from yueli.selftest import run_selftest
+        from src.selftest import run_selftest
         rc = asyncio.run(run_selftest(cfg))
         sys.exit(rc)
 
@@ -54,7 +54,7 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "memory.db"
 
-    from yueli.services.trace import trace
+    from src.services.trace import trace
     trace.configure(
         data_dir / "logs" / "trace.jsonl",
         record_content=cfg.advanced.trace_content,
@@ -64,33 +64,35 @@ def main() -> None:
         logger.warning("trace_content_enabled",
                        note="trace.jsonl 会明文记录对话正文与完整提示词，排查完请关掉")
 
-    from yueli.common.db.connection import open_db
-    from yueli.common.db.migrations.manager import run_migrations
+    from src.common.db.connection import open_db
+    from src.common.db.migrations.manager import run_migrations
     db = open_db(db_path)
     run_migrations(db, db_path)
     logger.info("db_ready", path=str(db_path))
 
     # 初始化 ChatService
-    from yueli.api.state import app_state
-    from yueli.api.ws import push
-    from yueli.services.chat import ChatService
+    from src.api.state import app_state
+    from src.api.ws import push
+    from src.services.chat import ChatService
 
-    from yueli.llm.openai import create_chat_provider, create_vision_provider
+    # 四个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
+    from src.llm_models.router import create_routers
+    routers = create_routers(cfg)
+    app_state.routers = routers
 
-    provider = None
-    try:
-        provider = create_chat_provider(cfg)
-        logger.info("llm_ready", model=provider.model)
-    except Exception as exc:
-        logger.warning("llm_init_failed", error=str(exc))
+    provider = routers.chat if routers.chat.ready else None
+    if provider:
+        logger.info("llm_ready", model=provider.model,
+                    candidates=len(provider.candidates), strategy=cfg.routing.chat.strategy)
+    else:
+        logger.warning("llm_init_failed",
+                       error="model_tasks.chat.model_list 是空的，她这轮说不出话")
 
     vision_provider = None
     if cfg.vision.enabled:
-        try:
-            vision_provider = create_vision_provider(cfg)
-            logger.info("vision_model_ready", model=vision_provider.model)
-        except Exception as exc:
-            logger.warning("vision_model_init_failed", error=str(exc))
+        vision_provider = routers.vision
+        logger.info("vision_model_ready", model=vision_provider.model,
+                    candidates=len(vision_provider.candidates))
 
     async def _push_event(channel: str, payload) -> None:
         await push(channel, payload)
@@ -107,29 +109,30 @@ def main() -> None:
     # 是同一种「服务建好后挂到 chat 私有属性上」的写法。
     if cfg.vector.enabled:
         try:
-            from yueli.memory.embed import build_client_from_config
-            from yueli.services.vector import VectorService
-            embed_client = build_client_from_config(cfg)
+            from src.memory.embed import build_client
+            from src.services.vector import VectorService
+            embed_client = build_client(routers.embedding)
             app_state.chat._vector = VectorService(app_state.chat.memory, embed_client)
-            logger.info("vector_recall_enabled", model=cfg.vector.embedding_model)
+            logger.info("vector_recall_enabled", model=routers.embedding.model,
+                        candidates=len(routers.embedding.candidates))
         except Exception as exc:
             logger.warning("vector_recall_init_failed", error=str(exc))
 
     # 初始化 TTS 服务（可选）
-    if cfg.tts.ready:
-        from yueli.services.tts import TtsService
-        tts = TtsService(cfg, _push_event)
+    if cfg.tts.enabled and routers.tts.ready:
+        from src.services.tts import TtsService
+        tts = TtsService(cfg, _push_event, routers.tts)
         app_state.chat._speak_audio = tts.speak
         app_state.chat._cancel_audio = tts.cancel
         app_state.tts = tts
-        logger.info("tts_ready", client=cfg.tts.client_type,
-                    model=cfg.tts.model or cfg.tts.voice)
+        logger.info("tts_ready", voice=cfg.tts.voice,
+                    candidates=len(routers.tts.candidates))
 
     # 初始化 DayPlanService（可选；失败则 schedule 留 None，AwarenessService 退到 fallback 日程）
     schedule = None
     try:
-        from yueli.schedule.plan import DayPlanService, ScheduleSleepState
-        from yueli.persona.state import describe_persona
+        from src.schedule.plan import DayPlanService, ScheduleSleepState
+        from src.persona.state import describe_persona
 
         class _LLMGenerator:
             async def generate(self, prompt: str) -> str:
@@ -162,8 +165,8 @@ def main() -> None:
     # 初始化 AwarenessService：吃前台事件、驱动睡眠状态、决定主动搭话。
     # startup/shutdown 注册进 lifecycle，真正的调用发生在 uvicorn 拉起循环之后
     # （api/app.py 的 FastAPI lifespan），这里只是登记。
-    from yueli.services.lifecycle import lifecycle
-    from yueli.services.proactive import AwarenessService
+    from src.services.lifecycle import lifecycle
+    from src.services.proactive import AwarenessService
     awareness = AwarenessService(
         chat=app_state.chat,
         schedule=schedule,
@@ -178,7 +181,7 @@ def main() -> None:
     _announce_port(port)
     logger.info("backend_starting", port=port)
 
-    from yueli.api.app import create_app
+    from src.api.app import create_app
     app = create_app()
 
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)

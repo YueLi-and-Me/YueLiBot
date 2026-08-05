@@ -1151,6 +1151,7 @@ name = "yueli"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "colorama" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jieba" },
@@ -1177,6 +1178,7 @@ vector = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", extras = ["trio"], marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "colorama", specifier = ">=0.4.6" },
     { name = "faiss-cpu", marker = "extra == 'vector'", specifier = ">=1.11.0" },
     { name = "fastapi", specifier = ">=0.116.0" },
     { name = "httpx", specifier = ">=0.27.0" },

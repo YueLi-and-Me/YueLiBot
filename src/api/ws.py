@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger
 from .auth import ws_auth
 
 logger = get_logger(__name__)

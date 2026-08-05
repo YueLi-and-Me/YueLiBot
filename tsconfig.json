@@ -15,5 +15,5 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["scripts/**/*.ts", "src/**/*.ts", "src/**/*.d.ts", "tests/**/*.ts", "electron.vite.config.ts"]
+  "include": ["scripts/**/*.ts", "electron/**/*.ts", "electron/**/*.d.ts", "tests/**/*.ts", "electron.vite.config.ts"]
 }

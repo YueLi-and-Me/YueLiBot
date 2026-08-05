@@ -1,9 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import type { CharPaths } from './paths.ts'
 
-// 类型定义放在 src/shared，与渲染层共用同一份 —— 各写一份迟早会漂
-export type { Rect, SpriteManifest } from '../../src/shared/sprite-manifest.ts'
-import type { SpriteManifest } from '../../src/shared/sprite-manifest.ts'
+// 类型定义放在 electron/shared，与渲染层共用同一份 —— 各写一份迟早会漂
+export type { Rect, SpriteManifest } from '../../electron/shared/sprite-manifest.ts'
+import type { SpriteManifest } from '../../electron/shared/sprite-manifest.ts'
 
 export async function writeManifest(paths: CharPaths, m: SpriteManifest): Promise<void> {
   await writeFile(paths.manifest, `${JSON.stringify(m, null, 2)}\n`, 'utf8')

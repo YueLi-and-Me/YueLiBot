@@ -1,5 +1,5 @@
 """
-Python CLI 自检：`python -m yueli --selftest`。
+Python CLI 自检：`python bot.py --selftest`。
 
 替换掉原来那个只打一行假日志的桩实现——CHAT/REFLECT/AWARE 必须真的跑一遍，
 不能只是「进程起来了」就算过。原来 TS 侧的 `SELFTEST-CHAT`/`REFLECT`/`AWARE`
@@ -19,12 +19,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from yueli.common.clock import now as current_time
-from yueli.common.db.connection import open_db
-from yueli.common.db.migrations.manager import run_migrations
-from yueli.common.logger import get_logger
-from yueli.services.chat import SUMMARIZE_AT, ChatService
-from yueli.services.proactive import AwarenessService
+from src.common.clock import now as current_time
+from src.common.db.connection import open_db
+from src.common.db.migrations.manager import run_migrations
+from src.common.logger import get_logger
+from src.services.chat import SUMMARIZE_AT, ChatService
+from src.services.proactive import AwarenessService
 
 logger = get_logger(__name__)
 
@@ -48,12 +48,11 @@ async def run_selftest(cfg: Any) -> int:
         async def _push_event(channel: str, payload: Any) -> None:
             events.append({"channel": channel, "payload": payload})
 
-        provider = None
-        try:
-            from yueli.llm.openai import create_chat_provider
-            provider = create_chat_provider(cfg)
-        except Exception as exc:
-            logger.info("selftest_no_provider", reason=str(exc))
+        from src.llm_models.router import create_routers
+        routers = create_routers(cfg)
+        provider = routers.chat if routers.chat.ready else None
+        if provider is None:
+            logger.info("selftest_no_provider", reason="model_tasks.chat.model_list 是空的")
 
         chat = ChatService(db=db, provider=provider, push_event=_push_event, cfg=cfg)
 

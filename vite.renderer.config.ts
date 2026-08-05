@@ -11,7 +11,7 @@ import { defineConfig } from 'vite'
  * window.pet 在浏览器里不存在，渲染层对它一律用可选链，缺了也不会崩。
  */
 export default defineConfig({
-  root: resolve(__dirname, 'src/renderer'),
+  root: resolve(__dirname, 'electron/renderer'),
   publicDir: resolve(__dirname, 'assets'),
   // 显式绑 IPv4。Vite 默认的 'localhost' 在 Windows 上会解析成 ::1，
   // 只监听 IPv6 回环 —— 部分环境（沙箱、某些防火墙策略）不允许连 ::1，

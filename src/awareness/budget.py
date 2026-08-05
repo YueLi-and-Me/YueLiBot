@@ -6,13 +6,11 @@
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
-from typing import Literal, Optional
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal
 
 DAILY_BUDGET = 5
-COOLDOWN_MS = 30 * 60_000
-IGNORE_LIMIT = 3
 SCENE_RESERVED_EVENT_SLOTS = 2
 
 
@@ -41,7 +39,6 @@ class Decision:
 
 
 def day_key_of(now: int) -> str:
-    from datetime import datetime
     d = datetime.fromtimestamp(now / 1000)
     return f'{d.year}-{d.month}-{d.day}'
 
@@ -57,13 +54,6 @@ def _rollover(state: ProactiveState, now: int) -> ProactiveState:
     return ProactiveState(day_key=key, used=0, last_at=state.last_at, ignored=state.ignored)
 
 
-def cooldown_for(ignored: int) -> int:
-    if ignored < IGNORE_LIMIT:
-        return COOLDOWN_MS
-    factor = min(8, 2 ** (ignored - IGNORE_LIMIT + 1))
-    return min(4 * 3_600_000, COOLDOWN_MS * factor)
-
-
 def decide(state: ProactiveState, ctx: InterruptContext) -> Decision:
     if ctx.silent:
         return Decision(allow=False, reason='silent')
@@ -74,10 +64,6 @@ def decide(state: ProactiveState, ctx: InterruptContext) -> Decision:
     s = _rollover(state, ctx.now)
     if ctx.priority == 'high':
         return Decision(allow=True)
-    ignored = 0 if ctx.responded_since_last else s.ignored
-    cooldown = cooldown_for(ignored)
-    if s.last_at and ctx.now - s.last_at < cooldown:
-        return Decision(allow=False, reason='cooldown')
     if s.used >= DAILY_BUDGET:
         return Decision(allow=False, reason='budget')
     return Decision(allow=True)
@@ -112,15 +98,9 @@ def after_user_spoke(state: ProactiveState) -> ProactiveState:
 
 def describe_budget(state: ProactiveState, now: int) -> dict:
     s = _rollover(state, now)
-    cooldown = cooldown_for(s.ignored)
-    next_allowed = 0
-    if s.last_at:
-        next_allowed = max(0, round((s.last_at + cooldown - now) / 60_000))
     return {
         'day_key': s.day_key,
         'used': s.used,
         'remaining': max(0, DAILY_BUDGET - s.used),
         'ignored': s.ignored,
-        'cooldown_minutes': round(cooldown / 60_000),
-        'next_allowed_in_minutes': next_allowed,
     }

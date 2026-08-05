@@ -17,20 +17,20 @@ import random
 from .trace import trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
-from yueli.agent.character import pick_tone
-from yueli.agent.expression import render_expression_habits, select_expression_habits
-from yueli.agent.history import close_dangling_say, fit_char_budget, normalize_history
-from yueli.agent.parser import (
-    MemoryEvent, MoodEvent, ParseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
+from src.agent.character import pick_tone
+from src.agent.expression import render_expression_habits, select_expression_habits
+from src.agent.history import close_dangling_say, fit_char_budget, normalize_history
+from src.agent.parser import (
+    MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
-from yueli.agent.prompt import build_proactive_prompt, build_system_prompt
-from yueli.agent.summarize import summarize
-from yueli.awareness.sleep import SleepState
-from yueli.common.clock import now as current_time
-from yueli.common.logger import get_logger
-from yueli.memory.store import EpisodeInput, FactInput, MemoryStore
-from yueli.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
-from yueli.schedule.plan import DayPlanService, ScheduleSleepState
+from src.agent.prompt import build_proactive_prompt, build_system_prompt
+from src.agent.summarize import summarize
+from src.awareness.sleep import SleepState
+from src.common.clock import now as current_time
+from src.common.logger import get_logger
+from src.memory.store import EpisodeInput, FactInput, MemoryStore
+from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
+from src.schedule.plan import DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
 
@@ -124,6 +124,7 @@ class ChatService:
         self._summarizing = False
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
+        self._promise_handler: Callable[[int, str], None] | None = None
         self._schedule: DayPlanService | None = None
         # 会话级人设状态。逐轮重掷会让她的语气一轮一个样，读起来就像每轮
         # 换了个人——这正是「像单次对话」的一部分。
@@ -143,6 +144,10 @@ class ChatService:
 
     def set_sleep_state_provider(self, fn: Callable[[], SleepState]) -> None:
         self._sleep_state = fn
+
+    def set_promise_handler(self, fn: Callable[[int, str], None]) -> None:
+        """接收解析出的约定，交由 AwarenessService 统一调度与持久化。"""
+        self._promise_handler = fn
 
     def current_sleep(self) -> ScheduleSleepState:
         s = self._sleep_state() if self._sleep_state else None
@@ -199,7 +204,7 @@ class ChatService:
             assistant_raw = ''
             side_effects: list[dict] = []
             interrupted = False
-            from yueli.llm.openai import LlmError
+            from src.llm_models.openai import LlmError
             try:
                 messages = await self._build_messages_with_vector(trimmed, now)
                 trace.emit(
@@ -225,7 +230,7 @@ class ChatService:
                         if cancel_event.is_set():
                             interrupted = True
                             break
-                        self._handle_side_effects(event, now, turn, side_effects)
+                        self._handle_side_effects(event, now, turn, side_effects, trimmed)
                         self._track_speech(event, turn)
                         await self._emit_parse_event(turn, event)
                     if interrupted:
@@ -236,7 +241,7 @@ class ChatService:
                         if cancel_event.is_set():
                             interrupted = True
                             break
-                        self._handle_side_effects(event, now, turn, side_effects)
+                        self._handle_side_effects(event, now, turn, side_effects, trimmed)
                         self._track_speech(event, turn)
                         await self._emit_parse_event(turn, event)
 
@@ -487,6 +492,7 @@ class ChatService:
 
     def _handle_side_effects(
         self, event: ParseEvent, now: int, turn: int, sink: list[dict] | None = None,
+        source_text: str | None = None,
     ) -> None:
         if isinstance(event, MemoryEvent) and event.content:
             memory_kind = event.memory_type or '未分类'
@@ -499,6 +505,16 @@ class ChatService:
             trace.emit('mood_delta', turnId=turn, favor=event.favor, energy=event.energy)
             if sink is not None:
                 sink.append({'kind': 'mood_delta', 'favor': event.favor, 'energy': event.energy})
+        elif isinstance(event, PromiseEvent):
+            if self._promise_handler is None:
+                logger.warning('promise_handler_missing', turnId=turn)
+                return
+            if source_text is None:
+                raise ValueError('约定事件必须关联本轮用户原话')
+            self._promise_handler(event.at, source_text)
+            trace.emit('promise_stashed', turnId=turn, at=event.at, subject=source_text)
+            if sink is not None:
+                sink.append({'kind': 'promise_stashed', 'at': event.at, 'subject': source_text})
 
     def _dispatch_speech(self, text: str, turn: int) -> None:
         """把一句台词送去合成。

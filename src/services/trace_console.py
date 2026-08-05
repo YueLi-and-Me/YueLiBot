@@ -8,9 +8,9 @@
 
 ★ 不是 TTY（打包后台跑、日志重定向到文件）时全部函数变成空操作——
   这一层是叠加在 structlog 之上的，不能在非交互环境下污染输出。
-  TTY 判断同时认 YUELI_FORCE_COLOR=1（见 common/logger.py 的同一条注释）：
-  被 Electron 的 supervisor 拉起时 stdout 恒为管道，`isatty()` 恒为 False，
-  但这个管道会被逐行转发进真终端，所以需要一个显式信号而不是只看 isatty()。
+  判断走 common/logger_colors.py 的 is_color_enabled()，与 structlog 那一层
+  共用同一个判据：它同时认 YUELI_FORCE_COLOR=1，因为被 Electron 的 supervisor
+  拉起时 stdout 恒为管道、`isatty()` 恒为 False，但这个管道会被逐行转发进真终端。
 
 mark_turn_start 记的 _starts 字典没有主动清理：单用户桌面应用，一个进程
 一次顶多几十轮在飞，可以接受；如果某轮因为 interrupt() 半途而废、
@@ -19,8 +19,6 @@ _starts 里的条目永远不会被弹出，也只是几十字节常驻内存，
 
 from __future__ import annotations
 
-import os
-import sys
 import time
 from typing import Any
 
@@ -28,13 +26,13 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 
-from yueli.common.logger import get_logger
+from src.common.logger import get_logger, is_color_enabled
 
 logger = get_logger(__name__)
 
 _PROMPT_PREVIEW_CHARS = 400
 
-_is_tty = sys.stdout.isatty() or os.environ.get('YUELI_FORCE_COLOR') == '1'
+_is_tty = is_color_enabled()
 # force_terminal：rich 自己也会在构造/打印时探测 sys.stdout.isatty()，
 # 不强制的话即使上面的 _is_tty 放行，rich 内部还是会因为看到管道而把颜色
 # 全部去掉，等于白做上面那道判断。

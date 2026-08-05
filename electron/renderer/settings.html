@@ -42,43 +42,38 @@
         </section>
 
         <section class="panel-card">
-          <header class="section-heading"><h2>对话模型</h2></header>
+          <header class="section-heading">
+            <h2>API 服务商</h2>
+            <button id="add-provider" class="button secondary small" type="button">添加服务商</button>
+          </header>
           <div class="section-body">
-            <label class="field">
-              <span class="field-label">服务商</span>
-              <select name="llm.provider">
-                <option value="ark">方舟（火山引擎）</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="dashscope">通义千问</option>
-                <option value="moonshot">月之暗面</option>
-                <option value="openai">OpenAI</option>
-                <option value="ollama">Ollama（本地）</option>
-              </select>
-            </label>
-            <label class="field required">
-              <span class="field-label">模型 ID</span>
-              <input type="text" name="llm.model" placeholder="例如 doubao-seed-character-260628" required />
-            </label>
-            <label class="field required">
-              <span class="field-label">API Key</span>
-              <input type="password" name="llm.api_key" required />
-            </label>
-            <details class="advanced-fields">
-              <summary>高级</summary>
-              <label class="field">
-                <span class="field-label">Base URL（留空用预设官方地址）</span>
-                <input type="text" name="llm.base_url" />
-              </label>
-              <label class="field">
-                <span class="field-label">深度思考</span>
-                <select name="llm.thinking">
-                  <option value="disabled">关闭（推荐，速度快）</option>
-                  <option value="enabled">开启</option>
-                  <option value="auto">自动</option>
-                </select>
-              </label>
-              <p class="hint">⚠ 开启后实测首字延迟从 3 秒涨到 26~31 秒，桌宠场景不推荐。</p>
-            </details>
+            <p class="hint">
+              一条连接就是一个「地址 + 密钥」。配多家之后，某家挂了会自动切到下一家。
+            </p>
+            <div id="provider-list" class="repeat-list"></div>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading">
+            <h2>模型</h2>
+            <button id="add-model" class="button secondary small" type="button">添加模型</button>
+          </header>
+          <div class="section-body">
+            <p class="hint">
+              模型只挂在某个服务商下。同一个模型 ID 在两家都能用时，就建两条、分别挂过去。
+            </p>
+            <div id="model-list" class="repeat-list"></div>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading"><h2>任务用哪些模型</h2></header>
+          <div class="section-body">
+            <p class="hint">
+              每个任务按顺序排候选：排在前面的是主力，它挂了自动顺延到下一个。
+            </p>
+            <div id="task-list" class="repeat-list"></div>
           </div>
         </section>
 
@@ -88,18 +83,10 @@
             <label class="toggle"><input type="checkbox" name="tts.enabled" /> 启用</label>
           </header>
           <div class="section-body toggle-body" data-toggle-target="tts.enabled">
-            <label class="field">
-              <span class="field-label">Base URL</span>
-              <input type="text" name="tts.base_url" />
-            </label>
-            <label class="field">
-              <span class="field-label">API Key</span>
-              <input type="password" name="tts.api_key" />
-            </label>
-            <label class="field">
-              <span class="field-label">模型</span>
-              <input type="text" name="tts.model" />
-            </label>
+            <p class="hint">
+              地址和密钥在上面的「API 服务商」里配，这里只填音色。豆包语音要把服务商的协议选成
+              「豆包语音」，音色填 voice_type。
+            </p>
             <label class="field">
               <span class="field-label">音色</span>
               <input type="text" name="tts.voice" />
@@ -118,24 +105,24 @@
               但截图里仍可能有明文密码、私信、银行页面、公司文档——开启前想清楚。
             </p>
             <p class="hint">
-              对话接口接受图片时可以留空复用；若接口只接受文本，请在下面填写另一套多模态接口。
+              用哪个模型在上面的「任务用哪些模型」里选，模型和接口都必须接受图片消息。
             </p>
-            <label class="field">
-              <span class="field-label">API 地址（留空复用对话地址）</span>
-              <input type="url" name="vision.base_url" placeholder="例如 https://ark.cn-beijing.volces.com/api/v3" />
-            </label>
-            <label class="field">
-              <span class="field-label">视觉模型（必须支持 image_url）</span>
-              <input type="text" name="vision.model" />
-            </label>
-            <label class="field">
-              <span class="field-label">API Key（留空复用对话 Key）</span>
-              <input type="password" name="vision.api_key" />
-            </label>
             <label class="field checkbox-field">
               <input type="checkbox" name="vision.fullscreen_silent" />
               <span>疑似全屏时静默（避免直播/录屏把她的声音带进去）</span>
             </label>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading">
+            <h2>主动互动</h2>
+            <label class="toggle"><input type="checkbox" name="generation.proactive.enabled" /> 启用</label>
+          </header>
+          <div class="section-body toggle-body" data-toggle-target="generation.proactive.enabled">
+            <p class="hint">
+              开启后，她会根据前台活动、键鼠强度和日程在合适时机主动搭话；关闭后不会安装全局键鼠钩子，也不会主动发起互动。
+            </p>
           </div>
         </section>
 
