@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 import sys
-import tomllib
 
 from src.llm_models.openai import resolve_base_url
 
@@ -22,25 +21,13 @@ from .schema import (
     RoutingConfig,
     TaskRouting,
 )
+from .toml_io import read_versioned_toml
 
 _config: Config | None = None
 
 
 CONFIG_VERSION = '1.1.0'
-
-
-def _read_toml(path: Path) -> Dict[str, Any]:
-    with open(path, 'rb') as file:
-        document = tomllib.load(file)
-    # 版本对不上就不要往下解释字段了：同一个 model_tasks 在 1.0.0 里是模型名、
-    # 在 1.1.0 里是候选列表，硬读只会给出一堆看不懂的类型错误。
-    version = document.get('inner', {}).get('version')
-    if version != CONFIG_VERSION:
-        raise ValueError(
-            f'{path.name} 的配置版本是 {version!r}，当前需要 {CONFIG_VERSION}；'
-            '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
-        )
-    return document
+_VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
 
 
 def _providers_by_name(catalog: ProviderCatalog) -> Dict[str, ApiProviderConfig]:
@@ -131,11 +118,17 @@ def _build_routing(
 
 def _load_split_config(directory: Path) -> Config:
     providers_document = ProviderCatalog.model_validate(
-        _read_toml(directory / 'providers.toml')
+        read_versioned_toml(directory / 'providers.toml', CONFIG_VERSION, _VERSION_HINT)
     )
-    models_document = ModelCatalog.model_validate(_read_toml(directory / 'models.toml'))
-    bot_document = BotDocument.model_validate(_read_toml(directory / 'bot.toml'))
-    features_document = FeatureDocument.model_validate(_read_toml(directory / 'features.toml'))
+    models_document = ModelCatalog.model_validate(
+        read_versioned_toml(directory / 'models.toml', CONFIG_VERSION, _VERSION_HINT)
+    )
+    bot_document = BotDocument.model_validate(
+        read_versioned_toml(directory / 'bot.toml', CONFIG_VERSION, _VERSION_HINT)
+    )
+    features_document = FeatureDocument.model_validate(
+        read_versioned_toml(directory / 'features.toml', CONFIG_VERSION, _VERSION_HINT)
+    )
 
     providers = _providers_by_name(providers_document)
     models = _models_by_name(models_document)
