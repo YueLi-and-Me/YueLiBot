@@ -12,12 +12,13 @@ Python CLI 自检：`python bot.py --selftest`。
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
 import asyncio
 import json
 import shutil
 import tempfile
-from pathlib import Path
-from typing import Any, Awaitable, Callable
 
 from src.common.clock import now as current_time
 from src.common.db.connection import open_db
@@ -45,8 +46,8 @@ async def run_selftest(cfg: Any) -> int:
 
         events: list[dict] = []
 
-        async def _push_event(channel: str, payload: Any) -> None:
-            events.append({"channel": channel, "payload": payload})
+        async def _push_event(channel: str, payload: Any, stream_id: int = 1) -> None:
+            events.append({"stream_id": stream_id, "channel": channel, "payload": payload})
 
         from src.llm_models.router import create_routers
         routers = create_routers(cfg)

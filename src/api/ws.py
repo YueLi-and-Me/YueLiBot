@@ -12,14 +12,17 @@ Electron → Python 的命令走 HTTP（更简单，有状态码，易排查）�
 
 from __future__ import annotations
 
+from typing import Any, Dict, List, Literal, Set, cast
+
 import asyncio
 import json
-from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.common.logger import get_logger
 from .auth import ws_auth
+
+from src.common.logger import get_logger
+from src.services.trace import trace
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -28,45 +31,63 @@ router = APIRouter()
 # 连接管理
 # ─────────────────────────────────────────────────────────────────────
 
+ClientKind = Literal['desktop', 'napcat']
+_CLIENT_KINDS = frozenset({'desktop', 'napcat'})
+_DESKTOP_STREAM_ID = 1
+
+
 class _ConnectionManager:
-    """管理当前活跃的 WebSocket 连接（同一时刻只有 Electron 一个客户端）。"""
+    """管理按客户端分区的 WebSocket 订阅。"""
 
     def __init__(self) -> None:
-        self._ws: WebSocket | None = None
+        self._connections: Dict[ClientKind, Set[WebSocket]] = {
+            'desktop': set(),
+            'napcat': set(),
+        }
         self._lock = asyncio.Lock()
 
-    async def connect(self, ws: WebSocket) -> None:
+    async def connect(self, client: ClientKind, ws: WebSocket) -> None:
         async with self._lock:
-            if self._ws is not None:
-                # 旧连接仍在：关闭它（Electron 重启时会重连）
-                try:
-                    await self._ws.close(code=1001)
-                except Exception:
-                    pass
-            self._ws = ws
+            self._connections[client].add(ws)
 
-    def disconnect(self) -> None:
-        self._ws = None
+    async def disconnect(self, client: ClientKind, ws: WebSocket) -> None:
+        async with self._lock:
+            self._connections[client].discard(ws)
 
-    async def push(self, channel: str, payload: Any) -> None:
-        """推送一条消息；若无连接则静默丢弃。"""
-        ws = self._ws
-        if ws is None:
-            return
-        try:
-            await ws.send_text(json.dumps({"channel": channel, "payload": payload},
-                                          ensure_ascii=False))
-        except Exception as exc:
-            logger.warning("ws_push_failed", channel=channel, error=str(exc))
-            self._ws = None
+    async def push(self, stream_id: int, channel: str, payload: Any) -> int:
+        """按 stream 所属分支推送，并返回实际完成投递的连接数。"""
+        client: ClientKind = 'desktop' if stream_id == _DESKTOP_STREAM_ID else 'napcat'
+        async with self._lock:
+            connections: List[WebSocket] = list(self._connections[client])
+        if not connections:
+            if client == 'napcat':
+                trace.emit('outbound_dropped', streamId=stream_id, channel=channel)
+            return 0
+
+        envelope = json.dumps(
+            {'stream_id': stream_id, 'channel': channel, 'payload': payload},
+            ensure_ascii=False,
+        )
+        delivered = 0
+        failed: List[WebSocket] = []
+        for ws in connections:
+            try:
+                await ws.send_text(envelope)
+                delivered += 1
+            except Exception as exc:
+                logger.warning('ws_push_failed', client=client, channel=channel, error=str(exc))
+                failed.append(ws)
+        for ws in failed:
+            await self.disconnect(client, ws)
+        return delivered
 
 
 manager = _ConnectionManager()
 
 
-async def push(channel: str, payload: Any) -> None:
+async def push(stream_id: int, channel: str, payload: Any) -> int:
     """模块级推送入口，供其他 service 调用。"""
-    await manager.push(channel, payload)
+    return await manager.push(stream_id, channel, payload)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -86,6 +107,13 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         logger.warning("ws_auth_failed", client=websocket.client)
         return
 
+    raw_client = websocket.query_params.get('client')
+    if raw_client not in _CLIENT_KINDS:
+        await websocket.close(code=1008)
+        logger.warning('ws_client_invalid', client=raw_client)
+        return
+    client = cast(ClientKind, raw_client)
+
     # ★ 必须把客户端选的子协议回显回去。
     #   客户端发 "yueli-<token>"，服务端不回显 → RFC 6455 §4.1 规定握手失败。
     #   Python websockets 库宽松，但 undici（Electron 用的那个）严格遵守规范。
@@ -98,15 +126,15 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             break
 
     await websocket.accept(subprotocol=selected_proto)
-    await manager.connect(websocket)
-    logger.info("ws_connected", client=str(websocket.client))
+    await manager.connect(client, websocket)
+    logger.info('ws_connected', client=client, peer=str(websocket.client))
 
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        logger.info("ws_disconnected")
+        logger.info('ws_disconnected', client=client)
     except Exception as exc:
         logger.warning("ws_error", error=str(exc))
     finally:
-        manager.disconnect()
+        await manager.disconnect(client, websocket)

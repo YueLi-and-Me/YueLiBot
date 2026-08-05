@@ -12,10 +12,11 @@ L3 facts     — 结构化事实，带强度与遗忘曲线
 
 from __future__ import annotations
 
-import json
-import sqlite3
 from dataclasses import dataclass
 from typing import Any, Optional
+
+import json
+import sqlite3
 
 from .decay import (
     FREEZE, DecayState, evaluate, freeze_due_at, half_life_for,

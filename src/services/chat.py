@@ -93,7 +93,7 @@ class ChatService:
         chat_provider: Any | None,
         proactive_provider: Any | None,
         summary_provider: Any | None,
-        push_event: Callable[[str, Any], Any],
+        push_event: Callable[[str, Any, int], Any],
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
         cfg: Any | None = None,
@@ -221,7 +221,7 @@ class ChatService:
         trace.emit('user_input', turnId=turn, text=trimmed)
 
         if not self._chat_provider:
-            await self._emit('chat.error', {
+            await self._emit(stream_id, 'chat.error', {
                 'turnId': turn,
                 'kind': 'error',
                 'message': '对话未初始化',
@@ -281,7 +281,7 @@ class ChatService:
                             break
                         self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
                         self._track_speech(context, event, turn)
-                        await self._emit_parse_event(turn, event)
+                        await self._emit_parse_event(context, turn, event)
                     if interrupted:
                         break
 
@@ -292,7 +292,7 @@ class ChatService:
                             break
                         self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
                         self._track_speech(context, event, turn)
-                        await self._emit_parse_event(turn, event)
+                        await self._emit_parse_event(context, turn, event)
 
                 # ★ 中断也要落库。这段话已经显示（甚至念）给用户了，历史里
                 #   不能当它没发生过——否则下一轮就是连着两条 user 消息，
@@ -309,7 +309,7 @@ class ChatService:
                 except Exception as exc:
                     # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
-                await self._emit('chat.done', {'turnId': turn, 'kind': 'done'})
+                await self._emit(stream_id, 'chat.done', {'turnId': turn, 'kind': 'done'})
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
 
             except LlmError as exc:
@@ -320,7 +320,7 @@ class ChatService:
                 hint = _HINTS.get(exc.kind, '')
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
                 render_turn_error(turn, trimmed, exc.kind, str(exc))
-                await self._emit('chat.error', {
+                await self._emit(stream_id, 'chat.error', {
                     'turnId': turn,
                     'kind': 'error',
                     'message': str(exc),
@@ -330,7 +330,11 @@ class ChatService:
                 self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
                 render_turn_error(turn, trimmed, 'unknown', str(exc))
-                await self._emit('chat.error', {'turnId': turn, 'kind': 'error', 'message': str(exc)})
+                await self._emit(
+                    stream_id,
+                    'chat.error',
+                    {'turnId': turn, 'kind': 'error', 'message': str(exc)},
+                )
 
         task = asyncio.create_task(_run())
         inflight = _InflightTurn(task=task, cancel_event=cancel_event)
@@ -449,12 +453,14 @@ class ChatService:
         self._active_turns[stream_id] = turn
         texts: list[str] = []
         for line in lines:
-            asyncio.create_task(self._emit_parse_event(turn, SayEvent(emotion=line.get('emotion'))))
-            asyncio.create_task(self._emit_parse_event(turn, TextEvent(value=line['text'])))
-            asyncio.create_task(self._emit_parse_event(turn, SayEndEvent()))
+            asyncio.create_task(
+                self._emit_parse_event(context, turn, SayEvent(emotion=line.get('emotion')))
+            )
+            asyncio.create_task(self._emit_parse_event(context, turn, TextEvent(value=line['text'])))
+            asyncio.create_task(self._emit_parse_event(context, turn, SayEndEvent()))
             self._dispatch_speech(context, line['text'], turn)
             texts.append(f'<say>{line["text"]}</say>')
-        asyncio.create_task(self._emit('chat.done', {'turnId': turn, 'kind': 'done'}))
+        asyncio.create_task(self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'}))
         self.memory.append_message(
             stream_id,
             None,
@@ -710,7 +716,7 @@ class ChatService:
           `create_task(None)`，直接抛 TypeError。主动搭话那条语音链路一直是
           这么坏掉的。
         """
-        if not self._speak_audio:
+        if context.stream.kind != 'desktop' or not self._speak_audio:
             return
         line = text.strip()
         if not line:
@@ -740,13 +746,18 @@ class ChatService:
             line = ''.join(self._speech_buffer.pop(stream_id, []))
             self._dispatch_speech(context, line, turn)
 
-    async def _emit(self, channel: str, payload: Any) -> None:
+    async def _emit(self, stream_id: int, channel: str, payload: Any) -> None:
         try:
-            await self._push_event(channel, payload)
+            await self._push_event(channel, payload, stream_id)
         except Exception as exc:
-            logger.warning('emit_failed', channel=channel, error=str(exc))
+            logger.warning('emit_failed', streamId=stream_id, channel=channel, error=str(exc))
 
-    async def _emit_parse_event(self, turn: int, event: ParseEvent) -> None:
+    async def _emit_parse_event(
+        self,
+        context: ConversationContext,
+        turn: int,
+        event: ParseEvent,
+    ) -> None:
         if isinstance(event, SayEvent):
             ev = {'turnId': turn, 'kind': 'parse',
                   'event': {'type': 'say', **({'emotion': event.emotion} if event.emotion else {}),
@@ -766,7 +777,7 @@ class ChatService:
                              **({'energy': event.energy} if event.energy is not None else {})}}
         else:
             return
-        await self._emit('chat.event', ev)
+        await self._emit(context.stream.id, 'chat.event', ev)
 
     async def _maybe_summarize(self, stream_id: int) -> None:
         if stream_id in self._summarizing or not self._summary_provider:

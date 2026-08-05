@@ -4,13 +4,14 @@ YueLiBot Python 后端入口。
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import argparse
 import asyncio
 import os
 import socket
 import sys
-from pathlib import Path
-from typing import Any
 
 import uvicorn
 
@@ -132,8 +133,12 @@ def main() -> None:
         logger.info("vision_model_ready", model=vision_provider.model,
                     candidates=len(vision_provider.candidates))
 
-    async def _push_event(channel: str, payload) -> None:
-        await push(channel, payload)
+    async def _push_event(
+        channel: str,
+        payload: Any,
+        stream_id: int = desktop_context.stream.id,
+    ) -> int:
+        return await push(stream_id, channel, payload)
 
     app_state.chat = ChatService(
         db=db,
