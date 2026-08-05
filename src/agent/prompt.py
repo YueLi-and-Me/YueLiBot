@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .character import (
     ATTENTION_PROMPT,
@@ -15,6 +15,7 @@ from .character import (
 )
 from .expression import render_expression_habits, select_expression_habits
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
+
 from src.common.clock import now as current_time
 from src.schedule.daily import describe_schedule
 
@@ -42,6 +43,14 @@ _PROTOCOL = f"""只输出下列标签，不要在标签外写正文：
 what 只写他提议的事；不确定日期、他只是随口说说、你没有答应时都不写。绝不编造约定。
 
 标签只是外壳。先自然地把话说出来，再套上标签，别为了填标签改掉你本来想说的那句话。"""
+
+# 重逢措辞的档位。写成一张有序表而不是几个散落的常量：
+# 它们同属一条曲线，单独调任何一个都要看着相邻档位，拆开放反而更难维护。
+# 顺序由 pytests 断言守住，不靠人记。第三档携带具体天数，由函数动态生成。
+RESUMPTION_TIERS: List[Tuple[int, str]] = [
+    (6 * 60 * 60_000, '距离你们上次说话过了几个小时。'),
+    (3 * 24 * 60 * 60_000, '距离你们上次说话隔了一夜。'),
+]
 
 
 def _time_context(now: datetime, schedule: Optional[str] = None) -> str:
@@ -84,6 +93,15 @@ def _relationship_context(user_nickname: Optional[str], relationship: Optional[s
     return '\n'.join(lines)
 
 
+def describe_resumption(gap_ms: int) -> str:
+    """把静默时长翻译成一句陈述。只说过了多久，不说她该有什么情绪。"""
+    for threshold, description in RESUMPTION_TIERS:
+        if gap_ms < threshold:
+            return description
+    days = gap_ms // (24 * 60 * 60_000)
+    return f'距离你们上次说话已经过去 {days} 天。'
+
+
 def build_system_prompt(
     name: str = CHARACTER_NAME,
     now: Optional[datetime] = None,
@@ -102,6 +120,7 @@ def build_system_prompt(
     boundaries: str = BOUNDARIES_PROMPT,
     expression_habits: Optional[str] = None,
     tone: Optional[str] = None,
+    resumption: Optional[str] = None,
 ) -> str:
     """组装主对话提示词，各段只承担一种职责。"""
 
@@ -120,6 +139,8 @@ def build_system_prompt(
         parts.extend(['', _relationship_context(user_nickname, relationship)])
 
     parts.extend(['', '# 此刻', _time_context(now, schedule)])
+    if resumption:
+        parts.extend(['', resumption])
     if persona:
         parts.extend(['', persona])
     if activity:

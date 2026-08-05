@@ -24,7 +24,7 @@ from src.agent.history import close_dangling_say, fit_char_budget, normalize_his
 from src.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
-from src.agent.prompt import build_proactive_prompt, build_system_prompt
+from src.agent.prompt import build_proactive_prompt, build_system_prompt, describe_resumption
 from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
@@ -136,6 +136,8 @@ class ChatService:
         self._session_started_at: int | None = None
         self._session_tone: str | None = None
         self._session_seed: int = 0
+        # 仅供本轮提示词使用；组装后立即清空，避免下一轮重复提起久别。
+        self._resumption_gap_ms: int | None = None
 
     @property
     def ready(self) -> bool:
@@ -199,7 +201,7 @@ class ChatService:
 
         # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
         #   间隔恒为 0，会话永远不会翻页。
-        self._refresh_session(now)
+        self._resumption_gap_ms = self._refresh_session(now)
 
         user_msg_id = self.memory.append_message('user', trimmed, now)
         cancel_event = asyncio.Event()
@@ -289,12 +291,17 @@ class ChatService:
         self._inflight = task
         return turn
 
-    def _refresh_session(self, now: int) -> None:
-        """跨过静默间隔就开一段新会话，重抽语气和表达样本的随机种子。"""
+    def _refresh_session(self, now: int) -> int | None:
+        """跨过静默间隔就开一段新会话，重抽语气和表达样本的随机种子。
+
+        返回本次静默了多久（毫秒）；仍在同一会话内则返回 None。
+        首次启动（库里一条消息都没有）也返回 None —— 没有「上一次」可言。
+        """
         last = self.memory.last_message_at()
+        gap_ms = now - last if last is not None else None
         if (self._session_started_at is None
                 or last is None
-                or now - last > self._session_gap_ms):
+                or (gap_ms is not None and gap_ms > self._session_gap_ms)):
             self._session_started_at = now
             if self._cfg is None:
                 self._session_tone = pick_tone()
@@ -305,6 +312,17 @@ class ChatService:
                     variants=personality.tone_variants,
                 )
             self._session_seed = random.randrange(1 << 30)
+        if gap_ms is None or gap_ms <= self._session_gap_ms:
+            return None
+        return gap_ms
+
+    def _take_resumption(self) -> str | None:
+        """取走本轮重逢事实，确保它只进入一次系统提示词。"""
+        gap_ms = self._resumption_gap_ms
+        self._resumption_gap_ms = None
+        if gap_ms is None:
+            return None
+        return describe_resumption(gap_ms)
 
     def _session_rng(self) -> random.Random:
         """同一会话内给出同一批表达样本；情境识别仍然逐轮进行。"""
@@ -364,7 +382,7 @@ class ChatService:
         if not self._proactive_provider:
             return None
         now = current_time()
-        self._refresh_session(now)
+        self._resumption_gap_ms = self._refresh_session(now)
         if self._schedule:
             await self._schedule.ensure(now)
         persona_desc = describe_persona(self.persona.get())
@@ -382,6 +400,7 @@ class ChatService:
                 select_expression_habits(situation, proactive=True, limit=3, rng=self._session_rng())
             ),
             tone=self._session_tone,
+            resumption=self._take_resumption(),
             **self._prompt_config_kwargs(),
         )
         system = build_proactive_prompt(base_prompt, situation)
@@ -474,6 +493,7 @@ class ChatService:
         persona_desc = describe_persona(self.persona.get())
         acquaintance = describe_acquaintance(self.memory.first_seen_at, now)
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
+        resumption = self._take_resumption()
         system = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
@@ -486,6 +506,7 @@ class ChatService:
                 select_expression_habits(query, rng=self._session_rng())
             ),
             tone=self._session_tone,
+            resumption=resumption,
             **self._prompt_config_kwargs(),
         )
         # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
