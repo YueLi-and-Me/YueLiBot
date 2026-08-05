@@ -90,7 +90,7 @@ class AwarenessService:
             date=plan.date,
             bedtime_hint=plan.bedtime_hint,
             wake_hint=plan.wake_hint,
-            energy=self.chat.persona.get().energy,
+            energy=self.chat.persona.get(desktop_context.person.id).energy,
             last_interaction_at=self.chat.memory.last_message_at(desktop_context.stream.id),
         )
 
@@ -132,7 +132,7 @@ class AwarenessService:
         classified = self._last_classified or classify(None)
         last_message_at = self.chat.memory.last_message_at(self.chat.desktop_context.stream.id)
         absence_hours = 0.0 if last_message_at is None else max(0.0, (now - last_message_at) / 3_600_000)
-        persona = self.chat.persona.get()
+        persona = self.chat.persona.get(self.chat.desktop_context.person.id)
         return factors_for(
             classified.activity,
             classified.intensity,

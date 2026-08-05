@@ -126,7 +126,7 @@ class ChatService:
         self._registry = StreamRegistry(db)
         self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
-        self.persona.snapshot_daily()
+        self.persona.snapshot_daily(self._desktop_context.person.id)
         self._turn_id = 0
         self._inflight: asyncio.Task | None = None
         self._summarizing = False
@@ -176,13 +176,14 @@ class ChatService:
 
     def settle_elapsed(self, now: int | None = None, earlier_asleep: bool = False) -> None:
         now = now or current_time()
-        before = self.persona.get()
+        person_id = self._desktop_context.person.id
+        before = self.persona.get(person_id)
         if self._schedule:
             asleep_hours = self._schedule.sleep_hours_between(before.updated_at, now, earlier_asleep)
         else:
             asleep_hours = 0.0
-        self.persona.apply_elapsed(now, asleep_hours)
-        self.persona.snapshot_daily(now)
+        self.persona.apply_elapsed(person_id, now, asleep_hours)
+        self.persona.snapshot_daily(person_id, now)
 
     async def send(self, text: str) -> int:
         trimmed = text.strip()
@@ -277,7 +278,7 @@ class ChatService:
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
                 render_turn(turn, trimmed, messages, assistant_raw, side_effects)
                 try:
-                    self.persona.apply_turn(current_time())
+                    self.persona.apply_turn(self._desktop_context.person.id, current_time())
                 except Exception as exc:
                     # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
@@ -410,7 +411,7 @@ class ChatService:
         self._resumption_gap_ms = self._refresh_session(now)
         if self._schedule:
             await self._schedule.ensure(now)
-        persona_desc = describe_persona(self.persona.get())
+        persona_desc = describe_persona(self.persona.get(self._desktop_context.person.id))
         acquaintance = describe_acquaintance(
             self.memory.first_seen_at(self._desktop_context.person.id),
             now,
@@ -466,7 +467,7 @@ class ChatService:
 
     def observability_snapshot(self, now: int | None = None) -> dict:
         now = now or current_time()
-        s = self.persona.get()
+        s = self.persona.get(self._desktop_context.person.id)
         fc = self.memory.fact_count(self._desktop_context.person.id)
         return {
             'now': now,
@@ -540,7 +541,7 @@ class ChatService:
                 seen_ids.add(e.id)
                 episodes.append(e)
         episodes = episodes[:self._episode_context_limit]
-        persona_desc = describe_persona(self.persona.get())
+        persona_desc = describe_persona(self.persona.get(self._desktop_context.person.id))
         acquaintance = describe_acquaintance(
             self.memory.first_seen_at(self._desktop_context.person.id),
             now,
@@ -587,7 +588,11 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
         elif isinstance(event, MoodEvent):
-            self.persona.apply_mood(MoodDelta(favor=event.favor, energy=event.energy), now)
+            self.persona.apply_mood(
+                self._desktop_context.person.id,
+                MoodDelta(favor=event.favor, energy=event.energy),
+                now,
+            )
             trace.emit('mood_delta', turnId=turn, favor=event.favor, energy=event.energy)
             if sink is not None:
                 sink.append({'kind': 'mood_delta', 'favor': event.favor, 'energy': event.energy})

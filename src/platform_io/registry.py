@@ -58,12 +58,21 @@ class StreamRegistry:
 
     def owner_person(self) -> PersonRef:
         """读取迁移/SEED 确定的唯一 owner；缺失说明数据库形态损坏。"""
+        person = self.person(_OWNER_PERSON_ID)
+        if person.kind != "owner":
+            raise RuntimeError("owner person 不存在或 kind 不正确，确认 v6 迁移已完成")
+        return person
+
+    def person(self, person_id: int) -> PersonRef:
+        """按稳定主键取得 person，供需要显式人物归属的业务服务校验引用。"""
         row = self._db.execute(
             "SELECT id, kind, first_seen_at FROM persons WHERE id = ?",
-            (_OWNER_PERSON_ID,),
+            (person_id,),
         ).fetchone()
-        if row is None or row[1] != "owner":
-            raise RuntimeError("owner person 不存在或 kind 不正确，确认 v6 迁移已完成")
+        if row is None:
+            raise ValueError(f"person {person_id} 不存在，必须先经 StreamRegistry 创建或解析")
+        if row[1] not in ("contact", "owner"):
+            raise RuntimeError(f"person {person_id} 的 kind 不受支持：{row[1]}")
         return PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
 
     def desktop_stream(self) -> StreamRef:

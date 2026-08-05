@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import sqlite3
 
 from src.common.clock import now as current_time, snapshot_date
+from src.platform_io.registry import PersonRef, StreamRegistry
 
 
 @dataclass
@@ -57,35 +58,77 @@ def _clamp_delta(v: float | None) -> float:
 class Persona:
     def __init__(self, db: sqlite3.Connection) -> None:
         self._db = db
+        self._registry = StreamRegistry(db)
 
-    def get(self) -> PersonaState:
-        row = self._db.execute(
-            'SELECT intimacy, tsundere, reliance, energy, updated_at FROM persona WHERE id = 1'
+    def get(self, person_id: int) -> PersonaState:
+        """组合指定人物的关系轴与全局的身体精力。"""
+        person = self._registry.person(person_id)
+        bond = self._db.execute(
+            '''SELECT intimacy, tsundere, reliance, updated_at
+               FROM persona_bond WHERE person_id = ?''',
+            (person.id,),
         ).fetchone()
-        if not row:
-            raise RuntimeError('persona 行不存在，确认 DDL 和 SEED 已执行')
-        return PersonaState(intimacy=row[0], tsundere=row[1], reliance=row[2],
-                            energy=row[3], updated_at=row[4])
+        if bond is None:
+            if person.kind == 'owner':
+                raise RuntimeError('owner persona_bond 不存在，确认 v6 迁移已完整执行')
+            self._create_contact_bond(person)
+            bond = self._db.execute(
+                '''SELECT intimacy, tsundere, reliance, updated_at
+                   FROM persona_bond WHERE person_id = ?''',
+                (person.id,),
+            ).fetchone()
+        if bond is None:
+            raise RuntimeError(f'person {person.id} 的 persona_bond 创建失败')
+        self_state = self._db.execute(
+            'SELECT energy FROM persona_self WHERE id = 1'
+        ).fetchone()
+        if self_state is None:
+            raise RuntimeError('persona_self 行不存在，确认 v6 迁移已完整执行')
+        return PersonaState(
+            intimacy=bond[0],
+            tsundere=bond[1],
+            reliance=bond[2],
+            energy=self_state[0],
+            updated_at=bond[3],
+        )
 
-    def _write(self, s: PersonaState) -> None:
+    def _create_contact_bond(self, person: PersonRef) -> None:
+        if person.kind != 'contact':
+            raise RuntimeError(f'不能为 kind={person.kind} 的 person 懒创建关系状态')
         self._db.execute(
-            'UPDATE persona SET intimacy=?, tsundere=?, reliance=?, energy=?, updated_at=? WHERE id=1',
-            (s.intimacy, s.tsundere, s.reliance, s.energy, s.updated_at)
+            '''INSERT INTO persona_bond (person_id, intimacy, tsundere, reliance, updated_at)
+               VALUES (?, ?, ?, ?, ?)''',
+            (person.id, 12.0, 5.0, 20.0, current_time()),
         )
         self._db.commit()
 
-    def snapshot_daily(self, now: int | None = None) -> None:
+    def _write(self, person_id: int, state: PersonaState) -> None:
+        self._db.execute(
+            '''UPDATE persona_bond
+               SET intimacy = ?, tsundere = ?, reliance = ?, updated_at = ?
+               WHERE person_id = ?''',
+            (state.intimacy, state.tsundere, state.reliance, state.updated_at, person_id),
+        )
+        self._db.execute(
+            'UPDATE persona_self SET energy = ?, updated_at = ? WHERE id = 1',
+            (state.energy, state.updated_at),
+        )
+        self._db.commit()
+
+    def snapshot_daily(self, person_id: int, now: int | None = None) -> None:
+        self._require_owner(person_id)
         now = now if now is not None else current_time()
-        s = self.get()
+        state = self.get(person_id)
         date = snapshot_date(now)
         self._db.execute(
             '''INSERT OR IGNORE INTO persona_snapshots (date, intimacy, tsundere, reliance, energy, captured_at)
                VALUES (?, ?, ?, ?, ?, ?)''',
-            (date, s.intimacy, s.tsundere, s.reliance, s.energy, now)
+            (date, state.intimacy, state.tsundere, state.reliance, state.energy, now)
         )
         self._db.commit()
 
-    def latest_snapshot_before(self, now: int | None = None) -> PersonaSnapshot | None:
+    def latest_snapshot_before(self, person_id: int, now: int | None = None) -> PersonaSnapshot | None:
+        self._require_owner(person_id)
         now = now if now is not None else current_time()
         row = self._db.execute(
             '''SELECT date, intimacy, tsundere, reliance, energy, captured_at FROM persona_snapshots
@@ -97,7 +140,8 @@ class Persona:
         return PersonaSnapshot(date=row[0], intimacy=row[1], tsundere=row[2],
                                reliance=row[3], energy=row[4], updated_at=row[5], captured_at=row[5])
 
-    def snapshots(self, limit: int = 90) -> list[PersonaSnapshot]:
+    def snapshots(self, person_id: int, limit: int = 90) -> list[PersonaSnapshot]:
+        self._require_owner(person_id)
         rows = self._db.execute(
             '''SELECT date, intimacy, tsundere, reliance, energy, captured_at FROM persona_snapshots
                ORDER BY date DESC LIMIT ?''', (limit,)
@@ -105,52 +149,63 @@ class Persona:
         return [PersonaSnapshot(date=r[0], intimacy=r[1], tsundere=r[2], reliance=r[3],
                                 energy=r[4], updated_at=r[5], captured_at=r[5]) for r in rows]
 
-    def apply_mood(self, delta: MoodDelta, now: int | None = None) -> PersonaState:
+    def apply_mood(self, person_id: int, delta: MoodDelta,
+                   now: int | None = None) -> PersonaState:
         now = now if now is not None else current_time()
-        s = self.get()
+        state = self.get(person_id)
         favor = _clamp_delta(delta.favor)
         energy = _clamp_delta(delta.energy)
-        nxt = PersonaState(
-            intimacy=_clamp('intimacy', s.intimacy + favor * 1.2),
-            tsundere=_clamp('tsundere', s.tsundere - favor * 0.4),
-            reliance=_clamp('reliance', s.reliance + favor * 0.5),
-            energy=_clamp('energy', s.energy + energy * 3),
+        next_state = PersonaState(
+            intimacy=_clamp('intimacy', state.intimacy + favor * 1.2),
+            tsundere=_clamp('tsundere', state.tsundere - favor * 0.4),
+            reliance=_clamp('reliance', state.reliance + favor * 0.5),
+            energy=_clamp('energy', state.energy + energy * 3),
             updated_at=now,
         )
-        self._write(nxt)
-        return nxt
+        self._write(person_id, next_state)
+        return next_state
 
-    def apply_turn(self, now: int | None = None) -> PersonaState:
+    def apply_turn(self, person_id: int, now: int | None = None) -> PersonaState:
         now = now if now is not None else current_time()
-        s = self.get()
-        nxt = PersonaState(
-            intimacy=_clamp('intimacy', s.intimacy + 0.35),
-            tsundere=_clamp('tsundere', s.tsundere - 0.08),
-            reliance=_clamp('reliance', s.reliance + 0.15),
-            energy=_clamp('energy', s.energy - 0.4),
+        state = self.get(person_id)
+        next_state = PersonaState(
+            intimacy=_clamp('intimacy', state.intimacy + 0.35),
+            tsundere=_clamp('tsundere', state.tsundere - 0.08),
+            reliance=_clamp('reliance', state.reliance + 0.15),
+            energy=_clamp('energy', state.energy - 0.4),
             updated_at=now,
         )
-        self._write(nxt)
-        return nxt
+        self._write(person_id, next_state)
+        return next_state
 
-    def apply_elapsed(self, now: int | None = None, asleep_hours: float = 0.0) -> PersonaState:
+    def apply_elapsed(self, person_id: int, now: int | None = None,
+                      asleep_hours: float = 0.0) -> PersonaState:
         now = now if now is not None else current_time()
-        s = self.get()
-        hours = max(0.0, (now - s.updated_at) / 3_600_000)
+        person = self._registry.person(person_id)
+        state = self.get(person.id)
+        if person.kind != 'owner':
+            return state
+        hours = max(0.0, (now - state.updated_at) / 3_600_000)
         if hours < 1:
-            return s
+            return state
         bounded_asleep = min(hours, max(0.0, asleep_hours))
         awake_hours = hours - bounded_asleep
         days = hours / 24
-        nxt = PersonaState(
-            intimacy=_clamp('intimacy', s.intimacy - days * 0.6),
-            tsundere=_clamp('tsundere', s.tsundere + days * 1.5),
-            reliance=_clamp('reliance', s.reliance - days * 1.2),
-            energy=_clamp('energy', s.energy + bounded_asleep * 4 - awake_hours * 2),
+        next_state = PersonaState(
+            intimacy=_clamp('intimacy', state.intimacy - days * 0.6),
+            tsundere=_clamp('tsundere', state.tsundere + days * 1.5),
+            reliance=_clamp('reliance', state.reliance - days * 1.2),
+            energy=_clamp('energy', state.energy + bounded_asleep * 4 - awake_hours * 2),
             updated_at=now,
         )
-        self._write(nxt)
-        return nxt
+        self._write(person.id, next_state)
+        return next_state
+
+    def _require_owner(self, person_id: int) -> PersonRef:
+        person = self._registry.person(person_id)
+        if person.kind != 'owner':
+            raise ValueError('persona snapshot 仅允许 owner person 读写')
+        return person
 
 
 # ─────────────────────────────────────────────────────────────────────

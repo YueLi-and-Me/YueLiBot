@@ -186,13 +186,15 @@ def main() -> None:
         )
         schedule = DayPlanService(
             store=chat_svc.memory,
-            persona_description=lambda: describe_persona(chat_svc.persona.get()),
+            persona_description=lambda: describe_persona(
+                chat_svc.persona.get(desktop_context.person.id)
+            ),
             interaction_density=lambda n: chat_svc.memory.interaction_density(
                 desktop_context.stream.id,
                 n,
             ),
             anniversary_at=lambda: chat_svc.memory.first_seen_at(desktop_context.person.id),
-            energy=lambda: chat_svc.persona.get().energy,
+            energy=lambda: chat_svc.persona.get(desktop_context.person.id).energy,
             last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
             generator=schedule_generator,
         )
