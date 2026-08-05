@@ -171,6 +171,7 @@ def main() -> None:
         chat=app_state.chat,
         schedule=schedule,
         cfg=cfg,
+        push_event=_push_event,
         vision_provider=vision_provider,
     )
     app_state.awareness = awareness

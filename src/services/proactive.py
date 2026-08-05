@@ -9,11 +9,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 import asyncio
 
-from src.api.ws import push
 from src.awareness.budget import (
     DAILY_BUDGET,
     InterruptContext,
@@ -48,12 +47,19 @@ POLL_INTERVAL_S = 60.0
 class AwarenessService:
     """吃前台/截图事件，驱动睡眠状态与主动搭话决策；注册进 lifecycle。"""
 
-    def __init__(self, chat: Any, schedule: Any | None, cfg: Any,
-                 vision_provider: VisionProvider | None = None) -> None:
+    def __init__(
+        self,
+        chat: Any,
+        schedule: Any | None,
+        cfg: Any,
+        push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
+        vision_provider: VisionProvider | None = None,
+    ) -> None:
         started_at = current_time()
         self.chat = chat
         self._schedule = schedule
         self._cfg = cfg
+        self._push_event = push_event
         self._vision_provider = vision_provider
         self._enabled = cfg.generation.proactive.enabled
 
@@ -221,7 +227,7 @@ class AwarenessService:
         self.chat.set_promise_handler(self.stash_promise)
         if self._cfg.vision.ready and self._vision_provider:
             from src.services.vision import VisionService
-            self._vision = VisionService(self._cfg, push, self._vision_provider)
+            self._vision = VisionService(self._cfg, self._push_event, self._vision_provider)
             logger.info('vision_service_ready', model=self._vision_provider.model)
         elif self._cfg.vision.ready:
             logger.warning('vision_service_disabled', reason='视觉模型配置无效，请检查后端启动日志')
@@ -363,7 +369,7 @@ class AwarenessService:
                        now: int, expired_vision: bool = False) -> bool:
         if intent.wants_vision and self._vision and not self._vision.chat_glance() and not expired_vision:
             # 单程请求：不等截图回传，更不把截图内容冻进这条 intent。
-            await push('vision.capture_request', {'reason': intent.intent_type.name.lower()})
+            await self._push_event('vision.capture_request', {'reason': intent.intent_type.name.lower()})
             return False
 
         minutes = max(0, (now - self._last_activity_since) // 60_000)
@@ -450,7 +456,7 @@ class AwarenessService:
             self._last_pushed_asleep = state.asleep
             trace.emit('sleep_transition', asleep=state.asleep, drowsy=state.drowsy,
                        probability=state.probability)
-            await push('sleep.state', {
+            await self._push_event('sleep.state', {
                 'asleep': state.asleep,
                 'drowsy': state.drowsy,
                 'justWoke': state.just_woke,

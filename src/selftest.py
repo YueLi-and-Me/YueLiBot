@@ -17,7 +17,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from src.common.clock import now as current_time
 from src.common.db.connection import open_db
@@ -58,7 +58,7 @@ async def run_selftest(cfg: Any) -> int:
 
         chat_ok = await _check_chat(chat, provider, events)
         reflect_ok = await _check_reflect(chat, provider)
-        aware_ok = await _check_aware(chat, cfg)
+        aware_ok = await _check_aware(chat, cfg, _push_event)
         return 0 if (chat_ok and reflect_ok and aware_ok) else 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -106,10 +106,14 @@ async def _check_reflect(chat: ChatService, provider: Any) -> bool:
         return False
 
 
-async def _check_aware(chat: ChatService, cfg: Any) -> bool:
+async def _check_aware(
+    chat: ChatService,
+    cfg: Any,
+    push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
+) -> bool:
     """不需要 LLM——纯编排检查，白盒读内部状态。"""
     try:
-        awareness = AwarenessService(chat=chat, schedule=None, cfg=cfg)
+        awareness = AwarenessService(chat=chat, schedule=None, cfg=cfg, push_event=push_event)
 
         awareness.on_foreground({"process": "Code.exe", "title": "main.py - test", "fullscreen": False})
         activity = awareness._last_classified.activity if awareness._last_classified else None
