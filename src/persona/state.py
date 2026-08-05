@@ -12,7 +12,8 @@ from dataclasses import dataclass
 import sqlite3
 
 from src.common.clock import now as current_time, snapshot_date
-from src.platform_io.registry import PersonRef, StreamRegistry
+from src.platform_io.registry import StreamRegistry
+from src.platform_io.types import PersonRef
 
 
 @dataclass

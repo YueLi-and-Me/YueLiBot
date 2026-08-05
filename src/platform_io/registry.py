@@ -7,47 +7,15 @@ desktop；QQ 等平台的入站适配与发送协议仍属于后续阶段。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
-
 import sqlite3
 
-
-PersonKind = Literal["contact", "owner"]
-StreamKind = Literal["desktop", "direct", "group"]
+from src.platform_io.types import ConversationContext, PersonKind, PersonRef, StreamKind, StreamRef
 
 _OWNER_PERSON_ID = 1
 _DESKTOP_STREAM_ID = 1
 _DESKTOP_PLATFORM = "desktop"
 _DESKTOP_KIND = "desktop"
 _DESKTOP_EXTERNAL_ID = "desktop"
-
-
-@dataclass(frozen=True)
-class PersonRef:
-    """已存在 person 的稳定引用。"""
-
-    id: int
-    kind: PersonKind
-    first_seen_at: int
-
-
-@dataclass(frozen=True)
-class StreamRef:
-    """已存在 stream 的稳定引用。"""
-
-    id: int
-    platform: str
-    kind: StreamKind
-    external_id: str
-
-
-@dataclass(frozen=True)
-class ConversationContext:
-    """一条入站消息在当前阶段需要的说话场所与发送人。"""
-
-    stream: StreamRef
-    person: PersonRef
 
 
 class StreamRegistry:

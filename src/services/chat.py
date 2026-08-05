@@ -32,7 +32,8 @@ from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
-from src.platform_io.registry import ConversationContext, StreamRegistry
+from src.platform_io.registry import StreamRegistry
+from src.platform_io.types import ConversationContext, InboundMessage
 from src.schedule.plan import DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
@@ -58,14 +59,6 @@ _HINTS: dict[str, str] = {
     'network': '连不上模型接口，检查网络或代理',
     'blocked': '这句被内容审核拦了，换个说法',
 }
-
-
-@dataclass(frozen=True)
-class InboundMessage:
-    """已经由 StreamRegistry 解析完成的一条入站消息。"""
-
-    text: str
-    context: ConversationContext
 
 
 @dataclass
@@ -209,8 +202,8 @@ class ChatService:
             asleep_hours = self._schedule.sleep_hours_between(before.updated_at, now, earlier_asleep)
         else:
             asleep_hours = 0.0
-        self.persona.apply_elapsed(person_id, now, asleep_hours)
-        if context.person.kind == 'owner':
+        if context.relationship_signals_enabled:
+            self.persona.apply_elapsed(person_id, now, asleep_hours)
             self.persona.snapshot_daily(person_id, now)
 
     async def send(self, inbound: InboundMessage) -> int:
@@ -381,7 +374,9 @@ class ChatService:
                     variants=personality.tone_variants,
                 )
             state.seed = random.randrange(1 << 30)
-        if gap_ms is None or gap_ms <= self._session_gap_ms:
+        if (not context.relationship_signals_enabled
+                or gap_ms is None
+                or gap_ms <= self._session_gap_ms):
             state.resumption_gap_ms = None
         else:
             state.resumption_gap_ms = gap_ms
@@ -689,11 +684,11 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'mood_delta', 'favor': event.favor, 'energy': event.energy})
         elif isinstance(event, PromiseEvent):
-            if context.stream.kind != 'desktop':
+            if not context.relationship_signals_enabled:
                 logger.warning(
-                    'promise_rejected_for_stream',
+                    'promise_rejected_for_person',
                     turnId=turn,
-                    streamKind=context.stream.kind,
+                    personKind=context.person.kind,
                 )
                 return
             if self._promise_handler is None:
