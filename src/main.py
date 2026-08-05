@@ -92,6 +92,7 @@ def main() -> None:
 
     from src.common.db.connection import open_db
     from src.common.db.migrations.manager import run_migrations
+    from src.platform_io.registry import StreamRegistry
     db = open_db(db_path)
     run_migrations(db, db_path)
     logger.info("db_ready", path=str(db_path))
@@ -100,6 +101,14 @@ def main() -> None:
     from src.api.state import app_state
     from src.api.ws import push
     from src.services.chat import ChatService
+
+    app_state.registry = StreamRegistry(db)
+    desktop_context = app_state.registry.desktop_context()
+    logger.info(
+        "stream_registry_ready",
+        owner_person_id=desktop_context.person.id,
+        desktop_stream_id=desktop_context.stream.id,
+    )
 
     # 七个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
     from src.llm_models.router import create_routers
