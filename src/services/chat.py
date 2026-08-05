@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
@@ -59,6 +60,32 @@ _HINTS: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class InboundMessage:
+    """已经由 StreamRegistry 解析完成的一条入站消息。"""
+
+    text: str
+    context: ConversationContext
+
+
+@dataclass
+class _InflightTurn:
+    """可被指定 stream 打断的一次流式对话。"""
+
+    task: asyncio.Task[None]
+    cancel_event: asyncio.Event
+
+
+@dataclass
+class _SessionState:
+    """一个 stream 内稳定的语气、表达样本和单次重逢上下文。"""
+
+    started_at: int | None = None
+    tone: str | None = None
+    seed: int = 0
+    resumption_gap_ms: int | None = None
+
+
 class ChatService:
     """
     对话编排。
@@ -86,8 +113,8 @@ class ChatService:
         self._speak_audio = speak_audio
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
         self._cancel_audio: Callable[[int], Any] | None = None
-        # 流式解析时攒当前这句 <say> 的正文，收完整句才送去合成。
-        self._speech_buffer: list[str] = []
+        # 流式解析时按 stream 攒当前这句 <say> 的正文，收完整句才送去合成。
+        self._speech_buffer: dict[int, list[str]] = {}
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
         if cfg is None:
@@ -128,19 +155,14 @@ class ChatService:
         self.persona = Persona(db)
         self.persona.snapshot_daily(self._desktop_context.person.id)
         self._turn_id = 0
-        self._inflight: asyncio.Task | None = None
-        self._summarizing = False
+        self._inflight: dict[int, _InflightTurn] = {}
+        self._sessions: dict[int, _SessionState] = {}
+        self._summarizing: set[int] = set()
+        self._active_turns: dict[int, int] = {}
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
         self._promise_handler: Callable[[int, str], None] | None = None
         self._schedule: DayPlanService | None = None
-        # 会话级人设状态。逐轮重掷会让她的语气一轮一个样，读起来就像每轮
-        # 换了个人——这正是「像单次对话」的一部分。
-        self._session_started_at: int | None = None
-        self._session_tone: str | None = None
-        self._session_seed: int = 0
-        # 仅供本轮提示词使用；组装后立即清空，避免下一轮重复提起久别。
-        self._resumption_gap_ms: int | None = None
 
     @property
     def ready(self) -> bool:
@@ -174,61 +196,73 @@ class ChatService:
         if self._schedule:
             await self._schedule.ensure(now or current_time())
 
-    def settle_elapsed(self, now: int | None = None, earlier_asleep: bool = False) -> None:
+    def settle_elapsed(
+        self,
+        context: ConversationContext,
+        now: int | None = None,
+        earlier_asleep: bool = False,
+    ) -> None:
         now = now or current_time()
-        person_id = self._desktop_context.person.id
+        person_id = context.person.id
         before = self.persona.get(person_id)
         if self._schedule:
             asleep_hours = self._schedule.sleep_hours_between(before.updated_at, now, earlier_asleep)
         else:
             asleep_hours = 0.0
         self.persona.apply_elapsed(person_id, now, asleep_hours)
-        self.persona.snapshot_daily(person_id, now)
+        if context.person.kind == 'owner':
+            self.persona.snapshot_daily(person_id, now)
 
-    async def send(self, text: str) -> int:
-        trimmed = text.strip()
+    async def send(self, inbound: InboundMessage) -> int:
+        """处理一条携带完整归属上下文的入站消息。"""
+        context = inbound.context
+        stream_id = context.stream.id
+        trimmed = inbound.text.strip()
         if not trimmed:
             return self._turn_id
 
-        self.interrupt()
+        self.interrupt(stream_id)
         turn = self._next_turn()
+        self._active_turns[stream_id] = turn
         mark_turn_start(turn)
         trace.emit('user_input', turnId=turn, text=trimmed)
 
         if not self._chat_provider:
-            await self._emit('chat.error', {'turnId': turn, 'kind': 'error',
-                                             'message': '对话未初始化',
-                                             'hint': '检查 providers.toml 和 models.toml'})
+            await self._emit('chat.error', {
+                'turnId': turn,
+                'kind': 'error',
+                'message': '对话未初始化',
+                'hint': '检查 providers.toml 和 models.toml',
+            })
             return turn
 
         now = current_time()
-        asleep = (self._sleep_state().asleep if self._sleep_state else False)
-        self.settle_elapsed(now, asleep)
+        asleep = self._sleep_state().asleep if self._sleep_state else False
+        self.settle_elapsed(context, now, asleep)
         self.memory.sweep(now)
         if self._schedule:
             await self._schedule.ensure(now)
 
         # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
         #   间隔恒为 0，会话永远不会翻页。
-        self._resumption_gap_ms = self._refresh_session(now)
-
+        self._refresh_session(context, now)
         user_msg_id = self.memory.append_message(
-            self._desktop_context.stream.id,
-            self._desktop_context.person.id,
+            stream_id,
+            context.person.id,
             'user',
             trimmed,
             now,
         )
         cancel_event = asyncio.Event()
 
-        async def _run():
+        async def _run() -> None:
             parser = ResponseParser()
             assistant_raw = ''
             side_effects: list[dict] = []
             interrupted = False
             from src.llm_models.openai import LlmError
             try:
-                messages = await self._build_messages_with_vector(trimmed, now)
+                messages = await self._build_messages_with_vector(context, trimmed, now)
                 trace.emit(
                     'llm_request',
                     turnId=turn,
@@ -252,8 +286,8 @@ class ChatService:
                         if cancel_event.is_set():
                             interrupted = True
                             break
-                        self._handle_side_effects(event, now, turn, side_effects, trimmed)
-                        self._track_speech(event, turn)
+                        self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
+                        self._track_speech(context, event, turn)
                         await self._emit_parse_event(turn, event)
                     if interrupted:
                         break
@@ -263,99 +297,127 @@ class ChatService:
                         if cancel_event.is_set():
                             interrupted = True
                             break
-                        self._handle_side_effects(event, now, turn, side_effects, trimmed)
-                        self._track_speech(event, turn)
+                        self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
+                        self._track_speech(context, event, turn)
                         await self._emit_parse_event(turn, event)
 
                 # ★ 中断也要落库。这段话已经显示（甚至念）给用户了，历史里
                 #   不能当它没发生过——否则下一轮就是连着两条 user 消息，
                 #   模型看不到自己上一句说了什么。副作用（<memory>/<mood>）
                 #   在流式过程中已经写库了，话本身更不该丢。
-                self._persist_reply(assistant_raw)
+                self._persist_reply(context, assistant_raw)
                 if interrupted:
                     return
 
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
                 render_turn(turn, trimmed, messages, assistant_raw, side_effects)
                 try:
-                    self.persona.apply_turn(self._desktop_context.person.id, current_time())
+                    self.persona.apply_turn(context.person.id, current_time())
                 except Exception as exc:
                     # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
                 await self._emit('chat.done', {'turnId': turn, 'kind': 'done'})
-                asyncio.create_task(self._maybe_summarize())
+                asyncio.create_task(self._maybe_summarize(context.stream.id))
 
             except LlmError as exc:
                 if exc.kind == 'aborted':
-                    self._persist_reply(assistant_raw)
+                    self._persist_reply(context, assistant_raw)
                     return
-                self._rollback_or_keep(user_msg_id, assistant_raw)
+                self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
                 render_turn_error(turn, trimmed, exc.kind, str(exc))
-                await self._emit('chat.error', {'turnId': turn, 'kind': 'error',
-                                                 'message': str(exc), 'hint': hint})
+                await self._emit('chat.error', {
+                    'turnId': turn,
+                    'kind': 'error',
+                    'message': str(exc),
+                    'hint': hint,
+                })
             except Exception as exc:
-                self._rollback_or_keep(user_msg_id, assistant_raw)
+                self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
                 render_turn_error(turn, trimmed, 'unknown', str(exc))
                 await self._emit('chat.error', {'turnId': turn, 'kind': 'error', 'message': str(exc)})
 
         task = asyncio.create_task(_run())
-        task._cancel_event = cancel_event  # type: ignore[attr-defined]
-        self._inflight = task
+        inflight = _InflightTurn(task=task, cancel_event=cancel_event)
+        self._inflight[stream_id] = inflight
+
+        def _remove_completed(done_task: asyncio.Task[None]) -> None:
+            current = self._inflight.get(stream_id)
+            if current is inflight and current.task is done_task:
+                self._inflight.pop(stream_id, None)
+
+        task.add_done_callback(_remove_completed)
         return turn
 
-    def _refresh_session(self, now: int) -> int | None:
+    def _session(self, stream_id: int) -> _SessionState:
+        state = self._sessions.get(stream_id)
+        if state is None:
+            state = _SessionState()
+            self._sessions[stream_id] = state
+        return state
+
+    def _refresh_session(self, context: ConversationContext, now: int) -> int | None:
         """跨过静默间隔就开一段新会话，重抽语气和表达样本的随机种子。
 
         返回本次静默了多久（毫秒）；仍在同一会话内则返回 None。
         首次启动（库里一条消息都没有）也返回 None —— 没有「上一次」可言。
         """
-        last = self.memory.last_message_at(self._desktop_context.stream.id)
+        stream_id = context.stream.id
+        state = self._session(stream_id)
+        last = self.memory.last_message_at(stream_id)
         gap_ms = now - last if last is not None else None
-        if (self._session_started_at is None
+        if (state.started_at is None
                 or last is None
                 or (gap_ms is not None and gap_ms > self._session_gap_ms)):
-            self._session_started_at = now
+            state.started_at = now
             if self._cfg is None:
-                self._session_tone = pick_tone()
+                state.tone = pick_tone()
             else:
                 personality = self._cfg.personality
-                self._session_tone = pick_tone(
+                state.tone = pick_tone(
                     probability=personality.tone_probability,
                     variants=personality.tone_variants,
                 )
-            self._session_seed = random.randrange(1 << 30)
+            state.seed = random.randrange(1 << 30)
         if gap_ms is None or gap_ms <= self._session_gap_ms:
-            return None
-        return gap_ms
+            state.resumption_gap_ms = None
+        else:
+            state.resumption_gap_ms = gap_ms
+        return state.resumption_gap_ms
 
-    def _take_resumption(self) -> str | None:
+    def _take_resumption(self, stream_id: int) -> str | None:
         """取走本轮重逢事实，确保它只进入一次系统提示词。"""
-        gap_ms = self._resumption_gap_ms
-        self._resumption_gap_ms = None
+        state = self._session(stream_id)
+        gap_ms = state.resumption_gap_ms
+        state.resumption_gap_ms = None
         if gap_ms is None:
             return None
         return describe_resumption(gap_ms)
 
-    def _session_rng(self) -> random.Random:
+    def _session_rng(self, stream_id: int) -> random.Random:
         """同一会话内给出同一批表达样本；情境识别仍然逐轮进行。"""
-        return random.Random(self._session_seed)
+        return random.Random(self._session(stream_id).seed)
 
-    def _persist_reply(self, assistant_raw: str) -> None:
+    def _persist_reply(self, context: ConversationContext, assistant_raw: str) -> None:
         """把已经吐出去的回复落进历史，补齐流式中断留下的悬空 <say>。"""
         text = close_dangling_say(assistant_raw)
         if text:
             self.memory.append_message(
-                self._desktop_context.stream.id,
+                context.stream.id,
                 None,
                 'assistant',
                 text,
                 current_time(),
             )
 
-    def _rollback_or_keep(self, user_msg_id: int, assistant_raw: str) -> None:
+    def _rollback_or_keep(
+        self,
+        context: ConversationContext,
+        user_msg_id: int,
+        assistant_raw: str,
+    ) -> None:
         """出错时决定这一轮留不留。
 
         一个字都没吐出来 → 整轮回滚，用户那句话也删掉（保持原有意图：
@@ -363,57 +425,63 @@ class ChatService:
         删掉用户消息反而会让历史里出现「凭空的回复」。
         """
         if close_dangling_say(assistant_raw):
-            self._persist_reply(assistant_raw)
+            self._persist_reply(context, assistant_raw)
         else:
-            self.memory.delete_message(self._desktop_context.stream.id, user_msg_id)
+            self.memory.delete_message(context.stream.id, user_msg_id)
 
-    def interrupt(self) -> None:
-        if self._inflight and not self._inflight.done():
-            cancel_ev = getattr(self._inflight, '_cancel_event', None)
-            if cancel_ev:
-                cancel_ev.set()
-        self._inflight = None
+    def interrupt(self, stream_id: int) -> None:
+        """只取消指定 stream 的对话、语音和半截台词。"""
+        inflight = self._inflight.pop(stream_id, None)
+        if inflight is not None and not inflight.task.done():
+            inflight.cancel_event.set()
         # 半截台词的缓冲不能留到下一轮，否则会把上一句的尾巴念进新回复里。
-        self._speech_buffer = []
-        if self._cancel_audio:
+        self._speech_buffer.pop(stream_id, None)
+        turn = self._active_turns.pop(stream_id, None)
+        if self._cancel_audio and turn is not None:
             try:
-                result = self._cancel_audio(self._turn_id)
+                result = self._cancel_audio(turn)
                 if inspect.isawaitable(result):
                     asyncio.create_task(result)
             except Exception as exc:
                 logger.warning('cancel_audio_failed', error=str(exc))
 
-    def speak(self, lines: list[dict]) -> int:
+    def speak(self, context: ConversationContext, lines: list[dict]) -> int:
         if not lines:
             return self._turn_id
-        self.interrupt()
+        stream_id = context.stream.id
+        self.interrupt(stream_id)
         turn = self._next_turn()
+        self._active_turns[stream_id] = turn
         texts: list[str] = []
         for line in lines:
             asyncio.create_task(self._emit_parse_event(turn, SayEvent(emotion=line.get('emotion'))))
             asyncio.create_task(self._emit_parse_event(turn, TextEvent(value=line['text'])))
             asyncio.create_task(self._emit_parse_event(turn, SayEndEvent()))
-            self._dispatch_speech(line['text'], turn)
+            self._dispatch_speech(context, line['text'], turn)
             texts.append(f'<say>{line["text"]}</say>')
         asyncio.create_task(self._emit('chat.done', {'turnId': turn, 'kind': 'done'}))
         self.memory.append_message(
-            self._desktop_context.stream.id,
+            stream_id,
             None,
             'assistant',
             ''.join(texts),
         )
         return turn
 
-    async def compose_proactive(self, situation: str) -> list[dict] | None:
+    async def compose_proactive(
+        self,
+        context: ConversationContext,
+        situation: str,
+    ) -> list[dict] | None:
         if not self._proactive_provider:
             return None
         now = current_time()
-        self._resumption_gap_ms = self._refresh_session(now)
+        self._refresh_session(context, now)
         if self._schedule:
             await self._schedule.ensure(now)
-        persona_desc = describe_persona(self.persona.get(self._desktop_context.person.id))
+        persona_desc = describe_persona(self.persona.get(context.person.id))
         acquaintance = describe_acquaintance(
-            self.memory.first_seen_at(self._desktop_context.person.id),
+            self.memory.first_seen_at(context.person.id),
             now,
         )
         schedule_desc = (self._schedule.describe(now, self.current_sleep())
@@ -424,17 +492,22 @@ class ChatService:
             acquaintance=acquaintance,
             facts=[
                 fact.content
-                for fact in self.memory.top_facts(self._desktop_context.person.id, 5, now)
+                for fact in self.memory.top_facts(context.person.id, 5, now)
             ],
             episodes=[episode.summary for episode in self.memory.recent_episodes(
-                self._desktop_context.stream.id, 2
+                context.stream.id, 2
             )],
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
-                select_expression_habits(situation, proactive=True, limit=3, rng=self._session_rng())
+                select_expression_habits(
+                    situation,
+                    proactive=True,
+                    limit=3,
+                    rng=self._session_rng(context.stream.id),
+                )
             ),
-            tone=self._session_tone,
-            resumption=self._take_resumption(),
+            tone=self._session(context.stream.id).tone,
+            resumption=self._take_resumption(context.stream.id),
             **self._prompt_config_kwargs(),
         )
         system = build_proactive_prompt(base_prompt, situation)
@@ -515,23 +588,28 @@ class ChatService:
             'boundaries': personality.boundaries,
         }
 
-    async def _build_messages_with_vector(self, query: str, now: int) -> list[dict]:
+    async def _build_messages_with_vector(
+        self,
+        context: ConversationContext,
+        query: str,
+        now: int,
+    ) -> list[dict]:
         """向量召回版本的消息构建。_build_messages 的异步替代。"""
         query_embedding = await self._vector.embed_query(query)
         facts = self.memory.recall_facts(
-            self._desktop_context.person.id,
+            context.person.id,
             query,
             self._fact_recall_limit,
             now,
             query_embedding=query_embedding,
         )
         recalled = self.memory.recall_episodes(
-            self._desktop_context.stream.id,
+            context.stream.id,
             query,
             self._recalled_episode_limit,
         )
         recent = self.memory.recent_episodes(
-            self._desktop_context.stream.id,
+            context.stream.id,
             self._recent_episode_limit,
         )
         seen_ids: set[int] = set()
@@ -541,13 +619,13 @@ class ChatService:
                 seen_ids.add(e.id)
                 episodes.append(e)
         episodes = episodes[:self._episode_context_limit]
-        persona_desc = describe_persona(self.persona.get(self._desktop_context.person.id))
+        persona_desc = describe_persona(self.persona.get(context.person.id))
         acquaintance = describe_acquaintance(
-            self.memory.first_seen_at(self._desktop_context.person.id),
+            self.memory.first_seen_at(context.person.id),
             now,
         )
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
-        resumption = self._take_resumption()
+        resumption = self._take_resumption(context.stream.id)
         system = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
@@ -557,9 +635,9 @@ class ChatService:
             activity=(self._activity() if self._activity else None),
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
-                select_expression_habits(query, rng=self._session_rng())
+                select_expression_habits(query, rng=self._session_rng(context.stream.id))
             ),
-            tone=self._session_tone,
+            tone=self._session(context.stream.id).tone,
             resumption=resumption,
             **self._prompt_config_kwargs(),
         )
@@ -567,20 +645,34 @@ class ChatService:
         #   都损坏过一轮）只能在这里救回来，写入端的修复管不到已经写坏的部分。
         #   幂等，对干净历史没有副作用。
         wm = self.memory.working_memory(
-            self._desktop_context.stream.id,
+            context.stream.id,
             self._working_memory_messages,
         )
-        history = normalize_history({'role': m.role, 'content': m.content} for m in wm)
+        history = normalize_history(self._history_for_context(context, wm))
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
+    def _history_for_context(self, context: ConversationContext, messages: list[Any]) -> list[dict]:
+        """仅在组装群聊历史时补说话人显示名，不污染原始消息内容。"""
+        history: list[dict] = []
+        for message in messages:
+            content = message.content
+            if context.stream.kind == 'group' and message.role == 'user':
+                if message.sender_person_id is None:
+                    raise RuntimeError('群聊 user 历史缺少 sender_person_id')
+                name = self._registry.display_name(message.sender_person_id, context.stream.platform)
+                content = f'{name}: {content}'
+            history.append({'role': message.role, 'content': content})
+        return history
+
     def _handle_side_effects(
-        self, event: ParseEvent, now: int, turn: int, sink: list[dict] | None = None,
+        self, context: ConversationContext, event: ParseEvent, now: int, turn: int,
+        sink: list[dict] | None = None,
         source_text: str | None = None,
     ) -> None:
         if isinstance(event, MemoryEvent) and event.content:
             memory_kind = event.memory_type or '未分类'
             self.memory.add_fact(
-                self._desktop_context.person.id,
+                context.person.id,
                 FactInput(content=event.content, kind=memory_kind),
                 now,
             )
@@ -589,7 +681,7 @@ class ChatService:
                 sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
         elif isinstance(event, MoodEvent):
             self.persona.apply_mood(
-                self._desktop_context.person.id,
+                context.person.id,
                 MoodDelta(favor=event.favor, energy=event.energy),
                 now,
             )
@@ -597,6 +689,13 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'mood_delta', 'favor': event.favor, 'energy': event.energy})
         elif isinstance(event, PromiseEvent):
+            if context.stream.kind != 'desktop':
+                logger.warning(
+                    'promise_rejected_for_stream',
+                    turnId=turn,
+                    streamKind=context.stream.kind,
+                )
+                return
             if self._promise_handler is None:
                 logger.warning('promise_handler_missing', turnId=turn)
                 return
@@ -607,7 +706,7 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'promise_stashed', 'at': event.at, 'subject': source_text})
 
-    def _dispatch_speech(self, text: str, turn: int) -> None:
+    def _dispatch_speech(self, context: ConversationContext, text: str, turn: int) -> None:
         """把一句台词送去合成。
 
         ★ 这里必须容忍同步和协程两种回调：注入进来的 TtsService.speak 是同步的
@@ -628,7 +727,7 @@ class ChatService:
         except Exception as exc:
             logger.warning('speak_audio_failed', turnId=turn, error=str(exc))
 
-    def _track_speech(self, event: ParseEvent, turn: int) -> None:
+    def _track_speech(self, context: ConversationContext, event: ParseEvent, turn: int) -> None:
         """在流式解析过程中攒出完整台词，每收完一个 <say> 就送去合成。
 
         ★ 此前这里是个空 stub，导致正常对话**完全不发声**——_speak_audio
@@ -637,14 +736,14 @@ class ChatService:
         """
         if not self._speak_audio:
             return
+        stream_id = context.stream.id
         if isinstance(event, SayEvent):
-            self._speech_buffer = []
+            self._speech_buffer[stream_id] = []
         elif isinstance(event, TextEvent):
-            self._speech_buffer.append(event.value)
+            self._speech_buffer.setdefault(stream_id, []).append(event.value)
         elif isinstance(event, SayEndEvent):
-            line = ''.join(self._speech_buffer)
-            self._speech_buffer = []
-            self._dispatch_speech(line, turn)
+            line = ''.join(self._speech_buffer.pop(stream_id, []))
+            self._dispatch_speech(context, line, turn)
 
     async def _emit(self, channel: str, payload: Any) -> None:
         try:
@@ -674,15 +773,15 @@ class ChatService:
             return
         await self._emit('chat.event', ev)
 
-    async def _maybe_summarize(self) -> None:
-        if self._summarizing or not self._summary_provider:
+    async def _maybe_summarize(self, stream_id: int) -> None:
+        if stream_id in self._summarizing or not self._summary_provider:
             return
-        if self.memory.pending_count(self._desktop_context.stream.id) < self._summarize_trigger_messages:
+        if self.memory.pending_count(stream_id) < self._summarize_trigger_messages:
             return
-        self._summarizing = True
+        self._summarizing.add(stream_id)
         try:
             batch = self.memory.oldest_pending(
-                self._desktop_context.stream.id,
+                stream_id,
                 self._summarize_batch_messages,
             )
             if len(batch) < 4:
@@ -697,7 +796,7 @@ class ChatService:
             if not episode:
                 return
             self.memory.add_episode(
-                self._desktop_context.stream.id,
+                stream_id,
                 EpisodeInput(
                     summary=episode.summary,
                     cues=episode.recall_cues,
@@ -709,7 +808,7 @@ class ChatService:
         except Exception:
             pass
         finally:
-            self._summarizing = False
+            self._summarizing.discard(stream_id)
 
 
 def _extract_lines(raw: str) -> list[dict] | None:

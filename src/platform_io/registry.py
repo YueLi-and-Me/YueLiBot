@@ -117,6 +117,19 @@ class StreamRegistry:
             return None
         return PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
 
+    def display_name(self, person_id: int, platform: str) -> str:
+        """读取指定平台上的显示名，供群聊历史在读取时标识说话人。"""
+        platform = _require_text(platform, "platform")
+        row = self._db.execute(
+            '''SELECT display_name FROM identities
+               WHERE person_id = ? AND platform = ?
+               ORDER BY external_id ASC LIMIT 1''',
+            (person_id, platform),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"person {person_id} 在平台 {platform} 没有可用显示名")
+        return row[0]
+
     def link_identity(
         self,
         person: PersonRef,

@@ -386,10 +386,11 @@ class AwarenessService:
         else:
             base = describe_activity(classified, minutes)
         description_used = bool(self._vision and self._vision.chat_glance())
-        lines = await self.chat.compose_proactive(self._with_vision(base))
+        desktop_context = self.chat.desktop_context
+        lines = await self.chat.compose_proactive(desktop_context, self._with_vision(base))
         if not lines:
             return False
-        self.chat.speak(lines)
+        self.chat.speak(desktop_context, lines)
         if description_used:
             self._vision_spoke_count += 1
         self._budget = after_speak(self._budget, ctx)

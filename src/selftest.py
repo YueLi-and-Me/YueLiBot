@@ -23,7 +23,7 @@ from src.common.clock import now as current_time
 from src.common.db.connection import open_db
 from src.common.db.migrations.manager import run_migrations
 from src.common.logger import get_logger
-from src.services.chat import SUMMARIZE_AT, ChatService
+from src.services.chat import SUMMARIZE_AT, ChatService, InboundMessage
 from src.services.proactive import AwarenessService
 
 logger = get_logger(__name__)
@@ -78,10 +78,11 @@ async def _check_chat(chat: ChatService, provider: Any, events: list[dict]) -> b
         _report("SELFTEST-CHAT", {"ok": True, "skipped": True, "reason": "no_provider"})
         return True
     try:
-        turn = await chat.send("自检：请用一个字回复我")
-        task = chat._inflight
-        if task is not None:
-            await asyncio.wait_for(task, timeout=_CHAT_TIMEOUT_S)
+        context = chat.desktop_context
+        turn = await chat.send(InboundMessage(text="自检：请用一个字回复我", context=context))
+        inflight = chat._inflight.get(context.stream.id)
+        if inflight is not None:
+            await asyncio.wait_for(inflight.task, timeout=_CHAT_TIMEOUT_S)
         turn_events = [e for e in events if e["payload"].get("turnId") == turn]
         done = any(e["channel"] == "chat.done" for e in turn_events)
         error = next((e for e in turn_events if e["channel"] == "chat.error"), None)
@@ -113,7 +114,7 @@ async def _check_reflect(chat: ChatService, provider: Any) -> bool:
                 f"自检消息 {i}",
                 base + i * 1000,
             )
-        await chat._maybe_summarize()
+        await chat._maybe_summarize(desktop_context.stream.id)
         after = len(chat.memory.all_episodes())
         ok = after > before
         _report("SELFTEST-REFLECT", {"ok": ok, "episodesBefore": before, "episodesAfter": after})

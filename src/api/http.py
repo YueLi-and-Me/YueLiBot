@@ -7,11 +7,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
+from .auth import require_token
+from .state import app_state   # 全局服务状态
+
 from src.common.logger import get_logger
 from src.config.loader import get_config
 from src.services.trace import trace
-from .auth import require_token
-from .state import app_state   # 全局服务状态
+from src.services.chat import InboundMessage
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -30,16 +32,17 @@ async def health() -> dict:
 async def chat_send(request: Request) -> JSONResponse:
     body = await request.json()
     text = str(body.get("text", "")).strip()
-    if not text or app_state.chat is None:
+    if not text or app_state.chat is None or app_state.registry is None:
         return JSONResponse({"turnId": 0})
-    turn_id = await app_state.chat.send(text)
+    context = app_state.registry.desktop_context()
+    turn_id = await app_state.chat.send(InboundMessage(text=text, context=context))
     return JSONResponse({"turnId": turn_id})
 
 
 @router.post("/chat/interrupt", dependencies=[Depends(_auth)])
 async def chat_interrupt() -> dict:
-    if app_state.chat:
-        app_state.chat.interrupt()
+    if app_state.chat and app_state.registry:
+        app_state.chat.interrupt(app_state.registry.desktop_stream().id)
     return {"ok": True}
 
 
