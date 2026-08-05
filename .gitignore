@@ -31,5 +31,11 @@ __pycache__/
 /config/
 /data/
 
+# 测试不入库。文件仍留在工作区，pytest 与 vitest 照常运行；
+# 加这三条是防止一次 `git add .` 把它们重新带进版本库。
+/pytests/
+/tests/
+*.test.ts
+
 # IDE
 .idea/
