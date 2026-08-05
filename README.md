@@ -69,7 +69,7 @@ uv pip install "rembg[cli]" onnxruntime
 
 数据库、日志和 Electron 缓存统一放在项目根目录的 `data\`。程序启动时会拒绝把运行时根目录解析到 C 盘；特殊启动方式可用 `YUELI_PROJECT_ROOT` 明确指定其它盘。项目根目录若存在旧版 `config.toml`，会自动迁移为四文件结构并保留原文件。
 
-字段说明、引用关系和手工编辑示例见 [配置指南](docs/configuration.md)。
+四份文件里的引用关系是单向的：`models.toml` 的每个模型引用 `providers.toml` 里的一个厂商名，任务再引用一串模型名作为候选。改名字的时候要顺着这条链一起改，否则启动时会直接报错退出——加载期会做完整的交叉校验，不会带着一个悬空引用继续跑。
 
 > [!IMPORTANT]
 > `providers.toml` 当前仍包含明文 Key。`config\` 和 `data\` 已被 Git 忽略，仍不要把 Key、相关截图或日志提交到版本库。
@@ -88,21 +88,13 @@ npm run dev
 
 ---
 
-## 📚 文档 · DOC
+## ⚠️ 三个不报错的坑 · PITFALLS
 
-| 文档 | 内容 |
-| :--- | :--- |
-| [`docs/notes.md`](docs/notes.md) | 设计决策与踩坑汇总。**动手前强烈建议扫一遍** |
-| [`docs/configuration.md`](docs/configuration.md) | 配置字段说明与手工编辑示例 |
-| [`docs/observability.md`](docs/observability.md) | 把后台黑盒打开：人格、记忆、日程的可观测方案 |
-| [`docs/design-review-roadmap.md`](docs/design-review-roadmap.md) | 2026-08-03 快照的系统性复盘（其中路线图是建议，不代表已完成） |
+改 Electron 那一侧之前先看这三条。它们的共同点是**没有任何报错，只表现为功能不工作**，不知道的话能查很久：
 
-`docs/` 下另有若干 `*-rework*.md`，是各轮重构的过程记录，按需查阅。
-
-`notes.md` 里有几条是**没有任何报错、只表现为功能不工作**的坑（Electron 的 `focusable`、`setPosition` 在非整数 DPI 下的漂移、ESM preload 与 sandbox），不知道的话能查很久。
-
-> [!NOTE]
-> 推进计划、接入方案、规范约定这类**过程文档不入库**，和测试一样只存在于开发机的工作区（`docs/roadmap.md`、`docs/napcat-plan.md`、`docs/webui-plan.md`、`CLAUDE.md`、`Agent.md` 等）。README 是**唯一**随代码分发的文档，所以它必须自己把话说完整，不要指望读者能翻到别的文件。
+- **窗口 `focusable`**：置成 `false` 之后输入栏永远拿不到焦点，但窗口本身看起来一切正常，点击也有反应。
+- **`setPosition` 在非整数 DPI 下漂移**：125% / 150% 缩放时传进去的坐标和实际落点差几像素，多次「搬回原位」会越积越偏。取整时机要对齐缩放因子。
+- **ESM preload 与 sandbox**：sandbox 开着时 preload 走不了 ESM，`import` 会静默失败，渲染层拿到的是一个空的 IPC 桥——表现为「按钮点了没反应」，控制台干净。
 
 ---
 
@@ -182,7 +174,8 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 | `npm run sprite:*` | 生图管线，见上 |
 
 > [!NOTE]
-> 测试文件（`pytests/`、`tests/`、`*.test.ts`）**不进版本库**，clone 下来不会有这些目录，上面三条测试命令也就无从执行。它们只存在于开发机的工作区。
+> 测试文件（`pytests/`、`tests/`、`*.test.ts`）和 `docs/` **都不进版本库**，检出后不会有这些目录，上面三条测试命令也就无从执行。它们只存在于开发机的工作区。
+> 版本库里刻意只留代码和这份 README——所以 README 必须自己把话说完整，不指望读者能翻到别的文件。
 >
 > 因此**本项目不做 CI**：检出的仓库里没有测试可跑。验证只在开发机进行，标准是三条绿状态门（`pytest` / `tsc --noEmit` / `vitest run`）。
 > 这是自觉取舍，代价是没有人能替你复核——所以地基级改动（数据库迁移、记忆分区这类）的额外验收项一条都不能省。

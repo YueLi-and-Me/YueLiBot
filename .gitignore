@@ -37,5 +37,12 @@ __pycache__/
 /tests/
 *.test.ts
 
+# 文档不入库。docs/ 整个目录、以及给 agent 的规范约定，都只留在开发机工作区；
+# README.md 是唯一随代码分发的文档，所以它得自己把话说完整。
+# 同测试守卫，防的是一次 `git add .` 把它们带进版本库。
+/docs/
+/CLAUDE.md
+/Agent.md
+
 # IDE
 .idea/
