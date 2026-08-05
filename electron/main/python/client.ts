@@ -160,7 +160,7 @@ export class PythonClient {
 
   private _connect(): void {
     // 子协议方式传 token：标准握手字段，浏览器与 Node 实现都支持
-    const ws = new WebSocket(`ws://127.0.0.1:${this.port}/ws`, [`yueli-${this.token}`])
+    const ws = new WebSocket(`ws://127.0.0.1:${this.port}/ws?client=desktop`, [`yueli-${this.token}`])
     this.ws = ws
 
     ws.addEventListener('open', () => {
