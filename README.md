@@ -88,8 +88,26 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 业务域已经从 TypeScript 迁到 Python：Electron 只做平台层和进程治理，
 对话、记忆、人格、日程、主动行为全在 Python 后端。
 
+目录按 MaiBot 的形状组织：`src/` 是 Python 包根，一个模块一个文件夹，
+入口在仓库根的 `bot.py`；Electron 那一侧整体收在 `electron/`。
+
 ```
-src/                Electron 端（TypeScript）
+bot.py              后端入口（等价 MaiBot 的 bot.py）
+
+src/                业务真源（Python 包根）
+  main.py           启动装配：读配置、建服务、拉 uvicorn
+  agent/            人设、提示词、表达习惯、增量标签解析、历史修复、反思
+  llm_models/       OpenAI 兼容的流式对话与多厂商路由
+  memory/           三层记忆、分词、遗忘曲线
+  persona/          四条人格轴 → 自然语言行为指令
+  awareness/        前台归类、键鼠强度、兴趣值、意图队列、睡眠状态
+  schedule/         24h 生成式日程
+  services/         对话编排、主动感知、视觉、TTS、追踪
+  api/              FastAPI 路由与 WebSocket
+  config/           配置 schema 与多文件 TOML 加载
+  common/           时钟、日志、SQLite 连接与迁移
+
+electron/           Electron 端（TypeScript）
   main/             主进程（持有 API Key）
     platform/       ★ 系统调用适配层，迁移 Tauri 只需重写这里
     python/         Python 后端的 supervisor 与 HTTP/WS 客户端
@@ -98,16 +116,8 @@ src/                Electron 端（TypeScript）
     character/      CharacterView 接口 + 立绘差分实现
   shared/           两端共用的类型与 IPC 契约
 
-python/yueli/       业务真源（Python）
-  agent/            人设、提示词、表达习惯、增量标签解析、历史修复、反思
-  llm/              OpenAI 兼容的流式对话
-  memory/           三层记忆、分词、遗忘曲线
-  persona/          四条人格轴 → 自然语言行为指令
-  awareness/        前台归类、打扰预算、睡眠状态
-  schedule/         24h 生成式日程
-  services/         对话编排、主动感知、视觉、TTS、追踪
-  api/              FastAPI 路由与 WebSocket
-
+pytests/            Python 测试
+tests/              TypeScript 测试
 scripts/sprite/     生图管线
 ```
 
