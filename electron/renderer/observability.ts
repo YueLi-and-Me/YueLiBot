@@ -122,11 +122,11 @@ function chip(parent: HTMLElement, label: string, value: string): void {
 function renderStatus(payload: ObservabilityPayload): void {
   status.replaceChildren()
   const sleep = record(payload.sleep)
-  const budget = record(payload.budget)
+  const impulse = record(payload.impulse)
   const vision = record(record(payload.sensing).visionStats)
   const sleepLabel = sleep.asleep === true ? '睡着' : sleep.drowsy === true ? '犯困' : '清醒'
-  const used = numeric(budget.used) ?? 0
-  const remaining = numeric(budget.remaining) ?? 0
+  const used = numeric(impulse.used) ?? 0
+  const remaining = numeric(impulse.remaining) ?? 0
   const values: Array<readonly [string, string]> = [
     ['当前状态', sleepLabel],
     ['今日预算', `${used} / ${used + remaining}`],
@@ -252,19 +252,27 @@ function renderSleep(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
+// 后端把预算和冲动放在同一个 impulse 块里（proactive.py 的 observability_fields）。
+// 场景类意图只能用到总额减去保留槽的那部分，用完之后她整天都不会再因为
+// 切窗口开口——面板必须把这一段单独标出来，否则「还剩 2 额度却再也不说话」
+// 会被当成故障来查。
+const SCENE_RESERVED_SLOTS = 2
+
 function renderBudget(payload: ObservabilityPayload): void {
-  const budget = record(payload.budget)
-  const { body } = section('打扰预算', 'budget')
-  const used = numeric(budget.used) ?? 0
-  const remaining = numeric(budget.remaining) ?? 0
-  const total = Math.max(1, used + remaining)
-  progress(body, used, total, '今日主动开口预算')
+  const impulse = record(payload.impulse)
+  const { body } = section('打扰预算', 'impulse')
+  const used = numeric(impulse.used) ?? 0
+  const remaining = numeric(impulse.remaining) ?? 0
+  const total = used + remaining
+  progress(body, used, Math.max(1, total), '今日主动开口预算')
+  const sceneTotal = Math.max(0, total - SCENE_RESERVED_SLOTS)
   const list = document.createElement('div')
   list.className = 'metric-list spaced'
-  metric(list, '已用 / 总额', `${used} / ${used + remaining}`)
-  metric(list, '连续未回应', fixed(budget.ignored))
-  metric(list, '当前冷却', `${fixed(budget.cooldownMinutes)} 分钟`)
-  metric(list, '下次可开口', `${fixed(budget.nextAllowedInMinutes)} 分钟后`)
+  metric(list, '已用 / 总额', `${used} / ${total}`)
+  metric(list, '场景可用', `${Math.max(0, sceneTotal - used)} / ${sceneTotal}`)
+  metric(list, '连续未回应', fixed(impulse.ignored))
+  metric(list, '当前兴趣值', fixed(impulse.interest, 2))
+  metric(list, '攒满还需', `${fixed(impulse.minutesToFull)} 分钟`)
   body.append(list)
 }
 
