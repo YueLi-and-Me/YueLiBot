@@ -159,6 +159,15 @@ class MemoryStore:
         ).fetchone()
         return row[0] if row else 0
 
+    def assistant_reply_count_since(self, stream_id: int, since: int) -> int:
+        """统计群聊硬频率闸窗口内已经落库的助手回复数。"""
+        row = self._db.execute(
+            '''SELECT COUNT(*) FROM messages
+               WHERE stream_id = ? AND role = 'assistant' AND created_at >= ?''',
+            (stream_id, since),
+        ).fetchone()
+        return row[0] if row else 0
+
     def oldest_pending(self, stream_id: int, n: int) -> list[dict[str, Any]]:
         rows = self._db.execute(
             '''SELECT id, role, content, created_at, sender_person_id FROM messages
