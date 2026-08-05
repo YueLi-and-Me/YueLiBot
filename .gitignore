@@ -46,3 +46,9 @@ __pycache__/
 
 # IDE
 .idea/
+.vscode/
+
+# AI 工具的本地配置与缓存
+.claude/
+.cursor/
+.aider*
