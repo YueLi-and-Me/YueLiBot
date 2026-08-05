@@ -59,6 +59,26 @@ class StreamRegistry:
         """返回桌面唯一且完整的入站上下文。"""
         return ConversationContext(stream=self.desktop_stream(), person=self.owner_person())
 
+    def resolve_inbound(
+        self,
+        platform: str,
+        stream_kind: StreamKind,
+        stream_external_id: str,
+        sender_external_id: str,
+        sender_name: str,
+        first_seen_at: int,
+    ) -> ConversationContext:
+        """把平台入站字段解析为唯一的业务归属上下文。"""
+        if stream_kind not in ('direct', 'group'):
+            raise ValueError('平台入站仅支持 direct 或 group stream')
+        platform = _require_text(platform, 'platform')
+        stream = self.get_or_create_stream(platform, stream_kind, stream_external_id)
+        person = self.find_person_by_identity(platform, sender_external_id)
+        if person is None:
+            person = self.create_person('contact', first_seen_at)
+        self.link_identity(person, platform, sender_external_id, sender_name)
+        return ConversationContext(stream=stream, person=person)
+
     def create_person(self, kind: PersonKind, first_seen_at: int) -> PersonRef:
         """创建非 owner person；owner 只能由迁移或 SEED 确定性创建。"""
         if kind != "contact":

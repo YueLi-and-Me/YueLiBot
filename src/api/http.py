@@ -4,19 +4,57 @@ HTTP 路由（已接通各 service）。
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .auth import require_token
 from .state import app_state   # 全局服务状态
 
+from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.config.loader import get_config
+from src.platform_io.reply_gate import decide_reply
+from src.platform_io.types import InboundMessage
 from src.services.trace import trace
-from src.services.chat import InboundMessage
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+_GROUP_REPLY_WINDOW_MS = 10 * 60_000
+_MAX_GROUP_REPLIES_IN_WINDOW = 3
+
+
+class PlatformInboundBody(BaseModel):
+    """平台适配器提交的一条完整入站消息。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: str
+    stream_kind: Literal['direct', 'group'] = Field(alias='streamKind')
+    stream_external_id: str = Field(alias='streamExternalId')
+    sender_external_id: str = Field(alias='senderExternalId')
+    sender_name: str = Field(alias='senderName')
+    text: str
+    mentioned_me: bool = Field(alias='mentionedMe')
+    external_message_id: str = Field(alias='externalMessageId')
+
+    @field_validator(
+        'platform',
+        'stream_external_id',
+        'sender_external_id',
+        'sender_name',
+        'text',
+        'external_message_id',
+    )
+    @classmethod
+    def _require_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError('字符串字段不能为空')
+        return value
 
 
 def _auth(authorization: str | None = Header(default=None)) -> None:
@@ -37,6 +75,65 @@ async def chat_send(request: Request) -> JSONResponse:
     context = app_state.registry.desktop_context()
     turn_id = await app_state.chat.send(InboundMessage(text=text, context=context))
     return JSONResponse({"turnId": turn_id})
+
+
+@router.post('/platform/inbound', dependencies=[Depends(_auth)])
+async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
+    """接收非桌面平台消息，完成归属解析和群聊门控后汇入 ChatService。"""
+    if app_state.chat is None or app_state.registry is None:
+        return JSONResponse(
+            {'detail': '对话服务未初始化'},
+            status_code=503,
+        )
+
+    now = current_time()
+    context = app_state.registry.resolve_inbound(
+        platform=body.platform,
+        stream_kind=body.stream_kind,
+        stream_external_id=body.stream_external_id,
+        sender_external_id=body.sender_external_id,
+        sender_name=body.sender_name,
+        first_seen_at=now,
+    )
+    reply_count = 0
+    if context.stream.kind == 'group':
+        reply_count = app_state.chat.memory.assistant_reply_count_since(
+            context.stream.id,
+            now - _GROUP_REPLY_WINDOW_MS,
+        )
+    decision = decide_reply(
+        stream_kind=context.stream.kind,
+        asleep=app_state.chat.current_sleep().asleep,
+        mentioned_me=body.mentioned_me,
+        my_replies_in_window=reply_count,
+        max_replies_in_window=_MAX_GROUP_REPLIES_IN_WINDOW,
+    )
+    trace.emit(
+        'reply_gate',
+        streamId=context.stream.id,
+        accepted=decision.accepted,
+        reason=decision.reason,
+    )
+    if not decision.accepted:
+        return JSONResponse({
+            'turnId': 0,
+            'streamId': context.stream.id,
+            'accepted': False,
+            'reason': decision.reason,
+        })
+
+    turn_id = await app_state.chat.send(InboundMessage(
+        text=body.text,
+        context=context,
+        mentioned_me=body.mentioned_me,
+        external_message_id=body.external_message_id,
+    ))
+    return JSONResponse({
+        'turnId': turn_id,
+        'streamId': context.stream.id,
+        'accepted': True,
+        'reason': decision.reason,
+    })
 
 
 @router.post("/chat/interrupt", dependencies=[Depends(_auth)])
