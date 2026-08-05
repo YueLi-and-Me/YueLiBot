@@ -74,6 +74,15 @@ uv pip install "rembg[cli]" onnxruntime
 > [!IMPORTANT]
 > `providers.toml` 当前仍包含明文 Key。`config\` 和 `data\` 已被 Git 忽略，仍不要把 Key、相关截图或日志提交到版本库。
 
+### 数据库迁移与恢复
+
+程序升级数据库前，会在 `data\backups\` 创建带旧版本号和日期的 SQLite 一致性备份。迁移是
+单向的：特别是事实归属与人格关系拆分后的多人数据，不能可靠地自动降级。
+
+若升级后需要恢复旧库，先完全退出程序，再用对应的 `memory.v5.<日期>.db` 备份覆盖当前
+`memory.db`，随后在 SQLite 中执行 `PRAGMA user_version = 5`。不要尝试手工删除新列或运行
+不存在的反向迁移；那样会留下表结构和数据内容不一致的库。
+
 ### 3. 跑起来
 
 ```bash

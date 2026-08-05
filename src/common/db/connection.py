@@ -6,7 +6,8 @@ SQLite 连接管理。
   · 阻塞查询一律用 asyncio.to_thread 包裹，防止事件循环在流式对话期间被卡住
   · 测试可传入 ':memory:' 拿到隔离的内存库
 
-连接在进程生命周期内保持打开，不需要连接池。
+连接在进程生命周期内保持打开，不需要连接池。建表与迁移由 migrations.manager
+统一编排，避免旧库在创建备份前就被最新 DDL 改写。
 """
 
 from __future__ import annotations
@@ -16,8 +17,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from .schema import DDL, SCHEMA_VERSION, SEED
-
 _T = TypeVar("_T")
 
 # 进程级单例
@@ -26,9 +25,10 @@ _db: sqlite3.Connection | None = None
 
 def open_db(path: str | Path) -> sqlite3.Connection:
     """
-    打开数据库，执行 DDL 与初始 SEED，返回连接。
+    打开数据库并返回连接。
 
-    首次调用建库；以后库已存在则只应用迁移（见 migrations/manager.py）。
+    DDL/SEED 必须由 migrations.manager 在版本与备份处理之后执行：已有库若在这里
+    先执行目标 DDL，会使后续迁移失败时无法恢复为原始版本。
     """
     global _db
     if _db is not None:
@@ -36,9 +36,6 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 
     db = sqlite3.connect(str(path), check_same_thread=False)
     db.row_factory = sqlite3.Row   # 让 fetchone/fetchall 返回 dict-like 对象
-    db.executescript(DDL)
-    db.executescript(SEED)
-    db.commit()
     _db = db
     return db
 
