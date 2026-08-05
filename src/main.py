@@ -187,10 +187,13 @@ def main() -> None:
         schedule = DayPlanService(
             store=chat_svc.memory,
             persona_description=lambda: describe_persona(chat_svc.persona.get()),
-            interaction_density=lambda n: chat_svc.memory.interaction_density(n),
-            anniversary_at=lambda: chat_svc.memory.first_seen_at,
+            interaction_density=lambda n: chat_svc.memory.interaction_density(
+                desktop_context.stream.id,
+                n,
+            ),
+            anniversary_at=lambda: chat_svc.memory.first_seen_at(desktop_context.person.id),
             energy=lambda: chat_svc.persona.get().energy,
-            last_interaction_at=lambda: chat_svc.memory.last_message_at(),
+            last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
             generator=schedule_generator,
         )
         chat_svc.set_schedule(schedule)

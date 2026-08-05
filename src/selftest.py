@@ -102,9 +102,17 @@ async def _check_reflect(chat: ChatService, provider: Any) -> bool:
     try:
         before = len(chat.memory.all_episodes())
         base = current_time() - 60 * 60_000
+        desktop_context = chat.desktop_context
         for i in range(SUMMARIZE_AT):
             role = "user" if i % 2 == 0 else "assistant"
-            chat.memory.append_message(role, f"自检消息 {i}", base + i * 1000)
+            sender_person_id = desktop_context.person.id if role == "user" else None
+            chat.memory.append_message(
+                desktop_context.stream.id,
+                sender_person_id,
+                role,
+                f"自检消息 {i}",
+                base + i * 1000,
+            )
         await chat._maybe_summarize()
         after = len(chat.memory.all_episodes())
         ok = after > before

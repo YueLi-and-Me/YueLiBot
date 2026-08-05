@@ -85,12 +85,13 @@ class AwarenessService:
     def _sleep_inputs(self, now: int) -> SleepInputs:
         date = day_plan_date(now)
         plan = self._schedule.get(now) if self._schedule else fallback_day_plan(date)
+        desktop_context = self.chat.desktop_context
         return SleepInputs(
             date=plan.date,
             bedtime_hint=plan.bedtime_hint,
             wake_hint=plan.wake_hint,
             energy=self.chat.persona.get().energy,
-            last_interaction_at=self.chat.memory.last_message_at(),
+            last_interaction_at=self.chat.memory.last_message_at(desktop_context.stream.id),
         )
 
     def _restore_promises(self) -> list[PendingIntent]:
@@ -129,7 +130,7 @@ class AwarenessService:
 
     def _interest_factors(self, now: int) -> InterestFactors:
         classified = self._last_classified or classify(None)
-        last_message_at = self.chat.memory.last_message_at()
+        last_message_at = self.chat.memory.last_message_at(self.chat.desktop_context.stream.id)
         absence_hours = 0.0 if last_message_at is None else max(0.0, (now - last_message_at) / 3_600_000)
         persona = self.chat.persona.get()
         return factors_for(
@@ -439,7 +440,7 @@ class AwarenessService:
             return
 
     def _responded_since_last(self, now: int) -> bool:
-        last_msg = self.chat.memory.last_message_at()
+        last_msg = self.chat.memory.last_message_at(self.chat.desktop_context.stream.id)
         if last_msg is None:
             return True
         return last_msg > self._budget.last_at

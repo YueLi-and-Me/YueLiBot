@@ -31,6 +31,7 @@ from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
+from src.platform_io.registry import ConversationContext, StreamRegistry
 from src.schedule.plan import DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
@@ -122,6 +123,8 @@ class ChatService:
             self._summary_temperature = generation.summary.temperature
             self._summary_max_tokens = generation.summary.token_limit
         self.memory = MemoryStore(db)
+        self._registry = StreamRegistry(db)
+        self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
         self.persona.snapshot_daily()
         self._turn_id = 0
@@ -142,6 +145,11 @@ class ChatService:
     @property
     def ready(self) -> bool:
         return self._chat_provider is not None
+
+    @property
+    def desktop_context(self) -> ConversationContext:
+        """当前 desktop 链路的归属上下文；M1.4.5 再改为每条入站消息显式携带。"""
+        return self._desktop_context
 
     def set_schedule(self, svc: DayPlanService) -> None:
         self._schedule = svc
@@ -203,7 +211,13 @@ class ChatService:
         #   间隔恒为 0，会话永远不会翻页。
         self._resumption_gap_ms = self._refresh_session(now)
 
-        user_msg_id = self.memory.append_message('user', trimmed, now)
+        user_msg_id = self.memory.append_message(
+            self._desktop_context.stream.id,
+            self._desktop_context.person.id,
+            'user',
+            trimmed,
+            now,
+        )
         cancel_event = asyncio.Event()
 
         async def _run():
@@ -297,7 +311,7 @@ class ChatService:
         返回本次静默了多久（毫秒）；仍在同一会话内则返回 None。
         首次启动（库里一条消息都没有）也返回 None —— 没有「上一次」可言。
         """
-        last = self.memory.last_message_at()
+        last = self.memory.last_message_at(self._desktop_context.stream.id)
         gap_ms = now - last if last is not None else None
         if (self._session_started_at is None
                 or last is None
@@ -332,7 +346,13 @@ class ChatService:
         """把已经吐出去的回复落进历史，补齐流式中断留下的悬空 <say>。"""
         text = close_dangling_say(assistant_raw)
         if text:
-            self.memory.append_message('assistant', text, current_time())
+            self.memory.append_message(
+                self._desktop_context.stream.id,
+                None,
+                'assistant',
+                text,
+                current_time(),
+            )
 
     def _rollback_or_keep(self, user_msg_id: int, assistant_raw: str) -> None:
         """出错时决定这一轮留不留。
@@ -344,7 +364,7 @@ class ChatService:
         if close_dangling_say(assistant_raw):
             self._persist_reply(assistant_raw)
         else:
-            self.memory.delete_message(user_msg_id)
+            self.memory.delete_message(self._desktop_context.stream.id, user_msg_id)
 
     def interrupt(self) -> None:
         if self._inflight and not self._inflight.done():
@@ -375,7 +395,12 @@ class ChatService:
             self._dispatch_speech(line['text'], turn)
             texts.append(f'<say>{line["text"]}</say>')
         asyncio.create_task(self._emit('chat.done', {'turnId': turn, 'kind': 'done'}))
-        self.memory.append_message('assistant', ''.join(texts))
+        self.memory.append_message(
+            self._desktop_context.stream.id,
+            None,
+            'assistant',
+            ''.join(texts),
+        )
         return turn
 
     async def compose_proactive(self, situation: str) -> list[dict] | None:
@@ -386,15 +411,23 @@ class ChatService:
         if self._schedule:
             await self._schedule.ensure(now)
         persona_desc = describe_persona(self.persona.get())
-        acquaintance = describe_acquaintance(self.memory.first_seen_at, now)
+        acquaintance = describe_acquaintance(
+            self.memory.first_seen_at(self._desktop_context.person.id),
+            now,
+        )
         schedule_desc = (self._schedule.describe(now, self.current_sleep())
                          if self._schedule else '')
         base_prompt = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
             acquaintance=acquaintance,
-            facts=[fact.content for fact in self.memory.top_facts(5, now)],
-            episodes=[episode.summary for episode in self.memory.recent_episodes(2)],
+            facts=[
+                fact.content
+                for fact in self.memory.top_facts(self._desktop_context.person.id, 5, now)
+            ],
+            episodes=[episode.summary for episode in self.memory.recent_episodes(
+                self._desktop_context.stream.id, 2
+            )],
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
                 select_expression_habits(situation, proactive=True, limit=3, rng=self._session_rng())
@@ -419,7 +452,10 @@ class ChatService:
 
     def diary_payload(self, now: int | None = None) -> dict:
         now = now or current_time()
-        memories = [{'content': f.content, 'frozen': f.frozen} for f in self.memory.all_facts(now)]
+        memories = [
+            {'content': fact.content, 'frozen': fact.frozen}
+            for fact in self.memory.all_facts(self._desktop_context.person.id, now)
+        ]
         today = self._schedule.get(now) if self._schedule else None
         return {
             'entries': self.memory.all_episodes(),
@@ -431,15 +467,18 @@ class ChatService:
     def observability_snapshot(self, now: int | None = None) -> dict:
         now = now or current_time()
         s = self.persona.get()
-        fc = self.memory.fact_count()
+        fc = self.memory.fact_count(self._desktop_context.person.id)
         return {
             'now': now,
             'persona': {'state': s.__dict__, 'description': describe_persona(s)},
             'schedule': _plan_to_dict(self._schedule.get(now)) if self._schedule else None,
             'memory': {
-                'semantic': [f.__dict__ for f in self.memory.all_facts(now)],
+                'semantic': [
+                    fact.__dict__
+                    for fact in self.memory.all_facts(self._desktop_context.person.id, now)
+                ],
                 'episodes': len(self.memory.all_episodes()),
-                'workingMessages': self.memory.pending_count(),
+                'workingMessages': self.memory.pending_count(self._desktop_context.stream.id),
             },
         }
 
@@ -479,10 +518,21 @@ class ChatService:
         """向量召回版本的消息构建。_build_messages 的异步替代。"""
         query_embedding = await self._vector.embed_query(query)
         facts = self.memory.recall_facts(
-            query, self._fact_recall_limit, now, query_embedding=query_embedding
+            self._desktop_context.person.id,
+            query,
+            self._fact_recall_limit,
+            now,
+            query_embedding=query_embedding,
         )
-        recalled = self.memory.recall_episodes(query, self._recalled_episode_limit)
-        recent = self.memory.recent_episodes(self._recent_episode_limit)
+        recalled = self.memory.recall_episodes(
+            self._desktop_context.stream.id,
+            query,
+            self._recalled_episode_limit,
+        )
+        recent = self.memory.recent_episodes(
+            self._desktop_context.stream.id,
+            self._recent_episode_limit,
+        )
         seen_ids: set[int] = set()
         episodes = []
         for e in [*recalled, *recent]:
@@ -491,7 +541,10 @@ class ChatService:
                 episodes.append(e)
         episodes = episodes[:self._episode_context_limit]
         persona_desc = describe_persona(self.persona.get())
-        acquaintance = describe_acquaintance(self.memory.first_seen_at, now)
+        acquaintance = describe_acquaintance(
+            self.memory.first_seen_at(self._desktop_context.person.id),
+            now,
+        )
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
         resumption = self._take_resumption()
         system = build_system_prompt(
@@ -512,7 +565,10 @@ class ChatService:
         # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
         #   都损坏过一轮）只能在这里救回来，写入端的修复管不到已经写坏的部分。
         #   幂等，对干净历史没有副作用。
-        wm = self.memory.working_memory(self._working_memory_messages)
+        wm = self.memory.working_memory(
+            self._desktop_context.stream.id,
+            self._working_memory_messages,
+        )
         history = normalize_history({'role': m.role, 'content': m.content} for m in wm)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
@@ -522,7 +578,11 @@ class ChatService:
     ) -> None:
         if isinstance(event, MemoryEvent) and event.content:
             memory_kind = event.memory_type or '未分类'
-            self.memory.add_fact(FactInput(content=event.content, kind=memory_kind), now)
+            self.memory.add_fact(
+                self._desktop_context.person.id,
+                FactInput(content=event.content, kind=memory_kind),
+                now,
+            )
             trace.emit('memory_fact', turnId=turn, content=event.content, memoryKind=memory_kind)
             if sink is not None:
                 sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
@@ -612,11 +672,14 @@ class ChatService:
     async def _maybe_summarize(self) -> None:
         if self._summarizing or not self._summary_provider:
             return
-        if self.memory.pending_count() < self._summarize_trigger_messages:
+        if self.memory.pending_count(self._desktop_context.stream.id) < self._summarize_trigger_messages:
             return
         self._summarizing = True
         try:
-            batch = self.memory.oldest_pending(self._summarize_batch_messages)
+            batch = self.memory.oldest_pending(
+                self._desktop_context.stream.id,
+                self._summarize_batch_messages,
+            )
             if len(batch) < 4:
                 return
             msgs = [{'role': m['role'], 'content': m['content']} for m in batch]
@@ -628,11 +691,16 @@ class ChatService:
             )
             if not episode:
                 return
-            self.memory.add_episode(EpisodeInput(
-                summary=episode.summary, cues=episode.recall_cues,
-                started_at=batch[0]['created_at'], ended_at=batch[-1]['created_at'],
-                message_ids=[m['id'] for m in batch],
-            ))
+            self.memory.add_episode(
+                self._desktop_context.stream.id,
+                EpisodeInput(
+                    summary=episode.summary,
+                    cues=episode.recall_cues,
+                    started_at=batch[0]['created_at'],
+                    ended_at=batch[-1]['created_at'],
+                    message_ids=[message['id'] for message in batch],
+                ),
+            )
         except Exception:
             pass
         finally:
