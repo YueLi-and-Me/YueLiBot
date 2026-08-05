@@ -1,54 +1,78 @@
-# 月璃 · YueLiBot
+<div align="center">
 
-一个住在 Windows 桌面上的 AI 陪伴角色。对标《妹居物语》，核心不是「LLM + 立绘」，而是**持续性**：
+  <h1>月璃 · YueLiBot</h1>
 
-| | 实现 |
-|---|---|
-| 她记得 | 三层记忆 + 遗忘曲线，跨重启保留 |
-| 她会变 | 四条连续人格轴，随交互与冷落漂移 |
-| 她主动 | 日程 / 屏幕感知 / 打扰预算 |
-| 她有内心 | 做梦、离线补偿、可翻阅的日记 |
+  <!-- Badges Row -->
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.11+-blue" alt="Python">
+    <img src="https://img.shields.io/badge/Electron-TypeScript-47848F" alt="Electron">
+    <img src="https://img.shields.io/badge/Platform-Windows-0078D6" alt="Platform">
+    <img src="https://img.shields.io/badge/Live2D-not%20required-brightgreen" alt="No Live2D">
+  </p>
 
-技术栈：Electron + TypeScript + Canvas2D + SQLite。角色是 **AI 生成的立绘差分**，不依赖 Live2D。
+</div>
+
+<br>
+
+<!-- Mascot on the Right (Float) -->
+<img src="assets/character/yueli/face/normal.png" align="right" width="30%" alt="月璃">
+
+## 简介 · INTRO
+
+月璃是一个住在 Windows 桌面上的 AI 陪伴角色。对标《妹居物语》。
+
+她的核心不是「LLM + 立绘」——那个组合两小时就能搭出来，而且用两天就会腻。真正难的是**持续性**：让她在你关掉程序、隔了三天再打开之后，仍然是同一个她。
+
+- 🧠 **关掉再打开，她还记得**：三层记忆加遗忘曲线，跨重启保留。不是每次对话都从空白开始。
+- 🎭 **她会因为你而变**：四条连续人格轴随交互漂移，冷落她也有代价。人格不是一段写死的提示词。
+- 👀 **她知道什么时候不该说话**：日程、屏幕感知和打扰预算共同决定她开不开口。一个随时插话的桌宠只会被关掉。
+- 🌙 **你不看她的时候她也在**：会做梦，会补偿离线期间的时间流逝，写的日记你可以翻。
+- 🖼 **不依赖 Live2D**：角色是 AI 生成的立绘差分，一张参考图加一句描述就能出一整套表情。
 
 ---
 
-## 上手
+## 安装 · INSTALL
+
+**环境要求**：Windows 10/11 · Python 3.11+ · Node.js（Electron 43）
 
 ### 1. 依赖
 
 ```bash
-npm install
+uv sync         # Python 后端依赖
+npm install     # Electron 端依赖
 ```
 
-抠图需要 Python 侧的 rembg（只在跑生图管线时用到，日常运行不需要）：
+可选 extra：`--extra vector` 装向量召回用的 faiss 与 numpy，`--extra dev` 装 pytest。
+
+Electron 用 PATH 上的 `python` 拉起后端。用 uv 建的虚拟环境要么先激活，要么用环境变量指过去：
 
 ```bash
-pip install "rembg[cli]" onnxruntime
+$env:YUELI_PYTHON_EXE = ".venv\Scripts\python.exe"
+```
+
+抠图需要 rembg，只在跑生图管线时用到，日常运行不需要：
+
+```bash
+uv pip install "rembg[cli]" onnxruntime
 ```
 
 ### 2. 配置
 
-第一次运行会打开设置窗口。保存后，运行时配置固定写入项目根目录的
-`config\`，按职责拆成四份：
+第一次运行会打开设置窗口。保存后，运行时配置固定写入项目根目录的 `config\`，按职责拆成四份：
 
-- `providers.toml`：API 厂商、地址、密钥、超时与安全重试；
-- `models.toml`：具体模型、任务引用，以及各任务的温度和输出上限；
-- `bot.toml`：Bot 名字、用户关系、完整人格提示词与会话记忆策略；
-- `features.toml`：语音、视觉、向量召回和调试开关。
+| 文件 | 内容 |
+| :--- | :--- |
+| `providers.toml` | API 厂商、地址、密钥、超时与安全重试 |
+| `models.toml` | 具体模型、任务引用，各任务的温度和输出上限 |
+| `bot.toml` | Bot 名字、用户关系、人格提示词与会话记忆策略 |
+| `features.toml` | 语音、视觉、向量召回和调试开关 |
 
-数据库、日志和 Electron 缓存统一放在项目根目录的 `data\`。程序启动时会拒绝
-把运行时根目录解析到 C 盘；特殊启动方式可用 `YUELI_PROJECT_ROOT` 明确指定其它盘。
-项目根目录若存在旧版 `config.toml`，会自动迁移为四文件结构并保留原文件。
-字段说明、引用关系和手工编辑示例见[配置指南](docs/configuration.md)。
+数据库、日志和 Electron 缓存统一放在项目根目录的 `data\`。程序启动时会拒绝把运行时根目录解析到 C 盘；特殊启动方式可用 `YUELI_PROJECT_ROOT` 明确指定其它盘。项目根目录若存在旧版 `config.toml`，会自动迁移为四文件结构并保留原文件。
 
+字段说明、引用关系和手工编辑示例见 [配置指南](docs/configuration.md)。
+
+> [!IMPORTANT]
 > `providers.toml` 当前仍包含明文 Key。`config\` 和 `data\` 已被 Git 忽略，仍不要把 Key、相关截图或日志提交到版本库。
-
-先验通后端链路：
-
-```bash
-cd python && python -m pytest tests/ -q
-```
 
 ### 3. 跑起来
 
@@ -64,35 +88,32 @@ npm run dev
 
 ---
 
-## 生图管线
+## 📚 文档 · DOC
 
-从参考图跑出一整套角色素材。**你只需做两件事：定稿底图、看图挑好坏**，不接触提示词工程。
+| 文档 | 内容 |
+| :--- | :--- |
+| [`docs/notes.md`](docs/notes.md) | 设计决策与踩坑汇总。**动手前强烈建议扫一遍** |
+| [`docs/configuration.md`](docs/configuration.md) | 配置字段说明与手工编辑示例 |
+| [`docs/observability.md`](docs/observability.md) | 把后台黑盒打开：人格、记忆、日程的可观测方案 |
+| [`docs/design-review-roadmap.md`](docs/design-review-roadmap.md) | 2026-08-03 快照的系统性复盘（其中路线图是建议，不代表已完成） |
 
-详见 [`scripts/sprite/README.md`](scripts/sprite/README.md)。
+`docs/` 下另有若干 `*-rework*.md`，是各轮重构的过程记录，按需查阅。
 
-```bash
-npm run sprite:test                                        # 冒烟测试
-npx tsx scripts/sprite/base.ts --ref <参考图> --desc "<角色描述>"
-npx tsx scripts/sprite/base.ts --pick 2                    # 定稿底图
-npm run sprite:gen                                         # 16 表情 + 4 闭眼 + 3 嘴型
-npm run sprite:preview                                     # 逐张 diff 挑图
-npm run sprite:process                                     # 抠图 + 对齐 + 烘焙 + manifest
-```
+`notes.md` 里有几条是**没有任何报错、只表现为功能不工作**的坑（Electron 的 `focusable`、`setPosition` 在非整数 DPI 下的漂移、ESM preload 与 sandbox），不知道的话能查很久。
 
-> Windows 下 `npm run xxx -- --flag` 会被 npm 吞掉参数，带参数一律用 `npx tsx` 直调。
+> [!NOTE]
+> 推进计划、接入方案、规范约定这类**过程文档不入库**，和测试一样只存在于开发机的工作区（`docs/roadmap.md`、`docs/napcat-plan.md`、`docs/webui-plan.md`、`CLAUDE.md`、`Agent.md` 等）。README 是**唯一**随代码分发的文档，所以它必须自己把话说完整，不要指望读者能翻到别的文件。
 
 ---
 
-## 架构
+## 🧱 架构 · ARCHITECTURE
 
-业务域已经从 TypeScript 迁到 Python：Electron 只做平台层和进程治理，
-对话、记忆、人格、日程、主动行为全在 Python 后端。
+业务域已经从 TypeScript 迁到 Python：Electron 只做平台层和进程治理，对话、记忆、人格、日程、主动行为全在 Python 后端。
 
-目录按 MaiBot 的形状组织：`src/` 是 Python 包根，一个模块一个文件夹，
-入口在仓库根的 `bot.py`；Electron 那一侧整体收在 `electron/`。
+目录形状：`src/` 是 Python 包根，一个模块一个文件夹，入口在仓库根的 `bot.py`；Electron 那一侧整体收在 `electron/`。
 
 ```
-bot.py              后端入口（等价 MaiBot 的 bot.py）
+bot.py              后端入口
 
 src/                业务真源（Python 包根）
   main.py           启动装配：读配置、建服务、拉 uvicorn
@@ -116,8 +137,6 @@ electron/           Electron 端（TypeScript）
     character/      CharacterView 接口 + 立绘差分实现
   shared/           两端共用的类型与 IPC 契约
 
-pytests/            Python 测试
-tests/              TypeScript 测试
 scripts/sprite/     生图管线
 ```
 
@@ -129,19 +148,44 @@ scripts/sprite/     生图管线
 
 ---
 
-## 命令
+## 🎨 生图管线 · SPRITE
+
+从参考图跑出一整套角色素材。**你只需做两件事：定稿底图、看图挑好坏**，不接触提示词工程。
+
+```bash
+npm run sprite:test                                        # 冒烟测试
+npx tsx scripts/sprite/base.ts --ref <参考图> --desc "<角色描述>"
+npx tsx scripts/sprite/base.ts --pick 2                    # 定稿底图
+npm run sprite:gen                                         # 16 表情 + 4 闭眼 + 3 嘴型
+npm run sprite:preview                                     # 逐张 diff 挑图
+npm run sprite:process                                     # 抠图 + 对齐 + 烘焙 + manifest
+```
+
+详见 [`scripts/sprite/README.md`](scripts/sprite/README.md)。
+
+> Windows 下 `npm run xxx -- --flag` 会被 npm 吞掉参数，带参数一律用 `npx tsx` 直调。
+
+---
+
+## 🛠 开发 · DEV
 
 | 命令 | 作用 |
-|---|---|
+| :--- | :--- |
 | `npm run dev` | 开发模式 |
 | `npm run dev:renderer` | 只起渲染层（浏览器里调画面，比重启 Electron 快得多） |
 | `npm run build` | 生产构建 |
 | `npm run selftest` | **无头自检**，8 段断言 |
-| `npm test` | Electron 端单元测试（4 个） |
 | `npm run typecheck` | 类型检查 |
-| `cd python && python -m pytest tests/ -q` | Python 后端测试（155 个），业务逻辑主要在这边 |
-| `npm run test:integration` | 真实拉起 Python 后端的集成测试（需要可用的 Python 环境） |
+| `npm test` | Electron 端单元测试 |
+| `uv run pytest pytests/ -q` | Python 后端测试，业务逻辑主要在这边 |
+| `npm run test:integration` | 真实拉起 Python 后端的集成测试。**手动验收项**，不在任何默认门里 |
 | `npm run sprite:*` | 生图管线，见上 |
+
+> [!NOTE]
+> 测试文件（`pytests/`、`tests/`、`*.test.ts`）**不进版本库**，clone 下来不会有这些目录，上面三条测试命令也就无从执行。它们只存在于开发机的工作区。
+>
+> 因此**本项目不做 CI**：检出的仓库里没有测试可跑。验证只在开发机进行，标准是三条绿状态门（`pytest` / `tsc --noEmit` / `vitest run`）。
+> 这是自觉取舍，代价是没有人能替你复核——所以地基级改动（数据库迁移、记忆分区这类）的额外验收项一条都不能省。
 
 ### 自检
 
@@ -166,17 +210,23 @@ SELFTEST-DIARY     日记窗口渲染，兼验生产多入口
 
 ---
 
-## 设计决策与踩坑
+## 💡 设计理念 · IDEA
 
-散落在各文件注释里的「为什么这么写」，汇总见 [`docs/notes.md`](docs/notes.md)。
-
-当前架构、算法、提示词、安全、测试与发布体系的系统性复盘和分阶段改进建议，见 [`docs/design-review-roadmap.md`](docs/design-review-roadmap.md)。文档基于 2026-08-03 的工作区快照，其中路线图是待实施建议，不代表已经完成。
-
-强烈建议动手前先扫一遍——里面几条（Electron 的 `focusable`、`setPosition` 在非整数 DPI 下的漂移、ESM preload 与 sandbox）都是**没有任何报错、只表现为功能不工作**的坑，不知道的话能查很久。
+> **最像，而不是最好。**
+>
+> 一个完美的助手不需要人格——你不会在意计算器今天心情如何。而一旦目标是陪伴，
+> 「像人」就压倒一切：她可以答得不够全，可以有起伏，可以在你冷落她之后闹一点别扭，
+> 但不能在你说了一句话之后表现得像刚认识你。
+>
+> 这条原则有具体后果：凡是「机械定时」的地方都应该换成连续量；新加的行为优先挂到
+> 已有的人格轴上，而不是新开一个开关；随机不等于像人——掷骰子只会显得神经质。
 
 ---
 
-## 授权
+## 📌 注意事项 & License
 
-- 角色立绘由 AI 生成。参考图若为他人角色设计或成品画作，生成结果仍可能构成侵权——这与「是否 AI 生成」无关，发布前需确认来源
-- `星月水母` Live2D 模型仅曾作本地占位，**不进入任何分发包**（且其贴图已损坏，该路线已放弃）
+> [!IMPORTANT]
+> - 角色立绘由 AI 生成。参考图若为他人角色设计或成品画作，生成结果仍可能构成侵权——这与「是否 AI 生成」无关，发布前需确认来源
+> - `星月水母` Live2D 模型仅曾作本地占位，**不进入任何分发包**（且其贴图已损坏，该路线已放弃）
+
+**License**：尚未声明开源许可证，默认保留所有权利。
