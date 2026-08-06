@@ -40,6 +40,16 @@ export interface SupervisorOptions {
   napcatConfigPath?: string
 }
 
+export function formatProcessExitDetails(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): string {
+  const details: string[] = []
+  if (code !== null) details.push(`code=${code}`)
+  if (signal) details.push(`signal=${signal}`)
+  return details.length > 0 ? details.join(' ') : '无退出详情'
+}
+
 export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private child: ChildProcess | null = null
   private adapter: ChildProcess | null = null
@@ -261,13 +271,11 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     this.adapter = adapter
-    let adapterFailureReported = false
+    let adapterSpawnError: Error | null = null
 
     adapter.on('error', (err) => {
       if (this.adapter !== adapter) return
-      console.error('[supervisor] 无法拉起 QQ 适配器：', err.message)
-      adapterFailureReported = true
-      this.emit('adapterFailed', err)
+      adapterSpawnError = err
     })
     adapter.stdout?.on('data', (chunk: Buffer) => this._onAdapterStdout(chunk))
     adapter.stderr?.on('data', (chunk: Buffer) => this._onAdapterStderr(chunk))
@@ -275,12 +283,16 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       if (this.adapter !== adapter) return
       this._flushAdapterOutput()
       this.adapter = null
-      console.warn(`[supervisor] QQ 适配器退出（code=${code} signal=${signal}）`)
-      if (!this.stopping && code !== 0 && !adapterFailureReported) {
-        this.emit(
-          'adapterFailed',
-          new Error(`QQ 适配器异常退出（code=${code} signal=${signal ?? 'unknown'}）`),
-        )
+      const details = formatProcessExitDetails(code, signal)
+      if (this.stopping || (code === 0 && signal === null)) {
+        console.info(`[supervisor] QQ 适配器已退出（${details}）`)
+        return
+      }
+      const reason = adapterSpawnError ? ` reason=${adapterSpawnError.message}` : ''
+      const failure = new Error(`QQ 适配器异常退出（${details}${reason}）`)
+      console.error(`[supervisor] ${failure.message}`)
+      if (!this.stopping) {
+        this.emit('adapterFailed', failure)
       }
     })
   }
@@ -292,7 +304,6 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       this.adapter = null
       return
     }
-    this.adapter = null
     if (process.platform === 'win32' && adapter.pid) {
       const terminateDirectly = () => {
         if (adapter.exitCode === null) adapter.kill()
