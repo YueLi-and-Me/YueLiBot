@@ -45,11 +45,14 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private adapter: ChildProcess | null = null
   private restarts = 0
   private stopping = false
-  /** stdout 行缓冲。网络/管道分包与行边界无关，不缓冲会漏掉被切断的 YUELI_PORT=。 */
+  /** stdout 行缓冲。网络/管道分包与行边界无关，不缓冲会漏掉半截公告。 */
   private stdoutBuf = ''
   private adapterStdoutBuf = ''
   private adapterStderrBuf = ''
-  private portAnnounced = false
+  /** 后端启动公告集合；未来加入 token 时继续在这里追加条件。 */
+  private backendPort: number | null = null
+  private backendReady = false
+  private readyEmitted = false
   /** 最大重启次数。超过后等用户重启 Electron。 */
   private static readonly MAX_RESTARTS = 5
   /** 退避基准（毫秒）。 */
@@ -124,7 +127,9 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       '--token', this.token,
     ]
     this.stdoutBuf = ''
-    this.portAnnounced = false
+    this.backendPort = null
+    this.backendReady = false
+    this.readyEmitted = false
 
     const child = spawn(this.pythonExe, args, {
       cwd: this.cwd,
@@ -183,23 +188,36 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   }
 
   private _onLine(line: string): void {
-    if (!this.portAnnounced && line.startsWith('YUELI_PORT=')) {
+    if (line.startsWith('YUELI_PORT=')) {
       const port = Number.parseInt(line.slice('YUELI_PORT='.length), 10)
       if (!Number.isInteger(port) || port <= 0 || port > 65535) return
-      this.portAnnounced = true
-      console.log(`[supervisor] Python 后端就绪，端口 ${port}`)
-      // 稳定跑够一段时间才认为这次拉起成功，避免「起来就崩」把退避耗尽
-      setTimeout(() => {
-        if (this.alive) this.restarts = 0
-      }, PythonSupervisor.STABLE_AFTER).unref?.()
-      this._spawnAdapter(port)
-      this.emit('ready', port)
+      this.backendPort = port
+      this._emitReadyIfComplete()
+      return
+    }
+    if (line === 'YUELI_READY=1') {
+      this.backendReady = true
+      this._emitReadyIfComplete()
       return
     }
     // ★ 其余每一行都是 Python 侧真的想给人看的输出——structlog 日志、
     //   trace_console 的 rich 面板。以前这里只找端口号，其它行直接吞掉，
     //   Electron 控制台里等于永远看不到 Python 那边发生了什么。
     if (line) process.stdout.write(`${line}\n`)
+  }
+
+  /** 只有端口和 FastAPI 生命周期都公告后，才允许下游建立连接。 */
+  private _emitReadyIfComplete(): void {
+    if (this.readyEmitted || this.backendPort === null || !this.backendReady) return
+    const port = this.backendPort
+    this.readyEmitted = true
+    console.log(`[supervisor] Python 后端就绪，端口 ${port}`)
+    // 稳定跑够一段时间才认为这次拉起成功，避免「起来就崩」把退避耗尽
+    setTimeout(() => {
+      if (this.alive) this.restarts = 0
+    }, PythonSupervisor.STABLE_AFTER).unref?.()
+    this._spawnAdapter(port)
+    this.emit('ready', port)
   }
 
   private _scheduleRestart(): void {
@@ -216,9 +234,9 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   }
 
   /**
-   * 后端端口只在真正监听后才会宣告，此时再把适配器接上，避免给它传一个
-   * 尚未可用的端口。适配器不参与主体重启退避；它自己的首次连接失败策略
-   * 由 runner 执行，配置或协议端错误则直接通过托盘告诉用户。
+   * 后端端口和生命周期都完成后才会宣告 ready，此时再把适配器接上，避免给它
+   * 传一个尚未可用的端口。适配器不参与主体重启退避；它自己的连接失败策略由
+   * runner 执行，配置或协议端错误则直接通过托盘告诉用户。
    */
   private _spawnAdapter(port: number): void {
     if (!this.napcatConfigPath) return

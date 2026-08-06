@@ -54,6 +54,10 @@ def _announce_port(port: int) -> None:
     print(f"YUELI_PORT={port}", flush=True)
 
 
+def _announce_ready() -> None:
+    print("YUELI_READY=1", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="YueLiBot Python backend")
     parser.add_argument("--data-dir", required=True)
@@ -244,7 +248,7 @@ def main() -> None:
     logger.info("backend_starting", port=port)
 
     from src.api.app import create_app
-    app = create_app()
+    app = create_app(_announce_ready)
 
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
 
