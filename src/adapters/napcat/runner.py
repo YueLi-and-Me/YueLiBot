@@ -113,7 +113,12 @@ class NapcatRunner:
 
     async def _consume_protocol_events(self, self_id: str) -> None:
         async for payload in self._transport.iter_events():
-            kind = classify_event(payload, self_id, self._config.owner.qq)
+            kind = classify_event(
+                payload,
+                self_id,
+                self._config.owner.qq,
+                self._config.private,
+            )
             if kind == 'action_response':
                 continue
             if kind == 'heartbeat':
@@ -124,14 +129,24 @@ class NapcatRunner:
             if kind == 'self_message':
                 logger.info('忽略 QQ 自发消息', messageId=payload.get('message_id'))
                 continue
-            if kind == 'non_owner_private':
-                logger.info('忽略非 owner QQ 私聊', userId=payload.get('user_id'))
+            if kind == 'private_denied':
+                logger.info(
+                    'QQ 私聊访问被拒',
+                    userId=payload.get('user_id'),
+                    mode=self._config.private.mode,
+                    reason='不在私聊访问名单中',
+                )
                 continue
             if kind != 'message':
                 logger.debug('忽略未知 QQ 事件', postType=payload.get('post_type'))
                 continue
 
-            event = parse_inbound_event(payload, self_id, self._config.owner.qq)
+            event = parse_inbound_event(
+                payload,
+                self_id,
+                self._config.owner.qq,
+                self._config.private,
+            )
             if event is None:
                 continue
             if event.stream_kind != 'direct':

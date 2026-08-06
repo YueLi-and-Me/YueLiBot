@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import List, Literal
 
 import sys
 
@@ -46,6 +46,44 @@ class NapcatConnectionConfig(BaseModel):
         return value
 
 
+class PrivateAccessConfig(BaseModel):
+    """私聊名单策略；群聊访问控制不属于本配置。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    # 默认白名单：配错时最多是朋友没收到回复，不会静默消耗模型额度。
+    mode: Literal['whitelist', 'blacklist'] = 'whitelist'
+    list: List[str] = Field(default_factory=list)
+
+    @field_validator('list', mode='before')
+    @classmethod
+    def _normalize_numeric_list(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        return [
+            str(item) if isinstance(item, int) and not isinstance(item, bool) else item
+            for item in value
+        ]
+
+    @field_validator('list')
+    @classmethod
+    def _validate_list(cls, value: List[str]) -> List[str]:
+        normalized: List[str] = []
+        for item in value:
+            item = item.strip()
+            if not item or not item.isdigit():
+                raise ValueError('private.list 必须是数字 QQ 号列表')
+            normalized.append(item)
+        return normalized
+
+    def allows(self, sender_qq: str, owner_qq: str) -> bool:
+        """判断私聊是否放行；owner 无论模式和名单内容都自动放行。"""
+        if sender_qq == owner_qq:
+            return True
+        listed = sender_qq in self.list
+        return listed if self.mode == 'whitelist' else not listed
+
+
 class OwnerConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -68,6 +106,7 @@ class NapcatDocument(BaseModel):
     inner: InnerConfig
     napcat: NapcatConnectionConfig
     owner: OwnerConfig
+    private: PrivateAccessConfig = Field(default_factory=PrivateAccessConfig)
 
     @model_validator(mode='after')
     def _require_owner_when_enabled(self) -> 'NapcatDocument':

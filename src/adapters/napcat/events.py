@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
+from .config import PrivateAccessConfig
 from .segments import mentions_user, message_to_text
 
 
@@ -13,7 +14,7 @@ EventKind = Literal[
     'heartbeat',
     'request',
     'self_message',
-    'non_owner_private',
+    'private_denied',
     'message',
     'other',
 ]
@@ -47,6 +48,7 @@ def classify_event(
     payload: Mapping[str, Any],
     self_id: str,
     owner_qq: str,
+    private_access: PrivateAccessConfig,
 ) -> EventKind:
     """给运行器一个可记录的事件判定，不执行任何 I/O。"""
     if is_action_response(payload):
@@ -64,8 +66,11 @@ def classify_event(
         return 'self_message'
     if payload.get('group_id'):
         return 'message'
-    if sender_id != _required_identifier(owner_qq, 'owner_qq 不能为空'):
-        return 'non_owner_private'
+    if not private_access.allows(
+        sender_id,
+        _required_identifier(owner_qq, 'owner_qq 不能为空'),
+    ):
+        return 'private_denied'
     return 'message'
 
 
@@ -73,9 +78,10 @@ def parse_inbound_event(
     payload: Mapping[str, Any],
     self_id: str,
     owner_qq: str,
+    private_access: PrivateAccessConfig,
 ) -> QqInboundEvent | None:
-    """解析 owner 私聊或任意群聊消息；其余类型返回 None 交给运行器记录。"""
-    if classify_event(payload, self_id, owner_qq) != 'message':
+    """解析允许的私聊或任意群聊消息；其余类型返回 None 交给运行器记录。"""
+    if classify_event(payload, self_id, owner_qq, private_access) != 'message':
         return None
 
     sender_id = _sender_external_id(payload)

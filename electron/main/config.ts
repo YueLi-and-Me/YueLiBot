@@ -42,6 +42,13 @@ action_timeout_sec = 15
 [owner]
 # 启用 QQ 适配器前填写桌主自己的数字 QQ 号。
 qq = ""
+
+[private]
+# 私聊访问控制。whitelist = 只回名单里的人；blacklist = 名单里的人不回，其余都回。
+# 默认 whitelist：配错时是朋友没收到回复，而不是任何人都能消耗模型额度。
+mode = "whitelist"
+# owner.qq 无论哪种模式都自动放行，不必重复写在这里。
+list = []
 `
 
 const DEFAULT_IDENTITY = `你住在他的电脑桌面一角，从他第一次把你叫醒起，就把这里当成了自己的住处。
