@@ -196,7 +196,7 @@ export class PythonClient {
       if (!this.stopped && !this.authRejected) this._scheduleReconnect()
     })
 
-    // 不打日志：error 事件不带原因，能查的 code/reason 在上面 close 里。
+    // error 事件不带原因，能查的 code/reason 在上面 close 里。
     // 监听器不能删，否则成未处理事件。
     ws.addEventListener('error', () => {})
   }

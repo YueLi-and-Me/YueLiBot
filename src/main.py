@@ -45,7 +45,8 @@ class _LLMGenerator:
 
 
 def _bind_backend_socket(port: int) -> socket.socket:
-    """绑定并一直占住端口；port 传 0 由系统分配。探完就放会被别人占走。"""
+    """绑定并占住一个端口；port 传 0 由系统分配。"""
+    # 要一直持有这个 socket，探完就放会被别人占走
     sock = socket.socket()
     sock.bind(("127.0.0.1", port))
     return sock
@@ -60,7 +61,7 @@ def _announce_ready() -> None:
 
 
 class _ReadyAnnouncingServer(uvicorn.Server):
-    """端口真正开始监听后才打印就绪公告。lifespan 跑在绑端口之前，不能用。"""
+    """在端口真正开始监听之后才打印就绪公告。"""
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
         await super().startup(sockets=sockets)

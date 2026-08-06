@@ -276,14 +276,14 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.adapter = adapter
     let adapterSpawnError: Error | null = null
 
-    // 只记下来，由下面的 close 统一打一行
+    // 只记下来，由 close 统一输出
     adapter.on('error', (err) => {
       if (this.adapter !== adapter) return
       adapterSpawnError = err
     })
     adapter.stdout?.on('data', (chunk: Buffer) => this._onAdapterStdout(chunk))
     adapter.stderr?.on('data', (chunk: Buffer) => this._onAdapterStderr(chunk))
-    // 用 close 不用 exit：spawn 失败时 Node 只发 error 和 close，不发 exit
+    // 用 close 不用 exit：spawn 失败时 Node 不发 exit
     adapter.on('close', (code, signal) => {
       if (this.adapter !== adapter) return
       this._flushAdapterOutput()
@@ -292,7 +292,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         console.info(`[supervisor] QQ 适配器已退出（${formatProcessExitDetails(code, signal)}）`)
         return
       }
-      // 没起来就没有退出码，别硬凑「异常退出」
+      // 拉起失败没有退出码，单独措辞
       const failure = adapterSpawnError
         ? new Error(`QQ 适配器拉起失败：${adapterSpawnError.message}`)
         : new Error(`QQ 适配器异常退出（${formatProcessExitDetails(code, signal)}）`)

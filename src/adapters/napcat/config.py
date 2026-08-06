@@ -28,8 +28,7 @@ class InnerConfig(BaseModel):
 class NapcatConnectionConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    # 必填，不给默认值：漏写它就等于让程序替用户决定要不要去连 QQ，
-    # 而这个决定的两个方向后果完全不对称。自动生成的模板里明确写着 false。
+    # 必填：漏写就等于让程序替用户决定要不要连 QQ
     enabled: bool
     # 月璃自己的号，用来认出她自己发的消息
     self_qq: str = ''
@@ -69,7 +68,7 @@ class PrivateAccessConfig(BaseModel):
 
     model_config = ConfigDict(extra='forbid')
 
-    # 默认白名单：配错时最多是朋友没收到回复，不会静默消耗模型额度。
+    # 默认白名单：配错的后果是朋友没收到回复，而不是谁都能消耗额度
     mode: Literal['whitelist', 'blacklist'] = 'whitelist'
     list: List[str] = Field(default_factory=list)
 
@@ -128,7 +127,7 @@ class NapcatDocument(BaseModel):
 
     @model_validator(mode='after')
     def _require_two_distinct_qq_numbers(self) -> 'NapcatDocument':
-        """启用后两个号都要填，且不能相同。填成同一个她会把你当成她自己。"""
+        """校验启用时两个 QQ 号都填了且不相同。"""
         if not self.napcat.enabled:
             return self
         if not self.napcat.self_qq:
@@ -150,7 +149,7 @@ def read_config(path: Path) -> NapcatDocument:
 
 
 def _readable_error(exc: Exception) -> str:
-    """只留字段名和原因，去掉 pydantic 默认带的整份配置和文档链接。"""
+    """把校验错误压成「字段：原因」几行。"""
     if not isinstance(exc, ValidationError):
         return str(exc)
     lines = []
@@ -162,7 +161,7 @@ def _readable_error(exc: Exception) -> str:
 
 
 def load_config(path: Path) -> NapcatDocument:
-    """读取适配器配置，错误打印修复指引后以非零状态退出。"""
+    """读取配置，失败时打印修复指引并退出。"""
     try:
         return read_config(path)
     except Exception as exc:

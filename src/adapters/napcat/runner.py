@@ -41,7 +41,7 @@ class NapcatRunner:
         self._connected_once = False
 
     async def run(self) -> None:
-        """按失败类型决定退出或重试，避免把正常启动顺序当成配置错误。"""
+        """连接协议端并保持运行，断线按失败类型决定重试还是退出。"""
         if not self._config.napcat.enabled:
             logger.info('QQ 适配器未启用，跳过协议端连接')
             return
@@ -49,6 +49,7 @@ class NapcatRunner:
         retry_count = 0
         while True:
             try:
+                # 连协议端，核对登录的号，再接主体
                 self_id = await self._transport.connect()
                 _check_self_qq_matches(self._config.napcat.self_qq, self_id)
                 await self._backend.connect()
@@ -76,6 +77,7 @@ class NapcatRunner:
                     )
                     raise RuntimeError(f'QQ 适配器启动失败，已停止重试：{exc}') from exc
 
+                # 暂时性故障：退避后重试，只有第一次打完整警告
                 retry_count += 1
                 delay = _retry_delay(
                     self._config.napcat.reconnect_interval_sec,
@@ -161,7 +163,7 @@ class NapcatRunner:
             try:
                 await self._backend.submit_inbound(event)
             except httpx.HTTPStatusError as exc:
-                # 丢这一条接着下一条；传输层的错要往上抛，那是真断了
+                # 主体拒收：丢这一条继续下一条，不拆连接
                 logger.error(
                     'QQ 入站消息被主体拒绝',
                     streamExternalId=event.stream_external_id,
@@ -197,7 +199,7 @@ class NapcatRunner:
 
 
 class SelfQqMismatch(RuntimeError):
-    """配置里写的机器人 QQ 号和协议端实际登录的号对不上。"""
+    """配置里的 self_qq 与协议端实际登录的号不一致。"""
 
 
 def _check_self_qq_matches(configured: str, actual_self_id: str) -> None:
@@ -218,19 +220,18 @@ def _qq_number(value: str) -> int:
 
 
 def _is_retryable(error: BaseException) -> bool:
-    """只把网络层暂时不可达归入重试，配置和协议拒绝必须立即暴露。"""
+    """判断这个异常该不该重试。"""
     if isinstance(
         error,
         (ProtocolAuthenticationError, ProtocolHandshakeError, ActionError, SelfQqMismatch),
     ):
         return False
-    # httpx 的异常不继承 ConnectionError/OSError，得单独列。
-    # HTTPStatusError 除外，那是主体明确说「不行」。
+    # httpx 的异常不继承 ConnectionError/OSError，要单独列
     if isinstance(error, httpx.TransportError):
         return True
     return isinstance(error, (ConnectionError, OSError, asyncio.TimeoutError))
 
 
 def _retry_delay(interval_sec: float, retry_count: int) -> float:
-    """按配置间隔指数退避，最多放大到 32 倍，避免错误时无限拉长。"""
+    """按配置间隔指数退避，最多放大到 32 倍。"""
     return interval_sec * min(2 ** (retry_count - 1), 32)
