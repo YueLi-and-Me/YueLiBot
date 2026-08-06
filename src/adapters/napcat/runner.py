@@ -157,7 +157,18 @@ class NapcatRunner:
             if not event.text.strip():
                 logger.info('忽略空 QQ 私聊消息', messageId=event.external_message_id)
                 continue
-            await self._backend.submit_inbound(event)
+            try:
+                await self._backend.submit_inbound(event)
+            except httpx.HTTPStatusError as exc:
+                # 主体明确回答了「这一条不行」。为一条消息拆掉整条连接是过度反应——
+                # 记下来接着消费下一条。传输层故障不在这里捕获，它是真的断了，要往上抛。
+                logger.error(
+                    'QQ 入站消息被主体拒绝',
+                    streamExternalId=event.stream_external_id,
+                    messageId=event.external_message_id,
+                    status=exc.response.status_code,
+                    error=str(exc),
+                )
 
     async def _consume_backend_outbound(self) -> None:
         async for outbound in self._backend.iter_outbound():
