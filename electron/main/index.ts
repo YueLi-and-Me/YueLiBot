@@ -33,8 +33,8 @@ import {
   createTray, destroyTray, notifyTray, resetPetPosition, togglePet, trayIconEmpty,
 } from './platform/tray.ts'
 import {
-  assertConfigConsistent, configIsComplete, readConfigDirectory, tryPrefillFromLegacyEnv,
-  writeConfigDirectory,
+  assertConfigConsistent, configIsComplete, ensureNapcatConfig, readConfigDirectory,
+  tryPrefillFromLegacyEnv, writeConfigDirectory,
 } from './config.ts'
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
 import { mentionsScreen } from './screenIntent.ts'
@@ -101,6 +101,7 @@ let firstRunResolve: (() => void) | null = null
 app.whenReady().then(async () => {
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (!devUrl) serveAppScheme(resolveRendererRoot())
+  const napcatConfigPath = ensureNapcatConfig(configDir)
 
   // ── 配置读写 IPC（设置窗口首次启动和后续编辑共用）───────────────────
   ipcMain.handle(IPC.ReadConfig, async () => readConfigDirectory(configDir, legacyConfigPath))
@@ -140,7 +141,7 @@ app.whenReady().then(async () => {
     await runFirstRunWizard(devUrl)
   }
 
-  await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath))
+  await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath), napcatConfigPath)
 })
 
 /** 老用户从仓库根目录的 .env 迁移；prefill 直接写进拆分配置目录，
@@ -166,7 +167,11 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
   })
 }
 
-async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<void> {
+async function startApp(
+  devUrl: string | undefined,
+  cfg: YueliConfig,
+  napcatConfigPath: string,
+): Promise<void> {
   currentCfg = cfg
   inputActivity = new InputActivity()
   syncInputActivity()
@@ -191,7 +196,7 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
     configPath: configDir,
     cwd: app.getAppPath(),
     pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
-    napcatConfigPath: join(configDir, 'napcat.toml'),
+    napcatConfigPath,
   })
   supervisor.on('ready', (port) => {
     if (!petWindow || petWindow.isDestroyed() || !supervisor) return

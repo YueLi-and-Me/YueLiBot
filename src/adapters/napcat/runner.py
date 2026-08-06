@@ -35,6 +35,10 @@ class NapcatRunner:
 
     async def run(self) -> None:
         """首次连接失败直接退出，已连上后断线才按配置重连。"""
+        if not self._config.napcat.enabled:
+            logger.info('QQ 适配器未启用，跳过协议端连接')
+            return
+
         while True:
             try:
                 self_id = await self._transport.connect()

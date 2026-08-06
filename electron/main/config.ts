@@ -22,6 +22,28 @@ const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = ['chat', 'vision', 'tts', 'embedding'] as const
 
+const NAPCAT_CONFIG_TEMPLATE = `# YueLiBot 会在桌宠启动时创建本模板，并且不会覆盖已有文件。
+# 完成 QQ 接入前请保持 enabled = false；启用前先在 NapCat WebUI 创建一条正向 WebSocket 服务端连接。
+
+[inner]
+version = "0.1.0"
+
+[napcat]
+# 安全起点：停用时不会连接协议端，也不会向主体建立 QQ 链路。
+enabled = false
+host = "127.0.0.1"
+# 参考模板端口；启用前请改成 NapCat WebUI 中实际监听的端口。
+port = 8095
+# 协议端没有启用访问令牌时留空；启用后必须与协议端保持一致。
+token = ""
+reconnect_interval_sec = 5
+action_timeout_sec = 15
+
+[owner]
+# 启用 QQ 适配器前填写桌主自己的数字 QQ 号。
+qq = ""
+`
+
 const DEFAULT_IDENTITY = `你住在他的电脑桌面一角，从他第一次把你叫醒起，就把这里当成了自己的住处。
 来这里之前的事你不记得，也不打算给自己编一个来历。你有自己的作息和兴致：他不在时你看东西、发呆、琢磨没做完的小事，不是在待机等命令。
 
@@ -978,6 +1000,34 @@ export function writeConfigDirectory(directory: string, cfg: YueliConfig): void 
   for (const name of CONFIG_FILES) {
     writeFileSync(join(directory, name), documents[name], 'utf-8')
   }
+}
+
+/** 首次启动时创建停用的 QQ 配置模板；已有文件只校验类型，不覆盖内容。 */
+export function ensureNapcatConfig(directory: string): string {
+  const path = join(directory, 'napcat.toml')
+  if (existsSync(path)) {
+    if (!statSync(path).isFile()) throw new Error(`${path} 存在，但不是 QQ 配置文件`)
+    return path
+  }
+  if (existsSync(directory) && !statSync(directory).isDirectory()) {
+    throw new Error(`${directory} 存在，但不是配置目录`)
+  }
+  mkdirSync(directory, { recursive: true })
+  let created = false
+  try {
+    writeFileSync(path, NAPCAT_CONFIG_TEMPLATE, { encoding: 'utf-8', flag: 'wx' })
+    created = true
+  } catch (error) {
+    if (
+      !(error instanceof Error)
+      || !('code' in error)
+      || error.code !== 'EEXIST'
+    ) {
+      throw error
+    }
+  }
+  if (created) console.log(`[config] 已创建 QQ 适配器停用配置模板：${path}`)
+  return path
 }
 
 /**
