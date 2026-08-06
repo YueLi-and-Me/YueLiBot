@@ -34,7 +34,12 @@ class QqInboundEvent:
 
 
 def is_action_response(payload: Mapping[str, Any]) -> bool:
-    """只有非空字符串 echo 才是 action 响应，空值仍按事件处理。"""
+    """只有非空字符串 echo 才是 action 响应，空值仍按事件处理。
+
+    ★ 另一种常见判据是「没有 post_type 就是响应」，我们不用它：它只能回答
+      「这是不是一个响应」，回答不了「这是**哪一次**请求的响应」——并发发两个
+      action 时无法配对。echo 是我们自己生成并带上的，天然带着对应关系。
+    """
     echo = payload.get('echo')
     return isinstance(echo, str) and bool(echo.strip())
 
