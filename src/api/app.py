@@ -16,8 +16,8 @@ async def _lifespan(app: FastAPI):
     # lifecycle.start_all()/stop_all() 是协程，必须跑在 uvicorn 拥有的事件
     # 循环里——uvicorn.run() 本身是阻塞调用，FastAPI 的 lifespan 正是它给的
     # 「循环起来之后跑、循环关之前跑」这个钩子。
-    # ★ 这里跑完**不等于**可以对外服务了：uvicorn 先跑 lifespan、后绑 socket。
-    #   「后端就绪」的公告因此挂在 main.py 的 Server.startup() 之后，不在这里。
+    # 这里跑完不等于能对外服务了：uvicorn 先跑 lifespan 再绑端口。
+    # 所以「后端就绪」的公告在 main.py 里，不在这儿。
     await lifecycle.start_all()
     yield
     await lifecycle.stop_all()

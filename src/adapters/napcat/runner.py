@@ -161,8 +161,8 @@ class NapcatRunner:
             try:
                 await self._backend.submit_inbound(event)
             except httpx.HTTPStatusError as exc:
-                # 主体明确回答了「这一条不行」。为一条消息拆掉整条连接是过度反应——
-                # 记下来接着消费下一条。传输层故障不在这里捕获，它是真的断了，要往上抛。
+                # 主体说这一条不行。为一条消息把整条连接拆掉不值得，记下来接着下一条。
+                # 传输层的错不在这儿接，那是真断了，要往上抛。
                 logger.error(
                     'QQ 入站消息被主体拒绝',
                     streamExternalId=event.stream_external_id,
@@ -229,10 +229,9 @@ def _is_retryable(error: BaseException) -> bool:
         (ProtocolAuthenticationError, ProtocolHandshakeError, ActionError, SelfQqMismatch),
     ):
         return False
-    # 适配器有两条外连链路：到协议端走 websockets，抛的是内置 socket 异常；
-    # 到主体走 httpx，而 httpx 的异常**一个都不继承 ConnectionError/OSError**。
-    # 漏掉这一支的后果是：主体重启的那几百毫秒里刚好来一条 QQ 消息，整条链路就永久断了。
-    # HTTPStatusError 不在这里——那是主体明确回答了「不行」，属于要暴露的东西。
+    # 连协议端走 websockets，抛的是标准 socket 异常；连主体走 httpx，
+    # 而 httpx 的异常不继承 ConnectionError/OSError，所以得单独列一句。
+    # HTTPStatusError 不算——那是主体明确说了「不行」，该报出来。
     if isinstance(error, httpx.TransportError):
         return True
     return isinstance(error, (ConnectionError, OSError, asyncio.TimeoutError))

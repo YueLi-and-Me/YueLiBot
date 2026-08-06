@@ -206,9 +206,8 @@ async function startApp(
     })
     client.connect()
   })
-  // ★ 只负责把故障呈现给用户，不再复述一遍原因 —— supervisor 在发事件之前
-  //   已经把带 code/signal/原因的那一行打出来了，这里再打就是同一件事占相邻两行，
-  //   徒增「是不是两回事」的疑问。`failed` 同理，它的输出也在 supervisor 里。
+  // 只弹托盘提示，不再打印一遍原因：supervisor 发这个事件之前已经打过带
+  // code/signal 的那一行了，这里再打就是同一件事占两行。failed 同理。
   supervisor.on('adapterFailed', (err) => {
     notifyTray(err.message)
   })
