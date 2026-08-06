@@ -29,8 +29,9 @@ class InnerConfig(BaseModel):
 class NapcatConnectionConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
-    # 旧版手写配置没有这个字段时保持原有连接行为；自动生成的模板会明确写 false。
-    enabled: bool = True
+    # 必填，不给默认值：漏写它就等于让程序替用户决定要不要去连 QQ，
+    # 而这个决定的两个方向后果完全不对称。自动生成的模板里明确写着 false。
+    enabled: bool
     host: str
     port: int = Field(gt=0, le=65535)
     token: str
