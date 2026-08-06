@@ -179,7 +179,7 @@ export class PythonClient {
 
     ws.addEventListener('close', (event: Event) => {
       const closeEvent = event as unknown as { code?: number; reason?: string }
-      // 自己主动关的不算故障：退出桌宠、后端重启都会走到这儿。
+      // 自己关的不算故障
       if (!this.stopped) {
         const detail = [`code=${closeEvent.code ?? 'unknown'}`]
         const reason = typeof closeEvent.reason === 'string' ? closeEvent.reason.trim() : ''
@@ -196,9 +196,8 @@ export class PythonClient {
       if (!this.stopped && !this.authRejected) this._scheduleReconnect()
     })
 
-    // 故意留空，不要往里加日志：WebSocket 的 error 事件不带任何原因，
-    // 能打印的只有 "error" 这个词本身。真正能查的 code 和 reason 在上面的 close 里。
-    // 监听器本身要留着，不挂的话这个 error 会变成未处理事件。
+    // 不打日志：error 事件不带原因，能查的 code/reason 在上面 close 里。
+    // 监听器不能删，否则成未处理事件。
     ws.addEventListener('error', () => {})
   }
 

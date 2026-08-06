@@ -22,52 +22,26 @@ const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = ['chat', 'vision', 'tts', 'embedding'] as const
 
-const NAPCAT_CONFIG_TEMPLATE = `# 月璃的 QQ 配置。桌宠第一次启动时自动创建，之后不会覆盖你改过的内容。
-#
-# 这里要填两个不同的 QQ 号，千万别填反：
-#
-#     [napcat] self_qq  = 月璃的号，也就是你在 NapCat 里登录的那个机器人账号
-#     [owner]  qq       = 你自己的号，你平时发消息用的那个
-#
-# 填反了会怎样：她会把你当成她自己，你发的消息一律被当作"自己发的"忽略掉，
-# 结果就是你怎么找她都没反应。所以下面两处都写明了该填谁的号。
+const NAPCAT_CONFIG_TEMPLATE = `# 月璃的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
 
 [inner]
 version = "0.1.0"
 
 [napcat]
-# 改成 true 才会去连 QQ。下面几项都填好了再改。
-enabled = false
-
-# 月璃的 QQ 号 —— NapCat 登录的那个机器人账号。
-# 她靠这个号认出哪些消息是自己发的，不然会自己回自己。
-self_qq = ""
-
-# NapCat 装在这台电脑上就填 127.0.0.1。
-host = "127.0.0.1"
-# 要和你在 NapCat 里新建的那条「正向 WebSocket」连接的端口一致。
-port = 8095
-# 那条连接如果设了访问令牌就填一样的，没设就留空。
-token = ""
-
-# 断线后隔几秒重连一次。
-reconnect_interval_sec = 5
-# 一次请求等几秒算超时。
-action_timeout_sec = 15
+enabled = false              # 改成 true 才连 QQ
+self_qq = ""                 # 月璃的号：NapCat 登录的那个
+host = "127.0.0.1"           # NapCat 在本机就不用改
+port = 8095                  # NapCat 里那条正向 WebSocket 的端口
+token = ""                   # 那条连接的令牌，没设就留空
+reconnect_interval_sec = 5   # 断线后几秒重连
+action_timeout_sec = 15      # 请求几秒算超时
 
 [owner]
-# 你自己的 QQ 号 —— 不是上面那个机器人号。
-# 填对了，她才知道 QQ 上的你和电脑桌面上的你是同一个人，两边记忆才是通的。
-qq = ""
+qq = ""                      # 你的号：平时发消息用的那个
 
 [private]
-# 谁可以私聊她：
-#   whitelist —— 只有下面名单里的人能找她（默认，推荐）
-#   blacklist —— 名单里的人不能找她，其他人都可以
-mode = "whitelist"
-# 允许（或禁止）的 QQ 号，比如 [12345678, 87654321]。
-# 你自己不用写进来，owner.qq 任何时候都能找她。
-list = []
+mode = "whitelist"           # whitelist 只回名单里的人；blacklist 只不回名单里的人
+list = []                    # 数字 QQ 号，你自己不用写
 `
 
 const DEFAULT_IDENTITY = `你住在他的电脑桌面一角，从他第一次把你叫醒起，就把这里当成了自己的住处。

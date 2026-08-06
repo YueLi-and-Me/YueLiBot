@@ -177,7 +177,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         this.child = null
         this._killAdapter()
       }
-      // signal 为空就不打这个字段，别编一个 null 出来。自己关的不算故障，不用 warn。
+      // 自己关的不算故障
       const details = formatProcessExitDetails(code, signal)
       if (this.stopping) console.info(`[supervisor] Python 后端已退出（${details}）`)
       else console.warn(`[supervisor] Python 后端退出（${details}）`)
@@ -276,15 +276,14 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.adapter = adapter
     let adapterSpawnError: Error | null = null
 
-    // 只记下来不打印，让下面的 close 处理器统一出一行，免得同一件事打两遍。
+    // 只记下来，由下面的 close 统一打一行
     adapter.on('error', (err) => {
       if (this.adapter !== adapter) return
       adapterSpawnError = err
     })
     adapter.stdout?.on('data', (chunk: Buffer) => this._onAdapterStdout(chunk))
     adapter.stderr?.on('data', (chunk: Buffer) => this._onAdapterStderr(chunk))
-    // 监听 close 而不是 exit：进程压根没起来时（找不到可执行文件、没权限），
-    // Node 只发 error 和 close，不发 exit。用 exit 的话这种情况一行日志都不会有。
+    // 用 close 不用 exit：spawn 失败时 Node 只发 error 和 close，不发 exit
     adapter.on('close', (code, signal) => {
       if (this.adapter !== adapter) return
       this._flushAdapterOutput()
@@ -293,7 +292,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         console.info(`[supervisor] QQ 适配器已退出（${formatProcessExitDetails(code, signal)}）`)
         return
       }
-      // 没起来的时候本来就没有退出码，说「异常退出（无退出详情）」是在编数据。
+      // 没起来就没有退出码，别硬凑「异常退出」
       const failure = adapterSpawnError
         ? new Error(`QQ 适配器拉起失败：${adapterSpawnError.message}`)
         : new Error(`QQ 适配器异常退出（${formatProcessExitDetails(code, signal)}）`)

@@ -206,8 +206,7 @@ async function startApp(
     })
     client.connect()
   })
-  // 只弹托盘提示，不再打印一遍原因：supervisor 发这个事件之前已经打过带
-  // code/signal 的那一行了，这里再打就是同一件事占两行。failed 同理。
+  // 只弹托盘，原因 supervisor 已经打过了
   supervisor.on('adapterFailed', (err) => {
     notifyTray(err.message)
   })
