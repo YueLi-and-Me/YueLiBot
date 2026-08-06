@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 from src.common.logger import get_logger
 
 from .backend import BackendClient
@@ -194,6 +196,12 @@ def _is_retryable(error: BaseException) -> bool:
     """只把网络层暂时不可达归入重试，配置和协议拒绝必须立即暴露。"""
     if isinstance(error, (ProtocolAuthenticationError, ProtocolHandshakeError, ActionError)):
         return False
+    # 适配器有两条外连链路：到协议端走 websockets，抛的是内置 socket 异常；
+    # 到主体走 httpx，而 httpx 的异常**一个都不继承 ConnectionError/OSError**。
+    # 漏掉这一支的后果是：主体重启的那几百毫秒里刚好来一条 QQ 消息，整条链路就永久断了。
+    # HTTPStatusError 不在这里——那是主体明确回答了「不行」，属于要暴露的东西。
+    if isinstance(error, httpx.TransportError):
+        return True
     return isinstance(error, (ConnectionError, OSError, asyncio.TimeoutError))
 
 
