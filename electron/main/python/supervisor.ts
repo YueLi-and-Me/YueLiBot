@@ -273,27 +273,31 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.adapter = adapter
     let adapterSpawnError: Error | null = null
 
+    // 只记录不输出：退出诊断统一由下面那一个处理器出，避免同一件事打两行。
     adapter.on('error', (err) => {
       if (this.adapter !== adapter) return
       adapterSpawnError = err
     })
     adapter.stdout?.on('data', (chunk: Buffer) => this._onAdapterStdout(chunk))
     adapter.stderr?.on('data', (chunk: Buffer) => this._onAdapterStderr(chunk))
-    adapter.on('exit', (code, signal) => {
+    // ★ 挂 close 而不是 exit。spawn 本身失败（可执行文件不存在、权限不足）时 Node
+    //   发的是 error + close，**不会发 exit** —— 挂 exit 就等于让「适配器根本没拉起来」
+    //   变成一条日志都没有的静默失败。close 两种情况都会到，且它在 stdio 关闭之后才发，
+    //   正好是 _flushAdapterOutput() 想要的时机。
+    adapter.on('close', (code, signal) => {
       if (this.adapter !== adapter) return
       this._flushAdapterOutput()
       this.adapter = null
-      const details = formatProcessExitDetails(code, signal)
       if (this.stopping || (code === 0 && signal === null)) {
-        console.info(`[supervisor] QQ 适配器已退出（${details}）`)
+        console.info(`[supervisor] QQ 适配器已退出（${formatProcessExitDetails(code, signal)}）`)
         return
       }
-      const reason = adapterSpawnError ? ` reason=${adapterSpawnError.message}` : ''
-      const failure = new Error(`QQ 适配器异常退出（${details}${reason}）`)
+      // 拉起失败没有退出码可言，说「异常退出（无退出详情）」是在编造信息；分开措辞。
+      const failure = adapterSpawnError
+        ? new Error(`QQ 适配器拉起失败：${adapterSpawnError.message}`)
+        : new Error(`QQ 适配器异常退出（${formatProcessExitDetails(code, signal)}）`)
       console.error(`[supervisor] ${failure.message}`)
-      if (!this.stopping) {
-        this.emit('adapterFailed', failure)
-      }
+      this.emit('adapterFailed', failure)
     })
   }
 
