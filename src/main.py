@@ -44,10 +44,16 @@ class _LLMGenerator:
         return raw
 
 
-def _pick_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _bind_backend_socket(port: int) -> socket.socket:
+    """绑定并**持有**监听 socket；port 传 0 表示由系统挑一个。
+
+    不是「探测一个空闲端口再释放」——那样从探测到真正监听之间隔着整个装配过程
+    （实测 4 秒），这期间那个端口对系统而言是空闲的，谁都能占走。
+    绑定失败会在这里直接抛出来，此时还没有对外宣告任何东西。
+    """
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", port))
+    return sock
 
 
 def _announce_port(port: int) -> None:
@@ -56,6 +62,19 @@ def _announce_port(port: int) -> None:
 
 def _announce_ready() -> None:
     print("YUELI_READY=1", flush=True)
+
+
+class _ReadyAnnouncingServer(uvicorn.Server):
+    """socket 真的在监听、且 lifespan 也跑完之后，才对外宣告就绪。
+
+    ★ 不能把这个公告挂在 FastAPI 的 lifespan 上：uvicorn 是**先跑 lifespan、后绑 socket**
+      的，挂在那里等于在还没开始监听时就说「可以连了」——端口被占时甚至会先宣告就绪、
+      再退出。startup() 的最后一句是 self.started = True，在它返回之后两件事都已成立。
+    """
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().startup(sockets=sockets)
+        _announce_ready()
 
 
 def main() -> None:
@@ -243,14 +262,14 @@ def main() -> None:
     app_state.foreground_callback = awareness.on_foreground
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 
-    port = args.port or _pick_port()
+    sock = _bind_backend_socket(args.port)
+    port = sock.getsockname()[1]
     _announce_port(port)
     logger.info("backend_starting", port=port)
 
     from src.api.app import create_app
-    app = create_app(_announce_ready)
-
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
+    config = uvicorn.Config(create_app(), log_level="warning", access_log=False)
+    _ReadyAnnouncingServer(config).run(sockets=[sock])
 
 
 if __name__ == "__main__":
