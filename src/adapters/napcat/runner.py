@@ -9,7 +9,12 @@ from src.common.logger import get_logger
 from .backend import BackendClient
 from .config import NapcatDocument
 from .events import classify_event, parse_inbound_event
-from .transport import ActionError, NapcatTransport
+from .transport import (
+    ActionError,
+    NapcatTransport,
+    ProtocolAuthenticationError,
+    ProtocolHandshakeError,
+)
 
 
 logger = get_logger(__name__)
@@ -34,11 +39,12 @@ class NapcatRunner:
         self._connected_once = False
 
     async def run(self) -> None:
-        """首次连接失败直接退出，已连上后断线才按配置重连。"""
+        """按失败类型决定退出或重试，避免把正常启动顺序当成配置错误。"""
         if not self._config.napcat.enabled:
             logger.info('QQ 适配器未启用，跳过协议端连接')
             return
 
+        retry_count = 0
         while True:
             try:
                 self_id = await self._transport.connect()
@@ -50,22 +56,46 @@ class NapcatRunner:
                     protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
                     selfId=self_id,
                     backendPort=self._backend_port,
+                    retryCount=retry_count,
                 )
+                retry_count = 0
                 await self._serve_connected(self_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 await self._backend.close()
                 await self._transport.close()
-                if not self._connected_once:
-                    logger.error('QQ 适配器首次连接失败', error=str(exc))
-                    raise RuntimeError(f'首次连接 QQ 协议端失败：{exc}') from exc
-                logger.warning(
-                    'QQ 适配器连接断开，准备重连',
-                    intervalSec=self._config.napcat.reconnect_interval_sec,
-                    error=str(exc),
+                if not _is_retryable(exc):
+                    logger.error(
+                        'QQ 适配器启动失败，停止重试',
+                        protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
+                        error=str(exc),
+                    )
+                    raise RuntimeError(f'QQ 适配器启动失败，已停止重试：{exc}') from exc
+
+                retry_count += 1
+                delay = _retry_delay(
+                    self._config.napcat.reconnect_interval_sec,
+                    retry_count,
                 )
-                await asyncio.sleep(self._config.napcat.reconnect_interval_sec)
+                phase = '重连' if self._connected_once else '首次连接'
+                log_fields = {
+                    'protocol': f'{self._config.napcat.host}:{self._config.napcat.port}',
+                    'intervalSec': delay,
+                    'retryCount': retry_count,
+                    'error': str(exc),
+                }
+                if retry_count == 1:
+                    logger.warning(
+                        f'QQ 协议端{phase}暂不可用，准备重试；请确认协议端已启动且连接已启用',
+                        **log_fields,
+                    )
+                else:
+                    logger.debug(
+                        f'QQ 协议端{phase}仍不可用，继续重试',
+                        **log_fields,
+                    )
+                await asyncio.sleep(delay)
 
     async def _serve_connected(self, self_id: str) -> None:
         event_task = asyncio.create_task(self._consume_protocol_events(self_id))
@@ -143,3 +173,15 @@ def _qq_number(value: str) -> int:
     if not normalized.isdigit():
         raise ValueError(f'私聊目标不是数字 QQ 号：{value!r}')
     return int(normalized)
+
+
+def _is_retryable(error: BaseException) -> bool:
+    """只把网络层暂时不可达归入重试，配置和协议拒绝必须立即暴露。"""
+    if isinstance(error, (ProtocolAuthenticationError, ProtocolHandshakeError, ActionError)):
+        return False
+    return isinstance(error, (ConnectionError, OSError, asyncio.TimeoutError))
+
+
+def _retry_delay(interval_sec: float, retry_count: int) -> float:
+    """按配置间隔指数退避，最多放大到 32 倍，避免错误时无限拉长。"""
+    return interval_sec * min(2 ** (retry_count - 1), 32)

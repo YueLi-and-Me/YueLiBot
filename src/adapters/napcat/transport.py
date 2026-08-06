@@ -9,6 +9,7 @@ import asyncio
 import json
 
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import InvalidStatus
 from websockets.protocol import State
 
 from src.common.logger import get_logger
@@ -34,6 +35,18 @@ class ActionError(RuntimeError):
             f'action {action} 失败：status={response.get("status")!r} '
             f'retcode={response.get("retcode")!r}'
         )
+
+
+class ProtocolHandshakeError(ConnectionError):
+    """协议端拒绝 WebSocket 握手，连接地址或协议端配置需要检查。"""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f'协议端拒绝 WebSocket 握手：HTTP {status_code}')
+
+
+class ProtocolAuthenticationError(ProtocolHandshakeError):
+    """协议端明确拒绝访问令牌，重试不会改变鉴权结果。"""
 
 
 _DISCONNECTED = object()
@@ -78,10 +91,19 @@ class NapcatTransport:
         headers = None
         if self._config.token:
             headers = {'Authorization': f'Bearer {self._config.token}'}
-        websocket = await connect(
-            self.uri,
-            additional_headers=headers,
-        )
+        try:
+            websocket = await connect(
+                self.uri,
+                additional_headers=headers,
+            )
+        except InvalidStatus as exc:
+            status_code = exc.response.status_code
+            error_type = (
+                ProtocolAuthenticationError
+                if status_code in (401, 403)
+                else ProtocolHandshakeError
+            )
+            raise error_type(status_code) from exc
         self._ws = websocket
         self._reader_task = asyncio.create_task(self._read_loop(websocket))
         try:
