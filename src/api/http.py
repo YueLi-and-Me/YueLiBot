@@ -57,6 +57,32 @@ class PlatformInboundBody(BaseModel):
         return value
 
 
+class PlatformIdentityLinkBody(BaseModel):
+    """平台适配器启动时，把已声明的 owner 身份绑定到既有 person。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: Literal['qq']
+    external_id: str = Field(alias='externalId')
+    display_name: str = Field(alias='displayName')
+
+    @field_validator('external_id')
+    @classmethod
+    def _require_qq(cls, value: str) -> str:
+        value = value.strip()
+        if not value or not value.isdigit():
+            raise ValueError('QQ identity 必须是非空数字')
+        return value
+
+    @field_validator('display_name')
+    @classmethod
+    def _require_display_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError('字符串字段不能为空')
+        return value
+
+
 def _auth(authorization: str | None = Header(default=None)) -> None:
     require_token(authorization)
 
@@ -136,6 +162,22 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         'accepted': True,
         'reason': decision.reason,
     })
+
+
+@router.post('/platform/identity/link', dependencies=[Depends(_auth)])
+async def platform_identity_link(body: PlatformIdentityLinkBody) -> dict:
+    """在平台消息进入归属解析前，绑定适配器声明的 owner 身份。"""
+    if app_state.registry is None:
+        return {'ok': False, 'detail': '身份注册表未初始化'}
+
+    owner = app_state.registry.owner_person()
+    app_state.registry.link_identity(
+        owner,
+        body.platform,
+        body.external_id,
+        body.display_name,
+    )
+    return {'ok': True, 'personId': owner.id}
 
 
 @router.post("/chat/interrupt", dependencies=[Depends(_auth)])

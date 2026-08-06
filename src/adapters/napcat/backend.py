@@ -102,6 +102,27 @@ class BackendClient:
             raise ValueError('主体 /platform/inbound 响应必须是 JSON 对象')
         return payload
 
+    async def link_owner_identity(self, owner_qq: str) -> None:
+        """在启动消息消费者前，把配置中的 owner QQ 号绑定到主体 owner。"""
+        client = self._http
+        if client is None:
+            raise BackendDisconnected('主体 HTTP 尚未连接')
+        normalized = owner_qq.strip()
+        if not normalized.isdigit():
+            raise ValueError(f'owner QQ 号必须是数字：{owner_qq!r}')
+        response = await client.post(
+            '/platform/identity/link',
+            json={
+                'platform': 'qq',
+                'externalId': normalized,
+                'displayName': normalized,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get('ok') is not True:
+            raise ValueError('主体 owner identity 绑定未确认成功')
+
     async def next_outbound(self) -> BackendOutbound:
         """读取主体 WS，忽略不属于适配器的通道。"""
         websocket = self._ws

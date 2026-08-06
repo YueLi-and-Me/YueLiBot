@@ -39,6 +39,7 @@ class NapcatRunner:
             try:
                 self_id = await self._transport.connect()
                 await self._backend.connect()
+                await self._backend.link_owner_identity(self._config.owner.qq)
                 self._connected_once = True
                 logger.info(
                     'QQ 适配器已连接',
