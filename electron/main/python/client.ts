@@ -179,12 +179,14 @@ export class PythonClient {
 
     ws.addEventListener('close', (event: Event) => {
       const closeEvent = event as unknown as { code?: number; reason?: string }
-      const detail = [`code=${closeEvent.code ?? 'unknown'}`]
-      const reason = typeof closeEvent.reason === 'string' ? closeEvent.reason.trim() : ''
-      if (reason) detail.push(`reason=${reason}`)
-      const phase = this.hasConnected ? '重连' : '首次连接'
-      const closeMessage = `[python-client] WS ${phase}关闭：`
-      console.warn(closeMessage, detail.join(' '))
+      // 主动关停不是故障：退出桌宠、切换后端都会走到这里，不该留一行黄字吓人。
+      if (!this.stopped) {
+        const detail = [`code=${closeEvent.code ?? 'unknown'}`]
+        const reason = typeof closeEvent.reason === 'string' ? closeEvent.reason.trim() : ''
+        if (reason) detail.push(`reason=${reason}`)
+        const phase = this.hasConnected ? '重连' : '首次连接'
+        console.warn(`[python-client] WS ${phase}关闭：`, detail.join(' '))
+      }
 
       // 1008 = policy violation，服务端鉴权失败时用它关连接
       if (closeEvent.code === 1008) {
@@ -194,9 +196,12 @@ export class PythonClient {
       if (!this.stopped && !this.authRejected) this._scheduleReconnect()
     })
 
-    ws.addEventListener('error', (event: Event) => {
-      console.debug('[python-client] WS 错误：', (event as ErrorEvent).message || event.type)
-    })
+    // ★ 空实现是刻意的，不要往里加日志。WS 的 error 事件不携带任何原因，能打的只有
+    //   事件类型名 "error" 本身——那是纯噪音。真正能查的 code/reason 在上面 close 里。
+    //   （Node 的 console.debug 就是 console.log 的别名，主进程没有级别过滤，
+    //   「降级为 debug」并不会让它变安静，只会让人以为它安静了。）
+    //   监听器本身必须留着：不挂它，undici 的 error 会成为未处理事件。
+    ws.addEventListener('error', () => {})
   }
 
   private _handleMessage(raw: string): void {
