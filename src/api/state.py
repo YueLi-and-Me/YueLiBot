@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from src.platform_io.types import StreamRef
+
 
 class _AppState:
     def __init__(self) -> None:
@@ -13,6 +15,8 @@ class _AppState:
         self.routers: Any = None       # ModelRouters（四个任务的候选与熔断状态）
         self.registry: Any = None       # StreamRegistry（stream/person/identity 的唯一入口）
         self.foreground_callback: Callable[[dict], None] | None = None
+        self.broker: Any = None         # PlatformBroker（非桌面唯一出站接缝）
+        self.register_platform_stream: Callable[[StreamRef], None] | None = None
 
 
 app_state = _AppState()

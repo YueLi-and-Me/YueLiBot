@@ -93,7 +93,10 @@ def main() -> None:
 
     from src.common.db.connection import open_db
     from src.common.db.migrations.manager import run_migrations
+    from src.platform_io.broker import PlatformBroker
+    from src.platform_io.drivers.qq_ws import QqWebSocketDriver
     from src.platform_io.registry import StreamRegistry
+    from src.platform_io.types import StreamRef
     db = open_db(db_path)
     run_migrations(db, db_path)
     logger.info("db_ready", path=str(db_path))
@@ -104,6 +107,17 @@ def main() -> None:
     from src.services.chat import ChatService
 
     app_state.registry = StreamRegistry(db)
+    broker = PlatformBroker()
+    qq_driver = QqWebSocketDriver(push)
+
+    def _register_platform_stream(stream: StreamRef) -> None:
+        if stream.platform != qq_driver.platform:
+            return
+        if not broker.has_driver(stream.id):
+            broker.register(stream.id, qq_driver)
+
+    app_state.broker = broker
+    app_state.register_platform_stream = _register_platform_stream
     desktop_context = app_state.registry.desktop_context()
     logger.info(
         "stream_registry_ready",
@@ -147,6 +161,7 @@ def main() -> None:
         summary_provider=summary_provider,
         push_event=_push_event,
         cfg=cfg,
+        broker=broker,
     )
 
     # 初始化 VectorService（可选，默认关）——必须在 app_state.chat 建好之后，

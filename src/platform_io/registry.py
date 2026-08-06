@@ -1,8 +1,8 @@
 """
 stream / person / identity 的唯一读写入口。
 
-业务层只能持有这里返回的引用，不能自行拼接数据库 ID 或直接读写归属表。当前只装配
-desktop；QQ 等平台的入站适配与发送协议仍属于后续阶段。
+业务层只能持有这里返回的引用，不能自行拼接数据库 ID 或直接读写归属表。desktop 与
+外部平台的 stream 都必须从这里取得，平台适配器不自行编造数据库 ID。
 """
 
 from __future__ import annotations

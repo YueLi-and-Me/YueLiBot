@@ -95,6 +95,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         sender_name=body.sender_name,
         first_seen_at=now,
     )
+    if app_state.register_platform_stream is not None:
+        app_state.register_platform_stream(context.stream)
     reply_count = 0
     if context.stream.kind == 'group':
         reply_count = app_state.chat.memory.assistant_reply_count_since(

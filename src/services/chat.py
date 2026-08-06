@@ -32,8 +32,9 @@ from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
+from src.platform_io.broker import PlatformBroker
 from src.platform_io.registry import StreamRegistry
-from src.platform_io.types import ConversationContext, InboundMessage
+from src.platform_io.types import ConversationContext, InboundMessage, OutboundMessage
 from src.schedule.plan import DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
@@ -97,6 +98,7 @@ class ChatService:
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
         cfg: Any | None = None,
+        broker: PlatformBroker | None = None,
     ) -> None:
         self._db = db
         self._chat_provider = chat_provider
@@ -104,6 +106,7 @@ class ChatService:
         self._summary_provider = summary_provider
         self._push_event = push_event
         self._speak_audio = speak_audio
+        self._broker = broker
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
         self._cancel_audio: Callable[[int], Any] | None = None
         # 流式解析时按 stream 攒当前这句 <say> 的正文，收完整句才送去合成。
@@ -252,7 +255,10 @@ class ChatService:
             parser = ResponseParser()
             assistant_raw = ''
             side_effects: list[dict] = []
+            outbound_segments: list[str] = []
+            outbound_segment: list[str] | None = None
             interrupted = False
+            reply_persisted = False
             from src.llm_models.openai import LlmError
             try:
                 messages = await self._build_messages_with_vector(context, trimmed, now)
@@ -280,8 +286,15 @@ class ChatService:
                             interrupted = True
                             break
                         self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
-                        self._track_speech(context, event, turn)
-                        await self._emit_parse_event(context, turn, event)
+                        if context.stream.platform == 'desktop':
+                            self._track_speech(context, event, turn)
+                            await self._emit_parse_event(context, turn, event)
+                        else:
+                            outbound_segment = _collect_outbound_segment(
+                                event,
+                                outbound_segments,
+                                outbound_segment,
+                            )
                     if interrupted:
                         break
 
@@ -291,14 +304,22 @@ class ChatService:
                             interrupted = True
                             break
                         self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
-                        self._track_speech(context, event, turn)
-                        await self._emit_parse_event(context, turn, event)
+                        if context.stream.platform == 'desktop':
+                            self._track_speech(context, event, turn)
+                            await self._emit_parse_event(context, turn, event)
+                        else:
+                            outbound_segment = _collect_outbound_segment(
+                                event,
+                                outbound_segments,
+                                outbound_segment,
+                            )
 
                 # ★ 中断也要落库。这段话已经显示（甚至念）给用户了，历史里
                 #   不能当它没发生过——否则下一轮就是连着两条 user 消息，
                 #   模型看不到自己上一句说了什么。副作用（<memory>/<mood>）
                 #   在流式过程中已经写库了，话本身更不该丢。
                 self._persist_reply(context, assistant_raw)
+                reply_persisted = True
                 if interrupted:
                     return
 
@@ -309,32 +330,44 @@ class ChatService:
                 except Exception as exc:
                     # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
-                await self._emit(stream_id, 'chat.done', {'turnId': turn, 'kind': 'done'})
+                if context.stream.platform == 'desktop':
+                    await self._emit(stream_id, 'chat.done', {'turnId': turn, 'kind': 'done'})
+                else:
+                    await self._dispatch_outbound(
+                        context,
+                        turn,
+                        outbound_segments,
+                    )
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
 
             except LlmError as exc:
                 if exc.kind == 'aborted':
-                    self._persist_reply(context, assistant_raw)
+                    if not reply_persisted:
+                        self._persist_reply(context, assistant_raw)
                     return
-                self._rollback_or_keep(context, user_msg_id, assistant_raw)
+                if not reply_persisted:
+                    self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
                 render_turn_error(turn, trimmed, exc.kind, str(exc))
-                await self._emit(stream_id, 'chat.error', {
-                    'turnId': turn,
-                    'kind': 'error',
-                    'message': str(exc),
-                    'hint': hint,
-                })
+                if context.stream.platform == 'desktop':
+                    await self._emit(stream_id, 'chat.error', {
+                        'turnId': turn,
+                        'kind': 'error',
+                        'message': str(exc),
+                        'hint': hint,
+                    })
             except Exception as exc:
-                self._rollback_or_keep(context, user_msg_id, assistant_raw)
+                if not reply_persisted:
+                    self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
                 render_turn_error(turn, trimmed, 'unknown', str(exc))
-                await self._emit(
-                    stream_id,
-                    'chat.error',
-                    {'turnId': turn, 'kind': 'error', 'message': str(exc)},
-                )
+                if context.stream.platform == 'desktop':
+                    await self._emit(
+                        stream_id,
+                        'chat.error',
+                        {'turnId': turn, 'kind': 'error', 'message': str(exc)},
+                    )
 
         task = asyncio.create_task(_run())
         inflight = _InflightTurn(task=task, cancel_event=cancel_event)
@@ -758,6 +791,8 @@ class ChatService:
         turn: int,
         event: ParseEvent,
     ) -> None:
+        if context.stream.platform != 'desktop':
+            return
         if isinstance(event, SayEvent):
             ev = {'turnId': turn, 'kind': 'parse',
                   'event': {'type': 'say', **({'emotion': event.emotion} if event.emotion else {}),
@@ -778,6 +813,31 @@ class ChatService:
         else:
             return
         await self._emit(context.stream.id, 'chat.event', ev)
+
+    async def _dispatch_outbound(
+        self,
+        context: ConversationContext,
+        turn: int,
+        segments: list[str],
+    ) -> None:
+        """把非桌面整轮回复交给 broker，桌面永远不走这条路径。"""
+        if context.stream.platform == 'desktop':
+            raise RuntimeError('desktop stream 不能经由非桌面 broker 投递')
+        if self._broker is None:
+            raise RuntimeError('非桌面 stream 未配置 PlatformBroker')
+        if not segments:
+            logger.warning('outbound_reply_empty', streamId=context.stream.id, turnId=turn)
+            return
+        receipt = await self._broker.dispatch(OutboundMessage(
+            stream=context.stream,
+            segments=segments,
+        ))
+        trace.emit(
+            'outbound_delivered',
+            platform=receipt.platform,
+            streamId=receipt.stream_id,
+            turnId=turn,
+        )
 
     async def _maybe_summarize(self, stream_id: int) -> None:
         if stream_id in self._summarizing or not self._summary_provider:
@@ -831,6 +891,28 @@ def _extract_lines(raw: str) -> list[dict] | None:
                 lines.append({**cur, 'text': cur['text'].strip()})
             cur = None
     return lines if lines else None
+
+
+def _collect_outbound_segment(
+    event: ParseEvent,
+    segments: list[str],
+    current: list[str] | None,
+) -> list[str] | None:
+    """按解析器已经识别出的 say 边界收集 QQ 正文，不重新扫描成品文本。"""
+    if isinstance(event, SayEvent):
+        return []
+    if isinstance(event, TextEvent):
+        if current is None:
+            current = []
+        current.append(event.value)
+        return current
+    if isinstance(event, SayEndEvent):
+        if current is not None:
+            text = ''.join(current).strip()
+            if text:
+                segments.append(text)
+        return None
+    return current
 
 
 def _plan_to_dict(plan: Any) -> dict | None:

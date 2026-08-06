@@ -26,6 +26,10 @@ class PlatformBroker:
             raise ValueError(f'stream {stream_id} 已注册出站 driver')
         self._drivers[stream_id] = driver
 
+    def has_driver(self, stream_id: int) -> bool:
+        """判断 stream 是否已经完成出站装配。"""
+        return stream_id in self._drivers
+
     async def dispatch(self, message: OutboundMessage) -> DeliveryReceipt:
         """单播消息；目标 stream 未注册时不得静默丢弃。"""
         driver = self._drivers.get(message.stream.id)
