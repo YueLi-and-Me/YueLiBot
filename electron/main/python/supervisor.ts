@@ -177,7 +177,11 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         this.child = null
         this._killAdapter()
       }
-      console.warn(`[supervisor] Python 后端退出（code=${code} signal=${signal}）`)
+      // 与适配器那条统一：signal 为空就不打这个字段，不编一个 null/unknown 出来；
+      // 主动关停不是故障，不占用 warn。
+      const details = formatProcessExitDetails(code, signal)
+      if (this.stopping) console.info(`[supervisor] Python 后端已退出（${details}）`)
+      else console.warn(`[supervisor] Python 后端退出（${details}）`)
       if (!isCurrent) return
       this.emit('exit', code)
       if (!this.stopping) this._scheduleRestart()
