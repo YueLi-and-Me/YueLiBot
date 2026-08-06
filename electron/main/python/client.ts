@@ -39,6 +39,8 @@ export class PythonClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private stopped = false
   private reconnects = 0
+  /** 连接成功过才算进入重连阶段；握手失败仍归为首次连接阶段。 */
+  private hasConnected = false
   /** 握手被 401 拒绝时不再重连 —— token 不会自己变对，重连只是白烧。 */
   private authRejected = false
   private static readonly MAX_RECONNECTS = 10
@@ -63,6 +65,7 @@ export class PythonClient {
   connect(): void {
     this.stopped = false
     this.authRejected = false
+    this.hasConnected = false
     this._connect()
   }
 
@@ -164,6 +167,7 @@ export class PythonClient {
     this.ws = ws
 
     ws.addEventListener('open', () => {
+      this.hasConnected = true
       this.reconnects = 0
       console.log('[python-client] WS 已连接')
     })
@@ -174,9 +178,16 @@ export class PythonClient {
     })
 
     ws.addEventListener('close', (event: Event) => {
-      const code = (event as unknown as { code?: number }).code
+      const closeEvent = event as unknown as { code?: number; reason?: string }
+      const detail = [`code=${closeEvent.code ?? 'unknown'}`]
+      const reason = typeof closeEvent.reason === 'string' ? closeEvent.reason.trim() : ''
+      if (reason) detail.push(`reason=${reason}`)
+      const phase = this.hasConnected ? '重连' : '首次连接'
+      const closeMessage = `[python-client] WS ${phase}关闭：`
+      console.warn(closeMessage, detail.join(' '))
+
       // 1008 = policy violation，服务端鉴权失败时用它关连接
-      if (code === 1008) {
+      if (closeEvent.code === 1008) {
         this.authRejected = true
         console.error('[python-client] WS 鉴权被拒，停止重连')
       }
@@ -184,7 +195,7 @@ export class PythonClient {
     })
 
     ws.addEventListener('error', (event: Event) => {
-      console.warn('[python-client] WS 错误：', (event as ErrorEvent).message ?? event.type)
+      console.debug('[python-client] WS 错误：', (event as ErrorEvent).message || event.type)
     })
   }
 
