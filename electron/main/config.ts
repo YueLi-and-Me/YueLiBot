@@ -22,32 +22,51 @@ const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = ['chat', 'vision', 'tts', 'embedding'] as const
 
-const NAPCAT_CONFIG_TEMPLATE = `# YueLiBot 会在桌宠启动时创建本模板，并且不会覆盖已有文件。
-# 完成 QQ 接入前请保持 enabled = false；启用前先在 NapCat WebUI 创建一条正向 WebSocket 服务端连接。
+const NAPCAT_CONFIG_TEMPLATE = `# 月璃的 QQ 配置。桌宠第一次启动时自动创建，之后不会覆盖你改过的内容。
+#
+# 这里要填两个不同的 QQ 号，千万别填反：
+#
+#     [napcat] self_qq  = 月璃的号，也就是你在 NapCat 里登录的那个机器人账号
+#     [owner]  qq       = 你自己的号，你平时发消息用的那个
+#
+# 填反了会怎样：她会把你当成她自己，你发的消息一律被当作"自己发的"忽略掉，
+# 结果就是你怎么找她都没反应。所以下面两处都写明了该填谁的号。
 
 [inner]
 version = "0.1.0"
 
 [napcat]
-# 安全起点：停用时不会连接协议端，也不会向主体建立 QQ 链路。
+# 改成 true 才会去连 QQ。下面几项都填好了再改。
 enabled = false
+
+# 月璃的 QQ 号 —— NapCat 登录的那个机器人账号。
+# 她靠这个号认出哪些消息是自己发的，不然会自己回自己。
+self_qq = ""
+
+# NapCat 装在这台电脑上就填 127.0.0.1。
 host = "127.0.0.1"
-# 参考模板端口；启用前请改成 NapCat WebUI 中实际监听的端口。
+# 要和你在 NapCat 里新建的那条「正向 WebSocket」连接的端口一致。
 port = 8095
-# 协议端没有启用访问令牌时留空；启用后必须与协议端保持一致。
+# 那条连接如果设了访问令牌就填一样的，没设就留空。
 token = ""
+
+# 断线后隔几秒重连一次。
 reconnect_interval_sec = 5
+# 一次请求等几秒算超时。
 action_timeout_sec = 15
 
 [owner]
-# 启用 QQ 适配器前填写桌主自己的数字 QQ 号。
+# 你自己的 QQ 号 —— 不是上面那个机器人号。
+# 填对了，她才知道 QQ 上的你和电脑桌面上的你是同一个人，两边记忆才是通的。
 qq = ""
 
 [private]
-# 私聊访问控制。whitelist = 只回名单里的人；blacklist = 名单里的人不回，其余都回。
-# 默认 whitelist：配错时是朋友没收到回复，而不是任何人都能消耗模型额度。
+# 谁可以私聊她：
+#   whitelist —— 只有下面名单里的人能找她（默认，推荐）
+#   blacklist —— 名单里的人不能找她，其他人都可以
 mode = "whitelist"
-# owner.qq 无论哪种模式都自动放行，不必重复写在这里。
+# 允许（或禁止）的 QQ 号，比如 [12345678, 87654321]。
+# 你自己不用写进来，owner.qq 任何时候都能找她。
 list = []
 `
 

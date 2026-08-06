@@ -50,6 +50,7 @@ class NapcatRunner:
         while True:
             try:
                 self_id = await self._transport.connect()
+                _check_self_qq_matches(self._config.napcat.self_qq, self_id)
                 await self._backend.connect()
                 await self._backend.link_owner_identity(self._config.owner.qq)
                 self._connected_once = True
@@ -196,6 +197,24 @@ class NapcatRunner:
                 )
 
 
+class SelfQqMismatch(RuntimeError):
+    """配置里写的机器人 QQ 号和协议端实际登录的号对不上。"""
+
+
+def _check_self_qq_matches(configured: str, actual_self_id: str) -> None:
+    """核对配置里的 self_qq 与协议端真正登录的号。
+
+    对不上通常是两种情况：连错了协议端，或者 self_qq 抄错了。
+    两种都得让用户知道，因为她要靠这个号认出自己发的消息。
+    """
+    if configured == actual_self_id:
+        return
+    raise SelfQqMismatch(
+        f'配置里的 napcat.self_qq 是 {configured}，但协议端登录的是 {actual_self_id}。'
+        f'请把 napcat.self_qq 改成 {actual_self_id}，或者检查是不是连错了协议端'
+    )
+
+
 def _qq_number(value: str) -> int:
     normalized = value.strip()
     if not normalized.isdigit():
@@ -205,7 +224,10 @@ def _qq_number(value: str) -> int:
 
 def _is_retryable(error: BaseException) -> bool:
     """只把网络层暂时不可达归入重试，配置和协议拒绝必须立即暴露。"""
-    if isinstance(error, (ProtocolAuthenticationError, ProtocolHandshakeError, ActionError)):
+    if isinstance(
+        error,
+        (ProtocolAuthenticationError, ProtocolHandshakeError, ActionError, SelfQqMismatch),
+    ):
         return False
     # 适配器有两条外连链路：到协议端走 websockets，抛的是内置 socket 异常；
     # 到主体走 httpx，而 httpx 的异常**一个都不继承 ConnectionError/OSError**。

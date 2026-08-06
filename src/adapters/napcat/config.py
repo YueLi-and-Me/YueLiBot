@@ -7,17 +7,26 @@ from typing import List, Literal
 
 import sys
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.config.toml_io import read_versioned_toml
 
 
 NAPCAT_CONFIG_VERSION = '0.1.0'
-_CONFIG_HINT = (
-    '桌宠托管启动时会自动创建停用模板；若手动运行，请创建 config/napcat.toml，'
-    '按 M3 QQ 私聊接入说明填写 enabled、host、port、owner.qq，'
-    '协议端没有 token 时也必须保留 token = ""'
-)
+_CONFIG_HINT = """config/napcat.toml 该怎么填：
+
+  [napcat]
+  enabled  = true          改成 true 才会去连 QQ
+  self_qq  = "月璃的号"     NapCat 里登录的那个机器人账号
+  host     = "127.0.0.1"   NapCat 装在本机就填这个
+  port     = 3001          和 NapCat 里那条「正向 WebSocket」的端口一致
+  token    = ""            那条连接设了令牌就填一样的，没设就留空
+
+  [owner]
+  qq       = "你的号"       你自己平时用的 QQ，不是上面那个机器人号
+
+self_qq 和 owner.qq 是两个不同的号，填反了她会把你当成她自己，你发什么她都不理。
+桌宠正常启动时会自动创建这个文件，里面每一项都有说明。"""
 
 
 class InnerConfig(BaseModel):
@@ -32,11 +41,30 @@ class NapcatConnectionConfig(BaseModel):
     # 必填，不给默认值：漏写它就等于让程序替用户决定要不要去连 QQ，
     # 而这个决定的两个方向后果完全不对称。自动生成的模板里明确写着 false。
     enabled: bool
+    # 月璃自己的 QQ 号，也就是协议端登录的那个机器人账号。
+    # 用来认出「这条消息是她自己发的」，避免她回复自己。
+    self_qq: str = ''
     host: str
     port: int = Field(gt=0, le=65535)
     token: str
     reconnect_interval_sec: float = Field(gt=0)
     action_timeout_sec: float = Field(gt=0)
+
+    @field_validator('self_qq', mode='before')
+    @classmethod
+    def _normalize_self_qq(cls, value: object) -> object:
+        # TOML 里写成数字也认，省得为了引号来回折腾。
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        return value
+
+    @field_validator('self_qq')
+    @classmethod
+    def _validate_self_qq(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.isdigit():
+            raise ValueError('napcat.self_qq 必须是数字 QQ 号')
+        return value
 
     @field_validator('host')
     @classmethod
@@ -110,9 +138,24 @@ class NapcatDocument(BaseModel):
     private: PrivateAccessConfig = Field(default_factory=PrivateAccessConfig)
 
     @model_validator(mode='after')
-    def _require_owner_when_enabled(self) -> 'NapcatDocument':
-        if self.napcat.enabled and not self.owner.qq:
-            raise ValueError('启用 QQ 适配器时 owner.qq 不能为空')
+    def _require_two_distinct_qq_numbers(self) -> 'NapcatDocument':
+        """启用后必须两个号都填，且不能是同一个。
+
+        填成同一个号是最容易犯的错：配 NapCat 的时候满眼都是机器人账号，
+        很容易顺手把它填进 owner.qq。真那样了她会把你当成她自己，
+        你发的每条消息都会被当作「自己发的」丢掉，而且不报任何错。
+        """
+        if not self.napcat.enabled:
+            return self
+        if not self.napcat.self_qq:
+            raise ValueError('启用 QQ 适配器时 napcat.self_qq 不能为空，填月璃登录的那个 QQ 号')
+        if not self.owner.qq:
+            raise ValueError('启用 QQ 适配器时 owner.qq 不能为空，填你自己的 QQ 号')
+        if self.napcat.self_qq == self.owner.qq:
+            raise ValueError(
+                f'napcat.self_qq 和 owner.qq 都填成了 {self.owner.qq}，这两个必须是不同的号：'
+                'napcat.self_qq 填月璃登录的机器人号，owner.qq 填你自己的号'
+            )
         return self
 
 
@@ -122,10 +165,29 @@ def read_config(path: Path) -> NapcatDocument:
     return NapcatDocument.model_validate(document)
 
 
+def _readable_error(exc: Exception) -> str:
+    """把 pydantic 的报错压成人能读的几行。
+
+    默认的 ValidationError 会把整份配置和文档链接一起打出来，
+    真正有用的那句话反而埋在中间。这里只留字段名和原因。
+    """
+    if not isinstance(exc, ValidationError):
+        return str(exc)
+    lines = []
+    for error in exc.errors():
+        field = '.'.join(str(part) for part in error['loc'])
+        message = error['msg'].removeprefix('Value error, ')
+        lines.append(f'  {field}：{message}' if field else f'  {message}')
+    return '\n'.join(lines)
+
+
 def load_config(path: Path) -> NapcatDocument:
     """读取适配器配置，错误打印修复指引后以非零状态退出。"""
     try:
         return read_config(path)
     except Exception as exc:
-        print(f'[napcat] 配置错误：{path}\n{exc}\n{_CONFIG_HINT}', file=sys.stderr)
+        print(
+            f'[napcat] {path} 有问题：\n{_readable_error(exc)}\n\n{_CONFIG_HINT}',
+            file=sys.stderr,
+        )
         raise SystemExit(1) from exc
