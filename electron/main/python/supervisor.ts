@@ -24,6 +24,8 @@ export interface SupervisorEvents {
   exit: [code: number | null]
   /** 拉不起来（python 不存在、权限不足）。不发这个事件的话 error 会成为未捕获异常。 */
   failed: [error: Error]
+  /** QQ 适配器异常退出；由主进程负责把这个故障呈现到托盘。 */
+  adapterFailed: [error: Error]
 }
 
 export interface SupervisorOptions {
@@ -34,14 +36,19 @@ export interface SupervisorOptions {
   /** Python 侧的工作目录：含 bot.py 与 src/ 的那一层，也就是仓库根。 */
   cwd: string
   pythonExe?: string
+  /** QQ 适配器配置文件；不传表示只启动主体，便于保留无 QQ 场景。 */
+  napcatConfigPath?: string
 }
 
 export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private child: ChildProcess | null = null
+  private adapter: ChildProcess | null = null
   private restarts = 0
   private stopping = false
   /** stdout 行缓冲。网络/管道分包与行边界无关，不缓冲会漏掉被切断的 YUELI_PORT=。 */
   private stdoutBuf = ''
+  private adapterStdoutBuf = ''
+  private adapterStderrBuf = ''
   private portAnnounced = false
   /** 最大重启次数。超过后等用户重启 Electron。 */
   private static readonly MAX_RESTARTS = 5
@@ -55,6 +62,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly configPath: string
   private readonly cwd: string
   private readonly pythonExe: string
+  private readonly napcatConfigPath: string | null
 
   constructor(opts: SupervisorOptions) {
     super()
@@ -63,6 +71,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.configPath = opts.configPath
     this.cwd = opts.cwd
     this.pythonExe = opts.pythonExe ?? 'python'
+    this.napcatConfigPath = opts.napcatConfigPath ?? null
   }
 
   start(): void {
@@ -72,6 +81,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
 
   stop(): void {
     this.stopping = true
+    this._killAdapter()
     this._kill()
   }
 
@@ -147,8 +157,13 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk))
 
     child.on('exit', (code, signal) => {
-      if (this.child === child) this.child = null
+      const isCurrent = this.child === child
+      if (isCurrent) {
+        this.child = null
+        this._killAdapter()
+      }
       console.warn(`[supervisor] Python 后端退出（code=${code} signal=${signal}）`)
+      if (!isCurrent) return
       this.emit('exit', code)
       if (!this.stopping) this._scheduleRestart()
     })
@@ -177,6 +192,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       setTimeout(() => {
         if (this.alive) this.restarts = 0
       }, PythonSupervisor.STABLE_AFTER).unref?.()
+      this._spawnAdapter(port)
       this.emit('ready', port)
       return
     }
@@ -197,5 +213,126 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     setTimeout(() => {
       if (!this.stopping) this._spawn()
     }, delay).unref?.()
+  }
+
+  /**
+   * 后端端口只在真正监听后才会宣告，此时再把适配器接上，避免给它传一个
+   * 尚未可用的端口。适配器不参与主体重启退避；它自己的首次连接失败策略
+   * 由 runner 执行，配置或协议端错误则直接通过托盘告诉用户。
+   */
+  private _spawnAdapter(port: number): void {
+    if (!this.napcatConfigPath) return
+    this._killAdapter()
+    this.adapterStdoutBuf = ''
+    this.adapterStderrBuf = ''
+
+    const adapter = spawn(this.pythonExe, [
+      '-m', 'src.adapters.napcat',
+      '--config-path', this.napcatConfigPath,
+      '--backend-port', String(port),
+      '--token', this.token,
+    ], {
+      cwd: this.cwd,
+      env: {
+        ...process.env,
+        YUELI_TOKEN: this.token,
+        PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
+        YUELI_FORCE_COLOR: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    this.adapter = adapter
+    let adapterFailureReported = false
+
+    adapter.on('error', (err) => {
+      if (this.adapter !== adapter) return
+      console.error('[supervisor] 无法拉起 QQ 适配器：', err.message)
+      adapterFailureReported = true
+      this.emit('adapterFailed', err)
+    })
+    adapter.stdout?.on('data', (chunk: Buffer) => this._onAdapterStdout(chunk))
+    adapter.stderr?.on('data', (chunk: Buffer) => this._onAdapterStderr(chunk))
+    adapter.on('exit', (code, signal) => {
+      if (this.adapter !== adapter) return
+      this._flushAdapterOutput()
+      this.adapter = null
+      console.warn(`[supervisor] QQ 适配器退出（code=${code} signal=${signal}）`)
+      if (!this.stopping && code !== 0 && !adapterFailureReported) {
+        this.emit(
+          'adapterFailed',
+          new Error(`QQ 适配器异常退出（code=${code} signal=${signal ?? 'unknown'}）`),
+        )
+      }
+    })
+  }
+
+  /** 适配器只由其自己的退出事件结束，避免 stop() 触发一次无意义的托盘告警。 */
+  private _killAdapter(): void {
+    const adapter = this.adapter
+    if (!adapter || adapter.exitCode !== null) {
+      this.adapter = null
+      return
+    }
+    this.adapter = null
+    if (process.platform === 'win32' && adapter.pid) {
+      const terminateDirectly = () => {
+        if (adapter.exitCode === null) adapter.kill()
+      }
+      const fallback = setTimeout(terminateDirectly, 2_000)
+      const taskkill = spawn('taskkill', ['/pid', String(adapter.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      })
+      const finish = () => {
+        clearTimeout(fallback)
+        terminateDirectly()
+      }
+      taskkill.on('error', finish)
+      taskkill.on('close', finish)
+    } else {
+      adapter.kill('SIGTERM')
+    }
+  }
+
+  private _onAdapterStdout(chunk: Buffer): void {
+    this.adapterStdoutBuf += chunk.toString('utf8')
+    this._writeAdapterLines(false, false)
+  }
+
+  private _onAdapterStderr(chunk: Buffer): void {
+    this.adapterStderrBuf += chunk.toString('utf8')
+    this._writeAdapterLines(true, false)
+  }
+
+  private _writeAdapterLines(isError: boolean, flush: boolean): void {
+    const buffer = isError ? this.adapterStderrBuf : this.adapterStdoutBuf
+    let remaining = buffer
+    let nl: number
+    while ((nl = remaining.indexOf('\n')) !== -1) {
+      this._writeAdapterLine(remaining.slice(0, nl), isError)
+      remaining = remaining.slice(nl + 1)
+    }
+    if (flush && remaining) {
+      this._writeAdapterLine(remaining, isError)
+      remaining = ''
+    }
+    if (isError) this.adapterStderrBuf = remaining
+    else this.adapterStdoutBuf = remaining
+    if (remaining.length > 64 * 1024) {
+      if (isError) this.adapterStderrBuf = ''
+      else this.adapterStdoutBuf = ''
+    }
+  }
+
+  private _writeAdapterLine(line: string, isError: boolean): void {
+    const text = line.trimEnd()
+    if (!text) return
+    const output = isError ? process.stderr : process.stdout
+    output.write(`[napcat] ${text}\n`)
+  }
+
+  private _flushAdapterOutput(): void {
+    this._writeAdapterLines(false, true)
+    this._writeAdapterLines(true, true)
   }
 }

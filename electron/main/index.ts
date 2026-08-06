@@ -29,7 +29,9 @@ import {
 } from './platform/petWindow.ts'
 import { closeObservabilityWindow, observabilityWindowOpen, openObservabilityWindow } from './platform/observabilityWindow.ts'
 import { closeSettingsWindow, openSettingsWindow } from './platform/settingsWindow.ts'
-import { createTray, destroyTray, resetPetPosition, togglePet, trayIconEmpty } from './platform/tray.ts'
+import {
+  createTray, destroyTray, notifyTray, resetPetPosition, togglePet, trayIconEmpty,
+} from './platform/tray.ts'
 import {
   assertConfigConsistent, configIsComplete, readConfigDirectory, tryPrefillFromLegacyEnv,
   writeConfigDirectory,
@@ -189,6 +191,7 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
     configPath: configDir,
     cwd: app.getAppPath(),
     pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
+    napcatConfigPath: join(configDir, 'napcat.toml'),
   })
   supervisor.on('ready', (port) => {
     if (!petWindow || petWindow.isDestroyed() || !supervisor) return
@@ -200,6 +203,10 @@ async function startApp(devUrl: string | undefined, cfg: YueliConfig): Promise<v
   })
   supervisor.on('failed', (err) => {
     console.warn('[supervisor] Python 后端不可用：', err.message)
+  })
+  supervisor.on('adapterFailed', (err) => {
+    console.warn('[supervisor] QQ 适配器不可用：', err.message)
+    notifyTray(err.message)
   })
   supervisor.start()
   app.on('before-quit', () => {

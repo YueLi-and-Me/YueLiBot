@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, Menu, Tray, nativeImage, screen, type BrowserWindow } from 'electron'
+import { app, Menu, Notification, Tray, nativeImage, screen, type BrowserWindow } from 'electron'
 
 /**
  * 系统托盘。
@@ -31,6 +31,19 @@ export interface TrayHandlers {
 }
 
 let tray: Tray | null = null
+
+/**
+ * QQ 适配器属于后台子进程，失败时桌宠窗口可能还没创建完成；托盘存在时用
+ * Windows 气泡通知，否则退回 Electron 系统通知，确保启动期错误也能被看见。
+ */
+export function notifyTray(message: string): void {
+  const title = '月璃 QQ 适配器'
+  if (process.platform === 'win32' && tray && !tray.isDestroyed()) {
+    tray.displayBalloon({ title, content: message, iconType: 'warning' })
+    return
+  }
+  new Notification({ title, body: message }).show()
+}
 
 /**
  * 找到图标文件。
