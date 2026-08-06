@@ -86,4 +86,6 @@ uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'c
 watchfiles==1.2.0
     # via uvicorn
 websockets==17.0.1
-    # via uvicorn
+    # via
+    #   uvicorn
+    #   yueli
