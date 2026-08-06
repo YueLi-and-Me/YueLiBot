@@ -29,6 +29,10 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     # 接口层
     "api.http": ("#5f87ff", False),
     "api.ws": ("#00d7ff", False),
+    # QQ 适配器
+    "adapters.napcat.backend": ("#d787ff", False),
+    "adapters.napcat.runner": ("#ff5f87", False),
+    "adapters.napcat.transport": ("#afafff", False),
     # 基础设施
     "common.logger": ("#808080", False),
     "config.loader": ("#5f5faf", False),
@@ -58,6 +62,9 @@ MODULE_ALIASES: Dict[str, str] = {
     "selftest": "自检",
     "api.http": "HTTP接口",
     "api.ws": "事件推流",
+    "adapters.napcat.backend": "QQ主体",
+    "adapters.napcat.runner": "QQ运行器",
+    "adapters.napcat.transport": "QQ传输",
     "common.logger": "日志",
     "config.loader": "配置加载",
     "common.db.migrations.bootstrap": "建库",
