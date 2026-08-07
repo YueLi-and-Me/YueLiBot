@@ -239,26 +239,29 @@ class ChatService:
             })
             return turn
 
-        now = current_time()
-        asleep = self._sleep_state().asleep if self._sleep_state else False
-        self.settle_elapsed(context, now, asleep)
-        self.memory.sweep(now)
-        if self._schedule:
-            self._schedule.ensure_background(now)
-
-        # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
-        #   间隔恒为 0，会话永远不会翻页。
-        self._refresh_session(context, now)
-        user_msg_id = self.memory.append_message(
-            stream_id,
-            context.person.id,
-            'user',
-            trimmed,
-            now,
-        )
         cancel_event = asyncio.Event()
 
         async def _run() -> None:
+            now = current_time()
+            asleep = self._sleep_state().asleep if self._sleep_state else False
+            self.settle_elapsed(context, now, asleep)
+            self.memory.sweep(now)
+            if self._schedule:
+                self._schedule.ensure_background(now)
+
+            # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
+            #   间隔恒为 0，会话永远不会翻页。
+            self._refresh_session(context, now)
+            user_msg_id = self.memory.append_message(
+                stream_id,
+                context.person.id,
+                'user',
+                trimmed,
+                now,
+            )
+            if cancel_event.is_set():
+                return
+
             parser = ResponseParser()
             assistant_raw = ''
             side_effects: list[dict] = []
