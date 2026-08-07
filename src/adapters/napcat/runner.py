@@ -162,6 +162,13 @@ class NapcatRunner:
                 continue
             try:
                 await self._backend.submit_inbound(event)
+            except httpx.ReadTimeout as exc:
+                logger.error(
+                    'QQ 入站消息提交超时',
+                    streamExternalId=event.stream_external_id,
+                    messageId=event.external_message_id,
+                    error=str(exc),
+                )
             except httpx.HTTPStatusError as exc:
                 # 主体拒收：丢这一条继续下一条，不拆连接
                 logger.error(
