@@ -171,7 +171,8 @@ async def platform_identity_link(body: PlatformIdentityLinkBody) -> dict:
         return {'ok': False, 'detail': '身份注册表未初始化'}
 
     owner = app_state.registry.owner_person()
-    app_state.registry.link_identity(
+    # owner.qq 是单值配置项，换号时旧号要解绑，不能越攒越多
+    app_state.registry.set_sole_identity(
         owner,
         body.platform,
         body.external_id,

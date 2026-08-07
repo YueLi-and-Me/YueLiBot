@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import sqlite3
 
+from src.common.logger import get_logger
 from src.platform_io.types import ConversationContext, PersonKind, PersonRef, StreamKind, StreamRef
+
+logger = get_logger(__name__)
 
 _OWNER_PERSON_ID = 1
 _DESKTOP_STREAM_ID = 1
@@ -156,6 +159,44 @@ class StreamRegistry:
                 (display_name, platform, external_id),
             )
         self._db.commit()
+
+    def set_sole_identity(
+        self,
+        person: PersonRef,
+        platform: str,
+        external_id: str,
+        display_name: str,
+    ) -> None:
+        """让 person 在该平台只保留这一个身份，旧的解绑。
+
+        用于 owner 这类「配置里只能填一个号」的绑定：配置项是单值的，
+        数据也该跟着是单值的。留着旧号的后果是它永远解析成 owner——
+        万一曾经填错成别人的号，那个人会一直读得到桌主的记忆。
+        """
+        platform = _require_text(platform, "platform")
+        external_id = _require_text(external_id, "external_id")
+
+        # 先解绑同平台上的其他号，再走正常绑定
+        stale = self._db.execute(
+            """SELECT external_id FROM identities
+               WHERE person_id = ? AND platform = ? AND external_id != ?""",
+            (person.id, platform, external_id),
+        ).fetchall()
+        if stale:
+            self._db.execute(
+                """DELETE FROM identities
+                   WHERE person_id = ? AND platform = ? AND external_id != ?""",
+                (person.id, platform, external_id),
+            )
+            self._db.commit()
+            logger.info(
+                '已解绑该 person 在此平台的旧身份',
+                personId=person.id,
+                platform=platform,
+                removed=[row[0] for row in stale],
+                kept=external_id,
+            )
+        self.link_identity(person, platform, external_id, display_name)
 
     def get_or_create_stream(
         self,
