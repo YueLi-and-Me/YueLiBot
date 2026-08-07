@@ -196,14 +196,15 @@ class SleepStateController:
         return self.current(now)
 
     def _change_state(self, asleep: bool, now: int) -> None:
+        if asleep == self._sleeping:
+            return
         if asleep and not self._sleeping:
             self._sleep_started_at = now
-            self._persist()
-        elif not asleep and self._sleeping:
+        else:
             self._woke_at = now
             self._sleep_started_at = None
-            self._persist()
         self._sleeping = asleep
+        self._persist()
 
     def _is_just_woke(self, now: int, natural_wake_target_at: int) -> bool:
         if self._woke_at is None:
@@ -223,5 +224,18 @@ class SleepStateController:
         self._restored = True
         saved = self._state_store.read_json(_SLEEP_RUNTIME_KEY, None)
         if saved and isinstance(saved, dict):
-            self._sleeping = bool(saved.get('sleeping', False))
-            self._sleep_started_at = saved.get('sleepStartedAt')
+            saved_sleeping = bool(saved.get('sleeping', False))
+            saved_started_at = saved.get('sleepStartedAt')
+            started_at_is_valid = (
+                isinstance(saved_started_at, int)
+                and not isinstance(saved_started_at, bool)
+            )
+            if saved_sleeping and started_at_is_valid:
+                self._sleeping = True
+                self._sleep_started_at = saved_started_at
+                return
+            self._sleeping = False
+            self._sleep_started_at = None
+            # 睡眠中必须有开始时间，清醒时开始时间必须为空。
+            if saved_sleeping or saved_started_at is not None:
+                self._persist()

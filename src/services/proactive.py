@@ -83,8 +83,18 @@ class AwarenessService:
     # ------------------------------------------------------------ 依赖注入回调
 
     def _sleep_inputs(self, now: int) -> SleepInputs:
+        if self._schedule:
+            schedule_inputs = self._schedule.sleep_inputs(now)
+            return SleepInputs(
+                date=schedule_inputs['date'],
+                bedtime_hint=schedule_inputs['bedtime_hint'],
+                wake_hint=schedule_inputs['wake_hint'],
+                energy=schedule_inputs['energy'],
+                last_interaction_at=schedule_inputs['last_interaction_at'],
+            )
+
         date = day_plan_date(now)
-        plan = self._schedule.get(now) if self._schedule else fallback_day_plan(date)
+        plan = fallback_day_plan(date)
         desktop_context = self.chat.desktop_context
         return SleepInputs(
             date=plan.date,
