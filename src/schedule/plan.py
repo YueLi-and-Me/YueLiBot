@@ -26,6 +26,7 @@ MAX_HOURS_FOR_ELAPSED_INTEGRATION = 48
 DAY_MS = 24 * 60 * 60_000
 HOUR_MS = 60 * 60_000
 LATE_BEDTIME_MAX_MINUTES = 2 * 60
+GENERATION_RETRY_INTERVAL_MS = 10 * 60_000
 
 
 @dataclass
@@ -55,6 +56,7 @@ class ScheduleSleepState:
 @dataclass
 class DayPlanGenerationIssue:
     kind: str      # 'invalid-output' | 'provider-error'
+    attempted_at: int
     raw: str | None = None
     reason: str | None = None
 
@@ -347,7 +349,7 @@ class DayPlanService:
         self._last_interaction_at = last_interaction_at
         self._generator = generator
         self._inflight: Dict[str, asyncio.Task[DayPlan]] = {}
-        self._generation_issues: dict[str, DayPlanGenerationIssue] = {}
+        self._generation_issues: Dict[str, DayPlanGenerationIssue] = {}
 
     def get(self, now: int | None = None) -> DayPlan:
         now = now if now is not None else current_time()
@@ -357,18 +359,22 @@ class DayPlanService:
     async def ensure(self, now: int | None = None) -> DayPlan:
         now = now if now is not None else current_time()
         date = day_plan_date(now)
-        existing = self._read(date)
+        existing = self._read_generation_result(date)
         if existing:
             return existing
+        if self._generation_is_cooling_down(date, now):
+            return fallback_day_plan(date)
         return await self._start_generation(date, now)
 
     def ensure_background(self, now: int | None = None) -> DayPlan:
         """当天计划缺失时立即返回备用计划，并在后台生成真实计划。"""
         now = now if now is not None else current_time()
         date = day_plan_date(now)
-        existing = self._read(date)
+        existing = self._read_generation_result(date)
         if existing:
             return existing
+        if self._generation_is_cooling_down(date, now):
+            return fallback_day_plan(date)
         self._start_generation(date, now)
         return fallback_day_plan(date)
 
@@ -377,7 +383,11 @@ class DayPlanService:
         if existing is not None:
             return existing
         task = asyncio.create_task(
-            self._generate(date, datetime.fromtimestamp(now / 1000))
+            self._generate(
+                date,
+                datetime.fromtimestamp(now / 1000),
+                now,
+            )
         )
         self._inflight[date] = task
         task.add_done_callback(
@@ -407,6 +417,13 @@ class DayPlanService:
 
     def generation_issue(self, now: int) -> DayPlanGenerationIssue | None:
         return self._generation_issues.get(day_plan_date(now))
+
+    def _generation_is_cooling_down(self, date: str, now: int) -> bool:
+        issue = self._generation_issues.get(date)
+        return (
+            issue is not None
+            and now < issue.attempted_at + GENERATION_RETRY_INTERVAL_MS
+        )
 
     def sleep_inputs(self, now: int | None = None) -> dict[str, Any]:
         now = now if now is not None else current_time()
@@ -468,9 +485,21 @@ class DayPlanService:
             plan = self._read_legacy(raw, date)
         return plan
 
-    async def _generate(self, date: str, now: datetime) -> DayPlan:
+    def _read_generation_result(self, date: str) -> DayPlan | None:
+        plan = self._read(date)
+        if self._generator is not None and plan == fallback_day_plan(date):
+            return None
+        return plan
+
+    async def _generate(
+        self,
+        date: str,
+        now: datetime,
+        attempted_at: int,
+    ) -> DayPlan:
         fallback = fallback_day_plan(date)
         if self._generator is None:
+            self._generation_issues.pop(date, None)
             self._store.write_json(_plan_key(date), _plan_to_dict(fallback))
             return fallback
         yesterday = self._read(_previous_date(now))
@@ -493,17 +522,23 @@ class DayPlanService:
                 raw = await self._generator.generate(retry_prompt)
                 parsed = parse_day_plan(raw, date)
             if not parsed:
-                self._generation_issues[date] = DayPlanGenerationIssue(kind='invalid-output', raw=raw)
+                self._generation_issues[date] = DayPlanGenerationIssue(
+                    kind='invalid-output',
+                    attempted_at=attempted_at,
+                    raw=raw,
+                )
                 logger.error('日程生成结果未通过结构校验', date=date)
-            else:
-                self._generation_issues.pop(date, None)
-            plan = parsed or fallback
-            self._store.write_json(_plan_key(date), _plan_to_dict(plan))
-            return plan
+                return fallback
+            self._generation_issues.pop(date, None)
+            self._store.write_json(_plan_key(date), _plan_to_dict(parsed))
+            return parsed
         except Exception as exc:
-            self._generation_issues[date] = DayPlanGenerationIssue(kind='provider-error', reason=str(exc))
+            self._generation_issues[date] = DayPlanGenerationIssue(
+                kind='provider-error',
+                attempted_at=attempted_at,
+                reason=str(exc),
+            )
             logger.error('日程生成失败', date=date, error=str(exc))
-            self._store.write_json(_plan_key(date), _plan_to_dict(fallback))
             return fallback
 
     def _read_legacy(self, raw: Any, date: str) -> DayPlan | None:
