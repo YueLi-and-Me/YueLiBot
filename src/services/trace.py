@@ -16,13 +16,36 @@ from __future__ import annotations
 
 import json
 from collections import deque
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# 当前这一轮消息的来源，由 ChatService.send() 在入口绑定一次，emit() 自动带上。
+# 用 ContextVar 是因为 llm_request / llm_final 这些 kind 在 LLM 层发出，
+# 不该为了记一句「这是谁说的」把 stream 和 person 一路透传下去。
+# 每轮跑在自己的 task 里，ContextVar 天然按轮隔离。
+_origin: ContextVar[Dict[str, Any]] = ContextVar('trace_origin', default={})
+
+
+def bind_origin(
+    stream_id: int,
+    platform: str,
+    person_id: int,
+    person_kind: str,
+) -> None:
+    """绑定本轮的消息来源，之后这一轮的每条 trace 都会带上。"""
+    _origin.set({
+        'streamId': stream_id,
+        'platform': platform,
+        'personId': person_id,
+        'personKind': person_kind,
+    })
 
 
 # 会带出对话正文的字段。默认脱敏成「类型 + 长度」，保留可排查性但不留下明文。
@@ -67,7 +90,7 @@ class TraceBuffer:
         self._seq += 1
         if not self._record_content:
             fields = {k: (_redact(v) if k in _CONTENT_FIELDS else v) for k, v in fields.items()}
-        entry = {"seq": self._seq, "at": current_time(), "kind": kind, **fields}
+        entry = {"seq": self._seq, "at": current_time(), "kind": kind, **_origin.get(), **fields}
         self._buf.append(entry)
         logger.debug("trace", **entry)
         if self._log_path:

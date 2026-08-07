@@ -15,7 +15,7 @@ import asyncio
 import inspect
 import random
 
-from .trace import trace
+from .trace import bind_origin, trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
 
@@ -221,6 +221,13 @@ class ChatService:
         turn = self._next_turn()
         self._active_turns[stream_id] = turn
         mark_turn_start(turn)
+        # 绑定来源，这一轮后续的每条 trace 都会带上，不必逐个 kind 拼
+        bind_origin(
+            stream_id=stream_id,
+            platform=context.stream.platform,
+            person_id=context.person.id,
+            person_kind=context.person.kind,
+        )
         trace.emit('user_input', turnId=turn, text=trimmed)
 
         if not self._chat_provider:
