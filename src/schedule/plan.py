@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, Callable, Dict, Optional, Protocol
 
 import asyncio
 import json
@@ -16,6 +16,9 @@ import re
 
 from .daily import SCHEDULE
 from src.common.clock import now as current_time
+from src.common.logger import get_logger
+
+logger = get_logger(__name__)
 
 PLAN_PREFIX = 'day_plan:'
 MAX_HOURS_FOR_HISTORY = 48
@@ -343,7 +346,7 @@ class DayPlanService:
         self._energy = energy
         self._last_interaction_at = last_interaction_at
         self._generator = generator
-        self._inflight: dict[str, asyncio.Task] = {}
+        self._inflight: Dict[str, asyncio.Task[DayPlan]] = {}
         self._generation_issues: dict[str, DayPlanGenerationIssue] = {}
 
     def get(self, now: int | None = None) -> DayPlan:
@@ -357,14 +360,47 @@ class DayPlanService:
         existing = self._read(date)
         if existing:
             return existing
-        if date in self._inflight:
-            return await self._inflight[date]
-        task = asyncio.create_task(self._generate(date, datetime.fromtimestamp(now / 1000)))
+        return await self._start_generation(date, now)
+
+    def ensure_background(self, now: int | None = None) -> DayPlan:
+        """当天计划缺失时立即返回备用计划，并在后台生成真实计划。"""
+        now = now if now is not None else current_time()
+        date = day_plan_date(now)
+        existing = self._read(date)
+        if existing:
+            return existing
+        self._start_generation(date, now)
+        return fallback_day_plan(date)
+
+    def _start_generation(self, date: str, now: int) -> asyncio.Task[DayPlan]:
+        existing = self._inflight.get(date)
+        if existing is not None:
+            return existing
+        task = asyncio.create_task(
+            self._generate(date, datetime.fromtimestamp(now / 1000))
+        )
         self._inflight[date] = task
-        try:
-            return await task
-        finally:
+        task.add_done_callback(
+            lambda completed, generated_date=date: self._finish_generation(
+                generated_date,
+                completed,
+            )
+        )
+        return task
+
+    def _finish_generation(
+        self,
+        date: str,
+        task: asyncio.Task[DayPlan],
+    ) -> None:
+        if self._inflight.get(date) is task:
             self._inflight.pop(date, None)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logger.exception('日程后台生成任务异常', date=date)
 
     def describe(self, now: int, sleep: ScheduleSleepState) -> str:
         return describe_day_plan(self.get(now), datetime.fromtimestamp(now / 1000), sleep)
@@ -458,6 +494,7 @@ class DayPlanService:
                 parsed = parse_day_plan(raw, date)
             if not parsed:
                 self._generation_issues[date] = DayPlanGenerationIssue(kind='invalid-output', raw=raw)
+                logger.error('日程生成结果未通过结构校验', date=date)
             else:
                 self._generation_issues.pop(date, None)
             plan = parsed or fallback
@@ -465,6 +502,7 @@ class DayPlanService:
             return plan
         except Exception as exc:
             self._generation_issues[date] = DayPlanGenerationIssue(kind='provider-error', reason=str(exc))
+            logger.error('日程生成失败', date=date, error=str(exc))
             self._store.write_json(_plan_key(date), _plan_to_dict(fallback))
             return fallback
 

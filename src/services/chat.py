@@ -244,7 +244,7 @@ class ChatService:
         self.settle_elapsed(context, now, asleep)
         self.memory.sweep(now)
         if self._schedule:
-            await self._schedule.ensure(now)
+            self._schedule.ensure_background(now)
 
         # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
         #   间隔恒为 0，会话永远不会翻页。

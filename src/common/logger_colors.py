@@ -50,6 +50,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "services.vector": ("#af87ff", False),
     # 业务
     "services.chat": ("#5fff00", False),
+    "schedule.plan": ("#87d7af", False),
     "services.proactive": ("#ff8700", False),
     "services.vision": ("#5fafff", False),
     "services.tts": ("#ffaf00", False),
@@ -80,6 +81,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "memory.embed": "记忆嵌入",
     "services.vector": "向量召回",
     "services.chat": "对话",
+    "schedule.plan": "日程",
     "services.proactive": "感知",
     "services.vision": "视觉",
     "services.tts": "语音",
