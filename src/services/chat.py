@@ -30,6 +30,7 @@ from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
+from src.llm_models.openai import LlmError
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
 from src.platform_io.broker import PlatformBroker
@@ -242,35 +243,35 @@ class ChatService:
         cancel_event = asyncio.Event()
 
         async def _run() -> None:
-            now = current_time()
-            asleep = self._sleep_state().asleep if self._sleep_state else False
-            self.settle_elapsed(context, now, asleep)
-            self.memory.sweep(now)
-            if self._schedule:
-                self._schedule.ensure_background(now)
-
-            # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
-            #   间隔恒为 0，会话永远不会翻页。
-            self._refresh_session(context, now)
-            user_msg_id = self.memory.append_message(
-                stream_id,
-                context.person.id,
-                'user',
-                trimmed,
-                now,
-            )
-            if cancel_event.is_set():
-                return
-
-            parser = ResponseParser()
+            user_msg_id: int | None = None
             assistant_raw = ''
-            side_effects: list[dict] = []
-            outbound_segments: list[str] = []
-            outbound_segment: list[str] | None = None
-            interrupted = False
             reply_persisted = False
-            from src.llm_models.openai import LlmError
             try:
+                now = current_time()
+                asleep = self._sleep_state().asleep if self._sleep_state else False
+                self.settle_elapsed(context, now, asleep)
+                self.memory.sweep(now)
+                if self._schedule:
+                    self._schedule.ensure_background(now)
+
+                # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
+                #   间隔恒为 0，会话永远不会翻页。
+                self._refresh_session(context, now)
+                user_msg_id = self.memory.append_message(
+                    stream_id,
+                    context.person.id,
+                    'user',
+                    trimmed,
+                    now,
+                )
+                if cancel_event.is_set():
+                    return
+
+                parser = ResponseParser()
+                side_effects: list[dict] = []
+                outbound_segments: list[str] = []
+                outbound_segment: list[str] | None = None
+                interrupted = False
                 messages = await self._build_messages_with_vector(context, trimmed, now)
                 trace.emit(
                     'llm_request',
@@ -355,7 +356,7 @@ class ChatService:
                     if not reply_persisted:
                         self._persist_reply(context, assistant_raw)
                     return
-                if not reply_persisted:
+                if not reply_persisted and user_msg_id is not None:
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
@@ -368,16 +369,21 @@ class ChatService:
                         'hint': hint,
                     })
             except Exception as exc:
-                if not reply_persisted:
+                if not reply_persisted and user_msg_id is not None:
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
+                logger.error(
+                    '对话处理失败',
+                    streamId=stream_id,
+                    turnId=turn,
+                    error=str(exc),
+                )
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
                 render_turn_error(turn, trimmed, 'unknown', str(exc))
-                if context.stream.platform == 'desktop':
-                    await self._emit(
-                        stream_id,
-                        'chat.error',
-                        {'turnId': turn, 'kind': 'error', 'message': str(exc)},
-                    )
+                await self._emit(
+                    stream_id,
+                    'chat.error',
+                    {'turnId': turn, 'kind': 'error', 'message': str(exc)},
+                )
 
         task = asyncio.create_task(_run())
         inflight = _InflightTurn(task=task, cancel_event=cancel_event)
