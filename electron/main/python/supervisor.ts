@@ -3,7 +3,7 @@
  *
  * 职责：
  *  · 拉起 `python bot.py` 子进程（仓库根的入口，业务在 src/ 下）
- *  · 解析 stdout 里的 YUELI_PORT=<n>，通知 client.ts 建立连接
+ *  · 解析 stdout 里的端口、token 与就绪公告，通知 client.ts 建立连接
  *  · stderr 转发到 console（structlog 的输出）
  *  · 异常退出时按退避策略重启
  *  · 关停时确保子进程树真的死掉
@@ -16,11 +16,10 @@
 
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 
 export interface SupervisorEvents {
-  ready: [port: number]
+  ready: [port: number, token: string]
   exit: [code: number | null]
   /** 拉不起来（python 不存在、权限不足）。不发这个事件的话 error 会成为未捕获异常。 */
   failed: [error: Error]
@@ -59,8 +58,9 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private stdoutBuf = ''
   private adapterStdoutBuf = ''
   private adapterStderrBuf = ''
-  /** 后端启动公告集合；未来加入 token 时继续在这里追加条件。 */
+  /** 后端启动公告集合；三项齐全后才能把连接坐标交给下游。 */
   private backendPort: number | null = null
+  private backendToken: string | null = null
   private backendReady = false
   private readyEmitted = false
   /** 最大重启次数。超过后等用户重启 Electron。 */
@@ -70,7 +70,6 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   /** 稳定运行超过这个时长就认为上次重启成功，清零计数。 */
   private static readonly STABLE_AFTER = 60_000
 
-  readonly token: string
   private readonly dataDir: string
   private readonly configPath: string
   private readonly cwd: string
@@ -79,7 +78,6 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
 
   constructor(opts: SupervisorOptions) {
     super()
-    this.token = randomUUID()
     this.dataDir = opts.dataDir
     this.configPath = opts.configPath
     this.cwd = opts.cwd
@@ -134,10 +132,10 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       'bot.py',
       '--data-dir', this.dataDir,
       '--config-path', this.configPath,
-      '--token', this.token,
     ]
     this.stdoutBuf = ''
     this.backendPort = null
+    this.backendToken = null
     this.backendReady = false
     this.readyEmitted = false
 
@@ -145,7 +143,6 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       cwd: this.cwd,
       env: {
         ...process.env,
-        YUELI_TOKEN: this.token,
         YUELI_DATA_DIR: this.dataDir,
         PYTHONUNBUFFERED: '1',
         // Windows 控制台默认 GBK，structlog 的中文会变成乱码甚至
@@ -208,6 +205,13 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       this._emitReadyIfComplete()
       return
     }
+    if (line.startsWith('YUELI_TOKEN=')) {
+      const token = line.slice('YUELI_TOKEN='.length)
+      if (!/^[0-9a-f]{64}$/.test(token)) return
+      this.backendToken = token
+      this._emitReadyIfComplete()
+      return
+    }
     if (line === 'YUELI_READY=1') {
       this.backendReady = true
       this._emitReadyIfComplete()
@@ -219,18 +223,24 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     if (line) process.stdout.write(`${line}\n`)
   }
 
-  /** 只有端口和 FastAPI 生命周期都公告后，才允许下游建立连接。 */
+  /** 只有端口、token 和 FastAPI 真就绪都公告后，才允许下游建立连接。 */
   private _emitReadyIfComplete(): void {
-    if (this.readyEmitted || this.backendPort === null || !this.backendReady) return
+    if (
+      this.readyEmitted
+      || this.backendPort === null
+      || this.backendToken === null
+      || !this.backendReady
+    ) return
     const port = this.backendPort
+    const token = this.backendToken
     this.readyEmitted = true
     console.log(`[supervisor] Python 后端就绪，端口 ${port}`)
     // 稳定跑够一段时间才认为这次拉起成功，避免「起来就崩」把退避耗尽
     setTimeout(() => {
       if (this.alive) this.restarts = 0
     }, PythonSupervisor.STABLE_AFTER).unref?.()
-    this._spawnAdapter(port)
-    this.emit('ready', port)
+    this._spawnAdapter()
+    this.emit('ready', port, token)
   }
 
   private _scheduleRestart(): void {
@@ -251,7 +261,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
    * 传一个尚未可用的端口。适配器不参与主体重启退避；它自己的连接失败策略由
    * runner 执行，配置或协议端错误则直接通过托盘告诉用户。
    */
-  private _spawnAdapter(port: number): void {
+  private _spawnAdapter(): void {
     if (!this.napcatConfigPath) return
     this._killAdapter()
     this.adapterStdoutBuf = ''
@@ -260,13 +270,11 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     const adapter = spawn(this.pythonExe, [
       '-m', 'src.adapters.napcat',
       '--config-path', this.napcatConfigPath,
-      '--backend-port', String(port),
-      '--token', this.token,
+      '--runtime-path', `${this.dataDir}/runtime/backend.json`,
     ], {
       cwd: this.cwd,
       env: {
         ...process.env,
-        YUELI_TOKEN: this.token,
         PYTHONUNBUFFERED: '1',
         PYTHONIOENCODING: 'utf-8',
         YUELI_FORCE_COLOR: '1',

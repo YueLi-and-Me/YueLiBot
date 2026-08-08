@@ -15,6 +15,8 @@ import sys
 
 import uvicorn
 
+from src.api.auth import token_manager
+from src.common.backend_runtime import create_backend_runtime
 from src.common.logger import get_logger, initialize_logging
 from src.config.loader import load_config
 
@@ -70,6 +72,10 @@ def _announce_port(port: int) -> None:
     print(f"YUELI_PORT={port}", flush=True)
 
 
+def _announce_token(token: str) -> None:
+    print(f"YUELI_TOKEN={token}", flush=True)
+
+
 def _announce_ready() -> None:
     print("YUELI_READY=1", flush=True)
 
@@ -86,12 +92,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="YueLiBot Python backend")
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--config-path", required=True)
-    parser.add_argument("--token", required=True)
     parser.add_argument("--port", type=int, default=DEFAULT_BACKEND_PORT)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
-    os.environ["YUELI_TOKEN"] = args.token
     os.environ["YUELI_DATA_DIR"] = args.data_dir
 
     cfg = load_config(Path(args.config_path))
@@ -108,6 +112,15 @@ def main() -> None:
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "memory.db"
+
+    # 先占住端口再落盘连接信息。端口冲突时不得写出看似可用的新 token，
+    # 更不能打印端口或就绪公告。
+    sock = _bind_backend_socket(args.port)
+    port = sock.getsockname()[1]
+    backend_runtime = create_backend_runtime(data_dir, port)
+    token_manager.configure(backend_runtime.token)
+    _announce_port(port)
+    _announce_token(backend_runtime.token)
 
     from src.services.trace import trace
     trace.configure(
@@ -267,9 +280,6 @@ def main() -> None:
     app_state.foreground_callback = awareness.on_foreground
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 
-    sock = _bind_backend_socket(args.port)
-    port = sock.getsockname()[1]
-    _announce_port(port)
     logger.info("backend_starting", port=port)
 
     from src.api.app import create_app

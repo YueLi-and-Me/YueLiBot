@@ -10,6 +10,7 @@ import asyncio
 import sys
 
 from src.common.logger import initialize_logging
+from src.common.backend_runtime import read_backend_runtime
 
 from .config import load_config
 from .runner import NapcatRunner
@@ -23,14 +24,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path('config/napcat.toml'),
         help='NapCat 连接配置路径',
     )
-    parser.add_argument('--backend-port', type=int, required=True, help='主体 Python backend 端口')
-    parser.add_argument('--token', required=True, help='主体 Python backend 一次性 token')
+    parser.add_argument(
+        '--runtime-path',
+        type=Path,
+        default=Path('data/runtime/backend.json'),
+        help='主体 Python backend 运行时信息文件',
+    )
     args = parser.parse_args(argv)
 
     initialize_logging()
-    config = load_config(args.config_path)
     try:
-        asyncio.run(NapcatRunner(config, args.backend_port, args.token).run())
+        config = load_config(args.config_path)
+        runtime = read_backend_runtime(args.runtime_path)
+        asyncio.run(NapcatRunner(config, runtime.port, runtime.token).run())
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

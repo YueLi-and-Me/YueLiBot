@@ -198,10 +198,10 @@ async function startApp(
     pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
     napcatConfigPath,
   })
-  supervisor.on('ready', (port) => {
+  supervisor.on('ready', (port, token) => {
     if (!petWindow || petWindow.isDestroyed() || !supervisor) return
     client?.stop()
-    client = new PythonClient(port, supervisor.token, windowSink(petWindow), (reason) => {
+    client = new PythonClient(port, token, windowSink(petWindow), (reason) => {
       void glanceForChat(reason)
     })
     client.connect()

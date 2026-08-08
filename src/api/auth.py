@@ -1,31 +1,50 @@
 """
 WebSocket 鉴权中间件。
 
-Python 进程启动时生成一次性 token，由 supervisor.ts 通过环境变量注入。
+Python 进程启动时生成一次性 token，经显式 TokenManager 注入认证层。
 所有 WS 连接和 HTTP 请求都必须携带 Authorization: Bearer <token>，
 其他本地进程无法伪造（仅凭 127.0.0.1 绑定不够）。
 """
 
 from __future__ import annotations
 
-import os
-import secrets
-
 from fastapi import HTTPException, WebSocket, status
 
-# 从环境变量读取（supervisor 在拉起前设好）
-_TOKEN: str = os.environ.get("YUELI_TOKEN", "")
+import secrets
+
+
+class TokenManager:
+    """持有当前 Python 后端进程唯一的认证 token。"""
+
+    def __init__(self) -> None:
+        self._token = ''
+
+    def configure(self, token: str) -> None:
+        if not token:
+            raise ValueError('后端认证 token 不能为空')
+        self._token = token
+
+    def get(self) -> str:
+        if not self._token:
+            raise RuntimeError('后端认证 token 尚未初始化')
+        return self._token
+
+    def verify(self, token: str) -> bool:
+        if not self._token:
+            return False
+        return secrets.compare_digest(token, self._token)
+
+
+token_manager = TokenManager()
 
 
 def get_token() -> str:
-    return _TOKEN
+    return token_manager.get()
 
 
 def verify_token(token: str) -> bool:
     """使用恒定时间比较，防止计时侧信道。"""
-    if not _TOKEN:
-        return False
-    return secrets.compare_digest(token, _TOKEN)
+    return token_manager.verify(token)
 
 
 def extract_bearer(authorization: str | None) -> str:
