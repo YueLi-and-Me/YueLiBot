@@ -26,9 +26,78 @@ export interface DayPlan {
   carryOver: string
 }
 
-/** 观察面板数据现在由 Python 组装，结构随 Python 侧变化而变化，渲染层按 key 读取。 */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type ObservabilityPayload = any
+/** 观察面板中一条可切换的会话流。 */
+export interface ObservabilityStream {
+  id: number
+  platform: string
+  kind: 'desktop' | 'direct' | 'group'
+  externalId: string
+}
+
+export interface ObservabilityStreamsPayload {
+  streams: ObservabilityStream[]
+}
+
+/** 人格关系轴与全局精力。 */
+export interface ObservabilityPersonaState {
+  intimacy: number
+  tsundere: number
+  reliance: number
+  energy: number
+  updated_at: number
+}
+
+/** L3 长期事实。HTTP 契约统一使用 camelCase，禁止前端猜 Python 字段名。 */
+export interface ObservabilityFact {
+  id: number
+  kind: string
+  content: string
+  retention: number
+  score: number
+  dueAt: number
+  frozen: boolean
+}
+
+/** Python `/observability` 的完整跨语言契约。 */
+export interface ObservabilityPayload {
+  now: number
+  persona: {
+    state: ObservabilityPersonaState
+    description: string
+  }
+  schedule: DayPlan | null
+  memory: {
+    semantic: ObservabilityFact[]
+    episodes: number
+    workingMessages: number
+  }
+  sleep?: Record<string, unknown>
+  impulse?: Record<string, unknown>
+  sensing?: Record<string, unknown>
+  voice?: {
+    enabled: boolean
+    configured: boolean
+    model: string
+    voice: string
+    failures: number
+    cacheHits: number
+    cacheMisses: number
+    cache: { files: number; bytes: number }
+  }
+}
+
+/** `/debug/trace` 的稳定公共字段；各 kind 的业务字段保留为 unknown。 */
+export interface TraceEntry {
+  seq: number
+  at: number
+  kind: string
+  streamId?: number
+  platform?: string
+  personId?: number
+  personKind?: string
+  turnId?: number
+  [key: string]: unknown
+}
 export const IPC = {
   /** 渲染层 → 主进程：切换窗口是否吃鼠标事件（点击穿透） */
   SetInteractive: 'pet:set-interactive',
@@ -154,7 +223,7 @@ export interface DiaryBridge {
 export interface ObservabilityBridge {
   read(): Promise<ObservabilityPayload>
   /** 增量拉取调试追踪；since 传上次拿到的最大 seq，默认从头。 */
-  readTrace(since?: number): Promise<unknown[]>
+  readTrace(since?: number): Promise<TraceEntry[]>
   /** 打开设置窗口。 */
   openSettings(): void
 }

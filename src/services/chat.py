@@ -600,7 +600,15 @@ class ChatService:
             'schedule': _plan_to_dict(self._schedule.get(now)) if self._schedule else None,
             'memory': {
                 'semantic': [
-                    fact.__dict__
+                    {
+                        'id': fact.id,
+                        'kind': fact.kind,
+                        'content': fact.content,
+                        'retention': fact.retention,
+                        'score': fact.score,
+                        'dueAt': fact.due_at,
+                        'frozen': fact.frozen,
+                    }
                     for fact in self.memory.all_facts(context.person.id, now)
                 ],
                 'episodes': len(self.memory.all_episodes()),

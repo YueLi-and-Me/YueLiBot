@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'self' ws://127.0.0.1:7999; style-src 'self'"
+      content="default-src 'self'; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'"
     />
     <title>月璃观察面板</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
@@ -23,10 +24,49 @@
           <p id="login-error" class="error" role="alert" aria-live="polite"></p>
         </form>
       </section>
-      <section id="panel-shell" class="login-card" hidden>
-        <p class="eyebrow">YUELI / WEBUI</p>
-        <h1>月璃观察面板</h1>
-        <p>身份验证成功，正在准备只读观察数据。</p>
+      <section id="panel-shell" class="app-shell" hidden>
+        <header class="app-header">
+          <div>
+            <p class="eyebrow">YUELI / WEBUI</p>
+            <h1>月璃观察面板</h1>
+            <p class="subtitle">按会话流读取的只读运行快照</p>
+          </div>
+          <div class="toolbar" aria-label="快照读取控制">
+            <label for="stream-select">会话流</label>
+            <select id="stream-select"></select>
+            <button id="refresh" type="button">刷新快照</button>
+            <label class="toggle"><input id="auto-refresh" type="checkbox" />自动刷新</label>
+            <time id="fetched-at" class="muted mono">尚未读取</time>
+          </div>
+        </header>
+        <aside id="status" class="status-strip" aria-label="关键状态"></aside>
+        <div id="grid" class="panel-grid"><p class="empty">正在读取内部状态…</p></div>
+        <section class="panel-card trace-panel" aria-label="运行时调试追踪">
+          <header class="section-heading">
+            <h2>Trace 回放</h2>
+            <div class="toolbar compact">
+              <label for="trace-filter">kind 过滤</label>
+              <select id="trace-filter">
+                <option value="all">全部</option>
+                <option value="interest">interest</option>
+                <option value="proactive_intent">proactive_intent</option>
+                <option value="vision_glance">vision_glance</option>
+              </select>
+              <span id="trace-count" class="section-subtitle">0 条</span>
+            </div>
+          </header>
+          <h3>对话轮次</h3>
+          <div id="turn-cards" class="turn-card-list"></div>
+          <h3>后台事件</h3>
+          <div id="trace-log" class="trace-log"></div>
+        </section>
+        <section class="panel-card log-panel" aria-label="实时日志">
+          <header class="section-heading">
+            <h2>实时日志</h2>
+            <span id="log-status" class="section-subtitle">正在连接</span>
+          </header>
+          <div id="log-output" class="log-output" aria-live="polite"></div>
+        </section>
       </section>
     </main>
     <script type="module" src="/src/main.ts"></script>

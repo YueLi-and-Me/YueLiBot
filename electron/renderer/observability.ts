@@ -181,6 +181,14 @@ function renderPersona(payload: ObservabilityPayload): void {
 }
 
 function renderSchedule(payload: ObservabilityPayload): void {
+  if (payload.schedule === null) {
+    const { body } = section('今天的日程', 'schedule', true)
+    const empty = document.createElement('p')
+    empty.className = 'muted'
+    empty.textContent = '日程服务当前不可用。'
+    body.append(empty)
+    return
+  }
   const { body } = section('今天的日程', payload.schedule.date, true)
   const chips = document.createElement('div')
   chips.className = 'chip-row'
@@ -197,14 +205,14 @@ function renderSchedule(payload: ObservabilityPayload): void {
   const currentMinute = Number(timeParts.find((part) => part.type === 'minute')?.value ?? 0)
   const currentMinutes = currentHour * 60 + currentMinute
   let currentIndex = 0
-  payload.schedule.slots.forEach((slot: any, index: number) => {
+  payload.schedule.slots.forEach((slot, index) => {
     const [hour, minute] = slot.from.split(':').map(Number)
     if (Number.isFinite(hour) && Number.isFinite(minute) && hour! * 60 + minute! <= currentMinutes) currentIndex = index
   })
 
   const timeline = document.createElement('ol')
   timeline.className = 'timeline'
-  payload.schedule.slots.forEach((slot: any, index: number) => {
+  payload.schedule.slots.forEach((slot, index) => {
     const item = document.createElement('li')
     item.className = index === currentIndex ? 'timeline-item current' : 'timeline-item'
     const heading = document.createElement('div')

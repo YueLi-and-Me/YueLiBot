@@ -23,6 +23,7 @@ from .auth import ws_auth
 
 from src.common.logger import get_logger
 from src.services.trace import trace
+from src.webui.logs import webui_logs
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -138,3 +139,23 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         logger.warning("ws_error", error=str(exc))
     finally:
         await manager.disconnect(client, websocket)
+
+
+@router.websocket('/ws/logs')
+async def webui_logs_endpoint(websocket: WebSocket) -> None:
+    """向已登录浏览器推送与控制台同款的 ANSI 彩色日志。"""
+    if not await ws_auth(websocket):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    subscriber, backlog = webui_logs.subscribe()
+    try:
+        for item in backlog:
+            await websocket.send_json(item)
+        while True:
+            await websocket.send_json(await subscriber.queue.get())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        webui_logs.unsubscribe(subscriber)

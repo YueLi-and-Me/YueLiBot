@@ -10,7 +10,7 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Re
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .auth import SESSION_COOKIE_NAME, require_token, verify_token
+from .auth import SESSION_COOKIE_NAME, extract_bearer, require_token, verify_token
 from .state import app_state   # 全局服务状态
 
 from src.common.clock import now as current_time
@@ -98,6 +98,7 @@ class WebLoginBody(BaseModel):
             raise ValueError('token 不能为空')
         return value
 
+
 def _auth(
     authorization: str | None = Header(default=None),
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
@@ -124,6 +125,19 @@ async def web_login(body: WebLoginBody, response: Response) -> dict:
     )
     response.headers['Cache-Control'] = 'no-store'
     return {'ok': True}
+
+
+@router.get('/auth/session')
+async def web_session(
+    authorization: str | None = Header(default=None),
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict:
+    """让首页无错误地判断是否已有登录 Cookie，不返回任何观察数据。"""
+    authenticated = (
+        verify_token(extract_bearer(authorization))
+        or verify_token(session_token or '')
+    )
+    return {'authenticated': authenticated}
 
 
 @router.get('/runtime/health', dependencies=[Depends(_auth)])

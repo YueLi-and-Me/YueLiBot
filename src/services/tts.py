@@ -157,10 +157,15 @@ class TtsService:
         return {
             'enabled': self.enabled,
             'configured': self._cfg.tts.enabled and self._router.ready,
+            'model': self._router.model,
             'voice': self._cfg.tts.voice,
             'format': self._cfg.tts.format,
             'failures': self._failures,
             'cacheHits': self._cache_hits,
             'cacheMisses': self._cache_misses,
+            'cache': {
+                'files': len(self._cache),
+                'bytes': sum(len(data) for data in self._cache.values()),
+            },
             'routing': self._router.inspect(),
         }

@@ -27,6 +27,8 @@ from .logger_colors import (
     normalize_logger_name,
 )
 
+from src.webui.logs import webui_logs
+
 # 显式查表，不用 getattr(logging, ...) 兜底：log_level 在 config/schema.py 里是个
 # 无校验的 str，写错成 "INF0" 时必须当场报错，而不是悄悄降级成 INFO 让人以为
 # 配置生效了。这里是它唯一的把关点。
@@ -97,6 +99,25 @@ class ModuleColoredConsoleRenderer:
         return rendered
 
 
+class WebUiLogHandler:
+    """structlog 的独立日志支路，始终输出带 ANSI 模块颜色的同款文本。"""
+
+    def __init__(self) -> None:
+        self._renderer = ModuleColoredConsoleRenderer(colors=True)
+
+    def __call__(
+        self,
+        logger: Any,
+        method_name: str,
+        event_dict: MutableMapping[str, Any],
+    ) -> MutableMapping[str, Any]:
+        webui_logs.publish(self._renderer(logger, method_name, event_dict.copy()))
+        return event_dict
+
+
+_webui_log_handler = WebUiLogHandler()
+
+
 def _stringify(value: Any) -> str:
     """
     值转字符串。
@@ -151,6 +172,10 @@ def initialize_logging(level: str = "INFO") -> None:
     else:
         shared_processors.append(structlog.processors.dict_tracebacks)
         renderer = structlog.processors.JSONRenderer()
+
+    # WebUI 推流是独立处理支路，不能复用 is_color_enabled() 的 TTY 判断。
+    # 即使 stdout 是管道或 JSON，这里也始终生成带模块颜色与中文别名的 ANSI 文本。
+    shared_processors.append(_webui_log_handler)
 
     structlog.configure(
         processors=shared_processors + [renderer],
