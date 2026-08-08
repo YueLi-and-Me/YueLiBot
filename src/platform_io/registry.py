@@ -7,6 +7,8 @@ stream / person / identity 的唯一读写入口。
 
 from __future__ import annotations
 
+from typing import List
+
 import sqlite3
 
 from src.common.logger import get_logger
@@ -57,6 +59,59 @@ class StreamRegistry:
         if row is None or tuple(row[1:]) != expected:
             raise RuntimeError("desktop stream 不存在或标识不正确，确认 v6 迁移已完成")
         return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+
+    def stream(self, stream_id: int) -> StreamRef:
+        """按稳定主键读取 stream；不存在时直接暴露调用方传错的分区。"""
+        row = self._db.execute(
+            """SELECT id, platform, kind, external_id FROM streams
+               WHERE id = ?""",
+            (stream_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"stream {stream_id} 不存在，必须先经 StreamRegistry 创建或解析")
+        return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+
+    def list_streams(self) -> List[StreamRef]:
+        """列出所有可观察 stream，供只读面板选择分区。"""
+        rows = self._db.execute(
+            """SELECT id, platform, kind, external_id FROM streams
+               ORDER BY id ASC"""
+        ).fetchall()
+        return [
+            StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+            for row in rows
+        ]
+
+    def observation_context(self, stream_id: int) -> ConversationContext:
+        """解析只读面板查看一个 stream 时对应的人物上下文。
+
+        desktop 固定属于 owner；direct 的 external_id 就是对端平台身份。
+        group 没有唯一人物，因此使用该 stream 最近一条用户消息的发送者，
+        并在尚无用户消息时明确报错，不虚构 owner 作为兜底。
+        """
+        stream = self.stream(stream_id)
+        if stream.kind == "desktop":
+            if stream.id != _DESKTOP_STREAM_ID:
+                raise RuntimeError(f"发现非预期的 desktop stream：{stream.id}")
+            return ConversationContext(stream=stream, person=self.owner_person())
+
+        if stream.kind == "direct":
+            person = self.find_person_by_identity(stream.platform, stream.external_id)
+            if person is None:
+                raise ValueError(
+                    f"stream {stream.id} 尚未绑定平台身份，不能确定观察对象"
+                )
+            return ConversationContext(stream=stream, person=person)
+
+        row = self._db.execute(
+            """SELECT sender_person_id FROM messages
+               WHERE stream_id = ? AND role = 'user' AND sender_person_id IS NOT NULL
+               ORDER BY id DESC LIMIT 1""",
+            (stream.id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"group stream {stream.id} 尚无用户消息，不能确定观察对象")
+        return ConversationContext(stream=stream, person=self.person(row[0]))
 
     def desktop_context(self) -> ConversationContext:
         """返回桌面唯一且完整的入站上下文。"""

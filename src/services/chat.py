@@ -588,10 +588,12 @@ class ChatService:
             'now': now,
         }
 
-    def observability_snapshot(self, now: int | None = None) -> dict:
+    def observability_snapshot(self, stream_id: int, now: int | None = None) -> dict:
+        """读取指定 stream 的观察快照；分区参数不得省略或回退到桌面。"""
         now = now or current_time()
-        s = self.persona.get(self._desktop_context.person.id)
-        fc = self.memory.fact_count(self._desktop_context.person.id)
+        context = self._registry.observation_context(stream_id)
+        s = self.persona.get(context.person.id)
+        fc = self.memory.fact_count(context.person.id)
         return {
             'now': now,
             'persona': {'state': s.__dict__, 'description': describe_persona(s)},
@@ -599,10 +601,10 @@ class ChatService:
             'memory': {
                 'semantic': [
                     fact.__dict__
-                    for fact in self.memory.all_facts(self._desktop_context.person.id, now)
+                    for fact in self.memory.all_facts(context.person.id, now)
                 ],
                 'episodes': len(self.memory.all_episodes()),
-                'workingMessages': self.memory.pending_count(self._desktop_context.stream.id),
+                'workingMessages': self.memory.pending_count(context.stream.id),
             },
         }
 

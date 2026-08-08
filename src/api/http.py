@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -231,15 +231,39 @@ async def diary() -> JSONResponse:
 
 
 @router.get("/observability", dependencies=[Depends(_auth)])
-async def observability() -> JSONResponse:
+async def observability(stream_id: int = Query(alias='streamId')) -> JSONResponse:
     if app_state.chat is None:
         return JSONResponse({"_stub": True})
-    payload = app_state.chat.observability_snapshot()
+    if app_state.registry is None:
+        return JSONResponse({'detail': 'stream 注册表未初始化'}, status_code=503)
+    try:
+        app_state.registry.stream(stream_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    payload = app_state.chat.observability_snapshot(stream_id)
     if app_state.awareness:
         payload.update(app_state.awareness.observability_fields())
     if app_state.tts:
         payload["voice"] = app_state.tts.inspect()
     return JSONResponse(payload)
+
+
+@router.get('/streams', dependencies=[Depends(_auth)])
+async def streams() -> dict:
+    """列出只读观察面板可选择的全部 stream。"""
+    if app_state.registry is None:
+        return {'streams': []}
+    return {
+        'streams': [
+            {
+                'id': stream.id,
+                'platform': stream.platform,
+                'kind': stream.kind,
+                'externalId': stream.external_id,
+            }
+            for stream in app_state.registry.list_streams()
+        ]
+    }
 
 
 @router.get("/debug/trace", dependencies=[Depends(_auth)])

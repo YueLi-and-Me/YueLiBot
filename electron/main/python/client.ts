@@ -119,7 +119,7 @@ export class PythonClient {
   }
 
   async observability(): Promise<unknown> {
-    return (await this._fetch('/observability', { method: 'GET' })).json()
+    return (await this._fetch('/observability?streamId=1', { method: 'GET' })).json()
   }
 
   async debugTrace(since: number): Promise<unknown> {
