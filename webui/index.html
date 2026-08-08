@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self' ws://127.0.0.1:7999; style-src 'self'"
+    />
+    <title>月璃观察面板</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section id="login-panel" class="login-card" aria-labelledby="login-title">
+        <p class="eyebrow">YUELI / WEBUI</p>
+        <h1 id="login-title">月璃观察面板</h1>
+        <p class="subtitle">输入后端启动时公告的 token。登录后凭据只保存在 HttpOnly Cookie 中。</p>
+        <form id="login-form">
+          <label for="token">后端 token</label>
+          <input id="token" name="token" type="password" autocomplete="off" required />
+          <button type="submit">登录</button>
+          <p id="login-error" class="error" role="alert" aria-live="polite"></p>
+        </form>
+      </section>
+      <section id="panel-shell" class="login-card" hidden>
+        <p class="eyebrow">YUELI / WEBUI</p>
+        <h1>月璃观察面板</h1>
+        <p>身份验证成功，正在准备只读观察数据。</p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

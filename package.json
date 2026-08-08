@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config vite.renderer.config.ts",
-    "build": "electron-vite build",
+    "build": "electron-vite build && vite build --config webui/vite.config.ts",
+    "dev:webui": "vite --config webui/vite.config.ts",
     "selftest": "electron . --selftest",
     "sprite:test": "tsx scripts/sprite/test.ts",
     "sprite:diagnose": "tsx scripts/sprite/diagnose.ts",

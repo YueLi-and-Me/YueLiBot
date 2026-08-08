@@ -6,9 +6,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from src.services.lifecycle import lifecycle
-from .ws import router as ws_router
 from .http import router as http_router
+from .ws import router as ws_router
+
+from src.services.lifecycle import lifecycle
+from src.webui.app import mount_webui
 
 
 @asynccontextmanager
@@ -31,4 +33,5 @@ def create_app() -> FastAPI:
     )
     app.include_router(ws_router)
     app.include_router(http_router)
+    mount_webui(app)
     return app

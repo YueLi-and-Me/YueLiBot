@@ -1,0 +1,100 @@
+:root {
+  color-scheme: dark;
+  font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  background: #101318;
+  color: #e8edf5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.login-shell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.login-card {
+  background: #191e26;
+  border: 1px solid #303846;
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 32%);
+  max-width: 460px;
+  padding: 32px;
+  width: 100%;
+}
+
+.eyebrow {
+  color: #79a9ff;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin: 0 0 8px;
+}
+
+h1 {
+  font-size: 28px;
+  margin: 0;
+}
+
+.subtitle {
+  color: #aeb8c7;
+  line-height: 1.7;
+  margin: 12px 0 24px;
+}
+
+form {
+  display: grid;
+  gap: 10px;
+}
+
+label {
+  color: #cbd4e1;
+  font-size: 14px;
+}
+
+input,
+button {
+  border-radius: 8px;
+  font: inherit;
+  min-height: 42px;
+}
+
+input {
+  background: #101318;
+  border: 1px solid #3c4656;
+  color: #f5f7fb;
+  padding: 0 12px;
+}
+
+input:focus {
+  border-color: #79a9ff;
+  outline: 2px solid rgb(121 169 255 / 20%);
+}
+
+button {
+  background: #79a9ff;
+  border: 0;
+  color: #0c1524;
+  cursor: pointer;
+  font-weight: 700;
+  margin-top: 6px;
+}
+
+.error {
+  color: #ff9d9d;
+  min-height: 24px;
+  margin: 2px 0 0;
+}
+
+[hidden] {
+  display: none !important;
+}

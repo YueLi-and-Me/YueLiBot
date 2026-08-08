@@ -2,8 +2,9 @@
 WebSocket 鉴权中间件。
 
 Python 进程启动时生成一次性 token，经显式 TokenManager 注入认证层。
-所有 WS 连接和 HTTP 请求都必须携带 Authorization: Bearer <token>，
-其他本地进程无法伪造（仅凭 127.0.0.1 绑定不够）。
+Electron 与平台适配器通过 Authorization: Bearer <token> 认证；浏览器登录
+成功后只持有 HttpOnly Cookie。其他本地进程无法伪造（仅凭 127.0.0.1
+绑定不够）。
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 from fastapi import HTTPException, WebSocket, status
 
 import secrets
+
+SESSION_COOKIE_NAME = 'yueli_session'
 
 
 class TokenManager:
@@ -56,11 +59,11 @@ def extract_bearer(authorization: str | None) -> str:
     return parts[1]
 
 
-def require_token(authorization: str | None) -> None:
-    """HTTP 路由依赖项：token 错误直接 401。"""
-    token = extract_bearer(authorization)
-    if not verify_token(token):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+def require_token(authorization: str | None, session_token: str | None = None) -> None:
+    """HTTP 路由依赖项：Bearer 与 HttpOnly Cookie 均走同一恒定时间校验。"""
+    bearer_token = extract_bearer(authorization)
+    if not verify_token(bearer_token) and not verify_token(session_token or ''):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
 
 
 async def ws_auth(websocket: WebSocket) -> bool:
@@ -81,4 +84,6 @@ async def ws_auth(websocket: WebSocket) -> bool:
                 return True
     # 也接受 Authorization header（Electron WS 客户端可以发）
     auth_header = websocket.headers.get("authorization", "")
-    return verify_token(extract_bearer(auth_header))
+    if verify_token(extract_bearer(auth_header)):
+        return True
+    return verify_token(websocket.cookies.get(SESSION_COOKIE_NAME, ''))

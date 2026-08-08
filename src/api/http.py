@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .auth import require_token
+from .auth import SESSION_COOKIE_NAME, require_token, verify_token
 from .state import app_state   # 全局服务状态
 
 from src.common.clock import now as current_time
@@ -83,13 +83,47 @@ class PlatformIdentityLinkBody(BaseModel):
         return value
 
 
-def _auth(authorization: str | None = Header(default=None)) -> None:
-    require_token(authorization)
+class WebLoginBody(BaseModel):
+    """浏览器登录页提交的一次性后端 token。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    token: str
+
+    @field_validator('token')
+    @classmethod
+    def _require_token(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError('token 不能为空')
+        return value
+
+def _auth(
+    authorization: str | None = Header(default=None),
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> None:
+    require_token(authorization, session_token)
 
 
 @router.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@router.post('/auth/login')
+async def web_login(body: WebLoginBody, response: Response) -> dict:
+    """校验用户手工输入的 token，并换成前端脚本无法读取的会话 Cookie。"""
+    if not verify_token(body.token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='token 不正确')
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=body.token,
+        httponly=True,
+        samesite='strict',
+        path='/',
+    )
+    response.headers['Cache-Control'] = 'no-store'
+    return {'ok': True}
 
 
 @router.get('/runtime/health', dependencies=[Depends(_auth)])
