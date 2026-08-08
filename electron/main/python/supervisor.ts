@@ -17,6 +17,14 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
+
+interface BackendConnection {
+  port: number
+  token: string
+}
 
 export interface SupervisorEvents {
   ready: [port: number, token: string]
@@ -54,6 +62,9 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private adapter: ChildProcess | null = null
   private restarts = 0
   private stopping = false
+  private connecting = false
+  private attachedBackend: BackendConnection | null = null
+  private attachedMonitor: ReturnType<typeof setInterval> | null = null
   /** stdout 行缓冲。网络/管道分包与行边界无关，不缓冲会漏掉半截公告。 */
   private stdoutBuf = ''
   private adapterStdoutBuf = ''
@@ -69,6 +80,8 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private static readonly BASE_BACKOFF = 2_000
   /** 稳定运行超过这个时长就认为上次重启成功，清零计数。 */
   private static readonly STABLE_AFTER = 60_000
+  /** 外部后端存活探测间隔；请求本身另有短超时。 */
+  private static readonly ATTACHED_PROBE_INTERVAL = 5_000
 
   private readonly dataDir: string
   private readonly configPath: string
@@ -87,18 +100,120 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
 
   start(): void {
     this.stopping = false
-    this._spawn()
+    void this._connectOrSpawn()
   }
 
   stop(): void {
     this.stopping = true
+    this.attachedBackend = null
+    this._clearAttachedMonitor()
     this._killAdapter()
     this._kill()
   }
 
   /** 当前是否有活着的子进程。供自检与集成测试断言。 */
   get alive(): boolean {
-    return !!this.child && this.child.exitCode === null && !this.child.killed
+    return this.attachedBackend !== null
+      || (!!this.child && this.child.exitCode === null && !this.child.killed)
+  }
+
+  /** 优先连接用户独立启动的后端；确认不可用后才拉起自己的子进程。 */
+  private async _connectOrSpawn(): Promise<void> {
+    if (this.stopping || this.connecting) return
+    this.connecting = true
+    try {
+      const existing = await this._findExistingBackend()
+      if (this.stopping) return
+      if (existing) {
+        this._attachBackend(existing)
+        return
+      }
+      this._spawn()
+    } finally {
+      this.connecting = false
+    }
+  }
+
+  private async _findExistingBackend(): Promise<BackendConnection | null> {
+    const runtimePath = join(this.dataDir, 'runtime', 'backend.json')
+    let payload: unknown
+    try {
+      payload = JSON.parse(await readFile(runtimePath, 'utf8'))
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT') {
+        console.warn(`[supervisor] 后端运行时文件不可用，将尝试拉起新后端：${String(error)}`)
+      }
+      return null
+    }
+    if (!payload || typeof payload !== 'object') {
+      console.warn('[supervisor] 后端运行时文件不是 JSON 对象，将尝试拉起新后端')
+      return null
+    }
+    const port = (payload as { port?: unknown }).port
+    const token = (payload as { token?: unknown }).token
+    if (
+      typeof port !== 'number'
+      || !Number.isInteger(port)
+      || port <= 0
+      || port > 65535
+      || typeof token !== 'string'
+      || !/^[0-9a-f]{64}$/.test(token)
+    ) {
+      console.warn('[supervisor] 后端运行时文件字段无效，将尝试拉起新后端')
+      return null
+    }
+    const connection = { port, token }
+    return await this._probeBackend(connection) ? connection : null
+  }
+
+  private async _probeBackend(connection: BackendConnection): Promise<boolean> {
+    try {
+      const response = await fetch(`http://127.0.0.1:${connection.port}/runtime/health`, {
+        headers: { Authorization: `Bearer ${connection.token}` },
+        signal: AbortSignal.timeout(1_500),
+      })
+      await response.arrayBuffer()
+      return response.ok
+    } catch {
+      return false
+    }
+  }
+
+  private _attachBackend(connection: BackendConnection): void {
+    this.attachedBackend = connection
+    this.restarts = 0
+    console.log(`[supervisor] 已连接独立 Python 后端，端口 ${connection.port}`)
+    this._spawnAdapter()
+    this.emit('ready', connection.port, connection.token)
+    this._startAttachedMonitor()
+  }
+
+  private _startAttachedMonitor(): void {
+    this._clearAttachedMonitor()
+    this.attachedMonitor = setInterval(() => {
+      void this._checkAttachedBackend()
+    }, PythonSupervisor.ATTACHED_PROBE_INTERVAL)
+    this.attachedMonitor.unref?.()
+  }
+
+  private async _checkAttachedBackend(): Promise<void> {
+    const connection = this.attachedBackend
+    if (this.stopping || connection === null) return
+    if (await this._probeBackend(connection)) return
+    if (this.attachedBackend !== connection) return
+    this.attachedBackend = null
+    this._clearAttachedMonitor()
+    this._killAdapter()
+    console.warn('[supervisor] 独立 Python 后端已断开，将重新连接或拉起')
+    this.emit('exit', null)
+    void this._connectOrSpawn()
+  }
+
+  private _clearAttachedMonitor(): void {
+    if (this.attachedMonitor === null) return
+    clearInterval(this.attachedMonitor)
+    this.attachedMonitor = null
   }
 
   private _kill(): void {
@@ -128,6 +243,8 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   }
 
   private _spawn(): void {
+    this.attachedBackend = null
+    this._clearAttachedMonitor()
     const args = [
       'bot.py',
       '--data-dir', this.dataDir,
@@ -252,7 +369,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.restarts++
     console.log(`[supervisor] 将在 ${delay}ms 后重启 Python 后端（第 ${this.restarts} 次）`)
     setTimeout(() => {
-      if (!this.stopping) this._spawn()
+      if (!this.stopping) void this._connectOrSpawn()
     }, delay).unref?.()
   }
 
@@ -270,7 +387,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     const adapter = spawn(this.pythonExe, [
       '-m', 'src.adapters.napcat',
       '--config-path', this.napcatConfigPath,
-      '--runtime-path', `${this.dataDir}/runtime/backend.json`,
+      '--runtime-path', join(this.dataDir, 'runtime', 'backend.json'),
     ], {
       cwd: this.cwd,
       env: {

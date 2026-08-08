@@ -92,6 +92,12 @@ async def health() -> dict:
     return {"ok": True}
 
 
+@router.get('/runtime/health', dependencies=[Depends(_auth)])
+async def runtime_health() -> dict:
+    """Electron 连接独立后端前，用 token 验证运行时文件与进程相匹配。"""
+    return {'ok': True}
+
+
 @router.post("/chat/send", dependencies=[Depends(_auth)])
 async def chat_send(request: Request) -> JSONResponse:
     body = await request.json()
