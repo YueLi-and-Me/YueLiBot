@@ -19,6 +19,9 @@ from src.common.logger import get_logger, initialize_logging
 from src.config.loader import load_config
 
 
+DEFAULT_BACKEND_PORT = 7999
+
+
 class _LLMGenerator:
     """把明确注入的日程路由适配为 DayPlanService 需要的生成接口。"""
 
@@ -45,10 +48,21 @@ class _LLMGenerator:
 
 
 def _bind_backend_socket(port: int) -> socket.socket:
-    """绑定并占住一个端口；port 传 0 由系统分配。"""
-    # 要一直持有这个 socket，探完就放会被别人占走
+    """绑定并占住后端端口，端口已被占用时给出可执行的排查提示。"""
+    # 要一直持有这个 socket，探完就放会被别人占走。
     sock = socket.socket()
-    sock.bind(("127.0.0.1", port))
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as exc:
+        sock.close()
+        if exc.errno in {98, 10048}:
+            raise OSError(
+                f'后端端口 {port} 已被占用，月璃无法启动。'
+                f'请运行 Get-NetTCPConnection -LocalPort {port} '
+                f'查看占用进程，结束冲突进程后重试；'
+                f'如需临时改用其他端口，可传入 --port <端口>。'
+            ) from exc
+        raise
     return sock
 
 
@@ -73,7 +87,7 @@ def main() -> None:
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--config-path", required=True)
     parser.add_argument("--token", required=True)
-    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port", type=int, default=DEFAULT_BACKEND_PORT)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
