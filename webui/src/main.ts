@@ -150,9 +150,7 @@ function renderPersona(payload: ObservabilityPayload): void {
   const axes = document.createElement('div')
   axes.className = 'axis-list'
   const definitions = [
-    ['亲密度', payload.persona.state.intimacy, 0, 100],
-    ['傲娇度', payload.persona.state.tsundere, -50, 50],
-    ['依赖度', payload.persona.state.reliance, 0, 100],
+    ['好感度', payload.persona.state.intimacy, 0, 100],
     ['精力', payload.persona.state.energy, 0, 100],
   ] as const
   for (const [label, value, min, max] of definitions) {

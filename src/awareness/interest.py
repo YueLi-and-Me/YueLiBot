@@ -11,11 +11,10 @@
 
 这里的增速由五个**已经存在**的输入相乘，不新造状态源：
 
-    rate_per_minute = BASE * f_activity * f_reliance * f_energy * f_ignored * f_absence
+    rate_per_minute = BASE * f_activity * f_favor * f_energy * f_ignored * f_absence
 
     f_activity  他在干什么（闲着涨得快，写代码涨得慢，人不在几乎不涨）
-    f_reliance  她多黏他 —— persona.reliance，describe_persona 里那句
-                「你挺黏他的…偶尔会借一个很小的由头凑过来」说的就是这件事
+    f_favor     她和他的关系深度 —— persona.intimacy，只影响主动联系意愿，不决定人设
     f_energy    她累不累 —— persona.energy，apply_turn 每轮扣、睡觉回涨
     f_ignored   她被冷落了几次 —— 替代原来 cooldown_for() 的指数退避。
                 「她没那么起劲了」比「冷却期变长」像人得多。
@@ -42,7 +41,7 @@ from .classify import Activity, InputIntensity
 FULL = 100.0
 
 # 各项乘数都为 1 时攒满需要多少分钟的倒数刻度：BASE=4 → 25 分钟到顶。
-# 实际上 f_reliance/f_energy 通常在 0.5 上下，所以典型间隔会明显长于这个值。
+# 实际上 f_favor/f_energy 通常在 0.5 上下，所以典型间隔会明显长于这个值。
 BASE = 4.0
 
 # 被忽略一次，增速打的折。连着不理她，她会越来越蔫（而不是越来越急）。
@@ -92,19 +91,19 @@ class InterestFactors:
     """
 
     activity: float
-    reliance: float
+    favor: float
     energy: float
     ignored: float
     absence: float
 
     @property
     def rate_per_minute(self) -> float:
-        return BASE * self.activity * self.reliance * self.energy * self.ignored * self.absence
+        return BASE * self.activity * self.favor * self.energy * self.ignored * self.absence
 
     def as_trace(self) -> dict[str, float]:
         return {
             'fActivity': round(self.activity, 3),
-            'fReliance': round(self.reliance, 3),
+            'fFavor': round(self.favor, 3),
             'fEnergy': round(self.energy, 3),
             'fIgnored': round(self.ignored, 3),
             'fAbsence': round(self.absence, 3),
@@ -112,16 +111,16 @@ class InterestFactors:
         }
 
 
-def factors_for(activity: Activity, intensity: InputIntensity, reliance: float, energy: float,
+def factors_for(activity: Activity, intensity: InputIntensity, favor: float, energy: float,
                 ignored: int, absence_hours: float) -> InterestFactors:
     """把当前情境和她的状态折算成五个乘数。
 
-    reliance / energy 是 persona 的 0~100 轴，直接除以 100 用——不引入新的
-    归一化常量。两者都设了地板：再累再不黏他也不至于彻底不想说话，只是慢。
+    favor / energy 是 persona 的 0~100 轴，直接除以 100 用——不引入新的
+    归一化常量。两者都设了地板：再累、关系再浅也不至于彻底不想说话，只是慢。
     """
     return InterestFactors(
         activity=_ACTIVITY_WEIGHT.get(activity, 1.0) * _INTENSITY_WEIGHT.get(intensity, 1.0),
-        reliance=max(0.25, reliance / 100.0),
+        favor=max(0.25, favor / 100.0),
         energy=max(0.2, energy / 100.0),
         ignored=IGNORED_DECAY ** max(0, ignored),
         absence=1.0 + min(1.5, max(0.0, absence_hours) / ABSENCE_SCALE_HOURS),

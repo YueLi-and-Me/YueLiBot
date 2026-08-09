@@ -123,6 +123,7 @@ def build_system_prompt(
     expression_habits: Optional[str] = None,
     tone: Optional[str] = None,
     resumption: Optional[str] = None,
+    relationship_decision: Optional[str] = None,
 ) -> str:
     """组装主对话提示词，各段只承担一种职责。"""
 
@@ -145,6 +146,8 @@ def build_system_prompt(
         parts.extend(['', resumption])
     if persona:
         parts.extend(['', persona])
+    if relationship_decision:
+        parts.extend(['', '# 本轮关系分寸', relationship_decision])
     if activity:
         parts.extend([
             '',

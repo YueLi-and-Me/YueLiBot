@@ -116,12 +116,10 @@ CREATE TABLE IF NOT EXISTS pending_utterances (
 CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_utterances(delivered_at, deliver_after);
 
 -- ---------------------------------------------------------------- 人格状态
--- 关系轴按人保存；person_id=1 是 owner，其他 person 在首次交互时懒创建。
+-- 好感度按人保存；person_id=1 是 owner，其他 person 在首次交互时懒创建。
 CREATE TABLE IF NOT EXISTS persona_bond (
   person_id  INTEGER PRIMARY KEY REFERENCES persons(id),
   intimacy   REAL    NOT NULL,
-  tsundere   REAL    NOT NULL,
-  reliance   REAL    NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
@@ -145,8 +143,6 @@ CREATE TABLE IF NOT EXISTS persona (
 CREATE TABLE IF NOT EXISTS persona_snapshots (
   date       TEXT PRIMARY KEY,
   intimacy   REAL    NOT NULL,
-  tsundere   REAL    NOT NULL,
-  reliance   REAL    NOT NULL,
   energy     REAL    NOT NULL,
   captured_at INTEGER NOT NULL
 );
@@ -160,8 +156,8 @@ VALUES (1, 'owner', CAST(strftime('%s','now') AS INTEGER) * 1000);
 INSERT OR IGNORE INTO streams (id, platform, kind, external_id)
 VALUES (1, 'desktop', 'desktop', 'desktop');
 
-INSERT OR IGNORE INTO persona_bond (person_id, intimacy, tsundere, reliance, updated_at)
-VALUES (1, 12, 5, 20, CAST(strftime('%s','now') AS INTEGER) * 1000);
+INSERT OR IGNORE INTO persona_bond (person_id, intimacy, updated_at)
+VALUES (1, 12, CAST(strftime('%s','now') AS INTEGER) * 1000);
 
 INSERT OR IGNORE INTO persona_self (id, energy, updated_at)
 VALUES (1, 80, CAST(strftime('%s','now') AS INTEGER) * 1000);

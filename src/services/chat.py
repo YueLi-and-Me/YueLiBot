@@ -19,13 +19,14 @@ from .trace import bind_origin, trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
 
-from src.agent.character import pick_tone
+from src.agent.character import BOUNDARIES_PROMPT, IDENTITY_PROMPT, pick_tone
 from src.agent.expression import render_expression_habits, select_expression_habits
 from src.agent.history import close_dangling_say, fit_char_budget, normalize_history
 from src.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
 from src.agent.prompt import build_proactive_prompt, build_system_prompt, describe_resumption
+from src.agent.relationship import RelationshipPlanner, relationship_tier
 from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
@@ -100,11 +101,17 @@ class ChatService:
         vector: VectorService | None = None,
         cfg: Any | None = None,
         broker: PlatformBroker | None = None,
+        relationship_provider: Any | None = None,
     ) -> None:
         self._db = db
         self._chat_provider = chat_provider
         self._proactive_provider = proactive_provider
         self._summary_provider = summary_provider
+        self._relationship_planner = (
+            RelationshipPlanner(relationship_provider)
+            if relationship_provider is not None
+            else None
+        )
         self._push_event = push_event
         self._speak_audio = speak_audio
         self._broker = broker
@@ -272,7 +279,12 @@ class ChatService:
                 outbound_segments: list[str] = []
                 outbound_segment: list[str] | None = None
                 interrupted = False
-                messages = await self._build_messages_with_vector(context, trimmed, now)
+                messages = await self._build_messages_with_vector(
+                    context,
+                    trimmed,
+                    now,
+                    cancel_event,
+                )
                 trace.emit(
                     'llm_request',
                     turnId=turn,
@@ -653,6 +665,7 @@ class ChatService:
         context: ConversationContext,
         query: str,
         now: int,
+        signal: asyncio.Event | None = None,
     ) -> list[dict]:
         """向量召回版本的消息构建。_build_messages 的异步替代。"""
         query_embedding = await self._vector.embed_query(query)
@@ -679,13 +692,25 @@ class ChatService:
                 seen_ids.add(e.id)
                 episodes.append(e)
         episodes = episodes[:self._episode_context_limit]
-        persona_desc = describe_persona(self.persona.get(context.person.id))
+        state = self.persona.get(context.person.id)
+        persona_desc = describe_persona(state)
         acquaintance = describe_acquaintance(
             self.memory.first_seen_at(context.person.id),
             now,
         )
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
         resumption = self._take_resumption(context.stream.id)
+        # 关系规划器只看最近上下文并返回受限动作；回复模型不会收到它的自由文本。
+        wm = self.memory.working_memory(
+            context.stream.id,
+            self._working_memory_messages,
+        )
+        raw_history = self._history_for_context(context, wm)
+        relationship_decision = await self._decide_relationship(
+            state.intimacy,
+            raw_history[-8:],
+            signal,
+        )
         system = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
@@ -699,17 +724,43 @@ class ChatService:
             ),
             tone=self._session(context.stream.id).tone,
             resumption=resumption,
+            relationship_decision=relationship_decision,
             **self._prompt_config_kwargs(),
         )
         # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
         #   都损坏过一轮）只能在这里救回来，写入端的修复管不到已经写坏的部分。
         #   幂等，对干净历史没有副作用。
-        wm = self.memory.working_memory(
-            context.stream.id,
-            self._working_memory_messages,
-        )
-        history = normalize_history(self._history_for_context(context, wm))
+        history = normalize_history(raw_history)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
+
+    async def _decide_relationship(
+        self,
+        intimacy: float,
+        history: list[dict[str, str]],
+        signal: asyncio.Event | None,
+    ) -> str | None:
+        if self._relationship_planner is None:
+            return None
+        if self._cfg is None:
+            identity = IDENTITY_PROMPT
+            boundaries = BOUNDARIES_PROMPT
+        else:
+            identity = self._cfg.personality.identity
+            boundaries = self._cfg.personality.boundaries
+        trace.emit(
+            'relationship_decision_request',
+            tier=relationship_tier(intimacy),
+            contextMessages=len(history),
+        )
+        decision = await self._relationship_planner.decide(
+            intimacy=intimacy,
+            history=history,
+            identity=identity,
+            boundaries=boundaries,
+            signal=signal,
+        )
+        trace.emit('relationship_decision', action=decision.action)
+        return decision.instruction
 
     def _history_for_context(self, context: ConversationContext, messages: list[Any]) -> list[dict]:
         """仅在组装群聊历史时补说话人显示名，不污染原始消息内容。"""

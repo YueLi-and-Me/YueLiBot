@@ -199,6 +199,7 @@ def main() -> None:
         push_event=_push_event,
         cfg=cfg,
         broker=broker,
+        relationship_provider=chat_provider,
     )
 
     # 初始化 VectorService（可选，默认关）——必须在 app_state.chat 建好之后，

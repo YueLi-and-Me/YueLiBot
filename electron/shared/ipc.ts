@@ -38,11 +38,9 @@ export interface ObservabilityStreamsPayload {
   streams: ObservabilityStream[]
 }
 
-/** 人格关系轴与全局精力。 */
+/** 人格好感度与全局精力。 */
 export interface ObservabilityPersonaState {
   intimacy: number
-  tsundere: number
-  reliance: number
   energy: number
   updated_at: number
 }

@@ -146,7 +146,7 @@ class AwarenessService:
         return factors_for(
             classified.activity,
             classified.intensity,
-            persona.reliance,
+            persona.intimacy,
             persona.energy,
             self._budget.ignored,
             absence_hours,
