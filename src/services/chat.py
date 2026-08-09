@@ -32,7 +32,7 @@ from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
-from src.config.schema import BotConfig, ConversationConfig, GenerationConfig
+from src.config.schema import BotConfig, ConversationConfig, GenerationConfig, PerceptionConfig
 from src.llm_models.openai import LlmError
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
@@ -144,6 +144,7 @@ class ChatService:
             self._bot_names: tuple[str, ...] = ()
             self._at_mention_must_reply = True
             self._name_mention_probability = 1.0
+            self._perception_surfaces = frozenset(PerceptionConfig().surfaces)
         else:
             conversation = cfg.conversation
             generation = cfg.generation
@@ -167,6 +168,7 @@ class ChatService:
             self._bot_names = tuple([cfg.bot.name, *cfg.bot.aliases])
             self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
             self._name_mention_probability = cfg.group_chat.name_mention_probability
+            self._perception_surfaces = frozenset(cfg.perception.surfaces)
         self._turn_planner = (
             TurnPlanner(
                 relationship_provider,
@@ -495,7 +497,10 @@ class ChatService:
                     variants=personality.tone_variants,
                 )
             state.seed = random.randrange(1 << 30)
+        # owner 闸门回答「这条关系信号属于谁」；group 闸门回答「静默间隔是否
+        # 代表这条会话中的重逢」。两者语义不同，不能合成一个关系 helper。
         if (not context.relationship_signals_enabled
+                or context.stream.kind == 'group'
                 or gap_ms is None
                 or gap_ms <= self._session_gap_ms):
             state.resumption_gap_ms = None
@@ -929,13 +934,20 @@ class ChatService:
             raw_history[-8:],
             signal,
         )
+        # 出口开关回答「这里能否看见本机屏幕」，owner 判据回答「对面是不是用户
+        # 本人」。私聊必须同时满足两个独立问题；群聊则不可能进入 surfaces。
+        activity = None
+        if (context.stream.kind in self._perception_surfaces
+                and context.person.kind == 'owner'
+                and self._activity is not None):
+            activity = self._activity()
         system = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
             acquaintance=acquaintance,
             facts=[f.content for f in facts],
             episodes=[e.summary for e in episodes],
-            activity=(self._activity() if self._activity else None),
+            activity=activity,
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
                 select_expression_habits(query, rng=self._session_rng(context.stream.id))

@@ -164,6 +164,7 @@ def _load_split_config(directory: Path) -> Config:
 
     features_tts = features_document.tts
     features_vision = features_document.vision
+    features_perception = features_document.perception
     features_vector = features_document.vector
     # 功能开着却一个候选都没有，是明确的配置错误：开了却不工作比直接报错更难查。
     for enabled, task in ((features_tts.enabled, 'tts'),
@@ -195,6 +196,7 @@ def _load_split_config(directory: Path) -> Config:
         routing=routing,
         tts=features_tts,
         vision=features_vision,
+        perception=features_perception,
         vector=features_vector,
         advanced=features_document.advanced,
     )

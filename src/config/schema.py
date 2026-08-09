@@ -247,6 +247,30 @@ class VisionConfig(BaseModel):
         return self.enabled
 
 
+class PerceptionConfig(BaseModel):
+    """屏幕情境获准出现的出口；群聊在配置形状上永久排除。"""
+
+    surfaces: List[Literal['desktop', 'direct']] = Field(
+        default_factory=lambda: ['desktop']
+    )
+
+    @field_validator('surfaces', mode='before')
+    @classmethod
+    def _validate_surfaces(cls, value: object) -> object:
+        if not isinstance(value, list):
+            raise ValueError('perception.surfaces 必须是列表，可填 desktop 或 direct')
+        invalid = [item for item in value if item not in ('desktop', 'direct')]
+        if 'group' in invalid:
+            raise ValueError(
+                '群聊不能启用屏幕情境：群消息会被多人看见，屏幕内容一旦发出无法撤回'
+            )
+        if invalid:
+            raise ValueError(
+                f'perception.surfaces 只能填写 desktop 或 direct，收到：{invalid}'
+            )
+        return value
+
+
 class VectorConfig(BaseModel):
     # 向量混合召回，默认关；还需 pip install yueli[vector]
     # 用哪个 embedding 模型由 model_tasks.embedding 决定，不在这里重复。
@@ -397,6 +421,7 @@ class FeatureDocument(BaseModel):
     inner: InnerConfig
     tts: TtsConfig
     vision: VisionConfig
+    perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig
     advanced: AdvancedConfig
 
@@ -412,5 +437,6 @@ class Config(BaseModel):
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
+    perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)

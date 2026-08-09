@@ -168,6 +168,9 @@ export const DEFAULT_CONFIG: YueliConfig = {
   vision: {
     enabled: false, fullscreen_silent: true, capture_mode: 'window',
   },
+  perception: {
+    surfaces: ['desktop'],
+  },
   vector: {
     enabled: false,
   },
@@ -230,6 +233,27 @@ function captureModeAt(record: Record<string, unknown>, path: string): 'window' 
     throw new Error(`${path} 的 capture_mode 只能是 "window" 或 "screen"`)
   }
   return value
+}
+
+function perceptionSurfacesAt(
+  document: Record<string, unknown>, path: string,
+): Array<'desktop' | 'direct'> {
+  if (document.perception === undefined) return [...DEFAULT_CONFIG.perception.surfaces]
+  const perception = recordAt(document, 'perception', path)
+  const surfaces = perception.surfaces
+  if (!Array.isArray(surfaces) || !surfaces.every((value) => typeof value === 'string')) {
+    throw new Error(`${path} 的 perception.surfaces 必须是字符串数组`)
+  }
+  if (surfaces.includes('group')) {
+    throw new Error(
+      `${path} 的群聊不能启用屏幕情境：群消息会被多人看见，屏幕内容一旦发出无法撤回`,
+    )
+  }
+  const invalid = surfaces.filter((value) => value !== 'desktop' && value !== 'direct')
+  if (invalid.length > 0) {
+    throw new Error(`${path} 的 perception.surfaces 只能填写 desktop 或 direct：${invalid.join('、')}`)
+  }
+  return [...surfaces] as Array<'desktop' | 'direct'>
 }
 
 function booleanAt(record: Record<string, unknown>, key: string, path: string): boolean {
@@ -634,6 +658,9 @@ function readSplitConfig(directory: string): YueliConfig {
       enabled: booleanAt(vision, 'enabled', featuresPath),
       fullscreen_silent: booleanAt(vision, 'fullscreen_silent', featuresPath),
       capture_mode: captureModeAt(vision, featuresPath),
+    },
+    perception: {
+      surfaces: perceptionSurfacesAt(features, featuresPath),
     },
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
@@ -1083,6 +1110,12 @@ fullscreen_silent = ${tomlValue(cfg.vision.fullscreen_silent)}
 # 送往云端模型时尤其要想清楚。
 capture_mode = ${tomlValue(cfg.vision.capture_mode)}
 
+[perception]
+# 她可以在哪些出口提到前台程序、持续时间，以及开启 [vision] 后看到的屏幕内容。
+# 可填 "desktop"（桌宠窗口）与 "direct"（QQ 私聊）；留空表示哪儿都不提。
+# 群聊不是可选项，填进去会在加载期直接报错。
+surfaces = ${tomlStringArray(cfg.perception.surfaces)}
+
 [vector]
 # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖
 enabled = ${tomlValue(cfg.vector.enabled)}
@@ -1122,6 +1155,17 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     throw new Error('名字或别名触发回复概率必须在 0 到 1 之间')
   }
   assertSchedule(cfg.schedule, '日程配置')
+  if (!Array.isArray(cfg.perception.surfaces)) {
+    throw new Error('perception.surfaces 必须是数组')
+  }
+  for (const surface of cfg.perception.surfaces as string[]) {
+    if (surface === 'group') {
+      throw new Error('群聊不能启用屏幕情境：群消息会被多人看见，屏幕内容一旦发出无法撤回')
+    }
+    if (surface !== 'desktop' && surface !== 'direct') {
+      throw new Error(`perception.surfaces 只能填写 desktop 或 direct：${surface}`)
+    }
+  }
   for (const [task, generation] of Object.entries(cfg.generation)) {
     if (
       !Number.isFinite(generation.temperature)

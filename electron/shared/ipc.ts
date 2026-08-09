@@ -400,6 +400,9 @@ export interface YueliConfig {
     /** window = 只截前台那一个窗口；screen = 截整个主屏（能看到桌面，但会连带截到别的窗口） */
     capture_mode: 'window' | 'screen'
   }
+  perception: {
+    surfaces: Array<'desktop' | 'direct'>
+  }
   vector: {
     enabled: boolean
   }
