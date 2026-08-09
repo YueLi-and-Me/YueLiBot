@@ -16,10 +16,31 @@ _VOCATIVE_SUFFIXES = frozenset('在来呢吗呀啊诶欸说看帮回醒你请给
 
 @dataclass(frozen=True)
 class ReplyGateDecision:
-    """一次确定性的群聊回复决策。"""
+    """群聊回复决策及判定依据。"""
 
     accepted: bool
     reason: str
+    asleep: bool = False
+    mentioned_me: bool = False
+    name_mentioned: bool = False
+    replies_in_window: int = 0
+    max_replies_in_window: int = 0
+    probability_draw: float = 0.0
+    name_mention_probability: float = 0.0
+
+    def as_trace(self) -> dict:
+        """转换为 trace 字段。"""
+        return {
+            'accepted': self.accepted,
+            'reason': self.reason,
+            'asleep': self.asleep,
+            'mentionedMe': self.mentioned_me,
+            'nameMentioned': self.name_mentioned,
+            'repliesInWindow': self.replies_in_window,
+            'maxRepliesInWindow': self.max_replies_in_window,
+            'probabilityDraw': round(self.probability_draw, 4),
+            'nameMentionProbability': self.name_mention_probability,
+        }
 
 
 def decide_reply(
@@ -41,21 +62,33 @@ def decide_reply(
         raise ValueError('name_mention_probability 必须在 0 到 1 之间')
     if not 0.0 <= probability_draw < 1.0:
         raise ValueError('probability_draw 必须在 0 到 1 之间且不含 1')
-    if mentioned_me and at_mention_must_reply:
-        return ReplyGateDecision(accepted=True, reason='mentioned')
 
     name_mentioned = mentions_bot_name(text, bot_names)
+
+    def decision(accepted: bool, reason: str) -> ReplyGateDecision:
+        return ReplyGateDecision(
+            accepted=accepted,
+            reason=reason,
+            asleep=asleep,
+            mentioned_me=mentioned_me,
+            name_mentioned=name_mentioned,
+            replies_in_window=my_replies_in_window,
+            max_replies_in_window=max_replies_in_window,
+            probability_draw=probability_draw,
+            name_mention_probability=name_mention_probability,
+        )
+
+    if mentioned_me and at_mention_must_reply:
+        return decision(True, 'mentioned')
     if asleep:
-        return ReplyGateDecision(accepted=False, reason='asleep_without_mention')
+        return decision(False, 'asleep_without_mention')
     if my_replies_in_window >= max_replies_in_window:
-        return ReplyGateDecision(accepted=False, reason='window_limit')
+        return decision(False, 'window_limit')
     if mentioned_me or name_mentioned:
         if probability_draw < name_mention_probability:
-            reason = 'mentioned_probability' if mentioned_me else 'name_mentioned'
-            return ReplyGateDecision(accepted=True, reason=reason)
-        reason = 'mention_probability' if mentioned_me else 'name_probability'
-        return ReplyGateDecision(accepted=False, reason=reason)
-    return ReplyGateDecision(accepted=False, reason='group_not_mentioned')
+            return decision(True, 'mentioned_probability' if mentioned_me else 'name_mentioned')
+        return decision(False, 'mention_probability' if mentioned_me else 'name_probability')
+    return decision(False, 'group_not_mentioned')
 
 
 def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:

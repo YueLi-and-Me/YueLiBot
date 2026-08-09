@@ -16,7 +16,7 @@ import inspect
 import random
 import sqlite3
 
-from .trace_console import mark_turn_start, render_turn, render_turn_error
+from .trace_console import mark_turn_start, render_observation, render_turn, render_turn_error
 from .vector import VectorService
 
 from src.agent.character import pick_tone
@@ -465,21 +465,33 @@ class ChatService:
         active_turn_id = self._active_turns.get(stream.id) if turn_id is None else turn_id
         enter_stage(stage, stream.id, name, detail, active_turn_id)
 
-    def record_group_observation(self, inbound: InboundMessage) -> int:
-        """原样保存无需回复的群消息，不推进关系状态也不调用模型。"""
+    def record_group_observation(self, inbound: InboundMessage, reason: str = '') -> int:
+        """保存静默群消息及未回复原因。"""
         context = inbound.context
         if context.stream.kind != 'group':
             raise ValueError('record_group_observation 只接受群聊消息')
         text = inbound.text.strip()
         if not text:
             raise ValueError('群聊消息正文不能为空')
-        return self.memory.append_message(
+        message_id = self.memory.append_message(
             context.stream.id,
             context.person.id,
             'user',
             text,
             current_time(),
         )
+        sender = self._sender_metadata(context)
+        trace.emit(
+            'observation',
+            streamId=context.stream.id,
+            personId=context.person.id,
+            text=text,
+            reason=reason,
+            **sender,
+        )
+        render_observation(sender['senderLabel'], text, reason)
+        return message_id
+
     def _session(self, stream_id: int) -> _SessionState:
         state = self._sessions.get(stream_id)
         if state is None:

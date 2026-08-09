@@ -223,21 +223,26 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     trace.emit(
         'reply_gate',
         streamId=context.stream.id,
-        accepted=decision.accepted,
-        reason=decision.reason,
+        personId=context.person.id,
+        text=body.text,
+        botNames=list(app_state.chat.bot_names(body.bot_name)),
+        **decision.as_trace(),
     )
     if not decision.accepted:
         enter_stage(
             GATED, context.stream.id, stream_name,
             f'未回复：{decision.reason}',
         )
-        app_state.chat.record_group_observation(InboundMessage(
-            text=body.text,
-            context=context,
-            mentioned_me=body.mentioned_me,
-            external_message_id=body.external_message_id,
-            bot_name=body.bot_name,
-        ))
+        app_state.chat.record_group_observation(
+            InboundMessage(
+                text=body.text,
+                context=context,
+                mentioned_me=body.mentioned_me,
+                external_message_id=body.external_message_id,
+                bot_name=body.bot_name,
+            ),
+            decision.reason,
+        )
         return JSONResponse({
             'turnId': 0,
             'streamId': context.stream.id,

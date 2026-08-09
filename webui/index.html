@@ -45,6 +45,13 @@
             </div>
           </header>
           <aside id="status" class="status-strip" aria-label="关键状态"></aside>
+          <section class="panel-card" aria-label="各会话当前阶段">
+            <header class="section-heading">
+              <h2>此刻在做什么</h2>
+              <span class="section-subtitle">每条会话停在哪一步、停了多久</span>
+            </header>
+            <div id="stage-board" class="stage-board"><p class="empty">尚未收到任何消息。</p></div>
+          </section>
           <div id="grid" class="panel-grid"><p class="empty">正在读取内部状态…</p></div>
           <section class="panel-card trace-panel" aria-label="运行时调试追踪">
             <header class="section-heading">
@@ -53,6 +60,9 @@
                 <label for="trace-filter">kind 过滤</label>
                 <select id="trace-filter">
                   <option value="all">全部</option>
+                  <option value="observation">observation（没回的群消息）</option>
+                  <option value="reply_gate">reply_gate（回不回的判定）</option>
+                  <option value="expression_select">expression_select</option>
                   <option value="interest">interest</option>
                   <option value="proactive_intent">proactive_intent</option>
                   <option value="vision_glance">vision_glance</option>

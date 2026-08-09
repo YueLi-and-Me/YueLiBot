@@ -107,6 +107,21 @@ def render_turn(
         logger.debug('render_turn_failed', error=str(exc))
 
 
+def render_observation(sender_label: str, user_text: str, reason: str) -> None:
+    """用单行显示静默群消息。"""
+    if not _is_tty:
+        return
+    try:
+        console.print(
+            Text('· ', style='dim')
+            + Text(f'{sender_label}: ', style='dim')
+            + Text(user_text, style='dim white')
+            + Text(f'  （未回复：{reason}）', style='dim italic'),
+        )
+    except Exception as exc:
+        logger.debug('render_observation_failed', error=str(exc))
+
+
 def render_turn_error(
     turn: int,
     sender_label: str,

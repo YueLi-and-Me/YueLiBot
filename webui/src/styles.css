@@ -479,6 +479,33 @@ tr.frozen {
   padding: 5px 0;
 }
 
+.stage-board {
+  display: grid;
+  gap: 2px;
+}
+
+.stage-row {
+  align-items: baseline;
+  border-bottom: 1px solid #252c37;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 190px 96px minmax(0, 1fr) 72px 80px;
+  overflow-wrap: anywhere;
+  padding: 6px 0;
+}
+
+.stage-name {
+  background: #1b2430;
+  border-radius: 4px;
+  color: #9ecbff;
+  padding: 1px 8px;
+  text-align: center;
+}
+
+.trace-observation .muted:last-child {
+  white-space: nowrap;
+}
+
 .log-output {
   background: #090c10;
   font-family: Consolas, "Cascadia Mono", monospace;

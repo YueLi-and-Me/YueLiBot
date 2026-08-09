@@ -9,6 +9,8 @@ import type {
 } from '../../electron/shared/ipc.ts'
 
 const SNAPSHOT_REFRESH_MS = 15_000
+// 阶段状态需要秒级刷新。
+const STAGE_POLL_MS = 1_000
 const MAX_TRACE_ENTRIES = 1_000
 const MAX_LOG_ROWS = 500
 
@@ -17,6 +19,7 @@ const panelShell = document.getElementById('panel-shell') as HTMLElement
 const loginForm = document.getElementById('login-form') as HTMLFormElement
 const loginError = document.getElementById('login-error') as HTMLElement
 const streamSelect = document.getElementById('stream-select') as HTMLSelectElement
+const stageBoard = document.getElementById('stage-board') as HTMLElement
 const conversationView = document.getElementById('conversation-view') as HTMLElement
 const personsView = document.getElementById('persons-view') as HTMLElement
 const personsGrid = document.getElementById('persons-grid') as HTMLElement
@@ -36,6 +39,7 @@ const logStatus = document.getElementById('log-status') as HTMLElement
 
 let initialized = false
 let snapshotTimer: ReturnType<typeof setInterval> | null = null
+let stageTimer: ReturnType<typeof setInterval> | null = null
 let logReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let eventReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let logSocket: WebSocket | null = null
@@ -610,6 +614,17 @@ function renderTrace(): void {
     const kind = document.createElement('strong')
     kind.textContent = entry.kind
     const detail = document.createElement('span')
+    // 直接显示静默群消息及门控原因。
+    if (entry.kind === 'observation') {
+      row.classList.add('trace-observation')
+      detail.textContent = `${traceSenderLabel(entry)}：${text(entry.text)}`
+      const why = document.createElement('span')
+      why.className = 'muted'
+      why.textContent = `未回复：${text(entry.reason)}`
+      row.append(time, kind, detail, why)
+      traceLog.append(row)
+      continue
+    }
     detail.textContent = traceDetail(entry)
     row.append(time, kind, detail)
     traceLog.append(row)
@@ -790,12 +805,70 @@ async function fetchSnapshot(): Promise<void> {
   }
 }
 
+interface StageEntry {
+  streamId: number
+  streamName: string
+  stage: string
+  stageLabel: string
+  detail: string
+  turnId: number | null
+  stageElapsedMs: number
+}
+
+/** 格式化阶段停留时长。 */
+function elapsedLabel(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60_000)}分${Math.floor((ms % 60_000) / 1000)}秒`
+}
+
+async function pollStages(): Promise<void> {
+  const response = await fetch('/stages', { credentials: 'same-origin' })
+  if (!response.ok) return
+  const entries = ((await response.json()).stages ?? []) as StageEntry[]
+  stageBoard.replaceChildren()
+  if (!entries.length) {
+    const empty = document.createElement('p')
+    empty.className = 'empty'
+    empty.textContent = '尚未收到任何消息。'
+    stageBoard.append(empty)
+    return
+  }
+  for (const entry of entries) {
+    const row = document.createElement('div')
+    row.className = 'stage-row'
+    if (entry.stage === 'failed') row.classList.add('error-border')
+
+    const name = document.createElement('strong')
+    name.textContent = entry.streamName
+    const stage = document.createElement('span')
+    stage.className = 'stage-name'
+    stage.textContent = entry.stageLabel
+    const detail = document.createElement('span')
+    detail.className = 'muted'
+    detail.textContent = entry.detail
+    const elapsed = document.createElement('span')
+    elapsed.className = 'muted mono'
+    elapsed.textContent = elapsedLabel(entry.stageElapsedMs)
+
+    row.append(name, stage, detail, elapsed)
+    if (entry.turnId !== null) {
+      const turn = document.createElement('span')
+      turn.className = 'muted mono'
+      turn.textContent = `Turn #${entry.turnId}`
+      row.append(turn)
+    }
+    stageBoard.append(row)
+  }
+}
 
 function stopPanel(): void {
   panelRunning = false
   if (snapshotTimer) clearInterval(snapshotTimer)
+  if (stageTimer) clearInterval(stageTimer)
   if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
   snapshotTimer = null
+  stageTimer = null
   eventReconnectTimer = null
   eventSocket?.close()
   eventSocket = null
@@ -848,6 +921,8 @@ async function initializePanel(): Promise<void> {
         : null
     })
   }
+  stageTimer = setInterval(() => void pollStages(), STAGE_POLL_MS)
+  void pollStages()
   connectEvents()
   connectLogs()
 }
