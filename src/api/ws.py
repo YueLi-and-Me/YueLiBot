@@ -22,7 +22,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from .auth import ws_auth
 
 from src.common.logger import get_logger
-from src.services.trace import trace
+from src.observe import events as trace
+from src.observe.events import broadcaster
+from src.observe.store import since as events_since
 from src.webui.logs import webui_logs
 
 logger = get_logger(__name__)
@@ -159,3 +161,61 @@ async def webui_logs_endpoint(websocket: WebSocket) -> None:
         pass
     finally:
         webui_logs.unsubscribe(subscriber)
+
+
+@router.websocket('/ws/events')
+async def webui_events_endpoint(websocket: WebSocket) -> None:
+    """先按游标回放账本，再逐条推送实时事件。"""
+    if not await ws_auth(websocket):
+        await websocket.close(code=1008)
+        return
+
+    raw_since = websocket.query_params.get('since', '0')
+    try:
+        since = int(raw_since)
+    except ValueError:
+        await websocket.close(code=1008)
+        return
+    if since < 0:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    # 先订阅，再查库并按 seq 去重。
+    subscriber = broadcaster.subscribe()
+    try:
+        page = events_since(since, 1_000)
+        replay_frame: Dict[str, Any] = {'events': page.events}
+        if page.truncated:
+            replay_frame['truncated'] = True
+            replay_frame['from'] = page.from_seq
+        await websocket.send_json(replay_frame)
+        last_sent_seq = page.events[-1]['seq'] if page.events else since
+
+        while True:
+            if subscriber.overflowed.is_set():
+                await websocket.close(code=1013)
+                return
+            queue_task = asyncio.create_task(subscriber.queue.get())
+            overflow_task = asyncio.create_task(subscriber.overflowed.wait())
+            done, pending = await asyncio.wait(
+                {queue_task, overflow_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            if overflow_task in done and overflow_task.result():
+                await websocket.close(code=1013)
+                return
+            entry = queue_task.result()
+            entry_seq = entry.get('seq')
+            if isinstance(entry_seq, int) and entry_seq <= last_sent_seq:
+                continue
+            await websocket.send_json({'events': [entry]})
+            if isinstance(entry_seq, int):
+                last_sent_seq = entry_seq
+    except WebSocketDisconnect:
+        pass
+    finally:
+        broadcaster.unsubscribe(subscriber)
