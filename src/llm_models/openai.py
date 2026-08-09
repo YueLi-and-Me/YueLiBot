@@ -15,6 +15,8 @@ import re
 
 import httpx
 
+from .snapshot import current_candidate, record_provider_request
+
 from src.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -206,10 +208,12 @@ class OpenAiChatProvider:
         if thinking is not None:
             body['thinking'] = {'type': thinking}
 
+        url = f'{self.base_url}/chat/completions'
+        record_provider_request(url, headers, body, candidate=current_candidate())
+
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
-                async with client.stream('POST', f'{self.base_url}/chat/completions',
-                                          headers=headers, json=body) as resp:
+                async with client.stream('POST', url, headers=headers, json=body) as resp:
                     if resp.status_code != 200:
                         text = await resp.aread()
                         body_text = text.decode('utf-8', errors='replace')

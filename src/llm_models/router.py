@@ -21,6 +21,8 @@ from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.config.schema import ModelCandidate
 from src.llm_models.openai import LlmError, OpenAiChatProvider, resolve_base_url
+from src.llm_models.snapshot import record_attempt, record_internal_request, select_candidate
+from src.observe.events import current_stage_id, current_stream_id, current_turn_id
 
 logger = get_logger(__name__)
 
@@ -138,6 +140,17 @@ class ModelRouter:
         ★ 一旦 yield 过内容就不能再换模型：换了等于把同一句话重新说一遍，
           用户看到的是半句话接着另外半句。这条约束和单连接内部的重试一致。
         """
+        record_internal_request(
+            task=self.task,
+            stage=current_stage_id(),
+            turn_id=current_turn_id(),
+            stream_id=current_stream_id(),
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            thinking=thinking,
+            response_format=response_format,
+        )
         order = self.order()
         if not order:
             raise self._no_candidate_error()
@@ -148,6 +161,12 @@ class ModelRouter:
             try:
                 client = self.client(candidate)
                 resolved_thinking = candidate.thinking if thinking == 'inherit' else thinking
+                select_candidate(
+                    model=candidate.name,
+                    provider=candidate.provider,
+                    kind=candidate.kind,
+                    resolved_thinking=resolved_thinking,
+                )
                 options: Dict[str, Any] = {}
                 if response_format is not None:
                     options['response_format'] = response_format
@@ -168,6 +187,13 @@ class ModelRouter:
                 return
             except LlmError as exc:
                 # 用户主动打断不是厂商的问题，不能记账也不该换人重来。
+                if exc.kind != 'aborted':
+                    record_attempt(
+                        model=candidate.name,
+                        provider=candidate.provider,
+                        error_kind=exc.kind,
+                        message=str(exc),
+                    )
                 if yielded or exc.kind == 'aborted':
                     raise
                 last_error = exc
@@ -186,6 +212,17 @@ class ModelRouter:
 
     async def run(self, call: Callable[[ModelCandidate], Awaitable[T]]) -> T:
         """非流式任务（TTS、embedding）的轮询：第一个成功的候选说了算。"""
+        record_internal_request(
+            task=self.task,
+            stage=current_stage_id(),
+            turn_id=current_turn_id(),
+            stream_id=current_stream_id(),
+            messages=[],
+            temperature=None,
+            max_tokens=None,
+            thinking='inherit',
+            response_format=None,
+        )
         order = self.order()
         if not order:
             raise self._no_candidate_error()
@@ -193,11 +230,23 @@ class ModelRouter:
         last_error: Exception | None = None
         for index, candidate in enumerate(order):
             try:
+                select_candidate(
+                    model=candidate.name,
+                    provider=candidate.provider,
+                    kind=candidate.kind,
+                    resolved_thinking=candidate.thinking,
+                )
                 result = await call(candidate)
                 self._health.recover(candidate.provider)
                 return result
             except Exception as exc:
                 last_error = exc
+                record_attempt(
+                    model=candidate.name,
+                    provider=candidate.provider,
+                    error_kind=exc.kind if isinstance(exc, LlmError) else type(exc).__name__,
+                    message=str(exc),
+                )
                 self._health.penalize(candidate.provider)
                 logger.warning(
                     'model_switch',
