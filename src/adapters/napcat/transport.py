@@ -64,6 +64,7 @@ class NapcatTransport:
         self._event_queue: asyncio.Queue[object] = asyncio.Queue()
         self._disconnect_error: TransportDisconnected | None = None
         self._self_id: str | None = None
+        self._self_name: str | None = None
 
     @property
     def uri(self) -> str:
@@ -74,6 +75,12 @@ class NapcatTransport:
         if self._self_id is None:
             raise RuntimeError('协议端登录信息尚未获取')
         return self._self_id
+
+    @property
+    def self_name(self) -> str:
+        if self._self_name is None:
+            raise RuntimeError('协议端登录昵称尚未获取')
+        return self._self_name
 
     @property
     def pending_count(self) -> int:
@@ -112,6 +119,7 @@ class NapcatTransport:
             if not isinstance(data, Mapping):
                 raise ValueError('get_login_info 响应缺少对象类型的 data')
             self._self_id = _required_identifier(data.get('user_id', data.get('self_id')), '登录 QQ 号')
+            self._self_name = _required_identifier(data.get('nickname'), '登录 QQ 昵称')
             return self._self_id
         except Exception:
             await self.close()
@@ -122,6 +130,8 @@ class NapcatTransport:
         reader = self._reader_task
         self._ws = None
         self._reader_task = None
+        self._self_id = None
+        self._self_name = None
         if websocket is not None:
             await websocket.close()
         if reader is not None and reader is not asyncio.current_task():

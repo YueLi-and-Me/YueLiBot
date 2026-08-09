@@ -29,6 +29,7 @@ class QqInboundEvent:
     stream_external_id: str
     sender_external_id: str
     sender_name: str
+    bot_name: str
     text: str
     mentioned_me: bool
     external_message_id: str
@@ -83,6 +84,7 @@ def classify_event(
 def parse_inbound_event(
     payload: Mapping[str, Any],
     self_id: str,
+    self_name: str,
     owner_qq: str,
     private_access: PrivateAccessConfig,
     group_access: GroupAccessConfig,
@@ -112,7 +114,7 @@ def parse_inbound_event(
     sender = payload.get('sender')
     sender_name = ''
     if isinstance(sender, Mapping):
-        sender_name = _string_value(sender.get('nickname'))
+        sender_name = _string_value(sender.get('card')) or _string_value(sender.get('nickname'))
     if not sender_name:
         sender_name = sender_id
     return QqInboundEvent(
@@ -120,6 +122,7 @@ def parse_inbound_event(
         stream_external_id=stream_external_id,
         sender_external_id=sender_id,
         sender_name=sender_name,
+        bot_name=_required_identifier(self_name, '机器人登录昵称不能为空'),
         text=message_to_text(raw_segments),
         mentioned_me=mentions_user(raw_segments, self_id),
         external_message_id=message_id,

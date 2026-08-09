@@ -101,7 +101,11 @@ const DEFAULT_PROVIDER: ApiProviderConfig = {
 }
 
 export const DEFAULT_CONFIG: YueliConfig = {
-  bot: { name: '月璃', user_nickname: '', relationship: '' },
+  bot: { name: '月璃', aliases: [], user_nickname: '', relationship: '' },
+  group_chat: {
+    at_mention_must_reply: true,
+    name_mention_probability: 1,
+  },
   personality: {
     identity: DEFAULT_IDENTITY,
     behavior: DEFAULT_BEHAVIOR,
@@ -123,6 +127,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
+    relationship: { temperature: 0.1, max_tokens: 4096 },
     proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
     summary: { temperature: 0.3, max_tokens: 0 },
     schedule: { temperature: 0.95, max_tokens: 700 },
@@ -268,7 +273,7 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
   if (document.generation === undefined) return structuredClone(DEFAULT_CONFIG.generation)
   const generation = recordAt(document, 'generation', path)
   const result = structuredClone(DEFAULT_CONFIG.generation)
-  for (const task of ['chat', 'proactive', 'summary', 'schedule', 'vision'] as const) {
+  for (const task of ['chat', 'relationship', 'proactive', 'summary', 'schedule', 'vision'] as const) {
     if (generation[task] === undefined) continue
     const taskConfig = recordAt(generation, task, `${path} 的 generation`)
     const parsed = {
@@ -441,6 +446,34 @@ function readSplitConfig(directory: string): YueliConfig {
 
   const { document: botDocument } = parseToml(botPath)
   const bot = recordAt(botDocument, 'bot', botPath)
+  const aliases = bot.aliases ?? DEFAULT_CONFIG.bot.aliases
+  if (!Array.isArray(aliases) || !aliases.every((value) => typeof value === 'string')) {
+    throw new Error(`${botPath} 的 bot.aliases 必须是字符串数组`)
+  }
+  const botName = stringAt(bot, 'name', botPath).trim()
+  const normalizedAliases = aliases.map((value) => value.trim())
+  if (!botName) throw new Error(`${botPath} 的 bot.name 不能为空`)
+  if (normalizedAliases.some((value) => !value)) {
+    throw new Error(`${botPath} 的 bot.aliases 不能包含空字符串`)
+  }
+  if (normalizedAliases.includes(botName)) {
+    throw new Error(`${botPath} 的 bot.aliases 不要重复 bot.name`)
+  }
+  if (new Set(normalizedAliases).size !== normalizedAliases.length) {
+    throw new Error(`${botPath} 的 bot.aliases 不能包含重复别名`)
+  }
+  const groupChat = botDocument.group_chat === undefined
+    ? structuredClone(DEFAULT_CONFIG.group_chat)
+    : recordAt(botDocument, 'group_chat', botPath)
+  const nameMentionProbability = numberAtOr(
+    groupChat,
+    'name_mention_probability',
+    DEFAULT_CONFIG.group_chat.name_mention_probability,
+    botPath,
+  )
+  if (nameMentionProbability < 0 || nameMentionProbability > 1) {
+    throw new Error(`${botPath} 的 group_chat.name_mention_probability 必须在 0 到 1 之间`)
+  }
   const personality = recordAt(botDocument, 'personality', botPath)
   const conversation = parseConversation(botDocument, botPath)
   const toneVariants = personality.tone_variants
@@ -464,9 +497,16 @@ function readSplitConfig(directory: string): YueliConfig {
 
   return {
     bot: {
-      name: stringAt(bot, 'name', botPath),
+      name: botName,
+      aliases: normalizedAliases,
       user_nickname: stringAt(bot, 'user_nickname', botPath),
       relationship: stringAt(bot, 'relationship', botPath),
+    },
+    group_chat: {
+      at_mention_must_reply: groupChat.at_mention_must_reply === undefined
+        ? DEFAULT_CONFIG.group_chat.at_mention_must_reply
+        : booleanAt(groupChat, 'at_mention_must_reply', botPath),
+      name_mention_probability: nameMentionProbability,
     },
     personality: {
       identity: stringAt(personality, 'identity', botPath),
@@ -799,6 +839,7 @@ selection_strategy = ${tomlString(routing.selection_strategy)}`
 function serializeModels(cfg: YueliConfig): string {
   const generationDescriptions: Record<keyof GenerationConfig, string> = {
     chat: '用户主动聊天的回复参数',
+    relationship: '关系分寸决策的生成参数',
     proactive: '桌宠主动搭话的回复参数',
     summary: '长期记忆摘要的生成参数',
     schedule: '每日生活计划的生成参数',
@@ -835,10 +876,18 @@ version = ${tomlString(CONFIG_VERSION)}
 [bot]
 # Bot 的显示名，也会作为系统提示词中的身份名
 name = ${tomlString(cfg.bot.name)}
+# 群聊里也会回应的其它称呼
+aliases = ${tomlStringArray(cfg.bot.aliases)}
 # 你希望她怎么称呼你；留空则不特别用名字称呼你
 user_nickname = ${tomlString(cfg.bot.user_nickname)}
 # 她和你的关系，例如“哥哥”“姐姐”“朋友”；留空则不预设关系
 relationship = ${tomlString(cfg.bot.relationship)}
+
+[group_chat]
+# true 时协议 @ 提及不受睡眠与群聊回复窗口限制
+at_mention_must_reply = ${cfg.group_chat.at_mention_must_reply}
+# 名字、别名或非必回 @ 命中后的回复概率，范围 0~1
+name_mention_probability = ${cfg.group_chat.name_mention_probability}
 
 [personality]
 # 稳定身份、经历、外表与自我认知；每轮都会进入系统提示词
@@ -933,6 +982,18 @@ trace_max_bytes = ${tomlValue(cfg.advanced.trace_max_bytes)}
  * 首次启动向导本来就允许先存一半再回来补。
  */
 export function assertConfigConsistent(cfg: YueliConfig): void {
+  const botName = cfg.bot.name.trim()
+  const aliases = cfg.bot.aliases.map((alias) => alias.trim())
+  if (!botName) throw new Error('Bot 名字不能为空')
+  if (aliases.some((alias) => !alias)) throw new Error('Bot 别名不能包含空字符串')
+  if (aliases.includes(botName)) throw new Error('Bot 别名不要重复 Bot 名字')
+  if (new Set(aliases).size !== aliases.length) throw new Error('Bot 别名不能重复')
+  if (
+    cfg.group_chat.name_mention_probability < 0
+    || cfg.group_chat.name_mention_probability > 1
+  ) {
+    throw new Error('名字或别名触发回复概率必须在 0 到 1 之间')
+  }
   const providerNames = cfg.api_providers.map((provider) => provider.name.trim())
   if (providerNames.some((name) => !name)) throw new Error('每个服务商都要有名称')
   if (new Set(providerNames).size !== providerNames.length) {

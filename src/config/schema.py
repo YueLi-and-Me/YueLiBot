@@ -36,10 +36,34 @@ class InnerConfig(BaseModel):
 class BotConfig(BaseModel):
     # Bot 的显示名和提示词身份名
     name: str = CHARACTER_NAME
+    # 群聊里可用于叫她的其它名字
+    aliases: List[str] = Field(default_factory=list)
     # 月璃眼中用户的名字/称呼，留空则不特别用名字称呼他
     user_nickname: str = ''
     # 月璃和用户的关系：哥哥/姐姐/朋友/自定义文本，留空则不设定这层关系
     relationship: str = ''
+
+    @model_validator(mode='after')
+    def _validate_names(self) -> 'BotConfig':
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError('bot.name 不能为空')
+        normalized = [alias.strip() for alias in self.aliases]
+        if any(not alias for alias in normalized):
+            raise ValueError('bot.aliases 不能包含空字符串')
+        if self.name in normalized:
+            raise ValueError('bot.aliases 不要重复 bot.name')
+        if len(set(normalized)) != len(normalized):
+            raise ValueError('bot.aliases 不能包含重复别名')
+        self.aliases = normalized
+        return self
+
+
+class GroupChatConfig(BaseModel):
+    """白名单群进入主体后的回复策略；群准入仍由 QQ 适配器负责。"""
+
+    at_mention_must_reply: bool = True
+    name_mention_probability: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
 class PersonalityConfig(BaseModel):
@@ -100,6 +124,9 @@ class GenerationConfig(BaseModel):
     """按任务拆分参数，避免改视觉模型时意外改变普通聊天。"""
 
     chat: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
+    relationship: GenerationTaskConfig = Field(
+        default_factory=lambda: GenerationTaskConfig(temperature=0.1, max_tokens=4096)
+    )
     proactive: ProactiveGenerationTaskConfig = Field(
         default_factory=lambda: ProactiveGenerationTaskConfig(temperature=0.9, max_tokens=200)
     )
@@ -290,6 +317,7 @@ class ModelCatalog(BaseModel):
 class BotDocument(BaseModel):
     inner: InnerConfig
     bot: BotConfig
+    group_chat: GroupChatConfig = Field(default_factory=GroupChatConfig)
     personality: PersonalityConfig
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
 
@@ -304,6 +332,7 @@ class FeatureDocument(BaseModel):
 
 class Config(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
+    group_chat: GroupChatConfig = Field(default_factory=GroupChatConfig)
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)

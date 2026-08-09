@@ -91,6 +91,7 @@ class BackendClient:
                 'streamExternalId': event.stream_external_id,
                 'senderExternalId': event.sender_external_id,
                 'senderName': event.sender_name,
+                'botName': event.bot_name,
                 'text': event.text,
                 'mentionedMe': event.mentioned_me,
                 'externalMessageId': event.external_message_id,

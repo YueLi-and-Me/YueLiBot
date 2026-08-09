@@ -25,6 +25,10 @@
               <input type="text" name="bot.name" required />
             </label>
             <label class="field">
+              <span class="field-label">群聊别名</span>
+              <input type="text" name="bot.aliases" data-string-array="true" placeholder="多个别名用逗号分隔，例如：小璃，璃璃" />
+            </label>
+            <label class="field">
               <span class="field-label">你希望她怎么称呼你</span>
               <input type="text" name="bot.user_nickname" placeholder="留空则不特别用名字称呼你" />
             </label>
@@ -37,6 +41,13 @@
                 <option value="朋友"></option>
                 <option value="主人"></option>
               </datalist>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" name="group_chat.at_mention_must_reply" /> @ 提及时必回
+            </label>
+            <label class="field">
+              <span class="field-label">名字或别名触发回复概率</span>
+              <input type="number" name="group_chat.name_mention_probability" min="0" max="1" step="0.05" required />
             </label>
           </div>
         </section>

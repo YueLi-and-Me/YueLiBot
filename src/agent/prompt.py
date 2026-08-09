@@ -124,6 +124,8 @@ def build_system_prompt(
     tone: Optional[str] = None,
     resumption: Optional[str] = None,
     relationship_decision: Optional[str] = None,
+    aliases: Optional[List[str]] = None,
+    platform_name: Optional[str] = None,
 ) -> str:
     """组装主对话提示词，各段只承担一种职责。"""
 
@@ -136,6 +138,13 @@ def build_system_prompt(
         '# 你是谁',
         identity,
     ]
+    self_names = [value for value in [*(aliases or []), platform_name] if value and value != name]
+    if self_names:
+        unique_names = list(dict.fromkeys(self_names))
+        parts.extend([
+            '',
+            f'别人也可能用这些名字叫你：{"、".join(unique_names)}。这些都是你的称呼。',
+        ])
     if acquaintance:
         parts.extend(['', '# 你们的关系走到哪里了', acquaintance])
     if user_nickname or relationship:

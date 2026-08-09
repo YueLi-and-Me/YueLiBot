@@ -113,11 +113,6 @@ class ChatService:
         self._chat_provider = chat_provider
         self._proactive_provider = proactive_provider
         self._summary_provider = summary_provider
-        self._relationship_planner = (
-            RelationshipPlanner(relationship_provider)
-            if relationship_provider is not None
-            else None
-        )
         self._push_event = push_event
         self._speak_audio = speak_audio
         self._broker = broker
@@ -142,6 +137,11 @@ class ChatService:
             self._proactive_max_tokens = 200
             self._summary_temperature = 0.3
             self._summary_max_tokens = None
+            relationship_temperature = 0.1
+            relationship_max_tokens = 4096
+            self._bot_names: tuple[str, ...] = ()
+            self._at_mention_must_reply = True
+            self._name_mention_probability = 1.0
         else:
             conversation = cfg.conversation
             generation = cfg.generation
@@ -159,6 +159,20 @@ class ChatService:
             self._proactive_max_tokens = generation.proactive.token_limit
             self._summary_temperature = generation.summary.temperature
             self._summary_max_tokens = generation.summary.token_limit
+            relationship_temperature = generation.relationship.temperature
+            relationship_max_tokens = generation.relationship.token_limit
+            self._bot_names = tuple([cfg.bot.name, *cfg.bot.aliases])
+            self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
+            self._name_mention_probability = cfg.group_chat.name_mention_probability
+        self._relationship_planner = (
+            RelationshipPlanner(
+                relationship_provider,
+                temperature=relationship_temperature,
+                max_tokens=relationship_max_tokens,
+            )
+            if relationship_provider is not None
+            else None
+        )
         self.memory = MemoryStore(db)
         self._registry = StreamRegistry(db)
         self._desktop_context = self._registry.desktop_context()
@@ -290,6 +304,7 @@ class ChatService:
                     trimmed,
                     now,
                     cancel_event,
+                    inbound.bot_name,
                 )
                 trace.emit(
                     'llm_request',
@@ -762,6 +777,7 @@ class ChatService:
         personality = self._cfg.personality
         return {
             'name': bot.name,
+            'aliases': bot.aliases,
             'user_nickname': bot.user_nickname,
             'relationship': bot.relationship,
             'identity': personality.identity,
@@ -777,6 +793,7 @@ class ChatService:
         query: str,
         now: int,
         signal: asyncio.Event | None = None,
+        platform_bot_name: str | None = None,
     ) -> list[dict]:
         """向量召回版本的消息构建。_build_messages 的异步替代。"""
         query_embedding = await self._vector.embed_query(query)
@@ -836,6 +853,7 @@ class ChatService:
             tone=self._session(context.stream.id).tone,
             resumption=resumption,
             relationship_decision=relationship_decision,
+            platform_name=platform_bot_name,
             **self._prompt_config_kwargs(),
         )
         # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
@@ -872,6 +890,24 @@ class ChatService:
         )
         trace.emit('relationship_decision', action=decision.action)
         return decision.instruction
+
+    def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
+        """返回群聊称呼候选；平台登录昵称只对当前入站消息生效。"""
+        names = list(self._bot_names)
+        if platform_name is not None:
+            normalized = platform_name.strip()
+            if not normalized:
+                raise ValueError('平台机器人昵称不能为空')
+            names.append(normalized)
+        return tuple(dict.fromkeys(names))
+
+    @property
+    def at_mention_must_reply(self) -> bool:
+        return self._at_mention_must_reply
+
+    @property
+    def name_mention_probability(self) -> float:
+        return self._name_mention_probability
 
     def _history_for_context(self, context: ConversationContext, messages: list[Any]) -> list[dict]:
         """仅在组装群聊历史时补说话人显示名，不污染原始消息内容。"""

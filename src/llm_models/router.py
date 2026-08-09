@@ -134,7 +134,8 @@ class ModelRouter:
 
     async def stream(self, messages: List[dict], temperature: float = 0.85,
                      max_tokens: int | None = None,
-                     signal: asyncio.Event | None = None) -> AsyncIterator[dict]:
+                     signal: asyncio.Event | None = None,
+                     response_format: Dict[str, str] | None = None) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到有一个开始出字。
 
         ★ 一旦 yield 过内容就不能再换模型：换了等于把同一句话重新说一遍，
@@ -148,9 +149,18 @@ class ModelRouter:
         for index, candidate in enumerate(order):
             yielded = False
             try:
-                async for chunk in self.client(candidate).stream(
-                    messages, temperature, max_tokens, signal,
-                ):
+                client = self.client(candidate)
+                if response_format is None:
+                    chunks = client.stream(messages, temperature, max_tokens, signal)
+                else:
+                    chunks = client.stream(
+                        messages,
+                        temperature,
+                        max_tokens,
+                        signal,
+                        response_format=response_format,
+                    )
+                async for chunk in chunks:
                     yielded = True
                     yield chunk
                 self._health.recover(candidate.provider)

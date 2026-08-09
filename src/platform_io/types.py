@@ -59,6 +59,7 @@ class InboundMessage:
     context: ConversationContext
     mentioned_me: bool = False
     external_message_id: str | None = None
+    bot_name: str | None = None
 
 
 @dataclass(frozen=True)

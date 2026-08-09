@@ -17,6 +17,9 @@ RelationshipAction = Literal[
     'hold_boundary',
 ]
 
+DEFAULT_RELATIONSHIP_TEMPERATURE = 0.1
+DEFAULT_RELATIONSHIP_MAX_TOKENS = 4096
+
 _ACTION_INSTRUCTIONS: Dict[RelationshipAction, str] = {
     'ignore': '本轮不刻意表现关系远近。',
     'keep_distance': '本轮保持初识分寸。',
@@ -116,8 +119,15 @@ def _build_prompt(
 class RelationshipPlanner:
     """用独立规划调用选择受限动作，再交给回复 Agent 消费固定指令。"""
 
-    def __init__(self, provider: Any) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        temperature: float = DEFAULT_RELATIONSHIP_TEMPERATURE,
+        max_tokens: int | None = DEFAULT_RELATIONSHIP_MAX_TOKENS,
+    ) -> None:
         self._provider = provider
+        self._temperature = temperature
+        self._max_tokens = max_tokens
 
     async def decide(
         self,
@@ -129,16 +139,26 @@ class RelationshipPlanner:
     ) -> RelationshipDecision:
         prompt = _build_prompt(intimacy, history, identity, boundaries)
         raw = ''
+        reasoning_length = 0
         async for chunk in self._provider.stream(
             messages=[{'role': 'system', 'content': prompt}],
-            temperature=0.1,
-            max_tokens=40,
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+            response_format={'type': 'json_object'},
             signal=signal,
         ):
             text = chunk.get('text')
             if text:
                 raw += text
-        return parse_relationship_decision(
-            raw,
-            allowed_relationship_actions(intimacy),
-        )
+            reasoning = chunk.get('reasoning')
+            if isinstance(reasoning, str):
+                reasoning_length += len(reasoning)
+        try:
+            return parse_relationship_decision(
+                raw,
+                allowed_relationship_actions(intimacy),
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f'{exc}（正文字符={len(raw)}，推理字符={reasoning_length}）'
+            ) from exc

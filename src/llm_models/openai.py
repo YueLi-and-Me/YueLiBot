@@ -71,7 +71,8 @@ class OpenAiChatProvider:
 
     async def stream(self, messages: list[dict], temperature: float = 0.85,
                      max_tokens: int | None = None,
-                     signal: asyncio.Event | None = None) -> AsyncIterator[dict]:
+                     signal: asyncio.Event | None = None,
+                     response_format: dict[str, str] | None = None) -> AsyncIterator[dict]:
         """发起流式请求；只在尚未输出内容时重试可恢复错误。
 
         流已经交给上层后再重放请求会产生重复文本和重复副作用，因此无论错误
@@ -80,7 +81,17 @@ class OpenAiChatProvider:
         for attempt in range(self._max_retries + 1):
             yielded_content = False
             try:
-                async for chunk in self._stream_once(messages, temperature, max_tokens, signal):
+                if response_format is None:
+                    chunks = self._stream_once(messages, temperature, max_tokens, signal)
+                else:
+                    chunks = self._stream_once_structured(
+                        messages,
+                        temperature,
+                        max_tokens,
+                        signal,
+                        response_format,
+                    )
+                async for chunk in chunks:
                     yielded_content = True
                     yield chunk
                 return
@@ -106,6 +117,42 @@ class OpenAiChatProvider:
         max_tokens: int | None,
         signal: asyncio.Event | None,
     ) -> AsyncIterator[dict]:
+        async for chunk in self._stream_http(
+            messages,
+            temperature,
+            max_tokens,
+            signal,
+            None,
+        ):
+            yield chunk
+
+    async def _stream_once_structured(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int | None,
+        signal: asyncio.Event | None,
+        response_format: dict[str, str],
+    ) -> AsyncIterator[dict]:
+        if response_format != {'type': 'json_object'}:
+            raise ValueError(f'不支持的结构化输出格式：{response_format!r}')
+        async for chunk in self._stream_http(
+            messages,
+            temperature,
+            max_tokens,
+            signal,
+            response_format,
+        ):
+            yield chunk
+
+    async def _stream_http(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int | None,
+        signal: asyncio.Event | None,
+        response_format: dict[str, str] | None,
+    ) -> AsyncIterator[dict]:
         headers = {
             'Content-Type': 'application/json',
             **({'Authorization': f'Bearer {self.api_key}'} if self.api_key else {}),
@@ -118,6 +165,8 @@ class OpenAiChatProvider:
         }
         if max_tokens is not None:
             body['max_tokens'] = max_tokens
+        if response_format is not None:
+            body['response_format'] = response_format
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:

@@ -51,6 +51,7 @@ class NapcatRunner:
             try:
                 # 连协议端，核对登录的号，再接主体
                 self_id = await self._transport.connect()
+                self_name = self._transport.self_name
                 _check_self_qq_matches(self._config.napcat.self_qq, self_id)
                 await self._backend.connect()
                 await self._backend.link_owner_identity(self._config.owner.qq)
@@ -59,11 +60,12 @@ class NapcatRunner:
                     'QQ 适配器已连接',
                     protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
                     selfId=self_id,
+                    selfName=self_name,
                     backendPort=self._backend_port,
                     retryCount=retry_count,
                 )
                 retry_count = 0
-                await self._serve_connected(self_id)
+                await self._serve_connected(self_id, self_name)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -102,8 +104,8 @@ class NapcatRunner:
                     )
                 await asyncio.sleep(delay)
 
-    async def _serve_connected(self, self_id: str) -> None:
-        event_task = asyncio.create_task(self._consume_protocol_events(self_id))
+    async def _serve_connected(self, self_id: str, self_name: str) -> None:
+        event_task = asyncio.create_task(self._consume_protocol_events(self_id, self_name))
         outbound_task = asyncio.create_task(self._consume_backend_outbound())
         done, pending = await asyncio.wait(
             {event_task, outbound_task},
@@ -116,7 +118,7 @@ class NapcatRunner:
             task.result()
         raise RuntimeError('QQ 适配器连接任务提前结束')
 
-    async def _consume_protocol_events(self, self_id: str) -> None:
+    async def _consume_protocol_events(self, self_id: str, self_name: str) -> None:
         async for payload in self._transport.iter_events():
             kind = classify_event(
                 payload,
@@ -158,6 +160,7 @@ class NapcatRunner:
             event = parse_inbound_event(
                 payload,
                 self_id,
+                self_name,
                 self._config.owner.qq,
                 self._config.private,
                 self._config.group,

@@ -303,7 +303,11 @@ export interface TaskRoutingConfig {
  * 四份 TOML，Python 侧再组合成同样的运行时结构。
  */
 export interface YueliConfig {
-  bot: { name: string; user_nickname: string; relationship: string }
+  bot: { name: string; aliases: string[]; user_nickname: string; relationship: string }
+  group_chat: {
+    at_mention_must_reply: boolean
+    name_mention_probability: number
+  }
   personality: {
     identity: string
     behavior: string
@@ -325,6 +329,7 @@ export interface YueliConfig {
   }
   generation: {
     chat: { temperature: number; max_tokens: number }
+    relationship: { temperature: number; max_tokens: number }
     proactive: { enabled: boolean; temperature: number; max_tokens: number }
     summary: { temperature: number; max_tokens: number }
     schedule: { temperature: number; max_tokens: number }

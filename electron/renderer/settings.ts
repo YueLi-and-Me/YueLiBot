@@ -394,6 +394,9 @@ function populateForm(config: YueliConfig): void {
     if (value === undefined) continue
     if (el instanceof HTMLInputElement && el.type === 'checkbox') {
       el.checked = Boolean(value)
+    } else if (el instanceof HTMLInputElement && el.dataset.stringArray === 'true') {
+      if (!Array.isArray(value)) throw new Error(`${name} 必须是字符串数组`)
+      el.value = value.join('，')
     } else if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) {
       el.value = String(value)
     }
@@ -423,6 +426,11 @@ function collectFormValues(base: YueliConfig): YueliConfig {
     if (!input.name) continue
     if (input instanceof HTMLInputElement && input.type === 'checkbox') {
       setByPath(result, input.name, input.checked)
+    } else if (input instanceof HTMLInputElement && input.dataset.stringArray === 'true') {
+      const values = input.value.split(/[,，、\n]/).map((value) => value.trim()).filter(Boolean)
+      setByPath(result, input.name, values)
+    } else if (input instanceof HTMLInputElement && input.type === 'number') {
+      setByPath(result, input.name, Number(input.value))
     } else {
       setByPath(result, input.name, input.value)
     }

@@ -4,6 +4,7 @@ HTTP 路由（已接通各 service）。
 
 from __future__ import annotations
 
+from random import random
 from typing import Literal
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
@@ -37,6 +38,7 @@ class PlatformInboundBody(BaseModel):
     stream_external_id: str = Field(alias='streamExternalId')
     sender_external_id: str = Field(alias='senderExternalId')
     sender_name: str = Field(alias='senderName')
+    bot_name: str | None = Field(default=None, alias='botName')
     text: str
     mentioned_me: bool = Field(alias='mentionedMe')
     external_message_id: str = Field(alias='externalMessageId')
@@ -55,6 +57,16 @@ class PlatformInboundBody(BaseModel):
         if not value:
             raise ValueError('字符串字段不能为空')
         return value
+
+    @field_validator('bot_name')
+    @classmethod
+    def _require_optional_bot_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('botName 不能为空字符串')
+        return normalized
 
 
 class PlatformIdentityLinkBody(BaseModel):
@@ -187,6 +199,11 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         stream_kind=context.stream.kind,
         asleep=app_state.chat.current_sleep().asleep,
         mentioned_me=body.mentioned_me,
+        text=body.text,
+        bot_names=app_state.chat.bot_names(body.bot_name),
+        at_mention_must_reply=app_state.chat.at_mention_must_reply,
+        name_mention_probability=app_state.chat.name_mention_probability,
+        probability_draw=random(),
         my_replies_in_window=reply_count,
         max_replies_in_window=_MAX_GROUP_REPLIES_IN_WINDOW,
     )
@@ -202,6 +219,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             context=context,
             mentioned_me=body.mentioned_me,
             external_message_id=body.external_message_id,
+            bot_name=body.bot_name,
         ))
         return JSONResponse({
             'turnId': 0,
@@ -215,6 +233,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         context=context,
         mentioned_me=body.mentioned_me,
         external_message_id=body.external_message_id,
+        bot_name=body.bot_name,
     ))
     return JSONResponse({
         'turnId': turn_id,
