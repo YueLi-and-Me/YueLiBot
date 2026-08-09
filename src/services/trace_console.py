@@ -18,8 +18,8 @@ _starts 里的条目永远不会被弹出，也只是几十字节常驻内存，
 
 from __future__ import annotations
 
-import time
 from typing import Any
+import time
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -79,6 +79,7 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
 
 def render_turn(
     turn: int,
+    sender_label: str,
     user_text: str,
     messages: list[dict],
     response_text: str,
@@ -92,7 +93,7 @@ def render_turn(
         return
     try:
         parts: list[Any] = [
-            Text(f'你: {user_text}', style='bold'),
+            Text(f'{sender_label}: {user_text}', style='bold'),
             Text(_prompt_preview(messages), style='dim'),
             Text(f'{bot_name}: {response_text}', style='green'),
         ]
@@ -107,12 +108,18 @@ def render_turn(
         logger.debug('render_turn_failed', error=str(exc))
 
 
-def render_turn_error(turn: int, user_text: str, kind: str, message: str) -> None:
+def render_turn_error(
+    turn: int,
+    sender_label: str,
+    user_text: str,
+    kind: str,
+    message: str,
+) -> None:
     if not _is_tty:
         return
     try:
         parts = [
-            Text(f'你: {user_text}', style='bold'),
+            Text(f'{sender_label}: {user_text}', style='bold'),
             Text(f'[{kind}] {message}', style='bold red'),
         ]
         console.print(Panel(

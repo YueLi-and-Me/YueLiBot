@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS identities (
 );
 CREATE INDEX IF NOT EXISTS idx_identities_person ON identities(person_id);
 
+-- QQ 账号昵称属于 identity；群名片属于 person 在具体群 stream 中的可变属性。
+CREATE TABLE IF NOT EXISTS group_memberships (
+  stream_id   INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+  person_id   INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+  group_card  TEXT    NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY(stream_id, person_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_memberships_person ON group_memberships(person_id);
+
 -- ---------------------------------------------------------------- L1 工作记忆
 CREATE TABLE IF NOT EXISTS messages (
   id               INTEGER PRIMARY KEY,

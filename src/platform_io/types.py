@@ -29,6 +29,16 @@ class IdentityRef:
 
 
 @dataclass(frozen=True)
+class GroupMembershipRef:
+    """person 在一个 QQ 群中的当前群名片。"""
+
+    stream_id: int
+    group_external_id: str
+    group_card: str
+    updated_at: int
+
+
+@dataclass(frozen=True)
 class StreamRef:
     """已存在 stream 的稳定引用。"""
 
@@ -44,6 +54,8 @@ class ConversationContext:
 
     stream: StreamRef
     person: PersonRef
+    identity: IdentityRef | None = None
+    group_card: str = ''
 
     @property
     def relationship_signals_enabled(self) -> bool:

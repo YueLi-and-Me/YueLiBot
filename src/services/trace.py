@@ -17,11 +17,11 @@
 
 from __future__ import annotations
 
-import json
 from collections import deque
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict
+import json
 
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
@@ -41,6 +41,12 @@ def bind_origin(
     platform: str,
     person_id: int,
     person_kind: str,
+    sender_external_id: str,
+    sender_nickname: str,
+    sender_group_card: str,
+    sender_display_name: str,
+    sender_label: str,
+    bot_name: str,
 ) -> None:
     """绑定本轮的消息来源，之后这一轮的每条 trace 都会带上。"""
     _origin.set({
@@ -48,6 +54,12 @@ def bind_origin(
         'platform': platform,
         'personId': person_id,
         'personKind': person_kind,
+        'senderExternalId': sender_external_id,
+        'senderNickname': sender_nickname,
+        'senderGroupCard': sender_group_card,
+        'senderDisplayName': sender_display_name,
+        'senderLabel': sender_label,
+        'botName': bot_name,
     })
 
 

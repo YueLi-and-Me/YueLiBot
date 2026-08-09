@@ -44,6 +44,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "common.db.migrations.v4_to_v5": ("#af8700", False),
     "common.db.migrations.v5_to_v6": ("#af8700", False),
     "common.db.migrations.v6_to_v7": ("#af8700", False),
+    "common.db.migrations.v7_to_v8": ("#af8700", False),
     # 模型
     "llm_models.router": ("#008080", False),
     "llm_models.openai": ("#00afaf", False),
@@ -78,6 +79,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "common.db.migrations.v4_to_v5": "迁移v4→v5",
     "common.db.migrations.v5_to_v6": "迁移v5→v6",
     "common.db.migrations.v6_to_v7": "迁移v6→v7",
+    "common.db.migrations.v7_to_v8": "迁移v7→v8",
     "llm_models.router": "模型路由",
     "llm_models.openai": "模型连接",
     "memory.embed": "记忆嵌入",

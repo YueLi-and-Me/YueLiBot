@@ -37,7 +37,8 @@ class PlatformInboundBody(BaseModel):
     stream_kind: Literal['direct', 'group'] = Field(alias='streamKind')
     stream_external_id: str = Field(alias='streamExternalId')
     sender_external_id: str = Field(alias='senderExternalId')
-    sender_name: str = Field(alias='senderName')
+    sender_nickname: str = Field(alias='senderNickname')
+    sender_group_card: str = Field(alias='senderGroupCard')
     bot_name: str | None = Field(default=None, alias='botName')
     text: str
     mentioned_me: bool = Field(alias='mentionedMe')
@@ -47,7 +48,7 @@ class PlatformInboundBody(BaseModel):
         'platform',
         'stream_external_id',
         'sender_external_id',
-        'sender_name',
+        'sender_nickname',
         'text',
         'external_message_id',
     )
@@ -57,6 +58,11 @@ class PlatformInboundBody(BaseModel):
         if not value:
             raise ValueError('字符串字段不能为空')
         return value
+
+    @field_validator('sender_group_card')
+    @classmethod
+    def _normalize_group_card(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator('bot_name')
     @classmethod
@@ -184,7 +190,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         stream_kind=body.stream_kind,
         stream_external_id=body.stream_external_id,
         sender_external_id=body.sender_external_id,
-        sender_name=body.sender_name,
+        sender_nickname=body.sender_nickname,
+        sender_group_card=body.sender_group_card,
         first_seen_at=now,
     )
     if app_state.register_platform_stream is not None:

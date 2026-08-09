@@ -60,6 +60,35 @@ function text(value: unknown): string {
   return '—'
 }
 
+function optionalText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function qqSenderLabel(
+  displayName: string,
+  nickname: string,
+  externalId: string,
+  groupCard: string,
+): string {
+  if (!externalId) return displayName
+  if (groupCard && groupCard !== nickname) {
+    return `${groupCard}（QQ昵称：${nickname} · QQ号：${externalId}）`
+  }
+  return `${nickname || displayName}（QQ号：${externalId}）`
+}
+
+function traceSenderLabel(entry: TraceEntry): string {
+  const ready = optionalText(entry.senderLabel)
+  if (ready) return ready
+  if (entry.platform === 'desktop') return '你'
+  return qqSenderLabel(
+    optionalText(entry.senderDisplayName) || `联系人 #${text(entry.personId)}`,
+    optionalText(entry.senderNickname),
+    optionalText(entry.senderExternalId),
+    optionalText(entry.senderGroupCard),
+  )
+}
+
 function fixed(value: unknown, digits = 0): string {
   const number = numeric(value)
   return number === null ? '—' : number.toFixed(digits)
@@ -274,7 +303,12 @@ function renderConversation(payload: ObservabilityPayload): void {
     const link = document.createElement('a')
     link.className = 'person-link'
     link.href = `/persons/${person.id}`
-    link.textContent = person.displayName
+    link.textContent = qqSenderLabel(
+      person.displayName,
+      person.nickname,
+      person.externalId,
+      person.groupCard,
+    )
     participants.append(link)
   }
   body.append(participants)
@@ -324,9 +358,21 @@ function renderPersonSummary(person: PersonSummary): void {
   const identities = document.createElement('div')
   identities.className = 'chip-row spaced'
   for (const identity of person.identities) {
-    chip(identities, identity.platform.toUpperCase(), `${identity.displayName} · ${identity.externalId}`)
+    if (identity.platform === 'qq') {
+      chip(identities, 'QQ昵称', identity.displayName)
+      chip(identities, 'QQ号', identity.externalId)
+    } else {
+      chip(identities, identity.platform.toUpperCase(), `${identity.displayName} · ${identity.externalId}`)
+    }
   }
   if (!person.identities.length) chip(identities, '身份', '尚未绑定平台身份')
+  for (const membership of person.groupMemberships) {
+    chip(
+      identities,
+      `QQ群 ${membership.groupExternalId}`,
+      membership.groupCard || '未设置群名片',
+    )
+  }
   body.append(identities)
   const link = document.createElement('a')
   link.className = 'button-link compact-link'
@@ -379,9 +425,21 @@ function renderPersonDetail(profile: PersonProfile): void {
   const identityChips = document.createElement('div')
   identityChips.className = 'chip-row spaced'
   for (const item of profile.identities) {
-    chip(identityChips, item.platform.toUpperCase(), `${item.displayName} · ${item.externalId}`)
+    if (item.platform === 'qq') {
+      chip(identityChips, 'QQ昵称', item.displayName)
+      chip(identityChips, 'QQ号', item.externalId)
+    } else {
+      chip(identityChips, item.platform.toUpperCase(), `${item.displayName} · ${item.externalId}`)
+    }
   }
   if (!profile.identities.length) chip(identityChips, '身份', '尚未绑定平台身份')
+  for (const membership of profile.groupMemberships) {
+    chip(
+      identityChips,
+      `QQ群 ${membership.groupExternalId}`,
+      membership.groupCard || '未设置群名片',
+    )
+  }
   identity.append(identityChips)
   const streamChips = document.createElement('div')
   streamChips.className = 'chip-row'
@@ -511,7 +569,7 @@ function renderTrace(): void {
     for (const entry of entries) {
       if (entry.kind === 'user_input') {
         const row = document.createElement('p')
-        row.textContent = `用户：${text(entry.text)}`
+        row.textContent = `${traceSenderLabel(entry)}：${text(entry.text)}`
         card.append(row)
       } else if (entry.kind === 'llm_request') {
         const details = document.createElement('details')
@@ -524,7 +582,7 @@ function renderTrace(): void {
       } else if (entry.kind === 'llm_final') {
         const row = document.createElement('p')
         row.className = 'trace-response'
-        row.textContent = `月璃：${text(entry.text)}`
+        row.textContent = `${optionalText(entry.botName) || 'Bot'}：${text(entry.text)}`
         card.append(row)
       } else if (entry.kind === 'memory_fact') {
         chip(card, '记忆', `[${text(entry.memoryKind)}] ${text(entry.content)}`)

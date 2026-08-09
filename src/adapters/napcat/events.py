@@ -28,7 +28,8 @@ class QqInboundEvent:
     stream_kind: Literal['direct', 'group']
     stream_external_id: str
     sender_external_id: str
-    sender_name: str
+    sender_nickname: str
+    sender_group_card: str
     bot_name: str
     text: str
     mentioned_me: bool
@@ -112,16 +113,20 @@ def parse_inbound_event(
         else sender_id
     )
     sender = payload.get('sender')
-    sender_name = ''
+    sender_nickname = ''
+    sender_group_card = ''
     if isinstance(sender, Mapping):
-        sender_name = _string_value(sender.get('card')) or _string_value(sender.get('nickname'))
-    if not sender_name:
-        sender_name = sender_id
+        sender_nickname = _string_value(sender.get('nickname'))
+        if stream_kind == 'group':
+            sender_group_card = _string_value(sender.get('card'))
+    if not sender_nickname:
+        sender_nickname = sender_id
     return QqInboundEvent(
         stream_kind=stream_kind,
         stream_external_id=stream_external_id,
         sender_external_id=sender_id,
-        sender_name=sender_name,
+        sender_nickname=sender_nickname,
+        sender_group_card=sender_group_card,
         bot_name=_required_identifier(self_name, '机器人登录昵称不能为空'),
         text=message_to_text(raw_segments, {self_id: self_name}),
         mentioned_me=mentions_user(raw_segments, self_id),

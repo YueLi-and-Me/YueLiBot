@@ -50,6 +50,35 @@ function text(value: unknown): string {
   return '—'
 }
 
+function optionalText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function qqSenderLabel(
+  displayName: string,
+  nickname: string,
+  externalId: string,
+  groupCard: string,
+): string {
+  if (!externalId) return displayName
+  if (groupCard && groupCard !== nickname) {
+    return `${groupCard}（QQ昵称：${nickname} · QQ号：${externalId}）`
+  }
+  return `${nickname || displayName}（QQ号：${externalId}）`
+}
+
+function traceSenderLabel(entry: Record<string, unknown>): string {
+  const ready = optionalText(entry.senderLabel)
+  if (ready) return ready
+  if (entry.platform === 'desktop') return '你'
+  return qqSenderLabel(
+    optionalText(entry.senderDisplayName) || `联系人 #${text(entry.personId)}`,
+    optionalText(entry.senderNickname),
+    optionalText(entry.senderExternalId),
+    optionalText(entry.senderGroupCard),
+  )
+}
+
 function fixed(value: unknown, digits = 0): string {
   const number = numeric(value)
   return number === null ? '—' : number.toFixed(digits)
@@ -336,7 +365,11 @@ function renderConversation(payload: ObservabilityPayload): void {
   const participants = document.createElement('div')
   participants.className = 'chip-row'
   for (const person of payload.conversation.participants) {
-    chip(participants, person.kind === 'owner' ? '本人' : '联系人', person.displayName)
+    chip(
+      participants,
+      person.kind === 'owner' ? '本人' : '联系人',
+      qqSenderLabel(person.displayName, person.nickname, person.externalId, person.groupCard),
+    )
   }
   body.append(participants)
 }
@@ -490,7 +523,7 @@ function applyTraceEntry(entry: Record<string, unknown>): void {
 
   switch (entry.kind) {
     case 'user_input':
-      card.userEl.textContent = `你: ${text(entry.text)}`
+      card.userEl.textContent = `${traceSenderLabel(entry)}: ${text(entry.text)}`
       break
     case 'llm_request':
       card.promptBodyEl.textContent = formatMessages(entry.messages)
@@ -500,7 +533,7 @@ function applyTraceEntry(entry: Record<string, unknown>): void {
       card.statusEl.textContent = `接收中…第 ${card.chunkCount} 段`
       break
     case 'llm_final': {
-      card.responseEl.textContent = `月璃: ${text(entry.text)}`
+      card.responseEl.textContent = `${optionalText(entry.botName) || 'Bot'}: ${text(entry.text)}`
       const at = numeric(entry.at)
       const elapsed = at !== null && card.firstAt !== null ? at - card.firstAt : null
       card.statusEl.textContent = elapsed !== null ? `完成 · ${elapsed} ms` : '完成'

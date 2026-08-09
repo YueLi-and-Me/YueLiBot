@@ -63,6 +63,12 @@ export interface PersonIdentity {
   displayName: string
 }
 
+export interface GroupMembership {
+  streamId: number
+  groupExternalId: string
+  groupCard: string
+}
+
 export interface PersonSummary {
   id: number
   kind: 'owner' | 'contact'
@@ -70,12 +76,16 @@ export interface PersonSummary {
   firstSeenAt: number
   identities: PersonIdentity[]
   streams: ObservabilityStream[]
+  groupMemberships: GroupMembership[]
 }
 
 export interface ConversationParticipant {
   id: number
   kind: 'owner' | 'contact'
   displayName: string
+  externalId: string
+  nickname: string
+  groupCard: string
 }
 
 export interface PersonProfile extends PersonSummary {
@@ -122,6 +132,12 @@ export interface TraceEntry {
   platform?: string
   personId?: number
   personKind?: string
+  senderExternalId?: string
+  senderNickname?: string
+  senderGroupCard?: string
+  senderDisplayName?: string
+  senderLabel?: string
+  botName?: string
   turnId?: number
   [key: string]: unknown
 }

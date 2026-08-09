@@ -43,6 +43,7 @@ from src.platform_io.types import (
     InboundMessage,
     OutboundMessage,
     PersonRef,
+    StreamRef,
 )
 from src.schedule.plan import DayPlanService, ScheduleSleepState
 
@@ -251,12 +252,19 @@ class ChatService:
         turn = self._next_turn()
         self._active_turns[stream_id] = turn
         mark_turn_start(turn)
+        sender = self._sender_metadata(context)
         # 绑定来源，这一轮后续的每条 trace 都会带上，不必逐个 kind 拼
         bind_origin(
             stream_id=stream_id,
             platform=context.stream.platform,
             person_id=context.person.id,
             person_kind=context.person.kind,
+            sender_external_id=sender['senderExternalId'],
+            sender_nickname=sender['senderNickname'],
+            sender_group_card=sender['senderGroupCard'],
+            sender_display_name=sender['senderDisplayName'],
+            sender_label=sender['senderLabel'],
+            bot_name=self._bot_display_name,
         )
         trace.emit('user_input', turnId=turn, text=trimmed)
 
@@ -372,6 +380,7 @@ class ChatService:
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
                 render_turn(
                     turn,
+                    sender['senderLabel'],
                     trimmed,
                     messages,
                     assistant_raw,
@@ -402,7 +411,7 @@ class ChatService:
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
-                render_turn_error(turn, trimmed, exc.kind, str(exc))
+                render_turn_error(turn, sender['senderLabel'], trimmed, exc.kind, str(exc))
                 if context.stream.platform == 'desktop':
                     await self._emit(stream_id, 'chat.error', {
                         'turnId': turn,
@@ -420,7 +429,7 @@ class ChatService:
                     error=str(exc),
                 )
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
-                render_turn_error(turn, trimmed, 'unknown', str(exc))
+                render_turn_error(turn, sender['senderLabel'], trimmed, 'unknown', str(exc))
                 await self._emit(
                     stream_id,
                     'chat.error',
@@ -651,7 +660,7 @@ class ChatService:
         now = now or current_time()
         stream = self._registry.stream(stream_id)
         participants = [
-            self._conversation_participant(person, stream.platform)
+            self._conversation_participant(person, stream)
             for person in self._registry.list_persons(stream.id)
         ]
         return {
@@ -725,19 +734,88 @@ class ChatService:
                 }
                 for stream in self._registry.list_person_streams(person.id)
             ],
+            'groupMemberships': [
+                {
+                    'streamId': membership.stream_id,
+                    'groupExternalId': membership.group_external_id,
+                    'groupCard': membership.group_card,
+                }
+                for membership in self._registry.group_memberships(person.id)
+            ],
         }
 
     def _conversation_participant(
         self,
         person: PersonRef,
-        platform: str,
+        stream: StreamRef,
     ) -> Dict[str, Any]:
-        """会话快照只暴露跳转人物页所需的最小参与者摘要。"""
+        """会话人物同时暴露稳定外部号、账号昵称和当前群名片。"""
         identities = self._registry.list_identities(person.id)
+        identity = next(
+            (item for item in identities if item.platform == stream.platform),
+            None,
+        )
+        if stream.platform != 'desktop' and identity is None:
+            raise RuntimeError(
+                f'person {person.id} 在会话平台 {stream.platform} 缺少 identity'
+            )
+        group_card = ''
+        if stream.kind == 'group':
+            membership = next(
+                (
+                    item for item in self._registry.group_memberships(person.id)
+                    if item.stream_id == stream.id
+                ),
+                None,
+            )
+            if membership is None:
+                raise RuntimeError(
+                    f'person {person.id} 在群 stream {stream.id} 缺少 membership'
+                )
+            group_card = membership.group_card
         return {
             'id': person.id,
             'kind': person.kind,
-            'displayName': self._profile_display_name(person, identities, platform),
+            'displayName': (
+                self._registry.stream_display_name(person.id, stream.id)
+                if stream.platform != 'desktop'
+                else self._profile_display_name(person, identities, stream.platform)
+            ),
+            'externalId': identity.external_id if identity is not None else '',
+            'nickname': identity.display_name if identity is not None else '',
+            'groupCard': group_card,
+        }
+
+    def _sender_metadata(self, context: ConversationContext) -> Dict[str, str]:
+        """生成观察与终端展示所需的发送者字段，不用昵称参与人物去重。"""
+        identity = context.identity
+        if context.stream.platform == 'desktop':
+            return {
+                'senderExternalId': '',
+                'senderNickname': '',
+                'senderGroupCard': '',
+                'senderDisplayName': '你',
+                'senderLabel': '你',
+            }
+        if identity is None:
+            raise RuntimeError('非桌面入站上下文缺少稳定平台 identity')
+        display_name = context.group_card or identity.display_name
+        if identity.platform == 'qq':
+            if context.group_card and context.group_card != identity.display_name:
+                sender_label = (
+                    f'{context.group_card}（QQ昵称：{identity.display_name} · '
+                    f'QQ号：{identity.external_id}）'
+                )
+            else:
+                sender_label = f'{identity.display_name}（QQ号：{identity.external_id}）'
+        else:
+            sender_label = f'{display_name}（{identity.platform}：{identity.external_id}）'
+        return {
+            'senderExternalId': identity.external_id,
+            'senderNickname': identity.display_name,
+            'senderGroupCard': context.group_card,
+            'senderDisplayName': display_name,
+            'senderLabel': sender_label,
         }
 
     def _profile_display_name(
@@ -926,7 +1004,10 @@ class ChatService:
             if context.stream.kind == 'group' and message.role == 'user':
                 if message.sender_person_id is None:
                     raise RuntimeError('群聊 user 历史缺少 sender_person_id')
-                name = self._registry.display_name(message.sender_person_id, context.stream.platform)
+                name = self._registry.stream_display_name(
+                    message.sender_person_id,
+                    context.stream.id,
+                )
                 content = f'{name}: {content}'
             history.append({'role': message.role, 'content': content})
         return history

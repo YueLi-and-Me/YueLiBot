@@ -14,6 +14,7 @@ import sqlite3
 from src.common.logger import get_logger
 from src.platform_io.types import (
     ConversationContext,
+    GroupMembershipRef,
     IdentityRef,
     PersonKind,
     PersonRef,
@@ -89,6 +90,27 @@ class StreamRegistry:
             for row in rows
         ]
 
+    def group_memberships(self, person_id: int) -> List[GroupMembershipRef]:
+        """列出人物在各 QQ 群中的当前群名片；空字符串表示当前未设置群名片。"""
+        person = self.person(person_id)
+        rows = self._db.execute(
+            '''SELECT gm.stream_id, s.external_id, gm.group_card, gm.updated_at
+               FROM group_memberships AS gm
+               JOIN streams AS s ON s.id = gm.stream_id
+               WHERE gm.person_id = ?
+               ORDER BY gm.stream_id ASC''',
+            (person.id,),
+        ).fetchall()
+        return [
+            GroupMembershipRef(
+                stream_id=row[0],
+                group_external_id=row[1],
+                group_card=row[2],
+                updated_at=row[3],
+            )
+            for row in rows
+        ]
+
     def desktop_stream(self) -> StreamRef:
         """读取迁移/SEED 确定的唯一 desktop stream。"""
         row = self._db.execute(
@@ -149,10 +171,11 @@ class StreamRegistry:
         stream_kind: StreamKind,
         stream_external_id: str,
         sender_external_id: str,
-        sender_name: str,
+        sender_nickname: str,
+        sender_group_card: str,
         first_seen_at: int,
     ) -> ConversationContext:
-        """把平台入站字段解析为唯一的业务归属上下文。"""
+        """按平台外部号解析人物，并分别更新账号昵称与当前群名片。"""
         if stream_kind not in ('direct', 'group'):
             raise ValueError('平台入站仅支持 direct 或 group stream')
         platform = _require_text(platform, 'platform')
@@ -160,8 +183,21 @@ class StreamRegistry:
         person = self.find_person_by_identity(platform, sender_external_id)
         if person is None:
             person = self.create_person('contact', first_seen_at)
-        self.link_identity(person, platform, sender_external_id, sender_name)
-        return ConversationContext(stream=stream, person=person)
+        self.link_identity(person, platform, sender_external_id, sender_nickname)
+        group_card = sender_group_card.strip()
+        if stream.kind == 'group':
+            self.set_group_card(person, stream, group_card, first_seen_at)
+        identity = IdentityRef(
+            platform=platform,
+            external_id=_require_text(sender_external_id, 'sender_external_id'),
+            display_name=_require_text(sender_nickname, 'sender_nickname'),
+        )
+        return ConversationContext(
+            stream=stream,
+            person=person,
+            identity=identity,
+            group_card=group_card,
+        )
 
     def create_person(self, kind: PersonKind, first_seen_at: int) -> PersonRef:
         """创建非 owner person；owner 只能由迁移或 SEED 确定性创建。"""
@@ -190,7 +226,7 @@ class StreamRegistry:
         return PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
 
     def display_name(self, person_id: int, platform: str) -> str:
-        """读取指定平台上的显示名，供群聊历史在读取时标识说话人。"""
+        """读取指定平台上的当前账号昵称，不混入任何群名片。"""
         platform = _require_text(platform, "platform")
         row = self._db.execute(
             '''SELECT display_name FROM identities
@@ -201,6 +237,43 @@ class StreamRegistry:
         if row is None:
             raise ValueError(f"person {person_id} 在平台 {platform} 没有可用显示名")
         return row[0]
+
+    def stream_display_name(self, person_id: int, stream_id: int) -> str:
+        """读取会话内显示名：群名片非空时优先，否则使用当前账号昵称。"""
+        stream = self.stream(stream_id)
+        self.person(person_id)
+        if stream.kind == 'group':
+            row = self._db.execute(
+                '''SELECT group_card FROM group_memberships
+                   WHERE stream_id = ? AND person_id = ?''',
+                (stream.id, person_id),
+            ).fetchone()
+            if row is not None and row[0]:
+                return row[0]
+        return self.display_name(person_id, stream.platform)
+
+    def set_group_card(
+        self,
+        person: PersonRef,
+        stream: StreamRef,
+        group_card: str,
+        updated_at: int,
+    ) -> None:
+        """按 person + 群 stream 更新当前群名片；清空名片也必须落库。"""
+        stored_stream = self.stream(stream.id)
+        if stored_stream.kind != 'group':
+            raise ValueError('群名片只能绑定到 group stream')
+        self.person(person.id)
+        self._db.execute(
+            '''INSERT INTO group_memberships (
+                   stream_id, person_id, group_card, updated_at
+               ) VALUES (?, ?, ?, ?)
+               ON CONFLICT(stream_id, person_id) DO UPDATE SET
+                   group_card = excluded.group_card,
+                   updated_at = excluded.updated_at''',
+            (stored_stream.id, person.id, group_card.strip(), updated_at),
+        )
+        self._db.commit()
 
     def link_identity(
         self,
