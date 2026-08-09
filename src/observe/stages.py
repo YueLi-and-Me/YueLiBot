@@ -37,4 +37,5 @@ STAGES_BY_ID: Dict[str, Stage] = {stage.id: stage for stage in STAGES}
 def label_for(stage_id: str) -> str:
     if not stage_id:
         return ""
-    return STAGES_BY_ID[stage_id].label
+    stage = STAGES_BY_ID.get(stage_id)
+    return stage.label if stage is not None else stage_id
