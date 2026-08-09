@@ -24,6 +24,8 @@ from src.common.clock import now as current_time
 from src.common.db.connection import open_db
 from src.common.db.migrations.manager import run_migrations
 from src.common.logger import get_logger
+from src.observe.store import close as close_event_store
+from src.observe.store import configure as configure_event_store
 from src.services.chat import SUMMARIZE_AT, ChatService, InboundMessage
 from src.services.proactive import AwarenessService
 
@@ -43,6 +45,7 @@ async def run_selftest(cfg: Any) -> int:
         db_path = tmp / "memory.db"
         db = open_db(db_path)
         run_migrations(db, db_path)
+        configure_event_store(db_path)
 
         events: list[dict] = []
 
@@ -71,6 +74,7 @@ async def run_selftest(cfg: Any) -> int:
         aware_ok = await _check_aware(chat, cfg, _push_event)
         return 0 if (chat_ok and reflect_ok and aware_ok) else 1
     finally:
+        close_event_store()
         shutil.rmtree(tmp, ignore_errors=True)
 
 

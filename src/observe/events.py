@@ -129,7 +129,7 @@ def emit(event_kind: str, **fields: Any) -> Dict[str, Any]:
         merged.pop(reserved, None)
     stage = _current_stage.get()
 
-    if event_kind in LIVE_ONLY_KINDS or not event_store.configured:
+    if event_kind in LIVE_ONLY_KINDS:
         entry: Dict[str, Any] = {
             "seq": None,
             "at": current_time(),
