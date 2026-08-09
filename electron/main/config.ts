@@ -107,6 +107,9 @@ export const DEFAULT_CONFIG: YueliConfig = {
   group_chat: {
     at_mention_must_reply: true,
     name_mention_probability: 1,
+    persona_weight: 0.05,
+    reply_window_minutes: 10,
+    max_replies_in_window: 3,
   },
   schedule: {
     min_slots: 8,
@@ -597,6 +600,33 @@ function readSplitConfig(directory: string): YueliConfig {
   if (nameMentionProbability < 0 || nameMentionProbability > 1) {
     throw new Error(`${botPath} 的 group_chat.name_mention_probability 必须在 0 到 1 之间`)
   }
+  const personaWeight = numberAtOr(
+    groupChat,
+    'persona_weight',
+    DEFAULT_CONFIG.group_chat.persona_weight,
+    botPath,
+  )
+  if (personaWeight < 0 || personaWeight > 1) {
+    throw new Error(`${botPath} 的 group_chat.persona_weight 必须在 0 到 1 之间`)
+  }
+  const replyWindowMinutes = numberAtOr(
+    groupChat,
+    'reply_window_minutes',
+    DEFAULT_CONFIG.group_chat.reply_window_minutes,
+    botPath,
+  )
+  if (!Number.isInteger(replyWindowMinutes) || replyWindowMinutes < 1) {
+    throw new Error(`${botPath} 的 group_chat.reply_window_minutes 必须是正整数`)
+  }
+  const maxRepliesInWindow = numberAtOr(
+    groupChat,
+    'max_replies_in_window',
+    DEFAULT_CONFIG.group_chat.max_replies_in_window,
+    botPath,
+  )
+  if (!Number.isInteger(maxRepliesInWindow) || maxRepliesInWindow < 0) {
+    throw new Error(`${botPath} 的 group_chat.max_replies_in_window 必须是非负整数`)
+  }
   const personality = recordAt(botDocument, 'personality', botPath)
   const conversation = parseConversation(botDocument, botPath)
   const schedule = parseSchedule(botDocument, botPath)
@@ -631,6 +661,9 @@ function readSplitConfig(directory: string): YueliConfig {
         ? DEFAULT_CONFIG.group_chat.at_mention_must_reply
         : booleanAt(groupChat, 'at_mention_must_reply', botPath),
       name_mention_probability: nameMentionProbability,
+      persona_weight: personaWeight,
+      reply_window_minutes: replyWindowMinutes,
+      max_replies_in_window: maxRepliesInWindow,
     },
     schedule,
     personality: {
@@ -1024,6 +1057,12 @@ relationship = ${tomlString(cfg.bot.relationship)}
 at_mention_must_reply = ${cfg.group_chat.at_mention_must_reply}
 # 名字、别名或非必回 @ 命中后的回复概率，范围 0~1
 name_mention_probability = ${cfg.group_chat.name_mention_probability}
+# 群聊里人格增量的折算系数，0~1；群里一句一答的消耗远小于面对面长聊
+persona_weight = ${cfg.group_chat.persona_weight}
+# 在这段时间窗口内统计她已经回复了多少次
+reply_window_minutes = ${cfg.group_chat.reply_window_minutes}
+# 非必回消息在时间窗口内允许的最大回复次数
+max_replies_in_window = ${cfg.group_chat.max_replies_in_window}
 
 [schedule]
 # 每天生成的日程段数范围
@@ -1153,6 +1192,21 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     || cfg.group_chat.name_mention_probability > 1
   ) {
     throw new Error('名字或别名触发回复概率必须在 0 到 1 之间')
+  }
+  if (cfg.group_chat.persona_weight < 0 || cfg.group_chat.persona_weight > 1) {
+    throw new Error('群聊人格增量折算系数必须在 0 到 1 之间')
+  }
+  if (
+    !Number.isInteger(cfg.group_chat.reply_window_minutes)
+    || cfg.group_chat.reply_window_minutes < 1
+  ) {
+    throw new Error('群聊回复窗口分钟数必须是正整数')
+  }
+  if (
+    !Number.isInteger(cfg.group_chat.max_replies_in_window)
+    || cfg.group_chat.max_replies_in_window < 0
+  ) {
+    throw new Error('群聊窗口内最大回复次数必须是非负整数')
   }
   assertSchedule(cfg.schedule, '日程配置')
   if (!Array.isArray(cfg.perception.surfaces)) {

@@ -158,6 +158,7 @@ def main() -> None:
     from src.services.chat import ChatService
 
     app_state.registry = StreamRegistry(db)
+    app_state.group_chat_config = cfg.group_chat
     broker = PlatformBroker()
     qq_driver = QqWebSocketDriver(push)
 

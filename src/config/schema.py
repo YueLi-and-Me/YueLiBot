@@ -65,6 +65,10 @@ class GroupChatConfig(BaseModel):
 
     at_mention_must_reply: bool = True
     name_mention_probability: float = Field(default=1.0, ge=0.0, le=1.0)
+    # 群里一句一答的消耗远小于面对面长聊；同一倍率作用于全部人格增量。
+    persona_weight: float = Field(default=0.05, ge=0.0, le=1.0)
+    reply_window_minutes: int = Field(default=10, ge=1)
+    max_replies_in_window: int = Field(default=3, ge=0)
 
 
 class ScheduleConfig(BaseModel):

@@ -32,7 +32,13 @@ from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
-from src.config.schema import BotConfig, ConversationConfig, GenerationConfig, PerceptionConfig
+from src.config.schema import (
+    BotConfig,
+    ConversationConfig,
+    GenerationConfig,
+    GroupChatConfig,
+    PerceptionConfig,
+)
 from src.llm_models.openai import LlmError
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
@@ -144,6 +150,7 @@ class ChatService:
             self._bot_names: tuple[str, ...] = ()
             self._at_mention_must_reply = True
             self._name_mention_probability = 1.0
+            self._group_persona_weight = GroupChatConfig().persona_weight
             self._perception_surfaces = frozenset(PerceptionConfig().surfaces)
         else:
             conversation = cfg.conversation
@@ -168,6 +175,7 @@ class ChatService:
             self._bot_names = tuple([cfg.bot.name, *cfg.bot.aliases])
             self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
             self._name_mention_probability = cfg.group_chat.name_mention_probability
+            self._group_persona_weight = cfg.group_chat.persona_weight
             self._perception_surfaces = frozenset(cfg.perception.surfaces)
         self._turn_planner = (
             TurnPlanner(
@@ -215,6 +223,10 @@ class ChatService:
     def set_promise_handler(self, fn: Callable[[int, str], None]) -> None:
         """接收解析出的约定，交由 AwarenessService 统一调度与持久化。"""
         self._promise_handler = fn
+
+    def _persona_weight(self, context: ConversationContext) -> float:
+        """由持有 stream 的编排层决定增量倍率，Persona 数据层不认识会话。"""
+        return self._group_persona_weight if context.stream.kind == 'group' else 1.0
 
     def current_sleep(self) -> ScheduleSleepState:
         s = self._sleep_state() if self._sleep_state else None
@@ -391,7 +403,11 @@ class ChatService:
                     self._bot_display_name,
                 )
                 try:
-                    self.persona.apply_turn(context.person.id, current_time())
+                    self.persona.apply_turn(
+                        context.person.id,
+                        current_time(),
+                        weight=self._persona_weight(context),
+                    )
                 except Exception as exc:
                     # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
@@ -1053,6 +1069,7 @@ class ChatService:
                 context.person.id,
                 MoodDelta(favor=event.favor, energy=event.energy),
                 now,
+                weight=self._persona_weight(context),
             )
             trace.emit('mood_delta', turnId=turn, favor=event.favor, energy=event.energy)
             if sink is not None:

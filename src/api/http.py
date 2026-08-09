@@ -24,9 +24,6 @@ from src.services.trace import trace
 logger = get_logger(__name__)
 router = APIRouter()
 
-_GROUP_REPLY_WINDOW_MS = 10 * 60_000
-_MAX_GROUP_REPLIES_IN_WINDOW = 3
-
 
 class PlatformInboundBody(BaseModel):
     """平台适配器提交的一条完整入站消息。"""
@@ -196,11 +193,12 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     )
     if app_state.register_platform_stream is not None:
         app_state.register_platform_stream(context.stream)
+    group_chat = app_state.group_chat_config
     reply_count = 0
     if context.stream.kind == 'group':
         reply_count = app_state.chat.memory.assistant_reply_count_since(
             context.stream.id,
-            now - _GROUP_REPLY_WINDOW_MS,
+            now - group_chat.reply_window_minutes * 60_000,
         )
     decision = decide_reply(
         stream_kind=context.stream.kind,
@@ -212,7 +210,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         name_mention_probability=app_state.chat.name_mention_probability,
         probability_draw=random(),
         my_replies_in_window=reply_count,
-        max_replies_in_window=_MAX_GROUP_REPLIES_IN_WINDOW,
+        max_replies_in_window=group_chat.max_replies_in_window,
     )
     trace.emit(
         'reply_gate',

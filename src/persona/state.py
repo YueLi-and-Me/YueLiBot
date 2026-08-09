@@ -187,25 +187,31 @@ class Persona:
         person_id: int,
         delta: MoodDelta,
         now: int | None = None,
+        weight: float = 1.0,
     ) -> PersonaState:
         now = now if now is not None else current_time()
         state = self.get(person_id)
         favor = _clamp_delta(delta.favor)
         energy = _clamp_delta(delta.energy)
         next_state = PersonaState(
-            intimacy=_clamp('intimacy', state.intimacy + favor * 1.2),
-            energy=_clamp('energy', state.energy + energy * 3),
+            intimacy=_clamp('intimacy', state.intimacy + favor * 1.2 * weight),
+            energy=_clamp('energy', state.energy + energy * 3 * weight),
             updated_at=now,
         )
         self._write(person_id, next_state)
         return next_state
 
-    def apply_turn(self, person_id: int, now: int | None = None) -> PersonaState:
+    def apply_turn(
+        self,
+        person_id: int,
+        now: int | None = None,
+        weight: float = 1.0,
+    ) -> PersonaState:
         now = now if now is not None else current_time()
         state = self.get(person_id)
         next_state = PersonaState(
-            intimacy=_clamp('intimacy', state.intimacy + 0.35),
-            energy=_clamp('energy', state.energy - 0.4),
+            intimacy=_clamp('intimacy', state.intimacy + 0.35 * weight),
+            energy=_clamp('energy', state.energy - 0.4 * weight),
             updated_at=now,
         )
         self._write(person_id, next_state)

@@ -325,6 +325,9 @@ export interface YueliConfig {
   group_chat: {
     at_mention_must_reply: boolean
     name_mention_probability: number
+    persona_weight: number
+    reply_window_minutes: number
+    max_replies_in_window: number
   }
   schedule: {
     min_slots: number
