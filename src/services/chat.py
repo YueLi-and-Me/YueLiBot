@@ -7,45 +7,38 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, Iterable, List
 
 import asyncio
 import inspect
 import random
+import sqlite3
 
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
 
-from src.agent.character import BOUNDARIES_PROMPT, IDENTITY_PROMPT, pick_tone
-from src.agent.expression import render_expression_habits, select_expression_habits
+from src.agent.character import pick_tone
+from src.agent.expression import ExpressionSample, render_expression_habits, select_expression_habits
+from src.agent.expression_select import ExpressionSelector
 from src.agent.history import close_dangling_say, fit_char_budget, normalize_history
 from src.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
 from src.agent.prompt import build_proactive_prompt, build_system_prompt, describe_resumption
-from src.agent.relationship import relationship_tier
-from src.agent.turn_plan import TurnPlan, TurnPlanner
 from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
-from src.config.schema import (
-    BotConfig,
-    ConversationConfig,
-    GenerationConfig,
-    GroupChatConfig,
-    PerceptionConfig,
-)
+from src.config.schema import Config, ConversationConfig
 from src.llm_models.openai import LlmError
+from src.llm_models.protocol import LlmProvider
 from src.llm_models.snapshot import dump as dump_llm_request
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.observe import events as trace
 from src.observe.events import bind_origin, enter_stage
-from src.observe.stages import (
-    CONTEXT, DISPATCHING, EXPRESSION, FAILED, GENERATING, REPLIED, Stage,
-)
+from src.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GENERATING, REPLIED, Stage
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
 from src.platform_io.broker import PlatformBroker
 from src.platform_io.registry import StreamRegistry
@@ -57,7 +50,7 @@ from src.platform_io.types import (
     PersonRef,
     StreamRef,
 )
-from src.schedule.plan import DayPlanService, ScheduleSleepState
+from src.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
 
@@ -91,6 +84,23 @@ class _SessionState:
     resumption_gap_ms: int | None = None
 
 
+@dataclass
+class _TurnSink:
+    """单轮流式解析状态。"""
+
+    context: ConversationContext
+    cancel_event: asyncio.Event
+    turn: int
+    now: int
+    source_text: str
+    # 解析副作用。
+    side_effects: list[dict] = field(default_factory=list)
+    # 非桌面平台的出站正文。
+    segments: list[str] = field(default_factory=list)
+    segment: list[str] | None = None
+    interrupted: bool = False
+
+
 class ChatService:
     """
     对话编排。
@@ -101,16 +111,17 @@ class ChatService:
 
     def __init__(
         self,
-        db: Any,
-        chat_provider: Any | None,
-        proactive_provider: Any | None,
-        summary_provider: Any | None,
+        db: sqlite3.Connection,
+        chat_provider: LlmProvider | None,
+        proactive_provider: LlmProvider | None,
+        summary_provider: LlmProvider | None,
         push_event: Callable[[str, Any, int], Any],
+        *,
+        cfg: Config,
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
-        cfg: Any | None = None,
         broker: PlatformBroker | None = None,
-        relationship_provider: Any | None = None,
+        expression_provider: LlmProvider | None = None,
     ) -> None:
         self._db = db
         self._chat_provider = chat_provider
@@ -125,71 +136,37 @@ class ChatService:
         self._speech_buffer: dict[int, list[str]] = {}
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
-        bot = cfg.bot if cfg is not None else BotConfig()
-        self._bot_display_name = bot.name
-        self._summary_identity = (
-            cfg.personality.identity
-            if cfg is not None
-            else IDENTITY_PROMPT
-        )
-        if cfg is None:
-            conversation = ConversationConfig()
-            generation = GenerationConfig()
-            self._working_memory_messages = conversation.working_memory_messages
-            self._summarize_trigger_messages = conversation.summarize_trigger_messages
-            self._summarize_batch_messages = conversation.summarize_batch_messages
-            self._session_gap_ms = conversation.session_gap_minutes * 60_000
-            self._fact_recall_limit = conversation.fact_recall_limit
-            self._recalled_episode_limit = conversation.recalled_episode_limit
-            self._recent_episode_limit = conversation.recent_episode_limit
-            self._episode_context_limit = conversation.episode_context_limit
-            self._chat_temperature = generation.chat.temperature
-            self._chat_max_tokens = generation.chat.token_limit
-            self._proactive_temperature = generation.proactive.temperature
-            self._proactive_max_tokens = generation.proactive.token_limit
-            self._summary_temperature = generation.summary.temperature
-            self._summary_max_tokens = generation.summary.token_limit
-            relationship_temperature = generation.relationship.temperature
-            relationship_max_tokens = generation.relationship.token_limit
-            relationship_thinking = generation.relationship.thinking
-            self._bot_names: tuple[str, ...] = ()
-            self._at_mention_must_reply = True
-            self._name_mention_probability = 1.0
-            self._group_persona_weight = GroupChatConfig().persona_weight
-            self._perception_surfaces = frozenset(PerceptionConfig().surfaces)
-        else:
-            conversation = cfg.conversation
-            generation = cfg.generation
-            self._working_memory_messages = conversation.working_memory_messages
-            self._summarize_trigger_messages = conversation.summarize_trigger_messages
-            self._summarize_batch_messages = conversation.summarize_batch_messages
-            self._session_gap_ms = conversation.session_gap_minutes * 60_000
-            self._fact_recall_limit = conversation.fact_recall_limit
-            self._recalled_episode_limit = conversation.recalled_episode_limit
-            self._recent_episode_limit = conversation.recent_episode_limit
-            self._episode_context_limit = conversation.episode_context_limit
-            self._chat_temperature = generation.chat.temperature
-            self._chat_max_tokens = generation.chat.token_limit
-            self._proactive_temperature = generation.proactive.temperature
-            self._proactive_max_tokens = generation.proactive.token_limit
-            self._summary_temperature = generation.summary.temperature
-            self._summary_max_tokens = generation.summary.token_limit
-            relationship_temperature = generation.relationship.temperature
-            relationship_max_tokens = generation.relationship.token_limit
-            relationship_thinking = generation.relationship.thinking
-            self._bot_names = tuple([cfg.bot.name, *cfg.bot.aliases])
-            self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
-            self._name_mention_probability = cfg.group_chat.name_mention_probability
-            self._group_persona_weight = cfg.group_chat.persona_weight
-            self._perception_surfaces = frozenset(cfg.perception.surfaces)
-        self._turn_planner = (
-            TurnPlanner(
-                relationship_provider,
-                temperature=relationship_temperature,
-                max_tokens=relationship_max_tokens,
-                thinking=relationship_thinking,
+        self._bot_display_name = cfg.bot.name
+        self._summary_identity = cfg.personality.identity
+        conversation = cfg.conversation
+        generation = cfg.generation
+        self._working_memory_messages = conversation.working_memory_messages
+        self._summarize_trigger_messages = conversation.summarize_trigger_messages
+        self._summarize_batch_messages = conversation.summarize_batch_messages
+        self._session_gap_ms = conversation.session_gap_minutes * 60_000
+        self._fact_recall_limit = conversation.fact_recall_limit
+        self._recalled_episode_limit = conversation.recalled_episode_limit
+        self._recent_episode_limit = conversation.recent_episode_limit
+        self._episode_context_limit = conversation.episode_context_limit
+        self._chat_temperature = generation.chat.temperature
+        self._chat_max_tokens = generation.chat.token_limit
+        self._proactive_temperature = generation.proactive.temperature
+        self._proactive_max_tokens = generation.proactive.token_limit
+        self._summary_temperature = generation.summary.temperature
+        self._summary_max_tokens = generation.summary.token_limit
+        self._bot_names: tuple[str, ...] = (cfg.bot.name, *cfg.bot.aliases)
+        self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
+        self._name_mention_probability = cfg.group_chat.name_mention_probability
+        self._group_persona_weight = cfg.group_chat.persona_weight
+        self._perception_surfaces = frozenset(cfg.perception.surfaces)
+        self._expression_selector = (
+            ExpressionSelector(
+                expression_provider,
+                temperature=generation.expression.temperature,
+                max_tokens=generation.expression.token_limit,
+                thinking=generation.expression.thinking,
             )
-            if relationship_provider is not None
+            if expression_provider is not None
             else None
         )
         self.memory = MemoryStore(db)
@@ -325,12 +302,14 @@ class ChatService:
                     return
 
                 parser = ResponseParser()
-                side_effects: list[dict] = []
-                outbound_segments: list[str] = []
-                outbound_segment: list[str] | None = None
-                interrupted = False
+                sink = _TurnSink(
+                    context=context,
+                    cancel_event=cancel_event,
+                    turn=turn,
+                    now=now,
+                    source_text=trimmed,
+                )
                 self._mark_stage(context, CONTEXT, turn_id=turn)
-                self._mark_stage(context, EXPRESSION, turn_id=turn)
                 messages = await self._build_messages_with_vector(
                     context,
                     trimmed,
@@ -352,44 +331,19 @@ class ChatService:
                     max_tokens=self._chat_max_tokens,
                 ):
                     if cancel_event.is_set():
-                        interrupted = True
+                        sink.interrupted = True
                         break
                     trace.emit('llm_chunk', turnId=turn, text=chunk.get('text'), reasoning=chunk.get('reasoning'))
                     if not chunk.get('text'):
                         continue
                     assistant_raw += chunk['text']
-                    for event in parser.push(chunk['text']):
-                        if cancel_event.is_set():
-                            interrupted = True
-                            break
-                        self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
-                        if context.stream.platform == 'desktop':
-                            self._track_speech(context, event, turn)
-                            await self._emit_parse_event(context, turn, event)
-                        else:
-                            outbound_segment = _collect_outbound_segment(
-                                event,
-                                outbound_segments,
-                                outbound_segment,
-                            )
-                    if interrupted:
+                    await self._consume_events(parser.push(chunk['text']), sink)
+                    if sink.interrupted:
                         break
 
-                if not interrupted:
-                    for event in parser.flush():
-                        if cancel_event.is_set():
-                            interrupted = True
-                            break
-                        self._handle_side_effects(context, event, now, turn, side_effects, trimmed)
-                        if context.stream.platform == 'desktop':
-                            self._track_speech(context, event, turn)
-                            await self._emit_parse_event(context, turn, event)
-                        else:
-                            outbound_segment = _collect_outbound_segment(
-                                event,
-                                outbound_segments,
-                                outbound_segment,
-                            )
+                # 取出解析器缓冲内容。
+                if not sink.interrupted:
+                    await self._consume_events(parser.flush(), sink)
 
                 # ★ 中断也要落库。这段话已经显示（甚至念）给用户了，历史里
                 #   不能当它没发生过——否则下一轮就是连着两条 user 消息，
@@ -397,7 +351,7 @@ class ChatService:
                 #   在流式过程中已经写库了，话本身更不该丢。
                 self._persist_reply(context, assistant_raw)
                 reply_persisted = True
-                if interrupted:
+                if sink.interrupted:
                     return
 
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
@@ -407,7 +361,7 @@ class ChatService:
                     trimmed,
                     messages,
                     assistant_raw,
-                    side_effects,
+                    sink.side_effects,
                     self._bot_display_name,
                 )
                 try:
@@ -426,9 +380,11 @@ class ChatService:
                     await self._dispatch_outbound(
                         context,
                         turn,
-                        outbound_segments,
+                        sink.segments,
                     )
-                self._mark_stage(context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn)
+                self._mark_stage(
+                    context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn,
+                )
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
 
             except LlmError as exc:
@@ -444,13 +400,8 @@ class ChatService:
                     'stage': trace.current_stage_id(),
                     'streamId': stream_id,
                 })
-                trace.emit(
-                    'llm_error',
-                    turnId=turn,
-                    errorKind=exc.kind,
-                    message=str(exc),
-                    snapshotPath=str(snapshot) if snapshot else None,
-                )
+                trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc),
+                           snapshotPath=str(snapshot) if snapshot else None)
                 render_turn_error(turn, sender['senderLabel'], trimmed, exc.kind, str(exc))
                 self._mark_stage(context, FAILED, f'{exc.kind}：{exc}', turn_id=turn)
                 if context.stream.platform == 'desktop':
@@ -475,13 +426,8 @@ class ChatService:
                     error=str(exc),
                     snapshot=str(snapshot) if snapshot else None,
                 )
-                trace.emit(
-                    'llm_error',
-                    turnId=turn,
-                    errorKind='unknown',
-                    message=str(exc),
-                    snapshotPath=str(snapshot) if snapshot else None,
-                )
+                trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc),
+                           snapshotPath=str(snapshot) if snapshot else None)
                 render_turn_error(turn, sender['senderLabel'], trimmed, 'unknown', str(exc))
                 self._mark_stage(context, FAILED, str(exc), turn_id=turn)
                 await self._emit(
@@ -509,6 +455,7 @@ class ChatService:
         detail: str = '',
         turn_id: int | None = None,
     ) -> None:
+        """登记当前阶段。"""
         stream = context.stream
         if stream.platform == 'desktop':
             name = '桌面'
@@ -533,7 +480,6 @@ class ChatService:
             text,
             current_time(),
         )
-
     def _session(self, stream_id: int) -> _SessionState:
         state = self._sessions.get(stream_id)
         if state is None:
@@ -555,14 +501,11 @@ class ChatService:
                 or last is None
                 or (gap_ms is not None and gap_ms > self._session_gap_ms)):
             state.started_at = now
-            if self._cfg is None:
-                state.tone = pick_tone()
-            else:
-                personality = self._cfg.personality
-                state.tone = pick_tone(
-                    probability=personality.tone_probability,
-                    variants=personality.tone_variants,
-                )
+            personality = self._cfg.personality
+            state.tone = pick_tone(
+                probability=personality.tone_probability,
+                variants=personality.tone_variants,
+            )
             state.seed = random.randrange(1 << 30)
         # owner 闸门回答「这条关系信号属于谁」；group 闸门回答「静默间隔是否
         # 代表这条会话中的重逢」。两者语义不同，不能合成一个关系 helper。
@@ -907,10 +850,9 @@ class ChatService:
         if identities:
             return identities[0].display_name
         if person.kind == 'owner':
-            if self._cfg is not None:
-                user_nickname = self._cfg.bot.user_nickname.strip()
-                if user_nickname:
-                    return user_nickname
+            user_nickname = self._cfg.bot.user_nickname.strip()
+            if user_nickname:
+                return user_nickname
             return '用户本人'
         return f'未绑定联系人 #{person.id}'
 
@@ -919,10 +861,7 @@ class ChatService:
         return self._turn_id
 
     def _relationship_kwargs(self) -> dict:
-        """从 cfg.bot 取用户昵称/关系称呼，喂给 build_system_prompt。cfg 可以是 None
-        （比如测试直接构造 ChatService 不传 cfg），这时两项都不注入，行为和之前一样。"""
-        if self._cfg is None:
-            return {}
+        """读取用户称呼。"""
         bot_cfg = self._cfg.bot
         return {
             'user_nickname': bot_cfg.user_nickname,
@@ -930,9 +869,7 @@ class ChatService:
         }
 
     def _prompt_config_kwargs(self) -> dict:
-        """把 bot.toml 中的身份、人格和用户关系一次性注入系统提示词。"""
-        if self._cfg is None:
-            return {}
+        """读取系统提示词配置。"""
         bot = self._cfg.bot
         personality = self._cfg.personality
         return {
@@ -946,6 +883,54 @@ class ChatService:
             'attention': personality.attention,
             'boundaries': personality.boundaries,
         }
+
+    async def _pick_expression_habits(
+        self,
+        context: ConversationContext,
+        query: str,
+        history: list[dict[str, str]],
+        signal: asyncio.Event | None,
+    ) -> list[ExpressionSample]:
+        """挑选回复所需的表达样本。"""
+        if self._expression_selector is None:
+            picked = select_expression_habits(query, rng=self._session_rng(context.stream.id))
+            trace.emit('expression_select', source='keyword', count=len(picked))
+            return picked
+        self._mark_stage(context, EXPRESSION)
+        try:
+            picked = await self._expression_selector.select(query, history[-8:], signal=signal)
+        except LlmError as exc:
+            if exc.kind == 'aborted':
+                raise
+            return self._expression_selection_failed(context, type(exc).__name__, str(exc))
+        except ValueError as exc:
+            return self._expression_selection_failed(context, 'ValueError', str(exc))
+        trace.emit(
+            'expression_select',
+            source='model',
+            count=len(picked),
+            situations=[situation for situation, _ in picked],
+        )
+        return picked
+
+    def _expression_selection_failed(
+        self,
+        context: ConversationContext,
+        error_type: str,
+        message: str,
+    ) -> list[ExpressionSample]:
+        """记录挑选失败并跳过样本注入。"""
+        snapshot = dump_llm_request('expression', error_type, message, {
+            'stage': trace.current_stage_id(),
+            'streamId': context.stream.id,
+            'turnId': self._active_turns.get(context.stream.id),
+        })
+        logger.error('expression_select_failed', errorType=error_type, error=message,
+                     snapshot=str(snapshot) if snapshot else None)
+        trace.emit('expression_select', source='model', count=0,
+                   errorType=error_type, error=message,
+                   snapshotPath=str(snapshot) if snapshot else None)
+        return []
 
     async def _build_messages_with_vector(
         self,
@@ -988,19 +973,11 @@ class ChatService:
         )
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
         resumption = self._take_resumption(context.stream.id)
-        # 关系规划器只看最近上下文并返回受限动作；回复模型不会收到它的自由文本。
         wm = self.memory.working_memory(
             context.stream.id,
             self._working_memory_messages,
         )
         raw_history = self._history_for_context(context, wm)
-        turn_plan = await self._plan_turn(
-            state.intimacy,
-            state.energy,
-            context.stream.kind == 'group',
-            raw_history[-8:],
-            signal,
-        )
         # 出口开关回答「这里能否看见本机屏幕」，owner 判据回答「对面是不是用户
         # 本人」。私聊必须同时满足两个独立问题；群聊则不可能进入 surfaces。
         activity = None
@@ -1017,12 +994,10 @@ class ChatService:
             activity=activity,
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
-                select_expression_habits(query, rng=self._session_rng(context.stream.id))
+                await self._pick_expression_habits(context, query, raw_history, signal)
             ),
             tone=self._session(context.stream.id).tone,
             resumption=resumption,
-            relationship_decision=(turn_plan.relationship_instruction if turn_plan else None),
-            length_decision=(turn_plan.length_instruction if turn_plan else None),
             platform_name=platform_bot_name,
             **self._prompt_config_kwargs(),
         )
@@ -1031,40 +1006,6 @@ class ChatService:
         #   幂等，对干净历史没有副作用。
         history = normalize_history(raw_history)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
-
-    async def _plan_turn(
-        self,
-        intimacy: float,
-        energy: float,
-        is_group: bool,
-        history: list[dict[str, str]],
-        signal: asyncio.Event | None,
-    ) -> TurnPlan | None:
-        if self._turn_planner is None:
-            return None
-        if self._cfg is None:
-            identity = IDENTITY_PROMPT
-            boundaries = BOUNDARIES_PROMPT
-        else:
-            identity = self._cfg.personality.identity
-            boundaries = self._cfg.personality.boundaries
-        trace.emit(
-            'relationship_decision_request',
-            tier=relationship_tier(intimacy),
-            contextMessages=len(history),
-            isGroup=is_group,
-        )
-        plan = await self._turn_planner.plan(
-            intimacy=intimacy,
-            energy=energy,
-            is_group=is_group,
-            history=history,
-            identity=identity,
-            boundaries=boundaries,
-            signal=signal,
-        )
-        trace.emit('relationship_decision', action=plan.action, length=plan.length)
-        return plan
 
     def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
         """返回群聊称呼候选；平台登录昵称只对当前入站消息生效。"""
@@ -1099,6 +1040,22 @@ class ChatService:
                 content = f'{name}: {content}'
             history.append({'role': message.role, 'content': content})
         return history
+
+    async def _consume_events(self, events: Iterable[ParseEvent], sink: _TurnSink) -> None:
+        """处理副作用并按平台投递事件。"""
+        context = sink.context
+        for event in events:
+            if sink.cancel_event.is_set():
+                sink.interrupted = True
+                return
+            self._handle_side_effects(
+                context, event, sink.now, sink.turn, sink.side_effects, sink.source_text,
+            )
+            if context.stream.platform == 'desktop':
+                self._track_speech(context, event, sink.turn)
+                await self._emit_parse_event(context, sink.turn, event)
+            else:
+                sink.segment = _collect_outbound_segment(event, sink.segments, sink.segment)
 
     def _handle_side_effects(
         self, context: ConversationContext, event: ParseEvent, now: int, turn: int,
@@ -1321,7 +1278,7 @@ def _collect_outbound_segment(
     return current
 
 
-def _plan_to_dict(plan: Any) -> dict | None:
+def _plan_to_dict(plan: DayPlan | None) -> dict | None:
     if plan is None:
         return None
     return {

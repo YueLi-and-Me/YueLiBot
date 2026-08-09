@@ -13,7 +13,7 @@ class _AppState:
         self.chat: Any = None          # ChatService
         self.awareness: Any = None     # AwarenessService
         self.tts: Any = None           # TtsService
-        self.routers: Any = None       # ModelRouters（四个任务的候选与熔断状态）
+        self.routers: Any = None       # ModelRouters（八个任务的候选与熔断状态）
         self.registry: Any = None       # StreamRegistry（stream/person/identity 的唯一入口）
         self.group_chat_config = GroupChatConfig()
         self.foreground_callback: Callable[[dict], None] | None = None

@@ -21,7 +21,7 @@ const CONFIG_VERSION = '1.1.0'
 const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
-  'chat', 'proactive', 'summary', 'schedule', 'vision', 'tts', 'embedding',
+  'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding',
 ] as const
 
 const NAPCAT_CONFIG_TEMPLATE = `# 月璃的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
@@ -145,10 +145,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
-    relationship: { temperature: 0.1, max_tokens: 4096, thinking: 'disabled' },
     proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
     summary: { temperature: 0.3, max_tokens: 0 },
     schedule: { temperature: 0.95, max_tokens: 4096, thinking: 'disabled' },
+    expression: { temperature: 0.1, max_tokens: 4096, thinking: 'disabled' },
     vision: { temperature: 0.3, max_tokens: 120 },
   },
   api_providers: [DEFAULT_PROVIDER],
@@ -162,6 +162,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     summary: { model_list: [], selection_strategy: 'sequential' },
     schedule: { model_list: [], selection_strategy: 'sequential' },
     vision: { model_list: [], selection_strategy: 'sequential' },
+    expression: { model_list: [], selection_strategy: 'sequential' },
     tts: { model_list: [], selection_strategy: 'sequential' },
     embedding: { model_list: [], selection_strategy: 'sequential' },
   },
@@ -328,7 +329,7 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
   if (document.generation === undefined) return structuredClone(DEFAULT_CONFIG.generation)
   const generation = recordAt(document, 'generation', path)
   const result = structuredClone(DEFAULT_CONFIG.generation)
-  for (const task of ['chat', 'relationship', 'proactive', 'summary', 'schedule', 'vision'] as const) {
+  for (const task of ['chat', 'proactive', 'summary', 'schedule', 'expression', 'vision'] as const) {
     if (generation[task] === undefined) continue
     const taskConfig = recordAt(generation, task, `${path} 的 generation`)
     const parsed = {
@@ -339,7 +340,7 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
         taskConfig, 'max_tokens', result[task].max_tokens, `${path} 的 generation.${task}`,
       ),
     }
-    if (task === 'relationship' || task === 'schedule') {
+    if (task === 'schedule' || task === 'expression') {
       const taskPath = `${path} 的 generation.${task}`
       const thinking = stringAtOr(taskConfig, 'thinking', result[task].thinking, taskPath)
       if (!['inherit', 'disabled', 'enabled', 'auto'].includes(thinking)) {
@@ -1043,9 +1044,9 @@ function generationBlock(
 enabled = ${(config as GenerationConfig['proactive']).enabled}
 `
     : ''
-  const thinking = task === 'relationship' || task === 'schedule'
+  const thinking = task === 'schedule' || task === 'expression'
     ? `# 思考模式覆盖：inherit 沿用模型定义；结构化任务默认关闭，给 JSON 正文留足预算
-thinking = ${tomlString((config as GenerationConfig['relationship']).thinking)}
+thinking = ${tomlString((config as GenerationConfig['schedule']).thinking)}
 `
     : ''
   return `[generation.${task}]
@@ -1075,6 +1076,7 @@ const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
   summary: '长期记忆摘要；留空时继承用户聊天候选',
   schedule: '每日生活计划；留空时继承用户聊天候选',
   vision: '前台窗口图片理解；模型和接口都必须接受图片消息',
+  expression: '挑选表达方式；分类型小任务，留空时继承用户聊天候选',
   tts: '语音合成',
   embedding: '向量记忆召回',
 }
@@ -1095,10 +1097,10 @@ selection_strategy = ${tomlString(routing.selection_strategy)}`
 function serializeModels(cfg: YueliConfig): string {
   const generationDescriptions: Record<keyof GenerationConfig, string> = {
     chat: '用户主动聊天的回复参数',
-    relationship: '关系分寸决策的生成参数',
     proactive: '桌宠主动搭话的回复参数',
     summary: '长期记忆摘要的生成参数',
     schedule: '每日生活计划的生成参数',
+    expression: '挑选表达方式的生成参数',
     vision: '前台窗口视觉描述的生成参数',
   }
   const generation = (Object.keys(generationDescriptions) as Array<keyof GenerationConfig>)
@@ -1357,8 +1359,8 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     ) {
       throw new Error(`generation.${task}.max_tokens 必须是 0 到 1000000 的整数`)
     }
-    if (task === 'relationship' || task === 'schedule') {
-      const thinking = (generation as GenerationConfig['relationship']).thinking
+    if (task === 'schedule' || task === 'expression') {
+      const thinking = (generation as GenerationConfig['schedule']).thinking
       if (!['inherit', 'disabled', 'enabled', 'auto'].includes(thinking)) {
         throw new Error(`generation.${task}.thinking 配置不合法`)
       }

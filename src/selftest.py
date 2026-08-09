@@ -24,9 +24,10 @@ from src.common.clock import now as current_time
 from src.common.db.connection import open_db
 from src.common.db.migrations.manager import run_migrations
 from src.common.logger import get_logger
+from src.llm_models.protocol import LlmProvider
 from src.observe.store import close as close_event_store
 from src.observe.store import configure as configure_event_store
-from src.services.chat import SUMMARIZE_AT, ChatService, InboundMessage
+from src.services.chat import ChatService, InboundMessage
 from src.services.proactive import AwarenessService
 
 logger = get_logger(__name__)
@@ -78,7 +79,7 @@ async def run_selftest(cfg: Any) -> int:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-async def _check_chat(chat: ChatService, provider: Any, events: list[dict]) -> bool:
+async def _check_chat(chat: ChatService, provider: LlmProvider | None, events: list[dict]) -> bool:
     if provider is None:
         _report("SELFTEST-CHAT", {"ok": True, "skipped": True, "reason": "no_provider"})
         return True
@@ -101,7 +102,7 @@ async def _check_chat(chat: ChatService, provider: Any, events: list[dict]) -> b
         return False
 
 
-async def _check_reflect(chat: ChatService, provider: Any) -> bool:
+async def _check_reflect(chat: ChatService, provider: LlmProvider | None) -> bool:
     if provider is None:
         _report("SELFTEST-REFLECT", {"ok": True, "skipped": True, "reason": "no_provider"})
         return True
@@ -109,7 +110,8 @@ async def _check_reflect(chat: ChatService, provider: Any) -> bool:
         before = len(chat.memory.all_episodes())
         base = current_time() - 60 * 60_000
         desktop_context = chat.desktop_context
-        for i in range(SUMMARIZE_AT):
+        # 写满摘要触发阈值。
+        for i in range(chat._summarize_trigger_messages):
             role = "user" if i % 2 == 0 else "assistant"
             sender_person_id = desktop_context.person.id if role == "user" else None
             chat.memory.append_message(

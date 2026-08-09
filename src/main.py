@@ -19,6 +19,7 @@ from src.api.auth import token_manager
 from src.common.backend_runtime import create_backend_runtime
 from src.common.logger import get_logger, initialize_logging
 from src.config.loader import load_config
+from src.llm_models.protocol import LlmProvider, ThinkingMode
 
 
 DEFAULT_BACKEND_PORT = 7999
@@ -29,15 +30,15 @@ class _LLMGenerator:
 
     def __init__(
         self,
-        schedule_provider: Any,
+        schedule_provider: LlmProvider,
         temperature: float,
         max_tokens: int | None,
-        thinking: str,
+        thinking: ThinkingMode,
     ) -> None:
         self._schedule_provider = schedule_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._thinking = thinking
+        self._thinking: ThinkingMode = thinking
 
     async def generate(self, prompt: str) -> str:
         raw = ''
@@ -183,7 +184,7 @@ def main() -> None:
         desktop_stream_id=desktop_context.stream.id,
     )
 
-    # 七个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
+    # 八个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
     from src.llm_models.router import create_routers
     routers = create_routers(cfg)
     app_state.routers = routers
@@ -220,7 +221,7 @@ def main() -> None:
         push_event=_push_event,
         cfg=cfg,
         broker=broker,
-        relationship_provider=chat_provider,
+        expression_provider=routers.expression if routers.expression.ready else None,
     )
 
     # 初始化 VectorService（可选，默认关）——必须在 app_state.chat 建好之后，

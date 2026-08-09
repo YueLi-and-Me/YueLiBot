@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import json
 import re
+
+from src.llm_models.protocol import LlmProvider
 
 
 @dataclass
@@ -70,7 +72,7 @@ def parse_episode(raw: str) -> Optional[Episode]:
 
 
 async def summarize(
-    provider: Any,
+    provider: LlmProvider,
     messages: List[Dict[str, str]],
     temperature: float,
     max_tokens: int | None,

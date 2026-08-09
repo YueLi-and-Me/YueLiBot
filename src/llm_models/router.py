@@ -275,7 +275,7 @@ class ModelRouter:
 
 
 class ModelRouters:
-    """七个任务的路由器。共享一份 ProviderHealth，好让熔断结论跨任务复用。"""
+    """八个任务的路由器。共享一份 ProviderHealth，好让熔断结论跨任务复用。"""
 
     def __init__(self, config: Any) -> None:
         self.health = ProviderHealth()
@@ -285,6 +285,7 @@ class ModelRouters:
         self.summary = self._build('summary', routing.summary)
         self.schedule = self._build('schedule', routing.schedule)
         self.vision = self._build('vision', routing.vision)
+        self.expression = self._build('expression', routing.expression)
         self.tts = self._build('tts', routing.tts)
         self.embedding = self._build('embedding', routing.embedding)
 
@@ -294,10 +295,10 @@ class ModelRouters:
     def inspect(self) -> Dict[str, Any]:
         return {
             task: getattr(self, task).inspect()
-            for task in ('chat', 'proactive', 'summary', 'schedule', 'vision', 'tts', 'embedding')
+            for task in ('chat', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding')
         }
 
 
 def create_routers(config: Any) -> ModelRouters:
-    """从 pydantic Config 构造七个任务的路由器。"""
+    """从 pydantic Config 构造八个任务的路由器。"""
     return ModelRouters(config)

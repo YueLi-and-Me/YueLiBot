@@ -190,14 +190,6 @@ class GenerationConfig(BaseModel):
     """按任务拆分参数，避免改视觉模型时意外改变普通聊天。"""
 
     chat: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
-    # 键名沿用历史叫法，实际管的是回复前那次规划调用的全部轴：
-    # 关系分寸、回复篇幅，以及后续新增的轴。改这里会同时影响它们。
-    relationship: StructuredGenerationTaskConfig = Field(
-        default_factory=lambda: StructuredGenerationTaskConfig(
-            temperature=0.1,
-            max_tokens=4096,
-        )
-    )
     proactive: ProactiveGenerationTaskConfig = Field(
         default_factory=lambda: ProactiveGenerationTaskConfig(temperature=0.9, max_tokens=200)
     )
@@ -207,6 +199,12 @@ class GenerationConfig(BaseModel):
     schedule: StructuredGenerationTaskConfig = Field(
         default_factory=lambda: StructuredGenerationTaskConfig(
             temperature=0.95,
+            max_tokens=4096,
+        )
+    )
+    expression: StructuredGenerationTaskConfig = Field(
+        default_factory=lambda: StructuredGenerationTaskConfig(
+            temperature=0.1,
             max_tokens=4096,
         )
     )
@@ -384,6 +382,7 @@ class ModelTaskConfig(BaseModel):
     summary: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     schedule: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     vision: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    expression: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
@@ -425,13 +424,14 @@ class TaskRouting(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    """七类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
+    """八类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
 
     chat: TaskRouting = Field(default_factory=lambda: TaskRouting(task='chat'))
     proactive: TaskRouting = Field(default_factory=lambda: TaskRouting(task='proactive'))
     summary: TaskRouting = Field(default_factory=lambda: TaskRouting(task='summary'))
     schedule: TaskRouting = Field(default_factory=lambda: TaskRouting(task='schedule'))
     vision: TaskRouting = Field(default_factory=lambda: TaskRouting(task='vision'))
+    expression: TaskRouting = Field(default_factory=lambda: TaskRouting(task='expression'))
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
 
@@ -469,7 +469,7 @@ class Config(BaseModel):
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
-    # 七类任务的候选模型与轮询策略；连接细节都收在候选里
+    # 八类任务的候选模型与轮询策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)

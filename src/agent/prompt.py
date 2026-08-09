@@ -121,8 +121,6 @@ def build_system_prompt(
     expression_habits: Optional[str] = None,
     tone: Optional[str] = None,
     resumption: Optional[str] = None,
-    relationship_decision: Optional[str] = None,
-    length_decision: Optional[str] = None,
     aliases: Optional[List[str]] = None,
     platform_name: Optional[str] = None,
 ) -> str:
@@ -154,10 +152,6 @@ def build_system_prompt(
         parts.extend(['', resumption])
     if persona:
         parts.extend(['', persona])
-    if relationship_decision:
-        parts.extend(['', '# 本轮关系分寸', relationship_decision])
-    if length_decision:
-        parts.extend(['', '# 本轮篇幅', length_decision])
     if activity:
         parts.extend([
             '',

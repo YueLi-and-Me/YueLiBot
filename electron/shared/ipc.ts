@@ -363,13 +363,13 @@ export interface YueliConfig {
   }
   generation: {
     chat: { temperature: number; max_tokens: number }
-    relationship: {
+    proactive: { enabled: boolean; temperature: number; max_tokens: number }
+    summary: { temperature: number; max_tokens: number }
+    expression: {
       temperature: number
       max_tokens: number
       thinking: 'inherit' | 'disabled' | 'enabled' | 'auto'
     }
-    proactive: { enabled: boolean; temperature: number; max_tokens: number }
-    summary: { temperature: number; max_tokens: number }
     schedule: {
       temperature: number
       max_tokens: number
@@ -388,6 +388,7 @@ export interface YueliConfig {
     summary: TaskRoutingConfig
     schedule: TaskRoutingConfig
     vision: TaskRoutingConfig
+    expression: TaskRoutingConfig
     tts: TaskRoutingConfig
     embedding: TaskRoutingConfig
   }
