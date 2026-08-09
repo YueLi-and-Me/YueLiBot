@@ -78,7 +78,12 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
 
 
 def render_turn(
-    turn: int, user_text: str, messages: list[dict], response_text: str, side_effects: list[dict],
+    turn: int,
+    user_text: str,
+    messages: list[dict],
+    response_text: str,
+    side_effects: list[dict],
+    bot_name: str,
 ) -> None:
     """★ 渲染失败绝不能往外抛——这只是叠加在 chat.py 主流程上的调试展示，
     真出问题（比如非 UTF-8 控制台下 emoji 写入炸掉）也只是终端没打印那个面板，
@@ -89,7 +94,7 @@ def render_turn(
         parts: list[Any] = [
             Text(f'你: {user_text}', style='bold'),
             Text(_prompt_preview(messages), style='dim'),
-            Text(f'月璃: {response_text}', style='green'),
+            Text(f'{bot_name}: {response_text}', style='green'),
         ]
         for line in _side_effect_lines(side_effects):
             parts.append(Text(line, style='yellow'))

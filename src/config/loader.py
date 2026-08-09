@@ -188,6 +188,7 @@ def _load_split_config(directory: Path) -> Config:
     return Config(
         bot=bot_document.bot,
         group_chat=bot_document.group_chat,
+        schedule=bot_document.schedule,
         personality=bot_document.personality,
         conversation=bot_document.conversation,
         generation=models_document.generation,

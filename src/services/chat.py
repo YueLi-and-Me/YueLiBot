@@ -1,5 +1,5 @@
 """
-对话编排服务。直接移植自 src/main/chat.ts。
+对话编排服务。
 
 持有所有后端资源：按角色拆分的 LLM provider、MemoryStore、Persona、DayPlanService。
 通过 WebSocket push 推事件给 Electron 主进程。
@@ -31,6 +31,7 @@ from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
+from src.config.schema import BotConfig, ConversationConfig, GenerationConfig
 from src.llm_models.openai import LlmError
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
@@ -47,19 +48,8 @@ from src.schedule.plan import DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
 
-# 工作记忆窗口：进 context 的最近消息条数
-WINDOW = 40
-# 待压缩消息超过这个数就触发一次 L2 摘要
-SUMMARIZE_AT = 48
-# 每次摘要吃掉多少条最老的消息
-SUMMARIZE_BATCH = 16
-# 真正的天花板是 min(WINDOW, pending_count)——working_memory() 只取
-# episode_id IS NULL 的消息。所以 SUMMARIZE_AT 必须跟着 WINDOW 一起调，
-# 否则摘要一跑 pending 就掉到 SUMMARIZE_AT - SUMMARIZE_BATCH，
-# 单调 WINDOW 完全无效。当前下限 48-16=32 条 ≈ 16 轮。
-
-# 两次对话间隔超过这个时长，视为新一段对话：重新抽语气、重新播种表达样本。
-SESSION_GAP_MS = 30 * 60_000
+# 旧测试和诊断脚本仍会读取这个换算值；唯一默认来源是配置模型。
+SESSION_GAP_MS = ConversationConfig().session_gap_minutes * 60_000
 
 _HINTS: dict[str, str] = {
     'auth': 'API Key 无效，检查 providers.toml',
@@ -122,23 +112,32 @@ class ChatService:
         self._speech_buffer: dict[int, list[str]] = {}
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
+        bot = cfg.bot if cfg is not None else BotConfig()
+        self._bot_display_name = bot.name
+        self._summary_identity = (
+            cfg.personality.identity
+            if cfg is not None
+            else IDENTITY_PROMPT
+        )
         if cfg is None:
-            self._working_memory_messages = WINDOW
-            self._summarize_trigger_messages = SUMMARIZE_AT
-            self._summarize_batch_messages = SUMMARIZE_BATCH
-            self._session_gap_ms = SESSION_GAP_MS
-            self._fact_recall_limit = 6
-            self._recalled_episode_limit = 2
-            self._recent_episode_limit = 2
-            self._episode_context_limit = 3
-            self._chat_temperature = 0.85
-            self._chat_max_tokens = None
-            self._proactive_temperature = 0.9
-            self._proactive_max_tokens = 200
-            self._summary_temperature = 0.3
-            self._summary_max_tokens = None
-            relationship_temperature = 0.1
-            relationship_max_tokens = 4096
+            conversation = ConversationConfig()
+            generation = GenerationConfig()
+            self._working_memory_messages = conversation.working_memory_messages
+            self._summarize_trigger_messages = conversation.summarize_trigger_messages
+            self._summarize_batch_messages = conversation.summarize_batch_messages
+            self._session_gap_ms = conversation.session_gap_minutes * 60_000
+            self._fact_recall_limit = conversation.fact_recall_limit
+            self._recalled_episode_limit = conversation.recalled_episode_limit
+            self._recent_episode_limit = conversation.recent_episode_limit
+            self._episode_context_limit = conversation.episode_context_limit
+            self._chat_temperature = generation.chat.temperature
+            self._chat_max_tokens = generation.chat.token_limit
+            self._proactive_temperature = generation.proactive.temperature
+            self._proactive_max_tokens = generation.proactive.token_limit
+            self._summary_temperature = generation.summary.temperature
+            self._summary_max_tokens = generation.summary.token_limit
+            relationship_temperature = generation.relationship.temperature
+            relationship_max_tokens = generation.relationship.token_limit
             self._bot_names: tuple[str, ...] = ()
             self._at_mention_must_reply = True
             self._name_mention_probability = 1.0
@@ -368,7 +367,14 @@ class ChatService:
                     return
 
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
-                render_turn(turn, trimmed, messages, assistant_raw, side_effects)
+                render_turn(
+                    turn,
+                    trimmed,
+                    messages,
+                    assistant_raw,
+                    side_effects,
+                    self._bot_display_name,
+                )
                 try:
                     self.persona.apply_turn(context.person.id, current_time())
                 except Exception as exc:
@@ -1082,6 +1088,8 @@ class ChatService:
                 msgs,
                 temperature=self._summary_temperature,
                 max_tokens=self._summary_max_tokens,
+                character_name=self._bot_display_name,
+                character_identity=self._summary_identity,
             )
             if not episode:
                 return
@@ -1149,4 +1157,6 @@ def _plan_to_dict(plan: Any) -> dict | None:
         'wakeHint': plan.wake_hint,
         'theme': plan.theme,
         'carryOver': plan.carry_over,
+        'sleepEnabled': plan.sleep_enabled,
+        'bedtimeDayBoundary': plan.bedtime_day_boundary,
     }

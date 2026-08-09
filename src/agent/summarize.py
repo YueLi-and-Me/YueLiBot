@@ -1,6 +1,4 @@
-"""
-情节摘要生成。直接移植自 src/core/agent/summarize.ts。
-"""
+"""按可配置角色身份生成情节摘要。"""
 
 from __future__ import annotations
 
@@ -17,11 +15,15 @@ class Episode:
     recall_cues: List[str]
 
 
-_SYSTEM_PROMPT = """你替月璃整理那些快要淡出短期上下文的聊天。写出来的是她以后会想起的片段，不是会议纪要。
+def _system_prompt(character_name: str, character_identity: str) -> str:
+    return f"""你替「{character_name}」整理那些快要淡出短期上下文的聊天。写出来的是这个角色以后会想起的片段，不是会议纪要。
+
+角色设定：
+{character_identity}
 
 要求：
 1. 只写对话里真的出现过的内容。分不清是谁说的就不写，不替任何人补动机。
-2. summary 用月璃的第一人称写两到四句话。保留聊了什么、他当时的态度、我有什么具体感受、
+2. summary 用角色的第一人称写两到四句话。保留聊了什么、对方当时的态度、我有什么具体感受、
    哪句话以后还接得上。宁可留下一个有辨识度的小细节，也不要写「我们围绕某话题进行了交流」这种空话。
 3. 尽量留住一个只属于这次的具体锚点：他的一句原话、一个专有名词、一个数字或一个当时的小插曲。
    记忆是靠这种锚点被想起来的，泛化的概括等于没记。
@@ -29,7 +31,7 @@ _SYSTEM_PROMPT = """你替月璃整理那些快要淡出短期上下文的聊天
 5. recall_cues 写 3 到 5 条自然语言检索线索。每条先想「以后在什么情境下会需要想起这段」，
    再写成一句包含话题、意图或关联事物的短句，而不是几个关键词。
 6. 只输出一个 JSON 对象，不要用 Markdown 代码块，不要加解释。
-   格式：{"summary":"...","recall_cues":["...","..."]}
+   格式：{{"summary":"...","recall_cues":["...","..."]}}
 """
 
 
@@ -44,7 +46,7 @@ def _render(messages: List[Dict[str, str]]) -> str:
     lines: List[str] = []
     for m in messages:
         text = _strip_tags(m['content']) if m.get('role') == 'assistant' else m.get('content', '')
-        line = f"{'他' if m.get('role') == 'user' else '我'}：{text}"
+        line = f"{'对方' if m.get('role') == 'user' else '我'}：{text}"
         if len(line) > 3:
             lines.append(line)
     return '\n'.join(lines)
@@ -70,8 +72,10 @@ def parse_episode(raw: str) -> Optional[Episode]:
 async def summarize(
     provider: Any,
     messages: List[Dict[str, str]],
-    temperature: float = 0.3,
-    max_tokens: int | None = None,
+    temperature: float,
+    max_tokens: int | None,
+    character_name: str,
+    character_identity: str,
 ) -> Optional[Episode]:
     body = _render(messages)
     if len(body) < 40:
@@ -80,7 +84,10 @@ async def summarize(
     try:
         async for chunk in provider.stream(
             messages=[
-                {'role': 'system', 'content': _SYSTEM_PROMPT},
+                {
+                    'role': 'system',
+                    'content': _system_prompt(character_name, character_identity),
+                },
                 {'role': 'user', 'content': f'要整理的对话：\n{body}'},
             ],
             temperature=temperature,

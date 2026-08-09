@@ -17,9 +17,6 @@ RelationshipAction = Literal[
     'hold_boundary',
 ]
 
-DEFAULT_RELATIONSHIP_TEMPERATURE = 0.1
-DEFAULT_RELATIONSHIP_MAX_TOKENS = 4096
-
 _ACTION_INSTRUCTIONS: Dict[RelationshipAction, str] = {
     'ignore': '本轮不刻意表现关系远近。',
     'keep_distance': '本轮保持初识分寸。',
@@ -122,8 +119,8 @@ class RelationshipPlanner:
     def __init__(
         self,
         provider: Any,
-        temperature: float = DEFAULT_RELATIONSHIP_TEMPERATURE,
-        max_tokens: int | None = DEFAULT_RELATIONSHIP_MAX_TOKENS,
+        temperature: float,
+        max_tokens: int | None,
     ) -> None:
         self._provider = provider
         self._temperature = temperature

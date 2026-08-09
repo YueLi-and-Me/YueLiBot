@@ -1,5 +1,5 @@
 """
-睡眠概率评估与状态机。直接移植自 src/core/awareness/sleep.ts。
+睡眠概率评估与状态机。
 
 双 sigmoid 乘积模型：就寝端上升 × 起床端下降，无距离折返。
 滞回门槛：入睡需 ≥ cutoff，醒来需 < wakeHysteresis < cutoff，避免边界抖动。
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from src.common.clock import now as current_time
-from src.schedule.plan import planned_sleep_window
+from src.schedule.plan import planned_sleep_window_from_hints
 
 WAKE_GRACE_MS = 10 * 60_000
 WAKE_TRANSITION_MS = 40 * 60_000
@@ -40,6 +40,8 @@ class SleepInputs:
     wake_hint: str
     energy: float
     last_interaction_at: int | None
+    sleep_enabled: bool
+    bedtime_day_boundary: str
 
 
 @dataclass
@@ -82,14 +84,21 @@ def evaluate_sleep(
     wake_hysteresis: float | None = None,
     sleep_started_at: int | None = None,
 ) -> SleepEvaluation:
-    from src.schedule.plan import DayPlan, DayPlanSlot, clock_minutes
-    # Re-use planned_sleep_window by constructing a minimal DayPlan
-    # We need bedtime_hint and wake_hint from SleepInputs
-    from src.schedule.plan import fallback_day_plan
-    plan = fallback_day_plan(inputs.date)
-    plan.bedtime_hint = inputs.bedtime_hint
-    plan.wake_hint = inputs.wake_hint
-    bedtime_at, wake_at = planned_sleep_window(plan)
+    if not inputs.sleep_enabled:
+        return SleepEvaluation(
+            asleep=False,
+            drowsy=False,
+            just_woke=False,
+            probability=0.0,
+        )
+
+    # 复用日程服务对跨日作息的解释，避免睡眠状态机另写一套日期算法。
+    bedtime_at, wake_at = planned_sleep_window_from_hints(
+        inputs.date,
+        inputs.bedtime_hint,
+        inputs.wake_hint,
+        inputs.bedtime_day_boundary,
+    )
 
     stable_jitter = jitter if jitter is not None else sleep_jitter(inputs.date)
     cutoff = 0.72 + (stable_jitter - 0.5) * 0.12
@@ -166,6 +175,9 @@ class SleepStateController:
             self._sleeping = forced
             return SleepState(asleep=forced, drowsy=False, just_woke=False, probability=1.0 if forced else 0.0)
         inputs = self._input_source(now)
+        if not inputs.sleep_enabled:
+            self._disable_sleep()
+            return SleepState(asleep=False, drowsy=False, just_woke=False, probability=0.0)
         evaluated = evaluate_sleep(inputs, now, self._sleeping, sleep_started_at=self._sleep_started_at)
         if now < self._woken_until:
             self._change_state(False, now)
@@ -180,11 +192,18 @@ class SleepStateController:
         now = now if now is not None else current_time()
         self._restore()
         inputs = self._input_source(now)
-        evaluated = evaluate_sleep(inputs, now, self._sleeping, sleep_started_at=self._sleep_started_at)
         forced = self._forced_asleep() if self._forced_asleep else None
         if forced is not None:
             return SleepEvaluation(asleep=forced, drowsy=False, just_woke=False,
                                    probability=1.0 if forced else 0.0)
+        if not inputs.sleep_enabled:
+            return SleepEvaluation(
+                asleep=False,
+                drowsy=False,
+                just_woke=False,
+                probability=0.0,
+            )
+        evaluated = evaluate_sleep(inputs, now, self._sleeping, sleep_started_at=self._sleep_started_at)
         return SleepEvaluation(
             **{**evaluated.__dict__, 'just_woke': not evaluated.asleep and self._is_just_woke(now, evaluated.natural_wake_target_at)}
         )
@@ -204,6 +223,14 @@ class SleepStateController:
             self._woke_at = now
             self._sleep_started_at = None
         self._sleeping = asleep
+        self._persist()
+
+    def _disable_sleep(self) -> None:
+        if not self._sleeping and self._sleep_started_at is None:
+            return
+        self._sleeping = False
+        self._sleep_started_at = None
+        self._woke_at = None
         self._persist()
 
     def _is_just_woke(self, now: int, natural_wake_target_at: int) -> bool:

@@ -91,10 +91,12 @@ class AwarenessService:
                 wake_hint=schedule_inputs['wake_hint'],
                 energy=schedule_inputs['energy'],
                 last_interaction_at=schedule_inputs['last_interaction_at'],
+                sleep_enabled=schedule_inputs['sleep_enabled'],
+                bedtime_day_boundary=schedule_inputs['bedtime_day_boundary'],
             )
 
         date = day_plan_date(now)
-        plan = fallback_day_plan(date)
+        plan = fallback_day_plan(date, self._cfg.schedule)
         desktop_context = self.chat.desktop_context
         return SleepInputs(
             date=plan.date,
@@ -102,6 +104,8 @@ class AwarenessService:
             wake_hint=plan.wake_hint,
             energy=self.chat.persona.get(desktop_context.person.id).energy,
             last_interaction_at=self.chat.memory.last_message_at(desktop_context.stream.id),
+            sleep_enabled=plan.sleep_enabled,
+            bedtime_day_boundary=plan.bedtime_day_boundary,
         )
 
     def _restore_promises(self) -> list[PendingIntent]:

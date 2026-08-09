@@ -266,6 +266,10 @@ def main() -> None:
             energy=lambda: chat_svc.persona.get(desktop_context.person.id).energy,
             last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
             generator=schedule_generator,
+            character_name=cfg.bot.name,
+            character_identity=cfg.personality.identity,
+            character_boundaries=cfg.personality.boundaries,
+            schedule_config=cfg.schedule,
         )
         chat_svc.set_schedule(schedule)
         logger.info("schedule_service_ready")

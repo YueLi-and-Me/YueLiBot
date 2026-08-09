@@ -15,6 +15,8 @@ from typing import List, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+import re
+
 from src.agent.character import (
     ATTENTION_PROMPT,
     BEHAVIOR_PROMPT,
@@ -38,9 +40,9 @@ class BotConfig(BaseModel):
     name: str = CHARACTER_NAME
     # 群聊里可用于叫她的其它名字
     aliases: List[str] = Field(default_factory=list)
-    # 月璃眼中用户的名字/称呼，留空则不特别用名字称呼他
+    # Bot 眼中用户的名字/称呼，留空则不特别用名字称呼他
     user_nickname: str = ''
-    # 月璃和用户的关系：哥哥/姐姐/朋友/自定义文本，留空则不设定这层关系
+    # Bot 和用户的关系：哥哥/姐姐/朋友/自定义文本，留空则不设定这层关系
     relationship: str = ''
 
     @model_validator(mode='after')
@@ -64,6 +66,61 @@ class GroupChatConfig(BaseModel):
 
     at_mention_must_reply: bool = True
     name_mention_probability: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class ScheduleConfig(BaseModel):
+    """日程形状与作息开关；这些是用户选择，不由解析器写死。"""
+
+    min_slots: int = Field(default=8, ge=1, le=24)
+    max_slots: int = Field(default=10, ge=1, le=24)
+    sleep_enabled: bool = True
+    fallback_bedtime: str = '23:00'
+    fallback_wake: str = '07:00'
+    bedtime_day_boundary: str = '02:00'
+    fallback_activity: str = Field(
+        default='按自己的节奏度过这段时间',
+        min_length=1,
+        max_length=72,
+    )
+    fallback_mood: str = Field(default='状态平稳', min_length=1, max_length=40)
+    fallback_theme: str = Field(
+        default='按自己的节奏度过今天。',
+        min_length=1,
+        max_length=72,
+    )
+    fallback_carry_over: str = Field(
+        default='无',
+        min_length=1,
+        max_length=72,
+    )
+    generation_retry_interval_minutes: int = Field(default=10, ge=1, le=1440)
+
+    @field_validator(
+        'fallback_activity',
+        'fallback_mood',
+        'fallback_theme',
+        'fallback_carry_over',
+    )
+    @classmethod
+    def _strip_fallback_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('日程备用文本不能为空')
+        return normalized
+
+    @model_validator(mode='after')
+    def _validate_schedule(self) -> 'ScheduleConfig':
+        if self.min_slots > self.max_slots:
+            raise ValueError('schedule.min_slots 不能大于 schedule.max_slots')
+        for field_name, value in (
+            ('fallback_bedtime', self.fallback_bedtime),
+            ('fallback_wake', self.fallback_wake),
+            ('bedtime_day_boundary', self.bedtime_day_boundary),
+        ):
+            match = re.fullmatch(r'(\d{2}):(\d{2})', value)
+            if match is None or int(match.group(1)) > 23 or int(match.group(2)) > 59:
+                raise ValueError(f'schedule.{field_name} 必须是合法 HH:MM 时间')
+        return self
 
 
 class PersonalityConfig(BaseModel):
@@ -318,6 +375,7 @@ class BotDocument(BaseModel):
     inner: InnerConfig
     bot: BotConfig
     group_chat: GroupChatConfig = Field(default_factory=GroupChatConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     personality: PersonalityConfig
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
 
@@ -333,6 +391,7 @@ class FeatureDocument(BaseModel):
 class Config(BaseModel):
     bot: BotConfig = Field(default_factory=BotConfig)
     group_chat: GroupChatConfig = Field(default_factory=GroupChatConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)

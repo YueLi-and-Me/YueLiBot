@@ -17,7 +17,6 @@ from .expression import render_expression_habits, select_expression_habits
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.common.clock import now as current_time
-from src.schedule.daily import describe_schedule
 
 _PROTOCOL = f"""只输出下列标签，不要在标签外写正文：
 
@@ -77,9 +76,8 @@ def _time_context(now: datetime, schedule: Optional[str] = None) -> str:
         '时间只是这段对话的背景。除非他正在聊作息、饭点或时间本身，否则不要像报时一样主动提起；'
         '真要关心也只自然带一句，不要每到固定时段重复问候。',
     ]
-    schedule_text = schedule if schedule is not None else describe_schedule(now)
-    if schedule_text:
-        lines.extend(['', schedule_text])
+    if schedule:
+        lines.extend(['', schedule])
     return '\n'.join(lines)
 
 
