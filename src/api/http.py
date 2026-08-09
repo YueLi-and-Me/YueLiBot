@@ -17,9 +17,13 @@ from .state import app_state   # 全局服务状态
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.config.loader import get_config
+from src.observe import events as trace
+from src.observe.board import board as stage_board
+from src.observe.events import enter_stage
+from src.observe.stages import GATED, RECEIVED
+from src.observe.store import since as events_since
 from src.platform_io.reply_gate import decide_reply
-from src.platform_io.types import InboundMessage
-from src.services.trace import trace
+from src.platform_io.types import InboundMessage, StreamRef
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -193,6 +197,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     )
     if app_state.register_platform_stream is not None:
         app_state.register_platform_stream(context.stream)
+    stream_name = _stream_label(context.stream)
+    enter_stage(
+        RECEIVED, context.stream.id, stream_name, body.text[:40],
+    )
     group_chat = app_state.group_chat_config
     reply_count = 0
     if context.stream.kind == 'group':
@@ -219,6 +227,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         reason=decision.reason,
     )
     if not decision.accepted:
+        enter_stage(
+            GATED, context.stream.id, stream_name,
+            f'未回复：{decision.reason}',
+        )
         app_state.chat.record_group_observation(InboundMessage(
             text=body.text,
             context=context,
@@ -326,6 +338,20 @@ async def observability(stream_id: int = Query(alias='streamId')) -> JSONRespons
     return JSONResponse(payload)
 
 
+def _stream_label(stream: StreamRef) -> str:
+    """面板上认得出是哪条 stream 的短名。"""
+    if stream.platform == 'desktop':
+        return '桌面'
+    kind = '群聊' if stream.kind == 'group' else '私聊'
+    return f'{stream.platform.upper()} {kind} {stream.external_id}'
+
+
+@router.get('/stages', dependencies=[Depends(_auth)])
+async def stages() -> dict:
+    """每条 stream 当前停在哪一步，供观察面板轮询。"""
+    return {'stages': stage_board.snapshot()}
+
+
 @router.get('/streams', dependencies=[Depends(_auth)])
 async def streams() -> dict:
     """列出只读观察面板可选择的全部 stream。"""
@@ -375,4 +401,4 @@ async def debug_trace(since: int = 0) -> JSONResponse:
 
     增量拉取：seq 之后的条目，配合前端轮询，不用每次全量搬。
     """
-    return JSONResponse(trace.since(since))
+    return JSONResponse(events_since(since, 1_000).events)
