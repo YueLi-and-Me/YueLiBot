@@ -314,6 +314,17 @@ function renderSnapshot(payload: ObservabilityPayload): void {
   renderVoice(payload)
 }
 
+/** 把 messages 数组摊成 [role] + 正文的分段文本，直接 JSON 化会把提示词里的换行全转义掉。 */
+function formatMessages(messages: unknown): string {
+  if (!Array.isArray(messages)) return String(messages ?? '')
+  return messages.map((item) => {
+    const entry = record(item)
+    const content = entry.content
+    const contentText = typeof content === 'string' ? content : JSON.stringify(content)
+    return `[${text(entry.role)}]\n${contentText}`
+  }).join('\n\n')
+}
+
 function traceDetail(entry: TraceEntry): string {
   const { seq: _seq, at: _at, kind: _kind, turnId: _turnId, ...detail } = entry
   return JSON.stringify(detail)
@@ -355,7 +366,7 @@ function renderTrace(): void {
         const summary = document.createElement('summary')
         summary.textContent = '发送的 Prompt'
         const pre = document.createElement('pre')
-        pre.textContent = typeof entry.messages === 'string' ? entry.messages : JSON.stringify(entry.messages, null, 2)
+        pre.textContent = formatMessages(entry.messages)
         details.append(summary, pre)
         card.append(details)
       } else if (entry.kind === 'llm_final') {
