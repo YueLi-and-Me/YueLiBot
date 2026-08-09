@@ -281,11 +281,15 @@ class VectorConfig(BaseModel):
     enabled: bool = False
 
 
+class LogConfig(BaseModel):
+    event_retention_count: int = Field(default=20_000, ge=1)
+    event_retention_hours: int = Field(default=72, ge=0)
+
+
 class AdvancedConfig(BaseModel):
     log_level: str = 'INFO'
     # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890
     https_proxy: str = ''
-
 
 
 class ApiProviderConfig(BaseModel):
@@ -425,6 +429,7 @@ class FeatureDocument(BaseModel):
     vision: VisionConfig
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig
+    log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig
 
 
@@ -441,4 +446,5 @@ class Config(BaseModel):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)
+    log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)

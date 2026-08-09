@@ -409,6 +409,10 @@ export interface YueliConfig {
   vector: {
     enabled: boolean
   }
+  log: {
+    event_retention_count: number
+    event_retention_hours: number
+  }
   advanced: {
     log_level: string; https_proxy: string
   }

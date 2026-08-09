@@ -198,6 +198,7 @@ def _load_split_config(directory: Path) -> Config:
         vision=features_vision,
         perception=features_perception,
         vector=features_vector,
+        log=features_document.log,
         advanced=features_document.advanced,
     )
 

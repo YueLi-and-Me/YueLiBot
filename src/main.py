@@ -148,7 +148,11 @@ def main() -> None:
     from src.platform_io.types import StreamRef
     db = open_db(db_path)
     run_migrations(db, db_path)
-    configure_event_store(db_path)
+    configure_event_store(
+        db_path,
+        retention_count=cfg.log.event_retention_count,
+        retention_hours=cfg.log.event_retention_hours,
+    )
     logger.info("db_ready", path=str(db_path))
 
     # 初始化 ChatService

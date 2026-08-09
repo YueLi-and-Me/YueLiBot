@@ -177,6 +177,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
   vector: {
     enabled: false,
   },
+  log: {
+    event_retention_count: 20_000,
+    event_retention_hours: 72,
+  },
   advanced: {
     log_level: 'INFO', https_proxy: '',
   },
@@ -643,7 +647,20 @@ function readSplitConfig(directory: string): YueliConfig {
   const tts = recordAt(features, 'tts', featuresPath)
   const vision = recordAt(features, 'vision', featuresPath)
   const vector = recordAt(features, 'vector', featuresPath)
+  const log = features.log === undefined ? {} : recordAt(features, 'log', featuresPath)
   const advanced = recordAt(features, 'advanced', featuresPath)
+  const eventRetentionCount = numberAtOr(
+    log, 'event_retention_count', DEFAULT_CONFIG.log.event_retention_count, featuresPath,
+  )
+  const eventRetentionHours = numberAtOr(
+    log, 'event_retention_hours', DEFAULT_CONFIG.log.event_retention_hours, featuresPath,
+  )
+  if (!Number.isInteger(eventRetentionCount) || eventRetentionCount < 1) {
+    throw new Error('log.event_retention_count 必须是正整数')
+  }
+  if (!Number.isInteger(eventRetentionHours) || eventRetentionHours < 0) {
+    throw new Error('log.event_retention_hours 必须是非负整数')
+  }
   const ttsFormat = stringAt(tts, 'format', featuresPath)
   if (!['mp3', 'wav', 'opus'].includes(ttsFormat)) {
     throw new Error(`${featuresPath} 的 tts.format 必须是 mp3、wav 或 opus`)
@@ -697,6 +714,10 @@ function readSplitConfig(directory: string): YueliConfig {
     },
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
+    },
+    log: {
+      event_retention_count: eventRetentionCount,
+      event_retention_hours: eventRetentionHours,
     },
     advanced: {
       log_level: stringAt(advanced, 'log_level', featuresPath),
@@ -1158,6 +1179,12 @@ surfaces = ${tomlStringArray(cfg.perception.surfaces)}
 # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖
 enabled = ${tomlValue(cfg.vector.enabled)}
 
+[log]
+# 管线事件最多保留多少条
+event_retention_count = ${tomlValue(cfg.log.event_retention_count)}
+# 管线事件最多保留多少小时
+event_retention_hours = ${tomlValue(cfg.log.event_retention_hours)}
+
 [advanced]
 # Python 日志等级，例如 DEBUG / INFO / WARNING / ERROR
 log_level = ${tomlValue(cfg.advanced.log_level)}
@@ -1206,6 +1233,12 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     throw new Error('群聊窗口内最大回复次数必须是非负整数')
   }
   assertSchedule(cfg.schedule, '日程配置')
+  if (!Number.isInteger(cfg.log.event_retention_count) || cfg.log.event_retention_count < 1) {
+    throw new Error('事件保留条数必须是正整数')
+  }
+  if (!Number.isInteger(cfg.log.event_retention_hours) || cfg.log.event_retention_hours < 0) {
+    throw new Error('事件保留小时数必须是非负整数')
+  }
   if (!Array.isArray(cfg.perception.surfaces)) {
     throw new Error('perception.surfaces 必须是数组')
   }
