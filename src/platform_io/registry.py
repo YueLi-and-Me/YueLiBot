@@ -252,7 +252,7 @@ class StreamRegistry:
 
         用于 owner 这类「配置里只能填一个号」的绑定：配置项是单值的，
         数据也该跟着是单值的。留着旧号的后果是它永远解析成 owner——
-        万一曾经填错成别人的号，那个人会一直读得到桌主的记忆。
+        万一曾经填错成别人的号，那个人会一直读得到用户本人的记忆。
         """
         platform = _require_text(platform, "platform")
         external_id = _require_text(external_id, "external_id")

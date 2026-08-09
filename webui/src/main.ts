@@ -307,7 +307,7 @@ function renderSnapshot(payload: ObservabilityPayload): void {
 function renderPersonSummary(person: PersonSummary): void {
   const body = section(
     person.displayName,
-    person.kind === 'owner' ? '桌主' : `联系人 #${person.id}`,
+    person.kind === 'owner' ? '本人' : `联系人 #${person.id}`,
     false,
     personsGrid,
   )
@@ -348,7 +348,7 @@ function renderPersonList(payload: PersonsPayload): void {
 function renderPersonDetail(profile: PersonProfile): void {
   personsTitle.textContent = profile.displayName
   personsSubtitle.textContent = profile.kind === 'owner'
-    ? '桌主的人物画像'
+    ? '用户本人的独立画像'
     : `联系人 #${profile.id} 的人物画像`
   personsGrid.replaceChildren()
 

@@ -332,7 +332,7 @@ function renderConversation(payload: ObservabilityPayload): void {
   const participants = document.createElement('div')
   participants.className = 'chip-row'
   for (const person of payload.conversation.participants) {
-    chip(participants, person.kind === 'owner' ? '桌主' : '联系人', person.displayName)
+    chip(participants, person.kind === 'owner' ? '本人' : '联系人', person.displayName)
   }
   body.append(participants)
 }

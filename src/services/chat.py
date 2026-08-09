@@ -716,8 +716,8 @@ class ChatService:
             'displayName': self._profile_display_name(person, identities, platform),
         }
 
-    @staticmethod
     def _profile_display_name(
+        self,
         person: PersonRef,
         identities: List[IdentityRef],
         preferred_platform: str | None,
@@ -732,7 +732,11 @@ class ChatService:
         if identities:
             return identities[0].display_name
         if person.kind == 'owner':
-            return '桌主'
+            if self._cfg is not None:
+                user_nickname = self._cfg.bot.user_nickname.strip()
+                if user_nickname:
+                    return user_nickname
+            return '用户本人'
         return f'未绑定联系人 #{person.id}'
 
     def _next_turn(self) -> int:
