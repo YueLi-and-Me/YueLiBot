@@ -136,20 +136,19 @@ def main() -> None:
     _announce_port(port)
     _announce_token(backend_runtime.token)
 
-    from src.services.trace import trace
-    trace.configure(
-        data_dir / "logs" / "trace.jsonl",
-        max_bytes=cfg.advanced.trace_max_bytes,
-    )
+    from src.llm_models.snapshot import configure as configure_snapshots
+    configure_snapshots(data_dir / 'logs' / 'llm_request')
 
     from src.common.db.connection import open_db
     from src.common.db.migrations.manager import run_migrations
+    from src.observe.store import configure as configure_event_store
     from src.platform_io.broker import PlatformBroker
     from src.platform_io.drivers.qq_ws import QqWebSocketDriver
     from src.platform_io.registry import StreamRegistry
     from src.platform_io.types import StreamRef
     db = open_db(db_path)
     run_migrations(db, db_path)
+    configure_event_store(db_path)
     logger.info("db_ready", path=str(db_path))
 
     # 初始化 ChatService
