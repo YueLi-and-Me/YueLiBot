@@ -15,7 +15,6 @@ import asyncio
 import inspect
 import random
 
-from .trace import bind_origin, trace
 from .trace_console import mark_turn_start, render_turn, render_turn_error
 from .vector import VectorService
 
@@ -40,7 +39,13 @@ from src.config.schema import (
     PerceptionConfig,
 )
 from src.llm_models.openai import LlmError
+from src.llm_models.snapshot import dump as dump_llm_request
 from src.memory.store import EpisodeInput, FactInput, MemoryStore
+from src.observe import events as trace
+from src.observe.events import bind_origin, enter_stage
+from src.observe.stages import (
+    CONTEXT, DISPATCHING, EXPRESSION, FAILED, GENERATING, REPLIED, Stage,
+)
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
 from src.platform_io.broker import PlatformBroker
 from src.platform_io.registry import StreamRegistry
@@ -324,6 +329,8 @@ class ChatService:
                 outbound_segments: list[str] = []
                 outbound_segment: list[str] | None = None
                 interrupted = False
+                self._mark_stage(context, CONTEXT, turn_id=turn)
+                self._mark_stage(context, EXPRESSION, turn_id=turn)
                 messages = await self._build_messages_with_vector(
                     context,
                     trimmed,
@@ -331,6 +338,7 @@ class ChatService:
                     cancel_event,
                     inbound.bot_name,
                 )
+                self._mark_stage(context, GENERATING, turn_id=turn)
                 trace.emit(
                     'llm_request',
                     turnId=turn,
@@ -412,6 +420,7 @@ class ChatService:
                     # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
                 if context.stream.platform == 'desktop':
+                    self._mark_stage(context, DISPATCHING, turn_id=turn)
                     await self._emit(stream_id, 'chat.done', {'turnId': turn, 'kind': 'done'})
                 else:
                     await self._dispatch_outbound(
@@ -419,6 +428,7 @@ class ChatService:
                         turn,
                         outbound_segments,
                     )
+                self._mark_stage(context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
 
             except LlmError as exc:
@@ -429,8 +439,20 @@ class ChatService:
                 if not reply_persisted and user_msg_id is not None:
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
-                trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc))
+                snapshot = dump_llm_request('chat', exc.kind, str(exc), {
+                    'turnId': turn,
+                    'stage': trace.current_stage_id(),
+                    'streamId': stream_id,
+                })
+                trace.emit(
+                    'llm_error',
+                    turnId=turn,
+                    errorKind=exc.kind,
+                    message=str(exc),
+                    snapshotPath=str(snapshot) if snapshot else None,
+                )
                 render_turn_error(turn, sender['senderLabel'], trimmed, exc.kind, str(exc))
+                self._mark_stage(context, FAILED, f'{exc.kind}：{exc}', turn_id=turn)
                 if context.stream.platform == 'desktop':
                     await self._emit(stream_id, 'chat.error', {
                         'turnId': turn,
@@ -441,14 +463,27 @@ class ChatService:
             except Exception as exc:
                 if not reply_persisted and user_msg_id is not None:
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
+                snapshot = dump_llm_request('chat', type(exc).__name__, str(exc), {
+                    'turnId': turn,
+                    'stage': trace.current_stage_id(),
+                    'streamId': stream_id,
+                })
                 logger.error(
                     '对话处理失败',
                     streamId=stream_id,
                     turnId=turn,
                     error=str(exc),
+                    snapshot=str(snapshot) if snapshot else None,
                 )
-                trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc))
+                trace.emit(
+                    'llm_error',
+                    turnId=turn,
+                    errorKind='unknown',
+                    message=str(exc),
+                    snapshotPath=str(snapshot) if snapshot else None,
+                )
                 render_turn_error(turn, sender['senderLabel'], trimmed, 'unknown', str(exc))
+                self._mark_stage(context, FAILED, str(exc), turn_id=turn)
                 await self._emit(
                     stream_id,
                     'chat.error',
@@ -466,6 +501,22 @@ class ChatService:
 
         task.add_done_callback(_remove_completed)
         return turn
+
+    def _mark_stage(
+        self,
+        context: ConversationContext,
+        stage: Stage,
+        detail: str = '',
+        turn_id: int | None = None,
+    ) -> None:
+        stream = context.stream
+        if stream.platform == 'desktop':
+            name = '桌面'
+        else:
+            kind = '群聊' if stream.kind == 'group' else '私聊'
+            name = f'{stream.platform.upper()} {kind} {stream.external_id}'
+        active_turn_id = self._active_turns.get(stream.id) if turn_id is None else turn_id
+        enter_stage(stage, stream.id, name, detail, active_turn_id)
 
     def record_group_observation(self, inbound: InboundMessage) -> int:
         """原样保存无需回复的群消息，不推进关系状态也不调用模型。"""
@@ -1173,6 +1224,7 @@ class ChatService:
         segments: list[str],
     ) -> None:
         """把非桌面整轮回复交给 broker，桌面永远不走这条路径。"""
+        self._mark_stage(context, DISPATCHING, turn_id=turn)
         if context.stream.platform == 'desktop':
             raise RuntimeError('desktop stream 不能经由非桌面 broker 投递')
         if self._broker is None:
