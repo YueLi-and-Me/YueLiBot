@@ -371,6 +371,7 @@ class ModelDefinitionConfig(BaseModel):
     model_identifier: str = ''
     api_provider: str
     extra_body: Dict[str, Any] = Field(default_factory=dict)
+    reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     embedding_dim: int = 0
 
     @model_validator(mode='before')
@@ -446,6 +447,7 @@ class ModelCandidate(BaseModel):
     # 发给厂商接口的真实模型 ID
     identifier: str = ''
     extra_body: Dict[str, Any] = Field(default_factory=dict)
+    reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     client_type: Literal['openai', 'volcengine'] = 'openai'
     app_id: str = ''
     embedding_dim: int = 0

@@ -124,6 +124,7 @@ def _build_routing(
             auth_name=provider.auth_name,
             identifier=model.model_identifier.strip(),
             extra_body=model.extra_body,
+            reasoning_parse_mode=model.reasoning_parse_mode,
             client_type=provider.client_type,
             app_id=provider.app_id,
             embedding_dim=model.embedding_dim,

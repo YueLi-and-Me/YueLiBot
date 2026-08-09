@@ -1,5 +1,6 @@
 import type {
-  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, SelectionStrategy, YueliConfig,
+  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, ReasoningParseMode,
+  SelectionStrategy, YueliConfig,
 } from '../shared/ipc.ts'
 
 /**
@@ -257,6 +258,11 @@ function renderModel(cfg: YueliConfig, model: ModelDefinitionConfig, index: numb
 
   const advanced = el('details', 'advanced-fields')
   advanced.append(el('summary', '', '高级'))
+  advanced.append(selectField('推理内容解析', model.reasoning_parse_mode, [
+    ['field', '接口字段'],
+    ['tag', '<think> 标签'],
+    ['none', '不解析'],
+  ], (value) => { model.reasoning_parse_mode = value as ReasoningParseMode }))
   advanced.append(numberField('向量维度（只有 embedding 模型要填）', model.embedding_dim, (value) => {
     model.embedding_dim = value
   }))
@@ -387,7 +393,7 @@ addModelButton.addEventListener('click', () => {
   loadedConfig.models.push({
     name: uniqueName('模型', loadedConfig.models.map((m) => m.name)),
     model_identifier: '', api_provider: provider.name,
-    extra_body: {}, embedding_dim: 0,
+    extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0,
   })
   renderDynamicSections()
 })

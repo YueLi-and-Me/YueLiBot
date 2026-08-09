@@ -274,6 +274,7 @@ export interface ObservabilityBridge {
 /** 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音私有协议，只能用于 tts。 */
 export type ClientType = 'openai' | 'volcengine'
 export type AuthType = 'bearer' | 'header' | 'query' | 'none'
+export type ReasoningParseMode = 'field' | 'tag' | 'none'
 
 /**
  * 任务在多个候选模型之间的挑选顺序。
@@ -309,6 +310,7 @@ export interface ModelDefinitionConfig {
   model_identifier: string
   api_provider: string
   extra_body: Record<string, unknown>
+  reasoning_parse_mode: ReasoningParseMode
   /** 向量维度，仅 embedding 模型使用 */
   embedding_dim: number
 }

@@ -7,7 +7,6 @@ OpenAI 兼容的异步流式对话客户端。直接移植自 src/core/llm/opena
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 from urllib.parse import urlencode
 import asyncio
@@ -21,6 +20,8 @@ from .snapshot import current_candidate, record_provider_request
 from src.common.logger import get_logger
 
 logger = get_logger(__name__)
+
+ReasoningParseMode = Literal['field', 'tag', 'none']
 
 
 class LlmError(Exception):
@@ -56,11 +57,59 @@ def _classify_code(code: str) -> str:
     return 'unknown'
 
 
+class _ReasoningTagParser:
+    _OPEN = '<think>'
+    _CLOSE = '</think>'
+
+    def __init__(self) -> None:
+        self._inside = False
+        self._buffer = ''
+
+    def push(self, text: str) -> list[dict[str, str]]:
+        self._buffer += text
+        chunks: list[dict[str, str]] = []
+        while self._buffer:
+            marker = self._CLOSE if self._inside else self._OPEN
+            index = self._buffer.find(marker)
+            if index >= 0:
+                self._append(chunks, self._buffer[:index])
+                self._buffer = self._buffer[index + len(marker):]
+                self._inside = not self._inside
+                continue
+
+            pending = self._pending_suffix(marker)
+            ready_length = len(self._buffer) - pending
+            if ready_length:
+                self._append(chunks, self._buffer[:ready_length])
+                self._buffer = self._buffer[ready_length:]
+            break
+        return chunks
+
+    def flush(self) -> list[dict[str, str]]:
+        chunks: list[dict[str, str]] = []
+        self._append(chunks, self._buffer)
+        self._buffer = ''
+        return chunks
+
+    def _append(self, chunks: list[dict[str, str]], value: str) -> None:
+        if value:
+            key = 'reasoning' if self._inside else 'text'
+            chunks.append({key: value})
+
+    def _pending_suffix(self, marker: str) -> int:
+        maximum = min(len(self._buffer), len(marker) - 1)
+        for size in range(maximum, 0, -1):
+            if marker.startswith(self._buffer[-size:]):
+                return size
+        return 0
+
+
 class OpenAiChatProvider:
     def __init__(self, base_url: str, api_key: str, model: str,
                  headers: dict | None = None, extra_body: dict | None = None,
                  auth_type: Literal['bearer', 'header', 'query', 'none'] = 'bearer',
                  auth_name: str = '',
+                 reasoning_parse_mode: ReasoningParseMode = 'field',
                  timeout_ms: int = 120_000, max_retries: int = 2,
                  retry_interval_ms: int = 800) -> None:
         if not model.strip():
@@ -72,6 +121,7 @@ class OpenAiChatProvider:
         self._auth_name = auth_name.strip()
         self._headers = headers or {}
         self._extra_body = extra_body or {}
+        self._reasoning_parse_mode = reasoning_parse_mode
         self._timeout = timeout_ms / 1000
         self._max_retries = max_retries
         self._retry_interval = retry_interval_ms / 1000
@@ -192,6 +242,11 @@ class OpenAiChatProvider:
             secret_header_name=self._auth_name if self._auth_type == 'header' else '',
             secret_query_name=self._auth_name if self._auth_type == 'query' else '',
         )
+        tag_parser = (
+            _ReasoningTagParser()
+            if self._reasoning_parse_mode == 'tag'
+            else None
+        )
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
@@ -220,18 +275,31 @@ class OpenAiChatProvider:
                     async for line in resp.aiter_lines():
                         if signal and signal.is_set():
                             raise LlmError('aborted', '生成已中断')
-                        chunk = _parse_sse_line(line)
+                        chunk = _parse_sse_line(line, self._reasoning_parse_mode)
                         if chunk == 'done':
+                            if tag_parser is not None:
+                                for parsed in tag_parser.flush():
+                                    yield parsed
                             return
                         if chunk:
-                            yield chunk
+                            if tag_parser is None:
+                                yield chunk
+                            else:
+                                for parsed in tag_parser.push(chunk['text']):
+                                    yield parsed
+                    if tag_parser is not None:
+                        for parsed in tag_parser.flush():
+                            yield parsed
             except httpx.TimeoutException:
                 raise LlmError('network', f'请求超时（{self._timeout}s）')
             except httpx.RequestError as exc:
                 raise LlmError('network', f'连不上 {self.base_url}', str(exc))
 
 
-def _parse_sse_line(line: str) -> dict | str | None:
+def _parse_sse_line(
+    line: str,
+    reasoning_parse_mode: ReasoningParseMode = 'field',
+) -> dict | str | None:
     line = line.strip()
     if not line or line.startswith(':') or not line.startswith('data:'):
         return None
@@ -250,7 +318,11 @@ def _parse_sse_line(line: str) -> dict | str | None:
     if not delta:
         return None
     text = delta.get('content')
-    reasoning = delta.get('reasoning_content') or delta.get('reasoning')
+    reasoning = None
+    if reasoning_parse_mode == 'field':
+        reasoning = delta.get('reasoning_content')
+        if reasoning is None:
+            reasoning = delta.get('reasoning')
     if text is None and reasoning is None:
         return None
     result: dict[str, Any] = {}

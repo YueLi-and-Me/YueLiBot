@@ -13,7 +13,6 @@
  · 标签被网络包切断（`<say emo` + `tion="害羞">` 分两次到）
  · 模型完全不按格式，直接吐纯文本 —— 不能丢，按隐式发言处理
  · 模型漏写 `</say>` —— flush 时兜底收尾
- · 推理模型把思维链混在正文里（`<think>`）—— 必须丢弃
 """
 
 from __future__ import annotations
@@ -71,7 +70,7 @@ ParseEvent = Union[SayEvent, TextEvent, SayEndEvent, MemoryEvent, MoodEvent, Pro
 # ─────────────────────────────────────────────────────────────────────
 # 内部会处理的标签名。其余一律当普通文本。
 # ─────────────────────────────────────────────────────────────────────
-_KNOWN = frozenset(['say', 'memory', 'mood', 'promise', 'think', 'thinking'])
+_KNOWN = frozenset(['say', 'memory', 'mood', 'promise'])
 
 _State = Literal['outside', 'say', 'memory', 'skip']
 
@@ -249,11 +248,6 @@ class ResponseParser:
             if at is not None and what:
                 out.append(PromiseEvent(at=at, what=what))
             return
-
-        # think / thinking: discard
-        if not closing and not self_closing:
-            self._skip_until = f'</{name}>'
-            self._state = 'skip'
 
     def _step_memory(self, out: list[ParseEvent]) -> bool:
         # 接受两种闭合写法：<memory> 正式名和遗留的 <system_reminder>

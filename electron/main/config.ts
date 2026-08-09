@@ -155,7 +155,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   api_providers: [DEFAULT_PROVIDER],
   models: [{
     name: 'chat', model_identifier: '', api_provider: '主力',
-    extra_body: {}, embedding_dim: 0,
+    extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0,
   }],
   model_tasks: {
     chat: { model_list: ['chat'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
@@ -452,18 +452,23 @@ function parseModels(
   ) as YueliConfig['model_tasks']
   const definitions = document.models
   if (!Array.isArray(definitions)) throw new Error(`${path} 缺少 [[models]]`)
-  const models = definitions.map((value, index) => {
+  const models = definitions.map<ModelDefinitionConfig>((value, index) => {
     const itemPath = `${path} 的 models[${index}]`
     if (!isRecord(value)) throw new Error(`${itemPath} 必须是表`)
     if ('thinking' in value) {
       throw new Error(`${itemPath} 的 thinking 已经取消，请改用 extra_body`)
     }
     const extraBody = value.extra_body === undefined ? {} : recordAt(value, 'extra_body', itemPath)
+    const reasoningMode = stringAtOr(value, 'reasoning_parse_mode', 'field', itemPath)
+    if (reasoningMode !== 'field' && reasoningMode !== 'tag' && reasoningMode !== 'none') {
+      throw new Error(`${itemPath} 的 reasoning_parse_mode 只能是 field、tag 或 none`)
+    }
     return {
       name: stringAt(value, 'name', itemPath),
       model_identifier: stringAt(value, 'model_identifier', itemPath),
       api_provider: stringAt(value, 'api_provider', itemPath),
       extra_body: structuredClone(extraBody),
+      reasoning_parse_mode: reasoningMode,
       embedding_dim: numberAtOr(value, 'embedding_dim', 0, itemPath),
     }
   })
@@ -911,6 +916,7 @@ function readLegacyConfig(path: string): YueliConfig {
     model_identifier: typeof llm.model === 'string' ? llm.model : '',
     api_provider: chat.providerName,
     extra_body: {},
+    reasoning_parse_mode: 'field',
     embedding_dim: 0,
   })
   tasks.chat = { ...tasks.chat, model_list: ['chat'], selection_strategy: 'sequential' }
@@ -922,7 +928,8 @@ function readLegacyConfig(path: string): YueliConfig {
     const connection = separate ? legacyConnection(vision, '视觉', chat) : chat
     models.push({
       name: 'vision', model_identifier: vision.model,
-      api_provider: pushProvider(connection), extra_body: {}, embedding_dim: 0,
+      api_provider: pushProvider(connection), extra_body: {},
+      reasoning_parse_mode: 'field', embedding_dim: 0,
     })
     tasks.vision = { ...tasks.vision, model_list: ['vision'], selection_strategy: 'sequential' }
   }
@@ -931,7 +938,8 @@ function readLegacyConfig(path: string): YueliConfig {
     connection.kind = connection.client_type === 'volcengine' ? 'volcengine' : 'openai'
     models.push({
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
-      api_provider: pushProvider(connection), extra_body: {}, embedding_dim: 0,
+      api_provider: pushProvider(connection), extra_body: {},
+      reasoning_parse_mode: 'none', embedding_dim: 0,
     })
     tasks.tts = { ...tasks.tts, model_list: ['tts'], selection_strategy: 'sequential' }
   }
@@ -945,6 +953,7 @@ function readLegacyConfig(path: string): YueliConfig {
     models.push({
       name: 'embedding', model_identifier: vector.embedding_model,
       api_provider: pushProvider(connection), extra_body: {},
+      reasoning_parse_mode: 'none',
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
     tasks.embedding = {
@@ -1104,6 +1113,8 @@ model_identifier = ${tomlString(model.model_identifier)}
 api_provider = ${tomlString(model.api_provider)}
 # 原样并入请求体，按厂商接口填写
 extra_body = ${tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)}
+# field = 接口字段；tag = <think>；none = 不解析
+reasoning_parse_mode = ${tomlString(model.reasoning_parse_mode)}
 # 向量维度，仅 embedding 模型使用；其它模型保持 0
 embedding_dim = ${model.embedding_dim}`
 }
@@ -1447,6 +1458,9 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
 
   for (const model of cfg.models) {
     tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)
+    if (!['field', 'tag', 'none'].includes(model.reasoning_parse_mode)) {
+      throw new Error(`模型 ${model.name} 的 reasoning_parse_mode 无效`)
+    }
     if (!cfg.api_providers.some((provider) => provider.name === model.api_provider)) {
       throw new Error(`模型 ${model.name} 挂在不存在的服务商 ${model.api_provider} 上`)
     }
@@ -1572,6 +1586,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         model_identifier: parsed.LLM_MODEL,
         api_provider: DEFAULT_PROVIDER.name,
         extra_body: {},
+        reasoning_parse_mode: 'field',
         embedding_dim: 0,
       }] : [],
       model_tasks: {

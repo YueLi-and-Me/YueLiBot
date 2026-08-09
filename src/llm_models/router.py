@@ -123,6 +123,7 @@ class ModelRouter:
                 auth_type=candidate.auth_type,
                 auth_name=candidate.auth_name,
                 extra_body=candidate.extra_body,
+                reasoning_parse_mode=candidate.reasoning_parse_mode,
                 timeout_ms=candidate.timeout_ms,
                 max_retries=candidate.max_retries,
                 retry_interval_ms=candidate.retry_interval_ms,
