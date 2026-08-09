@@ -164,7 +164,6 @@ class ChatService:
                 expression_provider,
                 temperature=generation.expression.temperature,
                 max_tokens=generation.expression.token_limit,
-                thinking=generation.expression.thinking,
             )
             if expression_provider is not None
             else None

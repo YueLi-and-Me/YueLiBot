@@ -147,14 +147,14 @@ export const DEFAULT_CONFIG: YueliConfig = {
     chat: { temperature: 0.85, max_tokens: 0 },
     proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
     summary: { temperature: 0.3, max_tokens: 0 },
-    schedule: { temperature: 0.95, max_tokens: 4096, thinking: 'disabled' },
-    expression: { temperature: 0.1, max_tokens: 4096, thinking: 'disabled' },
+    schedule: { temperature: 0.95, max_tokens: 4096 },
+    expression: { temperature: 0.1, max_tokens: 4096 },
     vision: { temperature: 0.3, max_tokens: 120 },
   },
   api_providers: [DEFAULT_PROVIDER],
   models: [{
     name: 'chat', model_identifier: '', api_provider: '主力',
-    thinking: 'disabled', embedding_dim: 0,
+    extra_body: {}, embedding_dim: 0,
   }],
   model_tasks: {
     chat: { model_list: ['chat'], selection_strategy: 'sequential' },
@@ -340,17 +340,12 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
         taskConfig, 'max_tokens', result[task].max_tokens, `${path} 的 generation.${task}`,
       ),
     }
-    if (task === 'schedule' || task === 'expression') {
-      const taskPath = `${path} 的 generation.${task}`
-      const thinking = stringAtOr(taskConfig, 'thinking', result[task].thinking, taskPath)
-      if (!['inherit', 'disabled', 'enabled', 'auto'].includes(thinking)) {
-        throw new Error(`${taskPath}.thinking 必须是 inherit、disabled、enabled 或 auto`)
-      }
-      result[task] = {
-        ...parsed,
-        thinking: thinking as GenerationConfig[typeof task]['thinking'],
-      }
-    } else if (task === 'proactive') {
+    if ('thinking' in taskConfig) {
+      throw new Error(
+        `${path} 的 generation.${task}.thinking 已经取消，请改用模型条目的 extra_body`,
+      )
+    }
+    if (task === 'proactive') {
       result.proactive = {
         ...parsed,
         enabled: taskConfig.enabled === undefined
@@ -412,15 +407,15 @@ function parseModels(
   const models = definitions.map((value, index) => {
     const itemPath = `${path} 的 models[${index}]`
     if (!isRecord(value)) throw new Error(`${itemPath} 必须是表`)
-    const thinking = stringAtOr(value, 'thinking', 'disabled', itemPath)
-    if (!['disabled', 'enabled', 'auto'].includes(thinking)) {
-      throw new Error(`${itemPath} 的 thinking 必须是 disabled、enabled 或 auto`)
+    if ('thinking' in value) {
+      throw new Error(`${itemPath} 的 thinking 已经取消，请改用 extra_body`)
     }
+    const extraBody = value.extra_body === undefined ? {} : recordAt(value, 'extra_body', itemPath)
     return {
       name: stringAt(value, 'name', itemPath),
       model_identifier: stringAt(value, 'model_identifier', itemPath),
       api_provider: stringAt(value, 'api_provider', itemPath),
-      thinking: thinking as ModelDefinitionConfig['thinking'],
+      extra_body: structuredClone(extraBody),
       embedding_dim: numberAtOr(value, 'embedding_dim', 0, itemPath),
     }
   })
@@ -856,11 +851,14 @@ function readLegacyConfig(path: string): YueliConfig {
     return connection.providerName
   }
   pushProvider(chat)
+  if ('thinking' in llm) {
+    throw new Error('旧配置的 llm.thinking 已经取消，请迁移到模型条目的 extra_body')
+  }
   models.push({
     name: 'chat',
     model_identifier: typeof llm.model === 'string' ? llm.model : '',
     api_provider: chat.providerName,
-    thinking: llm.thinking === 'enabled' || llm.thinking === 'auto' ? llm.thinking : 'disabled',
+    extra_body: {},
     embedding_dim: 0,
   })
   tasks.chat = { model_list: ['chat'], selection_strategy: 'sequential' }
@@ -872,7 +870,7 @@ function readLegacyConfig(path: string): YueliConfig {
     const connection = separate ? legacyConnection(vision, '视觉', chat) : chat
     models.push({
       name: 'vision', model_identifier: vision.model,
-      api_provider: pushProvider(connection), thinking: 'disabled', embedding_dim: 0,
+      api_provider: pushProvider(connection), extra_body: {}, embedding_dim: 0,
     })
     tasks.vision = { model_list: ['vision'], selection_strategy: 'sequential' }
   }
@@ -881,7 +879,7 @@ function readLegacyConfig(path: string): YueliConfig {
     connection.kind = connection.client_type === 'volcengine' ? 'volcengine' : 'openai'
     models.push({
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
-      api_provider: pushProvider(connection), thinking: 'disabled', embedding_dim: 0,
+      api_provider: pushProvider(connection), extra_body: {}, embedding_dim: 0,
     })
     tasks.tts = { model_list: ['tts'], selection_strategy: 'sequential' }
   }
@@ -894,7 +892,7 @@ function readLegacyConfig(path: string): YueliConfig {
       : chat
     models.push({
       name: 'embedding', model_identifier: vector.embedding_model,
-      api_provider: pushProvider(connection), thinking: 'disabled',
+      api_provider: pushProvider(connection), extra_body: {},
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
     tasks.embedding = { model_list: ['embedding'], selection_strategy: 'sequential' }
@@ -979,6 +977,24 @@ function tomlValue(value: string | number | boolean): string {
   return tomlString(value)
 }
 
+function tomlObject(value: Record<string, unknown>, path: string): string {
+  const entries = Object.entries(value).map(([key, item]) => {
+    const encodedKey = /^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key)
+    return `${encodedKey} = ${tomlExtraValue(item, `${path}.${key}`)}`
+  })
+  return `{ ${entries.join(', ')} }`
+}
+
+function tomlExtraValue(value: unknown, path: string): string {
+  if (typeof value === 'string' || typeof value === 'boolean') return tomlValue(value)
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (Array.isArray(value)) {
+    return `[${value.map((item, index) => tomlExtraValue(item, `${path}[${index}]`)).join(', ')}]`
+  }
+  if (isRecord(value)) return tomlObject(value, path)
+  throw new Error(`${path} 只能包含字符串、数字、布尔值、数组或对象`)
+}
+
 function tomlMultiline(value: string, field: string): string {
   if (value.includes("'''")) throw new Error(`${field} 不能包含三个连续单引号`)
   return `'''${value}'''`
@@ -1028,8 +1044,8 @@ name = ${tomlString(model.name)}
 model_identifier = ${tomlString(model.model_identifier)}
 # 引用 providers.toml 中 api_providers.name
 api_provider = ${tomlString(model.api_provider)}
-# 深度思考模式：disabled / enabled / auto；目前仅方舟适配器会发送该参数
-thinking = ${tomlString(model.thinking)}
+# 原样并入请求体，按厂商接口填写
+extra_body = ${tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)}
 # 向量维度，仅 embedding 模型使用；其它模型保持 0
 embedding_dim = ${model.embedding_dim}`
 }
@@ -1044,14 +1060,9 @@ function generationBlock(
 enabled = ${(config as GenerationConfig['proactive']).enabled}
 `
     : ''
-  const thinking = task === 'schedule' || task === 'expression'
-    ? `# 思考模式覆盖：inherit 沿用模型定义；结构化任务默认关闭，给 JSON 正文留足预算
-thinking = ${tomlString((config as GenerationConfig['schedule']).thinking)}
-`
-    : ''
   return `[generation.${task}]
 # ${description}；temperature 越低越稳定，越高越发散，范围 0~2
-${enabled}${thinking}temperature = ${config.temperature}
+${enabled}temperature = ${config.temperature}
 # 最大输出 token 数；0 表示不额外限制，交给模型厂商决定
 max_tokens = ${config.max_tokens}`
 }
@@ -1359,12 +1370,6 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     ) {
       throw new Error(`generation.${task}.max_tokens 必须是 0 到 1000000 的整数`)
     }
-    if (task === 'schedule' || task === 'expression') {
-      const thinking = (generation as GenerationConfig['schedule']).thinking
-      if (!['inherit', 'disabled', 'enabled', 'auto'].includes(thinking)) {
-        throw new Error(`generation.${task}.thinking 配置不合法`)
-      }
-    }
   }
   const providerNames = cfg.api_providers.map((provider) => provider.name.trim())
   if (providerNames.some((name) => !name)) throw new Error('每个服务商都要有名称')
@@ -1376,6 +1381,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   if (new Set(modelNames).size !== modelNames.length) throw new Error('模型名称不能重复')
 
   for (const model of cfg.models) {
+    tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)
     if (!cfg.api_providers.some((provider) => provider.name === model.api_provider)) {
       throw new Error(`模型 ${model.name} 挂在不存在的服务商 ${model.api_provider} 上`)
     }
@@ -1471,7 +1477,9 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
   try {
     const parsed = parseDotenv(readFileSync(envPath))
     if (!parsed.LLM_API_KEY && !parsed.LLM_MODEL) return null
-    const thinking = parsed.LLM_THINKING
+    if (parsed.LLM_THINKING) {
+      throw new Error('LLM_THINKING 已经取消，请迁移到模型条目的 extra_body')
+    }
     return {
       api_providers: [{
         ...DEFAULT_PROVIDER,
@@ -1486,7 +1494,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         name: 'chat',
         model_identifier: parsed.LLM_MODEL,
         api_provider: DEFAULT_PROVIDER.name,
-        thinking: thinking === 'enabled' || thinking === 'auto' ? thinking : 'disabled',
+        extra_body: {},
         embedding_dim: 0,
       }] : [],
       model_tasks: {

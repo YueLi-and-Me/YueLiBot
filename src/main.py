@@ -19,7 +19,7 @@ from src.api.auth import token_manager
 from src.common.backend_runtime import create_backend_runtime
 from src.common.logger import get_logger, initialize_logging
 from src.config.loader import load_config
-from src.llm_models.protocol import LlmProvider, ThinkingMode
+from src.llm_models.protocol import LlmProvider
 
 
 DEFAULT_BACKEND_PORT = 7999
@@ -33,12 +33,10 @@ class _LLMGenerator:
         schedule_provider: LlmProvider,
         temperature: float,
         max_tokens: int | None,
-        thinking: ThinkingMode,
     ) -> None:
         self._schedule_provider = schedule_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._thinking: ThinkingMode = thinking
 
     async def generate(self, prompt: str) -> str:
         raw = ''
@@ -48,7 +46,6 @@ class _LLMGenerator:
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},
-            thinking=self._thinking,
         ):
             text = chunk.get('text')
             if isinstance(text, str):
@@ -261,7 +258,6 @@ def main() -> None:
                 schedule_provider,
                 schedule_generation.temperature,
                 schedule_generation.token_limit,
-                schedule_generation.thinking,
             )
             if schedule_provider else None
         )

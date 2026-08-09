@@ -11,7 +11,7 @@ Pydantic 配置模型。
 
 from __future__ import annotations
 
-from typing import Dict, List, Literal
+from typing import Any, Dict, List, Literal
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -169,15 +169,20 @@ class GenerationTaskConfig(BaseModel):
     temperature: float = Field(default=0.85, ge=0.0, le=2.0)
     max_tokens: int = Field(default=0, ge=0, le=1_000_000)
 
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_thinking(cls, value: Any) -> Any:
+        if isinstance(value, dict) and 'thinking' in value:
+            raise ValueError(
+                'generation.<任务>.thinking 已经取消。思考模式现在是模型属性：'
+                '请在 models.toml 里为该任务注册一个 extra_body 关掉思考的模型条目，'
+                '再把 model_tasks.<任务>.model_list 指向它。'
+            )
+        return value
+
     @property
     def token_limit(self) -> int | None:
         return self.max_tokens or None
-
-
-class StructuredGenerationTaskConfig(GenerationTaskConfig):
-    """结构化任务可覆盖模型定义的思考模式，避免推理耗尽正文预算。"""
-
-    thinking: Literal['inherit', 'disabled', 'enabled', 'auto'] = 'disabled'
 
 
 class ProactiveGenerationTaskConfig(GenerationTaskConfig):
@@ -196,14 +201,14 @@ class GenerationConfig(BaseModel):
     summary: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=0)
     )
-    schedule: StructuredGenerationTaskConfig = Field(
-        default_factory=lambda: StructuredGenerationTaskConfig(
+    schedule: GenerationTaskConfig = Field(
+        default_factory=lambda: GenerationTaskConfig(
             temperature=0.95,
             max_tokens=4096,
         )
     )
-    expression: StructuredGenerationTaskConfig = Field(
-        default_factory=lambda: StructuredGenerationTaskConfig(
+    expression: GenerationTaskConfig = Field(
+        default_factory=lambda: GenerationTaskConfig(
             temperature=0.1,
             max_tokens=4096,
         )
@@ -347,8 +352,17 @@ class ModelDefinitionConfig(BaseModel):
     name: str
     model_identifier: str = ''
     api_provider: str
-    thinking: Literal['disabled', 'enabled', 'auto'] = 'disabled'
+    extra_body: Dict[str, Any] = Field(default_factory=dict)
     embedding_dim: int = 0
+
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_thinking(cls, value: Any) -> Any:
+        if isinstance(value, dict) and 'thinking' in value:
+            raise ValueError(
+                'models.*.thinking 已经取消，请把厂商参数原样写入 extra_body。'
+            )
+        return value
 
 
 class TaskRoutingConfig(BaseModel):
@@ -402,7 +416,7 @@ class ModelCandidate(BaseModel):
     api_key: str = ''
     # 发给厂商接口的真实模型 ID
     identifier: str = ''
-    thinking: Literal['disabled', 'enabled', 'auto'] = 'disabled'
+    extra_body: Dict[str, Any] = Field(default_factory=dict)
     client_type: Literal['openai', 'volcengine'] = 'openai'
     app_id: str = ''
     embedding_dim: int = 0

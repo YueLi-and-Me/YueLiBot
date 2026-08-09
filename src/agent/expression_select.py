@@ -8,7 +8,7 @@ import asyncio
 import json
 
 from src.agent.expression import EXPRESSION_HABITS, ExpressionSample
-from src.llm_models.protocol import LlmProvider, ThinkingMode
+from src.llm_models.protocol import LlmProvider
 
 # proactive 仅用于主动搭话，不参与回复挑选。
 _CANDIDATES: List[ExpressionSample] = [
@@ -108,12 +108,10 @@ class ExpressionSelector:
         provider: LlmProvider,
         temperature: float,
         max_tokens: int | None,
-        thinking: ThinkingMode,
     ) -> None:
         self._provider = provider
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._thinking: ThinkingMode = thinking
 
     async def select(
         self,
@@ -131,7 +129,6 @@ class ExpressionSelector:
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},
             signal=signal,
-            thinking=self._thinking,
         ):
             text = chunk.get('text')
             if text:

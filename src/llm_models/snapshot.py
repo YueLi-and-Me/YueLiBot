@@ -50,7 +50,6 @@ def record_internal_request(
     messages: List[dict],
     temperature: float | None,
     max_tokens: int | None,
-    thinking: str,
     response_format: Dict[str, str] | None,
 ) -> None:
     """在候选循环前记录调用方要求。"""
@@ -63,7 +62,6 @@ def record_internal_request(
             'messages': deepcopy(messages),
             'temperature': temperature,
             'maxTokens': max_tokens,
-            'thinking': thinking,
             'responseFormat': deepcopy(response_format),
         },
         'provider_request': None,
@@ -77,14 +75,12 @@ def select_candidate(
     model: str,
     provider: str,
     kind: str,
-    resolved_thinking: str,
 ) -> None:
     state = _state()
     state['candidate'] = {
         'model': model,
         'provider': provider,
         'kind': kind,
-        'resolvedThinking': resolved_thinking,
     }
 
 

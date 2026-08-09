@@ -305,7 +305,7 @@ export interface ModelDefinitionConfig {
   /** 发给厂商接口的真实模型 ID */
   model_identifier: string
   api_provider: string
-  thinking: 'disabled' | 'enabled' | 'auto'
+  extra_body: Record<string, unknown>
   /** 向量维度，仅 embedding 模型使用 */
   embedding_dim: number
 }
@@ -365,16 +365,8 @@ export interface YueliConfig {
     chat: { temperature: number; max_tokens: number }
     proactive: { enabled: boolean; temperature: number; max_tokens: number }
     summary: { temperature: number; max_tokens: number }
-    expression: {
-      temperature: number
-      max_tokens: number
-      thinking: 'inherit' | 'disabled' | 'enabled' | 'auto'
-    }
-    schedule: {
-      temperature: number
-      max_tokens: number
-      thinking: 'inherit' | 'disabled' | 'enabled' | 'auto'
-    }
+    expression: { temperature: number; max_tokens: number }
+    schedule: { temperature: number; max_tokens: number }
     vision: { temperature: number; max_tokens: number }
   }
   /** 所有可用连接。轮询就是在这些连接之间换。 */

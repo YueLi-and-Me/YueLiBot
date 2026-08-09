@@ -229,12 +229,6 @@ function renderModel(cfg: YueliConfig, model: ModelDefinitionConfig, index: numb
 
   const advanced = el('details', 'advanced-fields')
   advanced.append(el('summary', '', '高级'))
-  advanced.append(selectField('深度思考（仅方舟）', model.thinking, [
-    ['disabled', '关闭（推荐，速度快）'],
-    ['enabled', '开启'],
-    ['auto', '自动'],
-  ], (value) => { model.thinking = value as ModelDefinitionConfig['thinking'] }))
-  advanced.append(el('p', 'hint', '⚠ 开启深度思考后实测首字延迟从 3 秒涨到 26~31 秒，桌宠场景不推荐。'))
   advanced.append(numberField('向量维度（只有 embedding 模型要填）', model.embedding_dim, (value) => {
     model.embedding_dim = value
   }))
@@ -358,7 +352,7 @@ addModelButton.addEventListener('click', () => {
   loadedConfig.models.push({
     name: uniqueName('模型', loadedConfig.models.map((m) => m.name)),
     model_identifier: '', api_provider: provider.name,
-    thinking: 'disabled', embedding_dim: 0,
+    extra_body: {}, embedding_dim: 0,
   })
   renderDynamicSections()
 })

@@ -119,7 +119,7 @@ def _build_routing(
             base_url=provider.base_url,
             api_key=provider.api_key,
             identifier=model.model_identifier.strip(),
-            thinking=model.thinking,
+            extra_body=model.extra_body,
             client_type=provider.client_type,
             app_id=provider.app_id,
             embedding_dim=model.embedding_dim,

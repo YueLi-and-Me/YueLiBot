@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Literal, Sequence, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Sequence, TypeVar
 import asyncio
 import random
 
@@ -115,6 +115,7 @@ class ModelRouter:
                 base_url=resolve_base_url(candidate.kind, candidate.base_url),
                 api_key=candidate.api_key,
                 model=candidate.identifier,
+                extra_body=candidate.extra_body,
                 timeout_ms=candidate.timeout_ms,
                 max_retries=candidate.max_retries,
                 retry_interval_ms=candidate.retry_interval_ms,
@@ -133,7 +134,6 @@ class ModelRouter:
                      max_tokens: int | None = None,
                      signal: asyncio.Event | None = None,
                      response_format: Dict[str, str] | None = None,
-                     thinking: Literal['inherit', 'disabled', 'enabled', 'auto'] = 'inherit',
                      ) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到有一个开始出字。
 
@@ -148,7 +148,6 @@ class ModelRouter:
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            thinking=thinking,
             response_format=response_format,
         )
         order = self.order()
@@ -160,19 +159,14 @@ class ModelRouter:
             yielded = False
             try:
                 client = self.client(candidate)
-                resolved_thinking = candidate.thinking if thinking == 'inherit' else thinking
                 select_candidate(
                     model=candidate.name,
                     provider=candidate.provider,
                     kind=candidate.kind,
-                    resolved_thinking=resolved_thinking,
                 )
                 options: Dict[str, Any] = {}
                 if response_format is not None:
                     options['response_format'] = response_format
-                # 方舟才认 thinking；其它兼容接口收到会直接 400。
-                if candidate.kind == 'ark':
-                    options['thinking'] = resolved_thinking
                 chunks = client.stream(
                     messages,
                     temperature,
@@ -220,7 +214,6 @@ class ModelRouter:
             messages=[],
             temperature=None,
             max_tokens=None,
-            thinking='inherit',
             response_format=None,
         )
         order = self.order()
@@ -234,7 +227,6 @@ class ModelRouter:
                     model=candidate.name,
                     provider=candidate.provider,
                     kind=candidate.kind,
-                    resolved_thinking=candidate.thinking,
                 )
                 result = await call(candidate)
                 self._health.recover(candidate.provider)
