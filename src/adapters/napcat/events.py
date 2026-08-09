@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
-from .config import PrivateAccessConfig
+from .config import GroupAccessConfig, PrivateAccessConfig
 from .segments import mentions_user, message_to_text
 
 
@@ -15,6 +15,7 @@ EventKind = Literal[
     'request',
     'self_message',
     'private_denied',
+    'group_denied',
     'message',
     'other',
 ]
@@ -49,6 +50,7 @@ def classify_event(
     self_id: str,
     owner_qq: str,
     private_access: PrivateAccessConfig,
+    group_access: GroupAccessConfig,
 ) -> EventKind:
     """给运行器一个可记录的事件判定，不执行任何 I/O。"""
     if is_action_response(payload):
@@ -64,7 +66,11 @@ def classify_event(
     sender_id = _sender_external_id(payload)
     if sender_id == _required_identifier(self_id, 'self_id 不能为空'):
         return 'self_message'
-    if payload.get('group_id'):
+    group_id = payload.get('group_id')
+    if group_id is not None:
+        normalized_group_id = _required_identifier(group_id, 'group_id 不能为空')
+        if not group_access.allows(normalized_group_id):
+            return 'group_denied'
         return 'message'
     if not private_access.allows(
         sender_id,
@@ -79,9 +85,16 @@ def parse_inbound_event(
     self_id: str,
     owner_qq: str,
     private_access: PrivateAccessConfig,
+    group_access: GroupAccessConfig,
 ) -> QqInboundEvent | None:
-    """解析允许的私聊或任意群聊消息；其余类型返回 None 交给运行器记录。"""
-    if classify_event(payload, self_id, owner_qq, private_access) != 'message':
+    """解析允许的私聊或白名单群消息；其余类型返回 None 交给运行器记录。"""
+    if classify_event(
+        payload,
+        self_id,
+        owner_qq,
+        private_access,
+        group_access,
+    ) != 'message':
         return None
 
     sender_id = _sender_external_id(payload)
@@ -90,10 +103,10 @@ def parse_inbound_event(
     if not isinstance(raw_segments, list):
         raise ValueError('message 必须是 array 格式的消息段列表')
     group_id = payload.get('group_id')
-    stream_kind: Literal['direct', 'group'] = 'group' if group_id else 'direct'
+    stream_kind: Literal['direct', 'group'] = 'group' if group_id is not None else 'direct'
     stream_external_id = (
         _required_identifier(group_id, 'group_id 不能为空')
-        if group_id
+        if group_id is not None
         else sender_id
     )
     sender = payload.get('sender')

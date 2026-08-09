@@ -415,6 +415,22 @@ class ChatService:
         task.add_done_callback(_remove_completed)
         return turn
 
+    def record_group_observation(self, inbound: InboundMessage) -> int:
+        """原样保存无需回复的群消息，不推进关系状态也不调用模型。"""
+        context = inbound.context
+        if context.stream.kind != 'group':
+            raise ValueError('record_group_observation 只接受群聊消息')
+        text = inbound.text.strip()
+        if not text:
+            raise ValueError('群聊消息正文不能为空')
+        return self.memory.append_message(
+            context.stream.id,
+            context.person.id,
+            'user',
+            text,
+            current_time(),
+        )
+
     def _session(self, stream_id: int) -> _SessionState:
         state = self._sessions.get(stream_id)
         if state is None:

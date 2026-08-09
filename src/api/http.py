@@ -197,6 +197,12 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         reason=decision.reason,
     )
     if not decision.accepted:
+        app_state.chat.record_group_observation(InboundMessage(
+            text=body.text,
+            context=context,
+            mentioned_me=body.mentioned_me,
+            external_message_id=body.external_message_id,
+        ))
         return JSONResponse({
             'turnId': 0,
             'streamId': context.stream.id,

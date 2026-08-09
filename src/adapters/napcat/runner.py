@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 
 
 class NapcatRunner:
-    """管理协议端与主体连接，并只接通 M3 direct 私聊。"""
+    """管理协议端与主体连接，并接通允许的 QQ 私聊与群聊。"""
 
     def __init__(
         self,
@@ -123,6 +123,7 @@ class NapcatRunner:
                 self_id,
                 self._config.owner.qq,
                 self._config.private,
+                self._config.group,
             )
             if kind == 'action_response':
                 continue
@@ -142,6 +143,14 @@ class NapcatRunner:
                     reason='不在私聊访问名单中',
                 )
                 continue
+            if kind == 'group_denied':
+                logger.info(
+                    'QQ 群聊访问被拒',
+                    groupId=payload.get('group_id'),
+                    mode=self._config.group.mode,
+                    reason='群聊不在白名单中',
+                )
+                continue
             if kind != 'message':
                 logger.debug('忽略未知 QQ 事件', postType=payload.get('post_type'))
                 continue
@@ -151,14 +160,12 @@ class NapcatRunner:
                 self_id,
                 self._config.owner.qq,
                 self._config.private,
+                self._config.group,
             )
             if event is None:
                 continue
-            if event.stream_kind != 'direct':
-                logger.info('M3 忽略 QQ 群聊消息', groupId=event.stream_external_id)
-                continue
             if not event.text.strip():
-                logger.info('忽略空 QQ 私聊消息', messageId=event.external_message_id)
+                logger.info('忽略空 QQ 消息', messageId=event.external_message_id)
                 continue
             try:
                 await self._backend.submit_inbound(event)
@@ -181,26 +188,30 @@ class NapcatRunner:
 
     async def _consume_backend_outbound(self) -> None:
         async for outbound in self._backend.iter_outbound():
-            if outbound.stream_kind != 'direct':
-                logger.warning(
-                    'M3 拒绝非私聊出站消息',
-                    streamId=outbound.stream_id,
-                    streamKind=outbound.stream_kind,
-                )
-                continue
+            if outbound.stream_kind == 'direct':
+                action = 'send_private_msg'
+                target_field = 'user_id'
+                target_label = '私聊目标'
+            elif outbound.stream_kind == 'group':
+                action = 'send_group_msg'
+                target_field = 'group_id'
+                target_label = '群聊目标'
+            else:
+                raise ValueError(f'QQ 出站 streamKind 不受支持：{outbound.stream_kind}')
             try:
                 await self._transport.call_action(
-                    'send_private_msg',
+                    action,
                     {
-                        'user_id': _qq_number(outbound.stream_external_id),
+                        target_field: _qq_number(outbound.stream_external_id, target_label),
                         'message': ''.join(outbound.segments),
                     },
                 )
             except (ActionError, asyncio.TimeoutError) as exc:
                 logger.error(
-                    'QQ 私聊发送失败',
+                    'QQ 消息发送失败',
                     streamId=outbound.stream_id,
-                    userId=outbound.stream_external_id,
+                    streamKind=outbound.stream_kind,
+                    targetId=outbound.stream_external_id,
                     error=str(exc),
                 )
 
@@ -219,10 +230,10 @@ def _check_self_qq_matches(configured: str, actual_self_id: str) -> None:
     )
 
 
-def _qq_number(value: str) -> int:
+def _qq_number(value: str, target_label: str) -> int:
     normalized = value.strip()
     if not normalized.isdigit():
-        raise ValueError(f'私聊目标不是数字 QQ 号：{value!r}')
+        raise ValueError(f'{target_label}不是数字 QQ 号：{value!r}')
     return int(normalized)
 
 

@@ -42,6 +42,10 @@ qq = ""                      # 你的号：平时发消息用的那个
 [private]
 mode = "whitelist"           # whitelist 只回名单里的人；blacklist 只不回名单里的人
 list = []                    # 数字 QQ 号，你自己不用写
+
+[group]
+mode = "whitelist"           # 群聊固定使用白名单
+list = []                    # 数字 QQ 群号；用户本人在群里也不会豁免名单外群
 `
 
 const DEFAULT_IDENTITY = `你住在他的电脑桌面一角，从他第一次把你叫醒起，就把这里当成了自己的住处。

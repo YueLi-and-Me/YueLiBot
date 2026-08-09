@@ -64,7 +64,7 @@ class NapcatConnectionConfig(BaseModel):
 
 
 class PrivateAccessConfig(BaseModel):
-    """私聊名单策略；群聊访问控制不属于本配置。"""
+    """私聊名单策略。"""
 
     model_config = ConfigDict(extra='forbid')
 
@@ -101,6 +101,40 @@ class PrivateAccessConfig(BaseModel):
         return listed if self.mode == 'whitelist' else not listed
 
 
+class GroupAccessConfig(BaseModel):
+    """群聊白名单；群准入只由群 ID 决定，不接受任何人物豁免。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    mode: Literal['whitelist'] = 'whitelist'
+    list: List[str] = Field(default_factory=list)
+
+    @field_validator('list', mode='before')
+    @classmethod
+    def _normalize_numeric_list(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        return [
+            str(item) if isinstance(item, int) and not isinstance(item, bool) else item
+            for item in value
+        ]
+
+    @field_validator('list')
+    @classmethod
+    def _validate_list(cls, value: List[str]) -> List[str]:
+        normalized: List[str] = []
+        for item in value:
+            item = item.strip()
+            if not item or not item.isdigit():
+                raise ValueError('group.list 必须是数字 QQ 群号列表')
+            normalized.append(item)
+        return normalized
+
+    def allows(self, group_qq: str) -> bool:
+        """仅放行白名单群；调用方无需也不得传入 owner 身份。"""
+        return group_qq in self.list
+
+
 class OwnerConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
@@ -124,6 +158,7 @@ class NapcatDocument(BaseModel):
     napcat: NapcatConnectionConfig
     owner: OwnerConfig
     private: PrivateAccessConfig = Field(default_factory=PrivateAccessConfig)
+    group: GroupAccessConfig = Field(default_factory=GroupAccessConfig)
 
     @model_validator(mode='after')
     def _require_two_distinct_qq_numbers(self) -> 'NapcatDocument':

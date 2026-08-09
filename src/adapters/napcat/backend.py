@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Mapping
+from typing import Any, AsyncIterator, Dict, List, Literal, Mapping
 
 import json
 
@@ -27,10 +27,10 @@ class BackendDisconnected(ConnectionError):
 
 @dataclass(frozen=True)
 class BackendOutbound:
-    """主体发给 QQ 适配器的一条整轮私聊回复。"""
+    """主体发给 QQ 适配器的一条整轮私聊或群聊回复。"""
 
     stream_id: int
-    stream_kind: str
+    stream_kind: Literal['direct', 'group']
     stream_external_id: str
     segments: List[str]
 
@@ -163,8 +163,8 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     if not isinstance(body, Mapping):
         raise ValueError('主体 qq.send 缺少对象类型的 payload')
     stream_kind = body.get('streamKind')
-    if not isinstance(stream_kind, str) or not stream_kind.strip():
-        raise ValueError('主体 qq.send 缺少 streamKind')
+    if stream_kind not in {'direct', 'group'}:
+        raise ValueError('主体 qq.send 的 streamKind 必须是 direct 或 group')
     stream_external_id = body.get('streamExternalId')
     if not isinstance(stream_external_id, str) or not stream_external_id.strip():
         raise ValueError('主体 qq.send 缺少 streamExternalId')
@@ -176,7 +176,7 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         raise ValueError('主体 qq.send 的 segments 不能包含空字符串')
     return BackendOutbound(
         stream_id=stream_id,
-        stream_kind=stream_kind.strip(),
+        stream_kind=stream_kind,
         stream_external_id=stream_external_id.strip(),
         segments=segments,
     )
