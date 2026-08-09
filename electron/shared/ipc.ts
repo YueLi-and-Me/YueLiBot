@@ -1,8 +1,8 @@
 /**
  * 主进程 ↔ 渲染进程的通道名。两端共用，避免字符串写错却没人发现。
  *
- * NOTE: src/core/ と src/main/observability.ts を削除したため、
- * ParseEvent / DayPlan / ObservabilityPayload はここでインライン定義する。
+ * 注：src/core/ 与 src/main/observability.ts 已删除，
+ * ParseEvent / DayPlan / ObservabilityPayload 因此就地定义在本文件。
  */
 
 /** 流式响应解析事件（Python 侧通过 WS 推来，主进程原样转发）。 */
