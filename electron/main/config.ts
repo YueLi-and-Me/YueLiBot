@@ -130,7 +130,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     relationship: { temperature: 0.1, max_tokens: 4096 },
     proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
     summary: { temperature: 0.3, max_tokens: 0 },
-    schedule: { temperature: 0.95, max_tokens: 700 },
+    schedule: { temperature: 0.95, max_tokens: 4096 },
     vision: { temperature: 0.3, max_tokens: 120 },
   },
   api_providers: [DEFAULT_PROVIDER],

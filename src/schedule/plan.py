@@ -527,7 +527,11 @@ class DayPlanService:
                     attempted_at=attempted_at,
                     raw=raw,
                 )
-                logger.error('日程生成结果未通过结构校验', date=date)
+                logger.error(
+                    '日程生成结果未通过结构校验',
+                    date=date,
+                    bodyChars=len(raw),
+                )
                 return fallback
             self._generation_issues.pop(date, None)
             self._store.write_json(_plan_key(date), _plan_to_dict(parsed))

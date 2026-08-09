@@ -134,7 +134,7 @@ class GenerationConfig(BaseModel):
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=0)
     )
     schedule: GenerationTaskConfig = Field(
-        default_factory=lambda: GenerationTaskConfig(temperature=0.95, max_tokens=700)
+        default_factory=lambda: GenerationTaskConfig(temperature=0.95, max_tokens=4096)
     )
     vision: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=120)

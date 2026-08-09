@@ -39,13 +39,24 @@ class _LLMGenerator:
 
     async def generate(self, prompt: str) -> str:
         raw = ''
+        reasoning_length = 0
         async for chunk in self._schedule_provider.stream(
             messages=[{'role': 'user', 'content': prompt}],
             temperature=self._temperature,
             max_tokens=self._max_tokens,
+            response_format={'type': 'json_object'},
         ):
-            if chunk.get('text'):
-                raw += chunk['text']
+            text = chunk.get('text')
+            if isinstance(text, str):
+                raw += text
+            reasoning = chunk.get('reasoning')
+            if isinstance(reasoning, str):
+                reasoning_length += len(reasoning)
+        if not raw.strip():
+            raise ValueError(
+                '日程模型未返回正文'
+                f'（正文字符={len(raw)}，推理字符={reasoning_length}）'
+            )
         return raw
 
 
