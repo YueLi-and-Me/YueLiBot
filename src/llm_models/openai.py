@@ -7,11 +7,11 @@ OpenAI 兼容的异步流式对话客户端。直接移植自 src/core/llm/opena
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Literal
 import asyncio
 import json
 import re
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
 
 import httpx
 
@@ -72,7 +72,9 @@ class OpenAiChatProvider:
     async def stream(self, messages: list[dict], temperature: float = 0.85,
                      max_tokens: int | None = None,
                      signal: asyncio.Event | None = None,
-                     response_format: dict[str, str] | None = None) -> AsyncIterator[dict]:
+                     response_format: dict[str, str] | None = None,
+                     thinking: Literal['disabled', 'enabled', 'auto'] | None = None,
+                     ) -> AsyncIterator[dict]:
         """发起流式请求；只在尚未输出内容时重试可恢复错误。
 
         流已经交给上层后再重放请求会产生重复文本和重复副作用，因此无论错误
@@ -81,7 +83,16 @@ class OpenAiChatProvider:
         for attempt in range(self._max_retries + 1):
             yielded_content = False
             try:
-                if response_format is None:
+                if thinking is not None:
+                    chunks = self._stream_once_with_options(
+                        messages,
+                        temperature,
+                        max_tokens,
+                        signal,
+                        thinking,
+                        response_format,
+                    )
+                elif response_format is None:
                     chunks = self._stream_once(messages, temperature, max_tokens, signal)
                 else:
                     chunks = self._stream_once_structured(
@@ -123,6 +134,7 @@ class OpenAiChatProvider:
             max_tokens,
             signal,
             None,
+            None,
         ):
             yield chunk
 
@@ -142,6 +154,29 @@ class OpenAiChatProvider:
             max_tokens,
             signal,
             response_format,
+            None,
+        ):
+            yield chunk
+
+    async def _stream_once_with_options(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int | None,
+        signal: asyncio.Event | None,
+        thinking: Literal['disabled', 'enabled', 'auto'],
+        response_format: dict[str, str] | None,
+    ) -> AsyncIterator[dict]:
+        """仅在调用方明确覆盖思考模式时走这条请求路径。"""
+        if response_format is not None and response_format != {'type': 'json_object'}:
+            raise ValueError(f'不支持的结构化输出格式：{response_format!r}')
+        async for chunk in self._stream_http(
+            messages,
+            temperature,
+            max_tokens,
+            signal,
+            response_format,
+            thinking,
         ):
             yield chunk
 
@@ -152,6 +187,7 @@ class OpenAiChatProvider:
         max_tokens: int | None,
         signal: asyncio.Event | None,
         response_format: dict[str, str] | None,
+        thinking: Literal['disabled', 'enabled', 'auto'] | None,
     ) -> AsyncIterator[dict]:
         headers = {
             'Content-Type': 'application/json',
@@ -167,6 +203,8 @@ class OpenAiChatProvider:
             body['max_tokens'] = max_tokens
         if response_format is not None:
             body['response_format'] = response_format
+        if thinking is not None:
+            body['thinking'] = {'type': thinking}
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:

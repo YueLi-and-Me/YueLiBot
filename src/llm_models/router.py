@@ -13,9 +13,9 @@
 
 from __future__ import annotations
 
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Literal, Sequence, TypeVar
 import asyncio
 import random
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Sequence, TypeVar
 
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
@@ -109,15 +109,10 @@ class ModelRouter:
         """按候选取 OpenAI 兼容客户端，建好就缓存。"""
         client = self._clients.get(candidate.name)
         if client is None:
-            extra: Dict[str, Any] = {}
-            # 方舟才认这个参数，别的厂商收到会直接 400。
-            if candidate.kind == 'ark':
-                extra['thinking'] = {'type': candidate.thinking}
             client = OpenAiChatProvider(
                 base_url=resolve_base_url(candidate.kind, candidate.base_url),
                 api_key=candidate.api_key,
                 model=candidate.identifier,
-                extra_body=extra or None,
                 timeout_ms=candidate.timeout_ms,
                 max_retries=candidate.max_retries,
                 retry_interval_ms=candidate.retry_interval_ms,
@@ -135,7 +130,9 @@ class ModelRouter:
     async def stream(self, messages: List[dict], temperature: float = 0.85,
                      max_tokens: int | None = None,
                      signal: asyncio.Event | None = None,
-                     response_format: Dict[str, str] | None = None) -> AsyncIterator[dict]:
+                     response_format: Dict[str, str] | None = None,
+                     thinking: Literal['inherit', 'disabled', 'enabled', 'auto'] = 'inherit',
+                     ) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到有一个开始出字。
 
         ★ 一旦 yield 过内容就不能再换模型：换了等于把同一句话重新说一遍，
@@ -150,16 +147,20 @@ class ModelRouter:
             yielded = False
             try:
                 client = self.client(candidate)
-                if response_format is None:
-                    chunks = client.stream(messages, temperature, max_tokens, signal)
-                else:
-                    chunks = client.stream(
-                        messages,
-                        temperature,
-                        max_tokens,
-                        signal,
-                        response_format=response_format,
-                    )
+                resolved_thinking = candidate.thinking if thinking == 'inherit' else thinking
+                options: Dict[str, Any] = {}
+                if response_format is not None:
+                    options['response_format'] = response_format
+                # 方舟才认 thinking；其它兼容接口收到会直接 400。
+                if candidate.kind == 'ark':
+                    options['thinking'] = resolved_thinking
+                chunks = client.stream(
+                    messages,
+                    temperature,
+                    max_tokens,
+                    signal,
+                    **options,
+                )
                 async for chunk in chunks:
                     yielded = True
                     yield chunk

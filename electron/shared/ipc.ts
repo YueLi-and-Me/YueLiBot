@@ -344,19 +344,30 @@ export interface YueliConfig {
   }
   generation: {
     chat: { temperature: number; max_tokens: number }
-    relationship: { temperature: number; max_tokens: number }
+    relationship: {
+      temperature: number
+      max_tokens: number
+      thinking: 'inherit' | 'disabled' | 'enabled' | 'auto'
+    }
     proactive: { enabled: boolean; temperature: number; max_tokens: number }
     summary: { temperature: number; max_tokens: number }
-    schedule: { temperature: number; max_tokens: number }
+    schedule: {
+      temperature: number
+      max_tokens: number
+      thinking: 'inherit' | 'disabled' | 'enabled' | 'auto'
+    }
     vision: { temperature: number; max_tokens: number }
   }
   /** 所有可用连接。轮询就是在这些连接之间换。 */
   api_providers: ApiProviderConfig[]
   /** 所有模型定义。同一个厂商可以有多个模型，同一个模型 ID 也能挂在多个厂商下。 */
   models: ModelDefinitionConfig[]
-  /** 四类任务各自的候选模型与轮询策略。 */
+  /** 七类任务各自的候选模型与轮询策略。 */
   model_tasks: {
     chat: TaskRoutingConfig
+    proactive: TaskRoutingConfig
+    summary: TaskRoutingConfig
+    schedule: TaskRoutingConfig
     vision: TaskRoutingConfig
     tts: TaskRoutingConfig
     embedding: TaskRoutingConfig

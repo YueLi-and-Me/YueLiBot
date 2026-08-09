@@ -121,10 +121,12 @@ class RelationshipPlanner:
         provider: Any,
         temperature: float,
         max_tokens: int | None,
+        thinking: str,
     ) -> None:
         self._provider = provider
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._thinking = thinking
 
     async def decide(
         self,
@@ -143,6 +145,7 @@ class RelationshipPlanner:
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},
             signal=signal,
+            thinking=self._thinking,
         ):
             text = chunk.get('text')
             if text:

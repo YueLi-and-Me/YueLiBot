@@ -32,10 +32,12 @@ class _LLMGenerator:
         schedule_provider: Any,
         temperature: float,
         max_tokens: int | None,
+        thinking: str,
     ) -> None:
         self._schedule_provider = schedule_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._thinking = thinking
 
     async def generate(self, prompt: str) -> str:
         raw = ''
@@ -45,6 +47,7 @@ class _LLMGenerator:
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},
+            thinking=self._thinking,
         ):
             text = chunk.get('text')
             if isinstance(text, str):
@@ -250,6 +253,7 @@ def main() -> None:
                 schedule_provider,
                 schedule_generation.temperature,
                 schedule_generation.token_limit,
+                schedule_generation.thinking,
             )
             if schedule_provider else None
         )

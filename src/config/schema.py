@@ -12,10 +12,9 @@ Pydantic 配置模型。
 from __future__ import annotations
 
 from typing import List, Literal
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-import re
 
 from src.agent.character import (
     ATTENTION_PROMPT,
@@ -171,6 +170,12 @@ class GenerationTaskConfig(BaseModel):
         return self.max_tokens or None
 
 
+class StructuredGenerationTaskConfig(GenerationTaskConfig):
+    """结构化任务可覆盖模型定义的思考模式，避免推理耗尽正文预算。"""
+
+    thinking: Literal['inherit', 'disabled', 'enabled', 'auto'] = 'disabled'
+
+
 class ProactiveGenerationTaskConfig(GenerationTaskConfig):
     """主动系统的采样参数和总开关。关闭时 Electron 不安装全局键鼠钩子。"""
 
@@ -181,8 +186,11 @@ class GenerationConfig(BaseModel):
     """按任务拆分参数，避免改视觉模型时意外改变普通聊天。"""
 
     chat: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
-    relationship: GenerationTaskConfig = Field(
-        default_factory=lambda: GenerationTaskConfig(temperature=0.1, max_tokens=4096)
+    relationship: StructuredGenerationTaskConfig = Field(
+        default_factory=lambda: StructuredGenerationTaskConfig(
+            temperature=0.1,
+            max_tokens=4096,
+        )
     )
     proactive: ProactiveGenerationTaskConfig = Field(
         default_factory=lambda: ProactiveGenerationTaskConfig(temperature=0.9, max_tokens=200)
@@ -190,8 +198,11 @@ class GenerationConfig(BaseModel):
     summary: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=0)
     )
-    schedule: GenerationTaskConfig = Field(
-        default_factory=lambda: GenerationTaskConfig(temperature=0.95, max_tokens=4096)
+    schedule: StructuredGenerationTaskConfig = Field(
+        default_factory=lambda: StructuredGenerationTaskConfig(
+            temperature=0.95,
+            max_tokens=4096,
+        )
     )
     vision: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=120)

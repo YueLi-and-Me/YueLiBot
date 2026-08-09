@@ -138,6 +138,7 @@ class ChatService:
             self._summary_max_tokens = generation.summary.token_limit
             relationship_temperature = generation.relationship.temperature
             relationship_max_tokens = generation.relationship.token_limit
+            relationship_thinking = generation.relationship.thinking
             self._bot_names: tuple[str, ...] = ()
             self._at_mention_must_reply = True
             self._name_mention_probability = 1.0
@@ -160,6 +161,7 @@ class ChatService:
             self._summary_max_tokens = generation.summary.token_limit
             relationship_temperature = generation.relationship.temperature
             relationship_max_tokens = generation.relationship.token_limit
+            relationship_thinking = generation.relationship.thinking
             self._bot_names = tuple([cfg.bot.name, *cfg.bot.aliases])
             self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
             self._name_mention_probability = cfg.group_chat.name_mention_probability
@@ -168,6 +170,7 @@ class ChatService:
                 relationship_provider,
                 temperature=relationship_temperature,
                 max_tokens=relationship_max_tokens,
+                thinking=relationship_thinking,
             )
             if relationship_provider is not None
             else None

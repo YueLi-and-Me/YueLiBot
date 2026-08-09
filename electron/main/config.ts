@@ -20,7 +20,9 @@ import type {
 const CONFIG_VERSION = '1.1.0'
 const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
-export const MODEL_TASKS = ['chat', 'vision', 'tts', 'embedding'] as const
+export const MODEL_TASKS = [
+  'chat', 'proactive', 'summary', 'schedule', 'vision', 'tts', 'embedding',
+] as const
 
 const NAPCAT_CONFIG_TEMPLATE = `# 月璃的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
 
@@ -140,10 +142,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
-    relationship: { temperature: 0.1, max_tokens: 4096 },
+    relationship: { temperature: 0.1, max_tokens: 4096, thinking: 'disabled' },
     proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
     summary: { temperature: 0.3, max_tokens: 0 },
-    schedule: { temperature: 0.95, max_tokens: 4096 },
+    schedule: { temperature: 0.95, max_tokens: 4096, thinking: 'disabled' },
     vision: { temperature: 0.3, max_tokens: 120 },
   },
   api_providers: [DEFAULT_PROVIDER],
@@ -153,6 +155,9 @@ export const DEFAULT_CONFIG: YueliConfig = {
   }],
   model_tasks: {
     chat: { model_list: ['chat'], selection_strategy: 'sequential' },
+    proactive: { model_list: [], selection_strategy: 'sequential' },
+    summary: { model_list: [], selection_strategy: 'sequential' },
+    schedule: { model_list: [], selection_strategy: 'sequential' },
     vision: { model_list: [], selection_strategy: 'sequential' },
     tts: { model_list: [], selection_strategy: 'sequential' },
     embedding: { model_list: [], selection_strategy: 'sequential' },
@@ -297,7 +302,17 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
         taskConfig, 'max_tokens', result[task].max_tokens, `${path} 的 generation.${task}`,
       ),
     }
-    if (task === 'proactive') {
+    if (task === 'relationship' || task === 'schedule') {
+      const taskPath = `${path} 的 generation.${task}`
+      const thinking = stringAtOr(taskConfig, 'thinking', result[task].thinking, taskPath)
+      if (!['inherit', 'disabled', 'enabled', 'auto'].includes(thinking)) {
+        throw new Error(`${taskPath}.thinking 必须是 inherit、disabled、enabled 或 auto`)
+      }
+      result[task] = {
+        ...parsed,
+        thinking: thinking as GenerationConfig[typeof task]['thinking'],
+      }
+    } else if (task === 'proactive') {
       result.proactive = {
         ...parsed,
         enabled: taskConfig.enabled === undefined
@@ -351,12 +366,9 @@ function parseModels(
 ): { models: ModelDefinitionConfig[]; tasks: YueliConfig['model_tasks']; generation: GenerationConfig } {
   const { document } = parseToml(path)
   const taskRecord = recordAt(document, 'model_tasks', path)
-  const tasks = {
-    chat: parseTaskRouting(taskRecord, 'chat', path),
-    vision: parseTaskRouting(taskRecord, 'vision', path),
-    tts: parseTaskRouting(taskRecord, 'tts', path),
-    embedding: parseTaskRouting(taskRecord, 'embedding', path),
-  }
+  const tasks = Object.fromEntries(
+    MODEL_TASKS.map((task) => [task, parseTaskRouting(taskRecord, task, path)]),
+  ) as YueliConfig['model_tasks']
   const definitions = document.models
   if (!Array.isArray(definitions)) throw new Error(`${path} 缺少 [[models]]`)
   const models = definitions.map((value, index) => {
@@ -884,9 +896,14 @@ function generationBlock(
 enabled = ${(config as GenerationConfig['proactive']).enabled}
 `
     : ''
+  const thinking = task === 'relationship' || task === 'schedule'
+    ? `# 思考模式覆盖：inherit 沿用模型定义；结构化任务默认关闭，给 JSON 正文留足预算
+thinking = ${tomlString((config as GenerationConfig['relationship']).thinking)}
+`
+    : ''
   return `[generation.${task}]
 # ${description}；temperature 越低越稳定，越高越发散，范围 0~2
-${enabled}temperature = ${config.temperature}
+${enabled}${thinking}temperature = ${config.temperature}
 # 最大输出 token 数；0 表示不额外限制，交给模型厂商决定
 max_tokens = ${config.max_tokens}`
 }
@@ -906,7 +923,10 @@ ${cfg.api_providers.map(providerBlock).join('\n\n')}
 }
 
 const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
-  chat: '用户聊天与主动搭话',
+  chat: '用户聊天',
+  proactive: '主动搭话；留空时继承用户聊天候选',
+  summary: '长期记忆摘要；留空时继承用户聊天候选',
+  schedule: '每日生活计划；留空时继承用户聊天候选',
   vision: '前台窗口图片理解；模型和接口都必须接受图片消息',
   tts: '语音合成',
   embedding: '向量记忆召回',
@@ -1117,6 +1137,12 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     ) {
       throw new Error(`generation.${task}.max_tokens 必须是 0 到 1000000 的整数`)
     }
+    if (task === 'relationship' || task === 'schedule') {
+      const thinking = (generation as GenerationConfig['relationship']).thinking
+      if (!['inherit', 'disabled', 'enabled', 'auto'].includes(thinking)) {
+        throw new Error(`generation.${task}.thinking 配置不合法`)
+      }
+    }
   }
   const providerNames = cfg.api_providers.map((provider) => provider.name.trim())
   if (providerNames.some((name) => !name)) throw new Error('每个服务商都要有名称')
@@ -1170,7 +1196,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   if (dims.size > 1) throw new Error('向量记忆的候选模型必须是同一个向量维度')
 }
 
-/** 将设置页的任务视图拆成四份职责单一的配置。 */
+/** 将设置页的任务视图拆成四份职责单一的配置文件。 */
 export function writeConfigDirectory(directory: string, cfg: YueliConfig): void {
   if (existsSync(directory) && !statSync(directory).isDirectory()) {
     throw new Error(`${directory} 存在，但不是配置目录`)
