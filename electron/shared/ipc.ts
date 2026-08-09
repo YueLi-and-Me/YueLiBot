@@ -317,6 +317,8 @@ export interface ModelDefinitionConfig {
 export interface TaskRoutingConfig {
   model_list: string[]
   selection_strategy: SelectionStrategy
+  first_token_timeout_ms: number
+  slow_threshold_ms: number
 }
 
 /**

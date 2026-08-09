@@ -158,14 +158,14 @@ export const DEFAULT_CONFIG: YueliConfig = {
     extra_body: {}, embedding_dim: 0,
   }],
   model_tasks: {
-    chat: { model_list: ['chat'], selection_strategy: 'sequential' },
-    proactive: { model_list: [], selection_strategy: 'sequential' },
-    summary: { model_list: [], selection_strategy: 'sequential' },
-    schedule: { model_list: [], selection_strategy: 'sequential' },
-    vision: { model_list: [], selection_strategy: 'sequential' },
-    expression: { model_list: [], selection_strategy: 'sequential' },
-    tts: { model_list: [], selection_strategy: 'sequential' },
-    embedding: { model_list: [], selection_strategy: 'sequential' },
+    chat: { model_list: ['chat'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    proactive: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    summary: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    schedule: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    vision: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    expression: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    tts: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    embedding: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
   },
   tts: {
     enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
@@ -395,10 +395,11 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
 function parseTaskRouting(
   taskRecord: Record<string, unknown>, task: ModelTask, path: string,
 ): TaskRoutingConfig {
+  const defaults = DEFAULT_CONFIG.model_tasks[task]
   const value = taskRecord[task]
-  if (value === undefined) return { model_list: [], selection_strategy: 'sequential' }
+  if (value === undefined) return structuredClone(defaults)
   if (typeof value === 'string') {
-    return { model_list: value ? [value] : [], selection_strategy: 'sequential' }
+    return { ...structuredClone(defaults), model_list: value ? [value] : [] }
   }
   if (!isRecord(value)) {
     throw new Error(`${path} 的 model_tasks.${task} 必须是模型名或 [model_tasks.${task}] 配置段`)
@@ -418,7 +419,27 @@ function parseTaskRouting(
     if (seen.has(name)) throw new Error(`${itemPath} 的 model_list 存在重复模型：${name}`)
     seen.add(name)
   }
-  return { model_list: [...(modelList as string[])], selection_strategy: strategy }
+  const firstTokenTimeout = numberAtOr(
+    value, 'first_token_timeout_ms', defaults.first_token_timeout_ms, itemPath,
+  )
+  const slowThreshold = numberAtOr(
+    value, 'slow_threshold_ms', defaults.slow_threshold_ms, itemPath,
+  )
+  if (!Number.isInteger(firstTokenTimeout) || firstTokenTimeout < 1_000) {
+    throw new Error(`${itemPath} 的 first_token_timeout_ms 必须是至少 1000 的整数`)
+  }
+  if (!Number.isInteger(slowThreshold) || slowThreshold < 0) {
+    throw new Error(`${itemPath} 的 slow_threshold_ms 必须是非负整数`)
+  }
+  if (slowThreshold !== 0 && slowThreshold >= firstTokenTimeout) {
+    throw new Error(`${itemPath} 的 slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0`)
+  }
+  return {
+    model_list: [...(modelList as string[])],
+    selection_strategy: strategy,
+    first_token_timeout_ms: firstTokenTimeout,
+    slow_threshold_ms: slowThreshold,
+  }
 }
 
 function parseModels(
@@ -892,7 +913,7 @@ function readLegacyConfig(path: string): YueliConfig {
     extra_body: {},
     embedding_dim: 0,
   })
-  tasks.chat = { model_list: ['chat'], selection_strategy: 'sequential' }
+  tasks.chat = { ...tasks.chat, model_list: ['chat'], selection_strategy: 'sequential' }
 
   // 旧配置里 vision/vector 的地址留空就意味着复用对话连接，这里如实还原成
   // 「同一个 api_provider」而不是复制一份地址，避免改一处漏一处。
@@ -903,7 +924,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'vision', model_identifier: vision.model,
       api_provider: pushProvider(connection), extra_body: {}, embedding_dim: 0,
     })
-    tasks.vision = { model_list: ['vision'], selection_strategy: 'sequential' }
+    tasks.vision = { ...tasks.vision, model_list: ['vision'], selection_strategy: 'sequential' }
   }
   if (typeof tts.model === 'string' || typeof tts.voice === 'string') {
     const connection = legacyConnection(tts, '语音', chat)
@@ -912,7 +933,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
       api_provider: pushProvider(connection), extra_body: {}, embedding_dim: 0,
     })
-    tasks.tts = { model_list: ['tts'], selection_strategy: 'sequential' }
+    tasks.tts = { ...tasks.tts, model_list: ['tts'], selection_strategy: 'sequential' }
   }
   if (typeof vector.embedding_model === 'string' && vector.embedding_model) {
     const separate = Boolean(vector.embedding_base_url || vector.embedding_api_key)
@@ -926,7 +947,9 @@ function readLegacyConfig(path: string): YueliConfig {
       api_provider: pushProvider(connection), extra_body: {},
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
-    tasks.embedding = { model_list: ['embedding'], selection_strategy: 'sequential' }
+    tasks.embedding = {
+      ...tasks.embedding, model_list: ['embedding'], selection_strategy: 'sequential',
+    }
   }
 
   config.api_providers = providers
@@ -1137,7 +1160,11 @@ function taskBlock(task: ModelTask, routing: TaskRoutingConfig): string {
 model_list = ${tomlStringArray(routing.model_list)}
 # 挑选顺序：sequential = 永远优先第一条（主备）；random = 每次随机起点（分摊额度）
 # 无论哪种，刚失败过的厂商都会在冷却期内被排到最后
-selection_strategy = ${tomlString(routing.selection_strategy)}`
+selection_strategy = ${tomlString(routing.selection_strategy)}
+# 流式任务等待首字的上限，超时后切换候选
+first_token_timeout_ms = ${routing.first_token_timeout_ms}
+# 首字达到该耗时就记慢事件；0 表示关闭
+slow_threshold_ms = ${routing.slow_threshold_ms}`
 }
 
 function serializeModels(cfg: YueliConfig): string {
@@ -1426,6 +1453,18 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   }
   for (const task of MODEL_TASKS) {
     const routing = cfg.model_tasks[task]
+    if (!Number.isInteger(routing.first_token_timeout_ms) || routing.first_token_timeout_ms < 1_000) {
+      throw new Error(`${TASK_DESCRIPTIONS[task]}的 first_token_timeout_ms 必须至少为 1000`)
+    }
+    if (!Number.isInteger(routing.slow_threshold_ms) || routing.slow_threshold_ms < 0) {
+      throw new Error(`${TASK_DESCRIPTIONS[task]}的 slow_threshold_ms 必须是非负整数`)
+    }
+    if (routing.slow_threshold_ms !== 0
+        && routing.slow_threshold_ms >= routing.first_token_timeout_ms) {
+      throw new Error(
+        `${TASK_DESCRIPTIONS[task]}的 slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0`,
+      )
+    }
     if (new Set(routing.model_list).size !== routing.model_list.length) {
       throw new Error(`${TASK_DESCRIPTIONS[task]}的候选里有重复模型`)
     }
@@ -1538,6 +1577,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
       model_tasks: {
         ...structuredClone(DEFAULT_CONFIG.model_tasks),
         chat: {
+          ...structuredClone(DEFAULT_CONFIG.model_tasks.chat),
           model_list: parsed.LLM_MODEL ? ['chat'] : [],
           selection_strategy: 'sequential',
         },

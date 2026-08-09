@@ -16,13 +16,14 @@ from __future__ import annotations
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Sequence, TypeVar
 import asyncio
 import random
+import time
 
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.config.schema import ModelCandidate
 from src.llm_models.openai import LlmError, OpenAiChatProvider, resolve_base_url
 from src.llm_models.snapshot import record_attempt, record_internal_request, select_candidate
-from src.observe.events import current_stage_id, current_stream_id, current_turn_id
+from src.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
 
 logger = get_logger(__name__)
 
@@ -72,11 +73,15 @@ class ModelRouter:
 
     def __init__(self, task: str, candidates: Sequence[ModelCandidate],
                  strategy: str = 'sequential',
-                 health: ProviderHealth | None = None) -> None:
+                 health: ProviderHealth | None = None,
+                 first_token_timeout_ms: int = 30_000,
+                 slow_threshold_ms: int = 8_000) -> None:
         self.task = task
         self._candidates = list(candidates)
         self._strategy = strategy
         self._health = health or ProviderHealth()
+        self._first_token_timeout_ms = first_token_timeout_ms
+        self._slow_threshold_ms = slow_threshold_ms
         self._clients: Dict[str, OpenAiChatProvider] = {}
 
     @property
@@ -176,7 +181,32 @@ class ModelRouter:
                     signal,
                     **options,
                 )
-                async for chunk in chunks:
+                iterator = chunks.__aiter__()
+                started = time.monotonic()
+                try:
+                    async with asyncio.timeout(self._first_token_timeout_ms / 1_000):
+                        first_chunk = await anext(iterator)
+                except StopAsyncIteration:
+                    self._health.recover(candidate.provider)
+                    return
+                except TimeoutError as exc:
+                    raise LlmError(
+                        'network',
+                        f'等待首字超过 {self._first_token_timeout_ms} 毫秒',
+                    ) from exc
+
+                elapsed_ms = int((time.monotonic() - started) * 1_000)
+                if self._slow_threshold_ms and elapsed_ms >= self._slow_threshold_ms:
+                    emit(
+                        'llm_slow',
+                        task=self.task,
+                        model=candidate.name,
+                        provider=candidate.provider,
+                        elapsedMs=elapsed_ms,
+                    )
+                yielded = True
+                yield first_chunk
+                async for chunk in iterator:
                     yielded = True
                     yield chunk
                 self._health.recover(candidate.provider)
@@ -284,7 +314,14 @@ class ModelRouters:
         self.embedding = self._build('embedding', routing.embedding)
 
     def _build(self, task: str, routing: Any) -> ModelRouter:
-        return ModelRouter(task, routing.candidates, routing.strategy, self.health)
+        return ModelRouter(
+            task,
+            routing.candidates,
+            routing.strategy,
+            self.health,
+            routing.first_token_timeout_ms,
+            routing.slow_threshold_ms,
+        )
 
     def inspect(self) -> Dict[str, Any]:
         return {

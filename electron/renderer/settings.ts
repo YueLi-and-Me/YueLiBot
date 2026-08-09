@@ -282,6 +282,12 @@ function renderTask(
   const card = el('div', 'repeat-item')
   card.append(el('div', 'repeat-header', el('span', 'repeat-title', label)))
   card.append(el('p', 'hint', hint))
+  card.append(numberField('首字超时（毫秒）', routing.first_token_timeout_ms, (value) => {
+    routing.first_token_timeout_ms = value
+  }))
+  card.append(numberField('慢请求阈值（毫秒，0 关闭）', routing.slow_threshold_ms, (value) => {
+    routing.slow_threshold_ms = value
+  }))
 
   const modelOptions: Array<[string, string]> = cfg.models.map(
     (model) => [model.name, model.name || '（未命名）'],

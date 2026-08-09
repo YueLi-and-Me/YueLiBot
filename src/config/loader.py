@@ -84,6 +84,8 @@ def _build_routing(
             task=task,
             candidates=chat_routing.candidates,
             strategy=chat_routing.strategy,
+            first_token_timeout_ms=routing.first_token_timeout_ms,
+            slow_threshold_ms=routing.slow_threshold_ms,
         )
 
     candidates = []
@@ -129,7 +131,13 @@ def _build_routing(
             max_retries=provider.max_retries,
             retry_interval_ms=provider.retry_interval_ms,
         ))
-    return TaskRouting(task=task, candidates=candidates, strategy=routing.selection_strategy)
+    return TaskRouting(
+        task=task,
+        candidates=candidates,
+        strategy=routing.selection_strategy,
+        first_token_timeout_ms=routing.first_token_timeout_ms,
+        slow_threshold_ms=routing.slow_threshold_ms,
+    )
 
 
 def _load_split_config(directory: Path) -> Config:

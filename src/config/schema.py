@@ -394,6 +394,9 @@ class TaskRoutingConfig(BaseModel):
 
     model_list: List[str] = Field(default_factory=list)
     selection_strategy: Literal['sequential', 'random'] = 'sequential'
+    # provider 管网络读，first_token 管切换，slow 只记账。
+    first_token_timeout_ms: int = Field(default=30_000, ge=1_000)
+    slow_threshold_ms: int = Field(default=8_000, ge=0)
 
     @field_validator('model_list')
     @classmethod
@@ -402,6 +405,12 @@ class TaskRoutingConfig(BaseModel):
         if len(set(v)) != len(v):
             raise ValueError(f'model_list 存在重复模型：{v}')
         return v
+
+    @model_validator(mode='after')
+    def _validate_timing(self) -> 'TaskRoutingConfig':
+        if self.slow_threshold_ms and self.slow_threshold_ms >= self.first_token_timeout_ms:
+            raise ValueError('slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0')
+        return self
 
 
 class ModelTaskConfig(BaseModel):
@@ -451,6 +460,14 @@ class TaskRouting(BaseModel):
     task: str
     candidates: List[ModelCandidate] = Field(default_factory=list)
     strategy: Literal['sequential', 'random'] = 'sequential'
+    first_token_timeout_ms: int = Field(default=30_000, ge=1_000)
+    slow_threshold_ms: int = Field(default=8_000, ge=0)
+
+    @model_validator(mode='after')
+    def _validate_timing(self) -> 'TaskRouting':
+        if self.slow_threshold_ms and self.slow_threshold_ms >= self.first_token_timeout_ms:
+            raise ValueError('slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0')
+        return self
 
     @property
     def ready(self) -> bool:
