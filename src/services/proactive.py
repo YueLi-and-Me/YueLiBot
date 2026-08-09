@@ -32,8 +32,10 @@ from src.awareness.monitor import ForegroundProcessMonitor
 from src.awareness.sleep import SleepInputs, SleepStateController
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
+from src.observe import events as trace
+from src.observe.events import enter_stage
+from src.observe.stages import DISPATCHING, FAILED, GENERATING, REPLIED
 from src.schedule.plan import _slot_at, day_plan_date, describe_day_plan, fallback_day_plan
-from src.services.trace import trace
 
 if TYPE_CHECKING:
     from src.services.vision import VisionProvider, VisionService
@@ -401,10 +403,25 @@ class AwarenessService:
             base = describe_activity(classified, minutes)
         description_used = bool(self._vision and self._vision.chat_glance())
         desktop_context = self.chat.desktop_context
-        lines = await self.chat.compose_proactive(desktop_context, self._with_vision(base))
+        stream = desktop_context.stream
+        enter_stage(GENERATING, stream.id, '桌面')
+        try:
+            lines = await self.chat.compose_proactive(desktop_context, self._with_vision(base))
+        except Exception as exc:
+            enter_stage(FAILED, stream.id, '桌面', str(exc))
+            raise
         if not lines:
+            enter_stage(FAILED, stream.id, '桌面', '主动搭话模型未生成正文')
             return False
-        self.chat.speak(desktop_context, lines)
+        enter_stage(DISPATCHING, stream.id, '桌面')
+        turn = self.chat.speak(desktop_context, lines)
+        enter_stage(
+            REPLIED,
+            stream.id,
+            '桌面',
+            f'{sum(len(line) for line in lines)} 字',
+            turn,
+        )
         if description_used:
             self._vision_spoke_count += 1
         self._budget = after_speak(self._budget, ctx)
