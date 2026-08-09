@@ -144,15 +144,19 @@ def dump(
     if _directory is None:
         return None
     state = _current.get()
-    if state is None or state.get('provider_request') is None:
+    if state is None:
+        return None
+    internal_request = state.get('internal_request')
+    provider_request = state.get('provider_request')
+    if internal_request is None and provider_request is None:
         return None
 
     payload: Dict[str, Any] = {
         'at': datetime.now().isoformat(timespec='seconds'),
         'task': task,
         'error': {'type': error_type, 'message': error},
-        'internal_request': state.get('internal_request'),
-        'provider_request': state['provider_request'],
+        'internal_request': internal_request,
+        'provider_request': provider_request,
         'attempts': deepcopy(state['attempts']),
     }
     if extra:
