@@ -131,7 +131,7 @@ function renderStatus(payload: ObservabilityPayload): void {
     ['当前状态', sleepLabel],
     ['今日预算', `${used} / ${used + remaining}`],
     ['视觉响应', `${fixed(vision.looks)} 看 / ${fixed(vision.spoke)} 说`],
-    ['长期记忆', `${payload.memory.semantic.length} 条`],
+    ['会话人物', `${payload.conversation.participants.length} 人`],
   ]
   for (const [label, value] of values) {
     const item = document.createElement('div')
@@ -147,18 +147,12 @@ function renderStatus(payload: ObservabilityPayload): void {
   }
 }
 
-function renderPersona(payload: ObservabilityPayload): void {
-  const { body } = section('人格状态', 'persona')
-  const description = document.createElement('p')
-  description.className = 'persona-copy'
-  description.textContent = payload.persona.description
-  body.append(description)
-
+function renderSelfState(payload: ObservabilityPayload): void {
+  const { body } = section('自身状态', 'selfState')
   const axes = document.createElement('div')
   axes.className = 'axis-list'
   const definitions = [
-    ['好感度', payload.persona.state.intimacy, 0, 100, '当前关系深度'],
-    ['精力', payload.persona.state.energy, 0, 100, '当前行动余量'],
+    ['精力', payload.selfState.energy, 0, 100, '当前行动余量'],
   ] as const
   for (const [label, value, min, max, hint] of definitions) {
     const item = document.createElement('div')
@@ -321,49 +315,26 @@ function renderSensing(payload: ObservabilityPayload): void {
   }
 }
 
-function renderMemory(payload: ObservabilityPayload): void {
-  const { body } = section('记忆存储', 'L3 / L2 / L1', true)
+function renderConversation(payload: ObservabilityPayload): void {
+  const { body } = section('会话状态', 'conversation', true)
   const summary = document.createElement('div')
   summary.className = 'memory-summary'
-  chip(summary, 'L3 长期事实', `${payload.memory.semantic.length} 条`)
-  chip(summary, 'L2 情节', `${payload.memory.episodes} 条`)
-  chip(summary, 'L1 工作消息', `${payload.memory.workingMessages} 条`)
+  chip(summary, '工作消息', `${payload.conversation.workingMessages} 条`)
+  chip(summary, '出现人物', `${payload.conversation.participants.length} 人`)
   body.append(summary)
-  if (!payload.memory.semantic.length) {
+  if (!payload.conversation.participants.length) {
     const empty = document.createElement('p')
     empty.className = 'muted'
-    empty.textContent = '当前没有长期事实记忆。'
+    empty.textContent = '这条会话还没有人物发言。'
     body.append(empty)
     return
   }
-
-  const wrap = document.createElement('div')
-  wrap.className = 'table-wrap'
-  const table = document.createElement('table')
-  const head = document.createElement('thead')
-  const headRow = document.createElement('tr')
-  for (const label of ['内容', '类型', '保留度', '复习到期', '状态']) {
-    const cell = document.createElement('th')
-    cell.textContent = label
-    headRow.append(cell)
+  const participants = document.createElement('div')
+  participants.className = 'chip-row'
+  for (const person of payload.conversation.participants) {
+    chip(participants, person.kind === 'owner' ? '桌主' : '联系人', person.displayName)
   }
-  head.append(headRow)
-  const bodyRows = document.createElement('tbody')
-  for (const fact of payload.memory.semantic) {
-    const row = document.createElement('tr')
-    if (fact.frozen) row.className = 'frozen'
-    const values = [fact.content, fact.kind, fact.retention.toFixed(2), dateTime(fact.dueAt), fact.frozen ? '渐淡' : '清晰']
-    values.forEach((value, index) => {
-      const cell = document.createElement('td')
-      if (index > 1) cell.className = 'mono'
-      cell.textContent = value
-      row.append(cell)
-    })
-    bodyRows.append(row)
-  }
-  table.append(head, bodyRows)
-  wrap.append(table)
-  body.append(wrap)
+  body.append(participants)
 }
 
 function renderVoice(payload: ObservabilityPayload): void {
@@ -385,12 +356,12 @@ function renderVoice(payload: ObservabilityPayload): void {
 function render(payload: ObservabilityPayload): void {
   renderStatus(payload)
   grid.replaceChildren()
-  renderPersona(payload)
+  renderSelfState(payload)
   renderSleep(payload)
   renderSchedule(payload)
   renderBudget(payload)
   renderSensing(payload)
-  renderMemory(payload)
+  renderConversation(payload)
   renderVoice(payload)
 }
 

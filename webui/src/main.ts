@@ -2,6 +2,9 @@ import type {
   ObservabilityPayload,
   ObservabilityStream,
   ObservabilityStreamsPayload,
+  PersonProfile,
+  PersonSummary,
+  PersonsPayload,
   TraceEntry,
 } from '../../electron/shared/ipc.ts'
 
@@ -15,6 +18,11 @@ const panelShell = document.getElementById('panel-shell') as HTMLElement
 const loginForm = document.getElementById('login-form') as HTMLFormElement
 const loginError = document.getElementById('login-error') as HTMLElement
 const streamSelect = document.getElementById('stream-select') as HTMLSelectElement
+const conversationView = document.getElementById('conversation-view') as HTMLElement
+const personsView = document.getElementById('persons-view') as HTMLElement
+const personsGrid = document.getElementById('persons-grid') as HTMLElement
+const personsTitle = document.getElementById('persons-title') as HTMLElement
+const personsSubtitle = document.getElementById('persons-subtitle') as HTMLElement
 const refreshButton = document.getElementById('refresh') as HTMLButtonElement
 const autoRefresh = document.getElementById('auto-refresh') as HTMLInputElement
 const fetchedAt = document.getElementById('fetched-at') as HTMLTimeElement
@@ -70,7 +78,12 @@ function dateTime(value: unknown): string {
   }).format(new Date(timestamp))
 }
 
-function section(title: string, subtitle: string, wide = false): HTMLElement {
+function section(
+  title: string,
+  subtitle: string,
+  wide = false,
+  parent: HTMLElement = grid,
+): HTMLElement {
   const card = document.createElement('section')
   card.className = wide ? 'panel-card wide' : 'panel-card'
   const heading = document.createElement('header')
@@ -84,7 +97,7 @@ function section(title: string, subtitle: string, wide = false): HTMLElement {
   const body = document.createElement('div')
   body.className = 'section-body'
   card.append(heading, body)
-  grid.append(card)
+  parent.append(card)
   return body
 }
 
@@ -131,7 +144,7 @@ function renderStatus(payload: ObservabilityPayload): void {
     ['当前状态', sleepLabel],
     ['今日预算', `${used} / ${used + remaining}`],
     ['视觉响应', `${fixed(vision.looks)} 看 / ${fixed(vision.spoke)} 说`],
-    ['长期记忆', `${payload.memory.semantic.length} 条`],
+    ['会话人物', `${payload.conversation.participants.length} 人`],
   ]
   for (const [label, value] of values) {
     const item = document.createElement('div')
@@ -141,17 +154,12 @@ function renderStatus(payload: ObservabilityPayload): void {
   }
 }
 
-function renderPersona(payload: ObservabilityPayload): void {
-  const body = section('人格状态', 'persona')
-  const description = document.createElement('p')
-  description.className = 'persona-copy'
-  description.textContent = payload.persona.description
-  body.append(description)
+function renderSelfState(payload: ObservabilityPayload): void {
+  const body = section('自身状态', 'selfState')
   const axes = document.createElement('div')
   axes.className = 'axis-list'
   const definitions = [
-    ['好感度', payload.persona.state.intimacy, 0, 100],
-    ['精力', payload.persona.state.energy, 0, 100],
+    ['精力', payload.selfState.energy, 0, 100],
   ] as const
   for (const [label, value, min, max] of definitions) {
     const item = document.createElement('div')
@@ -242,46 +250,30 @@ function renderSensing(payload: ObservabilityPayload): void {
   for (const [reason, count] of Object.entries(byReason)) metric(body, `视觉原因 · ${reason}`, fixed(count))
 }
 
-function renderMemory(payload: ObservabilityPayload): void {
-  const body = section('记忆存储', 'L3 / L2 / L1', true)
+function renderConversation(payload: ObservabilityPayload): void {
+  const body = section('会话状态', 'conversation', true)
   const summary = document.createElement('div')
   summary.className = 'chip-row'
-  chip(summary, 'L3 长期事实', `${payload.memory.semantic.length} 条`)
-  chip(summary, 'L2 情节', `${payload.memory.episodes} 条`)
-  chip(summary, 'L1 工作消息', `${payload.memory.workingMessages} 条`)
+  chip(summary, '工作消息', `${payload.conversation.workingMessages} 条`)
+  chip(summary, '出现人物', `${payload.conversation.participants.length} 人`)
   body.append(summary)
-  if (!payload.memory.semantic.length) {
+  if (!payload.conversation.participants.length) {
     const empty = document.createElement('p')
     empty.className = 'muted'
-    empty.textContent = '当前没有长期事实记忆。'
+    empty.textContent = '这条会话还没有人物发言。'
     body.append(empty)
     return
   }
-  const wrap = document.createElement('div')
-  wrap.className = 'table-wrap'
-  const table = document.createElement('table')
-  const head = document.createElement('thead')
-  const headRow = document.createElement('tr')
-  for (const label of ['内容', '类型', '保留度', '复习到期', '状态']) {
-    const cell = document.createElement('th')
-    cell.textContent = label
-    headRow.append(cell)
+  const participants = document.createElement('div')
+  participants.className = 'person-link-list'
+  for (const person of payload.conversation.participants) {
+    const link = document.createElement('a')
+    link.className = 'person-link'
+    link.href = `/persons/${person.id}`
+    link.textContent = person.displayName
+    participants.append(link)
   }
-  head.append(headRow)
-  const rows = document.createElement('tbody')
-  for (const fact of payload.memory.semantic) {
-    const row = document.createElement('tr')
-    if (fact.frozen) row.className = 'frozen'
-    for (const value of [fact.content, fact.kind, fact.retention.toFixed(2), dateTime(fact.dueAt), fact.frozen ? '渐淡' : '清晰']) {
-      const cell = document.createElement('td')
-      cell.textContent = value
-      row.append(cell)
-    }
-    rows.append(row)
-  }
-  table.append(head, rows)
-  wrap.append(table)
-  body.append(wrap)
+  body.append(participants)
 }
 
 function renderVoice(payload: ObservabilityPayload): void {
@@ -303,13 +295,171 @@ function renderVoice(payload: ObservabilityPayload): void {
 function renderSnapshot(payload: ObservabilityPayload): void {
   renderStatus(payload)
   grid.replaceChildren()
-  renderPersona(payload)
+  renderSelfState(payload)
   renderSleep(payload)
   renderSchedule(payload)
   renderBudget(payload)
   renderSensing(payload)
-  renderMemory(payload)
+  renderConversation(payload)
   renderVoice(payload)
+}
+
+function renderPersonSummary(person: PersonSummary): void {
+  const body = section(
+    person.displayName,
+    person.kind === 'owner' ? '桌主' : `联系人 #${person.id}`,
+    false,
+    personsGrid,
+  )
+  const metadata = document.createElement('div')
+  metadata.className = 'metric-list'
+  metric(metadata, '认识时间', dateTime(person.firstSeenAt))
+  metric(metadata, '平台身份', `${person.identities.length} 个`)
+  metric(metadata, '出现会话', `${person.streams.length} 个`)
+  body.append(metadata)
+  const identities = document.createElement('div')
+  identities.className = 'chip-row spaced'
+  for (const identity of person.identities) {
+    chip(identities, identity.platform.toUpperCase(), `${identity.displayName} · ${identity.externalId}`)
+  }
+  if (!person.identities.length) chip(identities, '身份', '尚未绑定平台身份')
+  body.append(identities)
+  const link = document.createElement('a')
+  link.className = 'button-link compact-link'
+  link.href = `/persons/${person.id}`
+  link.textContent = '查看完整画像'
+  body.append(link)
+}
+
+function renderPersonList(payload: PersonsPayload): void {
+  personsTitle.textContent = '人物画像'
+  personsSubtitle.textContent = '每个人的身份、关系与事实记忆彼此独立。'
+  personsGrid.replaceChildren()
+  if (!payload.persons.length) {
+    const empty = document.createElement('p')
+    empty.className = 'empty'
+    empty.textContent = '还没有认识任何人。'
+    personsGrid.append(empty)
+    return
+  }
+  for (const person of payload.persons) renderPersonSummary(person)
+}
+
+function renderPersonDetail(profile: PersonProfile): void {
+  personsTitle.textContent = profile.displayName
+  personsSubtitle.textContent = profile.kind === 'owner'
+    ? '桌主的人物画像'
+    : `联系人 #${profile.id} 的人物画像`
+  personsGrid.replaceChildren()
+
+  const relationship = section('关系状态', 'persona_bond', false, personsGrid)
+  const axes = document.createElement('div')
+  axes.className = 'axis-list'
+  const definitions = [
+    ['好感度', profile.bond.intimacy, 0, 100],
+  ] as const
+  for (const [label, value, min, max] of definitions) {
+    const item = document.createElement('div')
+    metric(item, label, fixed(value, 1))
+    progress(item, value - min, max - min, label)
+    axes.append(item)
+  }
+  relationship.append(axes)
+
+  const identity = section('身份与会话', 'identities / streams', false, personsGrid)
+  const metadata = document.createElement('div')
+  metadata.className = 'metric-list'
+  metric(metadata, '认识时间', dateTime(profile.firstSeenAt))
+  metric(metadata, '画像更新时间', dateTime(profile.bond.updatedAt))
+  identity.append(metadata)
+  const identityChips = document.createElement('div')
+  identityChips.className = 'chip-row spaced'
+  for (const item of profile.identities) {
+    chip(identityChips, item.platform.toUpperCase(), `${item.displayName} · ${item.externalId}`)
+  }
+  if (!profile.identities.length) chip(identityChips, '身份', '尚未绑定平台身份')
+  identity.append(identityChips)
+  const streamChips = document.createElement('div')
+  streamChips.className = 'chip-row'
+  for (const stream of profile.streams) chip(streamChips, stream.kind, streamLabel(stream))
+  if (!profile.streams.length) chip(streamChips, '会话', '尚未在会话中发言')
+  identity.append(streamChips)
+
+  const memory = section('事实记忆', `${profile.facts.length} 条`, true, personsGrid)
+  if (!profile.facts.length) {
+    const empty = document.createElement('p')
+    empty.className = 'muted'
+    empty.textContent = '当前没有关于这个人的事实记忆。'
+    memory.append(empty)
+  } else {
+    const wrap = document.createElement('div')
+    wrap.className = 'table-wrap'
+    const table = document.createElement('table')
+    const head = document.createElement('thead')
+    const headRow = document.createElement('tr')
+    for (const label of ['内容', '类型', '保留度', '复习到期', '状态']) {
+      const cell = document.createElement('th')
+      cell.textContent = label
+      headRow.append(cell)
+    }
+    head.append(headRow)
+    const rows = document.createElement('tbody')
+    for (const fact of profile.facts) {
+      const row = document.createElement('tr')
+      if (fact.frozen) row.className = 'frozen'
+      for (const value of [
+        fact.content,
+        fact.kind,
+        fact.retention.toFixed(2),
+        dateTime(fact.dueAt),
+        fact.frozen ? '渐淡' : '清晰',
+      ]) {
+        const cell = document.createElement('td')
+        cell.textContent = value
+        row.append(cell)
+      }
+      rows.append(row)
+    }
+    table.append(head, rows)
+    wrap.append(table)
+    memory.append(wrap)
+  }
+
+  const back = document.createElement('a')
+  back.className = 'button-link compact-link'
+  back.href = '/persons'
+  back.textContent = '返回人物列表'
+  memory.append(back)
+}
+
+function requestedPersonId(): number | null | undefined {
+  const path = window.location.pathname.replace(/\/$/, '') || '/'
+  if (path === '/persons') return null
+  const match = /^\/persons\/(\d+)$/.exec(path)
+  return match ? Number(match[1]) : undefined
+}
+
+async function fetchPersonPage(personId: number | null): Promise<void> {
+  const path = personId === null ? '/api/persons' : `/api/persons/${personId}`
+  const response = await fetch(path, { credentials: 'same-origin' })
+  if (response.status === 401) {
+    showLogin('登录已失效，请重新输入 token。')
+    return
+  }
+  if (response.status === 404) {
+    personsGrid.replaceChildren()
+    const message = document.createElement('p')
+    message.className = 'error'
+    message.textContent = '找不到这个人物画像。'
+    personsGrid.append(message)
+    return
+  }
+  if (!response.ok) throw new Error(`人物画像请求失败：HTTP ${response.status}`)
+  if (personId === null) {
+    renderPersonList(await response.json() as PersonsPayload)
+  } else {
+    renderPersonDetail(await response.json() as PersonProfile)
+  }
 }
 
 /** 把 messages 数组摊成 [role] + 正文的分段文本，直接 JSON 化会把提示词里的换行全转义掉。 */
@@ -562,6 +712,16 @@ function showLogin(message = ''): void {
 
 async function initializePanel(): Promise<void> {
   showPanel()
+  const personId = requestedPersonId()
+  if (personId !== undefined) {
+    stopPanel()
+    conversationView.hidden = true
+    personsView.hidden = false
+    await fetchPersonPage(personId)
+    return
+  }
+  conversationView.hidden = false
+  personsView.hidden = true
   await fetchStreams()
   await fetchSnapshot()
   renderTrace()

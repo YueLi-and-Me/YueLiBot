@@ -38,11 +38,10 @@ export interface ObservabilityStreamsPayload {
   streams: ObservabilityStream[]
 }
 
-/** 人格好感度与全局精力。 */
-export interface ObservabilityPersonaState {
+/** 人物好感度；全局精力不属于任何单个人物。 */
+export interface PersonBond {
   intimacy: number
-  energy: number
-  updated_at: number
+  updatedAt: number
 }
 
 /** L3 长期事实。HTTP 契约统一使用 camelCase，禁止前端猜 Python 字段名。 */
@@ -56,18 +55,46 @@ export interface ObservabilityFact {
   frozen: boolean
 }
 
+export interface PersonIdentity {
+  platform: string
+  externalId: string
+  displayName: string
+}
+
+export interface PersonSummary {
+  id: number
+  kind: 'owner' | 'contact'
+  displayName: string
+  firstSeenAt: number
+  identities: PersonIdentity[]
+  streams: ObservabilityStream[]
+}
+
+export interface ConversationParticipant {
+  id: number
+  kind: 'owner' | 'contact'
+  displayName: string
+}
+
+export interface PersonProfile extends PersonSummary {
+  bond: PersonBond
+  facts: ObservabilityFact[]
+}
+
+export interface PersonsPayload {
+  persons: PersonSummary[]
+}
+
 /** Python `/observability` 的完整跨语言契约。 */
 export interface ObservabilityPayload {
   now: number
-  persona: {
-    state: ObservabilityPersonaState
-    description: string
+  selfState: {
+    energy: number
   }
   schedule: DayPlan | null
-  memory: {
-    semantic: ObservabilityFact[]
-    episodes: number
+  conversation: {
     workingMessages: number
+    participants: ConversationParticipant[]
   }
   sleep?: Record<string, unknown>
   impulse?: Record<string, unknown>

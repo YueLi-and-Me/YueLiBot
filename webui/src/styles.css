@@ -106,6 +106,51 @@ button {
   width: 100%;
 }
 
+.page-nav {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.page-nav a,
+.button-link,
+.person-link {
+  border-radius: 8px;
+  color: #9bbdff;
+  text-decoration: none;
+}
+
+.page-nav a,
+.button-link {
+  background: #191e26;
+  border: 1px solid #3c4656;
+  display: inline-flex;
+  font-weight: 700;
+  padding: 9px 14px;
+}
+
+.page-nav a:hover,
+.button-link:hover,
+.person-link:hover {
+  color: #d5e3ff;
+}
+
+.compact-link {
+  margin-top: 12px;
+}
+
+.person-link-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.person-link {
+  background: #11161d;
+  border: 1px solid #303846;
+  padding: 7px 10px;
+}
+
 .app-header,
 .toolbar,
 .section-heading,

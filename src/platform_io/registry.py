@@ -12,7 +12,14 @@ from typing import List
 import sqlite3
 
 from src.common.logger import get_logger
-from src.platform_io.types import ConversationContext, PersonKind, PersonRef, StreamKind, StreamRef
+from src.platform_io.types import (
+    ConversationContext,
+    IdentityRef,
+    PersonKind,
+    PersonRef,
+    StreamKind,
+    StreamRef,
+)
 
 logger = get_logger(__name__)
 
@@ -48,6 +55,40 @@ class StreamRegistry:
             raise RuntimeError(f"person {person_id} 的 kind 不受支持：{row[1]}")
         return PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
 
+    def list_persons(self, stream_id: int | None = None) -> List[PersonRef]:
+        """列出全部人物，或只列出在指定会话实际发过言的人物。"""
+        if stream_id is None:
+            rows = self._db.execute(
+                "SELECT id, kind, first_seen_at FROM persons ORDER BY id ASC"
+            ).fetchall()
+        else:
+            stream = self.stream(stream_id)
+            rows = self._db.execute(
+                """SELECT DISTINCT p.id, p.kind, p.first_seen_at
+                   FROM messages AS m
+                   JOIN persons AS p ON p.id = m.sender_person_id
+                   WHERE m.stream_id = ? AND m.role = 'user'
+                   ORDER BY p.id ASC""",
+                (stream.id,),
+            ).fetchall()
+        return [
+            PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
+            for row in rows
+        ]
+
+    def list_identities(self, person_id: int) -> List[IdentityRef]:
+        """列出人物的全部平台身份；先校验人物，禁止错误 ID 静默返回空列表。"""
+        person = self.person(person_id)
+        rows = self._db.execute(
+            """SELECT platform, external_id, display_name FROM identities
+               WHERE person_id = ? ORDER BY platform ASC, external_id ASC""",
+            (person.id,),
+        ).fetchall()
+        return [
+            IdentityRef(platform=row[0], external_id=row[1], display_name=row[2])
+            for row in rows
+        ]
+
     def desktop_stream(self) -> StreamRef:
         """读取迁移/SEED 确定的唯一 desktop stream。"""
         row = self._db.execute(
@@ -82,36 +123,21 @@ class StreamRegistry:
             for row in rows
         ]
 
-    def observation_context(self, stream_id: int) -> ConversationContext:
-        """解析只读面板查看一个 stream 时对应的人物上下文。
-
-        desktop 固定属于 owner；direct 的 external_id 就是对端平台身份。
-        group 没有唯一人物，因此使用该 stream 最近一条用户消息的发送者，
-        并在尚无用户消息时明确报错，不虚构 owner 作为兜底。
-        """
-        stream = self.stream(stream_id)
-        if stream.kind == "desktop":
-            if stream.id != _DESKTOP_STREAM_ID:
-                raise RuntimeError(f"发现非预期的 desktop stream：{stream.id}")
-            return ConversationContext(stream=stream, person=self.owner_person())
-
-        if stream.kind == "direct":
-            person = self.find_person_by_identity(stream.platform, stream.external_id)
-            if person is None:
-                raise ValueError(
-                    f"stream {stream.id} 尚未绑定平台身份，不能确定观察对象"
-                )
-            return ConversationContext(stream=stream, person=person)
-
-        row = self._db.execute(
-            """SELECT sender_person_id FROM messages
-               WHERE stream_id = ? AND role = 'user' AND sender_person_id IS NOT NULL
-               ORDER BY id DESC LIMIT 1""",
-            (stream.id,),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"group stream {stream.id} 尚无用户消息，不能确定观察对象")
-        return ConversationContext(stream=stream, person=self.person(row[0]))
+    def list_person_streams(self, person_id: int) -> List[StreamRef]:
+        """列出人物实际发过言的会话；不把仅有身份绑定误算成已经出现。"""
+        person = self.person(person_id)
+        rows = self._db.execute(
+            """SELECT DISTINCT s.id, s.platform, s.kind, s.external_id
+               FROM messages AS m
+               JOIN streams AS s ON s.id = m.stream_id
+               WHERE m.sender_person_id = ? AND m.role = 'user'
+               ORDER BY s.id ASC""",
+            (person.id,),
+        ).fetchall()
+        return [
+            StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+            for row in rows
+        ]
 
     def desktop_context(self) -> ConversationContext:
         """返回桌面唯一且完整的入站上下文。"""

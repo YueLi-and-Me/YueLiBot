@@ -20,6 +20,15 @@ class PersonRef:
 
 
 @dataclass(frozen=True)
+class IdentityRef:
+    """person 在某个平台上的稳定身份与展示名。"""
+
+    platform: str
+    external_id: str
+    display_name: str
+
+
+@dataclass(frozen=True)
 class StreamRef:
     """已存在 stream 的稳定引用。"""
 

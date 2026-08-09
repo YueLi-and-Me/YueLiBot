@@ -314,6 +314,31 @@ async def streams() -> dict:
     }
 
 
+@router.get('/api/persons', dependencies=[Depends(_auth)])
+async def persons() -> dict:
+    """列出独立人物画像入口，不把关系数据塞回会话快照。"""
+    if app_state.chat is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='人物画像服务未初始化',
+        )
+    return {'persons': app_state.chat.list_person_profiles()}
+
+
+@router.get('/api/persons/{person_id}', dependencies=[Depends(_auth)])
+async def person_detail(person_id: int) -> dict:
+    """读取单个人物画像；错误 ID 必须 404，禁止回退 owner。"""
+    if app_state.chat is None or app_state.registry is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='人物画像服务未初始化',
+        )
+    try:
+        return app_state.chat.person_profile(person_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get("/debug/trace", dependencies=[Depends(_auth)])
 async def debug_trace(since: int = 0) -> JSONResponse:
     """用户输入 / LLM 请求-流式增量-最终响应 / 记忆写入 / 感知决策的运行时追踪。

@@ -8,6 +8,7 @@ export default defineConfig({
     port: 5181,
     proxy: {
       '/auth': 'http://127.0.0.1:7999',
+      '/api': 'http://127.0.0.1:7999',
       '/streams': 'http://127.0.0.1:7999',
     },
   },

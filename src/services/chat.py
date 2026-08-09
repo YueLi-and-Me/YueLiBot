@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List
 
 import asyncio
 import inspect
@@ -36,7 +36,13 @@ from src.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
 from src.platform_io.broker import PlatformBroker
 from src.platform_io.registry import StreamRegistry
-from src.platform_io.types import ConversationContext, InboundMessage, OutboundMessage
+from src.platform_io.types import (
+    ConversationContext,
+    IdentityRef,
+    InboundMessage,
+    OutboundMessage,
+    PersonRef,
+)
 from src.schedule.plan import DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
@@ -601,32 +607,117 @@ class ChatService:
         }
 
     def observability_snapshot(self, stream_id: int, now: int | None = None) -> dict:
-        """读取指定 stream 的观察快照；分区参数不得省略或回退到桌面。"""
+        """读取指定 stream 的会话快照，不混入任何单个人物的关系与事实。"""
         now = now or current_time()
-        context = self._registry.observation_context(stream_id)
-        s = self.persona.get(context.person.id)
-        fc = self.memory.fact_count(context.person.id)
+        stream = self._registry.stream(stream_id)
+        participants = [
+            self._conversation_participant(person, stream.platform)
+            for person in self._registry.list_persons(stream.id)
+        ]
         return {
             'now': now,
-            'persona': {'state': s.__dict__, 'description': describe_persona(s)},
+            'selfState': {
+                'energy': self.persona.inspect(self._desktop_context.person.id).energy,
+            },
             'schedule': _plan_to_dict(self._schedule.get(now)) if self._schedule else None,
-            'memory': {
-                'semantic': [
-                    {
-                        'id': fact.id,
-                        'kind': fact.kind,
-                        'content': fact.content,
-                        'retention': fact.retention,
-                        'score': fact.score,
-                        'dueAt': fact.due_at,
-                        'frozen': fact.frozen,
-                    }
-                    for fact in self.memory.all_facts(context.person.id, now)
-                ],
-                'episodes': len(self.memory.all_episodes()),
-                'workingMessages': self.memory.pending_count(context.stream.id),
+            'conversation': {
+                'workingMessages': self.memory.pending_count(stream.id),
+                'participants': participants,
             },
         }
+
+    def list_person_profiles(self) -> List[Dict[str, Any]]:
+        """列出人物画像索引，只返回身份与会话归属，不提前展开关系和事实。"""
+        return [self._person_summary(person) for person in self._registry.list_persons()]
+
+    def person_profile(self, person_id: int, now: int | None = None) -> Dict[str, Any]:
+        """从既有 persons、identities、persona_bond 与 facts 组装单个人物画像。"""
+        now = now or current_time()
+        person = self._registry.person(person_id)
+        summary = self._person_summary(person)
+        state = self.persona.inspect(person.id)
+        summary.update({
+            'bond': {
+                'intimacy': state.intimacy,
+                'updatedAt': state.updated_at,
+            },
+            'facts': [
+                {
+                    'id': fact.id,
+                    'kind': fact.kind,
+                    'content': fact.content,
+                    'retention': fact.retention,
+                    'score': fact.score,
+                    'dueAt': fact.due_at,
+                    'frozen': fact.frozen,
+                }
+                for fact in self.memory.all_facts(person.id, now)
+            ],
+        })
+        return summary
+
+    def _person_summary(
+        self,
+        person: PersonRef,
+        preferred_platform: str | None = None,
+    ) -> Dict[str, Any]:
+        """把 Registry 引用转成跨语言人物摘要，显示名优先使用当前会话平台。"""
+        identities = self._registry.list_identities(person.id)
+        return {
+            'id': person.id,
+            'kind': person.kind,
+            'displayName': self._profile_display_name(person, identities, preferred_platform),
+            'firstSeenAt': person.first_seen_at,
+            'identities': [
+                {
+                    'platform': identity.platform,
+                    'externalId': identity.external_id,
+                    'displayName': identity.display_name,
+                }
+                for identity in identities
+            ],
+            'streams': [
+                {
+                    'id': stream.id,
+                    'platform': stream.platform,
+                    'kind': stream.kind,
+                    'externalId': stream.external_id,
+                }
+                for stream in self._registry.list_person_streams(person.id)
+            ],
+        }
+
+    def _conversation_participant(
+        self,
+        person: PersonRef,
+        platform: str,
+    ) -> Dict[str, Any]:
+        """会话快照只暴露跳转人物页所需的最小参与者摘要。"""
+        identities = self._registry.list_identities(person.id)
+        return {
+            'id': person.id,
+            'kind': person.kind,
+            'displayName': self._profile_display_name(person, identities, platform),
+        }
+
+    @staticmethod
+    def _profile_display_name(
+        person: PersonRef,
+        identities: List[IdentityRef],
+        preferred_platform: str | None,
+    ) -> str:
+        """优先使用指定平台的显示名，并明确标出尚未绑定身份的人物。"""
+        preferred = next(
+            (identity for identity in identities if identity.platform == preferred_platform),
+            None,
+        )
+        if preferred is not None:
+            return preferred.display_name
+        if identities:
+            return identities[0].display_name
+        if person.kind == 'owner':
+            return '桌主'
+        return f'未绑定联系人 #{person.id}'
 
     def _next_turn(self) -> int:
         self._turn_id += 1
