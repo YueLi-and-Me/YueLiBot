@@ -125,10 +125,10 @@ export interface ObservabilityPayload {
 
 /** `/debug/trace` 的稳定公共字段；各 kind 的业务字段保留为 unknown。 */
 export interface TraceEntry {
-  seq: number
+  seq: number | null
   at: number
   kind: string
-  streamId?: number
+  streamId?: number | null
   platform?: string
   personId?: number
   personKind?: string
@@ -138,7 +138,7 @@ export interface TraceEntry {
   senderDisplayName?: string
   senderLabel?: string
   botName?: string
-  turnId?: number
+  turnId?: number | null
   [key: string]: unknown
 }
 export const IPC = {

@@ -9,7 +9,6 @@ import type {
 } from '../../electron/shared/ipc.ts'
 
 const SNAPSHOT_REFRESH_MS = 15_000
-const TRACE_POLL_MS = 2_000
 const MAX_TRACE_ENTRIES = 1_000
 const MAX_LOG_ROWS = 500
 
@@ -37,10 +36,14 @@ const logStatus = document.getElementById('log-status') as HTMLElement
 
 let initialized = false
 let snapshotTimer: ReturnType<typeof setInterval> | null = null
-let traceTimer: ReturnType<typeof setInterval> | null = null
 let logReconnectTimer: ReturnType<typeof setTimeout> | null = null
+let eventReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let logSocket: WebSocket | null = null
+let eventSocket: WebSocket | null = null
+let eventReconnectDelay = 1_000
 let lastTraceSeq = 0
+let skippedEventCount = 0
+let panelRunning = false
 let traces: TraceEntry[] = []
 
 function record(value: unknown): Record<string, unknown> {
@@ -545,16 +548,18 @@ function renderTrace(): void {
   const selectedStream = Number(streamSelect.value)
   const visible = traces.filter((entry) => {
     const kindMatches = selectedKind === 'all' || entry.kind === selectedKind
-    const streamMatches = entry.streamId === undefined || entry.streamId === selectedStream
+    const streamMatches = entry.streamId == null || entry.streamId === selectedStream
     return kindMatches && streamMatches
   })
-  traceCount.textContent = `${visible.length} / ${traces.length} 条`
+  traceCount.textContent = `${visible.length} / ${traces.length} 条${
+    skippedEventCount ? ` · 已跳过 ${skippedEventCount} 条` : ''
+  }`
   turnCards.replaceChildren()
   traceLog.replaceChildren()
 
   const grouped = new Map<number, TraceEntry[]>()
   for (const entry of visible) {
-    if (entry.turnId === undefined) continue
+    if (entry.turnId == null) continue
     const group = grouped.get(entry.turnId) ?? []
     group.push(entry)
     grouped.set(entry.turnId, group)
@@ -596,7 +601,7 @@ function renderTrace(): void {
     turnCards.append(card)
   }
 
-  for (const entry of visible.filter((item) => item.turnId === undefined).slice(-300)) {
+  for (const entry of visible.filter((item) => item.turnId == null).slice(-300)) {
     const row = document.createElement('div')
     row.className = 'trace-entry'
     const time = document.createElement('span')
@@ -692,6 +697,52 @@ function connectLogs(): void {
   })
 }
 
+function connectEvents(): void {
+  if (!panelRunning) return
+  if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+  eventSocket = new WebSocket(
+    `${scheme}://${location.host}/ws/events?since=${encodeURIComponent(lastTraceSeq)}`,
+  )
+  eventSocket.addEventListener('open', () => {
+    eventReconnectDelay = 1_000
+  })
+  eventSocket.addEventListener('message', (message) => {
+    try {
+      const payload = JSON.parse(String(message.data)) as {
+        events?: unknown
+        truncated?: unknown
+        from?: unknown
+      }
+      if (!Array.isArray(payload.events)) return
+      if (payload.truncated === true && typeof payload.from === 'number') {
+        skippedEventCount += Math.max(0, payload.from - lastTraceSeq - 1)
+      }
+      const incoming: TraceEntry[] = []
+      for (const value of payload.events) {
+        const entry = record(value) as TraceEntry
+        if (typeof entry.kind !== 'string') continue
+        if (typeof entry.seq === 'number') {
+          if (entry.seq <= lastTraceSeq) continue
+          lastTraceSeq = entry.seq
+        }
+        incoming.push(entry)
+      }
+      if (!incoming.length) return
+      traces = [...traces, ...incoming].slice(-MAX_TRACE_ENTRIES)
+      renderTrace()
+    } catch {
+      eventSocket?.close()
+    }
+  })
+  eventSocket.addEventListener('close', () => {
+    eventSocket = null
+    if (!panelRunning) return
+    eventReconnectTimer = setTimeout(connectEvents, eventReconnectDelay)
+    eventReconnectDelay = Math.min(eventReconnectDelay * 2, 30_000)
+  })
+}
+
 async function fetchStreams(): Promise<void> {
   const response = await fetch('/streams', { credentials: 'same-origin' })
   if (response.status === 401) throw new Error('UNAUTHORIZED')
@@ -739,21 +790,15 @@ async function fetchSnapshot(): Promise<void> {
   }
 }
 
-async function pollTrace(): Promise<void> {
-  const response = await fetch(`/debug/trace?since=${lastTraceSeq}`, { credentials: 'same-origin' })
-  if (!response.ok) return
-  const incoming = await response.json() as TraceEntry[]
-  if (!incoming.length) return
-  traces = [...traces, ...incoming].slice(-MAX_TRACE_ENTRIES)
-  lastTraceSeq = incoming[incoming.length - 1]?.seq ?? lastTraceSeq
-  renderTrace()
-}
 
 function stopPanel(): void {
+  panelRunning = false
   if (snapshotTimer) clearInterval(snapshotTimer)
-  if (traceTimer) clearInterval(traceTimer)
+  if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
   snapshotTimer = null
-  traceTimer = null
+  eventReconnectTimer = null
+  eventSocket?.close()
+  eventSocket = null
   logSocket?.close()
   logSocket = null
 }
@@ -773,6 +818,7 @@ function showLogin(message = ''): void {
 }
 
 async function initializePanel(): Promise<void> {
+  panelRunning = true
   showPanel()
   const personId = requestedPersonId()
   if (personId !== undefined) {
@@ -802,8 +848,7 @@ async function initializePanel(): Promise<void> {
         : null
     })
   }
-  traceTimer = setInterval(() => void pollTrace(), TRACE_POLL_MS)
-  void pollTrace()
+  connectEvents()
   connectLogs()
 }
 
