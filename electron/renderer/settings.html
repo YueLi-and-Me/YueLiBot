@@ -137,6 +137,98 @@
           </div>
         </section>
 
+        <section class="panel-card">
+          <header class="section-heading">
+            <h2>日程与作息</h2>
+            <label class="toggle"><input type="checkbox" name="schedule.sleep_enabled" /> 自动睡眠</label>
+          </header>
+          <div class="section-body">
+            <p class="hint">
+              日程内容会服从已配置的人设。这里控制结构、备用文本和作息；关闭自动睡眠后，角色不会按日程自动入睡。
+            </p>
+            <label class="field">
+              <span class="field-label">最少日程段数</span>
+              <input type="number" name="schedule.min_slots" min="1" max="24" step="1" required />
+            </label>
+            <label class="field">
+              <span class="field-label">最多日程段数</span>
+              <input type="number" name="schedule.max_slots" min="1" max="24" step="1" required />
+            </label>
+            <label class="field">
+              <span class="field-label">备用入睡时间</span>
+              <input type="time" name="schedule.fallback_bedtime" required />
+            </label>
+            <label class="field">
+              <span class="field-label">备用醒来时间</span>
+              <input type="time" name="schedule.fallback_wake" required />
+            </label>
+            <label class="field">
+              <span class="field-label">跨日分界</span>
+              <input type="time" name="schedule.bedtime_day_boundary" required />
+              <span class="hint">入睡时间不晚于此值时，按计划日结束后的次日解释。</span>
+            </label>
+            <label class="field">
+              <span class="field-label">备用活动</span>
+              <input type="text" name="schedule.fallback_activity" maxlength="72" required />
+            </label>
+            <label class="field">
+              <span class="field-label">备用状态</span>
+              <input type="text" name="schedule.fallback_mood" maxlength="40" required />
+            </label>
+            <label class="field">
+              <span class="field-label">备用日主题</span>
+              <input type="text" name="schedule.fallback_theme" maxlength="72" required />
+            </label>
+            <label class="field">
+              <span class="field-label">备用承接事项</span>
+              <input type="text" name="schedule.fallback_carry_over" maxlength="72" required />
+            </label>
+            <label class="field">
+              <span class="field-label">生成失败重试间隔（分钟）</span>
+              <input type="number" name="schedule.generation_retry_interval_minutes" min="1" max="1440" step="1" required />
+            </label>
+          </div>
+        </section>
+
+        <details class="panel-card advanced-section">
+          <summary class="section-heading"><h2>模型生成参数</h2></summary>
+          <div class="section-body">
+            <p class="hint">
+              每类任务独立设置随机度和输出预算。max_tokens 填 0 表示不额外限制；推理模型会先消耗推理 token，结构化决策通常需要更大的预算。
+            </p>
+            <div class="repeat-item">
+              <div class="repeat-header"><h3 class="repeat-title">聊天回复</h3></div>
+              <label class="field"><span class="field-label">temperature</span><input type="number" name="generation.chat.temperature" min="0" max="2" step="0.05" required /></label>
+              <label class="field"><span class="field-label">max_tokens</span><input type="number" name="generation.chat.max_tokens" min="0" max="1000000" step="1" required /></label>
+            </div>
+            <div class="repeat-item">
+              <div class="repeat-header"><h3 class="repeat-title">关系分寸决策</h3></div>
+              <label class="field"><span class="field-label">temperature</span><input type="number" name="generation.relationship.temperature" min="0" max="2" step="0.05" required /></label>
+              <label class="field"><span class="field-label">max_tokens</span><input type="number" name="generation.relationship.max_tokens" min="0" max="1000000" step="1" required /></label>
+            </div>
+            <div class="repeat-item">
+              <div class="repeat-header"><h3 class="repeat-title">主动搭话</h3></div>
+              <label class="field"><span class="field-label">temperature</span><input type="number" name="generation.proactive.temperature" min="0" max="2" step="0.05" required /></label>
+              <label class="field"><span class="field-label">max_tokens</span><input type="number" name="generation.proactive.max_tokens" min="0" max="1000000" step="1" required /></label>
+            </div>
+            <div class="repeat-item">
+              <div class="repeat-header"><h3 class="repeat-title">长期记忆摘要</h3></div>
+              <label class="field"><span class="field-label">temperature</span><input type="number" name="generation.summary.temperature" min="0" max="2" step="0.05" required /></label>
+              <label class="field"><span class="field-label">max_tokens</span><input type="number" name="generation.summary.max_tokens" min="0" max="1000000" step="1" required /></label>
+            </div>
+            <div class="repeat-item">
+              <div class="repeat-header"><h3 class="repeat-title">每日日程</h3></div>
+              <label class="field"><span class="field-label">temperature</span><input type="number" name="generation.schedule.temperature" min="0" max="2" step="0.05" required /></label>
+              <label class="field"><span class="field-label">max_tokens</span><input type="number" name="generation.schedule.max_tokens" min="0" max="1000000" step="1" required /></label>
+            </div>
+            <div class="repeat-item">
+              <div class="repeat-header"><h3 class="repeat-title">视觉描述</h3></div>
+              <label class="field"><span class="field-label">temperature</span><input type="number" name="generation.vision.temperature" min="0" max="2" step="0.05" required /></label>
+              <label class="field"><span class="field-label">max_tokens</span><input type="number" name="generation.vision.max_tokens" min="0" max="1000000" step="1" required /></label>
+            </div>
+          </div>
+        </details>
+
         <details class="panel-card advanced-section">
           <summary class="section-heading"><h2>高级设置</h2></summary>
           <div class="section-body">

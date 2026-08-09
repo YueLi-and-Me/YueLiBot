@@ -196,8 +196,12 @@ function renderSchedule(payload: ObservabilityPayload): void {
   const chips = document.createElement('div')
   chips.className = 'chip-row'
   chip(chips, '主题', payload.schedule.theme)
-  chip(chips, '入睡', payload.schedule.bedtimeHint)
-  chip(chips, '醒来', payload.schedule.wakeHint)
+  if (payload.schedule.sleepEnabled) {
+    chip(chips, '入睡', payload.schedule.bedtimeHint)
+    chip(chips, '醒来', payload.schedule.wakeHint)
+  } else {
+    chip(chips, '自动睡眠', '已关闭')
+  }
   chip(chips, '承接', payload.schedule.carryOver)
   body.append(chips)
   const timeline = document.createElement('ol')

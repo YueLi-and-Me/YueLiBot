@@ -106,6 +106,19 @@ export const DEFAULT_CONFIG: YueliConfig = {
     at_mention_must_reply: true,
     name_mention_probability: 1,
   },
+  schedule: {
+    min_slots: 8,
+    max_slots: 10,
+    sleep_enabled: true,
+    fallback_bedtime: '23:00',
+    fallback_wake: '07:00',
+    bedtime_day_boundary: '02:00',
+    fallback_activity: '按自己的节奏度过这段时间',
+    fallback_mood: '状态平稳',
+    fallback_theme: '按自己的节奏度过今天。',
+    fallback_carry_over: '无',
+    generation_retry_interval_minutes: 10,
+  },
   personality: {
     identity: DEFAULT_IDENTITY,
     behavior: DEFAULT_BEHAVIOR,
@@ -399,6 +412,80 @@ function parseConversation(
   }
 }
 
+function assertClock(value: string, path: string): void {
+  const match = /^(\d{2}):(\d{2})$/.exec(value)
+  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
+    throw new Error(`${path} 必须是合法 HH:MM 时间`)
+  }
+}
+
+function assertSchedule(schedule: YueliConfig['schedule'], path: string): void {
+  if (!Number.isInteger(schedule.min_slots) || schedule.min_slots < 1 || schedule.min_slots > 24) {
+    throw new Error(`${path}.min_slots 必须是 1 到 24 的整数`)
+  }
+  if (!Number.isInteger(schedule.max_slots) || schedule.max_slots < 1 || schedule.max_slots > 24) {
+    throw new Error(`${path}.max_slots 必须是 1 到 24 的整数`)
+  }
+  if (schedule.min_slots > schedule.max_slots) {
+    throw new Error(`${path}.min_slots 不能大于 max_slots`)
+  }
+  if (
+    !Number.isInteger(schedule.generation_retry_interval_minutes)
+    || schedule.generation_retry_interval_minutes < 1
+    || schedule.generation_retry_interval_minutes > 1440
+  ) {
+    throw new Error(`${path}.generation_retry_interval_minutes 必须是 1 到 1440 的整数`)
+  }
+  assertClock(schedule.fallback_bedtime, `${path}.fallback_bedtime`)
+  assertClock(schedule.fallback_wake, `${path}.fallback_wake`)
+  assertClock(schedule.bedtime_day_boundary, `${path}.bedtime_day_boundary`)
+  for (const [field, maxLength] of [
+    ['fallback_activity', 72],
+    ['fallback_mood', 40],
+    ['fallback_theme', 72],
+    ['fallback_carry_over', 72],
+  ] as const) {
+    const value = schedule[field].trim()
+    if (!value || value.length > maxLength) {
+      throw new Error(`${path}.${field} 必须是 1 到 ${maxLength} 个字符`)
+    }
+  }
+}
+
+function parseSchedule(
+  document: Record<string, unknown>, path: string,
+): YueliConfig['schedule'] {
+  if (document.schedule === undefined) return structuredClone(DEFAULT_CONFIG.schedule)
+  const value = recordAt(document, 'schedule', path)
+  const defaults = DEFAULT_CONFIG.schedule
+  const schedule: YueliConfig['schedule'] = {
+    min_slots: numberAtOr(value, 'min_slots', defaults.min_slots, path),
+    max_slots: numberAtOr(value, 'max_slots', defaults.max_slots, path),
+    sleep_enabled: value.sleep_enabled === undefined
+      ? defaults.sleep_enabled
+      : booleanAt(value, 'sleep_enabled', path),
+    fallback_bedtime: stringAtOr(value, 'fallback_bedtime', defaults.fallback_bedtime, path),
+    fallback_wake: stringAtOr(value, 'fallback_wake', defaults.fallback_wake, path),
+    bedtime_day_boundary: stringAtOr(
+      value, 'bedtime_day_boundary', defaults.bedtime_day_boundary, path,
+    ),
+    fallback_activity: stringAtOr(value, 'fallback_activity', defaults.fallback_activity, path),
+    fallback_mood: stringAtOr(value, 'fallback_mood', defaults.fallback_mood, path),
+    fallback_theme: stringAtOr(value, 'fallback_theme', defaults.fallback_theme, path),
+    fallback_carry_over: stringAtOr(
+      value, 'fallback_carry_over', defaults.fallback_carry_over, path,
+    ),
+    generation_retry_interval_minutes: numberAtOr(
+      value,
+      'generation_retry_interval_minutes',
+      defaults.generation_retry_interval_minutes,
+      path,
+    ),
+  }
+  assertSchedule(schedule, `${path} 的 schedule`)
+  return schedule
+}
+
 function assertUniqueNames(items: Array<{ name: string }>, path: string, section: string): void {
   const names = new Set<string>()
   for (const item of items) {
@@ -476,6 +563,7 @@ function readSplitConfig(directory: string): YueliConfig {
   }
   const personality = recordAt(botDocument, 'personality', botPath)
   const conversation = parseConversation(botDocument, botPath)
+  const schedule = parseSchedule(botDocument, botPath)
   const toneVariants = personality.tone_variants
   if (!Array.isArray(toneVariants) || !toneVariants.every((value) => typeof value === 'string')) {
     throw new Error(`${botPath} 的 personality.tone_variants 必须是字符串数组`)
@@ -508,6 +596,7 @@ function readSplitConfig(directory: string): YueliConfig {
         : booleanAt(groupChat, 'at_mention_must_reply', botPath),
       name_mention_probability: nameMentionProbability,
     },
+    schedule,
     personality: {
       identity: stringAt(personality, 'identity', botPath),
       behavior: stringAt(personality, 'behavior', botPath),
@@ -889,6 +978,24 @@ at_mention_must_reply = ${cfg.group_chat.at_mention_must_reply}
 # 名字、别名或非必回 @ 命中后的回复概率，范围 0~1
 name_mention_probability = ${cfg.group_chat.name_mention_probability}
 
+[schedule]
+# 每天生成的日程段数范围
+min_slots = ${cfg.schedule.min_slots}
+max_slots = ${cfg.schedule.max_slots}
+# 是否启用自动睡眠状态；关闭后 bedtime/wake 仅保留为结构字段
+sleep_enabled = ${cfg.schedule.sleep_enabled}
+# 模型不可用或输出不合法时使用的作息与日程文本
+fallback_bedtime = ${tomlString(cfg.schedule.fallback_bedtime)}
+fallback_wake = ${tomlString(cfg.schedule.fallback_wake)}
+# 小于等于此时间的 bedtime 视为计划日结束后的次日时间
+bedtime_day_boundary = ${tomlString(cfg.schedule.bedtime_day_boundary)}
+fallback_activity = ${tomlString(cfg.schedule.fallback_activity)}
+fallback_mood = ${tomlString(cfg.schedule.fallback_mood)}
+fallback_theme = ${tomlString(cfg.schedule.fallback_theme)}
+fallback_carry_over = ${tomlString(cfg.schedule.fallback_carry_over)}
+# 生成失败后再次尝试前等待的分钟数
+generation_retry_interval_minutes = ${cfg.schedule.generation_retry_interval_minutes}
+
 [personality]
 # 稳定身份、经历、外表与自我认知；每轮都会进入系统提示词
 identity = ${tomlMultiline(cfg.personality.identity, 'personality.identity')}
@@ -993,6 +1100,23 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     || cfg.group_chat.name_mention_probability > 1
   ) {
     throw new Error('名字或别名触发回复概率必须在 0 到 1 之间')
+  }
+  assertSchedule(cfg.schedule, '日程配置')
+  for (const [task, generation] of Object.entries(cfg.generation)) {
+    if (
+      !Number.isFinite(generation.temperature)
+      || generation.temperature < 0
+      || generation.temperature > 2
+    ) {
+      throw new Error(`generation.${task}.temperature 必须在 0 到 2 之间`)
+    }
+    if (
+      !Number.isInteger(generation.max_tokens)
+      || generation.max_tokens < 0
+      || generation.max_tokens > 1_000_000
+    ) {
+      throw new Error(`generation.${task}.max_tokens 必须是 0 到 1000000 的整数`)
+    }
   }
   const providerNames = cfg.api_providers.map((provider) => provider.name.trim())
   if (providerNames.some((name) => !name)) throw new Error('每个服务商都要有名称')

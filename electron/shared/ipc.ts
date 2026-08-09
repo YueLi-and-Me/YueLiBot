@@ -24,6 +24,8 @@ export interface DayPlan {
   wakeHint: string
   theme: string
   carryOver: string
+  sleepEnabled: boolean
+  bedtimeDayBoundary: string
 }
 
 /** 观察面板中一条可切换的会话流。 */
@@ -307,6 +309,19 @@ export interface YueliConfig {
   group_chat: {
     at_mention_must_reply: boolean
     name_mention_probability: number
+  }
+  schedule: {
+    min_slots: number
+    max_slots: number
+    sleep_enabled: boolean
+    fallback_bedtime: string
+    fallback_wake: string
+    bedtime_day_boundary: string
+    fallback_activity: string
+    fallback_mood: string
+    fallback_theme: string
+    fallback_carry_over: string
+    generation_retry_interval_minutes: number
   }
   personality: {
     identity: string
