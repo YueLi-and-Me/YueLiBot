@@ -28,8 +28,8 @@ class QqWebSocketDriver(PlatformDriver):
             raise DeliveryError(
                 f'QQ driver 收到非 QQ stream：{message.stream.platform}'
             )
-        if message.stream.kind != 'direct':
-            raise DeliveryError(f'M3 QQ driver 不支持 {message.stream.kind} stream')
+        if message.stream.kind not in {'direct', 'group'}:
+            raise DeliveryError(f'QQ driver 不支持 {message.stream.kind} stream')
         delivered = await self._push(
             message.stream.id,
             'qq.send',
