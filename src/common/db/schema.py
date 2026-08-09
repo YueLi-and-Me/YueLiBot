@@ -8,9 +8,25 @@ Python 侧不使用 ORM —— contentless FTS5 虚表和手工维护的索引
 
 SCHEMA_VERSION = 3
 
-DDL = """
+EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS pipeline_events (
+  seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+  at        INTEGER NOT NULL,
+  stream_id INTEGER,
+  turn_id   INTEGER,
+  stage     TEXT    NOT NULL DEFAULT '',
+  kind      TEXT    NOT NULL,
+  payload   TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_at ON pipeline_events(at);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_stream_seq ON pipeline_events(stream_id, seq);
+"""
+
+DDL = f"""
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+
+{EVENTS_DDL}
 
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
