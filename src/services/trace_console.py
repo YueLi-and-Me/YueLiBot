@@ -2,8 +2,7 @@
 每轮对话结束时在终端打印一个分区的 rich 面板——不是逐条扁平日志。
 
 一轮对话是单阶段的，用一层 Group 摊平展示就够，不需要嵌套 Panel。
-完整 prompt/逐 chunk 细节已经写进 trace.jsonl（services/trace.py），
-这里只给一眼能扫完的摘要。
+完整 prompt 与最终响应已写进事件账本，这里只显示摘要。
 
 ★ 不是 TTY（打包后台跑、日志重定向到文件）时全部函数变成空操作——
   这一层是叠加在 structlog 之上的，不能在非交互环境下污染输出。
@@ -64,7 +63,7 @@ def _prompt_preview(messages: list[dict]) -> str:
     preview = system[:_PROMPT_PREVIEW_CHARS]
     if len(system) > _PROMPT_PREVIEW_CHARS:
         preview += '…'
-    return f'{preview}\n（共 {len(messages)} 条消息，完整内容见 trace.jsonl）'
+    return f'{preview}\n（共 {len(messages)} 条消息，完整内容见观察面板）'
 
 
 def _side_effect_lines(side_effects: list[dict]) -> list[str]:

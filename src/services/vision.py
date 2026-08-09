@@ -27,7 +27,7 @@ from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.config.schema import Config
 from src.llm_models.openai import LlmError
-from src.services.trace import trace
+from src.observe import events as trace
 
 logger = get_logger(__name__)
 

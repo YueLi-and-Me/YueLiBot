@@ -57,7 +57,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "services.vision": ("#5fafff", False),
     "services.tts": ("#ffaf00", False),
     "services.lifecycle": ("#af00ff", False),
-    "services.trace": ("#6c6c6c", False),
+    "observe.events": ("#6c6c6c", False),
     "services.trace_console": ("#6c6c6c", False),
 }
 
@@ -90,7 +90,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "services.vision": "视觉",
     "services.tts": "语音",
     "services.lifecycle": "生命周期",
-    "services.trace": "追踪",
+    "observe.events": "追踪",
     "services.trace_console": "追踪面板",
 }
 
