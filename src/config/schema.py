@@ -186,6 +186,8 @@ class GenerationConfig(BaseModel):
     """按任务拆分参数，避免改视觉模型时意外改变普通聊天。"""
 
     chat: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
+    # 键名沿用历史叫法，实际管的是回复前那次规划调用的全部轴：
+    # 关系分寸、回复篇幅，以及后续新增的轴。改这里会同时影响它们。
     relationship: StructuredGenerationTaskConfig = Field(
         default_factory=lambda: StructuredGenerationTaskConfig(
             temperature=0.1,

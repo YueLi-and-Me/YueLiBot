@@ -26,7 +26,8 @@ from src.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
 from src.agent.prompt import build_proactive_prompt, build_system_prompt, describe_resumption
-from src.agent.relationship import RelationshipPlanner, relationship_tier
+from src.agent.relationship import relationship_tier
+from src.agent.turn_plan import TurnPlan, TurnPlanner
 from src.agent.summarize import summarize
 from src.awareness.sleep import SleepState
 from src.common.clock import now as current_time
@@ -166,8 +167,8 @@ class ChatService:
             self._bot_names = tuple([cfg.bot.name, *cfg.bot.aliases])
             self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
             self._name_mention_probability = cfg.group_chat.name_mention_probability
-        self._relationship_planner = (
-            RelationshipPlanner(
+        self._turn_planner = (
+            TurnPlanner(
                 relationship_provider,
                 temperature=relationship_temperature,
                 max_tokens=relationship_max_tokens,
@@ -921,8 +922,10 @@ class ChatService:
             self._working_memory_messages,
         )
         raw_history = self._history_for_context(context, wm)
-        relationship_decision = await self._decide_relationship(
+        turn_plan = await self._plan_turn(
             state.intimacy,
+            state.energy,
+            context.stream.kind == 'group',
             raw_history[-8:],
             signal,
         )
@@ -939,7 +942,8 @@ class ChatService:
             ),
             tone=self._session(context.stream.id).tone,
             resumption=resumption,
-            relationship_decision=relationship_decision,
+            relationship_decision=(turn_plan.relationship_instruction if turn_plan else None),
+            length_decision=(turn_plan.length_instruction if turn_plan else None),
             platform_name=platform_bot_name,
             **self._prompt_config_kwargs(),
         )
@@ -949,13 +953,15 @@ class ChatService:
         history = normalize_history(raw_history)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
-    async def _decide_relationship(
+    async def _plan_turn(
         self,
         intimacy: float,
+        energy: float,
+        is_group: bool,
         history: list[dict[str, str]],
         signal: asyncio.Event | None,
-    ) -> str | None:
-        if self._relationship_planner is None:
+    ) -> TurnPlan | None:
+        if self._turn_planner is None:
             return None
         if self._cfg is None:
             identity = IDENTITY_PROMPT
@@ -967,16 +973,19 @@ class ChatService:
             'relationship_decision_request',
             tier=relationship_tier(intimacy),
             contextMessages=len(history),
+            isGroup=is_group,
         )
-        decision = await self._relationship_planner.decide(
+        plan = await self._turn_planner.plan(
             intimacy=intimacy,
+            energy=energy,
+            is_group=is_group,
             history=history,
             identity=identity,
             boundaries=boundaries,
             signal=signal,
         )
-        trace.emit('relationship_decision', action=decision.action)
-        return decision.instruction
+        trace.emit('relationship_decision', action=plan.action, length=plan.length)
+        return plan
 
     def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
         """返回群聊称呼候选；平台登录昵称只对当前入站消息生效。"""
