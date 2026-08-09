@@ -118,6 +118,8 @@ def _build_routing(
             kind=provider.kind,
             base_url=provider.base_url,
             api_key=provider.api_key,
+            auth_type=provider.auth_type,
+            auth_name=provider.auth_name,
             identifier=model.model_identifier.strip(),
             extra_body=model.extra_body,
             client_type=provider.client_type,

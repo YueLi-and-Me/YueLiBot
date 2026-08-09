@@ -115,6 +115,8 @@ class ModelRouter:
                 base_url=resolve_base_url(candidate.kind, candidate.base_url),
                 api_key=candidate.api_key,
                 model=candidate.identifier,
+                auth_type=candidate.auth_type,
+                auth_name=candidate.auth_name,
                 extra_body=candidate.extra_body,
                 timeout_ms=candidate.timeout_ms,
                 max_retries=candidate.max_retries,

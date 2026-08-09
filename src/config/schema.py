@@ -331,6 +331,8 @@ class ApiProviderConfig(BaseModel):
     kind: str
     base_url: str = ''
     api_key: str = ''
+    auth_type: Literal['bearer', 'header', 'query', 'none'] = 'bearer'
+    auth_name: str = ''
     # openai = OpenAI 兼容协议（对话/视觉/向量/TTS 都走它）
     # volcengine = 豆包语音私有协议，只能用于 tts 任务
     client_type: Literal['openai', 'volcengine'] = 'openai'
@@ -339,6 +341,22 @@ class ApiProviderConfig(BaseModel):
     timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
     max_retries: int = Field(default=2, ge=0, le=10)
     retry_interval_ms: int = Field(default=800, ge=0, le=60_000)
+
+    @model_validator(mode='after')
+    def _validate_auth(self) -> 'ApiProviderConfig':
+        if self.client_type != 'openai':
+            return self
+        self.auth_name = self.auth_name.strip()
+        has_key = bool(self.api_key.strip())
+        if self.auth_type in ('header', 'query') and not self.auth_name:
+            raise ValueError(f'auth_type={self.auth_type} 时 auth_name 不能为空')
+        if self.auth_type in ('bearer', 'none') and self.auth_name:
+            raise ValueError(f'auth_type={self.auth_type} 时 auth_name 必须留空')
+        if self.auth_type == 'none' and has_key:
+            raise ValueError('auth_type=none 时 api_key 必须留空')
+        if self.auth_type != 'none' and not has_key:
+            raise ValueError(f'auth_type={self.auth_type} 时 api_key 不能为空')
+        return self
 
 
 class ProviderCatalog(BaseModel):
@@ -414,6 +432,8 @@ class ModelCandidate(BaseModel):
     kind: str = ''
     base_url: str = ''
     api_key: str = ''
+    auth_type: Literal['bearer', 'header', 'query', 'none'] = 'bearer'
+    auth_name: str = ''
     # 发给厂商接口的真实模型 ID
     identifier: str = ''
     extra_body: Dict[str, Any] = Field(default_factory=dict)

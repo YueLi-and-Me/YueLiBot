@@ -273,6 +273,7 @@ export interface ObservabilityBridge {
 
 /** 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音私有协议，只能用于 tts。 */
 export type ClientType = 'openai' | 'volcengine'
+export type AuthType = 'bearer' | 'header' | 'query' | 'none'
 
 /**
  * 任务在多个候选模型之间的挑选顺序。
@@ -290,6 +291,8 @@ export interface ApiProviderConfig {
   kind: string
   base_url: string
   api_key: string
+  auth_type: AuthType
+  auth_name: string
   client_type: ClientType
   /** 仅 volcengine：App ID，与 api_key（Access Token）成对使用 */
   app_id: string

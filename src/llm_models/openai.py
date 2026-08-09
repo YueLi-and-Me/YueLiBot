@@ -8,7 +8,8 @@ OpenAI 兼容的异步流式对话客户端。直接移植自 src/core/llm/opena
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
+from urllib.parse import urlencode
 import asyncio
 import json
 import re
@@ -58,6 +59,8 @@ def _classify_code(code: str) -> str:
 class OpenAiChatProvider:
     def __init__(self, base_url: str, api_key: str, model: str,
                  headers: dict | None = None, extra_body: dict | None = None,
+                 auth_type: Literal['bearer', 'header', 'query', 'none'] = 'bearer',
+                 auth_name: str = '',
                  timeout_ms: int = 120_000, max_retries: int = 2,
                  retry_interval_ms: int = 800) -> None:
         if not model.strip():
@@ -65,6 +68,8 @@ class OpenAiChatProvider:
         self.model = model.strip()
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key.strip()
+        self._auth_type = auth_type
+        self._auth_name = auth_name.strip()
         self._headers = headers or {}
         self._extra_body = extra_body or {}
         self._timeout = timeout_ms / 1000
@@ -156,9 +161,14 @@ class OpenAiChatProvider:
         signal: asyncio.Event | None,
         response_format: dict[str, str] | None,
     ) -> AsyncIterator[dict]:
+        auth_headers: dict[str, str] = {}
+        if self._auth_type == 'bearer':
+            auth_headers['Authorization'] = f'Bearer {self.api_key}'
+        elif self._auth_type == 'header':
+            auth_headers[self._auth_name] = self.api_key
         headers = {
             'Content-Type': 'application/json',
-            **({'Authorization': f'Bearer {self.api_key}'} if self.api_key else {}),
+            **auth_headers,
             **self._headers,
         }
         body: dict[str, Any] = {
@@ -172,7 +182,16 @@ class OpenAiChatProvider:
             body['response_format'] = response_format
 
         url = f'{self.base_url}/chat/completions'
-        record_provider_request(url, headers, body, candidate=current_candidate())
+        if self._auth_type == 'query':
+            url = f'{url}?{urlencode({self._auth_name: self.api_key})}'
+        record_provider_request(
+            url,
+            headers,
+            body,
+            candidate=current_candidate(),
+            secret_header_name=self._auth_name if self._auth_type == 'header' else '',
+            secret_query_name=self._auth_name if self._auth_type == 'query' else '',
+        )
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:

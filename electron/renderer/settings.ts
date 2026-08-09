@@ -1,5 +1,5 @@
 import type {
-  ApiProviderConfig, ClientType, ModelDefinitionConfig, SelectionStrategy, YueliConfig,
+  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, SelectionStrategy, YueliConfig,
 } from '../shared/ipc.ts'
 
 /**
@@ -154,6 +154,23 @@ function renderProvider(cfg: YueliConfig, provider: ApiProviderConfig, index: nu
     password: true,
   }))
 
+  const authNameField = textField('鉴权字段名', provider.auth_name, (value) => {
+    provider.auth_name = value
+  }, { placeholder: 'header 或 query 模式必填' })
+  const authTypeField = selectField('鉴权方式', provider.auth_type, [
+    ['bearer', 'Bearer'],
+    ['header', '自定义请求头'],
+    ['query', 'Query 参数'],
+    ['none', '无鉴权'],
+  ], (value) => {
+    provider.auth_type = value as AuthType
+    authNameField.classList.toggle('collapsed', value !== 'header' && value !== 'query')
+  })
+  authNameField.classList.toggle(
+    'collapsed', provider.auth_type !== 'header' && provider.auth_type !== 'query',
+  )
+  card.append(authTypeField, authNameField)
+
   const appIdField = textField('App ID（豆包语音的服务接口认证信息）', provider.app_id, (value) => {
     provider.app_id = value
   })
@@ -163,8 +180,19 @@ function renderProvider(cfg: YueliConfig, provider: ApiProviderConfig, index: nu
   ], (value) => {
     provider.client_type = value as ClientType
     appIdField.classList.toggle('collapsed', value !== 'volcengine')
+    authTypeField.classList.toggle('collapsed', value !== 'openai')
+    authNameField.classList.toggle(
+      'collapsed',
+      value !== 'openai' || (provider.auth_type !== 'header' && provider.auth_type !== 'query'),
+    )
   }))
   appIdField.classList.toggle('collapsed', provider.client_type !== 'volcengine')
+  authTypeField.classList.toggle('collapsed', provider.client_type !== 'openai')
+  authNameField.classList.toggle(
+    'collapsed',
+    provider.client_type !== 'openai'
+      || (provider.auth_type !== 'header' && provider.auth_type !== 'query'),
+  )
   card.append(appIdField)
 
   const advanced = el('details', 'advanced-fields')
@@ -340,6 +368,7 @@ addProviderButton.addEventListener('click', () => {
   loadedConfig.api_providers.push({
     name: uniqueName('服务商', loadedConfig.api_providers.map((p) => p.name)),
     kind: 'openai', base_url: '', api_key: '', client_type: 'openai', app_id: '',
+    auth_type: 'bearer', auth_name: '',
     timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
   })
   renderDynamicSections()

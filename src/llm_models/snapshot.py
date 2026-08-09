@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import json
 
@@ -95,19 +96,33 @@ def record_provider_request(
     body: Dict[str, Any],
     *,
     candidate: Dict[str, Any] | None = None,
+    secret_header_name: str = '',
+    secret_query_name: str = '',
 ) -> None:
     """记录实际请求，并摘除敏感字段。"""
     state = _state()
     selected = current_candidate() if candidate is None else deepcopy(candidate)
+    secret_headers = _SECRET_HEADERS | frozenset({secret_header_name.lower()})
     state['provider_request'] = {
-        'url': url,
+        'url': _redact_url(url, secret_query_name),
         'headers': {
-            key: (_REDACTED if key.lower() in _SECRET_HEADERS else value)
+            key: (_REDACTED if key.lower() in secret_headers else value)
             for key, value in headers.items()
         },
         'body': _redact(body),
         'candidate': selected,
     }
+
+
+def _redact_url(url: str, secret_name: str) -> str:
+    if not secret_name:
+        return url
+    parts = urlsplit(url)
+    query = urlencode([
+        (key, _REDACTED if key == secret_name else value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    ])
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def record_request(url: str, headers: Dict[str, str], body: Dict[str, Any]) -> None:

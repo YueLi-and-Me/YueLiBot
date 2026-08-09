@@ -4,7 +4,7 @@ import { parse as parseDotenv } from 'dotenv'
 import * as TOML from 'smol-toml'
 
 import type {
-  ApiProviderConfig, ClientType, ModelDefinitionConfig, SelectionStrategy,
+  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, SelectionStrategy,
   TaskRoutingConfig, YueliConfig,
 } from '../shared/ipc.ts'
 
@@ -99,6 +99,7 @@ const DEFAULT_TONE_VARIANTS = [
 /** 新装时的唯一一条连接。用户可以在设置页继续添加备用厂商。 */
 const DEFAULT_PROVIDER: ApiProviderConfig = {
   name: '主力', kind: 'ark', base_url: '', api_key: '', client_type: 'openai',
+  auth_type: 'bearer', auth_name: '',
   app_id: '', timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
 }
 
@@ -294,6 +295,24 @@ function parseToml(path: string): { document: Record<string, unknown>; version: 
   return { document: parsed, version }
 }
 
+function validateProviderAuth(provider: ApiProviderConfig, path: string): void {
+  if (provider.client_type !== 'openai') return
+  provider.auth_name = provider.auth_name.trim()
+  const hasKey = provider.api_key.trim().length > 0
+  if ((provider.auth_type === 'header' || provider.auth_type === 'query') && !provider.auth_name) {
+    throw new Error(`${path} 的 auth_type=${provider.auth_type} 时 auth_name 不能为空`)
+  }
+  if ((provider.auth_type === 'bearer' || provider.auth_type === 'none') && provider.auth_name) {
+    throw new Error(`${path} 的 auth_type=${provider.auth_type} 时 auth_name 必须留空`)
+  }
+  if (provider.auth_type === 'none' && hasKey) {
+    throw new Error(`${path} 的 auth_type=none 时 api_key 必须留空`)
+  }
+  if (provider.auth_type !== 'none' && !hasKey) {
+    throw new Error(`${path} 的 auth_type=${provider.auth_type} 时 api_key 不能为空`)
+  }
+}
+
 function parseProviders(path: string): ApiProviderConfig[] {
   const { document } = parseToml(path)
   const definitions = document.api_providers
@@ -307,11 +326,17 @@ function parseProviders(path: string): ApiProviderConfig[] {
     if (clientType !== 'openai' && clientType !== 'volcengine') {
       throw new Error(`${itemPath} 的 client_type 当前只支持 openai 或 volcengine`)
     }
-    return {
+    const authType = stringAtOr(value, 'auth_type', 'bearer', itemPath)
+    if (!['bearer', 'header', 'query', 'none'].includes(authType)) {
+      throw new Error(`${itemPath} 的 auth_type 配置不合法`)
+    }
+    const provider: ApiProviderConfig = {
       name: stringAt(value, 'name', itemPath),
       kind: stringAt(value, 'kind', itemPath),
       base_url: stringAt(value, 'base_url', itemPath),
       api_key: stringAt(value, 'api_key', itemPath),
+      auth_type: authType as AuthType,
+      auth_name: stringAtOr(value, 'auth_name', '', itemPath),
       client_type: clientType as ClientType,
       app_id: stringAtOr(value, 'app_id', '', itemPath),
       timeout_ms: numberAt(value, 'timeout_ms', itemPath),
@@ -320,6 +345,8 @@ function parseProviders(path: string): ApiProviderConfig[] {
         value, 'retry_interval_ms', DEFAULT_PROVIDER.retry_interval_ms, itemPath,
       ),
     }
+    validateProviderAuth(provider, itemPath)
+    return provider
   })
   assertUniqueNames(providers, path, 'api_providers')
   return providers
@@ -787,6 +814,8 @@ interface LegacyConnection {
   kind: string
   base_url: string
   api_key: string
+  auth_type: AuthType
+  auth_name: string
   client_type: ClientType
   app_id: string
   timeout_ms: number
@@ -802,6 +831,8 @@ function legacyConnection(
     kind: typeof section.provider === 'string' ? section.provider : 'openai',
     base_url: typeof section.base_url === 'string' ? section.base_url : '',
     api_key: typeof section.api_key === 'string' ? section.api_key : '',
+    auth_type: 'bearer',
+    auth_name: '',
     client_type: section.client_type === 'volcengine' ? 'volcengine' : 'openai',
     app_id: typeof section.app_id === 'string' ? section.app_id : '',
     timeout_ms: typeof section.timeout_ms === 'number'
@@ -1023,6 +1054,10 @@ base_url = ${tomlString(provider.base_url)}
 # API 密钥，运行时配置为明文；不要提交 config 目录或把它贴进日志
 # 豆包语音填 Access Token（不是方舟的 API Key）
 api_key = ${tomlString(provider.api_key)}
+# OpenAI 兼容鉴权：bearer / header / query / none
+auth_type = ${tomlString(provider.auth_type)}
+# header 的头名或 query 的参数名；其它模式留空
+auth_name = ${tomlString(provider.auth_name)}
 # 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音，只能用于 tts
 client_type = ${tomlString(provider.client_type)}${provider.client_type === 'volcengine' ? `
 # 豆包语音的 App ID，与 api_key（Access Token）成对使用
@@ -1376,6 +1411,9 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   if (new Set(providerNames).size !== providerNames.length) {
     throw new Error('服务商名称不能重复')
   }
+  cfg.api_providers.forEach((provider) => {
+    validateProviderAuth(provider, `服务商 ${provider.name}`)
+  })
   const modelNames = cfg.models.map((model) => model.name.trim())
   if (modelNames.some((name) => !name)) throw new Error('每个模型都要有名称')
   if (new Set(modelNames).size !== modelNames.length) throw new Error('模型名称不能重复')
