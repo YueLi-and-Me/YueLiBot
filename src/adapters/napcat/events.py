@@ -123,7 +123,7 @@ def parse_inbound_event(
         sender_external_id=sender_id,
         sender_name=sender_name,
         bot_name=_required_identifier(self_name, '机器人登录昵称不能为空'),
-        text=message_to_text(raw_segments),
+        text=message_to_text(raw_segments, {self_id: self_name}),
         mentioned_me=mentions_user(raw_segments, self_id),
         external_message_id=message_id,
     )

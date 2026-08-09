@@ -20,7 +20,10 @@ def is_emoji_image(segment: Segment) -> bool:
     return subtype is not None and subtype not in _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI
 
 
-def segment_to_text(segment: Segment) -> str:
+def segment_to_text(
+    segment: Segment,
+    mention_names: Mapping[str, str] | None = None,
+) -> str:
     """把单个消息段转成能交给对话模型理解的文本或占位描述。"""
     segment_type = _segment_type(segment)
     data = _segment_data(segment)
@@ -32,7 +35,12 @@ def segment_to_text(segment: Segment) -> str:
         return text
     if segment_type == 'at':
         qq = _required_value(data.get('qq'), 'at 消息段缺少 data.qq')
-        return '@全体成员' if qq == 'all' else f'@{qq}'
+        if qq == 'all':
+            return '@全体成员'
+        if mention_names is not None and qq in mention_names:
+            name = _required_value(mention_names[qq], f'QQ {qq} 的显示名不能为空')
+            return f'@{name}'
+        return f'@{qq}'
     if segment_type == 'image':
         return '[表情包]' if is_emoji_image(segment) else '[图片]'
 
@@ -52,11 +60,14 @@ def segment_to_text(segment: Segment) -> str:
     return placeholders.get(segment_type, f'[非文本消息：{segment_type}]')
 
 
-def message_to_text(segments: Sequence[Segment]) -> str:
+def message_to_text(
+    segments: Sequence[Segment],
+    mention_names: Mapping[str, str] | None = None,
+) -> str:
     """按协议数组顺序拼接整条消息，非文本内容保留为占位描述。"""
     if not isinstance(segments, list):
         raise ValueError('message 必须是 array 格式的消息段列表')
-    return ''.join(segment_to_text(segment) for segment in segments)
+    return ''.join(segment_to_text(segment, mention_names) for segment in segments)
 
 
 def mentions_user(segments: Sequence[Segment], user_id: str) -> bool:
