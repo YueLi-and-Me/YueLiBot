@@ -285,9 +285,7 @@ class AdvancedConfig(BaseModel):
     log_level: str = 'INFO'
     # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890
     https_proxy: str = ''
-    # trace.jsonl 单文件上限，超过就轮转成 .1 并重开。
-    # 正文一律原样记录，这里是唯一的体积闸门，别调得太小否则翻不到上一轮。
-    trace_max_bytes: int = 8 * 1024 * 1024
+
 
 
 class ApiProviderConfig(BaseModel):

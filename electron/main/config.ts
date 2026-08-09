@@ -178,7 +178,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     enabled: false,
   },
   advanced: {
-    log_level: 'INFO', https_proxy: '', trace_max_bytes: 8 * 1024 * 1024,
+    log_level: 'INFO', https_proxy: '',
   },
 }
 
@@ -701,7 +701,6 @@ function readSplitConfig(directory: string): YueliConfig {
     advanced: {
       log_level: stringAt(advanced, 'log_level', featuresPath),
       https_proxy: stringAt(advanced, 'https_proxy', featuresPath),
-      trace_max_bytes: numberAt(advanced, 'trace_max_bytes', featuresPath),
     },
   }
 }
@@ -1164,8 +1163,6 @@ enabled = ${tomlValue(cfg.vector.enabled)}
 log_level = ${tomlValue(cfg.advanced.log_level)}
 # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连
 https_proxy = ${tomlValue(cfg.advanced.https_proxy)}
-# trace.jsonl 单文件轮转上限，单位字节；调试追踪始终记录完整对话与提示词
-trace_max_bytes = ${tomlValue(cfg.advanced.trace_max_bytes)}
 `
 }
 

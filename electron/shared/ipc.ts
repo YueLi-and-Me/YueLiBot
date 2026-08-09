@@ -411,7 +411,6 @@ export interface YueliConfig {
   }
   advanced: {
     log_level: string; https_proxy: string
-    trace_max_bytes: number
   }
 }
 
