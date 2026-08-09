@@ -410,11 +410,19 @@ export interface YueliConfig {
     enabled: boolean
   }
   log: {
-    event_retention_count: number
-    event_retention_hours: number
+    level: string; console_level: string; file_level: string
+    level_style: 'lite' | 'compact' | 'full'
+    color_scope: 'none' | 'title' | 'full'
+    date_format: string
+    to_file: boolean
+    file_max_bytes: number; max_files: number; cleanup_days: number
+    library_levels: Record<string, string>
+    suppress_libraries: string[]
+    request_snapshots: boolean; max_snapshot_files: number
+    event_retention_count: number; event_retention_hours: number
   }
   advanced: {
-    log_level: string; https_proxy: string
+    https_proxy: string
   }
 }
 

@@ -11,7 +11,7 @@ Pydantic 配置模型。
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import Dict, List, Literal
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -282,12 +282,41 @@ class VectorConfig(BaseModel):
 
 
 class LogConfig(BaseModel):
+    """日志等级、落盘与控制台样式。"""
+
+    # 全局兜底等级
+    level: str = 'INFO'
+    # 终端和文件各自的等级，留空跟随 level
+    console_level: str = ''
+    file_level: str = ''
+    # 控制台等级列：lite 只体现在时间戳颜色上，compact 显示单字母，full 显示全称
+    level_style: Literal['lite', 'compact', 'full'] = 'lite'
+    # 着色范围：none 不着色，title 只染时间戳与模块名，full 连正文一起染
+    color_scope: Literal['none', 'title', 'full'] = 'full'
+    date_format: str = '%m-%d %H:%M:%S'
+    # 关掉则只剩控制台和 WebUI 推流
+    to_file: bool = True
+    # 单个日志文件上限，超过就换新文件
+    file_max_bytes: int = Field(default=5 * 1024 * 1024, ge=64 * 1024)
+    # 最多保留几个文件，超出的从最旧的删起
+    max_files: int = Field(default=30, ge=1, le=1000)
+    # 超过这些天的文件直接清掉，0 表示只按数量
+    cleanup_days: int = Field(default=14, ge=0, le=3650)
+    # 按库名压噪音，没列出的库跟随 level
+    library_levels: Dict[str, str] = Field(
+        default_factory=lambda: {'httpx': 'WARNING', 'httpcore': 'WARNING', 'PIL': 'WARNING'}
+    )
+    # 完全不要的库，一行都不输出
+    suppress_libraries: List[str] = Field(default_factory=lambda: ['urllib3'])
+    # 模型调用失败时，把实际发出的请求体存进 logs/llm_request/（密钥已隐去）
+    request_snapshots: bool = True
+    max_snapshot_files: int = Field(default=50, ge=1, le=1000)
+    # 事件账本保留上限
     event_retention_count: int = Field(default=20_000, ge=1)
     event_retention_hours: int = Field(default=72, ge=0)
 
 
 class AdvancedConfig(BaseModel):
-    log_level: str = 'INFO'
     # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890
     https_proxy: str = ''
 

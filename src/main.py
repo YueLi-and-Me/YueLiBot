@@ -113,7 +113,7 @@ def main() -> None:
     os.environ["YUELI_DATA_DIR"] = args.data_dir
 
     cfg = load_config(Path(args.config_path))
-    initialize_logging(cfg.advanced.log_level)
+    initialize_logging(cfg.log, Path(args.data_dir) / 'logs')
     logger = get_logger("main")
 
     if args.selftest:
@@ -137,7 +137,10 @@ def main() -> None:
     _announce_token(backend_runtime.token)
 
     from src.llm_models.snapshot import configure as configure_snapshots
-    configure_snapshots(data_dir / 'logs' / 'llm_request')
+    configure_snapshots(
+        data_dir / 'logs' / 'llm_request' if cfg.log.request_snapshots else None,
+        cfg.log.max_snapshot_files,
+    )
 
     from src.common.db.connection import open_db
     from src.common.db.migrations.manager import run_migrations

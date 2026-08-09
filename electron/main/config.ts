@@ -178,11 +178,17 @@ export const DEFAULT_CONFIG: YueliConfig = {
     enabled: false,
   },
   log: {
-    event_retention_count: 20_000,
-    event_retention_hours: 72,
+    level: 'INFO', console_level: '', file_level: '',
+    level_style: 'lite', color_scope: 'full', date_format: '%m-%d %H:%M:%S',
+    to_file: true,
+    file_max_bytes: 5 * 1024 * 1024, max_files: 30, cleanup_days: 14,
+    library_levels: { httpx: 'WARNING', httpcore: 'WARNING', PIL: 'WARNING' },
+    suppress_libraries: ['urllib3'],
+    request_snapshots: true, max_snapshot_files: 50,
+    event_retention_count: 20_000, event_retention_hours: 72,
   },
   advanced: {
-    log_level: 'INFO', https_proxy: '',
+    https_proxy: '',
   },
 }
 
@@ -647,20 +653,7 @@ function readSplitConfig(directory: string): YueliConfig {
   const tts = recordAt(features, 'tts', featuresPath)
   const vision = recordAt(features, 'vision', featuresPath)
   const vector = recordAt(features, 'vector', featuresPath)
-  const log = features.log === undefined ? {} : recordAt(features, 'log', featuresPath)
   const advanced = recordAt(features, 'advanced', featuresPath)
-  const eventRetentionCount = numberAtOr(
-    log, 'event_retention_count', DEFAULT_CONFIG.log.event_retention_count, featuresPath,
-  )
-  const eventRetentionHours = numberAtOr(
-    log, 'event_retention_hours', DEFAULT_CONFIG.log.event_retention_hours, featuresPath,
-  )
-  if (!Number.isInteger(eventRetentionCount) || eventRetentionCount < 1) {
-    throw new Error('log.event_retention_count 必须是正整数')
-  }
-  if (!Number.isInteger(eventRetentionHours) || eventRetentionHours < 0) {
-    throw new Error('log.event_retention_hours 必须是非负整数')
-  }
   const ttsFormat = stringAt(tts, 'format', featuresPath)
   if (!['mp3', 'wav', 'opus'].includes(ttsFormat)) {
     throw new Error(`${featuresPath} 的 tts.format 必须是 mp3、wav 或 opus`)
@@ -715,14 +708,80 @@ function readSplitConfig(directory: string): YueliConfig {
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
     },
-    log: {
-      event_retention_count: eventRetentionCount,
-      event_retention_hours: eventRetentionHours,
-    },
+    log: parseLog(features, featuresPath),
     advanced: {
-      log_level: stringAt(advanced, 'log_level', featuresPath),
       https_proxy: stringAt(advanced, 'https_proxy', featuresPath),
     },
+  }
+}
+
+/** log.suppress_libraries 只接受字符串数组。 */
+function parseSuppressLibraries(value: unknown, path: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new Error(`${path} 的 log.suppress_libraries 必须是字符串数组`)
+  }
+  return [...(value as string[])]
+}
+
+/** 读 [log] 段；整段或单个字段缺失都退回默认值，老配置照样能启动。 */
+function parseLog(features: Record<string, unknown>, path: string): YueliConfig['log'] {
+  const fallback = structuredClone(DEFAULT_CONFIG.log)
+  if (features.log === undefined) return fallback
+  const log = recordAt(features, 'log', path)
+  const enumAt = <T extends string>(key: string, allowed: readonly T[], defaultValue: T): T => {
+    const value = stringAtOr(log, key, defaultValue, `${path} 的 log`)
+    if (!allowed.includes(value as T)) {
+      throw new Error(`${path} 的 log.${key} 必须是 ${allowed.join('、')}`)
+    }
+    return value as T
+  }
+  const levels: Record<string, string> = {}
+  if (log.library_levels !== undefined) {
+    const table = recordAt(log, 'library_levels', `${path} 的 log`)
+    for (const [name, value] of Object.entries(table)) {
+      if (typeof value !== 'string') {
+        throw new Error(`${path} 的 log.library_levels.${name} 必须是字符串`)
+      }
+      levels[name] = value
+    }
+  }
+  const eventRetentionCount = numberAtOr(
+    log, 'event_retention_count', fallback.event_retention_count, `${path} 的 log`,
+  )
+  const eventRetentionHours = numberAtOr(
+    log, 'event_retention_hours', fallback.event_retention_hours, `${path} 的 log`,
+  )
+  if (!Number.isInteger(eventRetentionCount) || eventRetentionCount < 1) {
+    throw new Error(`${path} 的 log.event_retention_count 必须是正整数`)
+  }
+  if (!Number.isInteger(eventRetentionHours) || eventRetentionHours < 0) {
+    throw new Error(`${path} 的 log.event_retention_hours 必须是非负整数`)
+  }
+  return {
+    level: stringAtOr(log, 'level', fallback.level, `${path} 的 log`),
+    console_level: stringAtOr(log, 'console_level', fallback.console_level, `${path} 的 log`),
+    file_level: stringAtOr(log, 'file_level', fallback.file_level, `${path} 的 log`),
+    level_style: enumAt('level_style', ['lite', 'compact', 'full'] as const, fallback.level_style),
+    color_scope: enumAt('color_scope', ['none', 'title', 'full'] as const, fallback.color_scope),
+    date_format: stringAtOr(log, 'date_format', fallback.date_format, `${path} 的 log`),
+    to_file: log.to_file === undefined
+      ? fallback.to_file
+      : booleanAt(log, 'to_file', `${path} 的 log`),
+    file_max_bytes: numberAtOr(log, 'file_max_bytes', fallback.file_max_bytes, `${path} 的 log`),
+    max_files: numberAtOr(log, 'max_files', fallback.max_files, `${path} 的 log`),
+    cleanup_days: numberAtOr(log, 'cleanup_days', fallback.cleanup_days, `${path} 的 log`),
+    library_levels: log.library_levels === undefined ? fallback.library_levels : levels,
+    suppress_libraries: log.suppress_libraries === undefined
+      ? fallback.suppress_libraries
+      : parseSuppressLibraries(log.suppress_libraries, path),
+    request_snapshots: log.request_snapshots === undefined
+      ? fallback.request_snapshots
+      : booleanAt(log, 'request_snapshots', `${path} 的 log`),
+    max_snapshot_files: numberAtOr(
+      log, 'max_snapshot_files', fallback.max_snapshot_files, `${path} 的 log`,
+    ),
+    event_retention_count: eventRetentionCount,
+    event_retention_hours: eventRetentionHours,
   }
 }
 
@@ -926,6 +985,14 @@ function tomlMultiline(value: string, field: string): string {
 
 function tomlStringArray(values: string[]): string {
   return `[${values.map(tomlString).join(', ')}]`
+}
+
+/** 内联表，用于 library_levels 这种「库名 = 等级」的短映射。 */
+function tomlInlineTable(entries: Record<string, string>): string {
+  const body = Object.entries(entries)
+    .map(([key, value]) => `${key} = ${tomlString(value)}`)
+    .join(', ')
+  return `{ ${body} }`
 }
 
 function providerBlock(provider: ApiProviderConfig): string {
@@ -1180,14 +1247,39 @@ surfaces = ${tomlStringArray(cfg.perception.surfaces)}
 enabled = ${tomlValue(cfg.vector.enabled)}
 
 [log]
+# 全局日志等级：DEBUG / INFO / WARNING / ERROR / CRITICAL
+level = ${tomlValue(cfg.log.level)}
+# 终端和文件各自的等级，留空跟随 level
+console_level = ${tomlValue(cfg.log.console_level)}
+file_level = ${tomlValue(cfg.log.file_level)}
+# 控制台等级列：lite 只体现在时间戳颜色上，compact 显示单字母，full 显示全称
+level_style = ${tomlValue(cfg.log.level_style)}
+# 着色范围：none 不着色，title 只染时间戳与模块名，full 连正文一起染
+color_scope = ${tomlValue(cfg.log.color_scope)}
+# 时间戳格式，strftime 语法
+date_format = ${tomlValue(cfg.log.date_format)}
+# 是否把日志写进 <数据目录>/logs/app_*.log.jsonl
+to_file = ${tomlValue(cfg.log.to_file)}
+# 单个日志文件上限，单位字节，超过就换新文件
+file_max_bytes = ${tomlValue(cfg.log.file_max_bytes)}
+# 最多保留几个日志文件，超出的从最旧的删起
+max_files = ${tomlValue(cfg.log.max_files)}
+# 超过这些天的日志文件直接清掉，0 表示只按数量
+cleanup_days = ${tomlValue(cfg.log.cleanup_days)}
+# 按库名压噪音，没列出的库跟随 level
+library_levels = ${tomlInlineTable(cfg.log.library_levels)}
+# 完全不要的库，一行都不输出
+suppress_libraries = ${tomlStringArray(cfg.log.suppress_libraries)}
+# 模型调用失败时，把实际发出的请求体存进 logs/llm_request/（密钥已隐去）
+request_snapshots = ${tomlValue(cfg.log.request_snapshots)}
+# 最多保留几份快照
+max_snapshot_files = ${tomlValue(cfg.log.max_snapshot_files)}
 # 管线事件最多保留多少条
 event_retention_count = ${tomlValue(cfg.log.event_retention_count)}
 # 管线事件最多保留多少小时
 event_retention_hours = ${tomlValue(cfg.log.event_retention_hours)}
 
 [advanced]
-# Python 日志等级，例如 DEBUG / INFO / WARNING / ERROR
-log_level = ${tomlValue(cfg.advanced.log_level)}
 # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连
 https_proxy = ${tomlValue(cfg.advanced.https_proxy)}
 `
