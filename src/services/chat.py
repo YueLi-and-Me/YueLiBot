@@ -62,6 +62,7 @@ _HINTS: dict[str, str] = {
     'model': '模型 ID 不对，检查 models.toml',
     'quota': '限流或余额不足，稍等一下',
     'network': '连不上模型接口，检查网络或代理',
+    'timeout': '模型迟迟不出字，可能在排队；换个模型或调大首字超时',
     'blocked': '这句被内容审核拦了，换个说法',
 }
 

@@ -193,7 +193,7 @@ class ModelRouter:
                     return
                 except TimeoutError as exc:
                     raise LlmError(
-                        'network',
+                        'timeout',
                         f'等待首字超过 {self._first_token_timeout_ms} 毫秒',
                     ) from exc
 

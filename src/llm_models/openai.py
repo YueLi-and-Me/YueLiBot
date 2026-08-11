@@ -27,7 +27,7 @@ ReasoningParseMode = Literal['field', 'tag', 'none']
 class LlmError(Exception):
     def __init__(self, kind: str, message: str, detail: str = '') -> None:
         super().__init__(message)
-        self.kind = kind   # auth | quota | model | network | blocked | aborted | unknown
+        self.kind = kind   # auth | quota | model | network | timeout | blocked | aborted | unknown
         self.detail = detail
 
 
