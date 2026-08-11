@@ -179,6 +179,70 @@ class EventStore:
             from_seq=events[0]["seq"] if events else None,
         )
 
+    def current_stages(self, scan_limit: int = 50) -> List[Dict[str, Any]]:
+        """从事件账本恢复每条 stream 的当前阶段及连续停留时长。
+
+        :param scan_limit: 每条 stream 最多向前扫描的阶段事件数，默认值为 50。
+        :return: 按最新阶段事件时间倒序排列的阶段快照。
+        :raises ValueError: 扫描上限小于 1。
+        :raises RuntimeError: 账本尚未配置。
+        :side_effects: 只读 ``pipeline_events``；不修改事件或业务状态。
+        """
+        if scan_limit < 1:
+            raise ValueError("阶段扫描上限必须大于 0")
+        now = current_time()
+        with self._lock:
+            connection = self._require_connection()
+            latest_rows = connection.execute(
+                """
+                SELECT event.seq, event.at, event.stream_id, event.turn_id,
+                       event.stage, event.payload
+                FROM pipeline_events AS event
+                INNER JOIN (
+                    SELECT stream_id, MAX(seq) AS seq
+                    FROM pipeline_events
+                    WHERE kind = 'stage' AND stream_id IS NOT NULL
+                    GROUP BY stream_id
+                ) AS latest ON latest.seq = event.seq
+                ORDER BY event.at DESC, event.seq DESC
+                """
+            ).fetchall()
+            snapshots: List[Dict[str, Any]] = []
+            for latest in latest_rows:
+                history = connection.execute(
+                    """
+                    SELECT at, stage
+                    FROM pipeline_events
+                    WHERE kind = 'stage' AND stream_id = ? AND seq <= ?
+                    ORDER BY seq DESC
+                    LIMIT ?
+                    """,
+                    (latest["stream_id"], latest["seq"], scan_limit),
+                ).fetchall()
+                started_at = int(latest["at"])
+                for row in history:
+                    if str(row["stage"]) != str(latest["stage"]):
+                        break
+                    started_at = int(row["at"])
+                payload = json.loads(latest["payload"])
+                if not isinstance(payload, dict):
+                    raise ValueError(f"事件 {latest['seq']} 的 payload 不是对象")
+                snapshots.append({
+                    "streamId": int(latest["stream_id"]),
+                    "streamName": str(payload.get("streamName", "")),
+                    "stage": str(latest["stage"]),
+                    "stageLabel": label_for(str(latest["stage"])),
+                    "detail": str(payload.get("detail", "")),
+                    "turnId": (
+                        int(latest["turn_id"])
+                        if latest["turn_id"] is not None
+                        else None
+                    ),
+                    "stageElapsedMs": max(0, now - started_at),
+                    "updatedAt": int(latest["at"]),
+                })
+        return snapshots
+
     def close(self) -> None:
         """关闭事件账本连接并重置写入计数。
 
@@ -327,6 +391,17 @@ def since(seq: int, limit: int = 1_000) -> EventPage:
     :raises RuntimeError: 模块级账本尚未配置。
     """
     return event_store.since(seq, limit)
+
+
+def current_stages(scan_limit: int = 50) -> List[Dict[str, Any]]:
+    """读取模块级事件账本中的当前阶段快照。
+
+    :param scan_limit: 每条 stream 最多扫描的阶段事件数量。
+    :return: 按更新时间倒序排列的阶段快照。
+    :raises ValueError: 扫描上限不合法。
+    :raises RuntimeError: 模块级账本尚未配置。
+    """
+    return event_store.current_stages(scan_limit)
 
 
 def close() -> None:

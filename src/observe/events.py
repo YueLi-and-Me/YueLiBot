@@ -15,7 +15,6 @@ import threading
 
 from src.common.clock import now as current_time
 from src.common.logger import get_logger
-from src.observe.board import board
 from src.observe.stages import Stage, label_for
 from src.observe.store import event_store
 
@@ -248,7 +247,7 @@ def enter_stage(
     detail: str = "",
     turn_id: int | None = None,
 ) -> Dict[str, Any]:
-    """更新当前管线阶段、阶段看板和事件上下文，并登记阶段事件。
+    """更新当前管线阶段和事件上下文，并登记阶段事件。
 
     Args:
         stage: 目标阶段定义。
@@ -264,12 +263,11 @@ def enter_stage(
         sqlite3.Error: 阶段事件持久化失败。
 
     Side Effects:
-        更新 ContextVar 和阶段看板，随后调用 ``emit`` 写入或广播事件。
+        更新 ContextVar，随后调用 ``emit`` 写入并广播阶段事件。
     """
     _current_stage.set(stage.id)
     _current_stream_id.set(stream_id)
     _current_turn_id.set(turn_id)
-    board._update(stream_id, stream_name, stage, detail, turn_id)
     return emit(
         "stage",
         streamId=stream_id,
@@ -280,14 +278,13 @@ def enter_stage(
 
 
 def reset_for_tests() -> None:
-    """清除当前事件上下文、阶段板和广播订阅者。
+    """清除当前事件上下文和广播订阅者。
 
-    :side_effects: 重置 ContextVar，并清空全局 board/broadcaster；仅供测试隔离使用。
+    :side_effects: 重置 ContextVar 并清空全局 broadcaster；仅供测试隔离使用，
         不删除事件账本中的历史记录。
     """
     _origin.set({})
     _current_stage.set("")
     _current_stream_id.set(None)
     _current_turn_id.set(None)
-    board.clear()
     broadcaster.clear()

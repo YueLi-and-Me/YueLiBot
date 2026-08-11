@@ -21,9 +21,9 @@ from src.common.clock import now as current_time
 from src.common.logger import get_logger
 from src.config.loader import get_config
 from src.observe import events as trace
-from src.observe.board import board as stage_board
 from src.observe.events import enter_stage
 from src.observe.stages import GATED, RECEIVED
+from src.observe.store import current_stages
 from src.platform_io.reply_gate import decide_reply
 from src.platform_io.types import InboundMessage, StreamRef
 
@@ -546,7 +546,7 @@ async def stages() -> dict:
     Side Effects:
         仅读取阶段看板，不触发业务处理或模型调用。
     """
-    return {'stages': stage_board.snapshot()}
+    return {'stages': current_stages()}
 
 
 @router.get('/streams', dependencies=[Depends(_auth)])
