@@ -28,6 +28,7 @@ from src.common.logger import get_logger
 from src.config.schema import Config
 from src.llm_models.openai import LlmError
 from src.observe import events as trace
+from src.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
 
@@ -249,8 +250,4 @@ class VisionService:
         描述质量立刻不一样——这是整条链路里最便宜的一个先验。
         """
         hint = f'画面里他开着的是 {app}。' if app else ''
-        return (
-            f'{hint}用不超过三十个字写这个屏幕上正在做什么，'
-            '说清是什么程序、在处理什么内容。'
-            '认不出来就直说看不清，不要猜。不要加开场白。'
-        )
+        return get_prompt('vision.glance').render(app_hint=hint)

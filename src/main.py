@@ -111,8 +111,13 @@ def main() -> None:
     os.environ["YUELI_DATA_DIR"] = args.data_dir
 
     cfg = load_config(Path(args.config_path))
-    initialize_logging(cfg.log, Path(args.data_dir) / 'logs')
+    data_dir = Path(args.data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    initialize_logging(cfg.log, data_dir / 'logs')
     logger = get_logger("main")
+
+    from src.prompts.registry import configure_prompts
+    configure_prompts(data_dir)
 
     if args.selftest:
         # ★ 自检必须用独立临时目录，绝不能碰 --data-dir 指向的真实 memory.db——
@@ -121,8 +126,6 @@ def main() -> None:
         rc = asyncio.run(run_selftest(cfg))
         sys.exit(rc)
 
-    data_dir = Path(args.data_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / "memory.db"
 
     # 先占住端口再落盘连接信息。端口冲突时不得写出看似可用的新 token，

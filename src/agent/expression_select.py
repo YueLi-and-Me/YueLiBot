@@ -9,6 +9,7 @@ import json
 
 from src.agent.expression import EXPRESSION_HABITS, ExpressionSample
 from src.llm_models.protocol import LlmProvider
+from src.prompts.registry import get_prompt
 
 # proactive 仅用于主动搭话，不参与回复挑选。
 _CANDIDATES: List[ExpressionSample] = [
@@ -42,31 +43,12 @@ def build_selection_prompt(
         for index, (situation, style) in _INDEXED.items()
     )
     context = json.dumps(list(history), ensure_ascii=False)
-    return '\n'.join([
-        '你在为一次回复挑选表达方式。你不是她本人，不要替她说话，也不要写回复内容——'
-        '写回复是另一个环节的事，你只输出编号。',
-        '',
-        '下面这段聊天记录只是最近的片段。他们之间还有更早的经历和更多了解，'
-        '这里没有全部展现出来。不要因为记录里没提到，就当作没发生过。',
-        '',
-        '最近的对话：',
-        context,
-        '',
-        f'他刚说的这句：{user_text}',
-        '',
-        '可选的表达方式：',
-        options,
-        '',
-        f'挑最贴合他这句话的，最多 {limit} 条。判断依据：',
-        '1. 他这句话在做什么——分享、抱怨、开玩笑、认真问事、还是在问她本人',
-        '2. 他此刻的情绪',
-        '3. 这句话给了多少可接的内容，短促的一句不需要长回应',
-        '',
-        '宁可少选也不要凑数：选进来一条不贴合的，她就会照着它说出不合时宜的话。'
-        '实在没有贴合的，输出空数组。',
-        '',
-        '只输出严格 JSON，例如 {"selected": [3, 11]}；不要输出原因或其他字段。',
-    ])
+    return get_prompt('expression.select').render(
+        history=context,
+        user_text=user_text,
+        options=options,
+        limit=str(limit),
+    )
 
 
 def parse_selection(raw: str, limit: int) -> List[ExpressionSample]:
