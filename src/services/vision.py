@@ -28,7 +28,7 @@ from src.common.logger import get_logger
 from src.config.schema import Config
 from src.llm_models.openai import LlmError
 from src.observe import events as trace
-from src.prompts.registry import get_prompt
+from src.prompts.registry import get_prompt, prompt_metadata
 
 logger = get_logger(__name__)
 
@@ -203,13 +203,27 @@ class VisionService:
             )
         try:
             b64 = base64.b64encode(jpeg_bytes).decode('ascii')
+            prompt = self._build_vision_prompt(app)
             content: list[dict] = [
-                {'type': 'text', 'text': self._build_vision_prompt(app)},
+                {'type': 'text', 'text': prompt},
                 {'type': 'image_url',
                  'image_url': {'url': f'data:image/jpeg;base64,{b64}', 'detail': 'low'}},
             ]
             raw = ''
             generation = self._cfg.generation.vision
+            trace.emit(
+                'llm_request',
+                messages=[{
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': prompt},
+                        {'type': 'image', 'bytes': len(jpeg_bytes), 'detail': 'low'},
+                    ],
+                }],
+                temperature=generation.temperature,
+                maxTokens=generation.token_limit,
+                **prompt_metadata('vision.glance', ('vision.glance',)),
+            )
             async for chunk in self._provider.stream(
                 messages=[{'role': 'user', 'content': content}],
                 temperature=generation.temperature,

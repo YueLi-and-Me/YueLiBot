@@ -20,6 +20,8 @@ from src.common.backend_runtime import create_backend_runtime
 from src.common.logger import get_logger, initialize_logging
 from src.config.loader import load_config
 from src.llm_models.protocol import LlmProvider
+from src.observe import events as trace
+from src.prompts.registry import prompt_metadata
 
 
 DEFAULT_BACKEND_PORT = 7999
@@ -41,8 +43,16 @@ class _LLMGenerator:
     async def generate(self, prompt: str) -> str:
         raw = ''
         reasoning_length = 0
+        messages = [{'role': 'user', 'content': prompt}]
+        trace.emit(
+            'llm_request',
+            messages=messages,
+            temperature=self._temperature,
+            maxTokens=self._max_tokens,
+            **prompt_metadata('schedule', ('schedule',)),
+        )
         async for chunk in self._schedule_provider.stream(
-            messages=[{'role': 'user', 'content': prompt}],
+            messages=messages,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},

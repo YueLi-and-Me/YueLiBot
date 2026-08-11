@@ -9,7 +9,8 @@ import json
 
 from src.agent.expression import EXPRESSION_HABITS, ExpressionSample
 from src.llm_models.protocol import LlmProvider
-from src.prompts.registry import get_prompt
+from src.observe import events as trace
+from src.prompts.registry import get_prompt, prompt_metadata
 
 # proactive 仅用于主动搭话，不参与回复挑选。
 _CANDIDATES: List[ExpressionSample] = [
@@ -105,8 +106,16 @@ class ExpressionSelector:
         prompt = build_selection_prompt(user_text, history, limit)
         raw = ''
         reasoning_length = 0
+        messages = [{'role': 'system', 'content': prompt}]
+        trace.emit(
+            'llm_request',
+            messages=messages,
+            temperature=self._temperature,
+            maxTokens=self._max_tokens,
+            **prompt_metadata('expression.select', ('expression.select',)),
+        )
         async for chunk in self._provider.stream(
-            messages=[{'role': 'system', 'content': prompt}],
+            messages=messages,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},

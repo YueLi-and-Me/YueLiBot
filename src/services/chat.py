@@ -50,6 +50,11 @@ from src.platform_io.types import (
     PersonRef,
     StreamRef,
 )
+from src.prompts.registry import (
+    CHAT_PROACTIVE_TEMPLATE_IDS,
+    CHAT_SYSTEM_TEMPLATE_IDS,
+    prompt_metadata,
+)
 from src.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
@@ -324,6 +329,7 @@ class ChatService:
                     messages=messages,
                     temperature=self._chat_temperature,
                     maxTokens=self._chat_max_tokens,
+                    **prompt_metadata('chat.system', CHAT_SYSTEM_TEMPLATE_IDS),
                 )
                 async for chunk in self._chat_provider.stream(
                     messages=messages,
@@ -658,8 +664,16 @@ class ChatService:
         system = build_proactive_prompt(base_prompt, situation)
         raw = ''
         try:
+            messages = [{'role': 'system', 'content': system}]
+            trace.emit(
+                'llm_request',
+                messages=messages,
+                temperature=self._proactive_temperature,
+                maxTokens=self._proactive_max_tokens,
+                **prompt_metadata('chat.proactive', CHAT_PROACTIVE_TEMPLATE_IDS),
+            )
             async for chunk in self._proactive_provider.stream(
-                messages=[{'role': 'system', 'content': system}],
+                messages=messages,
                 temperature=self._proactive_temperature,
                 max_tokens=self._proactive_max_tokens,
             ):

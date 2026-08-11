@@ -9,7 +9,8 @@ import json
 import re
 
 from src.llm_models.protocol import LlmProvider
-from src.prompts.registry import get_prompt
+from src.observe import events as trace
+from src.prompts.registry import get_prompt, prompt_metadata
 
 
 @dataclass
@@ -71,15 +72,23 @@ async def summarize(
     if len(body) < 40:
         return None
     raw = ''
+    request_messages = [
+        {
+            'role': 'system',
+            'content': _system_prompt(character_name, character_personality),
+        },
+        {'role': 'user', 'content': f'要整理的对话：\n{body}'},
+    ]
     try:
+        trace.emit(
+            'llm_request',
+            messages=request_messages,
+            temperature=temperature,
+            maxTokens=max_tokens,
+            **prompt_metadata('summary', ('summary',)),
+        )
         async for chunk in provider.stream(
-            messages=[
-                {
-                    'role': 'system',
-                    'content': _system_prompt(character_name, character_personality),
-                },
-                {'role': 'user', 'content': f'要整理的对话：\n{body}'},
-            ],
+            messages=request_messages,
             temperature=temperature,
             max_tokens=max_tokens,
         ):

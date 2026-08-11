@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
-from typing import Dict, FrozenSet
+from typing import Dict, FrozenSet, Iterable
 import re
 
 from src.common.logger import get_logger
@@ -12,12 +14,14 @@ from src.common.logger import get_logger
 logger = get_logger(__name__)
 
 BUILTIN_PROMPT_DIR = Path(__file__).parent
+MAX_TEMPLATE_HISTORY = 50
 FIXED_TEMPLATE_IDS = frozenset({'chat.discipline', 'chat.boundaries'})
 CHAT_SYSTEM_TEMPLATE_IDS = (
     'chat.boundaries',
     'chat.discipline',
     'chat.protocol',
 )
+CHAT_PROACTIVE_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.proactive')
 TEMPLATE_IDS = (
     'chat.protocol',
     'chat.discipline',
@@ -66,6 +70,7 @@ class PromptTemplate:
     text: str
     source: Path
     placeholders: FrozenSet[str]
+    sha256: str
 
     def render(self, **values: str) -> str:
         """只替换声明式双花括号，不解释条件、循环或值中的模板文本。"""
@@ -90,6 +95,12 @@ class PromptCatalog:
             return self._templates[template_id]
         except KeyError as exc:
             raise KeyError(f'未声明的提示词模板：{template_id}') from exc
+
+    def combined_hash(self, template_ids: Iterable[str]) -> str:
+        """按模板 ID 排序拼接完整哈希，再生成调用级八位指纹。"""
+
+        hashes = ''.join(self.get(template_id).sha256 for template_id in sorted(template_ids))
+        return sha256(hashes.encode('ascii')).hexdigest()[:8]
 
 
 def _placeholder_error(
@@ -144,8 +155,38 @@ def load_prompt_catalog(
             text=text,
             source=source,
             placeholders=declared,
+            sha256=sha256(text.encode('utf-8')).hexdigest(),
         )
-    return PromptCatalog(templates)
+    catalog = PromptCatalog(templates)
+    if data_dir is not None:
+        _archive_templates(catalog, data_dir)
+    return catalog
+
+
+def _archive_templates(catalog: PromptCatalog, data_dir: Path) -> None:
+    """只在内容变化时留档，并把每个模板的历史限制在固定数量。"""
+
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    history_root = data_dir / 'prompts' / 'history'
+    for template_id in TEMPLATE_IDS:
+        template = catalog.get(template_id)
+        history_dir = history_root / template_id
+        archived = list(history_dir.glob('*.md')) if history_dir.exists() else []
+        if archived:
+            latest = max(archived, key=lambda path: (path.stat().st_mtime_ns, path.name))
+            latest_text = latest.read_text(encoding='utf-8')
+            latest_hash = sha256(latest_text.encode('utf-8')).hexdigest()
+            if latest_hash == template.sha256:
+                continue
+        history_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = history_dir / f'{timestamp}-{template.sha256[:8]}.md'
+        archive_path.write_text(template.text, encoding='utf-8')
+        archived = sorted(
+            history_dir.glob('*.md'),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+        )
+        for expired in archived[:-MAX_TEMPLATE_HISTORY]:
+            expired.unlink()
 
 
 _catalog = load_prompt_catalog(None)
@@ -161,6 +202,13 @@ def configure_prompts(data_dir: Path) -> PromptCatalog:
 
 def get_prompt(template_id: str) -> PromptTemplate:
     return _catalog.get(template_id)
+
+
+def prompt_metadata(prompt_id: str, template_ids: Iterable[str]) -> Dict[str, str]:
+    return {
+        'promptId': prompt_id,
+        'promptHash': _catalog.combined_hash(template_ids),
+    }
 
 
 def reset_prompts_for_tests() -> None:
