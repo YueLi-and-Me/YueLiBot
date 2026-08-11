@@ -832,6 +832,14 @@ function renderTrace(): void {
         pre.textContent = formatMessages(entry.messages)
         details.append(summary, pre)
         card.append(details)
+        if (typeof entry.seq === 'number') {
+          const replay = document.createElement('button')
+          replay.type = 'button'
+          replay.className = 'replay-button'
+          replay.textContent = '用当前模板重放'
+          replay.addEventListener('click', () => void replayRequest(entry.seq as number, card, replay))
+          card.append(replay)
+        }
       } else if (entry.kind === 'llm_final') {
         const row = document.createElement('p')
         row.className = 'trace-response'
@@ -977,6 +985,51 @@ function connectLogs(): void {
     logStatus.textContent = '已断开，3 秒后重连'
     logReconnectTimer = setTimeout(connectLogs, 3_000)
   })
+}
+
+/** 隔离重放一条模型请求，并把原输出与新输出并排展示在轮次卡片中。 */
+async function replayRequest(
+  seq: number,
+  card: HTMLElement,
+  button: HTMLButtonElement,
+): Promise<void> {
+  button.disabled = true
+  button.textContent = '重放中…'
+  const response = await fetch('/replay', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seq }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: unknown }
+    button.textContent = text(payload.detail) || `重放失败：HTTP ${response.status}`
+    button.disabled = false
+    return
+  }
+  const result = record(await response.json())
+  const comparison = document.createElement('section')
+  comparison.className = 'replay-comparison'
+  const heading = document.createElement('strong')
+  heading.textContent = `重放对照 · ${text(result.originalPromptHash)} → ${text(result.replayPromptHash)}`
+  const columns = document.createElement('div')
+  for (const [label, value] of [
+    ['原输出', text(result.originalOutput)],
+    ['新输出', text(result.replayOutput)],
+  ] as Array<[string, string]>) {
+    const column = document.createElement('div')
+    const title = document.createElement('span')
+    title.className = 'muted'
+    title.textContent = label
+    const output = document.createElement('pre')
+    output.textContent = value || '（空输出）'
+    column.append(title, output)
+    columns.append(column)
+  }
+  comparison.append(heading, columns)
+  card.append(comparison)
+  button.textContent = '再次重放'
+  button.disabled = false
 }
 
 /** 将 datetime-local 控件值转换成毫秒时间戳。 */

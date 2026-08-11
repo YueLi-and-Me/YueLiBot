@@ -714,3 +714,29 @@ tr.frozen {
     border-right: 0;
   }
 }
+
+.replay-button {
+  background: #e36c2d;
+  color: #171a1f;
+  font-size: 12px;
+  margin: 4px 0 0;
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.replay-comparison {
+  border-top: 1px solid #303846;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.replay-comparison > div {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 8px;
+}
+
+.replay-comparison pre {
+  min-height: 90px;
+}

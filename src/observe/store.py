@@ -329,6 +329,46 @@ class EventStore:
             next_cursor=events[-1]["seq"] if truncated and events else None,
         )
 
+    def event(self, seq: int) -> Dict[str, Any] | None:
+        """按主键读取一条持久化事件。"""
+        if seq < 1:
+            raise ValueError("事件序号必须大于 0")
+        with self._lock:
+            connection = self._require_connection()
+            row = connection.execute(
+                """
+                SELECT seq, at, stream_id, turn_id, stage, kind, payload
+                FROM pipeline_events
+                WHERE seq = ?
+                """,
+                (seq,),
+            ).fetchone()
+        return self._row_to_event(row) if row is not None else None
+
+    def first_matching_after(
+        self,
+        seq: int,
+        *,
+        kind: str,
+        stream_id: int | None,
+        turn_id: int | None,
+    ) -> Dict[str, Any] | None:
+        """读取指定事件之后同会话轮次的第一条目标类型事件。"""
+        with self._lock:
+            connection = self._require_connection()
+            row = connection.execute(
+                """
+                SELECT seq, at, stream_id, turn_id, stage, kind, payload
+                FROM pipeline_events
+                WHERE seq > ? AND kind = ?
+                  AND stream_id IS ? AND turn_id IS ?
+                ORDER BY seq ASC
+                LIMIT 1
+                """,
+                (seq, kind, stream_id, turn_id),
+            ).fetchone()
+        return self._row_to_event(row) if row is not None else None
+
     def close(self) -> None:
         """关闭事件账本连接并重置写入计数。
 

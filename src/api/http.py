@@ -24,7 +24,7 @@ from src.config.loader import get_config
 from src.observe import events as trace
 from src.observe.events import enter_stage
 from src.observe.stages import GATED, RECEIVED
-from src.observe.store import current_stages, search_events
+from src.observe.store import current_stages, event_store, search_events
 from src.platform_io.reply_gate import decide_reply
 from src.platform_io.types import InboundMessage, StreamRef
 from src.prompts.registry import (
@@ -34,6 +34,7 @@ from src.prompts.registry import (
     prompt_history,
     update_prompt,
 )
+from src.services.replay import replay_event
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -175,6 +176,14 @@ class PromptWriteBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     content: str
+
+
+class ReplayBody(BaseModel):
+    """单次隔离重放请求。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    seq: int = Field(ge=1)
 
 
 def _require_loopback(request: Request) -> None:
@@ -678,6 +687,22 @@ async def prompt_versions(prompt_id: str) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
+@router.post('/replay', dependencies=[Depends(_auth)])
+async def replay(body: ReplayBody) -> dict:
+    """使用当前模板隔离重放一条历史模型请求。"""
+    if app_state.routers is None or not app_state.routers.chat.ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='chat 模型路由尚未就绪',
+        )
+    try:
+        return await replay_event(event_store, app_state.routers.chat, body.seq)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.get('/streams', dependencies=[Depends(_auth)])
 async def streams() -> dict:
     """列出只读观察面板可选择的全部 stream。
@@ -751,4 +776,3 @@ async def person_detail(person_id: int) -> dict:
         return app_state.chat.person_profile(person_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-
