@@ -62,6 +62,34 @@ form {
   gap: 10px;
 }
 
+.event-search {
+  align-items: end;
+  border-bottom: 1px solid #303846;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(90px, 0.6fr) minmax(180px, 1.2fr) minmax(180px, 1fr) minmax(180px, 1fr) auto auto;
+  padding: 14px 16px;
+}
+
+.event-search > label:not(.toggle) {
+  display: grid;
+  gap: 5px;
+}
+
+.event-search input {
+  min-height: 36px;
+}
+
+.event-search button {
+  margin: 0;
+  min-height: 36px;
+  padding: 0 12px;
+}
+
+.event-search .section-subtitle {
+  grid-column: 1 / -1;
+}
+
 label {
   color: #cbd4e1;
   font-size: 14px;
@@ -435,6 +463,24 @@ tr.frozen {
   padding: 12px;
 }
 
+.trace-card-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.trace-card-heading button {
+  background: transparent;
+  border: 1px solid #3c4656;
+  color: #9bbdff;
+  flex: 0 0 auto;
+  font-size: 12px;
+  margin: 0;
+  min-height: 30px;
+  padding: 0 9px;
+}
+
 .trace-card p {
   line-height: 1.6;
   margin: 7px 0;
@@ -564,6 +610,10 @@ tr.frozen {
   }
 
   .trace-entry {
+    grid-template-columns: 1fr;
+  }
+
+  .event-search {
     grid-template-columns: 1fr;
   }
 }

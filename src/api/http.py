@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from random import random
-from typing import Literal
+from typing import List, Literal
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -23,7 +23,7 @@ from src.config.loader import get_config
 from src.observe import events as trace
 from src.observe.events import enter_stage
 from src.observe.stages import GATED, RECEIVED
-from src.observe.store import current_stages
+from src.observe.store import current_stages, search_events
 from src.platform_io.reply_gate import decide_reply
 from src.platform_io.types import InboundMessage, StreamRef
 
@@ -547,6 +547,36 @@ async def stages() -> dict:
         仅读取阶段看板，不触发业务处理或模型调用。
     """
     return {'stages': current_stages()}
+
+
+@router.get('/events', dependencies=[Depends(_auth)])
+async def event_history(
+    stream_id: int | None = Query(default=None, alias='streamId', ge=1),
+    turn_id: int | None = Query(default=None, alias='turnId', ge=1),
+    kind: List[str] | None = Query(default=None),
+    since: int | None = Query(default=None, ge=0),
+    until: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=200, ge=1, le=1_000),
+    cursor: int | None = Query(default=None, ge=1),
+) -> dict:
+    """按组合条件检索持久化管线事件。
+
+    返回结果按 ``seq`` 倒序；``nextCursor`` 非空时可继续向前翻页。时间区间
+    使用左闭右开语义，重复 ``kind`` 参数表示多选。
+    """
+    try:
+        page = search_events(
+            stream_id=stream_id,
+            turn_id=turn_id,
+            kinds=kind,
+            since_at=since,
+            until_at=until,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {'events': page.events, 'nextCursor': page.next_cursor}
 
 
 @router.get('/streams', dependencies=[Depends(_auth)])

@@ -40,6 +40,14 @@ const traceFilter = document.getElementById('trace-filter') as HTMLSelectElement
 const traceCount = document.getElementById('trace-count') as HTMLElement
 const turnCards = document.getElementById('turn-cards') as HTMLElement
 const traceLog = document.getElementById('trace-log') as HTMLElement
+const eventSearchForm = document.getElementById('event-search-form') as HTMLFormElement
+const eventCurrentStream = document.getElementById('event-current-stream') as HTMLInputElement
+const eventTurnId = document.getElementById('event-turn-id') as HTMLInputElement
+const eventKinds = document.getElementById('event-kinds') as HTMLInputElement
+const eventSince = document.getElementById('event-since') as HTMLInputElement
+const eventUntil = document.getElementById('event-until') as HTMLInputElement
+const eventMore = document.getElementById('event-more') as HTMLButtonElement
+const eventSearchStatus = document.getElementById('event-search-status') as HTMLElement
 const logOutput = document.getElementById('log-output') as HTMLElement
 const logStatus = document.getElementById('log-status') as HTMLElement
 
@@ -55,6 +63,7 @@ let lastTraceSeq = 0
 let skippedEventCount = 0
 let panelRunning = false
 let traces: TraceEntry[] = []
+let eventHistoryCursor: number | null = null
 
 /**
  * 将未知快照字段收窄为非数组对象。
@@ -778,7 +787,14 @@ function renderTrace(): void {
     const title = document.createElement('strong')
     const origin = entries.find((entry) => entry.platform !== undefined)
     title.textContent = `Turn #${turnId} · ${origin?.platform ?? '未知来源'} · stream ${origin?.streamId ?? '—'} · person ${origin?.personId ?? '—'}`
-    card.append(title)
+    const actions = document.createElement('div')
+    actions.className = 'trace-card-heading'
+    const showTurn = document.createElement('button')
+    showTurn.type = 'button'
+    showTurn.textContent = '查看该轮全部事件'
+    showTurn.addEventListener('click', () => void fetchTurnEvents(turnId))
+    actions.append(title, showTurn)
+    card.append(actions)
     for (const entry of entries) {
       if (entry.kind === 'user_input') {
         const row = document.createElement('p')
@@ -937,6 +953,70 @@ function connectLogs(): void {
     logStatus.textContent = '已断开，3 秒后重连'
     logReconnectTimer = setTimeout(connectLogs, 3_000)
   })
+}
+
+/** 将 datetime-local 控件值转换成毫秒时间戳。 */
+function localDateTimeMs(value: string): number | null {
+  if (!value) return null
+  const parsed = new Date(value).getTime()
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** 根据检索表单组装事件历史查询参数。 */
+function eventSearchParams(cursor: number | null = null): URLSearchParams {
+  const params = new URLSearchParams({ limit: '200' })
+  if (eventCurrentStream.checked && streamSelect.value) params.set('streamId', streamSelect.value)
+  if (eventTurnId.value) params.set('turnId', eventTurnId.value)
+  for (const kind of eventKinds.value.split(',').map((value) => value.trim()).filter(Boolean)) {
+    params.append('kind', kind)
+  }
+  const since = localDateTimeMs(eventSince.value)
+  const until = localDateTimeMs(eventUntil.value)
+  if (since !== null) params.set('since', String(since))
+  if (until !== null) params.set('until', String(until))
+  if (cursor !== null) params.set('cursor', String(cursor))
+  return params
+}
+
+/** 执行历史事件检索，并可将更早一页追加到当前结果。 */
+async function fetchEventHistory(append = false): Promise<void> {
+  eventSearchStatus.textContent = '正在检索…'
+  const cursor = append ? eventHistoryCursor : null
+  const response = await fetch(`/events?${eventSearchParams(cursor)}`, { credentials: 'same-origin' })
+  if (response.status === 401) {
+    showLogin('登录已失效，请重新输入 token。')
+    return
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: unknown }
+    eventSearchStatus.textContent = `检索失败：${text(payload.detail) || `HTTP ${response.status}`}`
+    return
+  }
+  const payload = await response.json() as { events?: unknown; nextCursor?: unknown }
+  const incoming = Array.isArray(payload.events)
+    ? payload.events.map((value) => record(value) as TraceEntry)
+    : []
+  const combined = append ? [...traces, ...incoming] : incoming
+  const unique = new Map<number | string, TraceEntry>()
+  for (const entry of combined) unique.set(entry.seq ?? `live-${entry.at}-${entry.kind}`, entry)
+  traces = [...unique.values()].sort((left, right) => {
+    if (typeof left.seq === 'number' && typeof right.seq === 'number') return left.seq - right.seq
+    return left.at - right.at
+  }).slice(-MAX_TRACE_ENTRIES)
+  eventHistoryCursor = typeof payload.nextCursor === 'number' ? payload.nextCursor : null
+  eventMore.disabled = eventHistoryCursor === null
+  eventSearchStatus.textContent = `已读取 ${incoming.length} 条${eventHistoryCursor === null ? '，没有更早记录' : ''}`
+  renderTrace()
+}
+
+/** 从任意事件卡片切换到指定轮次的完整历史。 */
+async function fetchTurnEvents(turnId: number): Promise<void> {
+  eventCurrentStream.checked = false
+  eventTurnId.value = String(turnId)
+  eventKinds.value = ''
+  eventSince.value = ''
+  eventUntil.value = ''
+  await fetchEventHistory(false)
 }
 
 /**
@@ -1206,6 +1286,11 @@ async function initializePanel(): Promise<void> {
     })
     refreshButton.addEventListener('click', () => void fetchSnapshot())
     traceFilter.addEventListener('change', renderTrace)
+    eventSearchForm.addEventListener('submit', (event) => {
+      event.preventDefault()
+      void fetchEventHistory(false)
+    })
+    eventMore.addEventListener('click', () => void fetchEventHistory(true))
     autoRefresh.addEventListener('change', () => {
       if (snapshotTimer) clearInterval(snapshotTimer)
       snapshotTimer = autoRefresh.checked

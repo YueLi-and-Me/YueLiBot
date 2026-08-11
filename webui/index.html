@@ -61,7 +61,7 @@
           <div id="grid" class="panel-grid"><p class="empty">正在读取内部状态…</p></div>
           <section class="panel-card trace-panel" aria-label="运行时调试追踪">
             <header class="section-heading">
-              <h2>Trace 回放</h2>
+              <h2>事件账本</h2>
               <div class="toolbar compact">
                 <label for="trace-filter">kind 过滤</label>
                 <select id="trace-filter">
@@ -76,6 +76,16 @@
                 <span id="trace-count" class="section-subtitle">0 条</span>
               </div>
             </header>
+            <form id="event-search-form" class="event-search" aria-label="历史事件检索">
+              <label class="toggle"><input id="event-current-stream" type="checkbox" checked />当前会话</label>
+              <label>轮次<input id="event-turn-id" class="mono" type="number" min="1" placeholder="全部" /></label>
+              <label>类型<input id="event-kinds" class="mono" type="text" placeholder="llm_request, llm_final" /></label>
+              <label>开始<input id="event-since" type="datetime-local" /></label>
+              <label>结束<input id="event-until" type="datetime-local" /></label>
+              <button id="event-search" type="submit">检索历史</button>
+              <button id="event-more" type="button" disabled>更早事件</button>
+              <span id="event-search-status" class="section-subtitle" aria-live="polite"></span>
+            </form>
             <h3>对话轮次</h3>
             <div id="turn-cards" class="turn-card-list"></div>
             <h3>后台事件</h3>

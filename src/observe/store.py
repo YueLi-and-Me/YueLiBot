@@ -36,6 +36,18 @@ class EventPage:
     from_seq: int | None
 
 
+@dataclass(frozen=True)
+class EventSearchPage:
+    """表示一次历史事件倒序检索结果。
+
+    :ivar events: 按 seq 倒序排列的事件列表。
+    :ivar next_cursor: 下一页应传入的排他 seq 游标；没有更多结果时为 ``None``。
+    """
+
+    events: List[Dict[str, Any]]
+    next_cursor: int | None
+
+
 class EventStore:
     """管理独立 SQLite 连接上的管线事件账本。"""
 
@@ -243,6 +255,80 @@ class EventStore:
                 })
         return snapshots
 
+    def search(
+        self,
+        *,
+        stream_id: int | None = None,
+        turn_id: int | None = None,
+        kinds: List[str] | None = None,
+        since_at: int | None = None,
+        until_at: int | None = None,
+        limit: int = 200,
+        cursor: int | None = None,
+    ) -> EventSearchPage:
+        """按会话、轮次、类型和时间范围倒序检索历史事件。
+
+        :param stream_id: 可选 stream ID。
+        :param turn_id: 可选轮次 ID。
+        :param kinds: 可选事件类型列表，列表内按多选匹配。
+        :param since_at: 可选左闭毫秒时间边界。
+        :param until_at: 可选右开毫秒时间边界。
+        :param limit: 返回条数，范围为 1 到 1000。
+        :param cursor: 可选排他 seq 游标，只返回 seq 更小的记录。
+        :return: 倒序事件和下一页游标。
+        :raises ValueError: 参数范围或时间区间不合法。
+        :raises RuntimeError: 账本尚未配置。
+        :side_effects: 只读事件表。
+        """
+        if limit < 1 or limit > 1_000:
+            raise ValueError("事件检索上限必须在 1 到 1000 之间")
+        if cursor is not None and cursor < 1:
+            raise ValueError("事件检索游标必须大于 0")
+        if since_at is not None and until_at is not None and since_at >= until_at:
+            raise ValueError("事件检索开始时间必须早于结束时间")
+        selected_kinds = [kind for kind in (kinds or []) if kind]
+        clauses: List[str] = []
+        parameters: List[Any] = []
+        if stream_id is not None:
+            clauses.append("stream_id = ?")
+            parameters.append(stream_id)
+        if turn_id is not None:
+            clauses.append("turn_id = ?")
+            parameters.append(turn_id)
+        if selected_kinds:
+            placeholders = ", ".join("?" for _ in selected_kinds)
+            clauses.append(f"kind IN ({placeholders})")
+            parameters.extend(selected_kinds)
+        if since_at is not None:
+            clauses.append("at >= ?")
+            parameters.append(since_at)
+        if until_at is not None:
+            clauses.append("at < ?")
+            parameters.append(until_at)
+        if cursor is not None:
+            clauses.append("seq < ?")
+            parameters.append(cursor)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.append(limit + 1)
+        with self._lock:
+            connection = self._require_connection()
+            rows = connection.execute(
+                f"""
+                SELECT seq, at, stream_id, turn_id, stage, kind, payload
+                FROM pipeline_events
+                {where}
+                ORDER BY seq DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        truncated = len(rows) > limit
+        events = [self._row_to_event(row) for row in rows[:limit]]
+        return EventSearchPage(
+            events=events,
+            next_cursor=events[-1]["seq"] if truncated and events else None,
+        )
+
     def close(self) -> None:
         """关闭事件账本连接并重置写入计数。
 
@@ -402,6 +488,31 @@ def current_stages(scan_limit: int = 50) -> List[Dict[str, Any]]:
     :raises RuntimeError: 模块级账本尚未配置。
     """
     return event_store.current_stages(scan_limit)
+
+
+def search_events(
+    *,
+    stream_id: int | None = None,
+    turn_id: int | None = None,
+    kinds: List[str] | None = None,
+    since_at: int | None = None,
+    until_at: int | None = None,
+    limit: int = 200,
+    cursor: int | None = None,
+) -> EventSearchPage:
+    """检索模块级事件账本中的历史事件。
+
+    参数语义与 :meth:`EventStore.search` 一致。
+    """
+    return event_store.search(
+        stream_id=stream_id,
+        turn_id=turn_id,
+        kinds=kinds,
+        since_at=since_at,
+        until_at=until_at,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 def close() -> None:

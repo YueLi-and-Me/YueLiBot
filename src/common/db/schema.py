@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
 );
 CREATE INDEX IF NOT EXISTS idx_pipeline_events_at ON pipeline_events(at);
 CREATE INDEX IF NOT EXISTS idx_pipeline_events_stream_seq ON pipeline_events(stream_id, seq);
+CREATE INDEX IF NOT EXISTS idx_pipeline_events_turn ON pipeline_events(turn_id, seq);
 """
 
 DDL = f"""
