@@ -170,7 +170,8 @@ class VisionService:
                 description=None,
                 failure=VisionFailure(
                     error_type='TimeoutError',
-                    error_kind='network',
+                    # 厂商已连通，只是没在限时内出字，与连不上区分开。
+                    error_kind='timeout',
                     response_excerpt=f'视觉调用超过 {CHAT_GLANCE_DEADLINE_S:g} 秒截止时间',
                 ),
             )
