@@ -27,6 +27,9 @@ __pycache__/
 .pytest_cache/
 .uv-cache/
 
+# pytest --basetemp 落在仓库内时留下的目录；Windows 的 ACL 让它们事后删不掉
+.pytest-tmp-*/
+
 # YueLiBot 运行时配置与数据（含 API Key、SQLite、日志和 Electron 缓存）
 /config/
 /data/
