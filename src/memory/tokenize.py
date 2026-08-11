@@ -9,7 +9,7 @@ Python 侧 jieba 是纯 Python 包，这个约束消失了。
   jieba:          吃香菜 → 吃/香菜   ← 正确
 
 仍然保留 CJK bigram 兜底，原因：
-  · 自造专名「月璃」不在 jieba 词典，bigram 产出「月璃」使 FTS 仍能召回
+  · 自造专名不在 jieba 词典时，bigram 仍能让 FTS 召回连续汉字
   · 新词、品牌名同理
   · bigram 检索是中文 IR 的公认可靠基线，代价极低
 """

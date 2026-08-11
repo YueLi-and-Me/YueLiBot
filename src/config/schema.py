@@ -11,22 +11,11 @@ Pydantic 配置模型。
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, List, Literal
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-from src.agent.character import (
-    ATTENTION_PROMPT,
-    BEHAVIOR_PROMPT,
-    BOUNDARIES_PROMPT,
-    CHARACTER_NAME,
-    IDENTITY_PROMPT,
-    REPLY_STYLE_PROMPT,
-    TONE_PROBABILITY,
-    TONE_VARIANTS,
-)
-
 
 class InnerConfig(BaseModel):
     # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
@@ -36,7 +25,7 @@ class InnerConfig(BaseModel):
 
 class BotConfig(BaseModel):
     # Bot 的显示名和提示词身份名
-    name: str = CHARACTER_NAME
+    name: str
     # 群聊里可用于叫她的其它名字
     aliases: List[str] = Field(default_factory=list)
     # Bot 眼中用户的名字/称呼，留空则不特别用名字称呼他
@@ -127,15 +116,44 @@ class ScheduleConfig(BaseModel):
 
 
 class PersonalityConfig(BaseModel):
-    """可以由 bot.toml 完整改写的人格提示词，不再硬编码在 ChatService。"""
+    """用户可以在 bot.toml 完整改写的人设与说话风格。"""
 
-    identity: str = IDENTITY_PROMPT
-    behavior: str = BEHAVIOR_PROMPT
-    reply_style: str = REPLY_STYLE_PROMPT
-    attention: str = ATTENTION_PROMPT
-    boundaries: str = BOUNDARIES_PROMPT
-    tone_probability: float = Field(default=TONE_PROBABILITY, ge=0.0, le=1.0)
-    tone_variants: List[str] = Field(default_factory=lambda: list(TONE_VARIANTS))
+    birthday: str
+    personality: str
+    reply_style: str
+    tone_probability: float = Field(ge=0.0, le=1.0)
+    tone_variants: List[str]
+
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_retired_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migration_errors = (
+            ('identity', 'personality.identity 已改名为 personality.personality，请把内容挪过去。'),
+            ('behavior', 'personality.behavior 已取消：接话方式并进 reply_style。'),
+            ('attention', 'personality.attention 已取消：接话方式并进 reply_style。'),
+            ('boundaries', 'personality.boundaries 已取消：边界与事实纪律现在由代码固定，不再可配。'),
+        )
+        for field_name, message in migration_errors:
+            if field_name in value:
+                raise ValueError(message)
+        return value
+
+    @field_validator('birthday')
+    @classmethod
+    def _validate_birthday(cls, value: str) -> str:
+        if not value:
+            return value
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value) is None:
+            raise ValueError('personality.birthday 必须使用 YYYY-MM-DD 格式')
+        try:
+            birthday = date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError('personality.birthday 必须是合法日期') from exc
+        if birthday > date.today():
+            raise ValueError('personality.birthday 不能晚于今天')
+        return value
 
 
 class ConversationConfig(BaseModel):
@@ -518,10 +536,25 @@ class FeatureDocument(BaseModel):
 
 
 class Config(BaseModel):
-    bot: BotConfig = Field(default_factory=BotConfig)
+    # 生产加载器始终显式传入 BotDocument 的各段。这里的空 Bot 只服务于
+    # 不经过磁盘加载器、且与角色内容无关的纯单元测试，不提供角色信息。
+    bot: BotConfig = Field(default_factory=lambda: BotConfig.model_construct(
+        name='',
+        aliases=[],
+        user_nickname='',
+        relationship='',
+    ))
     group_chat: GroupChatConfig = Field(default_factory=GroupChatConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
-    personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
+    # 生产加载器始终显式传入 BotDocument.personality。空值工厂只让不经过
+    # 磁盘加载器的纯单元测试能构造其余配置段，不提供任何运行时人设兜底。
+    personality: PersonalityConfig = Field(default_factory=lambda: PersonalityConfig(
+        birthday='',
+        personality='',
+        reply_style='',
+        tone_probability=0.0,
+        tone_variants=[],
+    ))
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     # 八类任务的候选模型与轮询策略；连接细节都收在候选里

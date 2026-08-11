@@ -71,7 +71,7 @@ def _bind_backend_socket(port: int) -> socket.socket:
         sock.close()
         if exc.errno in {98, 10048}:
             raise OSError(
-                f'后端端口 {port} 已被占用，月璃无法启动。'
+                f'后端端口 {port} 已被占用，Bot 无法启动。'
                 f'请运行 Get-NetTCPConnection -LocalPort {port} '
                 f'查看占用进程，结束冲突进程后重试；'
                 f'如需临时改用其他端口，可传入 --port <端口>。'
@@ -275,8 +275,7 @@ def main() -> None:
             last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
             generator=schedule_generator,
             character_name=cfg.bot.name,
-            character_identity=cfg.personality.identity,
-            character_boundaries=cfg.personality.boundaries,
+            character_personality=cfg.personality.personality,
             schedule_config=cfg.schedule,
         )
         chat_svc.set_schedule(schedule)

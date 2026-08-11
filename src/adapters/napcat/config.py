@@ -14,7 +14,7 @@ from src.config.toml_io import read_versioned_toml
 
 NAPCAT_CONFIG_VERSION = '0.1.0'
 _CONFIG_HINT = (
-    'napcat.self_qq 填月璃的号（NapCat 登录的那个），owner.qq 填你自己的号，两个不能一样。'
+    'napcat.self_qq 填机器人的号（NapCat 登录的那个），owner.qq 填你自己的号，两个不能一样。'
     '桌宠启动时会自动创建 config/napcat.toml，每项都有注释。'
 )
 
@@ -30,7 +30,7 @@ class NapcatConnectionConfig(BaseModel):
 
     # 必填：漏写就等于让程序替用户决定要不要连 QQ
     enabled: bool
-    # 月璃自己的号，用来认出她自己发的消息
+    # 机器人自己的号，用来认出自身发出的消息
     self_qq: str = ''
     host: str
     port: int = Field(gt=0, le=65535)
@@ -166,13 +166,13 @@ class NapcatDocument(BaseModel):
         if not self.napcat.enabled:
             return self
         if not self.napcat.self_qq:
-            raise ValueError('启用 QQ 适配器时 napcat.self_qq 不能为空，填月璃登录的那个 QQ 号')
+            raise ValueError('启用 QQ 适配器时 napcat.self_qq 不能为空，填机器人登录的那个 QQ 号')
         if not self.owner.qq:
             raise ValueError('启用 QQ 适配器时 owner.qq 不能为空，填你自己的 QQ 号')
         if self.napcat.self_qq == self.owner.qq:
             raise ValueError(
                 f'napcat.self_qq 和 owner.qq 都填成了 {self.owner.qq}，这两个必须是不同的号：'
-                'napcat.self_qq 填月璃登录的机器人号，owner.qq 填你自己的号'
+                'napcat.self_qq 填机器人登录的 QQ 号，owner.qq 填你自己的号'
             )
         return self
 

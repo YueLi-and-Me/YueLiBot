@@ -138,7 +138,7 @@ class ChatService:
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
         self._bot_display_name = cfg.bot.name
-        self._summary_identity = cfg.personality.identity
+        self._summary_personality = cfg.personality.personality
         conversation = cfg.conversation
         generation = cfg.generation
         self._working_memory_messages = conversation.working_memory_messages
@@ -889,11 +889,9 @@ class ChatService:
             'aliases': bot.aliases,
             'user_nickname': bot.user_nickname,
             'relationship': bot.relationship,
-            'identity': personality.identity,
-            'behavior': personality.behavior,
+            'birthday': personality.birthday,
+            'personality': personality.personality,
             'reply_style': personality.reply_style,
-            'attention': personality.attention,
-            'boundaries': personality.boundaries,
         }
 
     async def _pick_expression_habits(
@@ -1232,7 +1230,7 @@ class ChatService:
                 temperature=self._summary_temperature,
                 max_tokens=self._summary_max_tokens,
                 character_name=self._bot_display_name,
-                character_identity=self._summary_identity,
+                character_personality=self._summary_personality,
             )
             if not episode:
                 return

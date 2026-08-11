@@ -17,11 +17,11 @@ class Episode:
     recall_cues: List[str]
 
 
-def _system_prompt(character_name: str, character_identity: str) -> str:
+def _system_prompt(character_name: str, character_personality: str) -> str:
     return f"""你替「{character_name}」整理那些快要淡出短期上下文的聊天。写出来的是这个角色以后会想起的片段，不是会议纪要。
 
 角色设定：
-{character_identity}
+{character_personality}
 
 要求：
 1. 只写对话里真的出现过的内容。分不清是谁说的就不写，不替任何人补动机。
@@ -77,7 +77,7 @@ async def summarize(
     temperature: float,
     max_tokens: int | None,
     character_name: str,
-    character_identity: str,
+    character_personality: str,
 ) -> Optional[Episode]:
     body = _render(messages)
     if len(body) < 40:
@@ -88,7 +88,7 @@ async def summarize(
             messages=[
                 {
                     'role': 'system',
-                    'content': _system_prompt(character_name, character_identity),
+                    'content': _system_prompt(character_name, character_personality),
                 },
                 {'role': 'user', 'content': f'要整理的对话：\n{body}'},
             ],

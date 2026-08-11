@@ -31,7 +31,7 @@ def mount_webui(app: FastAPI) -> None:
     async def webui_not_built() -> str:
         return (
             '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
-            '<title>月璃观察面板</title><body>'
+            '<title>Bot 观察面板</title><body>'
             '<h1>WebUI 尚未构建</h1><p>请先运行 npm run build，再重新打开本页。</p>'
             '</body></html>'
         )

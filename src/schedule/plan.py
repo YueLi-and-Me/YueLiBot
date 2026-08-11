@@ -310,9 +310,8 @@ def build_plan_prompt(
     yesterday_carry_over: str,
     yesterday_avoided: str,
     density: str,
-    character_name: str = '角色',
-    character_identity: str = '',
-    character_boundaries: str = '',
+    character_name: str,
+    character_personality: str,
     schedule_config: ScheduleConfig | None = None,
 ) -> str:
     settings = schedule_config or ScheduleConfig()
@@ -327,8 +326,7 @@ def build_plan_prompt(
         f'你为「{character_name}」规划这一天。日程属于这个角色自己，不是等用户出现的值班表。',
         '只返回合法 JSON，不要 Markdown 或解释。',
         f'日期：{date}，{weekday}；特别日：{occasion}。',
-        '', '# 角色设定', character_identity,
-        '', '# 角色边界', character_boundaries,
+        '', '# 角色设定', character_personality,
         '', '# 当前状态', persona, '',
         f'昨天主题：{yesterday_theme}',
         f'昨天休息时段提示：{yesterday_bedtime} 到 {yesterday_wake}。',
@@ -380,10 +378,9 @@ class DayPlanService:
         anniversary_at: Callable[[], int],
         energy: Callable[[], float],
         last_interaction_at: Callable[[], int | None],
+        character_name: str,
+        character_personality: str,
         generator: Any | None = None,
-        character_name: str = '角色',
-        character_identity: str = '',
-        character_boundaries: str = '',
         schedule_config: ScheduleConfig | None = None,
     ) -> None:
         self._store = store
@@ -394,8 +391,7 @@ class DayPlanService:
         self._last_interaction_at = last_interaction_at
         self._generator = generator
         self._character_name = character_name
-        self._character_identity = character_identity
-        self._character_boundaries = character_boundaries
+        self._character_personality = character_personality
         self._config = schedule_config or ScheduleConfig()
         self._inflight: Dict[str, asyncio.Task[DayPlan]] = {}
         self._generation_issues: Dict[str, DayPlanGenerationIssue] = {}
@@ -580,8 +576,7 @@ class DayPlanService:
             yesterday_avoided='、'.join(activity_avoidance_items(yesterday.slots)) if yesterday else '没有记录；今天没有旧活动需要避开。',
             density=self._interaction_density(int(now.timestamp() * 1000)),
             character_name=self._character_name,
-            character_identity=self._character_identity,
-            character_boundaries=self._character_boundaries,
+            character_personality=self._character_personality,
             schedule_config=self._config,
         )
         try:
