@@ -17,6 +17,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+
 class InnerConfig(BaseModel):
     # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
     # 旧配置由 Electron 侧在读取时就地升级，Python 只解析当前版本。
@@ -123,6 +124,8 @@ class PersonalityConfig(BaseModel):
     reply_style: str
     tone_probability: float = Field(ge=0.0, le=1.0)
     tone_variants: List[str]
+    expression_habits: List[str]
+    proactive_expression_habits: List[str]
 
     @model_validator(mode='before')
     @classmethod
@@ -133,7 +136,7 @@ class PersonalityConfig(BaseModel):
             ('identity', 'personality.identity 已改名为 personality.personality，请把内容挪过去。'),
             ('behavior', 'personality.behavior 已取消：接话方式并进 reply_style。'),
             ('attention', 'personality.attention 已取消：接话方式并进 reply_style。'),
-            ('boundaries', 'personality.boundaries 已取消：边界与事实纪律现在由代码固定，不再可配。'),
+            ('boundaries', 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。'),
         )
         for field_name, message in migration_errors:
             if field_name in value:
@@ -154,6 +157,14 @@ class PersonalityConfig(BaseModel):
         if birthday > date.today():
             raise ValueError('personality.birthday 不能晚于今天')
         return value
+
+    @field_validator('tone_variants', 'expression_habits', 'proactive_expression_habits')
+    @classmethod
+    def _validate_text_lists(cls, value: List[str]) -> List[str]:
+        normalized = [variant.strip() for variant in value]
+        if any(not variant for variant in normalized):
+            raise ValueError('personality 的文本列表不能包含空字符串')
+        return normalized
 
 
 class ConversationConfig(BaseModel):
@@ -554,6 +565,8 @@ class Config(BaseModel):
         reply_style='',
         tone_probability=0.0,
         tone_variants=[],
+        expression_habits=[],
+        proactive_expression_habits=[],
     ))
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)

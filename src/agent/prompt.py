@@ -1,11 +1,14 @@
-"""主对话与主动搭话提示词组装。"""
+"""组装主对话和主动搭话使用的系统提示词。
+
+本模块把配置人格、时间、关系、记忆、活动、日程和表达习惯分别渲染为独立块，
+再交给 `src.prompts.registry` 中的固定提示词资源组合；它只负责文本构造，不调用模型。
+"""
 
 from __future__ import annotations
 
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 
-from .expression import render_expression_habits, select_expression_habits
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.common.clock import now as current_time
@@ -23,6 +26,13 @@ RESUMPTION_TIERS: List[Tuple[int, str]] = [
 
 
 def _time_context(now: datetime, schedule: Optional[str] = None) -> str:
+    """把本地时间和可选日程转换为低干扰的对话背景块。
+
+    :param now: 用于显示日期、星期、时段和分钟的时间对象。
+    :param schedule: 可选的当天日程文本，默认值为 `None`。
+    :return: 中文时间背景；有日程时在空行后追加日程内容。
+    :side_effects: 不访问系统时钟，不修改输入对象。
+    """
     hour = now.hour
     if hour < 5:
         period = '凌晨'
@@ -50,12 +60,19 @@ def _time_context(now: datetime, schedule: Optional[str] = None) -> str:
 
 
 def _relationship_context(user_nickname: Optional[str], relationship: Optional[str]) -> str:
+    """渲染称呼偏好和关系描述。
+
+    :param user_nickname: 对方希望使用的称呼；`None` 或空字符串表示未配置。
+    :param relationship: 对方在 Bot 视角下的关系文本；默认可为空。
+    :return: 由一或两行关系规则组成的字符串，两个参数都为空时返回空字符串。
+    :side_effects: 不执行 I/O。
+    """
     lines: List[str] = []
     if user_nickname:
-        lines.append(f'他希望你叫他「{user_nickname}」。只在自然需要称呼时用，不要每句话都带名字。')
+        lines.append(f'对方希望你称呼「{user_nickname}」。只在自然需要称呼时用，不要每句话都带名字。')
     if relationship:
         lines.append(
-            f'你把他当{relationship}看待。这会影响你的分寸和亲近感，但不要反复声明这层关系，'
+            f'你把对方当{relationship}看待。这会影响你的分寸和亲近感，但不要反复声明这层关系，'
             '也不要把称呼当成口头禅。'
         )
     return '\n'.join(lines)
@@ -68,6 +85,109 @@ def describe_resumption(gap_ms: int) -> str:
             return description
     days = gap_ms // (24 * 60 * 60_000)
     return f'距离你们上次说话已经过去 {days} 天。'
+
+
+def _prefixed_block(content: Optional[str]) -> str:
+    """把可选动态上下文作为完整段落注入。"""
+
+    return f'\n\n{content}' if content else ''
+
+
+def _identity_context(
+    personality: str,
+    birthday: str,
+    now: datetime,
+    aliases: Optional[List[str]],
+    platform_name: Optional[str],
+    name: str,
+) -> Tuple[str, date | None]:
+    """只从配置和当前时间派生身份块，不提供角色默认值。"""
+
+    lines = [personality]
+    parsed_birthday: date | None = None
+    if birthday:
+        parsed_birthday = date.fromisoformat(birthday)
+        age = now.year - parsed_birthday.year - (
+            (now.month, now.day) < (parsed_birthday.month, parsed_birthday.day)
+        )
+        lines.extend(['', f'你今年 {age} 岁。'])
+
+    self_names = [value for value in [*(aliases or []), platform_name] if value and value != name]
+    if self_names:
+        unique_names = list(dict.fromkeys(self_names))
+        lines.extend([
+            '',
+            f'别人也可能用这些名字叫你：{"、".join(unique_names)}。这些都是你的称呼。',
+        ])
+    return '\n'.join(lines), parsed_birthday
+
+
+def _relationship_block(
+    acquaintance: Optional[str],
+    user_nickname: Optional[str],
+    relationship: Optional[str],
+) -> str:
+    """把熟悉程度、称呼和关系信息包装成可选提示词段落。
+
+    :param acquaintance: 已计算出的熟悉程度描述；可为空。
+    :param user_nickname: 对方称呼偏好；可为空。
+    :param relationship: 关系文本；可为空。
+    :return: 带段落前缀的关系块，所有输入为空时返回空字符串。
+    :side_effects: 不修改输入列表或文本。
+    """
+    lines: List[str] = []
+    if acquaintance:
+        lines.extend(['# 你们的关系走到哪里了', acquaintance])
+    relationship_context = _relationship_context(user_nickname, relationship)
+    if relationship_context:
+        lines.append(relationship_context)
+    return _prefixed_block('\n\n'.join(lines))
+
+
+def _activity_block(activity: Optional[str]) -> str:
+    """把当前前台活动包装为不要求主动提及的情境块。
+
+    :param activity: 前台活动描述；默认可为 `None`。
+    :return: 带情境说明和使用限制的提示词块；无活动时返回空字符串。
+    :side_effects: 不执行屏幕读取或其他 I/O。
+    """
+    if not activity:
+        return ''
+    return _prefixed_block('\n'.join([
+        '# 眼前的一点情境',
+        activity,
+        '这只是你顺眼得到的背景，不是监控报告。和当前话题无关就别提，也不要复述成「我看到你正在……」。',
+    ]))
+
+
+def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> str:
+    """把一组记忆条目渲染为带标题和使用规则的列表块。
+
+    :param title: 提示词中显示的区块标题。
+    :param values: 记忆文本列表；`None` 或空列表表示不注入该块。
+    :param instruction: 约束模型如何使用这些记忆的说明。
+    :return: 带段落前缀的 Markdown 风格列表，记忆为空时返回空字符串。
+    :side_effects: 不修改传入列表。
+    """
+    if not values:
+        return ''
+    return _prefixed_block('\n'.join([
+        f'# {title}',
+        *[f'- {value}' for value in values],
+        instruction,
+    ]))
+
+
+def _expression_habits_block(expression_habits: Optional[str]) -> str:
+    """把当前轮表达习惯放入独立提示词段落。
+
+    :param expression_habits: 已渲染的表达习惯文本；默认可为 `None`。
+    :return: 以“平时的说法”为标题的提示词块，无内容时返回空字符串。
+    :side_effects: 不执行 I/O。
+    """
+    if not expression_habits:
+        return ''
+    return _prefixed_block(f'# 平时的说法\n{expression_habits}')
 
 
 def build_system_prompt(
@@ -95,90 +215,52 @@ def build_system_prompt(
     if now is None:
         now = datetime.fromtimestamp(current_time() / 1000)
 
-    parts: List[str] = [
-        f'你是「{name}」。',
-        '',
-        '# 你是谁',
+    identity, parsed_birthday = _identity_context(
         personality,
-    ]
-    parsed_birthday: date | None = None
-    if birthday:
-        parsed_birthday = date.fromisoformat(birthday)
-        age = now.year - parsed_birthday.year - (
-            (now.month, now.day) < (parsed_birthday.month, parsed_birthday.day)
-        )
-        parts.extend(['', f'你今年 {age} 岁。'])
-    self_names = [value for value in [*(aliases or []), platform_name] if value and value != name]
-    if self_names:
-        unique_names = list(dict.fromkeys(self_names))
-        parts.extend([
-            '',
-            f'别人也可能用这些名字叫你：{"、".join(unique_names)}。这些都是你的称呼。',
-        ])
-    if acquaintance:
-        parts.extend(['', '# 你们的关系走到哪里了', acquaintance])
-    if user_nickname or relationship:
-        parts.extend(['', _relationship_context(user_nickname, relationship)])
-
-    parts.extend(['', '# 此刻', _time_context(now, schedule)])
+        birthday,
+        now,
+        aliases,
+        platform_name,
+        name,
+    )
+    birthday_note = ''
     if (
         parsed_birthday is not None
         and (parsed_birthday.month, parsed_birthday.day) == (now.month, now.day)
     ):
-        parts.append('今天是你的生日。')
-    if resumption:
-        parts.extend(['', resumption])
-    if persona:
-        parts.extend(['', persona])
-    if activity:
-        parts.extend([
-            '',
-            '# 眼前的一点情境',
-            activity,
-            '这只是你顺眼得到的背景，不是监控报告。和当前话题无关就别提，也不要复述成「我看到你正在……」。',
-        ])
-    if facts:
-        parts.extend([
-            '',
-            '# 你早就知道的事',
-            *[f'- {fact}' for fact in facts],
-            '把这些当成相处已久留下的常识。用得上时自然接住，用不上就放着；不要逐条复述给他听。',
-        ])
-    if episodes:
-        parts.extend([
-            '',
-            '# 最近留下的聊天回想',
-            *[f'- {episode}' for episode in episodes],
+        birthday_note = '\n今天是你的生日。'
+
+    # 主骨架由资源模板决定；此处只注入配置和当前轮次上下文。
+    return get_prompt('chat.system').render(
+        name=name,
+        identity=identity,
+        relationship=_relationship_block(acquaintance, user_nickname, relationship),
+        time_context=_time_context(now, schedule),
+        birthday_note=birthday_note,
+        resumption=_prefixed_block(resumption),
+        persona=_prefixed_block(persona),
+        activity=_activity_block(activity),
+        facts=_memory_block(
+            '你早就知道的事',
+            facts,
+            '把这些当成相处已久留下的常识。用得上时自然接住，用不上就放着；不要逐条复述给对方听。',
+        ),
+        episodes=_memory_block(
+            '最近留下的聊天回想',
+            episodes,
             '回想只用来理解没说完的话和关系变化，不要为了证明记得而主动翻旧账。',
-        ])
-
-    parts.extend([
-        '',
-        '# 说话的味道',
-        reply_style,
-    ])
-    if tone:
-        parts.extend(['', tone])
-
-    # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真的照着那个语感说话。
-    if expression_habits:
-        parts.extend(['', '# 她平时的说法', expression_habits])
-
-    parts.extend([
-        '',
-        '# 有一说一',
-        get_prompt('chat.discipline').text,
-        '',
-        '# 边界',
-        get_prompt('chat.boundaries').text,
-        '',
-        '# 输出格式',
-        get_prompt('chat.protocol').render(
+        ),
+        reply_style=reply_style,
+        tone=_prefixed_block(tone),
+        # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
+        expression_habits=_expression_habits_block(expression_habits),
+        discipline=get_prompt('chat.discipline').text.rstrip(),
+        boundaries=get_prompt('chat.boundaries').text.rstrip(),
+        protocol=get_prompt('chat.protocol').render(
             emotions=' / '.join(EXPRESSION_IDS),
             gestures=' / '.join(GESTURE_IDS),
-        ),
-    ])
-    return '\n'.join(parts)
+        ).rstrip(),
+    )
 
 
 def build_proactive_prompt(base_prompt: str, situation: str) -> str:

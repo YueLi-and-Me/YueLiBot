@@ -20,7 +20,7 @@ from .trace_console import mark_turn_start, render_observation, render_turn, ren
 from .vector import VectorService
 
 from src.agent.character import pick_tone
-from src.agent.expression import ExpressionSample, render_expression_habits, select_expression_habits
+from src.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.agent.expression_select import ExpressionSelector
 from src.agent.history import close_dangling_say, fit_char_budget, normalize_history
 from src.agent.parser import (
@@ -165,13 +165,18 @@ class ChatService:
         self._name_mention_probability = cfg.group_chat.name_mention_probability
         self._group_persona_weight = cfg.group_chat.persona_weight
         self._perception_surfaces = frozenset(cfg.perception.surfaces)
+        self._expression_habits = tuple(cfg.personality.expression_habits)
+        self._proactive_expression_habits = tuple(
+            cfg.personality.proactive_expression_habits
+        )
         self._expression_selector = (
             ExpressionSelector(
                 expression_provider,
                 temperature=generation.expression.temperature,
                 max_tokens=generation.expression.token_limit,
+                candidates=self._expression_habits,
             )
-            if expression_provider is not None
+            if expression_provider is not None and self._expression_habits
             else None
         )
         self.memory = MemoryStore(db)
@@ -650,9 +655,8 @@ class ChatService:
             )],
             schedule=schedule_desc,
             expression_habits=render_expression_habits(
-                select_expression_habits(
-                    situation,
-                    proactive=True,
+                sample_expression_habits(
+                    self._proactive_expression_habits,
                     limit=3,
                     rng=self._session_rng(context.stream.id),
                 )
@@ -917,9 +921,8 @@ class ChatService:
     ) -> list[ExpressionSample]:
         """挑选回复所需的表达样本。"""
         if self._expression_selector is None:
-            picked = select_expression_habits(query, rng=self._session_rng(context.stream.id))
-            trace.emit('expression_select', source='keyword', count=len(picked))
-            return picked
+            trace.emit('expression_select', source='disabled', count=0)
+            return []
         self._mark_stage(context, EXPRESSION)
         try:
             picked = await self._expression_selector.select(query, history[-8:], signal=signal)
@@ -933,7 +936,7 @@ class ChatService:
             'expression_select',
             source='model',
             count=len(picked),
-            situations=[situation for situation, _ in picked],
+            habits=picked,
         )
         return picked
 

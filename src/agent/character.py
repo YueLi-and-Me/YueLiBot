@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import List, Optional
 import random
 
+
 def pick_tone(
     probability: float,
     variants: List[str],
