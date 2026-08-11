@@ -338,7 +338,9 @@ class ApiProviderConfig(BaseModel):
     client_type: Literal['openai', 'volcengine'] = 'openai'
     # 豆包语音要 App ID + Access Token 两个凭证，api_key 放 Access Token
     app_id: str = ''
+    # 单次 HTTP 连接与流式读取超时；首字阶段的内部重试仍受任务级首字超时整体截断。
     timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
+    # 同一连接内的重试次数；需要让重试跑满时，应调大任务级首字超时。
     max_retries: int = Field(default=2, ge=0, le=10)
     retry_interval_ms: int = Field(default=800, ge=0, le=60_000)
 

@@ -185,6 +185,7 @@ class ModelRouter:
                 iterator = chunks.__aiter__()
                 started = time.monotonic()
                 try:
+                    # 任务级首字窗口包含下层内部重试，窗口耗尽会在重试跑满前切换候选。
                     async with asyncio.timeout(self._first_token_timeout_ms / 1_000):
                         first_chunk = await anext(iterator)
                 except StopAsyncIteration:

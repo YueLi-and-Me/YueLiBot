@@ -1095,9 +1095,9 @@ client_type = ${tomlString(provider.client_type)}${provider.client_type === 'vol
 # 豆包语音的 App ID，与 api_key（Access Token）成对使用
 # 取自控制台：豆包语音 → 语音合成大模型 → 页面下方「服务接口认证信息」
 app_id = ${tomlString(provider.app_id)}` : ''}
-# 单次 HTTP 连接与流式读取超时，单位毫秒；本地大模型可适当调大
+# 单次 HTTP 连接与流式读取超时，单位毫秒；首字阶段仍受任务级首字超时整体截断
 timeout_ms = ${provider.timeout_ms}
-# 同一条连接内的重试次数；重试用尽仍失败才算这个厂商挂了，轮询切下一条
+# 同一条连接内的重试次数；需要让重试跑满时，应调大任务级首字超时
 max_retries = ${provider.max_retries}
 # 两次重试之间的固定等待时间，单位毫秒
 retry_interval_ms = ${provider.retry_interval_ms}`
