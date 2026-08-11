@@ -24,7 +24,6 @@ from src.observe import events as trace
 from src.observe.board import board as stage_board
 from src.observe.events import enter_stage
 from src.observe.stages import GATED, RECEIVED
-from src.observe.store import since as events_since
 from src.platform_io.reply_gate import decide_reply
 from src.platform_io.types import InboundMessage, StreamRef
 
@@ -624,21 +623,3 @@ async def person_detail(person_id: int) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-
-@router.get("/debug/trace", dependencies=[Depends(_auth)])
-async def debug_trace(since: int = 0) -> JSONResponse:
-    """用户输入 / LLM 请求-流式增量-最终响应 / 记忆写入 / 感知决策的运行时追踪。
-
-    Args:
-        since: 已消费的最大事件序号，默认 ``0``；仅返回更大的序号。
-
-    Returns:
-        包含增量观测事件数组的 JSON 响应。
-
-    Raises:
-        fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
-
-    Side Effects:
-        仅读取事件账本，不修改事件序号或业务数据。
-    """
-    return JSONResponse(events_since(since, 1_000).events)

@@ -65,5 +65,4 @@ export function serveAppScheme(root: string): void {
 export const APP_INDEX_URL = `${SCHEME}://${HOST}/index.html`
 export const APP_CAPTURE_URL = `${SCHEME}://${HOST}/capture.html`
 export const APP_DIARY_URL = `${SCHEME}://${HOST}/diary.html`
-export const APP_OBSERVABILITY_URL = `${SCHEME}://${HOST}/observability.html`
 export const APP_SETTINGS_URL = `${SCHEME}://${HOST}/settings.html`

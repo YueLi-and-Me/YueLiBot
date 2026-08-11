@@ -19,7 +19,6 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'electron/preload/index.ts'),
           diary: resolve(__dirname, 'electron/preload/diary.ts'),
-          observability: resolve(__dirname, 'electron/preload/observability.ts'),
           settings: resolve(__dirname, 'electron/preload/settings.ts'),
         },
       },
@@ -42,7 +41,6 @@ export default defineConfig({
           index: resolve(__dirname, 'electron/renderer/index.html'),
           capture: resolve(__dirname, 'electron/renderer/capture.html'),
           diary: resolve(__dirname, 'electron/renderer/diary.html'),
-          observability: resolve(__dirname, 'electron/renderer/observability.html'),
           settings: resolve(__dirname, 'electron/renderer/settings.html'),
         },
       },

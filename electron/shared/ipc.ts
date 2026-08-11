@@ -172,18 +172,12 @@ export const IPC = {
   Sleep: 'sleep:state',
   /** 日记窗口 → 主进程：取全部情节记录 */
   Diary: 'diary:list',
-  /** 观察窗口 → 主进程：取得内部状态快照，只读。 */
-  Observability: 'observability:get',
-  /** 观察窗口 → 主进程：增量拉取运行时调试追踪（用户输入/LLM 请求/流式增量/最终响应等）。 */
-  DebugTrace: 'debug:trace',
   /** 设置窗口 → 主进程：读取拆分后的配置目录（不存在则返回默认值）。 */
   ReadConfig: 'settings:read-config',
   /** 设置窗口 → 主进程：写入拆分配置；首次启动时这个调用成功后才会继续正常启动流程。 */
   SaveConfig: 'settings:save-config',
   /** 设置窗口 → 主进程：重启 Python 后端，使刚保存的配置生效。 */
   RestartBackend: 'settings:restart-backend',
-  /** 观察窗口 → 主进程：打开设置窗口。 */
-  OpenSettings: 'settings:open',
 } as const
 
 /**
@@ -261,15 +255,6 @@ export interface PetBridge {
 /** 日记窗口的最小只读 bridge。它与桌宠 bridge 隔离，绝不带交互写入方法。 */
 export interface DiaryBridge {
   read(): Promise<DiaryPayload>
-}
-
-/** 开发者观察窗口的最小只读 bridge。 */
-export interface ObservabilityBridge {
-  read(): Promise<ObservabilityPayload>
-  /** 增量拉取调试追踪；since 传上次拿到的最大 seq，默认从头。 */
-  readTrace(since?: number): Promise<TraceEntry[]>
-  /** 打开设置窗口。 */
-  openSettings(): void
 }
 
 /** 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音私有协议，只能用于 tts。 */
@@ -440,7 +425,6 @@ declare global {
   interface Window {
     pet: PetBridge
     diary?: DiaryBridge
-    observability?: ObservabilityBridge
     settings?: SettingsBridge
   }
 }

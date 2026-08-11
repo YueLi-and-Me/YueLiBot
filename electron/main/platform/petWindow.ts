@@ -176,15 +176,6 @@ export function resolveDiaryPreload(): string {
 }
 
 /**
- * 返回观察窗口的最小只读 preload 产物路径。
- *
- * @returns {string} 观察窗口 preload 的绝对路径。
- */
-export function resolveObservabilityPreload(): string {
-  return join(__dirname, '../preload/observability.mjs')
-}
-
-/**
  * 返回设置窗口的配置 bridge preload 产物路径。
  *
  * @returns {string} 设置窗口 preload 的绝对路径。

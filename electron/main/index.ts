@@ -13,7 +13,7 @@ import { app, BrowserWindow, ipcMain, powerMonitor, screen } from 'electron'
 import 'dotenv/config'
 
 import {
-  APP_CAPTURE_URL, APP_DIARY_URL, APP_INDEX_URL, APP_OBSERVABILITY_URL, APP_SETTINGS_URL,
+  APP_CAPTURE_URL, APP_DIARY_URL, APP_INDEX_URL, APP_SETTINGS_URL,
   registerAppScheme, serveAppScheme,
 } from './platform/appProtocol.ts'
 import { closeDiaryWindow, diaryWindowOpen, openDiaryWindow } from './platform/diaryWindow.ts'
@@ -21,11 +21,10 @@ import { foregroundAvailable, isSelfProcess, readForeground } from './platform/f
 import { captureScreen, captureWindow, disposeWindowCapture } from './platform/capture.ts'
 import {
   beginDrag, createPetWindow, endDrag, focusForInput,
-  resolveDiaryPreload, resolveObservabilityPreload, resolvePreload,
+  resolveDiaryPreload, resolvePreload,
   resolveRendererRoot, resolveSettingsPreload,
   setInteractive,
 } from './platform/petWindow.ts'
-import { closeObservabilityWindow, observabilityWindowOpen, openObservabilityWindow } from './platform/observabilityWindow.ts'
 import { closeSettingsWindow, openSettingsWindow } from './platform/settingsWindow.ts'
 import {
   createTray, destroyTray, notifyTray, resetPetPosition, togglePet, trayIconEmpty,
@@ -133,14 +132,6 @@ app.whenReady().then(async () => {
     supervisor.stop()
     supervisor.start()
   })
-  ipcMain.on(IPC.OpenSettings, () => {
-    openSettingsWindow({
-      url: devUrl ? new URL('settings.html', devUrl).href : APP_SETTINGS_URL,
-      preload: resolveSettingsPreload(),
-      botName: currentCfg?.bot.name ?? '',
-    })
-  })
-
   // 首次启动缺少模型或 API 密钥时先显示设置窗口，桌宠和 Python 后端延后启动。
   if (!configIsComplete(readConfigDirectory(configDir, legacyConfigPath))) {
     await runFirstRunWizard(devUrl)
@@ -263,15 +254,6 @@ async function startApp(
     if (client) return client.diary()
     return { entries: [], memories: [], now: Date.now() }
   })
-  ipcMain.handle(IPC.Observability, async () => {
-    if (client) return client.observability()
-    return {}
-  })
-  ipcMain.handle(IPC.DebugTrace, async (_e, since: number) => {
-    if (client) return client.debugTrace(since ?? 0)
-    return []
-  })
-
   // 前台进程轮询后交给 Python 分类；Electron 保留读取系统前台窗口所需的平台权限。
   let lastTitle = ''
   /**
@@ -384,12 +366,6 @@ async function startApp(
       openDiaryWindow({
         url: devUrl ? new URL('diary.html', devUrl).href : APP_DIARY_URL,
         preload: resolveDiaryPreload(),
-        botName: cfg.bot.name,
-      }),
-    openObservability: () =>
-      openObservabilityWindow({
-        url: devUrl ? new URL('observability.html', devUrl).href : APP_OBSERVABILITY_URL,
-        preload: resolveObservabilityPreload(),
         botName: cfg.bot.name,
       }),
     openSettings: () =>

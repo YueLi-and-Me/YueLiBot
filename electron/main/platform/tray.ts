@@ -17,8 +17,6 @@ export interface TrayHandlers {
   resetPosition(): void
   /** 打开日记窗口。 */
   openDiary(): void
-  /** 打开仅供开发验收的内部状态观察面板。 */
-  openObservability(): void
   /** 打开设置窗口。 */
   openSettings(): void
   /** 重启 Python 后端，应用新的配置或恢复异常后端。 */
@@ -138,8 +136,6 @@ export function createTray(win: BrowserWindow, botName: string, handlers: TrayHa
         { type: 'separator' },
         { label: '设置…', click: handlers.openSettings },
         { label: `重启${labelName}`, click: handlers.restartBackend },
-        // 开发者验收入口，和日记严格分开，避免把数值面板做成养成功能。
-        { label: '打开观察面板…', click: handlers.openObservability },
         { type: 'separator' },
         { label: '搬回原位', click: handlers.resetPosition },
         {
