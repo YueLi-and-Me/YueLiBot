@@ -1,12 +1,11 @@
 /**
- * 生成合成素材，用于在**不消耗任何 API 配额**的前提下验证后处理链路。
+ * 生成本地合成素材，用于不调用外部 API 的情况下验证后处理链路。
  *
  *   npm run sprite:fixture
  *   npm run sprite:process:fixture
  *
- * 合成图刻意模拟 AI 生图的真实毛病：同一个「角色」在每张图里
- * 位置漂移几个像素。对齐若正确，process 输出的所有图角色位置应完全重合。
- * 其中 cry 那张故意把身体加宽，用来验证一致性报告能不能抓出「模型改了身体」。
+ * 合成图模拟同一角色在不同资源中的位置偏移、纹理变化和身体宽度变化；对齐后
+ * 可修复的偏移应消失，身体宽度变化应继续出现在一致性报告中。
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -17,11 +16,17 @@ const W = 512
 const H = 768
 
 /**
- * 画一个「角色」：头 + 眼 + 身体 + 两条腿，整体带偏移。白底，供降级抠图处理。
+ * 生成包含头部、眼睛、身体和腿部的白底角色图，并按参数施加偏移和局部变化。
  *
- * `scale` 模拟实测中方舟做指令编辑时那种「整体等比放大约 3%」的行为 ——
- * 这类漂移能被后处理的缩放归一修掉，不该被当成体型改动。
- * `bodyW` 变化则模拟真正的体型改动，归一后依然对不上，只能重跑。
+ * ``scale`` 用于模拟可由后处理修复的整体缩放；``bodyW`` 用于模拟归一化后仍
+ * 存在的体型变化。
+ *
+ * @param opts 合成角色的几何、颜色和局部状态参数；``scale``、``eyeOpen``、
+ * ``mouthOpen`` 和 ``bodySeed`` 未提供时分别使用 ``1``、``1``、``0`` 和 ``0``。
+ * @returns {Promise<Buffer>} 编码完成的白底 PNG 二进制数据。
+ * @throws {Error} SVG 转换或 PNG 编码失败时由 sharp 抛出。
+ * @remarks 该函数仅在内存中构造 SVG 和 PNG；输出尺寸固定为 ``512 × 768``，
+ *   适合作为后处理自动检测和一致性报告的确定性输入。
  */
 function character(opts: {
   dx: number
@@ -88,6 +93,13 @@ function character(opts: {
   return sharp(Buffer.from(svg)).png().toBuffer()
 }
 
+/**
+ * 生成底图、表情、眼睛和三档嘴型测试素材。
+ *
+ * @returns 所有素材写入完成后的 Promise。
+ * @throws Error 目录创建、图像编码或文件写入失败。
+ * @sideEffects 在 ``.sprite-work/fixture`` 下写入合成 PNG 文件。
+ */
 async function main() {
   const paths = new CharPaths('fixture')
   await paths.ensureRawDirs()
@@ -107,10 +119,10 @@ async function main() {
     await writeFile(paths.rawFile('face', id), await character({ dx, dy, bodyW: 150, eyeColor, bodySeed }))
   }
 
-  // 故意跑偏的一张：身体明显变宽 —— 归一后仍对不上，一致性报告应当点名它
+  // 该样本模拟身体明显变宽的素材；归一化后仍应无法对齐，并由一致性报告标记。
   await writeFile(paths.rawFile('face', 'cry'), await character({ dx: 2, dy: 2, bodyW: 210, eyeColor: '#3a6ea5', bodySeed: 7 }))
 
-  // 整体等比放大 4%（方舟实测约 3.4%）—— 应当被缩放归一修掉，且**不**被点名
+  // 整体等比放大 4%，用于验证缩放归一能够修正尺寸偏差，且一致性报告不应将其标记为身体重绘。
   await writeFile(paths.rawFile('face', 'smug'), await character({ dx: 0, dy: 0, bodyW: 150, eyeColor: '#8a6d3b', scale: 1.04, bodySeed: 8 }))
 
   // 闭眼差分：只有眼睛变成横线，其余不动 —— 用于验证眼部区域自动检测

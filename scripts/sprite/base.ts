@@ -1,17 +1,16 @@
 /**
  * 底图生成与定稿。
  *
- *   # 跑候选（参考图可给多张，重复 --ref 即可）
+ *   # 生成候选（参考图可给多张，重复 --ref 即可）
  *   npx tsx scripts/sprite/base.ts --ref ./ref.png --desc "银发蓝瞳，水母主题连衣裙，气质温柔"
  *
- *   # 挑中第 2 张，定为底图
+ *   # 选择第 2 张作为底图
  *   npx tsx scripts/sprite/base.ts --pick 2
  *
- * ⚠ Windows 下 `npm run xxx -- --flag` 会被 npm 当成自己的配置吞掉，
- *   凡是带参数的命令一律用 npx tsx 直调。
+ * Windows 下带参数的脚本建议直接使用 npx tsx 调用，避免 npm 参数转发差异。
  *
- * 底图是整条管线的地基：后续 23 张差分全部以它为基准做指令编辑，
- * 它的构图和清晰度直接决定一致性上限。宁可多跑几轮挑张好的。
+ * 底图是后续差分编辑的基准，其构图和清晰度决定角色一致性上限；脚本支持生成
+ * 多张候选并单独选择定稿文件。
  */
 import { readFile, writeFile } from 'node:fs/promises'
 import { parseArgs } from 'node:util'
@@ -41,6 +40,15 @@ const FAST_MODEL: Record<string, string> = {
   ark: 'doubao-seedream-5-0-pro-260628',
 }
 
+/**
+ * 将指定编号的底图候选复制为工作目录中的定稿底图。
+ *
+ * @param paths 角色素材路径集合。
+ * @param n 候选编号，必须为正整数。
+ * @returns 文件复制完成后的 Promise。
+ * @throws Error 候选文件不存在或目标文件不可写。
+ * @sideEffects 写入 raw/base.png 并输出下一步提示。
+ */
 async function pick(paths: CharPaths, n: number) {
   const src = paths.rawBaseCandidate(n)
   let buf: Buffer
@@ -56,6 +64,17 @@ async function pick(paths: CharPaths, n: number) {
   console.log('\n下一步：npm run sprite:gen')
 }
 
+/**
+ * 调用图像供应商生成多张底图候选并保存到工作目录。
+ *
+ * @param paths 角色素材路径集合。
+ * @param refs 参考图文件路径列表，可为空。
+ * @param desc 角色和构图描述，不能为空。
+ * @param count 候选数量，范围为 1 到 12。
+ * @returns 至少一张候选写入成功后的 Promise。
+ * @throws Error 描述为空、参考图不可读或所有候选请求均失败。
+ * @sideEffects 读取参考图、配置代理、调用图像供应商并写入 raw/base-N.png。
+ */
 async function generate(paths: CharPaths, refs: string[], desc: string, count: number) {
   if (!desc.trim()) {
     throw new Error('缺少 --desc。给一句角色描述即可，例如：--desc "银发蓝瞳，水母主题连衣裙，气质温柔"')
@@ -83,6 +102,7 @@ async function generate(paths: CharPaths, refs: string[], desc: string, count: n
 
   let ok = 0
   for (let i = 1; i <= count; i++) {
+    // 每张候选独立重试和落盘，单张失败不会阻断剩余候选生成。
     process.stdout.write(`  [${i}/${count}] 生成中… `)
     try {
       const img = await withRetry(() => provider.generate({ prompt, refs: refBufs, seed: Date.now() + i }), {
@@ -108,6 +128,12 @@ async function generate(paths: CharPaths, refs: string[], desc: string, count: n
   console.log('\n选好后：npx tsx scripts/sprite/base.ts --pick <编号>')
 }
 
+/**
+ * 解析命令行模式并执行候选选择或批量生成。
+ *
+ * @returns 当前操作完成后的 Promise。
+ * @throws Error 参数不合法、候选缺失或生成流程失败。
+ */
 async function main() {
   const paths = new CharPaths(values.name!)
 

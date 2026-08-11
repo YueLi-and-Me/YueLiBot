@@ -1,4 +1,9 @@
-"""内置提示词与用户覆盖文件的加载入口。"""
+"""加载、校验、哈希并归档运行时提示词模板。
+
+本模块从内置目录读取声明式 Markdown 模板，可按配置目录加载用户覆盖版本，
+校验模板 ID 与占位符集合，并在内容变化时写入有限历史。调用方通过全局目录
+快照取得模板，``src.services.chat``、调度和摘要服务只负责传入已声明参数。
+"""
 
 from __future__ import annotations
 
@@ -84,7 +89,7 @@ _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')
 
 @dataclass(frozen=True)
 class PromptTemplate:
-    """一次启动中固定不变的生效模板。"""
+    """一次启动中固定不变的生效模板及其内容指纹。"""
 
     id: str
     text: str
@@ -93,7 +98,18 @@ class PromptTemplate:
     sha256: str
 
     def render(self, **values: str) -> str:
-        """只替换声明式双花括号，不解释条件、循环或值中的模板文本。"""
+        """使用完整占位符集合渲染模板文本。
+
+        Args:
+            **values: 占位符名称到替换文本的映射。键集合必须与模板声明完全相同，
+                值按字符串处理，不会再次解释其中的模板语法。
+
+        Returns:
+            仅替换 ``{{name}}`` 形式占位符后的模板文本。
+
+        Raises:
+            ValueError: 提供的键缺失或多于模板声明。
+        """
 
         provided = frozenset(values)
         if provided != self.placeholders:
@@ -105,19 +121,48 @@ class PromptTemplate:
 
 
 class PromptCatalog:
-    """全量模板的不可变启动快照。"""
+    """全量提示词模板的不可变启动快照。"""
 
     def __init__(self, templates: Dict[str, PromptTemplate]) -> None:
+        """创建模板目录副本。
+
+        Args:
+            templates: 模板 ID 到模板对象的映射；构造后目录不会引用调用方的
+                可变字典。
+        """
+
         self._templates = dict(templates)
 
     def get(self, template_id: str) -> PromptTemplate:
+        """按声明的模板 ID 取得模板。
+
+        Args:
+            template_id: ``TEMPLATE_IDS`` 中的模板标识。
+
+        Returns:
+            对应的不可变模板对象。
+
+        Raises:
+            KeyError: 模板 ID 未加载或未在注册表中声明。
+        """
+
         try:
             return self._templates[template_id]
         except KeyError as exc:
             raise KeyError(f'未声明的提示词模板：{template_id}') from exc
 
     def combined_hash(self, template_ids: Iterable[str]) -> str:
-        """按模板 ID 排序拼接完整哈希，再生成调用级八位指纹。"""
+        """计算一组模板内容的稳定八位调用指纹。
+
+        Args:
+            template_ids: 要参与计算的模板 ID 可迭代对象；顺序不影响结果。
+
+        Returns:
+            按模板 ID 排序后拼接各模板 SHA-256，再计算得到的十六进制前八位。
+
+        Raises:
+            KeyError: 集合中包含未加载模板。
+        """
 
         hashes = ''.join(self.get(template_id).sha256 for template_id in sorted(template_ids))
         return sha256(hashes.encode('ascii')).hexdigest()[:8]
@@ -129,6 +174,18 @@ def _placeholder_error(
     actual: FrozenSet[str],
     source: str,
 ) -> ValueError:
+    """构造占位符声明与实际输入不一致的错误。
+
+    Args:
+        template_id: 出错模板 ID。
+        declared: 模板声明的占位符集合。
+        actual: 调用方或文件实际提供的占位符集合。
+        source: 错误来源标签，例如 ``渲染参数`` 或 ``占位符``。
+
+    Returns:
+        包含缺失项和多余项的 ``ValueError`` 实例。
+    """
+
     missing = sorted(declared - actual)
     extra = sorted(actual - declared)
     details = []
@@ -146,13 +203,31 @@ def load_prompt_catalog(
     *,
     builtin_dir: Path = BUILTIN_PROMPT_DIR,
 ) -> PromptCatalog:
-    """优先读取用户覆盖；固定纪律始终使用内置版本。"""
+    """加载并校验全部提示词模板。
+
+    Args:
+        data_dir: 可选的运行时数据目录；存在时从其 ``prompts`` 子目录读取用户
+            覆盖并归档生效内容。
+        builtin_dir: 内置模板目录，默认指向当前模块所在目录。
+
+    Returns:
+        已完成占位符校验的模板目录快照。
+
+    Raises:
+        FileNotFoundError: 必需的内置模板缺失。
+        ValueError: 模板内容的占位符集合与声明不一致。
+        OSError: 模板读取或归档失败。
+
+    Side Effects:
+        当 ``data_dir`` 非空时，内容变化会写入模板历史并删除超出保留数量的旧版本。
+    """
 
     override_dir = data_dir / 'prompts' if data_dir is not None else None
     templates: Dict[str, PromptTemplate] = {}
     for template_id in TEMPLATE_IDS:
         builtin_path = builtin_dir / f'{template_id}.md'
         override_path = override_dir / f'{template_id}.md' if override_dir is not None else None
+        # 固定纪律模板禁止覆盖，其余模板按“用户文件存在则优先”选择来源。
         if override_path is not None and override_path.exists():
             if template_id in FIXED_TEMPLATE_IDS:
                 logger.warning(
@@ -168,6 +243,7 @@ def load_prompt_catalog(
         text = source.read_text(encoding='utf-8')
         declared = TEMPLATE_PLACEHOLDERS[template_id]
         actual = frozenset(_PLACEHOLDER_PATTERN.findall(text))
+        # 在构造目录快照前校验占位符集合，避免错误模板进入运行时全局状态。
         if actual != declared:
             raise _placeholder_error(template_id, declared, actual, '占位符')
         templates[template_id] = PromptTemplate(
@@ -184,7 +260,15 @@ def load_prompt_catalog(
 
 
 def _archive_templates(catalog: PromptCatalog, data_dir: Path) -> None:
-    """只在内容变化时留档，并把每个模板的历史限制在固定数量。"""
+    """归档发生变化的模板，并限制每个模板的历史文件数量。
+
+    Args:
+        catalog: 已加载并校验的模板目录。
+        data_dir: 运行时数据目录，历史写入其 ``prompts/history`` 子目录。
+
+    Raises:
+        OSError: 历史目录创建、读取、写入或清理失败。
+    """
 
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     history_root = data_dir / 'prompts' / 'history'
@@ -193,9 +277,11 @@ def _archive_templates(catalog: PromptCatalog, data_dir: Path) -> None:
         history_dir = history_root / template_id
         archived = list(history_dir.glob('*.md')) if history_dir.exists() else []
         if archived:
+            # 文件系统不保证目录枚举顺序，使用修改时间和文件名共同确定最近归档。
             latest = max(archived, key=lambda path: (path.stat().st_mtime_ns, path.name))
             latest_text = latest.read_text(encoding='utf-8')
             latest_hash = sha256(latest_text.encode('utf-8')).hexdigest()
+            # 内容未变化时不新增副本，避免启动流程重复堆积相同模板。
             if latest_hash == template.sha256:
                 continue
         history_dir.mkdir(parents=True, exist_ok=True)
@@ -205,6 +291,7 @@ def _archive_templates(catalog: PromptCatalog, data_dir: Path) -> None:
             history_dir.glob('*.md'),
             key=lambda path: (path.stat().st_mtime_ns, path.name),
         )
+        # 按同一排序规则保留最新的固定数量，删除更早版本以限制磁盘增长。
         for expired in archived[:-MAX_TEMPLATE_HISTORY]:
             expired.unlink()
 
@@ -213,7 +300,17 @@ _catalog = load_prompt_catalog(None)
 
 
 def configure_prompts(data_dir: Path) -> PromptCatalog:
-    """在启动期一次性装入用户覆盖。"""
+    """在启动期加载指定数据目录中的用户提示词覆盖。
+
+    Args:
+        data_dir: 运行时数据目录。
+
+    Returns:
+        新的全局提示词目录快照。
+
+    Raises:
+        FileNotFoundError, ValueError, OSError: 加载或校验模板失败时直接传播。
+    """
 
     global _catalog
     _catalog = load_prompt_catalog(data_dir)
@@ -221,10 +318,35 @@ def configure_prompts(data_dir: Path) -> PromptCatalog:
 
 
 def get_prompt(template_id: str) -> PromptTemplate:
+    """从当前全局目录取得指定提示词模板。
+
+    Args:
+        template_id: 已声明的模板标识。
+
+    Returns:
+        当前生效的模板对象。
+
+    Raises:
+        KeyError: 模板标识不存在。
+    """
+
     return _catalog.get(template_id)
 
 
 def prompt_metadata(prompt_id: str, template_ids: Iterable[str]) -> Dict[str, str]:
+    """生成调用日志使用的提示词 ID 与内容指纹。
+
+    Args:
+        prompt_id: 当前调用场景的逻辑标识。
+        template_ids: 参与当前调用的模板 ID 可迭代对象。
+
+    Returns:
+        包含 ``promptId`` 和八位 ``promptHash`` 的字典。
+
+    Raises:
+        KeyError: ``template_ids`` 包含未知模板。
+    """
+
     return {
         'promptId': prompt_id,
         'promptHash': _catalog.combined_hash(template_ids),
@@ -232,7 +354,10 @@ def prompt_metadata(prompt_id: str, template_ids: Iterable[str]) -> Dict[str, st
 
 
 def reset_prompts_for_tests() -> None:
-    """恢复仅使用内置模板的注册表。"""
+    """将全局目录恢复为仅包含内置模板的快照。
+
+    该函数只供测试隔离使用；调用会替换进程内当前目录，不写入用户覆盖目录。
+    """
 
     global _catalog
     _catalog = load_prompt_catalog(None)

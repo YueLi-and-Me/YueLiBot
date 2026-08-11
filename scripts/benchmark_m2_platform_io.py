@@ -1,4 +1,8 @@
-"""M2 平台入站并发基线：20 条/秒下的首个文本事件延迟。"""
+"""平台入站并发基线：测量固定注入速率下的首个文本事件延迟。
+
+脚本使用内存 SQLite、模拟模型和模拟嵌入客户端，隔离网络与磁盘因素，重点观察
+``ChatService`` 在多 stream 并发入站时的事件延迟与召回路径。
+"""
 
 from __future__ import annotations
 
@@ -30,6 +34,18 @@ class _BenchmarkProvider:
     """只模拟模型首字可用，不把真实网络抖动混入接入层基线。"""
 
     async def stream(self, **_kwargs: object) -> AsyncIterator[Dict[str, str]]:
+        """延迟固定时间后产生一段最小合法的流式回复。
+
+        Args:
+            **_kwargs: 兼容模型 provider 接口的请求参数；基准实现不读取其值。
+
+        Yields:
+            包含 ``<say>`` 正文的单个文本增量。
+
+        Side Effects:
+            挂起约 2 毫秒以模拟首字延迟；不访问网络或写入外部数据。
+        """
+
         await asyncio.sleep(0.002)
         yield {'text': '<say>收到压测消息。</say>'}
 
@@ -38,6 +54,18 @@ class _BenchmarkEmbeddingClient:
     """让事实召回走过包含余弦计算的路径。"""
 
     async def embed_one(self, _query: str) -> bytes:
+        """返回固定维度的测试向量，确保基准经过余弦计算路径。
+
+        Args:
+            _query: 待向量化的查询文本；基准实现不读取其内容。
+
+        Returns:
+            由 64 个 float32 分量组成的小端 packed 字节串。
+
+        Side Effects:
+            不访问模型或修改存储。
+        """
+
         return _QUERY_EMBEDDING
 
 
@@ -53,6 +81,15 @@ class BenchmarkResult:
     max_ms: float
 
     def as_dict(self) -> Dict[str, int | float]:
+        """将基准结果转换为前端和 JSON 序列化使用的字段字典。
+
+        Returns:
+            使用 camelCase 键名表示速率、时长、样本数和延迟分位数的字典。
+
+        Side Effects:
+            不修改基准结果对象。
+        """
+
         return {
             'ratePerSecond': self.rate_per_second,
             'durationSeconds': self.duration_seconds,
@@ -64,6 +101,15 @@ class BenchmarkResult:
 
 
 def _parse_args() -> tuple[int, int]:
+    """解析并校验压测速率和持续时间参数。
+
+    Returns:
+        ``(rate_per_second, duration_seconds)``。
+
+    Raises:
+        SystemExit: 参数格式错误或不是正整数时由 ``argparse`` 结束进程。
+    """
+
     parser = ArgumentParser(description=__doc__)
     parser.add_argument('--rate', type=int, default=20, help='每秒注入消息数，默认 20')
     parser.add_argument('--seconds', type=int, default=5, help='持续秒数，默认 5')
@@ -74,6 +120,17 @@ def _parse_args() -> tuple[int, int]:
 
 
 def _seed_recall_data(store: MemoryStore, contexts: List[ConversationContext]) -> None:
+    """向基准数据库写入固定规模的事实、向量和 episode 数据。
+
+    Args:
+        store: 基准使用的记忆存储。
+        contexts: 需要写入历史 episode 的会话上下文列表。
+
+    Side Effects:
+        修改内存 SQLite 中的事实、事实向量和 episode 记录。
+    """
+
+    # 固定召回规模，避免数据量差异掩盖并发调度造成的延迟变化。
     for index in range(_FACT_COUNT):
         fact_id = store.add_fact(
             1,
@@ -97,6 +154,16 @@ def _seed_recall_data(store: MemoryStore, contexts: List[ConversationContext]) -
 
 
 def _contexts(registry: StreamRegistry, count: int) -> List[ConversationContext]:
+    """为每条压测消息创建独立 direct stream 上下文。
+
+    Args:
+        registry: 负责创建稳定 stream 的注册表。
+        count: 需要创建的上下文数量。
+
+    Returns:
+        使用同一 owner、不同 stream 的上下文列表。
+    """
+
     contexts: List[ConversationContext] = []
     owner = registry.owner_person()
     for index in range(count):
@@ -106,7 +173,23 @@ def _contexts(registry: StreamRegistry, count: int) -> List[ConversationContext]
 
 
 async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
-    """以均匀间隔注入独立 stream，避免同 stream 的正常打断干扰数据。"""
+    """以均匀间隔向独立 stream 注入消息并汇总首个文本事件延迟。
+
+    Args:
+        rate_per_second: 每秒注入消息数，必须为正整数。
+        duration_seconds: 注入持续秒数，必须为正整数。
+
+    Returns:
+        包含 p50、p95 和最大延迟的 ``BenchmarkResult``。
+
+    Side Effects:
+        创建并关闭内存 SQLite，运行模拟模型和聊天任务；不访问真实运行时数据。
+
+    Raises:
+        RuntimeError: 回合未进入运行态或未收集到全部首字事件。
+    """
+
+    # 每条消息使用独立 stream，避免 ChatService 的同 stream interrupt 机制改变样本。
     db = sqlite3.connect(':memory:', check_same_thread=False)
     db.row_factory = sqlite3.Row
     store = MemoryStore(db)
@@ -118,6 +201,17 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
     first_text_at: Dict[int, float] = {}
 
     async def push_event(channel: str, payload: object, _stream_id: int) -> None:
+        """记录每个回合首个文本解析事件的时间戳。
+
+        Args:
+            channel: 推送通道名称。
+            payload: 通道负载；仅处理字典型聊天事件。
+            _stream_id: 事件所属 stream ID；基准只按回合统计，不使用该参数。
+
+        Side Effects:
+            首次收到指定回合的 ``text`` 事件时更新内存延迟采样表。
+        """
+
         if channel != 'chat.event' or not isinstance(payload, dict):
             return
         event = payload.get('event')
@@ -140,6 +234,7 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
     interval = 1 / rate_per_second
     benchmark_start = perf_counter()
     for index, context in enumerate(contexts):
+        # 使用绝对到期时间控制注入间隔，避免每次处理耗时累积到后续样本。
         due_at = benchmark_start + index * interval
         remaining = due_at - perf_counter()
         if remaining > 0:
@@ -154,6 +249,7 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
     await asyncio.gather(*tasks)
     db.close()
 
+    # 只有每个回合都产生首个文本事件时，分位数才具有完整样本语义。
     delays = sorted((first_text_at[turn_id] - started_at) * 1000 for turn_id, started_at in starts.items())
     if len(delays) != message_count:
         raise RuntimeError(f'只收集到 {len(delays)}/{message_count} 条首字延迟')
@@ -168,6 +264,16 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
 
 
 async def main() -> None:
+    """解析基准参数、运行模拟负载并输出 JSON 结果。
+
+    Raises:
+        SystemExit: 参数格式错误时由 argparse 触发。
+        RuntimeError: 基准回合或首字延迟样本不完整。
+
+    Side Effects:
+        初始化进程日志，创建隔离内存数据库并向标准输出写入一行 JSON 结果。
+    """
+
     initialize_logging('WARNING')
     rate, seconds = _parse_args()
     result = await run(rate, seconds)

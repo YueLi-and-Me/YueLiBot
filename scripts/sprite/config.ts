@@ -1,13 +1,14 @@
 /**
- * 表情清单与指令模板。
+ * 表情清单与图像生成指令模板。
  *
- * ★ 使用者不需要修改本文件，也不需要懂提示词工程。
- *   跑图只要提供：参考图 + 一句角色描述。
+ * 本模块集中定义稳定的表情标识、中文展示名、生成描述、Live2D 映射和别名，
+ * 并提供差分图、眨眼图及嘴型图共用的保持不变约束。生成脚本和渲染层依赖这些定义，
+ * 以确保 `setEmotion('happy')` 在不同渲染实现中保持相同语义。
  *
  * 这张表同时被两套 CharacterView 实现消费：
  *   - AI 立绘差分：用 `desc` 生成对应表情图
  *   - Live2D 占位：用 `live2d` 切对应的 .exp3.json
- *   保证换渲染实现时，上层 setEmotion('happy') 的语义完全一致。
+ *   生成脚本和渲染层共享同一组表情标识。
  */
 
 export interface ExpressionDef {
@@ -133,9 +134,8 @@ export const EXPRESSIONS: ExpressionDef[] = [
   {
     id: 'thinking',
     cn: '思考',
-    // 原描述「眼睛看向斜上方、嘴巴抿成一条线」被模型画成了半闭眼 + 脸红 +
-    // 嘴角下撇，读出来是「不高兴」或「困」，完全不像在想事情。
-    // 改成明确要求睁大眼睛、眉毛上扬、嘴角不下垂 —— 把误读的方向堵死
+    // 原描述会让生成结果出现半闭眼、脸红和嘴角下撇，无法稳定表达思考状态。
+    // 这里明确要求睁眼、眉毛上扬且嘴角不下垂，降低模型对情绪的错误映射。
     desc: '正在想事情的表情，双眼明显睁开、眼珠朝斜上方看，一侧眉毛上扬，嘴巴轻轻抿起但嘴角不下垂，神情专注而不是不高兴，脸颊不要泛红',
     live2d: null,
     aliases: ['思考', '疑惑', '想', '琢磨', '沉思', 'think', 'ponder', 'wonder'],
@@ -144,8 +144,8 @@ export const EXPRESSIONS: ExpressionDef[] = [
 
 /**
  * 只给最常用的几个表情做闭眼差分。
- * 其余表情在对话中通常只持续 2–3 秒，期间不眨眼肉眼看不出来 ——
- * 全做的话图量和一致性风险都要翻倍，不划算。
+ * 其余表情在对话中的持续时间较短，眨眼差分对观感的增益有限；
+ * 全量生成会增加资源数量和角色一致性校验成本，因此只保留高频目标。
  */
 export const BLINK_TARGETS = ['normal', 'happy', 'smile', 'shy'] as const
 
@@ -161,19 +161,24 @@ export const MOUTH_SHAPES = [
 // ---------------------------------------------------------------------------
 
 /**
- * 一致性是整条管线的命门。这段前缀把「不许改什么」写死，
- * 比在每条表情描述里重复叮嘱更可靠。
+ * 角色一致性是差分生成的前置约束。本段前缀集中声明禁止改动的区域，
+ * 避免依赖每条表情描述的重复文字维持一致性。
  */
 const KEEP_IDENTICAL = [
   '这是一张角色立绘。请严格保持以下要素与原图完全一致，一个像素都不要改动：',
   '角色的五官轮廓、发型与每一缕头发、发饰、服装的款式与褶皱、配饰、身体姿势、手臂与手的位置、光照方向与阴影、色调。',
-  // 实测：不显式禁止缩放的话，模型会把角色整体放大 3% 左右。
-  // 位置可以靠后处理对齐救回来，缩放救不回来 —— 切表情时会出现「呼吸感」
+  // 经验验证表明，未显式禁止缩放时会出现整体放大；位置可后处理校正，缩放变化会破坏表情切换的一致边界。
   '尤其重要：不要改变角色的整体大小和缩放比例，不要改变角色在画布中所占的面积，',
   '角色的头顶、脚底、左右边缘必须停留在与原图完全相同的位置上。',
 ].join('')
 
-/** 表情差分：只改脸。 */
+/**
+ * 生成只改变面部表情的差分编辑指令。
+ *
+ * @param expr 表情定义，描述文本将直接拼接到生成约束中。
+ * @returns {string} 包含角色一致性约束和目标表情描述的完整编辑指令。
+ * @sideEffects 不访问外部资源，仅拼接字符串。
+ */
 export function editExpressionInstruction(expr: ExpressionDef): string {
   return [
     KEEP_IDENTICAL,
@@ -182,7 +187,13 @@ export function editExpressionInstruction(expr: ExpressionDef): string {
   ].join('')
 }
 
-/** 闭眼差分：在既有表情基础上只闭眼，用于眨眼动画。 */
+/**
+ * 生成保持既有表情、仅闭合双眼的差分编辑指令。
+ *
+ * @param expr 当前表情定义；其余面部特征必须在指令中保持不变。
+ * @returns {string} 包含角色一致性约束和闭眼要求的编辑指令。
+ * @sideEffects 不访问外部资源，仅拼接字符串。
+ */
 export function editBlinkInstruction(expr: ExpressionDef): string {
   return [
     KEEP_IDENTICAL,
@@ -192,7 +203,13 @@ export function editBlinkInstruction(expr: ExpressionDef): string {
   ].join('')
 }
 
-/** 嘴型差分：只改嘴。 */
+/**
+ * 生成保持眼睛和面部特征、仅改变嘴型的差分编辑指令。
+ *
+ * @param shape 嘴型定义，包含展示描述和稳定标识。
+ * @returns {string} 包含角色一致性约束和目标嘴型描述的编辑指令。
+ * @sideEffects 不访问外部资源，仅拼接字符串。
+ */
 export function editMouthInstruction(shape: (typeof MOUTH_SHAPES)[number]): string {
   return [
     KEEP_IDENTICAL,
@@ -202,8 +219,13 @@ export function editMouthInstruction(shape: (typeof MOUTH_SHAPES)[number]): stri
 }
 
 /**
- * 重试强化指令。预览页标记「这张漂了」之后追加，
- * 把上一次的具体问题回喂给模型，比单纯换 seed 重跑有效得多。
+ * 在预览复核发现素材偏差时，把具体问题追加到原始编辑指令。
+ * 这样重试可以针对已知偏差修正，而不是只更换随机种子。
+ *
+ * @param instruction 原始图像编辑指令。
+ * @param complaint 可选的复核问题文本；缺省或空白时使用通用一致性约束。
+ * @returns {string} 添加强化约束后的编辑指令。
+ * @sideEffects 不访问外部资源，仅创建新的字符串。
  */
 export function reinforce(instruction: string, complaint?: string): string {
   const what = complaint?.trim() || '改动了不该改的部分（如服装、发型或姿势）'
@@ -215,8 +237,11 @@ export function reinforce(instruction: string, complaint?: string): string {
 }
 
 /**
- * 底图生成。这是唯一需要用户输入的地方 ——
- * 一句角色描述（发色/瞳色/服装/气质），其余由模板补全。
+ * 根据角色描述生成底图创建指令。
+ *
+ * @param characterDesc 角色描述文本，建议包含发色、瞳色、服装和气质等关键设定。
+ * @returns {string} 包含全身构图、白色背景和禁止附加元素约束的底图指令。
+ * @sideEffects 不访问外部资源，仅拼接字符串。
  */
 export function baseImagePrompt(characterDesc: string): string {
   return [
@@ -228,7 +253,13 @@ export function baseImagePrompt(characterDesc: string): string {
   ].join('')
 }
 
-/** 兼容 LLM 吐出的各种情绪写法 —— 认不出的一律回落到 normal。 */
+/**
+ * 将模型输出的情绪文本解析为稳定的表情定义。
+ *
+ * @param raw 模型返回的原始情绪文本；允许使用稳定 id、中文名或别名。
+ * @returns {ExpressionDef} 首个匹配的表情定义；无法匹配时返回 ``normal``。
+ * @sideEffects 不修改表情清单，仅读取静态定义。
+ */
 export function resolveEmotion(raw: string): ExpressionDef {
   const key = raw.trim().toLowerCase()
   const hit = EXPRESSIONS.find((e) => e.id === key || e.cn === raw.trim() || e.aliases.some((a) => a.toLowerCase() === key))

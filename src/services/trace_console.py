@@ -1,18 +1,8 @@
-"""
-每轮对话结束时在终端打印一个分区的 rich 面板——不是逐条扁平日志。
+"""在支持颜色的交互式终端中渲染对话摘要和观察结果。
 
-一轮对话是单阶段的，用一层 Group 摊平展示就够，不需要嵌套 Panel。
-完整 prompt 与最终响应已写进事件账本，这里只显示摘要。
-
-★ 不是 TTY（打包后台跑、日志重定向到文件）时全部函数变成空操作——
-  这一层是叠加在 structlog 之上的，不能在非交互环境下污染输出。
-  判断走 common/logger_colors.py 的 is_color_enabled()，与 structlog 那一层
-  共用同一个判据：它同时认 YUELI_FORCE_COLOR=1，因为被 Electron 的 supervisor
-  拉起时 stdout 恒为管道、`isatty()` 恒为 False，但这个管道会被逐行转发进真终端。
-
-mark_turn_start 记的 _starts 字典没有主动清理：单用户桌面应用，一个进程
-一次顶多几十轮在飞，可以接受；如果某轮因为 interrupt() 半途而废、
-_starts 里的条目永远不会被弹出，也只是几十字节常驻内存，不值得为此加复杂度。
+完整提示词与模型响应由观察事件存储负责记录，本模块只显示有限长度的提示词
+预览、响应摘要、侧 effect 和耗时。检测到非交互输出时所有渲染函数保持无操作，
+避免把调试面板混入服务日志；终端判断复用 ``common.logger_colors`` 的统一规则。
 """
 
 from __future__ import annotations
@@ -31,25 +21,39 @@ logger = get_logger(__name__)
 _PROMPT_PREVIEW_CHARS = 400
 
 _is_tty = is_color_enabled()
-# force_terminal：rich 自己也会在构造/打印时探测 sys.stdout.isatty()，
-# 不强制的话即使上面的 _is_tty 放行，rich 内部还是会因为看到管道而把颜色
-# 全部去掉，等于白做上面那道判断。
-# legacy_windows=False：Windows 上 rich 拿不到真实控制台句柄时（正是被
-# Electron 用管道拉起的情况）会退化成调 Win32 控制台 API 上色，这条路径
-# 对着一个管道要么静默不上色、要么在写 emoji 时直接 UnicodeEncodeError
-# （已经在 render_turn 里包了 try/except，但根源在这）。强制走 ANSI 转义序列——
-# supervisor.ts 会把这些字节原样转发进一个真终端，ANSI 在那边能正常渲染。
+# force_terminal 确保 rich 不因 stdout 是管道而再次禁用颜色；legacy_windows=False
+# 让 Windows 管道输出使用 ANSI 序列，由上层终端负责解释。
 console = Console(force_terminal=_is_tty or None, legacy_windows=False if _is_tty else None)
 _starts: dict[int, float] = {}
 
 
 def mark_turn_start(turn: int) -> None:
+    """记录对话回合开始时间。
+
+    Args:
+        turn: 对话回合 ID。
+
+        非交互终端不会写入计时表，因为后续渲染也不会发生。
+    """
+
     if not _is_tty:
         return
     _starts[turn] = time.monotonic()
 
 
 def _elapsed_ms(turn: int) -> str:
+    """取出回合开始时间并格式化耗时。
+
+    Args:
+        turn: 对话回合 ID。
+
+    Returns:
+        以毫秒表示的耗时文本；没有开始记录时返回 ``—``。
+
+    Side Effects:
+        消费并删除该回合的开始时间记录。
+    """
+
     started = _starts.pop(turn, None)
     if started is None:
         return '—'
@@ -57,6 +61,15 @@ def _elapsed_ms(turn: int) -> str:
 
 
 def _prompt_preview(messages: list[dict]) -> str:
+    """提取系统提示词的有限长度预览。
+
+    Args:
+        messages: 对话消息字典列表。
+
+    Returns:
+        最多 400 字符的系统消息预览及消息总数说明。
+    """
+
     system = next((m.get('content') for m in messages if m.get('role') == 'system'), '')
     if not isinstance(system, str):
         system = str(system)
@@ -67,6 +80,15 @@ def _prompt_preview(messages: list[dict]) -> str:
 
 
 def _side_effect_lines(side_effects: list[dict]) -> list[str]:
+    """将记忆和情绪副作用转换为面板行文本。
+
+    Args:
+        side_effects: 解析事件产生的副作用字典列表。
+
+    Returns:
+        当前支持的 ``memory_fact`` 和 ``mood_delta`` 副作用行；未知类型被忽略。
+    """
+
     lines = []
     for effect in side_effects:
         if effect.get('kind') == 'memory_fact':
@@ -85,17 +107,30 @@ def render_turn(
     side_effects: list[dict],
     bot_name: str,
 ) -> None:
-    """★ 渲染失败绝不能往外抛——这只是叠加在 chat.py 主流程上的调试展示，
-    真出问题（比如非 UTF-8 控制台下 emoji 写入炸掉）也只是终端没打印那个面板，
-    不该让 chat.py 的异常处理把一次成功的对话误判成失败。"""
+    """渲染一轮对话的摘要面板。
+
+    Args:
+        turn: 对话回合 ID。
+        sender_label: 发送者展示名。
+        user_text: 用户原始文本。
+        messages: 发送给模型的消息列表，仅展示系统消息预览。
+        response_text: 最终响应文本。
+        side_effects: 本轮解析出的副作用列表。
+        bot_name: 主体展示名。
+
+    Side Effects:
+        在交互终端写入 rich 面板；面板渲染异常只记录调试日志，不影响聊天主流程。
+    """
     if not _is_tty:
         return
     try:
+        # 仅组装有限预览和结构化副作用，完整提示词仍由观察事件存储保留。
         parts: list[Any] = [
             Text(f'{sender_label}: {user_text}', style='bold'),
             Text(_prompt_preview(messages), style='dim'),
             Text(f'{bot_name}: {response_text}', style='green'),
         ]
+        # 副作用逐行追加，便于在交互终端中区分记忆写入和情绪变化。
         for line in _side_effect_lines(side_effects):
             parts.append(Text(line, style='yellow'))
         console.print(Panel(
@@ -108,7 +143,16 @@ def render_turn(
 
 
 def render_observation(sender_label: str, user_text: str, reason: str) -> None:
-    """用单行显示静默群消息。"""
+    """以单行显示被回复门控拦截的群消息。
+
+    Args:
+        sender_label: 发送者展示名。
+        user_text: 用户原始文本。
+        reason: 未回复的机器可读或可读原因。
+
+    Side Effects:
+        在交互终端写入观察行；渲染异常只记录调试日志。
+    """
     if not _is_tty:
         return
     try:
@@ -129,6 +173,19 @@ def render_turn_error(
     kind: str,
     message: str,
 ) -> None:
+    """渲染对话回合失败面板。
+
+    Args:
+        turn: 对话回合 ID。
+        sender_label: 发送者展示名。
+        user_text: 用户原始文本。
+        kind: 错误类别。
+        message: 错误消息。
+
+    Side Effects:
+        在交互终端写入错误面板；渲染异常只记录调试日志。
+    """
+
     if not _is_tty:
         return
     try:

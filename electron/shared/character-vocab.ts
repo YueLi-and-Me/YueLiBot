@@ -1,17 +1,14 @@
 /**
  * 角色表现词表：表情、动作、装扮。
  *
- * 放在 shared 下是因为三方都要用同一份定义：
- *   · core/agent  —— 拼进系统提示词，告诉模型可选值有哪些
- *   · core/agent  —— 解析模型输出的 emotion/gesture 属性
- *   · renderer    —— CharacterView 的实现照它驱动画面
- * 各写一份必然漂，一漂就是「模型说了个渲染层不认识的表情」。
+ * 放在 shared 下供提示词构造、模型输出解析和渲染层共同使用；各层共享同一份
+ * 类型和别名表，避免模型输出的标识与渲染层资源清单不一致。
  *
  * id 与 scripts/sprite/config.ts 的表情清单严格一致。
  */
 
 // ---------------------------------------------------------------------------
-// 四通道表情模型
+// 四通道表现模型
 //
 // 之所以分通道而不是一个大枚举：这些状态在语义上是正交的 ——
 // 「害羞地比心」是脸红(overlay) + 比心(gesture) 同时成立，
@@ -54,10 +51,8 @@ export const EMOTIONS: readonly Emotion[] = [
   'starry_eyes',
   'heart_eyes',
   'smug',
-  // ⚠ 'thinking' 刻意不在这个列表里 —— 它是拼进提示词给模型挑的选项，
-  // 而这张素材连生成两次都画成「半闭眼 + 脸红 + 嘴角下垂」，
-  // 读出来是不高兴或者困，跟 sleepy 还撞了。
-  // 类型里保留它、别名映射到 normal，这样模型自作主张说了也不会出现那张臭脸。
+  // thinking 保留在类型和别名中，但不进入可渲染素材列表；当前资源缺少可靠的
+  // thinking 图层，因此解析时回退到 normal，避免显示语义不一致的素材。
 ]
 
 /** gesture 通道：瞬时动作，播完自动回落。 */
@@ -166,8 +161,7 @@ const EMOTION_ALIASES: Record<string, Emotion> = {
   骄傲: 'smug',
   坏笑: 'smug',
   smirk: 'smug',
-  // 全部落到 normal：thinking 的素材不可用，见 EMOTIONS 里的说明。
-  // 平静脸配上「在想事情」的台词完全成立，比一张误读的脸好
+  // thinking 相关别名统一回退到 normal，因为当前素材没有可用的思考表情。
   思考: 'normal',
   疑惑: 'normal',
   沉思: 'normal',
@@ -175,6 +169,13 @@ const EMOTION_ALIASES: Record<string, Emotion> = {
   thinking: 'normal',
 }
 
+/**
+ * 将模型返回的原始表情标识规范化为可渲染表情。
+ *
+ * @param raw 模型输出的中文别名或英文表情标识，首尾空白会被移除。
+ * @returns ``EMOTIONS`` 中的合法标识；未知值统一回退到 ``normal``。
+ * @sideEffects 不修改别名表和输入字符串。
+ */
 export function resolveEmotion(raw: string): Emotion {
   const trimmed = raw.trim()
   const lower = trimmed.toLowerCase()
@@ -193,7 +194,12 @@ const GESTURE_ALIASES: Record<string, Gesture> = {
   飞头: 'head_fly',
 }
 
-/** 认不出返回 null —— 调用方跳过该动作即可，不该抛错。 */
+/**
+ * 将模型返回的原始动作标识规范化为可渲染动作。
+ *
+ * @param raw 模型输出的中文别名或英文动作标识，首尾空白会被移除。
+ * @returns 合法 Gesture；未知值返回 ``null``，调用方应跳过该动作而非抛错。
+ */
 export function resolveGesture(raw: string): Gesture | null {
   const trimmed = raw.trim()
   const lower = trimmed.toLowerCase()

@@ -1,4 +1,9 @@
-"""平台接入层共享的不可变消息与投递类型。"""
+"""定义平台接入层共享的不可变引用、上下文、消息和投递回执。
+
+这些数据类只描述已经完成归属解析的数据，不负责数据库读写、协议解析或消息
+发送。``StreamRegistry`` 创建的引用由本模块的数据类承载，并在主体服务、平台
+驱动和观察事件之间传递。
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,11 @@ StreamKind = Literal['desktop', 'direct', 'group']
 
 @dataclass(frozen=True)
 class PersonRef:
-    """已存在 person 的稳定引用。"""
+    """已存在人物的稳定数据库引用。
+
+    ``kind`` 区分普通联系人和配置确定的 owner；``first_seen_at`` 使用统一的
+    毫秒时间戳。
+    """
 
     id: int
     kind: PersonKind
@@ -21,7 +30,7 @@ class PersonRef:
 
 @dataclass(frozen=True)
 class IdentityRef:
-    """person 在某个平台上的稳定身份与展示名。"""
+    """人物在某个平台上的外部身份和当前展示名。"""
 
     platform: str
     external_id: str
@@ -30,7 +39,7 @@ class IdentityRef:
 
 @dataclass(frozen=True)
 class GroupMembershipRef:
-    """person 在一个 QQ 群中的当前群名片。"""
+    """人物在一个 QQ 群会话中的当前群名片记录。"""
 
     stream_id: int
     group_external_id: str
@@ -40,7 +49,7 @@ class GroupMembershipRef:
 
 @dataclass(frozen=True)
 class StreamRef:
-    """已存在 stream 的稳定引用。"""
+    """已存在会话分区的稳定数据库引用。"""
 
     id: int
     platform: str
@@ -50,7 +59,7 @@ class StreamRef:
 
 @dataclass(frozen=True)
 class ConversationContext:
-    """一条消息的说话场所、发送人与关系性信号判据。"""
+    """一条入站消息的会话、人物、平台身份和关系信号判据。"""
 
     stream: StreamRef
     person: PersonRef
@@ -59,13 +68,17 @@ class ConversationContext:
 
     @property
     def relationship_signals_enabled(self) -> bool:
-        """关系性信号只面向 owner，与消息来自哪个平台无关。"""
+        """判断上下文是否允许应用 owner 关系信号。
+
+        Returns:
+            ``person.kind`` 为 ``owner`` 时返回 ``True``，与消息来源平台无关。
+        """
         return self.person.kind == 'owner'
 
 
 @dataclass(frozen=True)
 class InboundMessage:
-    """已完成归属解析的一条入站消息。"""
+    """已完成会话与人物归属解析的入站消息。"""
 
     text: str
     context: ConversationContext
@@ -76,7 +89,7 @@ class InboundMessage:
 
 @dataclass(frozen=True)
 class OutboundMessage:
-    """待投递的非桌面回复，保留按 <say> 切好的原始分句。"""
+    """待投递的非桌面回复，并保留按 ``<say>`` 切分的原始分句。"""
 
     stream: StreamRef
     segments: List[str]
@@ -84,7 +97,11 @@ class OutboundMessage:
 
 @dataclass(frozen=True)
 class DeliveryReceipt:
-    """一次平台投递的可追踪结果。"""
+    """一次平台投递的可追踪结果。
+
+    ``external_message_ids`` 允许具体驱动回填平台返回的消息编号；不支持编号
+    的通道返回空列表。
+    """
 
     platform: str
     stream_id: int

@@ -1,3 +1,9 @@
+/**
+ * 构建后端观察 WebUI 的数据加载、状态展示、事件追踪和人物详情交互。
+ *
+ * 页面通过 HTTP 和 WebSocket 读取 FastAPI 观察接口，将后端快照转换为只读 DOM；
+ * 本模块不执行聊天发送、配置保存或其他业务写入。
+ */
 import type {
   ObservabilityPayload,
   ObservabilityStream,
@@ -9,7 +15,7 @@ import type {
 } from '../../electron/shared/ipc.ts'
 
 const SNAPSHOT_REFRESH_MS = 15_000
-// 阶段状态需要秒级刷新。
+// 阶段状态使用秒级刷新，以反映后端当前处理阶段。
 const STAGE_POLL_MS = 1_000
 const MAX_TRACE_ENTRIES = 1_000
 const MAX_LOG_ROWS = 500
@@ -50,16 +56,34 @@ let skippedEventCount = 0
 let panelRunning = false
 let traces: TraceEntry[] = []
 
+/**
+ * 将未知快照字段收窄为非数组对象。
+ *
+ * @param value 待转换的未知值。
+ * @returns 输入为非空对象时返回其记录视图，否则返回空记录。
+ */
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {}
 }
 
+/**
+ * 读取有限数字快照字段。
+ *
+ * @param value 待转换的未知值。
+ * @returns 有限数字本身；类型不符或数值非有限时返回 `null`。
+ */
 function numeric(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+/**
+ * 将快照值转换为适合页面展示的文本。
+ *
+ * @param value 待展示的未知值。
+ * @returns 非空字符串、布尔值或有限数字的文本表示；其他值返回占位符 `—`。
+ */
 function text(value: unknown): string {
   if (typeof value === 'string' && value.trim()) return value
   if (typeof value === 'boolean') return value ? '是' : '否'
@@ -67,10 +91,25 @@ function text(value: unknown): string {
   return '—'
 }
 
+/**
+ * 读取可选文本字段并去除首尾空白。
+ *
+ * @param value 待转换的未知值。
+ * @returns 字符串的去空白结果；非字符串返回空字符串。
+ */
 function optionalText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+/**
+ * 组合联系人显示名、平台昵称、外部账号和群名片。
+ *
+ * @param displayName 联系人显示名。
+ * @param nickname 平台昵称。
+ * @param externalId 外部平台账号标识；为空时不追加账号信息。
+ * @param groupCard 群名片；非空且不同于昵称时优先展示群名片。
+ * @returns 适合页面展示的发送者标签。
+ */
 function qqSenderLabel(
   displayName: string,
   nickname: string,
@@ -84,6 +123,12 @@ function qqSenderLabel(
   return `${nickname || displayName}（QQ号：${externalId}）`
 }
 
+/**
+ * 从追踪事件解析发送者标签，并为缺失字段提供平台级回退文本。
+ *
+ * @param entry 单条追踪事件。
+ * @returns 发送者可读名称。
+ */
 function traceSenderLabel(entry: TraceEntry): string {
   const ready = optionalText(entry.senderLabel)
   if (ready) return ready
@@ -96,11 +141,24 @@ function traceSenderLabel(entry: TraceEntry): string {
   )
 }
 
+/**
+ * 将快照数字格式化为固定小数位文本。
+ *
+ * @param value 待格式化的未知值。
+ * @param digits 小数位数，默认值为 `0`，必须是非负整数。
+ * @returns 格式化后的数字文本；输入不是有限数字时返回 `—`。
+ */
 function fixed(value: unknown, digits = 0): string {
   const number = numeric(value)
   return number === null ? '—' : number.toFixed(digits)
 }
 
+/**
+ * 将毫秒时间戳格式化为中文月日、时分秒文本。
+ *
+ * @param value 待格式化的未知时间戳，单位为毫秒。
+ * @returns 本地化时间文本；时间戳缺失、非有限或不大于零时返回 `—`。
+ */
 function dateTime(value: unknown): string {
   const timestamp = numeric(value)
   if (timestamp === null || timestamp <= 0) return '—'
@@ -114,6 +172,16 @@ function dateTime(value: unknown): string {
   }).format(new Date(timestamp))
 }
 
+/**
+ * 创建并挂载一个观察面板分区。
+ *
+ * @param title 分区标题。
+ * @param subtitle 分区标识或补充说明。
+ * @param wide 是否使用宽版布局，默认值为 `false`。
+ * @param parent 分区父节点，默认追加到主网格。
+ * @returns 新分区的内容容器。
+ * @throws 传播 DOM 创建或挂载失败产生的异常。
+ */
 function section(
   title: string,
   subtitle: string,
@@ -137,6 +205,14 @@ function section(
   return body
 }
 
+/**
+ * 向面板分区追加一行键值指标。
+ *
+ * @param parent 指标行父节点。
+ * @param label 指标名称。
+ * @param value 指标展示值。
+ * @returns 无返回值。
+ */
 function metric(parent: HTMLElement, label: string, value: string): void {
   const row = document.createElement('div')
   row.className = 'metric-row'
@@ -150,6 +226,15 @@ function metric(parent: HTMLElement, label: string, value: string): void {
   parent.append(row)
 }
 
+/**
+ * 向面板分区追加带无障碍标签的进度条。
+ *
+ * @param parent 进度条父节点。
+ * @param value 当前值；渲染时限制在 `0` 到 `max` 之间。
+ * @param max 最大值。
+ * @param label 进度条无障碍名称。
+ * @returns 无返回值。
+ */
 function progress(parent: HTMLElement, value: number, max: number, label: string): void {
   const element = document.createElement('progress')
   element.className = 'progress'
@@ -159,6 +244,14 @@ function progress(parent: HTMLElement, value: number, max: number, label: string
   parent.append(element)
 }
 
+/**
+ * 向面板分区追加标签式键值片段。
+ *
+ * @param parent 标签父节点。
+ * @param label 标签名称。
+ * @param value 标签展示值。
+ * @returns 无返回值。
+ */
 function chip(parent: HTMLElement, label: string, value: string): void {
   const item = document.createElement('span')
   item.className = 'chip'
@@ -168,6 +261,12 @@ function chip(parent: HTMLElement, label: string, value: string): void {
   parent.append(item)
 }
 
+/**
+ * 渲染顶部状态摘要，包括睡眠、预算、视觉响应和会话人数。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderStatus(payload: ObservabilityPayload): void {
   statusStrip.replaceChildren()
   const sleep = record(payload.sleep)
@@ -190,6 +289,12 @@ function renderStatus(payload: ObservabilityPayload): void {
   }
 }
 
+/**
+ * 渲染自身精力指标和进度条。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderSelfState(payload: ObservabilityPayload): void {
   const body = section('自身状态', 'selfState')
   const axes = document.createElement('div')
@@ -206,6 +311,12 @@ function renderSelfState(payload: ObservabilityPayload): void {
   body.append(axes)
 }
 
+/**
+ * 渲染睡意概率、睡眠判定线、计划时间和睡眠债指标。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderSleep(payload: ObservabilityPayload): void {
   const sleep = record(payload.sleep)
   const body = section('睡眠状态', 'sleep')
@@ -223,6 +334,12 @@ function renderSleep(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
+/**
+ * 渲染当天主题、睡眠提示和日程时间线。
+ *
+ * @param payload 后端观察快照；`schedule` 为空时显示服务不可用状态。
+ * @returns 无返回值。
+ */
 function renderSchedule(payload: ObservabilityPayload): void {
   const body = section('今天的日程', payload.schedule?.date ?? 'schedule', true)
   if (payload.schedule === null) {
@@ -256,6 +373,13 @@ function renderSchedule(payload: ObservabilityPayload): void {
   body.append(timeline)
 }
 
+/**
+ * 渲染主动打扰预算、场景剩余额度和兴趣指标。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ * @remarks 场景可用额度扣除固定预留槽位，保持与后端预算语义一致。
+ */
 function renderBudget(payload: ObservabilityPayload): void {
   const impulse = record(payload.impulse)
   const body = section('打扰预算', 'impulse')
@@ -273,6 +397,12 @@ function renderBudget(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
+/**
+ * 渲染前台活动、静默状态、视觉开关和按原因统计的视觉事件。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值；仅展示后端已聚合的统计值。
+ */
 function renderSensing(payload: ObservabilityPayload): void {
   const sensing = record(payload.sensing)
   const vision = record(sensing.visionStats)
@@ -290,6 +420,12 @@ function renderSensing(payload: ObservabilityPayload): void {
   for (const [reason, count] of Object.entries(byReason)) metric(body, `视觉原因 · ${reason}`, fixed(count))
 }
 
+/**
+ * 渲染当前会话的工作消息数量和参与人物链接。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderConversation(payload: ObservabilityPayload): void {
   const body = section('会话状态', 'conversation', true)
   const summary = document.createElement('div')
@@ -321,6 +457,12 @@ function renderConversation(payload: ObservabilityPayload): void {
   body.append(participants)
 }
 
+/**
+ * 渲染语音合成开关、模型音色和缓存统计。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderVoice(payload: ObservabilityPayload): void {
   const voice = record(payload.voice)
   const cache = record(voice.cache)
@@ -337,6 +479,13 @@ function renderVoice(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
+/**
+ * 清空并按固定顺序渲染观察快照的全部业务分区。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ * @remarks 保留状态条更新顺序，再清理旧网格节点，避免刷新后残留过期内容。
+ */
 function renderSnapshot(payload: ObservabilityPayload): void {
   renderStatus(payload)
   grid.replaceChildren()
@@ -349,6 +498,13 @@ function renderSnapshot(payload: ObservabilityPayload): void {
   renderVoice(payload)
 }
 
+/**
+ * 将人物摘要渲染为列表卡片，并提供进入完整人物画像的链接。
+ *
+ * @param person 后端返回的人物摘要。
+ * @returns 无返回值；卡片追加到人物网格。
+ * @throws 传播 DOM 创建、属性写入或节点挂载失败产生的异常。
+ */
 function renderPersonSummary(person: PersonSummary): void {
   const body = section(
     person.displayName,
@@ -364,6 +520,7 @@ function renderPersonSummary(person: PersonSummary): void {
   body.append(metadata)
   const identities = document.createElement('div')
   identities.className = 'chip-row spaced'
+  // QQ 身份拆分显示昵称和账号，其他平台保留平台名与外部标识，避免不同平台字段混用。
   for (const identity of person.identities) {
     if (identity.platform === 'qq') {
       chip(identities, 'QQ昵称', identity.displayName)
@@ -388,6 +545,12 @@ function renderPersonSummary(person: PersonSummary): void {
   body.append(link)
 }
 
+/**
+ * 渲染人物摘要列表或空状态。
+ *
+ * @param payload 后端返回的人物分页或列表数据。
+ * @returns 无返回值。
+ */
 function renderPersonList(payload: PersonsPayload): void {
   personsTitle.textContent = '人物画像'
   personsSubtitle.textContent = '每个人的身份、关系与事实记忆彼此独立。'
@@ -402,6 +565,14 @@ function renderPersonList(payload: PersonsPayload): void {
   for (const person of payload.persons) renderPersonSummary(person)
 }
 
+/**
+ * 渲染单个人物的关系、身份、会话、记忆和事实详情。
+ *
+ * @param profile 后端返回的人物完整画像。
+ * @returns 无返回值；页面标题、摘要和详情网格会被原地替换。
+ * @throws 传播 DOM 创建、属性写入或节点挂载失败产生的异常。
+ * @remarks 记忆和事实内容按纯文本写入，避免后端文本被解释为 HTML。
+ */
 function renderPersonDetail(profile: PersonProfile): void {
   personsTitle.textContent = profile.displayName
   personsSubtitle.textContent = profile.kind === 'owner'
@@ -423,6 +594,7 @@ function renderPersonDetail(profile: PersonProfile): void {
   }
   relationship.append(axes)
 
+  // 身份、群成员关系和会话流独立展示，便于区分“是谁”“在哪个群”和“出现在哪个出口”。
   const identity = section('身份与会话', 'identities / streams', false, personsGrid)
   const metadata = document.createElement('div')
   metadata.className = 'metric-list'
@@ -461,6 +633,7 @@ function renderPersonDetail(profile: PersonProfile): void {
     empty.textContent = '当前没有关于这个人的事实记忆。'
     memory.append(empty)
   } else {
+    // 事实内容使用 textContent 写入，冻结状态仅通过行样式标识，不改变事实原文。
     const wrap = document.createElement('div')
     wrap.className = 'table-wrap'
     const table = document.createElement('table')
@@ -501,6 +674,11 @@ function renderPersonDetail(profile: PersonProfile): void {
   memory.append(back)
 }
 
+/**
+ * 从当前 URL 解析人物页面路由。
+ *
+ * @returns `/persons` 时返回 `null`，`/persons/<正整数>` 时返回人物 ID，其他路径返回 `undefined`。
+ */
 function requestedPersonId(): number | null | undefined {
   const path = window.location.pathname.replace(/\/$/, '') || '/'
   if (path === '/persons') return null
@@ -508,6 +686,14 @@ function requestedPersonId(): number | null | undefined {
   return match ? Number(match[1]) : undefined
 }
 
+/**
+ * 请求人物列表或指定人物画像并渲染对应页面。
+ *
+ * @param personId 人物 ID；传入 `null` 请求列表。
+ * @returns 请求和渲染完成后的 Promise。
+ * @throws Error 当请求返回非成功且非 401/404 状态时抛出；401 和 404 转换为页面状态。
+ * @remarks 请求使用同源凭据；401 会切换到登录面板，404 只更新人物区域的错误提示。
+ */
 async function fetchPersonPage(personId: number | null): Promise<void> {
   const path = personId === null ? '/api/persons' : `/api/persons/${personId}`
   const response = await fetch(path, { credentials: 'same-origin' })
@@ -531,7 +717,12 @@ async function fetchPersonPage(personId: number | null): Promise<void> {
   }
 }
 
-/** 把 messages 数组摊成 [role] + 正文的分段文本，直接 JSON 化会把提示词里的换行全转义掉。 */
+/**
+ * 将追踪事件中的消息数组格式化为按角色分段的纯文本。
+ *
+ * @param messages LLM 消息数组或未知值。
+ * @returns 每条消息包含角色和正文的文本；非数组值直接转换为字符串。
+ */
 function formatMessages(messages: unknown): string {
   if (!Array.isArray(messages)) return String(messages ?? '')
   return messages.map((item) => {
@@ -542,11 +733,24 @@ function formatMessages(messages: unknown): string {
   }).join('\n\n')
 }
 
+/**
+ * 删除追踪事件的索引字段并序列化剩余详情。
+ *
+ * @param entry 单条追踪事件。
+ * @returns 不包含序号、时间、类型和轮次的 JSON 文本。
+ */
 function traceDetail(entry: TraceEntry): string {
   const { seq: _seq, at: _at, kind: _kind, turnId: _turnId, ...detail } = entry
   return JSON.stringify(detail)
 }
 
+/**
+ * 按当前类型和 stream 筛选条件重绘对话轮次卡片及后台事件列表。
+ *
+ * @returns 无返回值；筛选结果写入追踪区域。
+ * @remarks 对话事件按 `turnId` 聚合，后台事件按时间顺序单独展示；每次重绘都会清理旧节点。
+ * @throws 传播 DOM 创建、属性写入或节点挂载失败产生的异常。
+ */
 function renderTrace(): void {
   const selectedKind = traceFilter.value
   const selectedStream = Number(streamSelect.value)
@@ -614,7 +818,7 @@ function renderTrace(): void {
     const kind = document.createElement('strong')
     kind.textContent = entry.kind
     const detail = document.createElement('span')
-    // 直接显示静默群消息及门控原因。
+    // 观察事件直接展示原消息和后端门控原因，避免把“未回复”误判为链路故障。
     if (entry.kind === 'observation') {
       row.classList.add('trace-observation')
       detail.textContent = `${traceSenderLabel(entry)}：${text(entry.text)}`
@@ -633,6 +837,12 @@ function renderTrace(): void {
   if (!traceLog.children.length) traceLog.textContent = '当前筛选条件下没有后台事件。'
 }
 
+/**
+ * 将 ANSI 256 色索引转换为 CSS 颜色文本。
+ *
+ * @param index ANSI 颜色索引，通常范围为 0~255。
+ * @returns 对应的十六进制或 `rgb()` 颜色文本；超出范围时按算法结果生成颜色。
+ */
 function ansi256(index: number): string {
   if (index < 16) {
     const colors = ['#000000', '#800000', '#008000', '#808000', '#000080', '#800080', '#008080', '#c0c0c0', '#808080', '#ff0000', '#00ff00', '#ffff00', '#0000ff', '#ff00ff', '#00ffff', '#ffffff']
@@ -647,6 +857,14 @@ function ansi256(index: number): string {
   return `rgb(${levels[Math.floor(offset / 36)]} ${levels[Math.floor(offset / 6) % 6]} ${levels[offset % 6]})`
 }
 
+/**
+ * 解析一行 ANSI 转义日志并追加为带颜色和粗体样式的 DOM 行。
+ *
+ * @param line 含 ANSI SGR 转义序列的日志文本。
+ * @returns 无返回值。
+ * @remarks 支持基础色、粗体、24 位 RGB 和 256 色；追加后保留最多 {@link MAX_LOG_ROWS} 行并滚动到底部。
+ * @throws 传播 DOM 创建或样式写入失败产生的异常。
+ */
 function appendAnsiLine(line: string): void {
   const row = document.createElement('div')
   row.className = 'log-row'
@@ -654,6 +872,7 @@ function appendAnsiLine(line: string): void {
   let bold = false
   let cursor = 0
   const pattern = /\x1b\[([0-9;]*)m/g
+  // 按 SGR 序列切分文本，并把每个片段绑定到当前颜色和粗体状态。
   for (const match of line.matchAll(pattern)) {
     const index = match.index ?? 0
     if (index > cursor) {
@@ -671,6 +890,7 @@ function appendAnsiLine(line: string): void {
     if (codes.includes(1)) bold = true
     const basic: Record<number, string> = { 31: '#ff6b6b', 33: '#ffd166', 35: '#d787ff' }
     for (const code of codes) if (basic[code]) color = basic[code]
+    // 24 位颜色和 256 色都使用前缀 38；分别读取后续模式和值。
     const trueColorAt = codes.indexOf(38)
     if (trueColorAt >= 0 && codes[trueColorAt + 1] === 2) {
       color = `rgb(${codes[trueColorAt + 2]} ${codes[trueColorAt + 3]} ${codes[trueColorAt + 4]})`
@@ -691,6 +911,13 @@ function appendAnsiLine(line: string): void {
   logOutput.scrollTop = logOutput.scrollHeight
 }
 
+/**
+ * 建立日志 WebSocket 连接，并在断开后延迟重连。
+ *
+ * @returns 无返回值；连接状态和接收日志直接更新日志面板。
+ * @remarks 单条日志 JSON 解析失败只跳过该条，不关闭当前连接。
+ * @throws 传播 WebSocket 构造失败产生的异常。
+ */
 function connectLogs(): void {
   if (logReconnectTimer) clearTimeout(logReconnectTimer)
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -712,6 +939,13 @@ function connectLogs(): void {
   })
 }
 
+/**
+ * 建立追踪事件 WebSocket 连接，并按序号游标接收增量事件。
+ *
+ * @returns 无返回值；连接关闭时使用指数退避，最大重连间隔为 30 秒。
+ * @remarks 当面板未运行时不创建连接；服务端报告截断时累计被跳过的事件数量。
+ * @throws 传播 WebSocket 构造失败产生的异常。
+ */
 function connectEvents(): void {
   if (!panelRunning) return
   if (eventReconnectTimer) clearTimeout(eventReconnectTimer)
@@ -758,6 +992,12 @@ function connectEvents(): void {
   })
 }
 
+/**
+ * 读取可观察 stream 列表并更新 stream 下拉框。
+ *
+ * @returns 请求和下拉框更新完成后的 Promise。
+ * @throws Error 当未授权、HTTP 请求失败或后端返回空 stream 列表时抛出。
+ */
 async function fetchStreams(): Promise<void> {
   const response = await fetch('/streams', { credentials: 'same-origin' })
   if (response.status === 401) throw new Error('UNAUTHORIZED')
@@ -773,12 +1013,25 @@ async function fetchStreams(): Promise<void> {
   if (!payload.streams.length) throw new Error('后端没有可观察的 stream')
 }
 
+/**
+ * 将观察 stream 转换为下拉框展示标签。
+ *
+ * @param stream 后端返回的观察 stream。
+ * @returns 包含平台、会话类型、外部标识和内部 ID 的文本标签。
+ */
 function streamLabel(stream: ObservabilityStream): string {
   if (stream.kind === 'desktop') return `桌面 · #${stream.id}`
   const kind = stream.kind === 'direct' ? '私聊' : '群聊'
   return `${stream.platform.toUpperCase()} ${kind} · ${stream.externalId} · #${stream.id}`
 }
 
+/**
+ * 按当前 stream 读取观察快照并刷新业务面板。
+ *
+ * @returns 请求和渲染完成后的 Promise。
+ * @throws 不向上抛出读取或渲染异常；错误会转换为面板中的状态提示。
+ * @remarks 请求期间禁用刷新按钮，401 会切换登录面板，完成后恢复按钮状态。
+ */
 async function fetchSnapshot(): Promise<void> {
   refreshButton.disabled = true
   try {
@@ -815,13 +1068,25 @@ interface StageEntry {
   stageElapsedMs: number
 }
 
-/** 格式化阶段停留时长。 */
+/**
+ * 格式化后端阶段停留时长。
+ *
+ * @param ms 时长，单位为毫秒。
+ * @returns 小于 1 秒时使用毫秒，短于 1 分钟时使用秒，否则使用分秒文本。
+ */
 function elapsedLabel(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
   return `${Math.floor(ms / 60_000)}分${Math.floor((ms % 60_000) / 1000)}秒`
 }
 
+/**
+ * 读取各 stream 当前处理阶段并刷新阶段看板。
+ *
+ * @returns 一次轮询完成后的 Promise；HTTP 非成功响应时保留现有看板。
+ * @throws 传播网络请求、JSON 解析或 DOM 更新错误。
+ * @remarks 该方法由秒级定时器调用，保持后端阶段状态的近实时展示。
+ */
 async function pollStages(): Promise<void> {
   const response = await fetch('/stages', { credentials: 'same-origin' })
   if (!response.ok) return
@@ -834,6 +1099,7 @@ async function pollStages(): Promise<void> {
     stageBoard.append(empty)
     return
   }
+  // 每行只展示当前阶段、详情和停留时间，避免把后端内部状态对象直接暴露到页面。
   for (const entry of entries) {
     const row = document.createElement('div')
     row.className = 'stage-row'
@@ -862,6 +1128,11 @@ async function pollStages(): Promise<void> {
   }
 }
 
+/**
+ * 停止观察面板的定时器、WebSocket 和待执行重连任务。
+ *
+ * @returns 无返回值；重复调用安全。
+ */
 function stopPanel(): void {
   panelRunning = false
   if (snapshotTimer) clearInterval(snapshotTimer)
@@ -876,6 +1147,11 @@ function stopPanel(): void {
   logSocket = null
 }
 
+/**
+ * 显示观察面板并清理登录表单和错误提示。
+ *
+ * @returns 无返回值。
+ */
 function showPanel(): void {
   loginForm.reset()
   loginError.textContent = ''
@@ -883,6 +1159,12 @@ function showPanel(): void {
   panelShell.hidden = false
 }
 
+/**
+ * 停止面板运行并显示登录区域。
+ *
+ * @param message 可选登录错误提示，默认值为空字符串。
+ * @returns 无返回值。
+ */
 function showLogin(message = ''): void {
   stopPanel()
   panelShell.hidden = true
@@ -890,11 +1172,19 @@ function showLogin(message = ''): void {
   loginError.textContent = message
 }
 
+/**
+ * 初始化观察面板，按 URL 选择会话总览或人物画像页面。
+ *
+ * @returns 初始化请求和连接建立完成后的 Promise。
+ * @throws Error 当 stream、快照或人物接口请求失败时抛出，由登录入口统一转换为错误提示。
+ * @remarks 方法只注册一次静态交互监听器，后续调用复用既有监听器并重新建立运行期连接。
+ */
 async function initializePanel(): Promise<void> {
   panelRunning = true
   showPanel()
   const personId = requestedPersonId()
   if (personId !== undefined) {
+    // 人物路由不需要启动会话轮询，先停止旧面板连接再加载人物页面。
     stopPanel()
     conversationView.hidden = true
     personsView.hidden = false
@@ -903,10 +1193,12 @@ async function initializePanel(): Promise<void> {
   }
   conversationView.hidden = false
   personsView.hidden = true
+  // 会话总览先加载 stream 和快照，再连接增量事件与日志通道。
   await fetchStreams()
   await fetchSnapshot()
   renderTrace()
   if (!initialized) {
+    // 静态控件只绑定一次；后续重新认证或切换页面时复用同一组监听器。
     initialized = true
     streamSelect.addEventListener('change', () => {
       renderTrace()
@@ -921,12 +1213,19 @@ async function initializePanel(): Promise<void> {
         : null
     })
   }
+  // 阶段、事件和日志连接属于运行期资源，面板停止时由 stopPanel 统一释放。
   stageTimer = setInterval(() => void pollStages(), STAGE_POLL_MS)
   void pollStages()
   connectEvents()
   connectLogs()
 }
 
+/**
+ * 检查当前浏览器会话是否已通过认证，并在认证成功后初始化面板。
+ *
+ * @returns 会话检查和可选面板初始化完成后的 Promise。
+ * @throws Error 当会话接口返回非成功状态或响应无法解析时抛出。
+ */
 async function checkSession(): Promise<void> {
   const response = await fetch('/auth/session', { credentials: 'same-origin' })
   if (!response.ok) throw new Error(`会话状态请求失败：HTTP ${response.status}`)

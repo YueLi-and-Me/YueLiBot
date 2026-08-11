@@ -1,4 +1,8 @@
-"""群聊回复门控：纯函数，供入口在接线时记录决策。"""
+"""根据群聊上下文和频率窗口决定是否生成平台回复。
+
+本模块只处理协议 @、文本称呼、睡眠状态、名称概率和窗口配额，不访问数据库，
+因此可以由入口在接线时调用并将返回的判定依据写入 trace。
+"""
 
 from __future__ import annotations
 
@@ -16,7 +20,11 @@ _VOCATIVE_SUFFIXES = frozenset('在来呢吗呀啊诶欸说看帮回醒你请给
 
 @dataclass(frozen=True)
 class ReplyGateDecision:
-    """群聊回复决策及判定依据。"""
+    """群聊回复决策及其可审计的判定输入。
+
+    布尔字段记录触发条件，计数字段记录频率窗口，概率字段保留本次随机判定值，
+    便于在不重新执行随机逻辑的情况下还原决策。
+    """
 
     accepted: bool
     reason: str
@@ -29,7 +37,11 @@ class ReplyGateDecision:
     name_mention_probability: float = 0.0
 
     def as_trace(self) -> dict:
-        """转换为 trace 字段。"""
+        """将决策转换为观察事件使用的字典。
+
+        Returns:
+            使用项目 trace 字段命名约定的可序列化字典；概率保留四位小数。
+        """
         return {
             'accepted': self.accepted,
             'reason': self.reason,
@@ -55,7 +67,27 @@ def decide_reply(
     my_replies_in_window: int,
     max_replies_in_window: int,
 ) -> ReplyGateDecision:
-    """区分协议 @ 与文本称呼，并在群聊频率限制前处理“@ 必回”。"""
+    """按群聊规则计算一次是否回复的判定结果。
+
+    Args:
+        stream_kind: 会话类型；非 ``group`` 时直接允许回复。
+        asleep: 当前主体是否处于睡眠状态。
+        mentioned_me: 协议层是否明确 @ 主体。
+        text: 待分析的消息正文。
+        bot_names: 可被正文称呼匹配的主体名称序列。
+        at_mention_must_reply: 为 ``True`` 时，明确 @ 直接绕过睡眠和窗口限制。
+        name_mention_probability: 文本称呼触发回复的概率，范围 [0, 1]。
+        probability_draw: 本次随机抽样值，范围 [0, 1)。
+        my_replies_in_window: 当前频率窗口内已经发送的回复数。
+        max_replies_in_window: 当前窗口允许的最大回复数。
+
+    Returns:
+        包含接受结果、原因和完整判定输入的 ``ReplyGateDecision``。
+
+    Raises:
+        ValueError: 概率参数超出约定范围，或名称序列包含空字符串。
+    """
+    # 非群聊不受群聊门控约束，直接保留普通对话路径。
     if stream_kind != 'group':
         return ReplyGateDecision(accepted=True, reason='not_group')
     if not 0.0 <= name_mention_probability <= 1.0:
@@ -63,9 +95,20 @@ def decide_reply(
     if not 0.0 <= probability_draw < 1.0:
         raise ValueError('probability_draw 必须在 0 到 1 之间且不含 1')
 
+    # 先完成文本称呼识别，后续所有分支复用同一判定，避免重复扫描正文。
     name_mentioned = mentions_bot_name(text, bot_names)
 
     def decision(accepted: bool, reason: str) -> ReplyGateDecision:
+        """使用当前输入构造带完整审计字段的判定结果。
+
+        Args:
+            accepted: 是否允许本次回复。
+            reason: 稳定的机器可读判定原因。
+
+        Returns:
+            填充当前群聊上下文、计数和概率字段的决策对象。
+        """
+
         return ReplyGateDecision(
             accepted=accepted,
             reason=reason,
@@ -78,6 +121,7 @@ def decide_reply(
             name_mention_probability=name_mention_probability,
         )
 
+    # 协议 @ 的强制回复优先级最高，必须在睡眠和窗口限制前处理。
     if mentioned_me and at_mention_must_reply:
         return decision(True, 'mentioned')
     if asleep:
@@ -85,6 +129,7 @@ def decide_reply(
     if my_replies_in_window >= max_replies_in_window:
         return decision(False, 'window_limit')
     if mentioned_me or name_mentioned:
+        # 协议 @ 与文本称呼共用概率抽样，但返回不同原因以便观察面板区分来源。
         if probability_draw < name_mention_probability:
             return decision(True, 'mentioned_probability' if mentioned_me else 'name_mentioned')
         return decision(False, 'mention_probability' if mentioned_me else 'name_probability')
@@ -92,7 +137,19 @@ def decide_reply(
 
 
 def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:
-    """判断正文是否直接叫了机器人名字；英文名避免匹配到更长单词内部。"""
+    """判断正文是否直接包含主体名称。
+
+    Args:
+        text: 待匹配的消息正文。
+        bot_names: 可用名称序列；每个名称必须非空，比较时忽略大小写。
+
+    Returns:
+        发现满足中英文边界规则的名称时返回 ``True``，否则返回 ``False``。
+
+    Raises:
+        ValueError: ``bot_names`` 包含空字符串。
+        TypeError: 输入元素不支持字符串操作时由 Python 直接抛出。
+    """
     normalized_text = text.casefold()
     for raw_name in bot_names:
         name = raw_name.strip().casefold()
@@ -108,6 +165,18 @@ def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:
 
 
 def _is_name_boundary(text: str, start: int, end: int, name: str) -> bool:
+    """判断名称两侧是否满足中文或 ASCII 单词边界规则。
+
+    Args:
+        text: 已规范化的正文。
+        start: 名称匹配的起始索引。
+        end: 名称匹配的结束索引（不包含）。
+        name: 已规范化的名称。
+
+    Returns:
+        名称不嵌入其他 ASCII 标识符且符合中文称呼边界时返回 ``True``。
+    """
+
     before = text[start - 1] if start > 0 else ''
     after = text[end] if end < len(text) else ''
     if not all(character.isascii() for character in name):
@@ -126,10 +195,28 @@ def _is_name_boundary(text: str, start: int, end: int, name: str) -> bool:
 
 
 def _is_ascii_identifier(character: str) -> bool:
+    """判断字符是否属于 ASCII 标识符字符。
+
+    Args:
+        character: 待判断的单字符字符串；空字符串表示文本边界。
+
+    Returns:
+        字符为 ASCII 字母、数字或下划线时返回 ``True``。
+    """
+
     return bool(character) and character.isascii() and (
         character.isalnum() or character == '_'
     )
 
 
 def _is_separator(character: str) -> bool:
+    """判断字符是否为空白或 Unicode 标点/符号分隔符。
+
+    Args:
+        character: 待判断的单字符字符串。
+
+    Returns:
+        字符可作为名称边界分隔符时返回 ``True``。
+    """
+
     return character.isspace() or unicodedata.category(character).startswith(('P', 'S'))

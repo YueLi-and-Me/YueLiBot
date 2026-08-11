@@ -1,6 +1,12 @@
+/**
+ * 将后端观察快照和实时追踪事件渲染为只读诊断面板。
+ *
+ * 页面通过 preload/observability.ts 获取数据，按业务分区展示睡眠、兴趣、前台、
+ * 视觉、日程和人物信息；本模块不修改后端状态，也不保存原始截图或请求正文。
+ */
 import type { ObservabilityPayload } from '../shared/ipc.ts'
 
-/** 开发者观察面板：把只读快照翻译成可扫描的业务视图，不展示原始 JSON。 */
+/** 观察面板渲染器：把只读快照和追踪事件转换为可分区浏览的业务视图，不展示原始 JSON。 */
 
 const AUTO_REFRESH_MS = 15_000
 const grid = document.getElementById('grid') as HTMLElement
@@ -35,14 +41,32 @@ interface TurnCard {
 const turnCards = new Map<number, TurnCard>()
 const turnOrder: number[] = []
 
+/**
+ * 将未知快照字段收窄为非数组对象。
+ *
+ * @param value 待转换的未知值。
+ * @returns 输入为非空对象时返回其记录视图，否则返回空记录。
+ */
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+/**
+ * 读取有限数字快照字段。
+ *
+ * @param value 待转换的未知值。
+ * @returns 有限数字本身；类型不符或数值非有限时返回 `null`。
+ */
 function numeric(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+/**
+ * 将快照值转换为适合面板展示的文本。
+ *
+ * @param value 待展示的未知值。
+ * @returns 非空字符串、布尔值或有限数字的文本表示；其他值返回占位符 `—`。
+ */
 function text(value: unknown): string {
   if (typeof value === 'string' && value.trim()) return value
   if (typeof value === 'boolean') return value ? '是' : '否'
@@ -50,10 +74,25 @@ function text(value: unknown): string {
   return '—'
 }
 
+/**
+ * 读取可选文本字段并去除首尾空白。
+ *
+ * @param value 待转换的未知值。
+ * @returns 字符串的去空白结果；非字符串返回空字符串。
+ */
 function optionalText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+/**
+ * 组合 QQ 联系人的展示名称、群名片和外部账号标识。
+ *
+ * @param displayName 联系人显示名。
+ * @param nickname 联系人 QQ 昵称。
+ * @param externalId 外部平台账号标识；为空时不追加账号信息。
+ * @param groupCard 群名片；非空且不同于昵称时优先展示群名片。
+ * @returns 用于追踪卡片标题的发送者标签。
+ */
 function qqSenderLabel(
   displayName: string,
   nickname: string,
@@ -67,6 +106,12 @@ function qqSenderLabel(
   return `${nickname || displayName}（QQ号：${externalId}）`
 }
 
+/**
+ * 从追踪事件中解析发送者标签，并为缺失字段提供平台级回退文本。
+ *
+ * @param entry 单条追踪事件记录。
+ * @returns 发送者可读名称。
+ */
 function traceSenderLabel(entry: Record<string, unknown>): string {
   const ready = optionalText(entry.senderLabel)
   if (ready) return ready
@@ -79,11 +124,24 @@ function traceSenderLabel(entry: Record<string, unknown>): string {
   )
 }
 
+/**
+ * 将快照数字格式化为固定小数位文本。
+ *
+ * @param value 待格式化的未知数字。
+ * @param digits 小数位数，默认值为 `0`，必须是非负整数。
+ * @returns 格式化后的数字文本；输入不是有限数字时返回 `—`。
+ */
 function fixed(value: unknown, digits = 0): string {
   const number = numeric(value)
   return number === null ? '—' : number.toFixed(digits)
 }
 
+/**
+ * 将毫秒时间戳格式化为中文月日和 24 小时制时分。
+ *
+ * @param value 待格式化的未知时间戳，单位为毫秒。
+ * @returns 本地化时间文本；时间戳缺失、非有限或不大于零时返回 `—`。
+ */
 function dateTime(value: unknown): string {
   const timestamp = numeric(value)
   if (timestamp === null || timestamp <= 0) return '—'
@@ -96,6 +154,15 @@ function dateTime(value: unknown): string {
   }).format(new Date(timestamp))
 }
 
+/**
+ * 创建并挂载一个面板分区。
+ *
+ * @param title 分区标题。
+ * @param subtitle 分区标识或补充说明。
+ * @param wide 是否使用宽版布局，默认值为 `false`。
+ * @returns 新建的分区节点及其内容容器。
+ * @throws 传播 DOM 创建或挂载失败产生的异常。
+ */
 function section(title: string, subtitle: string, wide = false): { card: HTMLElement; body: HTMLElement } {
   const card = document.createElement('section')
   card.className = wide ? 'panel-card wide' : 'panel-card'
@@ -117,6 +184,14 @@ function section(title: string, subtitle: string, wide = false): { card: HTMLEle
   return { card, body }
 }
 
+/**
+ * 向面板分区追加一行键值指标。
+ *
+ * @param parent 指标行的父节点。
+ * @param label 指标名称。
+ * @param value 指标展示值。
+ * @returns 无返回值。
+ */
 function metric(parent: HTMLElement, label: string, value: string): void {
   const row = document.createElement('div')
   row.className = 'metric-row'
@@ -130,6 +205,15 @@ function metric(parent: HTMLElement, label: string, value: string): void {
   parent.append(row)
 }
 
+/**
+ * 向面板分区追加带无障碍标签的进度条。
+ *
+ * @param parent 进度条的父节点。
+ * @param value 当前值；渲染时限制在 `0` 到 `max` 之间。
+ * @param max 最大值，通常为正数。
+ * @param label 进度条的无障碍名称。
+ * @returns 无返回值。
+ */
 function progress(parent: HTMLElement, value: number, max: number, label: string): void {
   const element = document.createElement('progress')
   element.className = 'progress'
@@ -139,6 +223,14 @@ function progress(parent: HTMLElement, value: number, max: number, label: string
   parent.append(element)
 }
 
+/**
+ * 向面板分区追加标签式键值片段。
+ *
+ * @param parent 标签片段的父节点。
+ * @param label 标签名称。
+ * @param value 标签展示值。
+ * @returns 无返回值。
+ */
 function chip(parent: HTMLElement, label: string, value: string): void {
   const item = document.createElement('span')
   item.className = 'chip'
@@ -148,6 +240,12 @@ function chip(parent: HTMLElement, label: string, value: string): void {
   parent.append(item)
 }
 
+/**
+ * 渲染面板顶部的状态摘要，包括睡眠、预算、视觉响应和会话人物数量。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderStatus(payload: ObservabilityPayload): void {
   status.replaceChildren()
   const sleep = record(payload.sleep)
@@ -176,6 +274,12 @@ function renderStatus(payload: ObservabilityPayload): void {
   }
 }
 
+/**
+ * 渲染自身状态指标和精力进度条。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderSelfState(payload: ObservabilityPayload): void {
   const { body } = section('自身状态', 'selfState')
   const axes = document.createElement('div')
@@ -201,6 +305,13 @@ function renderSelfState(payload: ObservabilityPayload): void {
   body.append(axes)
 }
 
+/**
+ * 渲染当天主题、睡眠提示和日程时间线，并标记当前时间对应的日程段。
+ *
+ * @param payload 后端观察快照；`schedule` 为空时显示服务不可用状态。
+ * @returns 无返回值。
+ * @remarks 当前时间使用后端传入的 `payload.now`，避免渲染层时钟与业务快照不一致。
+ */
 function renderSchedule(payload: ObservabilityPayload): void {
   if (payload.schedule === null) {
     const { body } = section('今天的日程', 'schedule', true)
@@ -257,6 +368,12 @@ function renderSchedule(payload: ObservabilityPayload): void {
   body.append(timeline)
 }
 
+/**
+ * 渲染睡意概率、睡眠判定线、计划时间和睡眠债指标。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderSleep(payload: ObservabilityPayload): void {
   const sleep = record(payload.sleep)
   const { body } = section('睡眠状态', 'sleep')
@@ -285,12 +402,16 @@ function renderSleep(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
-// 后端把预算和冲动放在同一个 impulse 块里（proactive.py 的 observability_fields）。
-// 场景类意图只能用到总额减去保留槽的那部分，用完之后她整天都不会再因为
-// 切窗口开口——面板必须把这一段单独标出来，否则「还剩 2 额度却再也不说话」
-// 会被当成故障来查。
+// 场景类主动行为预留固定槽位；面板需要从总预算中扣除该槽位后再展示可用额度。
 const SCENE_RESERVED_SLOTS = 2
 
+/**
+ * 渲染主动打扰预算及场景类意图的剩余额度。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ * @remarks 预算和冲动字段来自同一快照块，场景可用额度会扣除 {@link SCENE_RESERVED_SLOTS}。
+ */
 function renderBudget(payload: ObservabilityPayload): void {
   const impulse = record(payload.impulse)
   const { body } = section('打扰预算', 'impulse')
@@ -309,6 +430,13 @@ function renderBudget(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
+/**
+ * 渲染前台活动、静默状态、视觉开关和按原因统计的视觉事件。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ * @remarks 仅展示后端已聚合的统计值，不读取原始截图或重新计算业务状态。
+ */
 function renderSensing(payload: ObservabilityPayload): void {
   const sensing = record(payload.sensing)
   const vision = record(sensing.visionStats)
@@ -324,6 +452,7 @@ function renderSensing(payload: ObservabilityPayload): void {
   metric(list, '看过 / 开口', `${fixed(vision.looks)} / ${fixed(vision.spoke)}`)
   body.append(list)
 
+  // 过滤掉非数字统计项，避免 NaN 进入进度条最大值和宽度计算。
   const entries = Object.entries(byReason).filter((entry): entry is [string, number] => numeric(entry[1]) !== null)
   if (entries.length) {
     const reasons = document.createElement('div')
@@ -348,6 +477,12 @@ function renderSensing(payload: ObservabilityPayload): void {
   }
 }
 
+/**
+ * 渲染当前会话的工作消息数量和参与人物标签。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderConversation(payload: ObservabilityPayload): void {
   const { body } = section('会话状态', 'conversation', true)
   const summary = document.createElement('div')
@@ -374,6 +509,12 @@ function renderConversation(payload: ObservabilityPayload): void {
   body.append(participants)
 }
 
+/**
+ * 渲染语音合成开关、模型音色和缓存统计。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ */
 function renderVoice(payload: ObservabilityPayload): void {
   const voice = record(payload.voice)
   const cache = record(voice.cache)
@@ -390,6 +531,13 @@ function renderVoice(payload: ObservabilityPayload): void {
   body.append(list)
 }
 
+/**
+ * 清空并按固定顺序渲染观察面板的全部业务分区。
+ *
+ * @param payload 后端观察快照。
+ * @returns 无返回值。
+ * @remarks 顶部状态先更新，随后清空网格再创建分区，保证刷新后不会残留旧节点。
+ */
 function render(payload: ObservabilityPayload): void {
   renderStatus(payload)
   grid.replaceChildren()
@@ -402,15 +550,14 @@ function render(payload: ObservabilityPayload): void {
   renderVoice(payload)
 }
 
-/**
- * 调试追踪：按对话轮次（turnId）分组成卡片——用户说了什么 / 发送的完整
- * Prompt（可展开）/ 她回了什么 / 记忆与心情变化 / 是否出错，而不是一行行
- * 原始 JSON。没有 turnId 的（感知/睡眠这类后台事件）走旁边的轻量列表，
- * 它们没有天然的分组键，不强行卡片化。
- *
- * 新卡片插到容器顶部而不是滚动到底部——读旧卡片时不会被新卡片从底下顶跑。
- */
+/** 调试追踪区按 `turnId` 聚合对话事件；无轮次标识的后台事件保留为轻量列表。 */
 
+/**
+ * 将追踪事件时间戳格式化为时分秒文本。
+ *
+ * @param at 事件时间戳，单位为毫秒。
+ * @returns 本地化时间文本；不是有限数字时返回 `—`。
+ */
 function traceTime(at: unknown): string {
   const ts = numeric(at)
   if (ts === null) return '—'
@@ -419,6 +566,13 @@ function traceTime(at: unknown): string {
   }).format(new Date(ts))
 }
 
+/**
+ * 将没有 `turnId` 的后台追踪事件追加到轻量列表并执行行数上限清理。
+ *
+ * @param entry 单条追踪事件记录。
+ * @returns 无返回值。
+ * @remarks 仅展示去除序号、时间、类型和轮次后的剩余字段，并始终滚动到最新事件。
+ */
 function appendUngroupedEntry(entry: Record<string, unknown>): void {
   if (traceLog.querySelector('.empty')) traceLog.replaceChildren()
   const { seq: _seq, at: _at, kind: _kind, turnId: _turnId, ...rest } = entry
@@ -439,6 +593,12 @@ function appendUngroupedEntry(entry: Record<string, unknown>): void {
   traceLog.scrollTop = traceLog.scrollHeight
 }
 
+/**
+ * 将 LLM 消息数组格式化为可展开查看的纯文本。
+ *
+ * @param messages 后端追踪事件中的未知消息值。
+ * @returns 按角色和内容拼接的消息文本；非数组值直接转为字符串。
+ */
 function formatMessages(messages: unknown): string {
   if (!Array.isArray(messages)) return String(messages ?? '')
   return messages.map((m) => {
@@ -449,6 +609,11 @@ function formatMessages(messages: unknown): string {
   }).join('\n\n')
 }
 
+/**
+ * 删除最旧的对话追踪卡片，保持 DOM 和内存映射不超过上限。
+ *
+ * @returns 无返回值。
+ */
 function evictOldTurnCards(): void {
   while (turnOrder.length > MAX_TURN_CARDS) {
     const oldest = turnOrder.shift()
@@ -458,9 +623,18 @@ function evictOldTurnCards(): void {
   }
 }
 
+/**
+ * 创建一张对话轮次追踪卡片并注册到卡片缓存。
+ *
+ * @param turnId 后端分配的对话轮次标识。
+ * @returns 可供后续事件更新的卡片状态对象。
+ * @throws 传播 DOM 创建或挂载失败产生的异常。
+ * @remarks 新卡片插入列表顶部，并立即清理超过 {@link MAX_TURN_CARDS} 的旧卡片。
+ */
 function createTurnCard(turnId: number): TurnCard {
   if (turnCardsEl.querySelector('.empty')) turnCardsEl.replaceChildren()
 
+  // 卡片节点与状态对象同时创建并登记，后续事件才能按轮次增量更新而不重绘整张面板。
   const cardEl = document.createElement('article')
   cardEl.className = 'trace-card'
 
@@ -504,10 +678,23 @@ function createTurnCard(turnId: number): TurnCard {
   return card
 }
 
+/**
+ * 获取指定轮次的现有卡片，不存在时创建并注册新卡片。
+ *
+ * @param turnId 后端分配的对话轮次标识。
+ * @returns 对应轮次的卡片状态对象。
+ */
 function getOrCreateTurnCard(turnId: number): TurnCard {
   return turnCards.get(turnId) ?? createTurnCard(turnId)
 }
 
+/**
+ * 将单条追踪事件应用到无分组列表或对应的对话卡片。
+ *
+ * @param entry 后端返回的追踪事件记录。
+ * @returns 无返回值。
+ * @remarks 事件类型决定更新用户输入、Prompt、流式片段、最终回复、记忆效果或错误状态。
+ */
 function applyTraceEntry(entry: Record<string, unknown>): void {
   const turnId = numeric(entry.turnId)
   if (turnId === null) {
@@ -521,6 +708,7 @@ function applyTraceEntry(entry: Record<string, unknown>): void {
     if (at !== null) card.firstAt = at
   }
 
+  // 事件按类型增量更新同一张卡片，保留流式输出过程中的片段计数和首包时间。
   switch (entry.kind) {
     case 'user_input':
       card.userEl.textContent = `${traceSenderLabel(entry)}: ${text(entry.text)}`
@@ -555,6 +743,12 @@ function applyTraceEntry(entry: Record<string, unknown>): void {
   }
 }
 
+/**
+ * 从上次序号之后拉取追踪事件并更新面板。
+ *
+ * @returns 一次轮询完成后的 Promise；接口不可用或请求失败时正常结束并等待下一轮。
+ * @remarks 使用序号游标避免重复渲染，失败不影响观察快照的刷新。
+ */
 async function pollTrace(): Promise<void> {
   try {
     const entries = await window.observability?.readTrace(lastTraceSeq)
@@ -568,10 +762,17 @@ async function pollTrace(): Promise<void> {
     traceTotal += entries.length
     traceCount.textContent = `${traceTotal} 条 · 实时轮询中`
   } catch {
-    /* 轮询失败静默重试，不打断快照那边的展示 */
+    /* 追踪轮询失败时保留现有面板，下一轮继续尝试，不阻断快照展示。 */
   }
 }
 
+/**
+ * 读取观察快照并刷新所有业务分区。
+ *
+ * @returns 一次读取和渲染完成后的 Promise。
+ * @throws 不向上抛出读取或渲染异常；错误会转换为面板中的失败提示。
+ * @remarks 请求期间禁用手动刷新按钮，完成后在 `finally` 中恢复交互状态。
+ */
 async function fetchAndRender(): Promise<void> {
   refreshButton.disabled = true
   try {

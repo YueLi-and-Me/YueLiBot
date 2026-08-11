@@ -1,13 +1,9 @@
-"""
-三层记忆的读写。直接移植自 src/core/memory/store.ts。
+"""实现三层记忆的 SQLite 读写、事务更新和相关内容召回。
 
-接受已打开的 sqlite3.Connection，不自己开文件：
-  · core 层不该知道用户数据目录在哪
-  · 测试可传入 ':memory:' 拿到隔离库
-
-L1 messages  — 对话原文，最近若干轮直接进 context
-L2 episodes  — 每 N 轮压缩成一条摘要，同时是日记内容
-L3 facts     — 结构化事实，带强度与遗忘曲线
+调用方注入已打开的 ``sqlite3.Connection``，本模块不决定数据库文件位置；因此
+生产环境可由统一连接管理器控制迁移和生命周期，测试可使用 ``:memory:`` 隔离。
+``messages`` 保存近期对话，``episodes`` 保存摘要，``facts`` 保存带强度和遗忘
+曲线的结构化事实。衰减、相似度和分词算法分别由同目录模块提供。
 """
 
 from __future__ import annotations
@@ -34,6 +30,14 @@ _PENDING_PROMISES_KEY = 'pending_promises'
 
 @dataclass
 class StoredMessage:
+    """表示从 L1 工作记忆读取的一条消息。
+
+    :ivar role: 消息角色，通常为 `user` 或 `assistant`。
+    :ivar content: 消息正文。
+    :ivar created_at: 创建时间的 Unix 毫秒时间戳。
+    :ivar sender_person_id: 发送者人物 ID；助手消息可为 `None`。
+    """
+
     role: str   # 'user' | 'assistant'
     content: str
     created_at: int
@@ -42,12 +46,27 @@ class StoredMessage:
 
 @dataclass
 class FactInput:
+    """表示待写入 L3 事实的内容和分类。
+
+    :ivar content: 事实正文。
+    :ivar kind: 事实类型，默认值为 `未分类`。
+    """
+
     content: str
     kind: str = '未分类'
 
 
 @dataclass
 class RecalledFact:
+    """表示召回结果中的事实及其排序指标。
+
+    :ivar id: facts 表主键。
+    :ivar kind: 事实类型。
+    :ivar content: 事实正文。
+    :ivar retention: 当前留存度。
+    :ivar score: 当前召回排序分数。
+    """
+
     id: int
     kind: str
     content: str
@@ -57,12 +76,27 @@ class RecalledFact:
 
 @dataclass
 class StoredFact(RecalledFact):
+    """表示包含冻结状态和下次评估时间的完整事实记录。
+
+    :ivar due_at: 下次衰减评估时间戳，默认值为 0。
+    :ivar frozen: 是否已冻结，默认值为 `False`。
+    """
+
     due_at: int = 0
     frozen: bool = False
 
 
 @dataclass
 class RecalledEpisode:
+    """表示情节记忆召回结果。
+
+    :ivar id: episodes 表主键。
+    :ivar summary: 情节摘要。
+    :ivar kind: 情节类型。
+    :ivar ended_at: 情节结束时间戳。
+    :ivar score: 召回排序分数。
+    """
+
     id: int
     summary: str
     kind: str
@@ -72,6 +106,16 @@ class RecalledEpisode:
 
 @dataclass
 class EpisodeInput:
+    """表示待写入 L2 情节记忆的摘要和关联消息。
+
+    :ivar summary: 情节摘要正文。
+    :ivar cues: 用于 FTS5 召回的线索列表。
+    :ivar started_at: 情节开始时间戳。
+    :ivar ended_at: 情节结束时间戳。
+    :ivar message_ids: 要归档到该情节的消息 ID 列表。
+    :ivar kind: 情节类型，默认值为 `conversation`。
+    """
+
     summary: str
     cues: list[str]
     started_at: int
@@ -81,7 +125,19 @@ class EpisodeInput:
 
 
 class MemoryStore:
+    """封装消息、情节、事实和待办约定的 SQLite 读写。
+
+    初始化时执行当前 DDL/SEED 并写入 schema 版本；数据库迁移应在构造此类之前由
+    `common.db.migrations.manager` 完成。
+    """
+
     def __init__(self, db: sqlite3.Connection) -> None:
+        """绑定已打开的 SQLite 连接并确保当前表结构和种子存在。
+
+        :param db: `check_same_thread=False` 的 SQLite 连接。
+        :side_effects: 执行 DDL、SEED、schema_version 写入并提交事务。
+        :raises sqlite3.Error: 建表、种子写入或提交失败。
+        """
         self._db = db
         db.executescript(DDL)
         db.executescript(SEED)
@@ -93,6 +149,14 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ 属性
     def first_seen_at(self, person_id: int) -> int:
+        """读取人物首次出现的 Unix 毫秒时间戳。
+
+        :param person_id: persons 表主键。
+        :return: 人物的 `first_seen_at`。
+        :raises RuntimeError: 人物不存在。
+        :raises sqlite3.Error: 查询失败。
+        :side_effects: 只读 persons 表。
+        """
         row = self._db.execute(
             "SELECT first_seen_at FROM persons WHERE id = ?", (person_id,)
         ).fetchone()
@@ -109,6 +173,18 @@ class MemoryStore:
         content: str,
         now: int | None = None,
     ) -> int:
+        """向指定 stream 的 L1 工作记忆追加一条消息。
+
+        :param stream_id: 目标 stream ID。
+        :param sender_person_id: 发送者人物 ID；`role='user'` 时必须非空。
+        :param role: 消息角色。
+        :param content: 消息正文。
+        :param now: 可选创建时间戳；省略时读取当前毫秒时钟。
+        :return: 新消息的数据库 ID。
+        :raises ValueError: 用户消息缺少发送者人物 ID。
+        :raises sqlite3.Error: 插入或提交失败。
+        :side_effects: 写入 messages 表并提交事务。
+        """
         if role == 'user' and sender_person_id is None:
             raise ValueError('user 消息必须携带 sender_person_id')
         now = now if now is not None else current_time()
@@ -121,10 +197,26 @@ class MemoryStore:
         return cur.lastrowid or 0
 
     def delete_message(self, stream_id: int, id: int) -> None:
+        """删除指定 stream 中的一条消息。
+
+        :param stream_id: 消息所属 stream ID。
+        :param id: 消息主键。
+        :return: 无返回值；目标不存在时不报错。
+        :raises sqlite3.Error: 删除或提交失败。
+        :side_effects: 从 messages 表删除匹配行并提交事务。
+        """
         self._db.execute('DELETE FROM messages WHERE id = ? AND stream_id = ?', (id, stream_id))
         self._db.commit()
 
     def working_memory(self, stream_id: int, limit: int = 40) -> list[StoredMessage]:
+        """读取指定 stream 尚未归档的最近工作记忆。
+
+        :param stream_id: 目标 stream ID。
+        :param limit: 最多返回的消息数，默认值为 40。
+        :return: 按时间正序排列的 `StoredMessage` 列表。
+        :raises sqlite3.Error: 查询失败。
+        :side_effects: 只读 messages 表。
+        """
         rows = self._db.execute(
             '''SELECT role, content, created_at, sender_person_id FROM messages
                WHERE stream_id = ? AND episode_id IS NULL ORDER BY id DESC LIMIT ?''',
@@ -134,12 +226,25 @@ class MemoryStore:
                 for r in reversed(rows)]
 
     def last_message_at(self, stream_id: int) -> int | None:
+        """返回指定 stream 最近一条消息的时间戳。
+
+        :param stream_id: 目标 stream ID。
+        :return: 最大 `created_at`；没有消息时返回 `None`。
+        :side_effects: 只读 messages 表。
+        """
         row = self._db.execute(
             'SELECT MAX(created_at) FROM messages WHERE stream_id = ?', (stream_id,)
         ).fetchone()
         return row[0] if row and row[0] is not None else None
 
     def interaction_density(self, stream_id: int, now: int | None = None) -> str:
+        """根据最近三天消息数量生成自然语言互动密度描述。
+
+        :param stream_id: 目标 stream ID。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :return: 用于日程/提示词的中文密度描述。
+        :side_effects: 只读 messages 表。
+        """
         now = now if now is not None else current_time()
         since = now - 3 * 24 * 60 * 60_000
         row = self._db.execute(
@@ -154,6 +259,12 @@ class MemoryStore:
         return '最近几天互动很少，安排更偏向安静地做自己的事。'
 
     def pending_count(self, stream_id: int) -> int:
+        """统计指定 stream 中尚未归档的消息数。
+
+        :param stream_id: 目标 stream ID。
+        :return: `episode_id IS NULL` 的消息数量。
+        :side_effects: 只读 messages 表。
+        """
         row = self._db.execute(
             'SELECT COUNT(*) FROM messages WHERE stream_id = ? AND episode_id IS NULL',
             (stream_id,),
@@ -161,7 +272,14 @@ class MemoryStore:
         return row[0] if row else 0
 
     def assistant_reply_count_since(self, stream_id: int, since: int) -> int:
-        """统计群聊硬频率闸窗口内已经落库的助手回复数。"""
+        """统计指定时间窗口内已落库的助手回复数量。
+
+        :param stream_id: 目标 stream ID。
+        :param since: 统计起点的 Unix 毫秒时间戳，包含该时刻。
+        :return: 满足 stream、角色和时间条件的助手消息数量。
+        :raises sqlite3.Error: 查询消息表失败时抛出。
+        :side_effects: 只读 messages 表。
+        """
         row = self._db.execute(
             '''SELECT COUNT(*) FROM messages
                WHERE stream_id = ? AND role = 'assistant' AND created_at >= ?''',
@@ -170,6 +288,13 @@ class MemoryStore:
         return row[0] if row else 0
 
     def oldest_pending(self, stream_id: int, n: int) -> list[dict[str, Any]]:
+        """按消息 ID 正序读取指定数量的待归档消息。
+
+        :param stream_id: 目标 stream ID。
+        :param n: 最多返回的消息数量。
+        :return: 包含 id、role、content、created_at 和 sender_person_id 的字典列表。
+        :side_effects: 只读 messages 表。
+        """
         rows = self._db.execute(
             '''SELECT id, role, content, created_at, sender_person_id FROM messages
                WHERE stream_id = ? AND episode_id IS NULL ORDER BY id ASC LIMIT ?''',
@@ -181,6 +306,17 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ L2 情节记忆
     def add_episode(self, stream_id: int, input: EpisodeInput, now: int | None = None) -> int:
+        """写入一条情节摘要、召回线索并归档关联消息。
+
+        :param stream_id: 目标 stream ID。
+        :param input: 情节摘要、线索和待归档消息 ID。
+        :param now: 可选创建时间戳；省略时读取当前毫秒时钟。
+        :return: 新情节的数据库 ID。
+        :raises sqlite3.Error: 情节、线索、FTS 或消息更新失败。
+        :side_effects: 写入 episodes、episode_cues、cues_fts，更新 messages.episode_id，
+            并提交事务。
+        """
+        # 先写主记录取得 episode_id，后续线索和消息归档都依赖该外键。
         now = now if now is not None else current_time()
         cur = self._db.execute(
             '''INSERT INTO episodes (stream_id, kind, summary, started_at, ended_at, created_at)
@@ -189,6 +325,7 @@ class MemoryStore:
         )
         episode_id = cur.lastrowid or 0
 
+        # 空线索不进入 FTS，避免无意义的检索词占用索引行。
         for cue in input.cues:
             c = cue.strip()
             if not c:
@@ -201,6 +338,7 @@ class MemoryStore:
                 'INSERT INTO cues_fts (rowid, tokens) VALUES (?, ?)', (cue_id, index_tokens(c))
             )
 
+        # 关联消息在同一事务内归档，防止出现摘要已写入但原消息仍待处理的中间状态。
         if input.message_ids:
             placeholders = ','.join('?' * len(input.message_ids))
             self._db.execute(
@@ -212,6 +350,13 @@ class MemoryStore:
         return episode_id
 
     def recent_episodes(self, stream_id: int, limit: int = 4) -> list[RecalledEpisode]:
+        """读取指定 stream 最近结束的情节摘要。
+
+        :param stream_id: 目标 stream ID。
+        :param limit: 最多返回的情节数，默认值为 4。
+        :return: 按结束时间倒序排列的情节列表，分数固定为 1.0。
+        :side_effects: 只读 episodes 表。
+        """
         rows = self._db.execute(
             '''SELECT id, summary, kind, ended_at FROM episodes
                WHERE stream_id = ? ORDER BY ended_at DESC LIMIT ?''',
@@ -221,6 +366,12 @@ class MemoryStore:
                 for r in rows]
 
     def all_episodes(self, limit: int = 200) -> list[dict[str, Any]]:
+        """读取所有 stream 最近的情节及其线索。
+
+        :param limit: 最多读取的情节数量，默认值为 200。
+        :return: 含 `id`、`kind`、`summary`、`ended_at`、`streamId` 和 `cues` 的字典列表。
+        :side_effects: 只读 episodes 和 episode_cues 表。
+        """
         rows = self._db.execute(
             '''SELECT id, kind, summary, ended_at, stream_id FROM episodes
                ORDER BY ended_at DESC LIMIT ?''',
@@ -242,6 +393,15 @@ class MemoryStore:
                  'cues': by_id.get(r[0], [])} for r in rows]
 
     def recall_episodes(self, stream_id: int, query: str, limit: int = 3) -> list[RecalledEpisode]:
+        """使用 cues FTS5 召回指定 stream 的相关情节。
+
+        :param stream_id: 目标 stream ID。
+        :param query: 待匹配的自然语言查询。
+        :param limit: 最多返回的情节数，默认值为 3。
+        :return: 按 BM25 归一化分数降序截取的情节列表；查询无有效词时返回空列表。
+        :raises sqlite3.Error: FTS 查询失败。
+        :side_effects: 只读 FTS 和情节表。
+        """
         match = match_query(query)
         if not match:
             return []
@@ -264,6 +424,16 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ L3 语义记忆
     def add_fact(self, person_id: int, input: FactInput, now: int | None = None) -> int:
+        """新增或强化人物的一条语义事实。
+
+        :param person_id: 事实所属人物 ID。
+        :param input: 事实正文和类型。
+        :param now: 可选更新时间戳；省略时读取当前毫秒时钟。
+        :return: 新建或强化的事实 ID；正文归一化后为空时返回 0。
+        :raises sqlite3.Error: 查询、插入、更新、FTS 写入或提交失败。
+        :side_effects: 可能更新已有事实强度，或写入 facts 与 facts_fts 并提交事务。
+        """
+        # 先规范化正文和去重键，空内容不创建事实记录。
         now = now if now is not None else current_time()
         content = input.content.strip()
         if not content:
@@ -275,6 +445,7 @@ class MemoryStore:
 
         existing = self._find_similar(person_id, content, key)
         if existing:
+            # 相似事实只强化留存度，不新增重复正文，保持同一人物的事实唯一性。
             cur_ret = retention(existing['strength'], existing['updated_at'], existing['half_life_hours'], now)
             next_strength = reinforce(cur_ret)
             self._db.execute(
@@ -291,6 +462,7 @@ class MemoryStore:
             self._db.commit()
             return existing['id']
 
+        # 未命中相似事实时创建新记录，并在同一事务中写入 FTS 索引。
         due = freeze_due_at(1.0, now, half_life)
         cur = self._db.execute(
             '''INSERT INTO facts (person_id, kind, content, content_key, strength, half_life_hours,
@@ -306,6 +478,16 @@ class MemoryStore:
         return fid
 
     def _find_similar(self, person_id: int, content: str, key: str) -> dict[str, Any] | None:
+        """按精确键和 FTS 候选查找同一人物的相似事实。
+
+        :param person_id: 事实所属人物 ID。
+        :param content: 已去空白的待比较正文。
+        :param key: `exact_key(content)` 生成的严格去重键。
+        :return: 含事实 ID、正文、强度和衰减参数的字典；没有相似事实时返回 `None`。
+        :raises sqlite3.Error: 查询失败。
+        :side_effects: 只读 facts 和 facts_fts 表。
+        :performance: 精确键优先；未命中时最多检查 8 个 FTS 候选。
+        """
         row = self._db.execute(
             '''SELECT id, content, strength, updated_at, half_life_hours
                FROM facts WHERE person_id = ? AND content_key = ?''', (person_id, key)
@@ -332,10 +514,27 @@ class MemoryStore:
     def recall_facts(self, person_id: int, query: str, limit: int = 6, now: int | None = None,
                       query_embedding: bytes | None = None) -> list[RecalledFact]:
         """
-        BM25 召回，可选混合向量打分。
+        按 BM25 召回人物事实，并在向量齐全时执行混合相关度排序。
 
-        query_embedding: 查询文本的 float32 packed bytes（由 VectorService 注入）。
-                         为 None 时退回纯 BM25，行为与重构前完全一致。
+        Args:
+            person_id: 目标人物 ID。
+            query: 待检索的自然语言文本。
+            limit: 最多返回的事实数量，默认 ``6``。
+            now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+            query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时仅使用 BM25。
+
+        Returns:
+            按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
+
+        Raises:
+            sqlite3.Error: FTS 查询、事实更新或事务提交失败。
+            struct.error: 查询向量与事实向量维度不匹配时，向量分支捕获该错误并回退 BM25。
+
+        Side Effects:
+            读取 FTS 和 facts 表；对最终命中的事实回补强度、更新时间、命中次数并提交事务。
+
+        Performance:
+            最多读取 ``limit * 3`` 个 FTS 候选，向量融合仅在查询向量和事实向量同时存在时执行。
         """
         now = now if now is not None else current_time()
         match = match_query(query)
@@ -354,33 +553,31 @@ class MemoryStore:
         for r in rows:
             ret = retention(r[3], r[4], r[5], now)
             relevance = relevance_from_bm25(r[7])
-            # ── 向量融合 ───────────────────────────────────────────────────
-            # 只有查询向量和事实向量都存在时才做混合，任意一方缺失就纯 BM25。
-            # 权重 0.4 BM25 + 0.6 向量：向量召回「换个说法也能找到」的收益更高，
-            # 但 BM25 精确词面匹配仍有价值（专名、数字、代码关键字）。
+            # 【关键】只有两侧向量都存在时才融合相关度，缺失任一向量则保留 BM25 结果。
             #
-            # ★ 融合发生在**相关度**层面，留存度权重最后统一乘上去。
-            #   此前是 0.4*score(bm25, ret) + 0.6*vec_score——留存度只作用于
-            #   BM25 那 40%，向量那 60% 完全不受遗忘曲线约束，等于一条已经
-            #   衰减到该被忘掉的事实，只要语义相近就能满血召回，跟三层记忆
-            #   「会遗忘」的设计意图直接冲突。
+            # 原因：
+            # 1. BM25 对专名、数字和代码关键字的精确匹配不可由语义相似度完全替代。
+            # 2. 留存度必须在 BM25/向量融合后统一施加，否则向量分支会绕过事实遗忘曲线。
+            # 当前处理：以 0.4/0.6 融合词面和语义相关度，再乘以留存度权重。
             fact_embedding = r[8]
             if query_embedding is not None and fact_embedding is not None:
                 try:
                     from .embed import cosine
-                    dim = len(query_embedding) // 4  # float32 = 4 bytes
+                    # 查询向量按 float32 打包，每个分量占 4 字节；维度必须与解包结果一致。
+                    dim = len(query_embedding) // 4
                     cos = cosine(query_embedding, fact_embedding, dim)
-                    # cos 归一化到 [0,1]（L2 归一化向量的内积已在[-1,1]，+1后/2）
+                    # 余弦相似度范围为 [-1, 1]，映射到 [0, 1] 后与 BM25 使用同一分数域。
                     vec_score = (cos + 1) / 2
                     relevance = 0.4 * relevance + 0.6 * vec_score
                 except Exception:
-                    pass   # 向量打分失败静默降级，不影响 BM25 结果
+                    # 向量计算失败时保留 BM25 相关度，确保单条坏向量不阻断整批召回。
+                    pass
             final_score = relevance * retention_weight(ret)
             scored.append(RecalledFact(id=r[0], kind=r[1], content=r[2],
                                         retention=ret, score=final_score))
         scored.sort(key=lambda x: x.score, reverse=True)
         result = scored[:limit]
-        # 命中即回补
+        # 命中后回补事实强度，使重复访问逐步提高留存度。
         for h in result:
             row = next((r for r in rows if r[0] == h.id), None)
             if row:
@@ -396,18 +593,49 @@ class MemoryStore:
         return result
 
     def store_embedding(self, fact_id: int, embedding: bytes) -> None:
-        """写入事实的向量。由 VectorService 在后台异步填充。"""
+        """为指定事实写入已打包的向量数据。
+
+        Args:
+            fact_id: ``facts`` 表中的事实 ID。
+            embedding: 小端 float32 packed 向量字节串；维度由调用方保证与索引一致。
+
+        Raises:
+            sqlite3.Error: 更新或提交失败。
+
+        Side Effects:
+            更新 ``facts.embedding`` 并提交事务；不存在的 fact ID 不会新增记录。
+        """
         self._db.execute('UPDATE facts SET embedding = ? WHERE id = ?', (embedding, fact_id))
         self._db.commit()
 
     def facts_without_embedding(self, limit: int = 128) -> list[dict]:
-        """取尚未计算 embedding 的事实，供后台批量补算。"""
+        """读取尚未计算 embedding 的事实摘要，供后台批量补算。
+
+        Args:
+            limit: 最多返回的事实数量，默认 ``128``；应为非负整数。
+
+        Returns:
+            包含 ``id`` 和 ``content`` 字段的事实字典列表。
+
+        Raises:
+            sqlite3.Error: 查询失败。
+
+        Side Effects:
+            只读 ``facts`` 表，不修改记录或提交事务。
+        """
         rows = self._db.execute(
             'SELECT id, content FROM facts WHERE embedding IS NULL LIMIT ?', (limit,)
         ).fetchall()
         return [{'id': r[0], 'content': r[1]} for r in rows]
 
     def sweep(self, now: int | None = None) -> int:
+        """评估到期事实并冻结留存度低于阈值的记录。
+
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :return: 本次转为非活跃的事实数量。
+        :raises sqlite3.Error: 查询、更新或提交失败。
+        :side_effects: 更新 facts.active 和 due_at，并提交事务。
+        """
         now = now if now is not None else current_time()
         due = self._db.execute(
             'SELECT id, strength, updated_at, half_life_hours, active FROM facts WHERE active = 1 AND due_at <= ?',
@@ -426,6 +654,14 @@ class MemoryStore:
 
     def top_facts(self, person_id: int, limit: int = 8,
                   now: int | None = None) -> list[RecalledFact]:
+        """按当前留存度返回人物的活跃事实。
+
+        :param person_id: 目标人物 ID。
+        :param limit: 最多返回的事实数，默认值为 8。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :return: 按留存度降序排列的事实列表。
+        :side_effects: 只读 facts 表，不执行命中回补。
+        """
         now = now if now is not None else current_time()
         rows = self._db.execute(
             '''SELECT id, kind, content, strength, updated_at, half_life_hours
@@ -440,6 +676,13 @@ class MemoryStore:
         return result[:limit]
 
     def all_facts(self, person_id: int, now: int | None = None) -> list[StoredFact]:
+        """读取人物的全部事实并计算当前留存度和冻结状态。
+
+        :param person_id: 目标人物 ID。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :return: 按留存度降序排列的完整事实列表。
+        :side_effects: 只读 facts 表，不改变 active 字段。
+        """
         now = now if now is not None else current_time()
         rows = self._db.execute(
             '''SELECT id, kind, content, strength, updated_at, half_life_hours, due_at, active
@@ -457,6 +700,12 @@ class MemoryStore:
         return result
 
     def fact_count(self, person_id: int) -> dict[str, int]:
+        """统计人物事实总数和当前活跃数。
+
+        :param person_id: 目标人物 ID。
+        :return: 含 `total` 和 `active` 两个整数键的字典。
+        :side_effects: 只读 facts 表。
+        """
         row = self._db.execute(
             'SELECT COUNT(*), SUM(active) FROM facts WHERE person_id = ?', (person_id,)
         ).fetchone()
@@ -466,7 +715,25 @@ class MemoryStore:
     def queue_utterance(self, source: str, text: str, deliver_after: int,
                         expires_at: int, emotion: str | None = None,
                         now: int | None = None) -> int:
-        """当前无生产调用；恢复接线后仅服务 desktop 主动搭话，QQ 启用时再分区。"""
+        """向待说话队列表写入一条带投放窗口的文本。
+
+        Args:
+            source: 产生该文本的来源标识。
+            text: 待投放正文；首尾空白会移除，规范化后为空时不写入。
+            deliver_after: 最早允许投放的 Unix 毫秒时间戳。
+            expires_at: 投放截止 Unix 毫秒时间戳。
+            emotion: 可选情绪标识。
+            now: 可选创建时间戳；省略时读取当前毫秒时钟。
+
+        Returns:
+            新建待说话记录的 ID；文本为空时返回 ``0``。
+
+        Raises:
+            sqlite3.Error: 插入或提交失败。
+
+        Side Effects:
+            写入 ``pending_utterances`` 并提交事务。
+        """
         now = now if now is not None else current_time()
         text = text.strip()
         if not text:
@@ -480,7 +747,21 @@ class MemoryStore:
         return cur.lastrowid or 0
 
     def due_utterances(self, now: int | None = None, limit: int = 4) -> list[dict[str, Any]]:
-        """当前无生产调用；恢复接线后仅服务 desktop 主动搭话，QQ 启用时再分区。"""
+        """读取当前已到投放时间且尚未过期的待说话记录。
+
+        Args:
+            now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+            limit: 最多返回的记录数，默认 ``4``。
+
+        Returns:
+            按记录 ID 升序排列、包含 ``id``、``source``、``emotion`` 和 ``text`` 字段的列表。
+
+        Raises:
+            sqlite3.Error: 查询失败。
+
+        Side Effects:
+            只读 ``pending_utterances`` 表，不标记记录已投放。
+        """
         now = now if now is not None else current_time()
         rows = self._db.execute(
             '''SELECT id, source, emotion, text FROM pending_utterances
@@ -491,7 +772,18 @@ class MemoryStore:
         return [{'id': r[0], 'source': r[1], 'emotion': r[2], 'text': r[3]} for r in rows]
 
     def mark_delivered(self, ids: list[int], now: int | None = None) -> None:
-        """当前无生产调用；恢复接线后仅服务 desktop 主动搭话，QQ 启用时再分区。"""
+        """将指定待说话记录标记为已投放。
+
+        Args:
+            ids: 待更新的记录 ID 列表；空列表不执行数据库操作。
+            now: 可选投放时间戳；省略时读取当前毫秒时钟。
+
+        Raises:
+            sqlite3.Error: 更新或提交失败。
+
+        Side Effects:
+            更新匹配记录的 ``delivered_at`` 并提交事务；不存在的 ID 被忽略。
+        """
         if not ids:
             return
         now = now if now is not None else current_time()
@@ -503,7 +795,18 @@ class MemoryStore:
         self._db.commit()
 
     def has_queued_since(self, source: str, since: int) -> bool:
-        """当前无生产调用；恢复接线后仅服务 desktop 主动搭话，QQ 启用时再分区。"""
+        """判断指定来源在给定时间之后是否创建过待说话记录。
+
+        Args:
+            source: 待匹配的来源标识。
+            since: 起始 Unix 毫秒时间戳，包含该时刻。
+
+        Returns:
+            存在满足条件的记录时返回 ``True``，否则返回 ``False``。
+
+        Raises:
+            sqlite3.Error: 查询失败。
+        """
         row = self._db.execute(
             'SELECT 1 FROM pending_utterances WHERE source = ? AND created_at >= ? LIMIT 1',
             (source, since)
@@ -511,7 +814,14 @@ class MemoryStore:
         return row is not None
 
     def pending_utterance_count(self) -> int:
-        """当前无生产调用；恢复接线后仅服务 desktop 主动搭话，QQ 启用时再分区。"""
+        """统计尚未标记为已投放的待说话记录数量。
+
+        Returns:
+            ``delivered_at IS NULL`` 的待说话记录数量。
+
+        Raises:
+            sqlite3.Error: 查询失败。
+        """
         row = self._db.execute(
             'SELECT COUNT(*) FROM pending_utterances WHERE delivered_at IS NULL'
         ).fetchone()
@@ -519,17 +829,42 @@ class MemoryStore:
 
     # ------------------------------------------------------------------ meta JSON 键值
     def load_pending_promises(self) -> list[dict[str, Any]]:
-        """读取 desktop 专属的跨重启约定；短期情境意图不在这里存储。"""
+        """读取持久化的跨重启约定列表。
+
+        Returns:
+            仅包含字典项的约定列表；meta 值缺失、解析失败或顶层不是列表时返回空列表。
+
+        Raises:
+            sqlite3.Error: 读取 meta 表失败。
+        """
         raw = self.read_json(_PENDING_PROMISES_KEY, [])
         if not isinstance(raw, list):
             return []
         return [item for item in raw if isinstance(item, dict)]
 
     def save_pending_promises(self, promises: list[dict[str, Any]]) -> None:
-        """整批覆盖 desktop 专属约定快照，队列的其余意图在进程内自然过期。"""
+        """整批覆盖持久化的跨重启约定快照。
+
+        Args:
+            promises: 可 JSON 序列化的约定字典列表。
+
+        Raises:
+            sqlite3.Error: meta 值写入或提交失败。
+            TypeError: 约定列表不可 JSON 序列化。
+
+        Side Effects:
+            覆盖 meta 表中的约定 JSON 值并提交事务。
+        """
         self.write_json(_PENDING_PROMISES_KEY, promises)
 
     def read_json(self, key: str, fallback: Any) -> Any:
+        """读取 meta 表中的 JSON 值，解析失败时返回调用方指定的回退值。
+
+        :param key: meta 表键名。
+        :param fallback: 键不存在或 JSON 无效时返回的值。
+        :return: JSON 解码后的对象，或 `fallback`。
+        :side_effects: 只读 meta 表。
+        """
         row = self._db.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()
         if not row:
             return fallback
@@ -539,6 +874,15 @@ class MemoryStore:
             return fallback
 
     def write_json(self, key: str, value: Any) -> None:
+        """把值序列化为 JSON 并覆盖写入 meta 表。
+
+        :param key: meta 表键名。
+        :param value: 可 JSON 序列化的值。
+        :return: 无返回值。
+        :raises TypeError: 值不可 JSON 序列化。
+        :raises sqlite3.Error: 写入或提交失败。
+        :side_effects: 插入/更新 meta 记录并提交事务。
+        """
         self._db.execute(
             'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
             (key, json.dumps(value, ensure_ascii=False))
@@ -546,6 +890,13 @@ class MemoryStore:
         self._db.commit()
 
     def user_spoke_after(self, stream_id: int, at: int) -> bool:
+        """判断指定 stream 在时间点之后是否出现用户消息。
+
+        :param stream_id: 目标 stream ID。
+        :param at: 比较用的 Unix 毫秒时间戳，严格使用 `created_at > at`。
+        :return: 存在匹配用户消息时返回 `True`。
+        :side_effects: 只读 messages 表。
+        """
         row = self._db.execute(
             """SELECT 1 FROM messages
                WHERE stream_id = ? AND role = 'user' AND created_at > ? LIMIT 1""",

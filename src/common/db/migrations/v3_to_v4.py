@@ -1,17 +1,8 @@
-"""
-v3 → v4 迁移：预分词列从 Intl.Segmenter+bigram 换成 jieba。
+"""将历史全文索引从手写 bigram 预分词迁移到 jieba 分词结果。
 
-原因：TS 侧手写 bigram 是因为无法分发编译型分词 .dll；
-Python 侧 jieba 是纯 Python 包，这个约束不存在了。
-
-步骤：
-  1. facts 表加 tokens_v2 列（新预分词）
-  2. 用 jieba 重新分词所有 content，填入 tokens_v2
-  3. 删旧 facts_fts / cues_fts，重建，用 tokens_v2 驱动
-  4. episode_cues 同理重建索引
-
-注意：facts_fts 是 contentless 表（content=''），只存索引不存原文，
-重建时必须重新插入 rowid + tokens 对。
+迁移为 ``facts`` 增加 ``tokens_v2``，重新处理事实文本，并重建 facts 与
+episode_cues 的 contentless FTS 索引。由于索引不保存原文，重建时必须同时写入
+原始 rowid 和新的分词字符串，才能保持查询结果与事实记录一一对应。
 """
 
 from __future__ import annotations
@@ -27,6 +18,13 @@ logger = get_logger(__name__)
 # 延迟导入：jieba 首次 import 会加载词典（约 1s），
 # 放在迁移函数里而非模块顶层，避免影响进程冷启动
 def _tokenize(text: str) -> str:
+    """使用 jieba 对记忆文本进行精确模式分词。
+
+    :param text: 待分词的事实或召回线索文本。
+    :return: 以单个空格连接的非空分词结果。
+    :side_effects: 首次调用可能加载 jieba 词典；不修改数据库。
+    :performance: 首次调用包含词典加载成本，后续复杂度与文本长度相关。
+    """
     import jieba
     tokens = list(jieba.cut(text, cut_all=False))
     return " ".join(t for t in tokens if t.strip())
@@ -34,7 +32,22 @@ def _tokenize(text: str) -> str:
 
 @register(3)
 def v3_to_v4(db: sqlite3.Connection) -> None:
-    """将全文索引的预分词列从手写 bigram 切换到 jieba。"""
+    """将全文索引预分词列切换为 jieba 精确模式结果并重建 FTS 表。
+
+    Args:
+        db: 当前迁移事务使用的 SQLite 连接。
+
+    Raises:
+        sqlite3.Error: 列添加、索引重建或批量写入失败。
+        ImportError: 运行环境未安装 jieba。
+
+    Side Effects:
+        为 ``facts`` 添加 ``tokens_v2`` 列，更新事实和情节线索分词结果，删除并重建
+        ``facts_fts`` 和 ``cues_fts``；不提交事务，由迁移管理器统一提交。
+
+    Performance:
+        首次分词可能加载词典，整体耗时与事实和线索文本总长度线性相关。
+    """
 
     # 1. facts 加新分词列（若不存在）
     cols = {row[1] for row in db.execute("PRAGMA table_info(facts)").fetchall()}

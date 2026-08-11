@@ -1,4 +1,8 @@
-"""OneBot v11 协议事件到 QQ 入站结构的纯解析。"""
+"""把 OneBot v11 协议事件解析为 QQ 适配器使用的入站结构。
+
+本模块只执行事件分类、访问策略判断和字段归一化，不建立网络连接，也不提交
+消息；`QqInboundEvent` 是解析结果，运行器据此调用主体后端接口。
+"""
 
 from __future__ import annotations
 
@@ -37,13 +41,33 @@ class QqInboundEvent:
 
 
 def is_action_response(payload: Mapping[str, Any]) -> bool:
-    """判断是不是我们发出去的请求的回复（带非空 echo）。"""
+    """判断协议事件是否为带非空 ``echo`` 的 action 响应。
+
+    Args:
+        payload: 已解析的 OneBot 事件映射。
+
+    Returns:
+        ``echo`` 为非空字符串时返回 ``True``，否则返回 ``False``。
+
+    Side Effects:
+        仅读取事件字段，不修改输入映射。
+    """
     echo = payload.get('echo')
     return isinstance(echo, str) and bool(echo.strip())
 
 
 def is_heartbeat(payload: Mapping[str, Any]) -> bool:
-    """识别协议端探活事件，供运行器静默丢弃。"""
+    """判断协议事件是否为 ``meta_event_type=heartbeat`` 探活事件。
+
+    Args:
+        payload: 已解析的 OneBot 事件映射。
+
+    Returns:
+        ``meta_event_type`` 等于 ``heartbeat`` 时返回 ``True``，否则返回 ``False``。
+
+    Side Effects:
+        仅读取事件字段，不修改输入映射。
+    """
     return payload.get('meta_event_type') == 'heartbeat'
 
 
@@ -54,7 +78,25 @@ def classify_event(
     private_access: PrivateAccessConfig,
     group_access: GroupAccessConfig,
 ) -> EventKind:
-    """给运行器一个可记录的事件判定，不执行任何 I/O。"""
+    """根据协议类型、机器人身份和访问策略分类单个入站事件。
+
+    Args:
+        payload: 已解析的 OneBot 事件映射。
+        self_id: 机器人登录 QQ 号。
+        owner_qq: 配置的 owner QQ 号。
+        private_access: 私聊访问策略模型。
+        group_access: 群聊白名单策略模型。
+
+    Returns:
+        事件种类标识，包括 action 响应、心跳、请求、自身消息、拒绝消息、普通消息
+        和其他未处理类型。
+
+    Raises:
+        ValueError: 消息事件缺少必要的身份字段或字段无法规范化。
+
+    Side Effects:
+        仅读取事件和访问策略，不执行网络、持久化或消息提交操作。
+    """
     if is_action_response(payload):
         return 'action_response'
     if is_heartbeat(payload):
@@ -90,7 +132,26 @@ def parse_inbound_event(
     private_access: PrivateAccessConfig,
     group_access: GroupAccessConfig,
 ) -> QqInboundEvent | None:
-    """解析允许的私聊或白名单群消息；其余类型返回 None 交给运行器记录。"""
+    """解析通过访问策略的私聊或白名单群消息为统一入站事件。
+
+    Args:
+        payload: 已解析的 OneBot 消息事件映射。
+        self_id: 机器人登录 QQ 号，用于识别自身消息和提及。
+        self_name: 机器人在平台上的显示名称。
+        owner_qq: 配置的 owner QQ 号。
+        private_access: 私聊访问策略模型。
+        group_access: 群聊白名单策略模型。
+
+    Returns:
+        规范化后的 ``QqInboundEvent``；事件不是允许处理的普通消息时返回 ``None``。
+
+    Raises:
+        ValueError: 消息缺少发送者、消息 ID、消息段列表或必要字段类型不正确。
+
+    Side Effects:
+        仅读取和转换输入事件，不执行网络请求或持久化操作。
+    """
+    # 先执行事件分类，拒绝消息、机器人自身消息和不支持类型不进入字段解析流程。
     if classify_event(
         payload,
         self_id,
@@ -105,6 +166,7 @@ def parse_inbound_event(
     raw_segments = payload.get('message')
     if not isinstance(raw_segments, list):
         raise ValueError('message 必须是 array 格式的消息段列表')
+    # group_id 同时决定 stream 类型和外部标识；私聊使用发送者外部号作为 stream 标识。
     group_id = payload.get('group_id')
     stream_kind: Literal['direct', 'group'] = 'group' if group_id is not None else 'direct'
     stream_external_id = (
@@ -116,6 +178,7 @@ def parse_inbound_event(
     sender_nickname = ''
     sender_group_card = ''
     if isinstance(sender, Mapping):
+        # 群名片只属于当前群 stream，不能覆盖跨平台 identity 的账号昵称。
         sender_nickname = _string_value(sender.get('nickname'))
         if stream_kind == 'group':
             sender_group_card = _string_value(sender.get('card'))
@@ -135,6 +198,13 @@ def parse_inbound_event(
 
 
 def _sender_external_id(payload: Mapping[str, Any]) -> str:
+    """从 sender.user_id 或事件级 user_id 提取发送者外部标识。
+
+    :param payload: 已解析的 OneBot 事件对象。
+    :return: 去除空白后的发送者 QQ 号或其他协议标识。
+    :raises ValueError: 两个候选字段都缺失或为空。
+    :side_effects: 不修改事件对象。
+    """
     sender = payload.get('sender')
     sender_id = sender.get('user_id') if isinstance(sender, Mapping) else None
     if sender_id is None:
@@ -143,6 +213,14 @@ def _sender_external_id(payload: Mapping[str, Any]) -> str:
 
 
 def _required_identifier(value: Any, message: str) -> str:
+    """把协议字段规范化为非空字符串。
+
+    :param value: 原始协议字段，可以是数字、字符串或 `None`。
+    :param message: 字段缺失时用于构造异常的中文错误信息。
+    :return: `str(value).strip()` 的结果。
+    :raises ValueError: 规范化结果为空。
+    :side_effects: 不修改输入值。
+    """
     normalized = _string_value(value)
     if not normalized:
         raise ValueError(message)
@@ -150,6 +228,12 @@ def _required_identifier(value: Any, message: str) -> str:
 
 
 def _string_value(value: Any) -> str:
+    """把可选协议值转换为空安全的去空白字符串。
+
+    :param value: 任意协议值；`None` 被视为空字符串。
+    :return: 非 `None` 值的字符串表示去除首尾空白后的结果。
+    :side_effects: 不执行 I/O，也不抛出本函数主动定义的异常。
+    """
     if value is None:
         return ''
     return str(value).strip()

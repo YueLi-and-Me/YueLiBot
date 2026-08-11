@@ -1,3 +1,9 @@
+/**
+ * 读取、校验并持久化 Electron 设置窗口使用的运行配置。
+ *
+ * 本模块负责兼容旧配置文件、解析 TOML、创建配置目录并生成前端可安全展示的
+ * 配置快照；它依赖 shared/ipc.ts 的配置类型，并由主进程和设置窗口共同调用。
+ */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseDotenv } from 'dotenv'
@@ -151,32 +157,80 @@ export const DEFAULT_CONFIG: YueliConfig = {
 type ModelTask = (typeof MODEL_TASKS)[number]
 type GenerationConfig = YueliConfig['generation']
 
+/**
+ * 创建默认配置的深拷贝，避免调用方修改全局默认值。
+ *
+ * @returns 与默认配置结构相同且可独立修改的配置对象。
+ */
 function cloneDefaults(): YueliConfig {
   return structuredClone(DEFAULT_CONFIG)
 }
 
+/**
+ * 判断未知值是否为非数组对象，并将其收窄为键值记录。
+ *
+ * @param value 待判断的未知配置值。
+ * @returns 值为非空、非数组对象时返回 `true`，否则返回 `false`。
+ */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * 从配置记录中读取必需的子表。
+ *
+ * @param record 当前配置记录。
+ * @param key 子表字段名。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 指定字段对应的配置记录。
+ * @throws Error 当字段缺失、值为空或值不是对象表时抛出。
+ */
 function recordAt(record: Record<string, unknown>, key: string, path: string): Record<string, unknown> {
   const value = record[key]
   if (!isRecord(value)) throw new Error(`${path} 缺少 [${key}] 配置段`)
   return value
 }
 
+/**
+ * 从配置记录中读取必需的字符串字段。
+ *
+ * @param record 当前配置记录。
+ * @param key 字段名。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 字段的字符串值；该方法不负责去除首尾空白。
+ * @throws Error 当字段不存在或值不是字符串时抛出。
+ */
 function stringAt(record: Record<string, unknown>, key: string, path: string): string {
   const value = record[key]
   if (typeof value !== 'string') throw new Error(`${path} 的 ${key} 必须是字符串`)
   return value
 }
 
+/**
+ * 从配置记录中读取必需的有限数字字段。
+ *
+ * @param record 当前配置记录。
+ * @param key 字段名。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 字段的有限数字值。
+ * @throws Error 当字段不存在、值不是数字或值为 `NaN`/无穷大时抛出。
+ */
 function numberAt(record: Record<string, unknown>, key: string, path: string): number {
   const value = record[key]
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${path} 的 ${key} 必须是数字`)
   return value
 }
 
+/**
+ * 读取可选数字字段；字段缺失时返回调用方提供的默认值。
+ *
+ * @param record 当前配置记录。
+ * @param key 字段名。
+ * @param defaultValue 字段缺失时使用的有限数字默认值。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 配置中的数字值，或字段缺失时的 `defaultValue`。
+ * @throws Error 当字段存在但不是有限数字时抛出。
+ */
 function numberAtOr(
   record: Record<string, unknown>, key: string, defaultValue: number, path: string,
 ): number {
@@ -184,6 +238,16 @@ function numberAtOr(
   return numberAt(record, key, path)
 }
 
+/**
+ * 读取可选字符串字段；字段缺失时返回调用方提供的默认值。
+ *
+ * @param record 当前配置记录。
+ * @param key 字段名。
+ * @param defaultValue 字段缺失时使用的字符串默认值。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 配置中的字符串值，或字段缺失时的 `defaultValue`。
+ * @throws Error 当字段存在但不是字符串时抛出。
+ */
 function stringAtOr(
   record: Record<string, unknown>, key: string, defaultValue: string, path: string,
 ): string {
@@ -192,8 +256,12 @@ function stringAtOr(
 }
 
 /**
- * 截图范围。写错值要在加载期就报出来——运行时才发现的话，表现是「她看到的
- * 东西不对」，那是最难往回追的一类问题。
+ * 读取视觉截图范围，并在配置加载阶段校验取值。
+ *
+ * @param record 视觉配置记录。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns `window`（前台窗口）或 `screen`（整个主屏）；字段缺失时返回默认值。
+ * @throws Error 当字段取值不是 `window` 或 `screen` 时抛出。
  */
 function captureModeAt(record: Record<string, unknown>, path: string): 'window' | 'screen' {
   const value = record['capture_mode']
@@ -204,6 +272,14 @@ function captureModeAt(record: Record<string, unknown>, path: string): 'window' 
   return value
 }
 
+/**
+ * 读取并校验允许生成屏幕情境的出口列表。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 仅包含 `desktop` 或 `direct` 的新数组；配置段缺失时返回默认副本。
+ * @throws Error 当字段不是字符串数组、包含群聊出口或包含未知出口时抛出。
+ */
 function perceptionSurfacesAt(
   document: Record<string, unknown>, path: string,
 ): Array<'desktop' | 'direct'> {
@@ -225,12 +301,28 @@ function perceptionSurfacesAt(
   return [...surfaces] as Array<'desktop' | 'direct'>
 }
 
+/**
+ * 从配置记录中读取必需的布尔字段。
+ *
+ * @param record 当前配置记录。
+ * @param key 字段名。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 字段的布尔值。
+ * @throws Error 当字段不存在或值不是布尔值时抛出。
+ */
 function booleanAt(record: Record<string, unknown>, key: string, path: string): boolean {
   const value = record[key]
   if (typeof value !== 'boolean') throw new Error(`${path} 的 ${key} 必须是布尔值`)
   return value
 }
 
+/**
+ * 读取 TOML 文件并校验顶层结构版本。
+ *
+ * @param path TOML 配置文件的绝对或相对路径。
+ * @returns 已解析的配置文档及其 `inner.version` 版本字符串。
+ * @throws Error 当文件不可读、TOML 语法无效、顶层不是表、缺少版本或版本不受支持时抛出。
+ */
 function parseToml(path: string): { document: Record<string, unknown>; version: string } {
   let parsed: unknown
   try {
@@ -249,6 +341,15 @@ function parseToml(path: string): { document: Record<string, unknown>; version: 
   return { document: parsed, version }
 }
 
+/**
+ * 校验 OpenAI 兼容服务商的鉴权字段组合，并规范化鉴权名称。
+ *
+ * @param provider 待校验的服务商配置；方法会原地去除 `auth_name` 首尾空白。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns {void} 无返回值；校验通过时保留规范化后的服务商配置。
+ * @throws Error 当鉴权类型与鉴权名称、API 密钥的组合不满足约束时抛出。
+ * @remarks `volcengine` 私有协议不使用本组字段校验，因此直接返回。
+ */
 function validateProviderAuth(provider: ApiProviderConfig, path: string): void {
   if (provider.client_type !== 'openai') return
   provider.auth_name = provider.auth_name.trim()
@@ -267,6 +368,14 @@ function validateProviderAuth(provider: ApiProviderConfig, path: string): void {
   }
 }
 
+/**
+ * 从服务商 TOML 文件解析并校验所有 API 服务商定义。
+ *
+ * @param path 服务商配置文件路径。
+ * @returns 按文件顺序排列且名称唯一的服务商配置数组。
+ * @throws Error 当文件结构、字段类型、客户端类型、鉴权字段或名称唯一性不满足约束时抛出。
+ * @remarks 方法会读取文件并对每个服务商执行鉴权字段规范化。
+ */
 function parseProviders(path: string): ApiProviderConfig[] {
   const { document } = parseToml(path)
   const definitions = document.api_providers
@@ -275,8 +384,8 @@ function parseProviders(path: string): ApiProviderConfig[] {
     const itemPath = `${path} 的 api_providers[${index}]`
     if (!isRecord(value)) throw new Error(`${itemPath} 必须是表`)
     const clientType = stringAt(value, 'client_type', itemPath)
-    // volcengine = 豆包语音私有协议，只能承载 tts；Python 侧的 loader 会拦截
-    // 把它指到 chat/vision/embedding 的配置，这里只负责别把它判成非法。
+    // 私有语音协议只能承载语音任务；跨任务引用由运行时配置加载器继续校验，
+    // 此处保留该客户端类型以便完整解析服务商文件。
     if (clientType !== 'openai' && clientType !== 'volcengine') {
       throw new Error(`${itemPath} 的 client_type 当前只支持 openai 或 volcengine`)
     }
@@ -306,6 +415,14 @@ function parseProviders(path: string): ApiProviderConfig[] {
   return providers
 }
 
+/**
+ * 解析各生成任务的温度、令牌上限及主动任务开关。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 合并默认值后的生成配置。
+ * @throws Error 当生成任务不是配置表、字段类型无效或仍包含已废弃的 `thinking` 字段时抛出。
+ */
 function parseGeneration(document: Record<string, unknown>, path: string): GenerationConfig {
   if (document.generation === undefined) return structuredClone(DEFAULT_CONFIG.generation)
   const generation = recordAt(document, 'generation', path)
@@ -341,10 +458,14 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
 }
 
 /**
- * 解析一个任务的候选模型。
+ * 解析单个任务的候选模型列表和轮询参数。
  *
- * 1.0.0 写成 `chat = "chat"`（一个任务一个模型），1.1.0 写成
- * `[model_tasks.chat] model_list = [...]`。两种都读得进来，写出去永远是新的。
+ * @param taskRecord `model_tasks` 配置表。
+ * @param task 待解析的任务名称。
+ * @param path 用于错误信息的模型配置文件路径。
+ * @returns 合并默认值后的任务路由配置；兼容旧版字符串模型名格式。
+ * @throws Error 当候选列表、选择策略、超时或候选名称重复时抛出。
+ * @remarks 旧版单字符串配置只转换为单元素 `model_list`，写回时统一使用新结构。
  */
 function parseTaskRouting(
   taskRecord: Record<string, unknown>, task: ModelTask, path: string,
@@ -367,7 +488,7 @@ function parseTaskRouting(
   if (strategy !== 'sequential' && strategy !== 'random') {
     throw new Error(`${itemPath} 的 selection_strategy 只能是 sequential 或 random`)
   }
-  // 同一个模型在列表里出现两次只会让轮询白撞一次，属于明显的手误。
+  // 重复候选会让顺序轮询重复命中同一模型，并使随机策略的权重失真，因此在加载期拒绝。
   const seen = new Set<string>()
   for (const name of modelList as string[]) {
     if (seen.has(name)) throw new Error(`${itemPath} 的 model_list 存在重复模型：${name}`)
@@ -396,6 +517,14 @@ function parseTaskRouting(
   }
 }
 
+/**
+ * 解析模型定义、任务路由和生成参数，并校验模型名称唯一性。
+ *
+ * @param path 模型配置文件路径。
+ * @returns 模型定义、任务路由和生成配置的组合结果。
+ * @throws Error 当模型文件结构、字段类型、推理解析模式或名称唯一性不满足约束时抛出。
+ * @remarks 方法同时读取模型配置文件和其中声明的任务路由，不会验证服务商引用是否存在。
+ */
 function parseModels(
   path: string,
 ): { models: ModelDefinitionConfig[]; tasks: YueliConfig['model_tasks']; generation: GenerationConfig } {
@@ -430,6 +559,14 @@ function parseModels(
   return { models, tasks, generation: parseGeneration(document, path) }
 }
 
+/**
+ * 从配置文档读取会话记忆参数，并为缺失字段合并默认值。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 合并默认值后的会话配置。
+ * @throws Error 当 `conversation` 不是表或其字段类型无效时抛出。
+ */
 function parseConversation(
   document: Record<string, unknown>, path: string,
 ): YueliConfig['conversation'] {
@@ -464,6 +601,14 @@ function parseConversation(
   }
 }
 
+/**
+ * 校验 24 小时制的 `HH:MM` 时间字符串。
+ *
+ * @param value 待校验的时间文本，必须使用两位小时和两位分钟。
+ * @param path 用于错误信息的配置路径。
+ * @returns {void} 无返回值；校验通过表示时间符合 24 小时制格式。
+ * @throws Error 当格式无效、小时不在 00~23 或分钟不在 00~59 时抛出。
+ */
 function assertClock(value: string, path: string): void {
   const match = /^(\d{2}):(\d{2})$/.exec(value)
   if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
@@ -471,6 +616,14 @@ function assertClock(value: string, path: string): void {
   }
 }
 
+/**
+ * 校验日程段数量、备用时间、文本长度和生成重试间隔。
+ *
+ * @param schedule 待校验的日程配置。
+ * @param path 用于错误信息的配置路径。
+ * @returns {void} 无返回值；校验通过表示日程字段满足范围和格式约束。
+ * @throws Error 当数量范围、时间格式、文本长度或重试间隔不满足约束时抛出。
+ */
 function assertSchedule(schedule: YueliConfig['schedule'], path: string): void {
   if (!Number.isInteger(schedule.min_slots) || schedule.min_slots < 1 || schedule.min_slots > 24) {
     throw new Error(`${path}.min_slots 必须是 1 到 24 的整数`)
@@ -504,6 +657,14 @@ function assertSchedule(schedule: YueliConfig['schedule'], path: string): void {
   }
 }
 
+/**
+ * 从配置文档读取日程参数，并合并默认值后执行完整校验。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 合并默认值且已通过校验的日程配置。
+ * @throws Error 当日程段结构、字段类型或字段取值无效时抛出。
+ */
 function parseSchedule(
   document: Record<string, unknown>, path: string,
 ): YueliConfig['schedule'] {
@@ -545,6 +706,13 @@ const RETIRED_PERSONALITY_FIELDS: Record<string, string> = {
   boundaries: 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。',
 }
 
+/**
+ * 拒绝人格配置中已移除的字段，避免旧结构静默改变运行语义。
+ *
+ * @param personality 人格配置记录。
+ * @returns {void} 无返回值；不包含已移除字段时校验通过。
+ * @throws Error 当记录包含任一已移除字段时抛出，并提示对应的新配置位置。
+ */
 function assertNoRetiredPersonalityFields(
   personality: Record<string, unknown>,
 ): void {
@@ -553,6 +721,14 @@ function assertNoRetiredPersonalityFields(
   }
 }
 
+/**
+ * 校验生日为空或为不晚于当前日期的真实日历日期。
+ *
+ * @param value 生日文本；空字符串表示未配置，非空值必须为 `YYYY-MM-DD`。
+ * @param path 用于错误信息的配置路径。
+ * @returns {void} 无返回值；空值或不晚于当前日期的合法日期视为通过。
+ * @throws Error 当格式无效、日期不存在或日期晚于当前日期时抛出。
+ */
 function assertBirthday(value: string, path: string): void {
   if (!value) return
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
@@ -572,6 +748,15 @@ function assertBirthday(value: string, path: string): void {
   if (birthday.getTime() > todayUtc) throw new Error(`${path} 不能晚于今天`)
 }
 
+/**
+ * 校验配置条目的名称非空且在同一配置段内唯一。
+ *
+ * @param items 带有 `name` 字段的配置条目数组。
+ * @param path 用于错误信息的配置文件路径。
+ * @param section 配置段名称，用于生成字段级错误信息。
+ * @returns {void} 无返回值；所有名称非空且唯一时校验通过。
+ * @throws Error 当名称为空或出现重复名称时抛出。
+ */
 function assertUniqueNames(items: Array<{ name: string }>, path: string, section: string): void {
   const names = new Set<string>()
   for (const item of items) {
@@ -582,8 +767,15 @@ function assertUniqueNames(items: Array<{ name: string }>, path: string, section
 }
 
 /**
- * 引用完整性检查。未被任何任务选中的坏模型同样是配置错误——不能等轮询切到
- * 它头上、用户正等着回话的时候才炸。
+ * 校验模型到服务商以及任务到模型的双向配置引用。
+ *
+ * @param models 模型定义数组。
+ * @param tasks 各任务的候选模型路由。
+ * @param providers API 服务商定义数组。
+ * @param modelsPath 模型配置文件路径，用于任务引用错误信息。
+ * @param providersPath 服务商配置文件路径，用于模型引用错误信息。
+ * @returns {void} 无返回值；所有双向引用均可解析时校验通过。
+ * @throws Error 当模型引用不存在的服务商，或任务引用不存在的模型时抛出。
  */
 function assertReferencesResolve(
   models: ModelDefinitionConfig[],
@@ -608,15 +800,26 @@ function assertReferencesResolve(
   }
 }
 
+/**
+ * 读取四个拆分 TOML 文件，合并为运行时配置并执行跨文件引用校验。
+ *
+ * @param directory 配置目录，必须包含 `providers.toml`、`models.toml`、`bot.toml` 和 `features.toml`。
+ * @returns 合并默认值、完成字段校验并通过引用完整性检查的运行时配置。
+ * @throws Error 当任一配置文件无法读取、结构无效、字段越界或跨文件引用不一致时抛出。
+ * @remarks 方法只读取配置，不写入文件；解析过程中会创建独立的默认配置副本。
+ */
 function readSplitConfig(directory: string): YueliConfig {
   const providersPath = join(directory, 'providers.toml')
   const modelsPath = join(directory, 'models.toml')
   const botPath = join(directory, 'bot.toml')
   const featuresPath = join(directory, 'features.toml')
+
+  // 先解析模型与服务商并校验交叉引用，避免将无法路由的配置继续合并到运行时。
   const providers = parseProviders(providersPath)
   const { models, tasks, generation } = parseModels(modelsPath)
   assertReferencesResolve(models, tasks, providers, modelsPath, providersPath)
 
+  // bot.toml 同时承载身份、群聊、人格和会话参数；缺失的可选段使用独立默认副本。
   const { document: botDocument } = parseToml(botPath)
   const bot = recordAt(botDocument, 'bot', botPath)
   const aliases = bot.aliases ?? DEFAULT_CONFIG.bot.aliases
@@ -700,6 +903,7 @@ function readSplitConfig(directory: string): YueliConfig {
   const birthday = stringAt(personality, 'birthday', botPath)
   assertBirthday(birthday, `${botPath} 的 personality.birthday`)
 
+  // features.toml 的任务开关必须与模型路由分开读取，避免旧配置迁移时互相覆盖。
   const { document: features } = parseToml(featuresPath)
   const tts = recordAt(features, 'tts', featuresPath)
   const vision = recordAt(features, 'vision', featuresPath)
@@ -766,7 +970,14 @@ function readSplitConfig(directory: string): YueliConfig {
   }
 }
 
-/** log.suppress_libraries 只接受字符串数组。 */
+/**
+ * 解析日志配置中的库名抑制列表。
+ *
+ * @param value 待解析的未知 TOML 值。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 字符串数组的浅拷贝，避免调用方持有 TOML 解析结果的可变引用。
+ * @throws Error 当值不是字符串数组时抛出。
+ */
 function parseSuppressLibraries(value: unknown, path: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
     throw new Error(`${path} 的 log.suppress_libraries 必须是字符串数组`)
@@ -774,11 +985,28 @@ function parseSuppressLibraries(value: unknown, path: string): string[] {
   return [...(value as string[])]
 }
 
-/** 读 [log] 段；整段或单个字段缺失都退回默认值，老配置照样能启动。 */
+/**
+ * 解析日志配置段，并为缺失字段合并默认值。
+ *
+ * @param features 已解析的功能配置文档。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 完整的日志运行配置。
+ * @throws Error 当日志配置段、枚举值、保留数量或列表字段类型无效时抛出。
+ * @remarks 方法返回新的默认配置副本，不修改 TOML 解析结果。
+ */
 function parseLog(features: Record<string, unknown>, path: string): YueliConfig['log'] {
   const fallback = structuredClone(DEFAULT_CONFIG.log)
   if (features.log === undefined) return fallback
   const log = recordAt(features, 'log', path)
+  /**
+   * 从日志配置读取受限字符串枚举，并在字段缺失时返回默认值。
+   *
+   * @param key 日志配置字段名。
+   * @param allowed 允许的字符串枚举值集合。
+   * @param defaultValue 字段缺失时使用的默认枚举值。
+   * @returns {T} 配置中的合法枚举值或默认值。
+   * @throws {Error} 字段存在但不是字符串，或字符串不在允许集合中时抛出。
+   */
   const enumAt = <T extends string>(key: string, allowed: readonly T[], defaultValue: T): T => {
     const value = stringAtOr(log, key, defaultValue, `${path} 的 log`)
     if (!allowed.includes(value as T)) {
@@ -787,6 +1015,7 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
     return value as T
   }
   const levels: Record<string, string> = {}
+  // 库级别覆盖采用独立记录，避免把 TOML 表中的未知对象直接暴露给日志初始化代码。
   if (log.library_levels !== undefined) {
     const table = recordAt(log, 'library_levels', `${path} 的 log`)
     for (const [name, value] of Object.entries(table)) {
@@ -802,6 +1031,7 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
   const eventRetentionHours = numberAtOr(
     log, 'event_retention_hours', fallback.event_retention_hours, `${path} 的 log`,
   )
+  // 保留策略在加载期拒绝非法值，防止运行时清理任务执行无界查询或立即清空数据。
   if (!Number.isInteger(eventRetentionCount) || eventRetentionCount < 1) {
     throw new Error(`${path} 的 log.event_retention_count 必须是正整数`)
   }
@@ -836,7 +1066,11 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
   }
 }
 
-/** 旧版扁平配置里的一段连接信息，用来生成一条 api_provider。 */
+/**
+ * 旧版扁平配置中的连接字段集合，用于迁移为一条 API 服务商记录。
+ *
+ * @remarks 该接口只描述迁移中间值，不代表当前拆分配置文件的完整服务商结构。
+ */
 interface LegacyConnection {
   providerName: string
   kind: string
@@ -851,6 +1085,15 @@ interface LegacyConnection {
   retry_interval_ms: number
 }
 
+/**
+ * 从旧版扁平配置段提取服务商连接信息，并为缺失数值字段合并已有默认值。
+ *
+ * @param section 旧版配置中的连接字段记录。
+ * @param providerName 迁移后服务商的名称。
+ * @param fallback 同一旧配置中可复用的连接默认值；不存在时使用全局服务商默认值。
+ * @returns 迁移用的连接信息对象。
+ * @remarks 方法仅读取输入，不写文件，也不会校验 API 密钥是否完整。
+ */
 function legacyConnection(
   section: Record<string, unknown>, providerName: string, fallback: LegacyConnection | null,
 ): LegacyConnection {
@@ -873,8 +1116,12 @@ function legacyConnection(
 }
 
 /**
- * 把旧版「一个任务一套地址密钥」的扁平配置摊成厂商 + 模型 + 任务三层。
- * 迁移出来的每个任务都只有一条候选，用户想加备用 API 时再自己在设置页添。
+ * 将旧版按任务保存地址和密钥的扁平配置迁移为服务商、模型和任务路由三层结构。
+ *
+ * @param path 旧版 TOML 配置文件路径。
+ * @returns 按当前配置结构生成的运行时配置；每个已配置任务最多生成一个候选模型。
+ * @throws Error 当旧配置无法读取、TOML 结构无效或包含已移除字段时抛出。
+ * @remarks 方法只构造内存配置，不会写回旧文件；迁移写入由调用方负责。
  */
 function readLegacyConfig(path: string): YueliConfig {
   let parsed: unknown
@@ -903,6 +1150,13 @@ function readLegacyConfig(path: string): YueliConfig {
   const models: ModelDefinitionConfig[] = []
   const tasks = structuredClone(DEFAULT_CONFIG.model_tasks)
 
+  /**
+   * 将迁移连接加入服务商列表，并返回其稳定名称。
+   *
+   * @param connection 旧配置解析出的服务商连接；名称相同时复用已有记录。
+   * @returns {string} 连接对应的服务商名称。
+   * @remarks 仅在名称尚未出现时写入 providers，不复制同名连接，避免迁移后模型引用分裂。
+   */
   const pushProvider = (connection: LegacyConnection): string => {
     if (!providers.some((provider) => provider.name === connection.providerName)) {
       const { providerName, ...rest } = connection
@@ -985,17 +1239,25 @@ function readLegacyConfig(path: string): YueliConfig {
   return config
 }
 
-/** 目录里还有旧版本的文件吗。Python 侧只认当前版本，读到旧的要就地升级。 */
+/**
+ * 判断配置目录中的任一文件是否仍使用旧结构版本。
+ *
+ * @param directory 已存在的拆分配置目录。
+ * @returns 任一配置文件版本不是当前版本时返回 `true`，否则返回 `false`。
+ * @throws Error 当任一配置文件无法解析或缺少版本字段时抛出。
+ */
 function directoryIsStale(directory: string): boolean {
   return CONFIG_FILES.some((name) => parseToml(join(directory, name)).version !== CONFIG_VERSION)
 }
 
 /**
- * 读取配置目录。旧 config.toml 存在时会自动生成四份新配置，旧文件原样保留。
- * 配置目录一旦存在就必须完整、可解析；损坏时直接暴露具体文件，不能静默用默认值。
+ * 读取拆分配置目录，并在发现旧版本或旧版单文件配置时执行迁移。
  *
- * ★ 读到旧版本会立刻重写一遍：Python 侧只解析当前版本，不留一份两边理解不
- *   一致的配置在磁盘上——那种情况下 Electron 一切正常，后端却起不来。
+ * @param directory 当前拆分配置目录路径。
+ * @param legacyPath 可选的旧版单文件配置路径；仅在拆分目录不存在时参与迁移。
+ * @returns 合并默认值且通过完整校验的运行时配置。
+ * @throws Error 当目录类型、文件完整性、配置语法或字段约束不满足要求时抛出。
+ * @remarks 迁移成功后写入四个当前版本文件，旧版文件保持不变；已存在的旧版本目录会原地升级。
  */
 export function readConfigDirectory(directory: string, legacyPath?: string): YueliConfig {
   if (!existsSync(directory)) {
@@ -1018,7 +1280,13 @@ export function readConfigDirectory(directory: string, legacyPath?: string): Yue
   return config
 }
 
-/** 首次启动判定：Bot 名字已配置，且对话任务至少有一条可用候选。 */
+/**
+ * 判断配置是否具备启动对话任务所需的最小条件。
+ *
+ * @param cfg 待检查的运行时配置。
+ * @returns Bot 名称非空且对话任务存在同时具备模型 ID、服务商和 API 密钥的候选时返回 `true`。
+ * @remarks 方法只读取配置，不抛出字段校验异常；完整结构校验由 {@link assertConfigConsistent} 负责。
+ */
 export function configIsComplete(cfg: YueliConfig): boolean {
   if (!cfg.bot.name.trim()) return false
   return cfg.model_tasks.chat.model_list.some((name) => {
@@ -1029,6 +1297,12 @@ export function configIsComplete(cfg: YueliConfig): boolean {
   })
 }
 
+/**
+ * 将字符串编码为 TOML 基本字符串。
+ *
+ * @param value 待编码的字符串。
+ * @returns 包含双引号并完成反斜杠、引号和控制字符转义的 TOML 字符串。
+ */
 function tomlString(value: string): string {
   const escaped = value
     .replace(/\\/g, '\\\\')
@@ -1039,11 +1313,25 @@ function tomlString(value: string): string {
   return `"${escaped}"`
 }
 
+/**
+ * 将字符串、数字或布尔值编码为 TOML 标量。
+ *
+ * @param value 待编码的 TOML 标量。
+ * @returns 可直接写入配置文件的 TOML 文本。
+ */
 function tomlValue(value: string | number | boolean): string {
   if (typeof value === 'boolean' || typeof value === 'number') return String(value)
   return tomlString(value)
 }
 
+/**
+ * 将可递归的键值对象编码为 TOML 内联表。
+ *
+ * @param value 待编码的对象，嵌套值必须属于支持的 TOML 类型。
+ * @param path 当前字段路径，用于报告嵌套值错误。
+ * @returns TOML 内联表文本。
+ * @throws Error 当对象包含不支持的值类型时抛出。
+ */
 function tomlObject(value: Record<string, unknown>, path: string): string {
   const entries = Object.entries(value).map(([key, item]) => {
     const encodedKey = /^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key)
@@ -1052,6 +1340,14 @@ function tomlObject(value: Record<string, unknown>, path: string): string {
   return `{ ${entries.join(', ')} }`
 }
 
+/**
+ * 编码模型扩展请求体中的递归 TOML 值。
+ *
+ * @param value 待编码的未知值。
+ * @param path 当前字段路径，用于报告不支持的类型。
+ * @returns 对应的 TOML 标量、数组或内联表文本。
+ * @throws Error 当值不是字符串、有限数字、布尔值、数组或对象时抛出。
+ */
 function tomlExtraValue(value: unknown, path: string): string {
   if (typeof value === 'string' || typeof value === 'boolean') return tomlValue(value)
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
@@ -1062,16 +1358,35 @@ function tomlExtraValue(value: unknown, path: string): string {
   throw new Error(`${path} 只能包含字符串、数字、布尔值、数组或对象`)
 }
 
+/**
+ * 将多行文本编码为 TOML 三单引号字符串。
+ *
+ * @param value 待编码的多行文本。
+ * @param field 字段名，用于报告分隔符冲突。
+ * @returns TOML 多行基本字符串文本。
+ * @throws Error 当文本包含三个连续单引号时抛出。
+ */
 function tomlMultiline(value: string, field: string): string {
   if (value.includes("'''")) throw new Error(`${field} 不能包含三个连续单引号`)
   return `'''${value}'''`
 }
 
+/**
+ * 将字符串数组编码为 TOML 数组。
+ *
+ * @param values 待编码的字符串数组。
+ * @returns TOML 字符串数组文本。
+ */
 function tomlStringArray(values: string[]): string {
   return `[${values.map(tomlString).join(', ')}]`
 }
 
-/** 内联表，用于 library_levels 这种「库名 = 等级」的短映射。 */
+/**
+ * 将日志库等级映射编码为 TOML 内联表。
+ *
+ * @param entries 库名到日志等级的映射。
+ * @returns 可写入配置文件的 TOML 内联表文本。
+ */
 function tomlInlineTable(entries: Record<string, string>): string {
   const body = Object.entries(entries)
     .map(([key, value]) => `${key} = ${tomlString(value)}`)
@@ -1079,6 +1394,12 @@ function tomlInlineTable(entries: Record<string, string>): string {
   return `{ ${body} }`
 }
 
+/**
+ * 序列化单个 API 服务商的 TOML 配置段。
+ *
+ * @param provider 待写入的服务商配置。
+ * @returns 包含服务商字段、协议说明和必要配置注释的 TOML 文本。
+ */
 function providerBlock(provider: ApiProviderConfig): string {
   return `[[api_providers]]
 # 配置内部引用名，必须唯一；models.toml 的 api_provider 写这个值
@@ -1107,6 +1428,13 @@ max_retries = ${provider.max_retries}
 retry_interval_ms = ${provider.retry_interval_ms}`
 }
 
+/**
+ * 序列化单个模型定义的 TOML 配置段。
+ *
+ * @param model 待写入的模型配置。
+ * @returns 包含模型标识、服务商引用、扩展请求体和向量维度的 TOML 文本。
+ * @throws Error 当 `extra_body` 包含不支持的 TOML 值时抛出。
+ */
 function modelBlock(model: ModelDefinitionConfig): string {
   return `[[models]]
 # 配置内部模型名，必须唯一；上方 model_tasks 的 model_list 引用这个值
@@ -1123,6 +1451,14 @@ reasoning_parse_mode = ${tomlString(model.reasoning_parse_mode)}
 embedding_dim = ${model.embedding_dim}`
 }
 
+/**
+ * 序列化单个生成任务的 TOML 配置段。
+ *
+ * @param task 生成任务名称。
+ * @param config 任务生成参数；主动任务还包含 `enabled` 字段。
+ * @param description 写入配置文件的任务说明。
+ * @returns 当前任务的 TOML 配置段文本。
+ */
 function generationBlock(
   task: keyof GenerationConfig,
   config: GenerationConfig[keyof GenerationConfig],
@@ -1140,11 +1476,17 @@ ${enabled}temperature = ${config.temperature}
 max_tokens = ${config.max_tokens}`
 }
 
+/**
+ * 将服务商配置序列化为 `providers.toml` 文件内容。
+ *
+ * @param cfg 完整运行时配置；仅使用其中的服务商数组。
+ * @returns 当前配置版本、服务商定义及说明注释组成的 TOML 文本。
+ */
 function serializeProviders(cfg: YueliConfig): string {
   return `# API 厂商与连接策略。具体模型不要写在这里。
 # 一个厂商可供多个模型复用；api_key 当前为明文，请勿提交 config 目录。
-# 想让某个任务在厂商挂掉时自动切换，就在这里多写几条连接，再到 models.toml
-# 里为每条连接建一个模型，最后把它们一起写进 model_tasks 的 model_list。
+# 若任务需要在服务商不可用时自动切换，请配置多条连接，再在 models.toml
+# 中为每条连接定义模型，并将对应模型一并写入 model_tasks 的 model_list。
 
 [inner]
 # 配置结构版本；手工修改为未知版本会拒绝启动，避免错误解释字段
@@ -1166,8 +1508,11 @@ const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
 }
 
 /**
- * 一个任务的候选模型与轮询策略。列表里排第一的是主力，其余是它挂掉之后
- * 依次顶上的备用；列表为空表示这个任务没有可用模型（功能关掉时的正常状态）。
+ * 序列化单个任务的候选模型列表和轮询策略。
+ *
+ * @param task 任务名称。
+ * @param routing 该任务的模型候选和超时配置。
+ * @returns 当前任务的 TOML 配置段文本；候选顺序保留主备优先级。
  */
 function taskBlock(task: ModelTask, routing: TaskRoutingConfig): string {
   return `[model_tasks.${task}]
@@ -1182,6 +1527,13 @@ first_token_timeout_ms = ${routing.first_token_timeout_ms}
 slow_threshold_ms = ${routing.slow_threshold_ms}`
 }
 
+/**
+ * 将模型、任务路由和生成参数序列化为 `models.toml` 文件内容。
+ *
+ * @param cfg 完整运行时配置；使用其中的模型、路由和生成参数。
+ * @returns 当前配置版本、任务路由、生成参数及模型定义组成的 TOML 文本。
+ * @throws Error 当模型扩展请求体包含不支持的 TOML 值时抛出。
+ */
 function serializeModels(cfg: YueliConfig): string {
   const generationDescriptions: Record<keyof GenerationConfig, string> = {
     chat: '用户主动聊天的回复参数',
@@ -1210,7 +1562,15 @@ ${cfg.models.map(modelBlock).join('\n\n')}
 `
 }
 
+/**
+ * 将 Bot 身份、人格、群聊、日程和会话配置序列化为 `bot.toml`。
+ *
+ * @param cfg 完整运行时配置；使用其中的 Bot、群聊、日程、人格和会话字段。
+ * @returns 当前配置版本及 Bot 相关配置组成的 TOML 文本。
+ * @throws Error 当多行人格文本包含 TOML 分隔符，或字符串数组无法编码时抛出。
+ */
 function serializeBot(cfg: YueliConfig): string {
+  // 先单独编码数组字段，保证模板主体只负责组织配置段，不重复处理转义规则。
   const tones = cfg.personality.tone_variants.map((tone) => `  ${tomlString(tone)},`).join('\n')
   const expressionHabits = cfg.personality.expression_habits
     .map((habit) => `  ${tomlString(habit)},`).join('\n')
@@ -1228,7 +1588,7 @@ version = ${tomlString(CONFIG_VERSION)}
 name = ${tomlString(cfg.bot.name)}
 # 群聊里也会回应的其它称呼
 aliases = ${tomlStringArray(cfg.bot.aliases)}
-# 你希望 Bot 怎么称呼你；留空则不特别用名字称呼你
+# Bot 对用户的称呼偏好；留空表示不主动使用特定称呼
 user_nickname = ${tomlString(cfg.bot.user_nickname)}
 # Bot 和你的关系，例如“哥哥”“姐姐”“朋友”；留空则不预设关系
 relationship = ${tomlString(cfg.bot.relationship)}
@@ -1305,7 +1665,15 @@ episode_context_limit = ${cfg.conversation.episode_context_limit}
 `
 }
 
+/**
+ * 将功能开关、日志、感知和代理参数序列化为 `features.toml`。
+ *
+ * @param cfg 完整运行时配置；使用其中的 TTS、视觉、感知、向量、日志和高级选项。
+ * @returns 当前配置版本及功能参数组成的 TOML 文本。
+ * @throws Error 当日志映射或其他字符串值无法编码为 TOML 时抛出。
+ */
 function serializeFeatures(cfg: YueliConfig): string {
+  // 该文件只保存运行能力与基础设施参数，服务商密钥和模型标识由另外两个文件维护。
   return `# 功能开关与运行参数。服务地址、密钥和模型分别在 providers/models 中维护。
 
 [inner]
@@ -1325,18 +1693,18 @@ speed = ${tomlValue(cfg.tts.speed)}
 cluster = ${tomlValue(cfg.tts.cluster)}
 
 [vision]
-# 他问起屏幕时截一帧发给视觉模型；不问就完全不截。默认关闭
+# 用户询问屏幕内容时截取一帧发送给视觉模型；未询问时不截取。默认关闭
 enabled = ${tomlValue(cfg.vision.enabled)}
 # 检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报
 fullscreen_silent = ${tomlValue(cfg.vision.fullscreen_silent)}
 # 截什么："window" 只截前台那一个窗口；"screen" 截整个主屏。
-# screen 能让她看到桌面全貌，但会连带截到其它窗口、后台聊天、没关的网页——
-# 送往云端模型时尤其要想清楚。
+# screen 会让视觉服务获取整个主屏画面，可能同时包含其他窗口、后台聊天和浏览器页面；
+# 向云端模型发送前应确认采集范围符合隐私要求。
 capture_mode = ${tomlValue(cfg.vision.capture_mode)}
 
 [perception]
-# 她可以在哪些出口提到前台程序、持续时间，以及开启 [vision] 后看到的屏幕内容。
-# 可填 "desktop"（桌宠窗口）与 "direct"（QQ 私聊）；留空表示哪儿都不提。
+# 允许 Bot 在哪些出口提及前台程序、持续时间，以及开启 [vision] 后得到的屏幕内容。
+# 可填 "desktop"（桌宠窗口）与 "direct"（QQ 私聊）；留空表示不在任何出口提及。
 # 群聊不是可选项，填进去会在加载期直接报错。
 surfaces = ${tomlStringArray(cfg.perception.surfaces)}
 
@@ -1384,15 +1752,13 @@ https_proxy = ${tomlValue(cfg.advanced.https_proxy)}
 }
 
 /**
- * 用户编辑的结构自检，由保存入口（IPC SaveConfig）调用。设置页只负责把这里
- * 的错误显示出来，不再自己维护一套规则——两套规则迟早会对不上。
+ * 校验设置页提交的配置结构、任务路由和功能开关之间的一致性。
  *
- * ★ 不放进 writeConfigDirectory：那个函数还承担版本迁移，写的是它刚读进来的
- *   东西。旧配置里「四个任务槽位都填着、其中几个是空模型」很常见，用用户编辑
- *   的标准去卡迁移，结果是老用户升级后直接启动不了。
- *
- * 只管「结构是否自洽」，不管「填完了没有」：后者是 configIsComplete 的事，
- * 首次启动向导本来就允许先存一半再回来补。
+ * @param cfg 待校验的完整运行时配置；服务商的 `auth_name` 可能被原地规范化。
+ * @returns {void} 无返回值；配置通过全部结构、范围和引用校验时正常返回。
+ * @throws Error 当身份字段、数值范围、引用关系、任务超时、功能候选或向量维度不满足约束时抛出。
+ * @remarks 该方法只校验结构自洽性，不要求所有可选功能都已配置完成；启动向导的最小可用性由
+ * {@link configIsComplete} 判断，目录迁移则使用读取阶段的兼容规则。
  */
 export function assertConfigConsistent(cfg: YueliConfig): void {
   const botName = cfg.bot.name.trim()
@@ -1510,7 +1876,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
       const model = cfg.models.find((candidate) => candidate.name === name)
       if (!model) throw new Error(`${TASK_DESCRIPTIONS[task]}引用了不存在的模型：${name}`)
       const provider = cfg.api_providers.find((item) => item.name === model.api_provider)!
-      // 豆包语音是私有协议，指到别的任务上只会在运行时抛难定位的错。
+      // 私有语音协议仅允许绑定语音任务；提前拒绝可避免请求阶段才出现协议不匹配。
       if (task !== 'tts' && provider.client_type !== 'openai') {
         throw new Error(
           `${TASK_DESCRIPTIONS[task]}不能用豆包语音协议的服务商（${provider.name}）`,
@@ -1522,7 +1888,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     }
   }
 
-  // 开着却没有候选，等于「开了但不工作」——比直接拦下来难查得多。
+  // 已启用功能必须存在候选模型，否则配置表面启用但运行时永远不会执行。
   for (const [enabled, task] of [
     [cfg.tts.enabled, 'tts'], [cfg.vision.enabled, 'vision'], [cfg.vector.enabled, 'embedding'],
   ] as const) {
@@ -1532,14 +1898,22 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   }
   if (cfg.tts.enabled && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
 
-  // 备用向量模型换上来之后维度不一样，新旧向量根本没法比，召回会莫名其妙地坏掉。
+  // 候选向量模型必须共享维度，否则备用模型返回的向量无法与既有索引计算相似度。
   const dims = new Set(cfg.model_tasks.embedding.model_list.map(
     (name) => cfg.models.find((model) => model.name === name)!.embedding_dim,
   ))
   if (dims.size > 1) throw new Error('向量记忆的候选模型必须是同一个向量维度')
 }
 
-/** 将设置页的任务视图拆成四份职责单一的配置文件。 */
+/**
+ * 将运行时配置序列化并写入四个职责单一的 TOML 配置文件。
+ *
+ * @param directory 目标配置目录；不存在时递归创建。
+ * @param cfg 已通过结构校验的运行时配置。
+ * @returns {void} 无返回值；四个配置文件全部写入后完成。
+ * @throws Error 当目标路径不是目录、目录创建失败或任一文件写入失败时抛出。
+ * @remarks 方法会覆盖目标目录中的四个当前配置文件，但不修改目录中的其他文件。
+ */
 export function writeConfigDirectory(directory: string, cfg: YueliConfig): void {
   if (existsSync(directory) && !statSync(directory).isDirectory()) {
     throw new Error(`${directory} 存在，但不是配置目录`)
@@ -1556,7 +1930,14 @@ export function writeConfigDirectory(directory: string, cfg: YueliConfig): void 
   }
 }
 
-/** 首次启动时创建停用的 QQ 配置模板；已有文件只校验类型，不覆盖内容。 */
+/**
+ * 在首次启动时创建停用状态的 QQ 适配器配置模板。
+ *
+ * @param directory 配置目录；不存在时递归创建。
+ * @returns `napcat.toml` 的完整路径。
+ * @throws Error 当目录或目标路径类型不正确、目录创建失败或模板写入失败时抛出。
+ * @remarks 已存在的文件只校验其为普通文件，不覆盖原有内容；并发创建时保留先写入者的文件。
+ */
 export function ensureNapcatConfig(directory: string): string {
   const path = join(directory, 'napcat.toml')
   if (existsSync(path)) {
@@ -1585,7 +1966,12 @@ export function ensureNapcatConfig(directory: string): string {
 }
 
 /**
- * 老用户从仓库根目录的 .env 迁移。只在没有可用配置时调用，读到多少填多少。
+ * 从旧版 `.env` 文件提取可迁移的模型连接字段。
+ *
+ * @param envPath `.env` 文件路径。
+ * @returns 当文件不存在或不包含模型连接字段时返回 `null`；否则返回可合并到配置表的部分配置。
+ * @throws Error 当文件无法解析或包含已移除的 `LLM_THINKING` 字段时抛出。
+ * @remarks 方法只读取并转换已存在的字段，不写回 `.env`，也不要求迁移结果已经完整可启动。
  */
 export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> | null {
   if (!existsSync(envPath)) return null
@@ -1603,8 +1989,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         api_key: parsed.LLM_API_KEY || '',
         timeout_ms: Number(parsed.LLM_TIMEOUT_MS) || DEFAULT_PROVIDER.timeout_ms,
       }],
-      // .env 里没有模型 ID 时不建这条候选：一个没填模型 ID 的候选写不进磁盘，
-      // 而这条路径的任务只是把已有的值捎带过去，不该因此拦住启动。
+      // 缺少模型 ID 时不创建无效候选；预填充只迁移已有值，完整性由设置页另行判断。
       models: parsed.LLM_MODEL ? [{
         name: 'chat',
         model_identifier: parsed.LLM_MODEL,

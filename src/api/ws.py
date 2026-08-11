@@ -1,5 +1,4 @@
-"""
-WebSocket 事件推流。
+"""提供主体后端到桌面端、QQ 适配器和 WebUI 的 WebSocket 推流。
 
 Python → Electron 的所有主动推送都走这个连接：
   chat.event / chat.done / chat.error
@@ -8,6 +7,9 @@ Python → Electron 的所有主动推送都走这个连接：
   sleep.state
 
 Electron → Python 的命令走 HTTP（更简单，有状态码，易排查）。
+
+连接按客户端类型分区，事件端点先回放数据库游标后的事件再订阅实时广播，
+从而避免连接建立窗口内丢失事件。
 """
 
 from __future__ import annotations
@@ -40,9 +42,18 @@ _DESKTOP_STREAM_ID = 1
 
 
 class _ConnectionManager:
-    """管理按客户端分区的 WebSocket 订阅。"""
+    """管理按客户端分区的 WebSocket 订阅。
+
+    `desktop` 对应固定桌面 stream，其他 stream 归入 `napcat`；连接集合由异步锁
+    保护，推送时复制快照后在锁外执行网络发送。
+    """
 
     def __init__(self) -> None:
+        """创建空的桌面端和 QQ 适配器连接集合。
+
+        :return: 无返回值。
+        :side_effects: 初始化连接字典和异步锁，不接受网络连接。
+        """
         self._connections: Dict[ClientKind, Set[WebSocket]] = {
             'desktop': set(),
             'napcat': set(),
@@ -50,15 +61,49 @@ class _ConnectionManager:
         self._lock = asyncio.Lock()
 
     async def connect(self, client: ClientKind, ws: WebSocket) -> None:
+        """登记一个已完成鉴权的 WebSocket。
+
+        :param client: 客户端分区，只能为 `desktop` 或 `napcat`。
+        :param ws: 待登记的 FastAPI WebSocket 对象。
+        :return: 无返回值。
+        :side_effects: 在锁保护下向对应集合加入连接。
+        """
         async with self._lock:
             self._connections[client].add(ws)
 
     async def disconnect(self, client: ClientKind, ws: WebSocket) -> None:
+        """从客户端分区移除一个 WebSocket，重复移除安全。
+
+        :param client: 客户端分区，只能为 `desktop` 或 `napcat`。
+        :param ws: 待移除的 WebSocket 对象。
+        :return: 无返回值。
+        :side_effects: 在锁保护下修改对应连接集合。
+        """
         async with self._lock:
             self._connections[client].discard(ws)
 
     async def push(self, stream_id: int, channel: str, payload: Any) -> int:
-        """按 stream 所属分支推送，并返回实际完成投递的连接数。"""
+        """向 stream 对应的客户端分区推送一条 JSON 信封消息。
+
+        Args:
+            stream_id: 目标 stream 数据库 ID；固定桌面 stream 发送至 desktop 分区，
+                其他 stream 发送至 napcat 分区。
+            channel: 推送通道名称，例如 ``chat.event`` 或 ``voice.play``。
+            payload: 通道负载；必须可由 ``json.dumps`` 序列化。
+
+        Returns:
+            成功调用 ``send_text`` 的连接数量；没有目标连接时返回 ``0``。
+
+        Raises:
+            TypeError: 负载无法 JSON 序列化或参数不符合协议时抛出。
+
+        Side Effects:
+            在锁外向连接发送网络消息；发送失败的连接会从对应分区移除，napcat 无订阅者
+            时记录 ``outbound_dropped`` 观测事件。
+
+        Performance:
+            连接快照复制在锁内完成，网络发送按快照顺序串行执行，发送阶段不会阻塞连接登记。
+        """
         client: ClientKind = 'desktop' if stream_id == _DESKTOP_STREAM_ID else 'napcat'
         async with self._lock:
             connections: List[WebSocket] = list(self._connections[client])
@@ -89,7 +134,19 @@ manager = _ConnectionManager()
 
 
 async def push(stream_id: int, channel: str, payload: Any) -> int:
-    """模块级推送入口，供其他 service 调用。"""
+    """通过模块级连接管理器向指定 stream 推送一条消息。
+
+    Args:
+        stream_id: 目标 stream 数据库 ID。
+        channel: 推送通道名称。
+        payload: 可 JSON 序列化的通道负载。
+
+    Returns:
+        实际完成发送的 WebSocket 连接数量。
+
+    Raises:
+        TypeError: 负载无法 JSON 序列化时抛出。
+    """
     return await manager.push(stream_id, channel, payload)
 
 
@@ -99,12 +156,19 @@ async def push(stream_id: int, channel: str, payload: Any) -> int:
 
 @router.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
-    # ★ 鉴权必须在 accept() 之前做。
-    #   accept() 之后再发 close() 会触发一次完整的握手+关闭握手，
-    #   对端能收到错误码；但 undici 对「accept 了再拒绝」这种组合会日志一条 warning
-    #   然后认为连接成功，接着发 receive 就报错 —— 行为不一致且难排查。
-    #   在 accept() 之前调 close() 在 ASGI 层面等于「直接关闭 TCP」，
-    #   对端得到的是 1002 Protocol Error，客户端会老老实实停止重连。
+    """鉴权并维持桌面端或 QQ 适配器的推送 WebSocket。
+
+    :param websocket: FastAPI 注入的 WebSocket，必须带合法鉴权和 `client` 查询参数。
+    :return: 客户端断开、鉴权失败或协议参数非法后返回。
+    :raises Exception: 接收循环出现未覆盖的底层异常时记录后结束连接。
+    :side_effects: 在握手后登记连接，持续读取客户端心跳/帧，并在结束时移除连接。
+    """
+    # [WORKAROUND] WebSocket 鉴权失败连接兼容性约束
+    #
+    # 必须在 accept() 前执行鉴权失败后的 close()。
+    # - 现象: accept() 后 close() 会让客户端误判连接已建立，随后 receive 阶段报错。
+    # - 原理: accept() 前 close() 直接终止未确认会话，鉴权失败使用 1008 Policy Violation。
+    # - 当前处理: 鉴权失败立即 close() 并返回，不进入 connect() 或 receive()。
     if not await ws_auth(websocket):
         await websocket.close(code=1008)   # 1008 = policy violation
         logger.warning("ws_auth_failed", client=websocket.client)
@@ -117,9 +181,8 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         return
     client = cast(ClientKind, raw_client)
 
-    # ★ 必须把客户端选的子协议回显回去。
-    #   客户端发 "yueli-<token>"，服务端不回显 → RFC 6455 §4.1 规定握手失败。
-    #   Python websockets 库宽松，但 undici（Electron 用的那个）严格遵守规范。
+    # 【关键】客户端选择 yueli-<token> 子协议时必须在 accept() 中回显。
+    # 未回显时，严格客户端会拒绝握手；当前实现只回显请求头中实际出现的令牌协议。
     selected_proto = None
     raw = websocket.headers.get("sec-websocket-protocol", "")
     for proto in raw.split(","):
@@ -145,7 +208,17 @@ async def ws_endpoint(websocket: WebSocket) -> None:
 
 @router.websocket('/ws/logs')
 async def webui_logs_endpoint(websocket: WebSocket) -> None:
-    """向已登录浏览器推送与控制台同款的 ANSI 彩色日志。"""
+    """向已登录浏览器回放并持续推送 ANSI 彩色日志。
+
+    Args:
+        websocket: FastAPI 注入的 WebSocket 对象，必须携带有效认证凭据。
+
+    Raises:
+        Exception: 日志回放或实时发送发生未覆盖的底层 WebSocket 错误时传播。
+
+    Side Effects:
+        鉴权通过后接受连接、发送现有 backlog 并订阅实时日志；连接结束时取消订阅。
+    """
     if not await ws_auth(websocket):
         await websocket.close(code=1008)
         return
@@ -165,7 +238,19 @@ async def webui_logs_endpoint(websocket: WebSocket) -> None:
 
 @router.websocket('/ws/events')
 async def webui_events_endpoint(websocket: WebSocket) -> None:
-    """先按游标回放账本，再逐条推送实时事件。"""
+    """按事件游标回放历史观测事件，再逐条推送实时事件。
+
+    Args:
+        websocket: FastAPI 注入的 WebSocket 对象；查询参数 ``since`` 为可选非负序号。
+
+    Raises:
+        ValueError: ``since`` 不是整数或为负数时关闭连接并返回协议错误。
+        Exception: 事件回放、实时订阅或 WebSocket 发送发生未覆盖错误时传播。
+
+    Side Effects:
+        鉴权通过后接受连接，先订阅实时广播再读取事件账本，按序号去重后发送；
+        连接结束时取消广播订阅，队列溢出时以 1013 关闭连接。
+    """
     if not await ws_auth(websocket):
         await websocket.close(code=1008)
         return
@@ -181,7 +266,7 @@ async def webui_events_endpoint(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
-    # 先订阅，再查库并按 seq 去重。
+    # 必须先订阅实时广播，再读取历史账本；随后按 seq 去重，避免建立窗口丢事件。
     subscriber = broadcaster.subscribe()
     try:
         page = events_since(since, 1_000)

@@ -1,3 +1,9 @@
+/*
+ * 定义后端观察 WebUI 的全局主题、布局、状态卡片和事件列表样式。
+ *
+ * 规则与 webui/src/main.ts 生成的业务区域对应，媒体查询负责窄屏布局；样式层不
+ * 读取接口或修改应用状态。
+ */
 :root {
   color-scheme: dark;
   font-family: "Microsoft YaHei UI", "PingFang SC", sans-serif;

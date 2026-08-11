@@ -1,13 +1,11 @@
 /**
- * 一致性体检：量化两张图之间的漂移，并说清楚**是什么性质的漂移**。
+ * 一致性检查：量化两张图之间的位移、缩放和局部像素差异。
  *
  *   npx tsx scripts/sprite/consistency.ts <图A> <图B>
  *   npx tsx scripts/sprite/consistency.ts --name yueli        # 批量：底图 vs 所有表情
  *
- * 「差异 12% 但我看不出来」几乎总是同一个原因：整体位移。
- * 模型把角色整个挪了一两像素，肉眼完全无感，逐像素比却会把整条轮廓标红。
- * 这类问题 process 阶段的对齐本来就会修掉，不该拿来吓人 ——
- * 所以这里先估出位移并补偿，再报「补偿后」的差异，那才是真正救不回来的部分。
+ * 先搜索最优整数位移并计算补偿后的差异，再分别报告头部、身体和腿部区域，
+ * 使自动对齐可修复的偏差不会被误判为素材质量问题。
  */
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
@@ -31,7 +29,14 @@ interface Loaded {
   box: { left: number; top: number; right: number; bottom: number }
 }
 
-/** 读图并求主体（非白）包围盒。生图都是纯白背景，按非白判定比 alpha 更直接。 */
+/**
+ * 读取图像并计算非白主体的包围盒。
+ *
+ * @param file PNG/JPEG 等可由 sharp 解码的图像路径。
+ * @returns {Promise<Loaded>} 原始像素、尺寸、通道数及主体包围盒。
+ * @throws Error 文件不存在、格式无法解码或像素缓冲区读取失败时抛出。
+ * @sideEffects 读取图像文件并在内存中创建原始像素缓冲区。
+ */
 async function load(file: string): Promise<Loaded> {
   const { data, info } = await sharp(await readFile(file)).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
   const { width: w, height: h, channels: ch } = info
@@ -69,6 +74,12 @@ interface Report {
 /**
  * 在 ±RANGE 像素内搜索使差异最小的整数偏移。
  *
+ * @param A 基准图像及其像素数据，尺寸必须与 B 一致。
+ * @param B 待比较图像及其像素数据，尺寸必须与 A 一致。
+ * @param threshold 单像素 RGB 差异阈值，必须为非负数。
+ * @returns { {dx: number, dy: number} } 使抽样差异成本最小的整数横纵偏移。
+ * @sideEffects 仅执行 CPU 像素遍历，不修改输入图像。
+ *
  * 全分辨率搜索 25×25 次太慢，所以按 STEP 抽样像素来算代价 ——
  * 找偏移量不需要看每个像素，抽 1/64 已经足够稳定。
  */
@@ -100,18 +111,31 @@ function searchBestOffset(A: Loaded, B: Loaded, threshold: number): { dx: number
   return { dx: best.dx, dy: best.dy }
 }
 
+/**
+ * 计算两张图的原始差异、位移补偿差异和身体分区差异。
+ *
+ * @param A 基准图像及其主体包围盒。
+ * @param B 待比较图像及其主体包围盒。
+ * @param threshold 单像素 RGB 差异阈值，默认值由命令行解析器提供。
+ * @returns 包含原始/补偿差异、位移、缩放和头身腿比例的报告。
+ * @sideEffects 不修改输入 Buffer，仅执行 CPU 像素遍历。
+ */
 function compare(A: Loaded, B: Loaded, threshold: number): Report {
   const { w, h, ch } = A
 
-  // 位移估计：暴力搜索让差异最小的偏移量。
-  //
-  // 一开始用主体包围盒的边界差来估，在长发角色上完全失效 ——
-  // 包围盒由发梢决定，而发梢每次重绘都不一样，拿它当参照点等于用噪声定位。
-  // 直接搜真正的最优对齐才诚实：搜完仍然降不下去的差异，就是真的救不回来。
+  // 使用像素代价搜索最优位移，避免长发边界变化将包围盒噪声误认为整体位移。
   const { dx, dy } = searchBestOffset(A, B, threshold)
   const scale = (B.box.bottom - B.box.top) / Math.max(1, A.box.bottom - A.box.top)
 
-  const diffAt = (ox: number, oy: number) => {
+  /**
+   * 在指定位移补偿下统计总体和头、身、腿分区的像素差异率。
+   *
+   * @param ox 横向位移补偿，单位为像素。
+   * @param oy 纵向位移补偿，单位为像素。
+   * @returns {{pct: number; head: number; torso: number; legs: number}} 总体及各分区差异百分比。
+   * @remarks 每次调用按完整画布遍历像素；比较过程只读输入缓冲区，分区边界依据基准图主体包围盒三等分。
+   */
+  const diffAt = (ox: number, oy: number): { pct: number; head: number; torso: number; legs: number } => {
     let changed = 0
     let counted = 0
     // 头/身/腿：按主体包围盒高度三等分，比按画布分准得多
@@ -154,6 +178,12 @@ function compare(A: Loaded, B: Loaded, threshold: number): Report {
   return { rawPct: raw.pct, alignedPct: aligned.pct, dx, dy, scale, head: aligned.head, torso: aligned.torso, legs: aligned.legs }
 }
 
+/**
+ * 将一致性报告转换为面向命令行的诊断结论。
+ *
+ * @param r 单张图的比较报告。
+ * @returns 按严重程度和可操作性组织的中文诊断行列表。
+ */
 function verdict(r: Report): string[] {
   const lines: string[] = []
 
@@ -185,6 +215,13 @@ function verdict(r: Report): string[] {
   return lines
 }
 
+/**
+ * 将单张图报告格式化为表格行。
+ *
+ * @param label 素材标识。
+ * @param r 比较报告。
+ * @returns 固定列宽的命令行文本。
+ */
 function row(label: string, r: Report): string {
   const flag = r.torso > 12 || r.legs > 12 ? '⚠' : r.alignedPct < 3 ? '✓' : '○'
   return (
@@ -196,6 +233,12 @@ function row(label: string, r: Report): string {
   )
 }
 
+/**
+ * 执行单图比较或指定角色目录的批量一致性检查。
+ *
+ * @returns 检查完成后的 Promise。
+ * @throws Error 输入图像、目录或参数无效。
+ */
 async function main() {
   const threshold = Number(values.threshold) || 24
 

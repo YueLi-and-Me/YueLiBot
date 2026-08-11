@@ -18,7 +18,18 @@ logger = get_logger(__name__)
 
 @register(4)
 def v4_to_v5(db: sqlite3.Connection) -> None:
-    """为 facts 表添加 embedding BLOB 列（NULL = 待计算）。"""
+    """为 ``facts`` 表添加可为空的 embedding BLOB 列。
+
+    Args:
+        db: 当前迁移事务使用的 SQLite 连接。
+
+    Raises:
+        sqlite3.Error: 表结构查询或列添加失败。
+
+    Side Effects:
+        在 ``facts`` 缺少 ``embedding`` 列时添加该列；已有列时保持数据不变，
+        不提交事务。
+    """
     cols = {row[1] for row in db.execute("PRAGMA table_info(facts)").fetchall()}
     if "embedding" not in cols:
         db.execute("ALTER TABLE facts ADD COLUMN embedding BLOB")

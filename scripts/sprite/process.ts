@@ -1,22 +1,27 @@
 /**
- * 后处理：抠透明背景 → 对齐 → 出 manifest。
+ * 精灵资源后处理模块：将生成阶段的原始角色图片转换为运行时可加载的透明素材。
+ *
+ * 所属模块：``scripts/sprite`` 资源生成工具链。
+ * 核心职责：调用 rembg 或近白阈值方案移除背景，按主体包围盒统一缩放与锚点，
+ * 通过像素差异定位眼睛和嘴部区域，将表情脸部合成到底图身体，并生成 ``manifest.json``。
+ * 依赖关系：读取 ``config.ts`` 提供的素材类别，使用 ``paths.ts`` 解析中间目录和最终资源目录，
+ * 使用 ``manifest.ts`` 写入运行时清单；图像解码、裁剪和编码依赖 sharp，模型抠图依赖外部 rembg 命令。
  *
  *   npm run sprite:process
- *   npx tsx scripts/sprite/process.ts --naive     # 没装 rembg 时的降级方案
- *   npx tsx scripts/sprite/process.ts --face 260,190,250,250   # 手填脸部区域
+ *   npx tsx scripts/sprite/process.ts --naive     # rembg 不可用时使用阈值抠图
+ *   npx tsx scripts/sprite/process.ts --face 260,190,250,250   # 指定脸部区域
  *
- * 五官区域默认自动检测，但它依赖「五官差异密度显著高于身体」这个前提。
- * 模型做表情差分时常把整个角色重画一遍，噪声压过信号时检测必然失准 ——
- * 这时用 --face（必要时再加 --eyes / --mouth）手填画布坐标。
- * 坐标可以从预览页读，或直接裁一块出来对着看。
+ * 五官区域默认自动检测，但前提是五官差异密度显著高于身体。若差分素材同时
+ * 重绘了大部分身体，自动检测结果会失真，此时使用 --face、--eyes 或 --mouth
+ * 传入对齐后画布坐标。
  *
- * ⚠ Windows 下 `npm run xxx -- --flag` 会被 npm 吞掉参数，带参数一律用 npx tsx 直调。
+ * Windows 下带参数的脚本建议直接使用 npx tsx 调用，避免 npm 参数转发差异。
  *
- * 对齐是这一步的关键。AI 每次生成，角色在画布里都会漂几个像素，
- * 不校正的话运行时切表情角色会「跳」，一眼假。
+ * 对齐是这一步的关键。生成接口可能使角色在画布中产生像素级位置偏移；若不校正，
+ * 运行时切换表情会产生明显跳动。
  *
- * 顺带产出一份一致性报告：把每张图的包围盒跟底图比，
- * 差得多说明模型偷偷改了身体，比肉眼扫图靠谱得多。
+ * 同时生成一份一致性报告：将每张图的包围盒与底图比较，
+ * 差异较大说明生成结果可能改变身体区域；数值报告比人工逐图检查更稳定。
  */
 import { spawn } from 'node:child_process'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
@@ -36,18 +41,25 @@ const { values } = parseArgs({
     'no-bake': { type: 'boolean', default: false },
     // 五官区域手动指定，形如 --face 260,190,250,250（画布坐标，对齐后的）。
     // 自动检测依赖「五官差异密度显著高于身体」，而模型做差分时会把整个角色
-    // 重画一遍 —— 身体噪声压过信号时检测必然失准，这时只能手填。
+    // 身体重绘噪声可能超过五官差异信号，导致自动检测失准；此时应使用手动坐标。
     face: { type: 'string' },
     eyes: { type: 'string' },
     mouth: { type: 'string' },
   },
 })
 
-/** 解析 "x,y,w,h"。写错了就直接报错退出，别让脏坐标一路传到烘焙里。 */
+/**
+ * 将命令行传入的矩形字符串解析为画布坐标。
+ *
+ * @param spec 矩形文本，支持逗号或空白分隔的 ``x,y,width,height``；未提供时返回 ``null``。
+ * @param label 参数名称，仅用于构造可定位的错误信息。
+ * @returns {Rect | null} 非负坐标且宽高至少为 1 的矩形；参数为空时返回 ``null``。
+ * @throws {Error} 参数不是四个有限数字，或坐标为负数、宽高小于 1 时抛出。
+ * @remarks 函数会将坐标和尺寸四舍五入为整数，避免浮点值进入 sharp 的区域裁剪接口。
+ */
 function parseRect(spec: string | undefined, label: string): Rect | null {
   if (!spec) return null
-  // PowerShell 会把裸的 a,b,c 当数组字面量，传给 npx 时逗号变空格，
-  // 所以逗号和空格都当分隔符收 —— 否则 Windows 下不加引号必然解析失败
+  // 同时接受逗号和空格分隔，兼容 PowerShell 对未加引号参数的拆分行为。
   const n = spec.split(/[,\s]+/).filter(Boolean).map(Number)
   if (n.length !== 4 || n.some((v) => !Number.isFinite(v) || v < 0) || n[2]! < 1 || n[3]! < 1) {
     throw new Error(`--${label} 格式错误：${spec}　应为 x,y,w,h（四个非负整数，宽高 ≥1）`)
@@ -62,7 +74,16 @@ interface BBox {
   height: number
 }
 
-/** 扫 alpha 通道求非透明区域的包围盒。空图返回 null。 */
+/**
+ * 扫描 RGBA 原始像素，计算有效透明度区域的最小包围盒。
+ *
+ * @param data 按行排列的原始像素缓冲区；像素步长由 ``channels`` 指定。
+ * @param width 图像宽度，单位为像素，必须为正整数。
+ * @param height 图像高度，单位为像素，必须为正整数。
+ * @param channels 每个像素的通道数量；最后一个通道被视为 alpha 通道。
+ * @returns {BBox | null} alpha 大于 8 的像素包围盒；没有有效像素时返回 ``null``。
+ * @remarks 以固定 alpha 阈值排除几乎透明的抠图噪点；时间复杂度为 ``O(width * height)``。
+ */
 function alphaBBox(data: Buffer, width: number, height: number, channels: number): BBox | null {
   let minX = width
   let minY = height
@@ -73,8 +94,8 @@ function alphaBBox(data: Buffer, width: number, height: number, channels: number
   for (let y = 0; y < height; y++) {
     const row = y * width * channels
     for (let x = 0; x < width; x++) {
-      // 阈值取 8 而非 0：抠图边缘常留一圈几乎全透明的杂点，
-      // 按 >0 算包围盒会把它们算进去，导致每张图的框大小不一
+      // 使用 8 而非 0 作为阈值：抠图边缘的近透明像素不应参与包围盒计算，
+      // 否则边缘噪点会使不同素材的主体边界产生不必要的尺寸差异。
       if (data[row + x * channels + alphaOffset]! > 8) {
         if (x < minX) minX = x
         if (x > maxX) maxX = x
@@ -89,18 +110,16 @@ function alphaBBox(data: Buffer, width: number, height: number, channels: number
 }
 
 /**
- * 求两张已对齐图之间的差异区域。
- *
- * 用来自动定位五官：`mouth/closed` 与 `mouth/open` 之间变了的地方就是嘴，
- * `face/x` 与 `eyes/x` 之间变了的地方就是眼睛。
- * 比让用户手工框选靠谱，也比按比例硬猜位置准。
- */
-/**
  * 沿一个轴的投影直方图里，找出以峰值为中心的密集区间。
  *
- * 取「所有差异的包围盒」是错的：差分图的身体部分同样会被模型重画，
- * 散落的噪点会把框一路撑到全身。真正要的是差异最集中的那一块 ——
- * 从峰值出发向两侧扩张，密度掉到峰值的一定比例就停。
+ * @param hist 单轴投影直方图；数组下标对应画布坐标，数值表示该坐标上的差异像素数。
+ * @param ratio 密度下限与峰值的比例，默认 ``0.2``；值越大，结果区域越集中。
+ * @returns {{start: number, end: number} | null} 密集区间的闭区间坐标；没有差异像素时返回 ``null``。
+ * @remarks 函数允许跨越有限数量的低谷，以免眉毛与眼睛之间的空隙把同一五官拆成多个区域。
+ *   时间复杂度为 ``O(hist.length)``。
+ *
+ * 直接取所有差异像素的包围盒会将身体重绘噪声一并纳入，导致结果覆盖整个角色。
+ * 此处从差异峰值向两侧扩张，在密度低于峰值指定比例后停止，以保留信号最集中的区域。
  */
 function denseSpan(hist: number[], ratio = 0.2): { start: number; end: number } | null {
   let peak = 0
@@ -116,7 +135,7 @@ function denseSpan(hist: number[], ratio = 0.2): { start: number; end: number } 
   const floor = peak * ratio
   let start = peakAt
   let end = peakAt
-  // 允许跨过几行低谷再继续，否则眼睛和眉毛之间的空隙会把区间切断
+  // 允许跨过有限低谷，避免眉毛与眼睛之间的间隙把同一五官拆分成多个区间。
   const GAP = 6
   let gap = 0
   while (start > 0) {
@@ -144,9 +163,17 @@ function denseSpan(hist: number[], ratio = 0.2): { start: number; end: number } 
 }
 
 /**
- * @param band 只在这个纵向区间里找。五官只可能长在头上，
- *   而差分图的身体同样会被模型重画 —— 身体面积远大于眼睛，
- *   不加约束的话噪声会直接压过信号，把眼区检到裙子上。
+ * 计算两张已对齐图像的差异密集区域，用于自动定位眼睛或嘴部。
+ *
+ * @param fileA 第一张 PNG 文件路径。
+ * @param fileB 第二张 PNG 文件路径；两张图的尺寸必须一致。
+ * @param pad 检测区域四周扩展的像素数，默认 ``8``，用于覆盖抗锯齿边缘。
+ * @param band 可选的纵向搜索范围；``top`` 和 ``bottom`` 均为包含端点的画布坐标。
+ * @param ratio 投影直方图密集区间的峰值比例阈值，默认 ``0.45``。
+ * @returns {Promise<Rect | null>} 差异区域；尺寸不一致、没有有效差异或无法形成密集区间时返回 ``null``。
+ * @throws {Error} 任一图片读取、解码或原始像素转换失败时抛出。
+ * @remarks 函数只在 ``band`` 内统计纵向差异，避免身体重绘噪声超过头部五官信号；
+ *   两次逐像素扫描的时间复杂度为 ``O(width * height)``，会占用两张原始 RGBA 图像的内存。
  */
 async function diffRegion(
   fileA: string,
@@ -171,7 +198,7 @@ async function diffRegion(
   for (let y = y0; y <= y1; y++) {
     for (let x = 0; x < width; x++) {
       const o = (y * width + x) * channels
-      // 把 alpha 也算进去：闭眼/闭嘴处可能是从有内容变成透明
+      // 将 alpha 纳入差异计算，以捕获闭眼或闭嘴区域由有内容变为透明的情况。
       const d =
         Math.abs(a.data[o]! - b.data[o]!) +
         Math.abs(a.data[o + 1]! - b.data[o + 1]!) +
@@ -189,7 +216,7 @@ async function diffRegion(
   const vSpan = denseSpan(rows, ratio)
   if (!vSpan) return null
 
-  // 横向直方图只统计密集行内的像素 —— 否则身上的噪点仍会把左右边界撑开
+  // 横向直方图只统计密集行内的像素，避免身体重绘噪声扩大左右边界。
   const cols2 = new Array<number>(width).fill(0)
   for (let y = vSpan.start; y <= vSpan.end; y++) {
     for (let x = 0; x < width; x++) {
@@ -205,7 +232,7 @@ async function diffRegion(
   const hSpan = denseSpan(cols2, ratio)
   if (!hSpan) return null
 
-  // 留一圈余量，避免抗锯齿边缘在合成时露出接缝
+  // 预留边界余量，避免抗锯齿边缘在局部合成时产生接缝。
   const x = Math.max(0, hSpan.start - pad)
   const y = Math.max(0, vSpan.start - pad)
   return {
@@ -217,22 +244,24 @@ async function diffRegion(
 }
 
 /**
- * 把每个表情的脸「烘焙」到同一具身体上。
+ * 将表情图的脸部区域合成到底图，统一所有表情的身体像素。
  *
- * 实测：Seedream 5.0 Pro 做表情差分时，角色设计、姿势、服装都保住了，
- * 但布料褶皱、发丝走向、尾巴形态会整体重画一遍 —— 身体区域差异高达 18~20%。
- * 静态看完全看不出来（同款不同笔触），可一旦运行时整图切换表情，
- * 人眼对闪变极其敏感，整个身体会「滋啦」一下。
+ * 生成接口在表情差分中可能同步重绘服装、发丝或姿态；运行时直接切换整图时，
+ * 这些非表情区域的像素差异会造成可见闪烁。因此以底图作为唯一身体来源，
+ * 只保留表情图指定脸部区域的像素。
  *
- * 所以在这里就把身体统一掉：取底图作为唯一的身体，
- * 各表情只贡献脸部区域。运行时仍是简单的整图切换，但身体逐像素一致，零闪烁。
- *
- * 用羽化椭圆遮罩而不是硬矩形 —— 硬边会在重画的脸与固定身体的交界处露出接缝。
+ * @param baseFile 身体基准底图 PNG 路径。
+ * @param faceFile 当前表情 PNG 路径；必须覆盖 ``region`` 指定的完整区域。
+ * @param region 脸部区域的画布坐标，坐标和尺寸必须为正整数且位于两张图范围内。
+ * @param feather 羽化半径，单位为像素；值越大，脸部与固定身体的过渡越平滑。
+ * @returns {Promise<Buffer>} 合成后的 PNG 二进制数据。
+ * @throws {Error} 图片读取、区域裁剪、遮罩生成或 PNG 编码失败时抛出。
+ * @remarks 函数会将整张结果图编码为 PNG 并暂存于内存；椭圆羽化遮罩避免矩形边缘产生接缝。
  */
 async function bakeFace(baseFile: string, faceFile: string, region: Rect, feather: number): Promise<Buffer> {
   const { x, y, width, height } = region
 
-  // 羽化遮罩：白色椭圆经高斯模糊，边缘平滑过渡到透明
+  // 使用高斯模糊的白色椭圆遮罩，使脸部边缘平滑过渡到固定身体。
   const mask = await sharp(
     Buffer.from(
       `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
@@ -246,11 +275,11 @@ async function bakeFace(baseFile: string, faceFile: string, region: Rect, feathe
     .raw()
     .toBuffer()
 
-  // 取表情图的脸部区域，用遮罩替换其 alpha
+  // 提取表情图的脸部区域，并用羽化遮罩约束其 alpha 通道。
   const face = await sharp(faceFile).extract({ left: x, top: y, width, height }).ensureAlpha().raw().toBuffer()
 
   for (let i = 0; i < width * height; i++) {
-    // 原有 alpha 与遮罩相乘：抠图边缘之外的透明区保持透明，不会糊出一块方影
+    // 保留原始 alpha 与遮罩的交集，避免透明背景被矩形区域重新带入合成结果。
     face[i * 4 + 3] = Math.round((face[i * 4 + 3]! * mask[i]!) / 255)
   }
 
@@ -263,11 +292,14 @@ async function bakeFace(baseFile: string, faceFile: string, region: Rect, feathe
 }
 
 /**
- * 检测结果的合理性闸门。
+ * 检查自动检测出的五官区域是否满足面积约束。
  *
- * 差分图的身体被整体重画时，denseSpan 会一路扩张到全身，吐出一个几百像素见方的
- * 「嘴区」。这种结果比没有更糟 —— 它会让烘焙把大半个角色换掉。宁可判失败，
- * 让用户用 --mouth / --eyes / --face 手填。
+ * @param r 待校验的检测矩形。
+ * @param label 区域类别；``mouth`` 使用更严格的宽高上限。
+ * @param canvasW 对齐后画布宽度，单位为像素。
+ * @param charH 对齐后角色主体高度，单位为像素。
+ * @returns {boolean} 区域同时满足对应类别的宽度和高度上限时返回 ``true``。
+ * @remarks 差分图可能将身体重绘噪声误判为五官；拒绝过大区域可避免烘焙覆盖角色主体。
  */
 function plausible(r: Rect, label: 'mouth' | 'eyes', canvasW: number, charH: number): boolean {
   const maxH = label === 'mouth' ? 0.08 : 0.1
@@ -275,6 +307,14 @@ function plausible(r: Rect, label: 'mouth' | 'eyes', canvasW: number, charH: num
   return r.height <= charH * maxH && r.width <= canvasW * maxW
 }
 
+/**
+ * 检查外部命令是否可启动并以成功状态退出。
+ *
+ * @param cmd 可执行文件名或路径。
+ * @param args 传递给命令的参数列表，按进程启动顺序排列。
+ * @returns {Promise<boolean>} 命令以退出码 ``0`` 结束时返回 ``true``；启动失败或退出码非零时返回 ``false``。
+ * @remarks 函数吞掉子进程错误并将其转换为布尔结果，适用于能力探测；不会向调用方抛出启动异常。
+ */
 function which(cmd: string, args: string[]): Promise<boolean> {
   return new Promise((res) => {
     const p = spawn(cmd, args, { shell: process.platform === 'win32', stdio: 'ignore' })
@@ -283,6 +323,15 @@ function which(cmd: string, args: string[]): Promise<boolean> {
   })
 }
 
+/**
+ * 运行外部图像处理命令，并等待其完成。
+ *
+ * @param cmd 可执行文件名或路径。
+ * @param args 传递给命令的参数列表。
+ * @returns {Promise<void>} 子进程以退出码 ``0`` 结束时完成。
+ * @throws {Error} 子进程无法启动，或以非零退出码结束时抛出。
+ * @remarks 子进程继承当前进程的标准输出，便于保留外部工具的诊断信息；调用方需等待 Promise 完成后继续处理。
+ */
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((res, rej) => {
     const p = spawn(cmd, args, { shell: process.platform === 'win32', stdio: 'inherit' })
@@ -292,9 +341,13 @@ function run(cmd: string, args: string[]): Promise<void> {
 }
 
 /**
- * 白底去除的降级方案。只在没装 rembg 时用 ——
- * 它会把角色身上接近纯白的部分（白色衣服、高光、浅色头发）一起吃掉，
- * 效果明显不如 isnet-anime。
+ * 基于近白像素阈值移除背景的备用抠图方案。
+ *
+ * @param src 输入 PNG 文件路径。
+ * @returns {Promise<Buffer>} 将近白像素 alpha 置零后重新编码的 PNG 数据。
+ * @throws {Error} 输入图片读取、原始像素转换或 PNG 编码失败时抛出。
+ * @remarks 该方案可能同时移除白色服装、高光和浅色头发，精度低于 ``isnet-anime``；
+ *   函数会将整张图片解码到内存，时间复杂度为 ``O(width * height)``。
  */
 async function naiveCutout(src: string): Promise<Buffer> {
   const { data, info } = await sharp(src).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
@@ -311,9 +364,18 @@ async function naiveCutout(src: string): Promise<Buffer> {
   return sharp(data, { raw: { width, height, channels } }).png().toBuffer()
 }
 
+/**
+ * 对底图和各类别素材执行透明背景抠图。
+ *
+ * @param paths 角色素材工作路径和输出路径。
+ * @param naive 是否使用近白阈值备用方案；为 ``false`` 时要求 rembg 可执行。
+ * @returns 所有图片处理完成后的 Promise。
+ * @throws Error rembg 不可用、外部命令失败或图片读写失败。
+ * @remarks 副作用：在最终素材目录写入透明 PNG；备用方案直接在进程内处理图像。
+ */
 async function cutoutAll(paths: CharPaths, naive: boolean): Promise<void> {
   if (naive) {
-    console.log('  使用降级抠图（纯白阈值）—— 白色服装和高光可能被吃掉\n')
+    console.log('  使用降级抠图（纯白阈值）—— 白色服装和高光可能同时被移除\n')
     for (const kind of KINDS) {
       const dir = resolve(paths.raw, kind)
       let files: string[] = []
@@ -368,7 +430,14 @@ interface Entry {
   file: string
 }
 
-async function main() {
+/**
+ * 执行抠图、尺寸归一、局部烘焙和 manifest 生成。
+ *
+ * @returns {Promise<void>} 全部后处理步骤完成后的 Promise。
+ * @throws {Error} 参数、外部抠图工具、图像数据或输出文件无效。
+ * @remarks 副作用：读取工作目录素材，写入透明、对齐后的最终 PNG 和 ``manifest.json``。
+ */
+async function main(): Promise<void> {
   const paths = new CharPaths(values.name!)
   const pad = Math.max(0, Number(values.padding) || 0)
   const rescale = !values['no-rescale']
@@ -393,25 +462,23 @@ async function main() {
 
   console.log(`\n[2/3] 对齐 ${entries.length} 张`)
 
-  // --- 求每张图的包围盒与锚点（头顶中心）---
+  // 为每张图计算非透明包围盒和头顶中心锚点。
   const boxes = new Map<string, BBox>()
   for (const e of entries) {
     const { data, info } = await sharp(e.file).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
     const box = alphaBBox(data, info.width, info.height, info.channels)
     if (!box) {
-      console.log(`  ⚠ ${e.kind}/${e.id} 抠完全透明，跳过 —— 多半是抠图把整张图吃了`)
+      console.log(`  ⚠ ${e.kind}/${e.id} 结果完全透明，跳过；请检查抠图是否移除了全部像素`)
       continue
     }
     boxes.set(`${e.kind}/${e.id}`, box)
   }
 
   const baseBox = boxes.get('base/base')
-  if (!baseBox) throw new Error('底图 base.png 抠图后是空的，后续没法对齐。检查 raw/base.png 和抠图结果。')
+  if (!baseBox) throw new Error('底图 base.png 抠图后为空，无法继续对齐；请检查 raw/base.png 和抠图结果。')
 
-  // --- 缩放归一 ---
-  // 实测方舟做一次指令编辑，角色整体会放大约 3%。只对齐位置的话，
-  // 切表情时角色会「一大一小」地呼吸。这里以底图高度为基准做等比缩放：
-  // 脸变了但身高不该变，所以按高度归一是安全的，宽度随之等比跟随。
+  // 以底图主体高度为基准等比缩放，消除生成接口造成的整体尺寸偏差；高度是
+  // 稳定锚点，宽度随比例同步调整。
   const scaleOf = new Map<string, number>()
   for (const [key, box] of boxes) {
     scaleOf.set(key, rescale ? baseBox.height / box.height : 1)
@@ -420,7 +487,7 @@ async function main() {
   const scaledW = (key: string) => boxes.get(key)!.width * scaleOf.get(key)!
   const scaledH = (key: string) => boxes.get(key)!.height * scaleOf.get(key)!
 
-  // --- 统一画布：锚点定在头顶中心 ---
+  // 创建统一画布，并将所有素材的头顶中心对齐到同一锚点。
   const keys = [...boxes.keys()]
   const halfW = Math.max(...keys.map((k) => scaledW(k) / 2))
   const maxH = Math.max(...keys.map((k) => scaledH(k)))
@@ -473,20 +540,19 @@ async function main() {
   }
 
   // --- 一致性报告 ---
-  // 关键：比较的是**缩放归一之后**的宽度差。
-  // 整体等比放大已经被上一步修掉了，若归一后宽度仍然对不上，
-  // 才说明模型真的改了体型或姿势 —— 这种是修不掉的，只能重跑。
+  // 比较缩放归一后的宽度差：整体比例偏差已在上一步消除，
+  // 归一后仍存在的差异才可能表示模型改变了体型或姿势，需要重新生成素材。
   const tolW = Math.max(4, Math.round(baseBox.width * 0.02))
   const suspects = drift
     .map((d) => ({ key: d.key, residual: Math.round((baseBox.width + d.dw) * d.scale - baseBox.width), scale: d.scale }))
     .filter((d) => Math.abs(d.residual) > tolW)
 
   if (suspects.length) {
-    console.log(`\n  ⚠ 以下 ${suspects.length} 张在缩放归一后轮廓仍对不上，模型八成改了体型或姿势：`)
+    console.log(`\n  ⚠ 以下 ${suspects.length} 张在缩放归一后轮廓仍不一致，可能存在体型或姿势变化：`)
     for (const s of suspects.sort((a, b) => Math.abs(b.residual) - Math.abs(a.residual))) {
       console.log(`      ${s.key}　残余宽差 ${s.residual > 0 ? '+' : ''}${s.residual}px`)
     }
-    console.log('      到预览页开 diff 模式确认，确实漂了就标记重跑 —— 这种缩放救不回来。')
+    console.log('      请在预览页启用 diff 模式确认；若确有变化，应标记素材重新生成。')
   } else {
     console.log('  ✓ 缩放归一后所有图轮廓一致，没有检测到体型改动')
   }
@@ -510,15 +576,14 @@ async function main() {
   }
 
   // --- 五官区域：手动指定优先，否则自动检测 ---
-  // 渲染层靠它做局部合成，而不是整图切换 —— 后者会让角色一开口表情就退回平静脸
+  // 渲染层使用这些区域执行局部合成，避免切换整图时嘴部变化覆盖已有表情状态。
   const regions: NonNullable<SpriteManifest['regions']> = {}
   const manualEyes = parseRect(values.eyes, 'eyes')
   const manualMouth = parseRect(values.mouth, 'mouth')
   const manualFace = parseRect(values.face, 'face')
 
-  // 五官只可能在头部。对齐后角色顶部固定在 anchorY，
-  // 取上 25% 高度作为搜索带 —— 原来的 40% 会把肩膀和胸口一起纳入，
-  // 而差分图的身体同样被重画，那部分噪声足以压过嘴部信号
+  // 五官位于头部。对齐后角色顶部固定在 anchorY，取上 25% 高度作为搜索带，
+  // 以排除肩膀和胸口区域的重绘噪声，避免其影响嘴部差异检测。
   const headBand = { top: anchorY, bottom: anchorY + Math.round(maxH * 0.25) }
 
   if (manualMouth) {
@@ -526,7 +591,7 @@ async function main() {
   } else if (mouth.closed && mouth.open) {
     const r = await diffRegion(resolve(paths.root, mouth.closed), resolve(paths.root, mouth.open), 8, headBand)
     if (r && plausible(r, 'mouth', canvasW, maxH)) regions.mouth = r
-    else if (r) console.log(`  ⚠ 嘴区检测结果不合理（${r.width}×${r.height}），已丢弃 —— 身体被大面积重绘带偏了检测`)
+    else if (r) console.log(`  ⚠ 嘴区检测结果不合理（${r.width}×${r.height}），已丢弃；可能受身体重绘噪声影响`)
   }
 
   if (manualEyes) {
@@ -537,20 +602,19 @@ async function main() {
       const [, v] = blinkPair
       const r = await diffRegion(resolve(paths.root, v.file), resolve(paths.root, v.blink!), 8, headBand)
       if (r && plausible(r, 'eyes', canvasW, maxH)) regions.eyes = r
-      else if (r) console.log(`  ⚠ 眼区检测结果不合理（${r.width}×${r.height}），已丢弃 —— 同上`)
+      else if (r) console.log(`  ⚠ 眼区检测结果不合理（${r.width}×${r.height}），已丢弃；可能受身体重绘噪声影响`)
     }
   }
 
-  // 眼在上嘴在下是解剖学保证的。反了说明至少有一个检歪了，
-  // 继续往下算只会把烘焙区域搞成一团糟，不如老实报出来
+  // 正常布局中眼区应位于嘴区上方；若顺序相反，至少有一个检测结果不可信，
+  // 因此删除眼区，避免错误坐标继续扩大烘焙范围。
   if (regions.eyes && regions.mouth && regions.eyes.y > regions.mouth.y) {
     console.log('  ⚠ 检测到眼区位置低于嘴区，五官检测不可信，已丢弃眼区。')
     delete regions.eyes
   }
 
-  // 两块区域各自留了一圈 padding，脸小或五官紧凑时会叠在一起。
-  // 一旦重叠，合成嘴型就会连带把眼睛下缘覆盖成 normal 脸的样子 —— 眨眼当场被抹掉。
-  // 眼在上嘴在下是解剖学保证的，取重叠带中线一刀切开即可。
+  // 两块区域分别扩展了边界余量，脸部较小或五官较紧凑时可能发生重叠。
+  // 重叠会使嘴型合成覆盖眼区下缘，因此按上下区域的中线切分重叠带。
   if (regions.eyes && regions.mouth) {
     const e = regions.eyes
     const m = regions.mouth
@@ -564,13 +628,13 @@ async function main() {
     }
   }
 
-  // --- 脸部烘焙：把所有表情统一到同一具身体上 ---
-  // 烘焙只需要一个脸部矩形。--face 直接给定；没给才从眼区 ∪ 嘴区推。
+  // --- 脸部烘焙：将所有表情统一到底图身体 ---
+  // 烘焙只需要一个脸部矩形；优先使用 --face，未指定时由眼区与嘴区的并集推导。
   let face: Rect | null = manualFace
   if (!face && regions.eyes && regions.mouth) {
     const e = regions.eyes
     const m = regions.mouth
-    // 脸部区域 = 眼区 ∪ 嘴区，再向外扩 —— 腮红、脸颊阴影都在这两块之外
+    // 脸部区域由眼区与嘴区的并集向外扩展，以覆盖腮红和脸颊阴影等相邻细节。
     const padX = Math.round(e.width * 0.28)
     const padY = Math.round(e.height * 1.1)
     const x = Math.max(0, Math.min(e.x, m.x) - padX)
@@ -581,14 +645,13 @@ async function main() {
     face = {
       x,
       y,
-      // 必须钳到 ≥1：五官检测偶尔会失准（比如嘴区被判到眼区上方），
-      // 算出负数尺寸会让 sharp 直接抛错，整条管线在最后一步崩掉
+      // 将尺寸限制为至少 1，避免检测误差产生非法尺寸并使 sharp 在裁剪阶段失败。
       width: Math.max(1, Math.min(canvasW - x, right - x)),
       height: Math.max(1, Math.min(canvasH - y, bottom - y)),
     }
 
-    // 脸不该占到半个身子。超了说明区域检测被身体重绘噪点带偏了，
-    // 这时烘焙会把大半个角色一起换掉，比不烘焙更糟 —— 宁可跳过
+    // 脸部区域不应覆盖大部分画布；超出该范围通常表示检测被身体重绘噪声偏移，
+    // 继续烘焙会替换过多角色像素，因此放弃自动区域。
     if (face.height > canvasH * 0.55 || face.width > canvasW * 0.9) {
       console.log(
         `  ⚠ 脸部区域检测异常（${face.width}×${face.height}，占画布 ${((face.height / canvasH) * 100).toFixed(0)}% 高），已丢弃。`,
@@ -598,14 +661,13 @@ async function main() {
   }
 
   if (bake && face) {
-    // 手填的坐标也要钳进画布，越界会让 sharp 在 extract 时直接抛错
+    // 手动坐标同样限制在画布范围内，避免越界导致 sharp 的 extract 操作失败。
     face.width = Math.max(1, Math.min(canvasW - face.x, face.width))
     face.height = Math.max(1, Math.min(canvasH - face.y, face.height))
 
     const feather = Math.max(6, Math.round(Math.min(face.width, face.height) * 0.12))
 
-    // 每个表情都要烘焙，包括 normal —— 它的身体同样是模型重画的，
-    // 只有底图 base.png 本身是那具唯一的身体
+    // 所有表情都需要烘焙，包括 normal；只有底图 base.png 作为统一的身体像素来源。
     let baked = 0
     for (const id of Object.keys(expressions)) {
       const file = resolve(paths.root, expressions[id]!.file)
@@ -618,8 +680,8 @@ async function main() {
         `脸区 ${face.width}×${face.height} @ (${face.x}, ${face.y})，羽化 ${feather}px`,
     )
   } else if (bake) {
-    console.log('  ⚠ 没有可用的脸部区域，跳过烘焙 —— 运行时切表情整个身体都会闪。')
-    console.log('     自动检测在身体被大面积重绘的素材上不可靠，用 --face 手填画布坐标即可绕过：')
+    console.log('  ⚠ 没有可用的脸部区域，跳过烘焙；运行时切换表情可能出现身体闪烁。')
+    console.log('     身体大面积重绘时自动检测可靠性不足，请使用 --face 手动指定画布坐标：')
     console.log('       npx tsx scripts/sprite/process.ts --face x,y,宽,高')
   }
 

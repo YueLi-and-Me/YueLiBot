@@ -1,3 +1,9 @@
+/*
+ * 定义设置窗口的表单、分组、错误提示和操作区布局。
+ *
+ * 选择器对应 settings.html 的配置字段，保留较高对比度和键盘焦点样式；本文件不
+ * 影响配置校验与保存行为。
+ */
 body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));

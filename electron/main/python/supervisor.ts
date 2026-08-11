@@ -2,16 +2,13 @@
  * Python 后端进程监护。
  *
  * 职责：
- *  · 拉起 `python bot.py` 子进程（仓库根的入口，业务在 src/ 下）
- *  · 解析 stdout 里的端口、token 与就绪公告，通知 client.ts 建立连接
- *  · stderr 转发到 console（structlog 的输出）
- *  · 异常退出时按退避策略重启
- *  · 关停时确保子进程树真的死掉
+ *  - 按调用方提供的工作目录启动 ``bot.py``，解析端口、令牌和就绪信号。
+ *  - 将标准输出和错误输出转发到 Electron 控制台，并在异常退出后有限退避重启。
+ *  - 监控已由其他进程启动的后端，必要时切换回本地子进程。
+ *  - 关闭时终止后端及可选的 QQ 适配器进程树。
  *
- * ★ 刻意不 import electron。
- *   一是为了能在无头 Node 里做真实联调测试（拉起真的 Python 再断言），
- *   二是 app.getAppPath() 在打包后指向 app.asar，而 Python 侧（bot.py 与 src/）
- *   不在 asar 里 —— 路径该由调用方决定，监护器不该猜。
+ * 本模块不依赖 Electron API，路径完全由调用方注入，因而可在 Node 测试环境中
+ * 单独验证进程和就绪信号处理。
  */
 
 import { spawn } from 'node:child_process'
@@ -47,6 +44,13 @@ export interface SupervisorOptions {
   napcatConfigPath?: string
 }
 
+/**
+ * 将子进程退出码和信号转换为稳定的诊断文本。
+ *
+ * @param code Node 提供的退出码；正常由信号结束时可为 ``null``。
+ * @param signal Node 提供的终止信号；正常退出时为 ``null``。
+ * @returns 包含可用退出字段的空格分隔文本；两者均为空时返回“无退出详情”。
+ */
 export function formatProcessExitDetails(
   code: number | null,
   signal: NodeJS.Signals | null,
@@ -89,6 +93,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly pythonExe: string
   private readonly napcatConfigPath: string | null
 
+  /**
+   * 创建后端进程监护器。
+   *
+   * @param opts 数据目录、配置路径、工作目录及可选 Python/适配器路径。
+   * @throws 不在构造阶段访问文件或启动进程；参数错误在启动时由对应操作报告。
+   */
   constructor(opts: SupervisorOptions) {
     super()
     this.dataDir = opts.dataDir
@@ -98,11 +108,23 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.napcatConfigPath = opts.napcatConfigPath ?? null
   }
 
+  /**
+   * 启动或接管后端，并异步等待就绪信号。
+   *
+   * @returns 无返回值；就绪、退出和失败通过事件发出。
+   * @sideEffects 读取运行时连接文件、可能启动 Python/适配器子进程并注册监控定时器。
+   */
   start(): void {
     this.stopping = false
     void this._connectOrSpawn()
   }
 
+  /**
+   * 停止后端监护并终止相关进程。
+   *
+   * @returns 无返回值；重复调用安全。
+   * @sideEffects 取消外部后端监控、终止适配器和 Python 进程，并阻止后续重启。
+   */
   stop(): void {
     this.stopping = true
     this.attachedBackend = null
@@ -111,13 +133,23 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this._kill()
   }
 
-  /** 当前是否有活着的子进程。供自检与集成测试断言。 */
+  /**
+   * 判断主体后端是否仍由本监护器接管且处于可用进程状态。
+   *
+   * @returns {boolean} 已接管外部后端，或本地子进程存在且尚未退出时返回 ``true``。
+   */
   get alive(): boolean {
     return this.attachedBackend !== null
       || (!!this.child && this.child.exitCode === null && !this.child.killed)
   }
 
   /** 优先连接用户独立启动的后端；确认不可用后才拉起自己的子进程。 */
+  /**
+   * 优先接管可用的外部后端，确认不存在后再启动本地后端。
+   *
+   * @returns 完成一次接管或启动尝试后的 Promise。
+   * @sideEffects 更新连接状态并可能触发 ready、exit 或 failed 事件。
+   */
   private async _connectOrSpawn(): Promise<void> {
     if (this.stopping || this.connecting) return
     this.connecting = true
@@ -134,6 +166,13 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     }
   }
 
+  /**
+   * 读取运行时连接文件并验证外部后端健康状态。
+   *
+   * @returns 端口和 64 位十六进制令牌均有效且健康检查成功时返回连接信息，否则
+   * 返回 ``null``。
+   * @sideEffects 读取 dataDir/runtime/backend.json 并执行一次本机健康请求。
+   */
   private async _findExistingBackend(): Promise<BackendConnection | null> {
     const runtimePath = join(this.dataDir, 'runtime', 'backend.json')
     let payload: unknown
@@ -167,6 +206,13 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     return await this._probeBackend(connection) ? connection : null
   }
 
+  /**
+   * 使用短超时和令牌探测后端运行状态。
+   *
+   * @param connection 待探测的本机端口和鉴权令牌。
+   * @returns HTTP 响应成功且正文可读取时为 ``true``；网络、超时或非 2xx 时为
+   * ``false``。
+   */
   private async _probeBackend(connection: BackendConnection): Promise<boolean> {
     try {
       const response = await fetch(`http://127.0.0.1:${connection.port}/runtime/health`, {
@@ -180,6 +226,13 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     }
   }
 
+  /**
+   * 接管已运行后端并向下游发布 ready 事件。
+   *
+   * @param connection 已通过健康检查的连接信息。
+   * @returns 无返回值。
+   * @sideEffects 保存外部连接、启动适配器和存活监控，并发出 ready 事件。
+   */
   private _attachBackend(connection: BackendConnection): void {
     this.attachedBackend = connection
     this.restarts = 0
@@ -189,6 +242,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this._startAttachedMonitor()
   }
 
+  /**
+   * 启动外部后端的周期健康检查。
+   *
+   * @returns 无返回值；重复启动前会先清除旧定时器。
+   * @sideEffects 创建不可阻止进程退出的轮询定时器。
+   */
   private _startAttachedMonitor(): void {
     this._clearAttachedMonitor()
     this.attachedMonitor = setInterval(() => {
@@ -197,6 +256,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.attachedMonitor.unref?.()
   }
 
+  /**
+   * 检查当前外部后端，失联时切换到重新接管或本地启动流程。
+   *
+   * @returns 完成一次健康检查后的 Promise。
+   * @sideEffects 可能清理外部连接、停止适配器、发出 exit 并触发下一次连接尝试。
+   */
   private async _checkAttachedBackend(): Promise<void> {
     const connection = this.attachedBackend
     if (this.stopping || connection === null) return
@@ -210,12 +275,24 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     void this._connectOrSpawn()
   }
 
+  /**
+   * 清除外部后端存活监控定时器。
+   *
+   * @returns 无返回值；没有定时器时安全返回。
+   * @sideEffects 停止周期健康检查并清空引用。
+   */
   private _clearAttachedMonitor(): void {
     if (this.attachedMonitor === null) return
     clearInterval(this.attachedMonitor)
     this.attachedMonitor = null
   }
 
+  /**
+   * 终止主 Python 子进程，并在 Windows 上连同子进程树一起结束。
+   *
+   * @returns 无返回值；进程不存在或已退出时安全返回。
+   * @sideEffects 调用 taskkill 或 ChildProcess.kill，并设置直接终止的超时兜底。
+   */
   private _kill(): void {
     const child = this.child
     if (!child || child.exitCode !== null) return
@@ -242,6 +319,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     }
   }
 
+  /**
+   * 启动一个本地 Python 后端子进程并注册输出、退出和错误处理器。
+   *
+   * @returns 无返回值；进程就绪后由 ``_onLine`` 发布 ready 事件。
+   * @sideEffects 创建子进程、注入运行目录和 UTF-8 环境变量，并重置本次启动的信号状态。
+   */
   private _spawn(): void {
     this.attachedBackend = null
     this._clearAttachedMonitor()
@@ -262,21 +345,18 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         ...process.env,
         YUELI_DATA_DIR: this.dataDir,
         PYTHONUNBUFFERED: '1',
-        // Windows 控制台默认 GBK，structlog 的中文会变成乱码甚至
-        // 在 print 时抛 UnicodeEncodeError 把进程带崩
+        // Windows 管道默认编码可能不是 UTF-8，显式设置避免中文日志解码错误。
         PYTHONIOENCODING: 'utf-8',
-        // stdout 是管道，Python 那边 sys.stdout.isatty() 永远是 False——
-        // 但这个管道最终确实会被转发进一个真终端（见下面 _onLine），
-        // 所以显式告诉 Python 侧「按彩色渲染」，不要被 isatty() 的假阴性坑了。
+        // stdout 通过管道转发到 Electron 控制台，isatty() 为 false；显式保留彩色
+        // 输出，避免日志转发后丢失可读性。
         YUELI_FORCE_COLOR: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     this.child = child
 
-    // ★ spawn 失败（ENOENT：python 不在 PATH）是**异步**发 error 事件，不是抛异常。
-    //   不挂这个监听器，未捕获的 error 会直接崩掉 Electron 主进程 ——
-    //   表现为「桌宠根本没出现」，而不是「后端没起来」
+    // spawn 失败通过异步 error 事件报告；必须监听，否则 Node 会将错误视为未处理
+    // 事件并终止 Electron 主进程。
     child.on('error', (err) => {
       console.error('[supervisor] 无法拉起 Python 后端：', err.message)
       this.emit('failed', err)
@@ -291,7 +371,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         this.child = null
         this._killAdapter()
       }
-      // 自己关的不算故障
+      // stop() 主动关闭进程不属于异常退出。
       const details = formatProcessExitDetails(code, signal)
       if (this.stopping) console.info(`[supervisor] Python 后端已退出（${details}）`)
       else console.warn(`[supervisor] Python 后端退出（${details}）`)
@@ -301,7 +381,13 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     })
   }
 
-  /** 按行解析 stdout，跨 chunk 的半截行留在缓冲里。 */
+  /**
+   * 将 Python stdout 按换行拆分并交给就绪信号解析器。
+   *
+   * @param chunk 子进程 stdout 的任意字节块，可能包含半行或多行文本。
+   * @returns 无返回值；未完成的行保留在内部缓冲区。
+   * @sideEffects 更新 stdout 缓冲区、触发 ready 状态处理并转发普通日志。
+   */
   private _onStdout(chunk: Buffer): void {
     this.stdoutBuf += chunk.toString('utf8')
     let nl: number
@@ -310,10 +396,17 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       this.stdoutBuf = this.stdoutBuf.slice(nl + 1)
       this._onLine(line)
     }
-    // 防止对端一直不换行时缓冲无限增长
+    // 无换行输出不能无限占用内存，超过上限后丢弃未成行内容。
     if (this.stdoutBuf.length > 64 * 1024) this.stdoutBuf = ''
   }
 
+  /**
+   * 解析单行后端公告并转发普通日志。
+   *
+   * @param line 去除换行后的 stdout 文本。
+   * @returns 无返回值；端口、令牌和就绪标记分别更新对应状态。
+   * @sideEffects 可能发布 ready 事件或写入 Electron stdout。
+   */
   private _onLine(line: string): void {
     if (line.startsWith('YUELI_PORT=')) {
       const port = Number.parseInt(line.slice('YUELI_PORT='.length), 10)
@@ -334,13 +427,16 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       this._emitReadyIfComplete()
       return
     }
-    // ★ 其余每一行都是 Python 侧真的想给人看的输出——structlog 日志、
-    //   trace_console 的 rich 面板。以前这里只找端口号，其它行直接吞掉，
-    //   Electron 控制台里等于永远看不到 Python 那边发生了什么。
+    // 非协议行属于后端诊断输出，保留并转发到 Electron 控制台，便于定位启动阶段问题。
     if (line) process.stdout.write(`${line}\n`)
   }
 
-  /** 只有端口、token 和 FastAPI 真就绪都公告后，才允许下游建立连接。 */
+  /**
+   * 在端口、令牌和后端就绪信号全部收到后向下游发布一次 ``ready`` 事件。
+   *
+   * @returns {void} 条件未满足、事件已发布或发布成功后均无返回值。
+   * @remarks 方法只允许发布一次 ready，并在稳定运行计时结束后清零连续重启计数。
+   */
   private _emitReadyIfComplete(): void {
     if (
       this.readyEmitted
@@ -352,7 +448,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     const token = this.backendToken
     this.readyEmitted = true
     console.log(`[supervisor] Python 后端就绪，端口 ${port}`)
-    // 稳定跑够一段时间才认为这次拉起成功，避免「起来就崩」把退避耗尽
+    // 稳定运行后才清零重启计数，避免短暂启动后立即崩溃耗尽退避次数。
     setTimeout(() => {
       if (this.alive) this.restarts = 0
     }, PythonSupervisor.STABLE_AFTER).unref?.()
@@ -360,6 +456,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.emit('ready', port, token)
   }
 
+  /**
+   * 按指数退避安排下一次后端启动。
+   *
+   * @returns 无返回值；达到重启上限时停止监护并发出错误日志。
+   * @sideEffects 增加重启计数并创建可取消的延迟任务。
+   */
   private _scheduleRestart(): void {
     if (this.restarts >= PythonSupervisor.MAX_RESTARTS) {
       console.error('[supervisor] Python 后端连续重启超过上限，停止监护')
@@ -374,9 +476,11 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   }
 
   /**
-   * 后端端口和生命周期都完成后才会宣告 ready，此时再把适配器接上，避免给它
-   * 传一个尚未可用的端口。适配器不参与主体重启退避；它自己的连接失败策略由
-   * runner 执行，配置或协议端错误则直接通过托盘告诉用户。
+   * 在主体后端完成就绪后启动可选 QQ 适配器。
+   *
+   * @returns 无返回值；未配置适配器路径时直接返回。
+   * @sideEffects 清理旧适配器、创建新 Python 进程并转发其标准输出和错误；适配器
+   * 故障通过 ``adapterFailed`` 事件通知主进程，不参与主体重启计数。
    */
   private _spawnAdapter(): void {
     if (!this.napcatConfigPath) return
@@ -401,14 +505,14 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.adapter = adapter
     let adapterSpawnError: Error | null = null
 
-    // 只记下来，由 close 统一输出
+    // 先缓存 spawn 错误，由 close 统一合并退出状态后发出一次故障通知。
     adapter.on('error', (err) => {
       if (this.adapter !== adapter) return
       adapterSpawnError = err
     })
     adapter.stdout?.on('data', (chunk: Buffer) => this._onAdapterStdout(chunk))
     adapter.stderr?.on('data', (chunk: Buffer) => this._onAdapterStderr(chunk))
-    // 用 close 不用 exit：spawn 失败时 Node 不发 exit
+    // 使用 close 而不是 exit：spawn 失败时 Node 可能只发 error/close。
     adapter.on('close', (code, signal) => {
       if (this.adapter !== adapter) return
       this._flushAdapterOutput()
@@ -417,7 +521,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
         console.info(`[supervisor] QQ 适配器已退出（${formatProcessExitDetails(code, signal)}）`)
         return
       }
-      // 拉起失败没有退出码，单独措辞
+      // 无退出码时保留原始 spawn 错误，避免将启动失败误报为普通退出。
       const failure = adapterSpawnError
         ? new Error(`QQ 适配器拉起失败：${adapterSpawnError.message}`)
         : new Error(`QQ 适配器异常退出（${formatProcessExitDetails(code, signal)}）`)
@@ -426,7 +530,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     })
   }
 
-  /** 适配器只由其自己的退出事件结束，避免 stop() 触发一次无意义的托盘告警。 */
+  /**
+   * 终止当前 QQ 适配器进程树。
+   *
+   * @returns 无返回值；适配器不存在或已经退出时安全返回。
+   * @sideEffects 在 Windows 使用 taskkill 终止进程树，其他平台发送 SIGTERM。
+   */
   private _killAdapter(): void {
     const adapter = this.adapter
     if (!adapter || adapter.exitCode !== null) {
@@ -452,16 +561,38 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     }
   }
 
+  /**
+   * 缓冲 QQ 适配器标准输出并按行转发。
+   *
+   * @param chunk 适配器 stdout 的任意字节块。
+   * @returns 无返回值。
+   * @sideEffects 更新 stdout 缓冲并将完整行写入 Electron stdout。
+   */
   private _onAdapterStdout(chunk: Buffer): void {
     this.adapterStdoutBuf += chunk.toString('utf8')
     this._writeAdapterLines(false, false)
   }
 
+  /**
+   * 缓冲 QQ 适配器标准错误并按行转发。
+   *
+   * @param chunk 适配器 stderr 的任意字节块。
+   * @returns 无返回值。
+   * @sideEffects 更新 stderr 缓冲并将完整行写入 Electron stderr。
+   */
   private _onAdapterStderr(chunk: Buffer): void {
     this.adapterStderrBuf += chunk.toString('utf8')
     this._writeAdapterLines(true, false)
   }
 
+  /**
+   * 从适配器指定输出缓冲区提取完整行，并处理关闭时的末尾残片。
+   *
+   * @param isError 为 ``true`` 时处理 stderr，否则处理 stdout。
+   * @param flush 为 ``true`` 时将末尾无换行文本也作为一行写出。
+   * @returns 无返回值；超过 64 KiB 的无换行缓冲会被清空。
+   * @sideEffects 更新对应缓冲区并向 Electron 输出带适配器前缀的文本。
+   */
   private _writeAdapterLines(isError: boolean, flush: boolean): void {
     const buffer = isError ? this.adapterStderrBuf : this.adapterStdoutBuf
     let remaining = buffer
@@ -482,6 +613,14 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     }
   }
 
+  /**
+   * 将一行适配器输出写入 Electron stdout 或 stderr。
+   *
+   * @param line 待写出的文本行。
+   * @param isError 是否写入 stderr。
+   * @returns 无返回值；空白行不输出。
+   * @sideEffects 写入当前进程的标准输出流。
+   */
   private _writeAdapterLine(line: string, isError: boolean): void {
     const text = line.trimEnd()
     if (!text) return
@@ -489,6 +628,12 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     output.write(`[napcat] ${text}\n`)
   }
 
+  /**
+   * 在适配器关闭时强制输出 stdout/stderr 缓冲区中的最后残片。
+   *
+   * @returns 无返回值。
+   * @sideEffects 清空可输出的适配器缓冲并写入当前进程输出流。
+   */
   private _flushAdapterOutput(): void {
     this._writeAdapterLines(false, true)
     this._writeAdapterLines(true, true)

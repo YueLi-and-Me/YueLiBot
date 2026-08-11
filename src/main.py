@@ -1,5 +1,8 @@
-"""
-YueLiBot Python 后端入口。
+"""启动 YueLiBot Python 后端并组装数据库、模型、平台和观察服务。
+
+命令行参数决定运行时数据目录、配置文件和监听端口；入口负责先校验端口，再创建
+数据库迁移、模型路由、对话服务、可选向量/TTS/日程服务，并将生命周期回调交给
+FastAPI。实际 HTTP/WebSocket 路由由 ``src.api`` 提供。
 """
 
 from __future__ import annotations
@@ -36,14 +39,39 @@ class _LLMGenerator:
         temperature: float,
         max_tokens: int | None,
     ) -> None:
+        """绑定日程模型提供者及生成参数。
+
+        Args:
+            schedule_provider: 已选中的日程模型提供者。
+            temperature: 模型采样温度。
+            max_tokens: 最大输出 token 数；``None`` 表示由提供者决定。
+        """
+
         self._schedule_provider = schedule_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
 
     async def generate(self, prompt: str) -> str:
+        """流式生成并拼接一份日程 JSON 文本。
+
+        Args:
+            prompt: 已渲染的日程生成提示词。
+
+        Returns:
+            模型返回的非空正文。
+
+        Raises:
+            ValueError: 模型只返回推理内容或空正文。
+            Exception: 提供者连接、协议或流式迭代错误直接传播。
+
+        Side Effects:
+            写入模型请求观察事件；不会持久化日程，持久化由日程服务负责。
+        """
+
         raw = ''
         reasoning_length = 0
         messages = [{'role': 'user', 'content': prompt}]
+        # 日程请求要求 JSON object，推理字段只计数用于诊断，不混入返回正文。
         trace.emit(
             'llm_request',
             messages=messages,
@@ -63,6 +91,7 @@ class _LLMGenerator:
             reasoning = chunk.get('reasoning')
             if isinstance(reasoning, str):
                 reasoning_length += len(reasoning)
+        # 空正文通常表示 provider 只返回推理或响应协议不匹配，必须显式暴露。
         if not raw.strip():
             raise ValueError(
                 '日程模型未返回正文'
@@ -72,7 +101,20 @@ class _LLMGenerator:
 
 
 def _bind_backend_socket(port: int) -> socket.socket:
-    """绑定并占住后端端口，端口已被占用时给出可执行的排查提示。"""
+    """绑定并持有本地后端端口，避免探测完成后被其他进程抢占。
+
+    Args:
+        port: 监听端口，范围为 ``1`` 到 ``65535``。
+
+    Returns:
+        已绑定到 ``127.0.0.1`` 的 TCP socket；调用方负责在服务器接管后管理其生命周期。
+
+    Raises:
+        OSError: 端口被占用时抛出带排查提示的异常，其他绑定失败传播原始异常。
+
+    Side Effects:
+        成功时占用本地端口；绑定失败时关闭临时 socket。
+    """
     # 要一直持有这个 socket，探完就放会被别人占走。
     sock = socket.socket()
     try:
@@ -91,14 +133,38 @@ def _bind_backend_socket(port: int) -> socket.socket:
 
 
 def _announce_port(port: int) -> None:
+    """向父进程以固定键值格式输出实际监听端口。
+
+    Args:
+        port: 后端实际绑定的端口。
+
+    Side Effects:
+        向标准输出写入并立即刷新 ``YUELI_PORT=<port>``。
+    """
+
     print(f"YUELI_PORT={port}", flush=True)
 
 
 def _announce_token(token: str) -> None:
+    """向父进程以固定键值格式输出当前后端认证令牌。
+
+    Args:
+        token: 当前进程认证 token。
+
+    Side Effects:
+        向标准输出写入并立即刷新 ``YUELI_TOKEN=<token>``；调用方必须确保输出通道受信任。
+    """
+
     print(f"YUELI_TOKEN={token}", flush=True)
 
 
 def _announce_ready() -> None:
+    """向父进程输出后端已完成监听初始化的就绪标记。
+
+    Side Effects:
+        向标准输出写入并立即刷新 ``YUELI_READY=1``。
+    """
+
     print("YUELI_READY=1", flush=True)
 
 
@@ -106,11 +172,35 @@ class _ReadyAnnouncingServer(uvicorn.Server):
     """在端口真正开始监听之后才打印就绪公告。"""
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        """完成 Uvicorn 启动后再输出就绪标记。
+
+        Args:
+            sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入。
+
+        Side Effects:
+            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1``。
+        """
+
         await super().startup(sockets=sockets)
         _announce_ready()
 
 
 def main() -> None:
+    """解析命令行参数并启动后端进程。
+
+    Returns:
+        ``None``；服务由 Uvicorn 事件循环持续运行。
+
+    Side Effects:
+        创建运行时目录、数据库和日志，初始化模型与可选服务，绑定本地端口并启动
+        FastAPI。使用 ``--selftest`` 时改为在隔离临时目录执行自检并通过进程退出码
+        返回结果。
+
+    Raises:
+        OSError: 端口占用、目录创建或数据库初始化失败。
+        Exception: 配置读取、服务装配或 Uvicorn 启动错误直接传播。
+    """
+
     parser = argparse.ArgumentParser(description="YueLiBot Python backend")
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--config-path", required=True)
@@ -118,6 +208,7 @@ def main() -> None:
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
+    # 先把数据目录暴露给依赖环境变量的后端组件，再加载配置和日志。
     os.environ["YUELI_DATA_DIR"] = args.data_dir
 
     cfg = load_config(Path(args.config_path))
@@ -130,16 +221,14 @@ def main() -> None:
     configure_prompts(data_dir)
 
     if args.selftest:
-        # ★ 自检必须用独立临时目录，绝不能碰 --data-dir 指向的真实 memory.db——
-        #   REFLECT 检查会塞假消息触发摘要，写进真实库就是污染用户数据。
+        # 自检会写入测试消息和摘要，必须在自身的临时数据库中运行，不能污染运行数据。
         from src.selftest import run_selftest
         rc = asyncio.run(run_selftest(cfg))
         sys.exit(rc)
 
     db_path = data_dir / "memory.db"
 
-    # 先占住端口再落盘连接信息。端口冲突时不得写出看似可用的新 token，
-    # 更不能打印端口或就绪公告。
+    # 先占住端口再生成并公告运行时凭证，避免端口冲突时留下看似可用的连接信息。
     sock = _bind_backend_socket(args.port)
     port = sock.getsockname()[1]
     backend_runtime = create_backend_runtime(data_dir, port)
@@ -169,7 +258,7 @@ def main() -> None:
     )
     logger.info("db_ready", path=str(db_path))
 
-    # 初始化 ChatService
+    # 先装配归属注册表和 broker，随后创建的聊天服务才能解析并投递外部 stream。
     from src.api.state import app_state
     from src.api.ws import push
     from src.services.chat import ChatService
@@ -180,6 +269,16 @@ def main() -> None:
     qq_driver = QqWebSocketDriver(push)
 
     def _register_platform_stream(stream: StreamRef) -> None:
+        """为 QQ stream 注册唯一的 WebSocket 出站驱动。
+
+        Args:
+            stream: 已由注册表解析的 stream 引用。
+
+        Side Effects:
+            当 stream 属于 QQ 平台且尚未注册驱动时，向平台 broker 写入该 stream 的
+            驱动绑定；重复调用不会重复注册。
+        """
+
         if stream.platform != qq_driver.platform:
             return
         if not broker.has_driver(stream.id):
@@ -194,7 +293,7 @@ def main() -> None:
         desktop_stream_id=desktop_context.stream.id,
     )
 
-    # 八个任务各自的候选序列。厂商挂了在这一层换下一条连接，业务侧无感。
+    # 路由器为各模型任务维护候选序列，业务服务只接收已经选择好的 provider。
     from src.llm_models.router import create_routers
     routers = create_routers(cfg)
     app_state.routers = routers
@@ -221,6 +320,17 @@ def main() -> None:
         payload: Any,
         stream_id: int = desktop_context.stream.id,
     ) -> int:
+        """将服务事件转发到指定 stream 的 WebSocket 订阅者。
+
+        Args:
+            channel: 事件频道名称。
+            payload: 事件载荷。
+            stream_id: 目标 stream ID，默认使用 desktop stream。
+
+        Returns:
+            实际收到事件的订阅者数量。
+        """
+
         return await push(stream_id, channel, payload)
 
     app_state.chat = ChatService(
@@ -234,9 +344,7 @@ def main() -> None:
         expression_provider=routers.expression if routers.expression.ready else None,
     )
 
-    # 初始化 VectorService（可选，默认关）——必须在 app_state.chat 建好之后，
-    # 它要用 chat.memory；直接赋 _vector 属性，和下面 TTS 的 _speak_audio
-    # 是同一种「服务建好后挂到 chat 私有属性上」的写法。
+    # 向量服务依赖 ChatService 已创建的 MemoryStore，因此必须在聊天服务之后装配。
     if cfg.vector.enabled:
         try:
             from src.memory.embed import build_client
@@ -248,7 +356,7 @@ def main() -> None:
         except Exception as exc:
             logger.warning("vector_recall_init_failed", error=str(exc))
 
-    # 初始化 TTS 服务（可选）
+    # TTS 只在配置启用且至少有一个可用候选时装配，避免创建永远失败的后台任务。
     if cfg.tts.enabled and routers.tts.ready:
         from src.services.tts import TtsService
         tts = TtsService(cfg, _push_event, routers.tts)
@@ -258,7 +366,7 @@ def main() -> None:
         logger.info("tts_ready", voice=cfg.tts.voice,
                     candidates=len(routers.tts.candidates))
 
-    # 初始化 DayPlanService（可选；失败则 schedule 留 None，AwarenessService 退到 fallback 日程）
+    # 日程服务是可选依赖；未成功装配时由 AwarenessService 使用配置备用日程。
     schedule = None
     try:
         from src.schedule.plan import DayPlanService, ScheduleSleepState
@@ -296,9 +404,8 @@ def main() -> None:
     except Exception as exc:
         logger.warning("schedule_init_failed", error=str(exc))
 
-    # 初始化 AwarenessService：吃前台事件、驱动睡眠状态、决定主动搭话。
-    # startup/shutdown 注册进 lifecycle，真正的调用发生在 uvicorn 拉起循环之后
-    # （api/app.py 的 FastAPI lifespan），这里只是登记。
+    # 主动感知依赖聊天、日程和视觉服务；这里只登记生命周期回调，实际启动在
+    # FastAPI lifespan 的事件循环中执行。
     from src.services.lifecycle import lifecycle
     from src.services.proactive import AwarenessService
     awareness = AwarenessService(

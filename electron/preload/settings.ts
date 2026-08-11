@@ -1,3 +1,9 @@
+/**
+ * 为设置窗口暴露配置读取、保存和后端重启通道。
+ *
+ * 配置值通过 shared/ipc.ts 的类型约束传输，实际解析、校验和写盘仍由主进程
+ * electron/main/config.ts 执行。
+ */
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type SettingsBridge, type YueliConfig } from '../shared/ipc.ts'
 

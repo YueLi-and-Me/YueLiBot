@@ -1,16 +1,16 @@
+/**
+ * 连接聊天输入、主进程流式事件、消息气泡、语音播放和角色表现。
+ *
+ * 本模块消费 preload/index.ts 提供的 PetBridge，并将解析事件映射为 UI 状态；
+ * 文本流和回合终止状态由 chatState.ts 及本模块的 DOM 控制器共同维护。
+ */
 import type { ChatStreamEvent } from '../shared/ipc.ts'
 import { VoicePlayer, decodeBase64 } from './audio/player.ts'
 import { resolveEmotion, resolveGesture, type CharacterView } from './character/types.ts'
 import { settledEmotion } from './chatState.ts'
 import { Bubble } from './ui/bubble.ts'
 
-/**
- * 对话交互接线：输入栏 ↔ 主进程 ↔ 气泡 + 角色表情。
- *
- * 一个关键的体感细节：首字延迟实测 2.4 秒（已经是最快的角色模型了）。
- * 用户按下回车后如果画面毫无反应，2.4 秒足够让人以为程序卡死。
- * 所以提交瞬间就切 thinking 表情 —— 视觉反馈必须先于第一个 token 到达。
- */
+/** 对话 UI 接线：输入栏、主进程流式事件、气泡、语音和角色表现共享同一回合状态。 */
 
 export interface ChatWiring {
   view: CharacterView
@@ -20,14 +20,23 @@ export interface ChatWiring {
   input: HTMLInputElement
   /** 由主进程经 IPC 推入的睡眠状态；渲染层不读时钟。 */
   sleepingNow: () => boolean
-  /** 注册「点了她一下」的回调。点与拖的区分在 ui/pointer.ts 里做。 */
+  /** 注册角色点击回调；点击与拖动的区分由 ui/pointer.ts 完成。 */
   onTap: (handler: () => void) => void
 }
 
+/**
+ * 初始化聊天输入、事件订阅、语音播放和角色状态转换。
+ *
+ * @param w 聊天 DOM 元素、角色视图、睡眠状态读取器和主进程回调集合。
+ * @returns 无返回值；初始化完成后由事件监听器驱动后续回合。
+ * @throws Error 依赖的 DOM bridge 或事件接口在运行时不可用时由调用方环境抛出。
+ * @sideEffects 注册键盘、失焦、主进程事件和页面卸载监听器；创建 Bubble 与 VoicePlayer，
+ * 并可能将音频和聊天事件更新到角色视图。
+ */
 export function setupChat(w: ChatWiring): void {
   const bubble = new Bubble(w.bubble, w.bubbleText)
   let currentTurn = 0
-  // 语音：主进程合成完把音频推过来，这里播放并由实测响度驱动口型
+  // 主进程推送合成音频后在此播放，并由 RMS 采样驱动口型。
   const player = new VoicePlayer(w.view)
 
   /** 打字节奏的近似口型定时器。有真语音时它必须让路。 */
@@ -36,20 +45,29 @@ export function setupChat(w: ChatWiring): void {
   /**
    * 表情回落定时器。
    *
-   * 说完一句话后脸不该一直定格 —— 她会顶着「哈哈大笑」或「打哈欠」的脸
-   * 在桌面上站几个小时，非常僵。真人说完话表情会自然松回平静。
-   *
-   * 只在**一整轮讲完**后才排，不在每句 sayEnd 排：她可能连说两三句，
-   * 中间回落会让脸一亮一灭地闪。
-   */
+   * 在整轮消息完成后恢复默认表情，避免表情在多句 ``say`` 分段之间反复切换。
+   * 仅在 ``done`` 事件后调度，而不是在每个 ``sayEnd`` 后调度。
+  */
   let settleTimer = 0
   const SETTLE_MS = 6000
 
+  /**
+   * 取消当前表情回落计时器。
+   *
+   * @returns {void} 无返回值；不存在活动计时器时安全返回。
+   * @remarks 新的流式回合开始前必须清除旧计时器，避免旧回合在新表情仍显示时覆盖角色状态。
+   */
   const cancelSettle = (): void => {
     clearTimeout(settleTimer)
     settleTimer = 0
   }
 
+  /**
+   * 在当前回合结束后安排表情回落。
+   *
+   * @returns {void} 无返回值；重复调用会先取消旧计时器再重新计时。
+   * @remarks 延迟读取睡眠状态和默认表情，确保回落时使用最新的主进程状态，而不是回合开始时的快照。
+   */
   const scheduleSettle = (): void => {
     cancelSettle()
     settleTimer = window.setTimeout(() => {
@@ -58,20 +76,24 @@ export function setupChat(w: ChatWiring): void {
     }, SETTLE_MS)
   }
 
-  const stopMouth = () => {
+  /**
+   * 停止无语音时使用的近似口型定时器。
+   *
+   * @returns {void} 无返回值；有真实音频播放时保留 VoicePlayer 当前口型电平。
+   * @remarks 清除近似定时器可以避免它与真实音频 RMS 采样同时写入同一角色视图。
+   */
+  const stopMouth = (): void => {
     clearInterval(mouthTimer)
     mouthTimer = 0
-    // 有音频在播时别抢方向盘 —— 那边每帧都在按 RMS 写嘴型，
-    // 这里再清零会让嘴一开一合地抽搐
+    // 有真实音频时由 VoicePlayer 独占口型写入，避免两个定时器竞争同一值。
     if (!player.active) w.view.setMouthOpen(0)
   }
 
   /**
    * 说话时嘴动。
    *
-   * 两套驱动：配了 TTS 就用**实测音频响度**（停顿、气声、拖长音都能对上）；
-   * 没配就退回按打字节奏的近似 —— 气泡在动而她一脸不动非常出戏，
-   * 假口型也比没有强。真音频一开始播，近似立刻停手。
+   * 配置 TTS 时由真实音频响度驱动；未配置时使用低成本定时器近似，避免文本流
+   * 更新而角色完全没有口型。真实音频开始播放后立即停止近似驱动。
    */
   const startMouth = () => {
     if (mouthTimer || player.active) return
@@ -84,9 +106,8 @@ export function setupChat(w: ChatWiring): void {
   /**
    * 开合输入栏。
    *
-   * 打字需要窗口真的拿到焦点 —— 只调 setInteractive 不够，那只管鼠标事件。
-   * 平时不主动抢焦点（你在别的窗口打字不该被打断），只在你点了她、
-   * 明确要输入的时候才拿过来。
+   * 输入框需要窗口焦点；setInteractive 只控制鼠标事件，不能替代 focusInput。
+   * 仅在用户明确打开输入栏时请求焦点，避免打断其他窗口的输入。
    */
   const showComposer = (show: boolean): void => {
     if (w.composer.classList.contains('show') === show) return
@@ -101,10 +122,10 @@ export function setupChat(w: ChatWiring): void {
     }
   }
 
-  // 点她身上开合输入栏。拖动不触发 —— 见 ui/pointer.ts 的位移阈值
+  // 点击角色区域开合输入栏；拖动由 ui/pointer.ts 的位移阈值过滤。
   w.onTap(() => showComposer(!w.composer.classList.contains('show')))
 
-  // 开发期把播放器挂出去，好在浏览器里用合成音频验证口型是否真的跟着响度走
+  // 开发环境暴露只读播放器状态，便于验证口型是否跟随音频响度。
   if (import.meta.env.DEV) {
     ;(globalThis as unknown as { __player: VoicePlayer }).__player = player
   }
@@ -118,7 +139,7 @@ export function setupChat(w: ChatWiring): void {
     if (e.data) player.enqueue(decodeBase64(e.data), e.format ?? 'mp3')
   })
 
-  // 托盘菜单「跟她说话」—— 她被隐藏或拖远时，这是唤起对话的入口
+  // 托盘菜单可在角色隐藏或移出当前视野时重新打开输入栏。
   window.pet?.onOpenComposer(() => showComposer(true))
 
   w.input.addEventListener('keydown', (e) => {
@@ -126,8 +147,7 @@ export function setupChat(w: ChatWiring): void {
       const text = w.input.value.trim()
       if (!text) return
       w.input.value = ''
-      // 发完就收起来：桌宠平时该是干净的一个人站在那儿，
-      // 不该常驻一条输入栏。想再说话点她一下就行
+      // 发送后收起输入栏，避免桌宠长期占用交互区域；再次输入由点击或托盘入口打开。
       showComposer(false)
       void submit(text)
     } else if (e.key === 'Escape') {
@@ -143,25 +163,27 @@ export function setupChat(w: ChatWiring): void {
     }, 120)
   })
 
+  /**
+   * 清理当前输入并提交一条聊天消息。
+   *
+   * @param text 已去除首尾空白的用户文本。
+   * @returns 主进程返回回合 ID 后完成。
+   * @throws Error bridge 请求失败时向事件处理方传播。
+   * @sideEffects 清空气泡、取消表情回落、设置生成中表情并更新当前回合 ID。
+   */
   async function submit(text: string): Promise<void> {
     bubble.clear()
     cancelSettle()
-    // 先给反馈，再等模型 —— 顺序反了就是 2.4 秒的死寂。
-    //
-    // 用 smile 而不是 thinking：生成出来的 thinking 素材是「半闭眼 + 脸红 +
-    // 嘴角下撇」，读出来像不高兴或者困，完全不像在想事情。
-    // 等回复时挂一张温和专注的脸，比挂一张臭脸强得多
+    // 先更新生成中视觉反馈，再等待模型首个 token，避免请求期间页面无变化。
     w.view.setEmotion('smile')
     currentTurn = await (window.pet?.send(text) ?? Promise.resolve(0))
   }
 
   const off = window.pet?.onEvent((e: ChatStreamEvent) => {
-    // 只丢**过期**轮次，不能只认自己发起的那一轮 ——
-    // F 阶段的主动打扰由主进程发起，渲染层这边 currentTurn 还是旧值，
-    // 按「必须等于」过滤会把她主动说的话全部静默吞掉。
+    // 只丢弃已结束的旧回合；主动消息也可能由主进程创建新的回合 ID。
     if (e.turnId < currentTurn) return
     if (e.turnId > currentTurn) {
-      // 主进程发起的新轮次：跟上它，并清掉上一轮残留
+      // 新回合到达时同步回合 ID，并清理上一回合残留文本。
       currentTurn = e.turnId
       bubble.clear()
     }
@@ -176,8 +198,7 @@ export function setupChat(w: ChatWiring): void {
     if (e.kind === 'done') {
       stopMouth()
       bubble.finish()
-      // 一整轮讲完才排回落。放在每句 sayEnd 上的话，
-      // 她连说两三句时脸会一亮一灭地闪
+      // 整轮完成后才恢复表情，避免多句分段之间出现闪烁。
       scheduleSettle()
       return
     }
@@ -198,7 +219,7 @@ export function setupChat(w: ChatWiring): void {
     } else if (ev.type === 'sayEnd') {
       stopMouth()
     }
-    // memory / mood 事件在 D 阶段接记忆与人格数值，当前无视
+    // memory/mood 由后端完成持久化和状态更新，渲染层无需重复处理。
   })
 
   addEventListener('beforeunload', () => off?.())

@@ -1,3 +1,9 @@
+/*
+ * 声明 Electron 渲染层共享的颜色、间距、圆角和字体变量。
+ *
+ * diary、observability、settings 及主桌宠样式通过 CSS 自定义属性引用这些值，
+ * 便于统一调整主题而不改变各页面的结构选择器。
+ */
 :root {
   color-scheme: light;
   --primary: 28.9 94.8% 45.1%;

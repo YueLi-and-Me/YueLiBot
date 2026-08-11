@@ -1,1 +1,5 @@
-# yueli — Python backend for YueLiBot
+"""YueLiBot Python 后端包。
+
+本包包含 API、配置、模型、记忆、人格、平台接入和服务编排模块；进程入口位于
+``src.main``，各子包通过明确的依赖注入连接数据库、模型客户端和外部平台。
+"""

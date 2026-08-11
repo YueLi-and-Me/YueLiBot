@@ -108,11 +108,11 @@ class _TurnSink:
 
 
 class ChatService:
-    """
-    对话编排。
+    """协调消息归属、记忆召回、模型流式输出、解析副作用和平台投递。
 
-    push_event: 把事件推送到 WebSocket 的回调，由 api/ws.py 注入。
-    speak_audio: 把文本送去合成的回调，由 tts service 注入（可 None）。
+    ``push_event`` 负责向桌面客户端推送观察与解析事件，``speak_audio`` 可选地
+    将完整 ``<say>`` 分句交给语音服务；外部平台通过 ``PlatformBroker`` 投递，
+    桌面消息继续使用解析事件链路。
     """
 
     def __init__(
@@ -129,6 +129,25 @@ class ChatService:
         broker: PlatformBroker | None = None,
         expression_provider: LlmProvider | None = None,
     ) -> None:
+        """初始化对话服务及其数据库、模型和平台依赖。
+
+        Args:
+            db: 已完成迁移的 SQLite 连接。
+            chat_provider: 普通对话模型；为 ``None`` 时服务不可接收对话。
+            proactive_provider: 主动消息模型；可为 ``None``。
+            summary_provider: 摘要模型；可为 ``None``。
+            push_event: 接收频道、载荷和 stream ID 的事件推送回调。
+            cfg: 已校验的运行时配置。
+            speak_audio: 可选的同步或异步语音回调。
+            vector: 可选向量服务；省略时创建禁用实例。
+            broker: 可选的非桌面平台出站路由器。
+            expression_provider: 可选的表达样本选择模型。
+
+        Side Effects:
+            创建记忆、注册表和人格服务，读取 desktop 上下文，并保存当天 owner
+            人格快照；不会启动异步任务。
+        """
+
         self._db = db
         self._chat_provider = chat_provider
         self._proactive_provider = proactive_provider
@@ -196,37 +215,107 @@ class ChatService:
 
     @property
     def ready(self) -> bool:
+        """判断普通对话模型是否已经注入。
+
+        Returns:
+            已配置 ``chat_provider`` 时返回 ``True``，否则返回 ``False``。
+        """
+
         return self._chat_provider is not None
 
     @property
     def desktop_context(self) -> ConversationContext:
-        """当前 desktop 链路的归属上下文；M1.4.5 再改为每条入站消息显式携带。"""
+        """返回唯一 desktop 会话的完整归属上下文。
+
+        Returns:
+            由 ``StreamRegistry`` 校验得到的 desktop stream 和 owner person 引用。
+        """
         return self._desktop_context
 
     def set_schedule(self, svc: DayPlanService) -> None:
+        """绑定日程服务。
+
+        Args:
+            svc: 提供日程读取、生成和作息计算的服务实例。
+
+        Side Effects:
+            替换当前日程依赖；不会立即读取日程或调用模型。
+        """
+
         self._schedule = svc
 
     def set_activity_provider(self, fn: Callable[[], str]) -> None:
+        """绑定实时活动描述回调。
+
+        Args:
+            fn: 无参数并返回当前活动文本的回调。
+
+        Side Effects:
+            替换后续提示词构建使用的活动来源。
+        """
+
         self._activity = fn
 
     def set_sleep_state_provider(self, fn: Callable[[], SleepState]) -> None:
+        """绑定睡眠状态回调。
+
+        Args:
+            fn: 无参数并返回当前睡眠状态的回调。
+
+        Side Effects:
+            替换对话和人格结算读取的睡眠状态来源。
+        """
+
         self._sleep_state = fn
 
     def set_promise_handler(self, fn: Callable[[int, str], None]) -> None:
-        """接收解析出的约定，交由 AwarenessService 统一调度与持久化。"""
+        """绑定解析后约定的统一调度回调。
+
+        Args:
+            fn: 接收提醒时间戳和约定正文的同步回调。
+
+        Side Effects:
+            替换后续对话轮次使用的约定处理器；不会立即执行回调或写入约定。
+        """
         self._promise_handler = fn
 
     def _persona_weight(self, context: ConversationContext) -> float:
-        """由持有 stream 的编排层决定增量倍率，Persona 数据层不认识会话。"""
+        """根据会话类型返回人格增量倍率。
+
+        Args:
+            context: 已解析 stream 和人物归属的会话上下文。
+
+        Returns:
+            群聊使用配置的群聊人格倍率，其他会话返回 ``1.0``。
+
+        Side Effects:
+            仅读取上下文和服务配置，不修改人格状态。
+        """
         return self._group_persona_weight if context.stream.kind == 'group' else 1.0
 
     def current_sleep(self) -> ScheduleSleepState:
+        """读取当前睡眠状态并转换为调度服务使用的类型。
+
+        Returns:
+            当前 ``asleep``、``drowsy`` 和 ``just_woke`` 标志；未绑定状态回调时
+            返回三个标志均为 ``False`` 的默认值。
+        """
+
         s = self._sleep_state() if self._sleep_state else None
         if s is None:
             return ScheduleSleepState(asleep=False, drowsy=False)
         return ScheduleSleepState(asleep=s.asleep, drowsy=s.drowsy, just_woke=s.just_woke)
 
     async def ensure_schedule(self, now: int | None = None) -> None:
+        """确保指定时间对应的日程已经可用。
+
+        Args:
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Side Effects:
+            绑定日程服务时可能调用模型并写入日程存储；未绑定时不执行操作。
+        """
+
         if self._schedule:
             await self._schedule.ensure(now or current_time())
 
@@ -236,6 +325,18 @@ class ChatService:
         now: int | None = None,
         earlier_asleep: bool = False,
     ) -> None:
+        """结算指定人物自上次状态更新时间以来的作息影响。
+
+        Args:
+            context: 已完成会话和人物归属解析的上下文。
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+            earlier_asleep: 区间起点之前已入睡时是否计入被截断的睡眠时间。
+
+        Side Effects:
+            owner 上会更新人格状态并保存每日快照；非 owner 只读取状态，不写入
+            关系信号。
+        """
+
         now = now or current_time()
         person_id = context.person.id
         before = self.persona.get(person_id)
@@ -248,7 +349,23 @@ class ChatService:
             self.persona.snapshot_daily(person_id, now)
 
     async def send(self, inbound: InboundMessage) -> int:
-        """处理一条携带完整归属上下文的入站消息。"""
+        """异步处理一条携带完整归属上下文的入站消息。
+
+        Args:
+            inbound: 已完成 stream、person 和 identity 解析的消息。
+
+        Returns:
+            新建的对话回合 ID；空白消息返回当前回合 ID。
+
+        Side Effects:
+            取消同一 stream 的旧回合，写入用户和助手历史，调用模型流并推送解析、
+            完成或错误事件；非桌面 stream 还会通过 broker 投递完整分句。
+
+        Raises:
+            ValueError: 入站上下文或平台归属不满足下游约束时由依赖服务抛出。
+            Exception: 任务内部异常会记录并推送 ``chat.error``，不会由返回的 task
+                再次向调用方抛出。
+        """
         context = inbound.context
         stream_id = context.stream.id
         trimmed = inbound.text.strip()
@@ -287,6 +404,17 @@ class ChatService:
         cancel_event = asyncio.Event()
 
         async def _run() -> None:
+            """执行当前回合的上下文构建、模型流读取、历史持久化和结果投递。
+
+            Raises:
+                LlmError: 模型调用失败；可根据错误类型决定回滚、保留或推送错误事件。
+                Exception: 其他上下文、数据库或出站处理异常；函数记录诊断并推送错误事件。
+
+            Side Effects:
+                写入用户和助手历史，更新阶段和观测事件，可能调用人格结算、摘要任务、
+                桌面 WebSocket 或外部平台出站驱动。
+            """
+
             user_msg_id: int | None = None
             assistant_raw = ''
             reply_persisted = False
@@ -298,8 +426,7 @@ class ChatService:
                 if self._schedule:
                     self._schedule.ensure_background(now)
 
-                # ★ 必须在 append 之前判定：append 之后 last_message_at() 就是 now，
-                #   间隔恒为 0，会话永远不会翻页。
+                # 必须在写入当前用户消息前计算会话间隔，否则 last_message_at 会变成 now。
                 self._refresh_session(context, now)
                 user_msg_id = self.memory.append_message(
                     stream_id,
@@ -311,6 +438,7 @@ class ChatService:
                 if cancel_event.is_set():
                     return
 
+                # parser 保留跨 chunk 的标签状态，sink 聚合副作用和非桌面分句。
                 parser = ResponseParser()
                 sink = _TurnSink(
                     context=context,
@@ -342,6 +470,7 @@ class ChatService:
                     max_tokens=self._chat_max_tokens,
                 ):
                     if cancel_event.is_set():
+                        # 取消只停止后续读取，已收到的正文仍按历史一致性规则保存。
                         sink.interrupted = True
                         break
                     trace.emit('llm_chunk', turnId=turn, text=chunk.get('text'), reasoning=chunk.get('reasoning'))
@@ -352,14 +481,11 @@ class ChatService:
                     if sink.interrupted:
                         break
 
-                # 取出解析器缓冲内容。
+                # 正常结束时冲刷未闭合标签；中断时避免把取消后的残余缓冲当作完整事件。
                 if not sink.interrupted:
                     await self._consume_events(parser.flush(), sink)
 
-                # ★ 中断也要落库。这段话已经显示（甚至念）给用户了，历史里
-                #   不能当它没发生过——否则下一轮就是连着两条 user 消息，
-                #   模型看不到自己上一句说了什么。副作用（<memory>/<mood>）
-                #   在流式过程中已经写库了，话本身更不该丢。
+                # 先保存已产生的助手正文，再判断是否中断，确保历史与已经展示的内容一致。
                 self._persist_reply(context, assistant_raw)
                 reply_persisted = True
                 if sink.interrupted:
@@ -382,9 +508,10 @@ class ChatService:
                         weight=self._persona_weight(context),
                     )
                 except Exception as exc:
-                    # 人格推进失败不该把历史一起拖下水——下面的 except 会删用户消息。
+                    # 人格结算是附加状态，失败不能回滚已经展示并持久化的对话正文。
                     logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
                 if context.stream.platform == 'desktop':
+                    # 桌面端消费解析事件；外部平台只在整轮完成后发送分句。
                     self._mark_stage(context, DISPATCHING, turn_id=turn)
                     await self._emit(stream_id, 'chat.done', {'turnId': turn, 'kind': 'done'})
                 else:
@@ -400,10 +527,12 @@ class ChatService:
 
             except LlmError as exc:
                 if exc.kind == 'aborted':
+                    # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
                     if not reply_persisted:
                         self._persist_reply(context, assistant_raw)
                     return
                 if not reply_persisted and user_msg_id is not None:
+                    # 模型尚未产出正文时回滚用户消息，避免留下无法对应的未完成回合。
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 snapshot = dump_llm_request('chat', exc.kind, str(exc), {
@@ -424,6 +553,7 @@ class ChatService:
                     })
             except Exception as exc:
                 if not reply_persisted and user_msg_id is not None:
+                    # 非模型异常沿用同一历史一致性策略，再生成诊断快照。
                     self._rollback_or_keep(context, user_msg_id, assistant_raw)
                 snapshot = dump_llm_request('chat', type(exc).__name__, str(exc), {
                     'turnId': turn,
@@ -452,6 +582,15 @@ class ChatService:
         self._inflight[stream_id] = inflight
 
         def _remove_completed(done_task: asyncio.Task[None]) -> None:
+            """仅移除仍对应当前回合的完成任务，避免旧回调覆盖新任务。
+
+            Args:
+                done_task: 已完成的异步回合任务。
+
+            Side Effects:
+                当任务仍是当前 stream 的活动任务时，从活动任务映射中移除它；否则不操作。
+            """
+
             current = self._inflight.get(stream_id)
             if current is inflight and current.task is done_task:
                 self._inflight.pop(stream_id, None)
@@ -466,7 +605,17 @@ class ChatService:
         detail: str = '',
         turn_id: int | None = None,
     ) -> None:
-        """登记当前阶段。"""
+        """为当前会话登记阶段看板和观测事件。
+
+        Args:
+            context: 当前会话上下文。
+            stage: 要登记的阶段定义。
+            detail: 可选阶段详情，默认空字符串。
+            turn_id: 可选回合 ID；省略时使用该 stream 的活动回合。
+
+        Side Effects:
+            更新全局阶段看板和当前事件上下文，并广播阶段事件。
+        """
         stream = context.stream
         if stream.platform == 'desktop':
             name = '桌面'
@@ -477,7 +626,22 @@ class ChatService:
         enter_stage(stage, stream.id, name, detail, active_turn_id)
 
     def record_group_observation(self, inbound: InboundMessage, reason: str = '') -> int:
-        """保存静默群消息及未回复原因。"""
+        """保存被群聊回复门控拒绝的入站消息及原因。
+
+        Args:
+            inbound: 已完成 stream、人物和身份解析的群聊消息。
+            reason: 门控拒绝原因，默认空字符串。
+
+        Returns:
+            新写入的用户消息 ID。
+
+        Raises:
+            ValueError: 入站消息不是群聊，或正文为空。
+            sqlite3.Error: 消息写入失败。
+
+        Side Effects:
+            将消息写入 L1 历史，登记 observation 事件并渲染观察输出；不启动模型生成。
+        """
         context = inbound.context
         if context.stream.kind != 'group':
             raise ValueError('record_group_observation 只接受群聊消息')
@@ -504,6 +668,18 @@ class ChatService:
         return message_id
 
     def _session(self, stream_id: int) -> _SessionState:
+        """取得或创建一个 stream 的内存会话状态。
+
+        Args:
+            stream_id: ``streams.id`` 稳定主键。
+
+        Returns:
+            与 stream 绑定的 ``_SessionState``；首次访问会创建默认状态。
+
+        Side Effects:
+            可能向进程内会话映射新增一项，不写入数据库。
+        """
+
         state = self._sessions.get(stream_id)
         if state is None:
             state = _SessionState()
@@ -511,10 +687,18 @@ class ChatService:
         return state
 
     def _refresh_session(self, context: ConversationContext, now: int) -> int | None:
-        """跨过静默间隔就开一段新会话，重抽语气和表达样本的随机种子。
+        """根据静默间隔刷新会话状态、临时语气和表达样本随机种子。
 
-        返回本次静默了多久（毫秒）；仍在同一会话内则返回 None。
-        首次启动（库里一条消息都没有）也返回 None —— 没有「上一次」可言。
+        Args:
+            context: 当前消息的会话上下文。
+            now: 当前 Unix 毫秒时间戳。
+
+        Returns:
+            本次应注入提示词的重逢间隔毫秒数；首次会话、群聊或间隔未超过阈值时返回
+            ``None``。
+
+        Side Effects:
+            可能更新进程内会话的开始时间、语气、随机种子和重逢间隔；不写入数据库。
         """
         stream_id = context.stream.id
         state = self._session(stream_id)
@@ -530,8 +714,8 @@ class ChatService:
                 variants=personality.tone_variants,
             )
             state.seed = random.randrange(1 << 30)
-        # owner 闸门回答「这条关系信号属于谁」；group 闸门回答「静默间隔是否
-        # 代表这条会话中的重逢」。两者语义不同，不能合成一个关系 helper。
+        # owner 门控判断关系信号归属；group 门控判断静默间隔是否代表会话重逢，
+        # 两者输入和业务语义不同，必须分别保留。
         if (not context.relationship_signals_enabled
                 or context.stream.kind == 'group'
                 or gap_ms is None
@@ -542,7 +726,17 @@ class ChatService:
         return state.resumption_gap_ms
 
     def _take_resumption(self, stream_id: int) -> str | None:
-        """取走本轮重逢事实，确保它只进入一次系统提示词。"""
+        """读取并清除当前 stream 的一次性重逢间隔描述。
+
+        Args:
+            stream_id: 目标 stream 数据库 ID。
+
+        Returns:
+            当前待消费的中文重逢描述；没有待消费间隔时返回 ``None``。
+
+        Side Effects:
+            清除会话状态中的重逢间隔，确保同一间隔只注入一次系统提示词。
+        """
         state = self._session(stream_id)
         gap_ms = state.resumption_gap_ms
         state.resumption_gap_ms = None
@@ -551,11 +745,32 @@ class ChatService:
         return describe_resumption(gap_ms)
 
     def _session_rng(self, stream_id: int) -> random.Random:
-        """同一会话内给出同一批表达样本；情境识别仍然逐轮进行。"""
+        """创建绑定到当前会话种子的随机数生成器。
+
+        Args:
+            stream_id: 目标 stream 数据库 ID。
+
+        Returns:
+            使用该会话随机种子的 ``random.Random`` 实例。
+
+        Side Effects:
+            仅读取进程内会话状态；不推进共享随机源状态。
+        """
         return random.Random(self._session(stream_id).seed)
 
     def _persist_reply(self, context: ConversationContext, assistant_raw: str) -> None:
-        """把已经吐出去的回复落进历史，补齐流式中断留下的悬空 <say>。"""
+        """将已生成的助手正文写入历史，并补齐流式中断留下的未闭合 ``<say>``。
+
+        Args:
+            context: 当前会话上下文。
+            assistant_raw: 模型已产生的原始助手文本。
+
+        Raises:
+            sqlite3.Error: 助手消息写入失败。
+
+        Side Effects:
+            可能向 L1 messages 表追加助手消息并提交事务；空正文不写入。
+        """
         text = close_dangling_say(assistant_raw)
         if text:
             self.memory.append_message(
@@ -572,11 +787,21 @@ class ChatService:
         user_msg_id: int,
         assistant_raw: str,
     ) -> None:
-        """出错时决定这一轮留不留。
+        """按已展示正文决定失败回合的历史保留策略。
 
-        一个字都没吐出来 → 整轮回滚，用户那句话也删掉（保持原有意图：
-        这轮相当于没发生）。已经有内容显示给用户了 → 两条都留下，
-        删掉用户消息反而会让历史里出现「凭空的回复」。
+        如果模型没有产生可见正文，则删除对应用户消息；如果已经产生正文，则保留
+        用户消息和规范化后的助手消息，避免历史只剩无来源的助手回复。
+
+        Args:
+            context: 当前会话上下文。
+            user_msg_id: 已写入的用户消息 ID。
+            assistant_raw: 模型已产生的原始助手文本。
+
+        Raises:
+            sqlite3.Error: 删除用户消息或写入助手消息失败。
+
+        Side Effects:
+            修改当前回合的 L1 历史记录；不回滚已经发送给客户端的内容。
         """
         if close_dangling_say(assistant_raw):
             self._persist_reply(context, assistant_raw)
@@ -584,11 +809,19 @@ class ChatService:
             self.memory.delete_message(context.stream.id, user_msg_id)
 
     def interrupt(self, stream_id: int) -> None:
-        """只取消指定 stream 的对话、语音和半截台词。"""
+        """仅取消指定 stream 的活动对话、语音任务和未完成语音缓冲。
+
+        Args:
+            stream_id: 目标 stream 数据库 ID。
+
+        Side Effects:
+            设置活动回合取消事件，清除该 stream 的语音缓冲和活动回合；必要时异步调用
+            音频取消回调。其他 stream 的任务和状态不受影响。
+        """
         inflight = self._inflight.pop(stream_id, None)
         if inflight is not None and not inflight.task.done():
             inflight.cancel_event.set()
-        # 半截台词的缓冲不能留到下一轮，否则会把上一句的尾巴念进新回复里。
+        # 未完成语音缓冲不能跨回合保留，否则下一轮会复用上一轮的尾部文本。
         self._speech_buffer.pop(stream_id, None)
         turn = self._active_turns.pop(stream_id, None)
         if self._cancel_audio and turn is not None:
@@ -600,14 +833,33 @@ class ChatService:
                 logger.warning('cancel_audio_failed', error=str(exc))
 
     def speak(self, context: ConversationContext, lines: list[dict]) -> int:
+        """投放主动生成的已结构化分句。
+
+        Args:
+            context: 目标会话和人物归属上下文。
+            lines: 包含 ``text`` 和可选 ``emotion`` 字段的分句列表。
+
+        Returns:
+            新建的回合 ID；输入为空时返回当前回合 ID。
+
+        Side Effects:
+            取消同一 stream 的旧回合，异步推送解析事件，触发语音回调，并将带
+            ``<say>`` 标签的助手正文写入记忆。
+
+        Raises:
+            KeyError: 分句缺少必需的 ``text`` 字段。
+        """
+
         if not lines:
             return self._turn_id
         stream_id = context.stream.id
+        # 主动消息复用同一 stream 的中断语义，避免旧回合的语音和事件继续投递。
         self.interrupt(stream_id)
         turn = self._next_turn()
         self._active_turns[stream_id] = turn
         texts: list[str] = []
         for line in lines:
+            # 先发解析事件再写入记忆，使桌面端和外部平台共享同一回合轨迹。
             asyncio.create_task(
                 self._emit_parse_event(context, turn, SayEvent(emotion=line.get('emotion')))
             )
@@ -616,6 +868,7 @@ class ChatService:
             self._dispatch_speech(context, line['text'], turn)
             texts.append(f'<say>{line["text"]}</say>')
         asyncio.create_task(self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'}))
+        # 记忆保存带有 <say> 边界，后续摘要和回放可以区分主动分句而不依赖前端事件。
         self.memory.append_message(
             stream_id,
             None,
@@ -629,12 +882,28 @@ class ChatService:
         context: ConversationContext,
         situation: str,
     ) -> list[dict] | None:
+        """构造并调用主动消息模型，解析为结构化分句。
+
+        Args:
+            context: 目标会话和人物归属上下文。
+            situation: 当前前台活动或触发意图的情境描述。
+
+        Returns:
+            模型输出解析后的分句列表；未配置主动模型、调用失败或正文无法解析时
+            返回 ``None``。
+
+        Side Effects:
+            可能确保日程存在、读取关系/记忆/历史、调用主动模型并记录请求事件。
+            模型异常被转换为 ``None``，调用方据此放弃本次投放。
+        """
+
         if not self._proactive_provider:
             return None
         now = current_time()
         self._refresh_session(context, now)
         if self._schedule:
             await self._schedule.ensure(now)
+        # 主动消息使用与普通对话相同的人格和记忆边界，但只读取少量上下文以控制延迟。
         persona_desc = describe_persona(self.persona.get(context.person.id))
         acquaintance = describe_acquaintance(
             self.memory.first_seen_at(context.person.id),
@@ -668,6 +937,7 @@ class ChatService:
         system = build_proactive_prompt(base_prompt, situation)
         raw = ''
         try:
+            # 主动模型只接收一个 system 消息，避免将触发情境误当作用户新问题。
             messages = [{'role': 'system', 'content': system}]
             trace.emit(
                 'llm_request',
@@ -685,9 +955,19 @@ class ChatService:
                     raw += chunk['text']
         except Exception:
             return None
+        # 统一通过响应解析器提取 <say> 边界，保证主动消息与普通流式回复格式一致。
         return _extract_lines(raw)
 
     def diary_payload(self, now: int | None = None) -> dict:
+        """构造日记页面所需的历史 episode、当天日程和事实摘要。
+
+        Args:
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            可序列化的日记载荷，不包含模型凭证。
+        """
+
         now = now or current_time()
         memories = [
             {'content': fact.content, 'frozen': fact.frozen}
@@ -702,7 +982,19 @@ class ChatService:
         }
 
     def observability_snapshot(self, stream_id: int, now: int | None = None) -> dict:
-        """读取指定 stream 的会话快照，不混入任何单个人物的关系与事实。"""
+        """读取指定 stream 的会话观察快照。
+
+        Args:
+            stream_id: ``streams.id`` 稳定主键。
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            包含主体精力、日程、待处理消息数和会话参与人的可序列化字典；不展开
+            单个人物的关系和事实。
+
+        Raises:
+            ValueError: stream 不存在时由注册表抛出。
+        """
         now = now or current_time()
         stream = self._registry.stream(stream_id)
         participants = [
@@ -722,15 +1014,31 @@ class ChatService:
         }
 
     def list_person_profiles(self) -> List[Dict[str, Any]]:
-        """列出人物画像索引，只返回身份与会话归属，不提前展开关系和事实。"""
+        """列出人物画像索引。
+
+        Returns:
+            每个人物的身份与会话归属摘要，不展开关系状态和事实正文。
+        """
         return [self._person_summary(person) for person in self._registry.list_persons()]
 
     def person_profile(self, person_id: int, now: int | None = None) -> Dict[str, Any]:
-        """从既有 persons、identities、persona_bond 与 facts 组装单个人物画像。"""
+        """组装指定人物的身份、关系和事实画像。
+
+        Args:
+            person_id: ``persons.id`` 稳定主键。
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            包含人物摘要、亲密度和当前事实列表的字典。
+
+        Raises:
+            ValueError: 人物不存在时由注册表抛出。
+        """
         now = now or current_time()
         person = self._registry.person(person_id)
         summary = self._person_summary(person)
         state = self.persona.inspect(person.id)
+        # 关系快照与事实列表使用同一时间点，避免画像字段跨时钟读取产生不一致。
         summary.update({
             'bond': {
                 'intimacy': state.intimacy,
@@ -756,8 +1064,24 @@ class ChatService:
         person: PersonRef,
         preferred_platform: str | None = None,
     ) -> Dict[str, Any]:
-        """把 Registry 引用转成跨语言人物摘要，显示名优先使用当前会话平台。"""
+        """将人物注册表引用转换为跨语言人物画像摘要。
+
+        Args:
+            person: 已解析的人物引用。
+            preferred_platform: 可选优先显示平台；没有匹配身份时按注册表顺序回退。
+
+        Returns:
+            包含人物基本信息、平台身份、实际发言 stream 和群成员关系的可序列化字典。
+
+        Raises:
+            ValueError: 人物不存在时由注册表查询抛出。
+            sqlite3.Error: 读取身份、stream 或群成员关系失败。
+
+        Side Effects:
+            只读注册表，不调用模型、不修改人物数据。
+        """
         identities = self._registry.list_identities(person.id)
+        # 身份、stream 和群成员分开返回，调用方可按平台权限选择展示字段。
         return {
             'id': person.id,
             'kind': person.kind,
@@ -795,8 +1119,22 @@ class ChatService:
         person: PersonRef,
         stream: StreamRef,
     ) -> Dict[str, Any]:
-        """会话人物同时暴露稳定外部号、账号昵称和当前群名片。"""
+        """构造当前会话参与人的身份、显示名和群名片摘要。
+
+        Args:
+            person: 会话参与人的人物引用。
+            stream: 当前会话引用。
+
+        Returns:
+            包含人物 ID、类型、会话显示名、平台外部 ID、账号昵称和群名片的字典。
+
+        Raises:
+            RuntimeError: 非桌面会话缺少平台身份，或群聊缺少群成员关系。
+            ValueError: 人物或 stream 不存在，或平台没有可用显示名。
+            sqlite3.Error: 读取归属关系失败。
+        """
         identities = self._registry.list_identities(person.id)
+        # 非桌面会话必须绑定稳定 identity；仅桌面会话允许使用内部人物资料生成显示名。
         identity = next(
             (item for item in identities if item.platform == stream.platform),
             None,
@@ -807,6 +1145,7 @@ class ChatService:
             )
         group_card = ''
         if stream.kind == 'group':
+            # 群名片属于 person-stream 关系，不能从全局 identity 推导。
             membership = next(
                 (
                     item for item in self._registry.group_memberships(person.id)
@@ -833,7 +1172,18 @@ class ChatService:
         }
 
     def _sender_metadata(self, context: ConversationContext) -> Dict[str, str]:
-        """生成观察与终端展示所需的发送者字段，不用昵称参与人物去重。"""
+        """生成观测和终端展示使用的发送者元数据。
+
+        Args:
+            context: 已解析当前 stream、人物、身份和群名片的会话上下文。
+
+        Returns:
+            包含外部 ID、账号昵称、群名片、最终显示名和展示标签的字符串字典；桌面消息
+            使用固定的本地用户标签。
+
+        Raises:
+            RuntimeError: 非桌面上下文缺少稳定平台身份。
+        """
         identity = context.identity
         if context.stream.platform == 'desktop':
             return {
@@ -870,7 +1220,19 @@ class ChatService:
         identities: List[IdentityRef],
         preferred_platform: str | None,
     ) -> str:
-        """优先使用指定平台的显示名，并明确标出尚未绑定身份的人物。"""
+        """按平台优先级选择人物画像显示名，并为未绑定身份生成明确占位名。
+
+        Args:
+            person: 人物引用。
+            identities: 已加载的平台身份列表。
+            preferred_platform: 可选优先平台标识。
+
+        Returns:
+            优先平台显示名、首个身份显示名、owner 用户昵称或未绑定联系人占位名。
+
+        Side Effects:
+            仅读取人物和身份数据，不修改配置或注册表。
+        """
         preferred = next(
             (identity for identity in identities if identity.platform == preferred_platform),
             None,
@@ -887,11 +1249,24 @@ class ChatService:
         return f'未绑定联系人 #{person.id}'
 
     def _next_turn(self) -> int:
+        """分配进程内单调递增的回合 ID。
+
+        Returns:
+            新分配的正整数回合 ID。
+
+        Side Effects:
+            更新进程内回合计数器；不会写入数据库。
+        """
+
         self._turn_id += 1
         return self._turn_id
 
     def _relationship_kwargs(self) -> dict:
-        """读取用户称呼。"""
+        """读取构建关系提示词所需的用户称呼配置。
+
+        Returns:
+            包含 ``user_nickname`` 和 ``relationship`` 的字典。
+        """
         bot_cfg = self._cfg.bot
         return {
             'user_nickname': bot_cfg.user_nickname,
@@ -899,7 +1274,11 @@ class ChatService:
         }
 
     def _prompt_config_kwargs(self) -> dict:
-        """读取系统提示词配置。"""
+        """读取系统提示词所需的角色与用户配置。
+
+        Returns:
+            包含角色名、别名、用户称呼、关系、生日、人设和回复风格的字典。
+        """
         bot = self._cfg.bot
         personality = self._cfg.personality
         return {
@@ -919,12 +1298,26 @@ class ChatService:
         history: list[dict[str, str]],
         signal: asyncio.Event | None,
     ) -> list[ExpressionSample]:
-        """挑选回复所需的表达样本。"""
+        """为当前回复选择表达习惯样本。
+
+        Args:
+            context: 当前会话上下文，用于阶段和错误 trace。
+            query: 当前用户文本或主动情境。
+            history: 已组装的对话历史。
+            signal: 可选的取消信号。
+
+        Returns:
+            选择出的表达样本；选择器未配置、输入错误或非中断模型错误时返回空列表。
+
+        Raises:
+            LlmError: 选择过程被主动中断时向上抛出。
+        """
         if self._expression_selector is None:
             trace.emit('expression_select', source='disabled', count=0)
             return []
         self._mark_stage(context, EXPRESSION)
         try:
+            # 只把最近历史传给选择器，避免表达习惯选择占用完整上下文预算。
             picked = await self._expression_selector.select(query, history[-8:], signal=signal)
         except LlmError as exc:
             if exc.kind == 'aborted':
@@ -946,7 +1339,19 @@ class ChatService:
         error_type: str,
         message: str,
     ) -> list[ExpressionSample]:
-        """记录挑选失败并跳过样本注入。"""
+        """记录表达样本选择失败并跳过本轮样本注入。
+
+        Args:
+            context: 当前会话上下文。
+            error_type: 错误类型名称。
+            message: 错误详情。
+
+        Returns:
+            空表达样本列表。
+
+        Side Effects:
+            写入模型请求诊断快照和观察事件。
+        """
         snapshot = dump_llm_request('expression', error_type, message, {
             'stage': trace.current_stage_id(),
             'streamId': context.stream.id,
@@ -967,7 +1372,24 @@ class ChatService:
         signal: asyncio.Event | None = None,
         platform_bot_name: str | None = None,
     ) -> list[dict]:
-        """向量召回版本的消息构建。_build_messages 的异步替代。"""
+        """异步构建包含向量召回和表达样本的模型消息。
+
+        Args:
+            context: 当前会话上下文。
+            query: 当前用户文本。
+            now: 当前毫秒时间戳。
+            signal: 可选的模型选择取消信号。
+            platform_bot_name: 当前平台登录昵称；仅用于当前入站消息的称呼匹配。
+
+        Returns:
+            首项为 system 消息、后续为裁剪后历史消息的列表。
+
+        Side Effects:
+            可能调用嵌入模型、读取记忆和日程、消费一次重逢提示，并调用表达样本
+            选择模型。
+        """
+
+        # 查询向量只影响事实排序；即使向量服务禁用，事实召回仍保留关键词路径。
         query_embedding = await self._vector.embed_query(query)
         facts = self.memory.recall_facts(
             context.person.id,
@@ -988,6 +1410,7 @@ class ChatService:
         seen_ids: set[int] = set()
         episodes = []
         for e in [*recalled, *recent]:
+            # 召回结果与最近 episode 可能重叠，按 ID 去重后再限制上下文数量。
             if e.id not in seen_ids:
                 seen_ids.add(e.id)
                 episodes.append(e)
@@ -1005,8 +1428,7 @@ class ChatService:
             self._working_memory_messages,
         )
         raw_history = self._history_for_context(context, wm)
-        # 出口开关回答「这里能否看见本机屏幕」，owner 判据回答「对面是不是用户
-        # 本人」。私聊必须同时满足两个独立问题；群聊则不可能进入 surfaces。
+        # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。
         activity = None
         if (context.stream.kind in self._perception_surfaces
                 and context.person.kind == 'owner'
@@ -1028,14 +1450,23 @@ class ChatService:
             platform_name=platform_bot_name,
             **self._prompt_config_kwargs(),
         )
-        # ★ 读时修复：不假设历史是干净的。库里已经存在的坏历史（每一次打断
-        #   都损坏过一轮）只能在这里救回来，写入端的修复管不到已经写坏的部分。
-        #   幂等，对干净历史没有副作用。
+        # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
         history = normalize_history(raw_history)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
     def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
-        """返回群聊称呼候选；平台登录昵称只对当前入站消息生效。"""
+        """返回群聊文本称呼候选。
+
+        Args:
+            platform_name: 可选的当前平台登录昵称；仅追加到本次调用结果，不修改
+                全局配置。
+
+        Returns:
+            去重后的主体名称和别名元组。
+
+        Raises:
+            ValueError: ``platform_name`` 只有空白字符。
+        """
         names = list(self._bot_names)
         if platform_name is not None:
             normalized = platform_name.strip()
@@ -1046,14 +1477,37 @@ class ChatService:
 
     @property
     def at_mention_must_reply(self) -> bool:
+        """返回协议 @ 是否绕过群聊回复门控。
+
+        Returns:
+            配置值。
+        """
+
         return self._at_mention_must_reply
 
     @property
     def name_mention_probability(self) -> float:
+        """返回文本称呼触发回复的概率。
+
+        Returns:
+            [0, 1] 范围内的配置值。
+        """
+
         return self._name_mention_probability
 
     def _history_for_context(self, context: ConversationContext, messages: list[Any]) -> list[dict]:
-        """仅在组装群聊历史时补说话人显示名，不污染原始消息内容。"""
+        """将记忆消息转换为模型历史，并在群聊中补充发送者显示名。
+
+        Args:
+            context: 当前会话上下文。
+            messages: 记忆服务返回的消息对象列表。
+
+        Returns:
+            仅含 ``role`` 和 ``content`` 的模型消息列表；原始记忆对象不被修改。
+
+        Raises:
+            RuntimeError: 群聊用户消息缺少发送者人物 ID。
+        """
         history: list[dict] = []
         for message in messages:
             content = message.content
@@ -1069,7 +1523,16 @@ class ChatService:
         return history
 
     async def _consume_events(self, events: Iterable[ParseEvent], sink: _TurnSink) -> None:
-        """处理副作用并按平台投递事件。"""
+        """消费解析事件，应用副作用并按平台选择输出路径。
+
+        Args:
+            events: 响应解析器产生的事件迭代器。
+            sink: 当前回合的聚合状态。
+
+        Side Effects:
+            写入事实、人格和 promise 状态，推送桌面解析事件，或向非桌面 sink
+            聚合按 ``<say>`` 边界切分的出站文本；取消信号会提前结束消费。
+        """
         context = sink.context
         for event in events:
             if sink.cancel_event.is_set():
@@ -1089,7 +1552,26 @@ class ChatService:
         sink: list[dict] | None = None,
         source_text: str | None = None,
     ) -> None:
+        """应用单个解析事件携带的事实、情绪或约定副作用。
+
+        Args:
+            context: 当前会话上下文。
+            event: 解析器产生的事件。
+            now: 当前回合的毫秒时间戳。
+            turn: 当前对话回合 ID。
+            sink: 可选的面板副作用列表。
+            source_text: 当前用户原话；promise 事件必须提供。
+
+        Raises:
+            ValueError: promise 事件缺少用户原话。
+            Exception: 记忆、人格或 promise 回调写入失败时直接传播。
+
+        Side Effects:
+            可能写入事实、人格状态或待投放 promise，并发出对应观察事件。
+        """
+
         if isinstance(event, MemoryEvent) and event.content:
+            # 事实先写入统一记忆存储，向量补算由上层异步服务处理。
             memory_kind = event.memory_type or '未分类'
             self.memory.add_fact(
                 context.person.id,
@@ -1100,6 +1582,7 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
         elif isinstance(event, MoodEvent):
+            # 群聊关系增量由上下文决定权重，Persona 本身不感知平台会话。
             self.persona.apply_mood(
                 context.person.id,
                 MoodDelta(favor=event.favor, energy=event.energy),
@@ -1110,6 +1593,7 @@ class ChatService:
             if sink is not None:
                 sink.append({'kind': 'mood_delta', 'favor': event.favor, 'energy': event.energy})
         elif isinstance(event, PromiseEvent):
+            # promise 只允许 owner 关系信号进入主动调度，联系人消息不能改变主体计划。
             if not context.relationship_signals_enabled:
                 logger.warning(
                     'promise_rejected_for_person',
@@ -1128,13 +1612,15 @@ class ChatService:
                 sink.append({'kind': 'promise_stashed', 'at': event.at, 'subject': source_text})
 
     def _dispatch_speech(self, context: ConversationContext, text: str, turn: int) -> None:
-        """把一句台词送去合成。
+        """将一条桌面 ``<say>`` 分句交给语音回调。
 
-        ★ 这里必须容忍同步和协程两种回调：注入进来的 TtsService.speak 是同步的
-          （它自己内部起 task），而此前调用点写的是
-          `asyncio.create_task(self._speak_audio(...))` —— 对同步函数来说等于
-          `create_task(None)`，直接抛 TypeError。主动搭话那条语音链路一直是
-          这么坏掉的。
+        Args:
+            context: 当前会话上下文。
+            text: 待合成的分句文本。
+            turn: 关联的对话回合 ID。
+
+        Side Effects:
+            可能调用同步或异步语音回调；回调异常只记录警告，不影响文本消息流程。
         """
         if context.stream.kind != 'desktop' or not self._speak_audio:
             return
@@ -1143,17 +1629,23 @@ class ChatService:
             return
         try:
             result = self._speak_audio(line, turn)
+            # TtsService.speak 已自行创建任务，其他注入实现可能返回协程，因此分别处理两种返回形式。
             if inspect.isawaitable(result):
                 asyncio.create_task(result)
         except Exception as exc:
             logger.warning('speak_audio_failed', turnId=turn, error=str(exc))
 
     def _track_speech(self, context: ConversationContext, event: ParseEvent, turn: int) -> None:
-        """在流式解析过程中攒出完整台词，每收完一个 <say> 就送去合成。
+        """在流式解析过程中聚合一条完整 ``<say>`` 分句并触发合成。
 
-        ★ 此前这里是个空 stub，导致正常对话**完全不发声**——_speak_audio
-          全仓库只在 speak()（主动搭话）里被调用过。按 <say> 分句送，而不是
-          等整段回复收完，是为了让她开口的延迟和字幕对得上。
+        Args:
+            context: 当前会话上下文。
+            event: 当前解析事件。
+            turn: 关联的对话回合 ID。
+
+        Side Effects:
+            更新指定 stream 的台词缓冲；收到 ``SayEndEvent`` 时调用语音回调。
+            每个分句独立发送，以便音频与桌面解析事件保持顺序。
         """
         if not self._speak_audio:
             return
@@ -1167,6 +1659,17 @@ class ChatService:
             self._dispatch_speech(context, line, turn)
 
     async def _emit(self, stream_id: int, channel: str, payload: Any) -> None:
+        """向客户端推送事件并隔离推送层异常。
+
+        Args:
+            stream_id: 目标 stream ID。
+            channel: 事件频道名称。
+            payload: 事件载荷。
+
+        Side Effects:
+            调用注入的事件回调；回调异常只写警告日志，不阻断对话任务。
+        """
+
         try:
             await self._push_event(channel, payload, stream_id)
         except Exception as exc:
@@ -1178,8 +1681,21 @@ class ChatService:
         turn: int,
         event: ParseEvent,
     ) -> None:
+        """将解析事件转换为桌面端 ``chat.event`` 载荷。
+
+        Args:
+            context: 当前会话上下文。
+            turn: 对话回合 ID。
+            event: 解析器产生的事件。
+
+        Side Effects:
+            仅在 desktop stream 上通过 ``_emit`` 推送一个解析事件；未知事件类型
+            不产生输出。
+        """
+
         if context.stream.platform != 'desktop':
             return
+        # 仅传输前端可渲染的事件字段，内部对象和未定义事件不越过平台边界。
         if isinstance(event, SayEvent):
             ev = {'turnId': turn, 'kind': 'parse',
                   'event': {'type': 'say', **({'emotion': event.emotion} if event.emotion else {}),
@@ -1207,7 +1723,21 @@ class ChatService:
         turn: int,
         segments: list[str],
     ) -> None:
-        """把非桌面整轮回复交给 broker，桌面永远不走这条路径。"""
+        """将非桌面整轮回复交给平台 broker。
+
+        Args:
+            context: 目标会话上下文。
+            turn: 对话回合 ID。
+            segments: 已按 ``<say>`` 边界切分的正文列表。
+
+        Side Effects:
+            可能调用平台驱动并写入投递观察事件；空列表只记录警告并返回。
+
+        Raises:
+            RuntimeError: 桌面 stream 误走 broker，或非桌面 stream 未配置 broker。
+            DeliveryError: 平台驱动未注册或投递失败时由 broker 传播。
+        """
+
         self._mark_stage(context, DISPATCHING, turn_id=turn)
         if context.stream.platform == 'desktop':
             raise RuntimeError('desktop stream 不能经由非桌面 broker 投递')
@@ -1216,6 +1746,7 @@ class ChatService:
         if not segments:
             logger.warning('outbound_reply_empty', streamId=context.stream.id, turnId=turn)
             return
+        # Broker 负责平台驱动选择和失败归一化，服务层只提交已切分的整轮正文。
         receipt = await self._broker.dispatch(OutboundMessage(
             stream=context.stream,
             segments=segments,
@@ -1228,18 +1759,30 @@ class ChatService:
         )
 
     async def _maybe_summarize(self, stream_id: int) -> None:
+        """在待摘要消息达到阈值时异步生成并保存 episode。
+
+        Args:
+            stream_id: 待检查的会话 stream ID。
+
+        Side Effects:
+            读取待摘要消息、调用摘要模型并写入 episode；同一 stream 同时只允许
+            一个摘要任务。摘要异常不会影响已完成的对话回合。
+        """
+
         if stream_id in self._summarizing or not self._summary_provider:
             return
         if self.memory.pending_count(stream_id) < self._summarize_trigger_messages:
             return
         self._summarizing.add(stream_id)
         try:
+            # 单个 stream 使用内存集合去重，避免连续回复重复启动摘要任务。
             batch = self.memory.oldest_pending(
                 stream_id,
                 self._summarize_batch_messages,
             )
             if len(batch) < 4:
                 return
+            # 摘要输入只保留 role/content，避免将内部消息 ID 暴露给模型。
             msgs = [{'role': m['role'], 'content': m['content']} for m in batch]
             episode = await summarize(
                 self._summary_provider,
@@ -1251,6 +1794,7 @@ class ChatService:
             )
             if not episode:
                 return
+            # episode 写入后由 MemoryStore 标记对应消息已处理，下一轮从队列继续。
             self.memory.add_episode(
                 stream_id,
                 EpisodeInput(
@@ -1262,12 +1806,23 @@ class ChatService:
                 ),
             )
         except Exception:
+            # 摘要是后台附加任务，失败不能回滚已完成的对话或阻断下一轮。
             pass
         finally:
             self._summarizing.discard(stream_id)
 
 
 def _extract_lines(raw: str) -> list[dict] | None:
+    """将带协议标签的完整模型响应提取为分句字典。
+
+    Args:
+        raw: 模型返回的完整文本。
+
+    Returns:
+        每个 ``<say>`` 分句的 ``text`` 和可选 ``emotion`` 字典；没有完整正文时
+        返回 ``None``。
+    """
+
     parser = ResponseParser()
     lines: list[dict] = []
     cur: dict | None = None
@@ -1288,7 +1843,19 @@ def _collect_outbound_segment(
     segments: list[str],
     current: list[str] | None,
 ) -> list[str] | None:
-    """按解析器已经识别出的 say 边界收集 QQ 正文，不重新扫描成品文本。"""
+    """按解析器识别的 ``say`` 边界收集外部平台正文。
+
+    Args:
+        event: 当前解析事件。
+        segments: 已完成的分句列表，会被原地追加。
+        current: 当前尚未结束的分句片段列表。
+
+    Returns:
+        更新后的当前分句片段；收到 ``SayEndEvent`` 后返回 ``None``。
+
+    Side Effects:
+        可能向 ``segments`` 原地追加一条非空分句，不重新扫描完整响应文本。
+    """
     if isinstance(event, SayEvent):
         return []
     if isinstance(event, TextEvent):
@@ -1306,6 +1873,15 @@ def _collect_outbound_segment(
 
 
 def _plan_to_dict(plan: DayPlan | None) -> dict | None:
+    """将可选日程对象转换为前端使用的字典。
+
+    Args:
+        plan: 待转换日程；可以为 ``None``。
+
+    Returns:
+        JSON 兼容日程字典；输入为 ``None`` 时返回 ``None``。
+    """
+
     if plan is None:
         return None
     return {

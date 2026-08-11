@@ -1,9 +1,7 @@
-"""
-SQLite schema DDL。
+"""定义主体后端使用的 SQLite 表结构、索引、全文索引和初始种子数据。
 
-直接从 src/core/memory/schema.ts 移植，保留所有注释与索引。
-Python 侧不使用 ORM —— contentless FTS5 虚表和手工维护的索引
-在 SQLAlchemy 里需要大量 text() 绕路，不如直接用 sqlite3。
+Python 侧直接使用 sqlite3 执行 DDL，不引入 ORM；无内容 FTS5 表的 rowid 与
+业务表主键保持一致，记忆、人格、平台归属和观测事件由同一份 schema 管理。
 """
 
 SCHEMA_VERSION = 3
@@ -149,14 +147,14 @@ CREATE TABLE IF NOT EXISTS persona_bond (
   updated_at INTEGER NOT NULL
 );
 
--- energy 是她唯一的身体状态，保留单行 CHECK(id=1) 是正确建模，不是历史遗留。
+-- energy 是全局唯一的自身状态，使用 CHECK(id=1) 强制表中只保留一行。
 CREATE TABLE IF NOT EXISTS persona_self (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   energy     REAL    NOT NULL,
   updated_at INTEGER NOT NULL
 );
 
--- M1.4.4 前由旧 Persona 继续读写；之后只作为 owner 的历史迁移留存，不再写入。
+-- 旧人格表仅用于历史数据迁移，不再由当前运行时写入。
 CREATE TABLE IF NOT EXISTS persona (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   intimacy   REAL    NOT NULL,

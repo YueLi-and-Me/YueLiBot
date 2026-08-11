@@ -1,3 +1,9 @@
+/**
+ * 为日记窗口暴露最小化的只读 IPC bridge。
+ *
+ * 该桥接层只转发日记读取请求和窗口关闭动作，不把主进程对象或业务写入接口
+ * 暴露给渲染层；调用方为 electron/renderer/diary.ts。
+ */
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type DiaryBridge, type DiaryPayload } from '../shared/ipc.ts'
 

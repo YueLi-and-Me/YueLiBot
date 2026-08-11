@@ -1,12 +1,10 @@
 /**
- * Electron 主进程 —— 纯平台层。
+ * Electron 主进程入口，负责桌宠窗口、托盘、平台读取权限和 Python 后端生命周期。
  *
- * 业务逻辑（记忆、人格、日程、LLM）全部搬进 Python 后端。
- * 这里只剩：窗口管理、托盘、平台权限调用、前台进程轮询、截图捕获。
- *
- * 两侧边界：
- *   · 渲染层：只通过 preload bridge 通信，IPC 形状不变（electron/shared/ipc.ts）
- *   · Python：通过 PythonSupervisor/PythonClient（HTTP + WS on 127.0.0.1）
+ * 本模块在应用就绪前设置运行时目录，随后读取拆分 TOML 配置、注册设置与业务 IPC、
+ * 创建桌宠窗口，并通过 {@link PythonSupervisor} 启动本机后端。前台窗口轮询、屏幕捕获
+ * 和输入活动采集由 Electron 执行，记忆、人格、日程和模型调用由 Python 服务处理。
+ * 渲染器仅经 preload bridge 访问本模块，IPC 类型与消息名称统一由 `shared/ipc.ts` 定义。
  */
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -46,7 +44,7 @@ import { resolveRuntimePaths } from './runtimePaths.ts'
 const PET_W = 440
 const PET_H = 480
 
-/** 前台轮询间隔（毫秒）。比原来的 ProactiveGate 稍快，Python 侧有自己的节流。 */
+/** 前台窗口轮询间隔，单位为毫秒；后端仍会根据事件内容执行业务级节流。 */
 const FOREGROUND_POLL_MS = 8_000
 
 if (process.env.YUELI_DISABLE_GPU === '1') app.disableHardwareAcceleration()
@@ -61,8 +59,8 @@ for (const directory of [
 ]) {
   mkdirSync(directory, { recursive: true })
 }
-// 必须在 app.ready 之前改写 Electron 的路径，否则 Chromium 会先在 C 盘 AppData
-// 建 Cache、Local Storage、崩溃转储和临时文件。
+// 必须在 app.ready 之前改写 Electron 路径，避免 Chromium 先在系统用户目录创建缓存、
+// Local Storage、崩溃转储和临时文件。
 app.setPath('userData', runtimePaths.electronUserDataDir)
 app.setPath('sessionData', runtimePaths.electronSessionDataDir)
 app.setPath('temp', runtimePaths.electronTempDir)
@@ -71,18 +69,25 @@ app.setPath('crashDumps', runtimePaths.electronCrashDumpsDir)
 let petWindow: BrowserWindow | null = null
 let supervisor: PythonSupervisor | null = null
 let client: PythonClient | null = null
-/** 启动后一直保持"当前有效配置"的引用，重启 Bot 时刷新——
- * 决定 Electron 这一侧的行为（比如要不要轮询截图）不能只看启动那一刻的值。 */
+/** 当前有效配置；后端重启后刷新，保证 Electron 侧按最新功能开关执行轮询和截图。 */
 let currentCfg: YueliConfig | null = null
 let inputActivity: InputActivity | null = null
 /**
- * 托盘「让她看着屏幕」开关。开着＝每条消息都截一帧；关着＝只在他问起屏幕时
- * 才截（见 screenIntent.ts）。只存在于本次运行，重启回到关——持续截屏是个
- * 应该每次主动开启的动作，不该悄悄地跨会话生效。
+ * 本次运行的持续截图开关。
+ *
+ * 开启后每条消息都允许触发一帧截图；关闭时仅在输入命中屏幕意图时截图。该状态不写入
+ * 配置文件，应用重启后恢复为关闭，避免持续采集行为跨会话隐式生效。
  */
 let watchScreen = false
 registerAppScheme()
 
+/**
+ * 根据当前配置启用或停止输入活动采集器。
+ *
+ * @returns 无返回值。
+ * @remarks 配置或采集器尚未初始化时直接返回；启用主动感知时启动全局采集，否则停止采集。
+ * @throws 传播采集器启动或停止过程中产生的运行时错误。
+ */
 function syncInputActivity(): void {
   if (!inputActivity) return
   if (currentCfg?.generation.proactive.enabled) {
@@ -103,12 +108,11 @@ app.whenReady().then(async () => {
   if (!devUrl) serveAppScheme(resolveRendererRoot())
   const napcatConfigPath = ensureNapcatConfig(configDir)
 
-  // ── 配置读写 IPC（设置窗口首次启动和后续编辑共用）───────────────────
+  // 配置读写 IPC 同时服务首次启动设置窗口和后续编辑。
   ipcMain.handle(IPC.ReadConfig, async () => readConfigDirectory(configDir, legacyConfigPath))
   ipcMain.handle(IPC.SaveConfig, async (_e, config: YueliConfig) => {
     try {
-      // 结构自检只卡用户编辑这一条路径：迁移写回的是刚读进来的旧配置，
-      // 用同一把尺子量会让老用户升级后直接起不来。
+      // 结构校验只约束用户编辑入口；迁移写回的是兼容解析后的旧配置，不能使用更严格的编辑期规则阻断升级。
       assertConfigConsistent(config)
       writeConfigDirectory(configDir, config)
       if (firstRunResolve) {
@@ -137,7 +141,7 @@ app.whenReady().then(async () => {
     })
   })
 
-  // ── 首次启动：模型/API Key 没填就先弹设置窗口，桌宠和 Python 都先不起 ──
+  // 首次启动缺少模型或 API 密钥时先显示设置窗口，桌宠和 Python 后端延后启动。
   if (!configIsComplete(readConfigDirectory(configDir, legacyConfigPath))) {
     await runFirstRunWizard(devUrl)
   }
@@ -145,8 +149,14 @@ app.whenReady().then(async () => {
   await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath), napcatConfigPath)
 })
 
-/** 老用户从仓库根目录的 .env 迁移；prefill 直接写进拆分配置目录，
- * 这样设置窗口的 read() 首次读到的就是这些值，不用另开一条 IPC 通道传初值。 */
+/**
+ * 执行首次启动配置向导，并将旧环境变量中的连接字段预填入拆分配置目录。
+ *
+ * @param devUrl 开发服务器地址；生产模式下为 `undefined`。
+ * @returns 设置窗口保存配置后完成的 Promise。
+ * @throws Error 当旧环境变量无法解析、配置目录无法读写或设置窗口初始化失败时抛出。
+ * @remarks 预填值先写入配置目录，使设置窗口通过既有读取 IPC 获取初始数据；向导完成后关闭设置窗口。
+ */
 function runFirstRunWizard(devUrl?: string): Promise<void> {
   const legacyEnvPath = join(app.getAppPath(), '.env')
   const prefill = tryPrefillFromLegacyEnv(legacyEnvPath)
@@ -169,6 +179,16 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
   })
 }
 
+/**
+ * 创建桌宠运行时资源，注册主进程 IPC，并启动 Python 后端及前台感知循环。
+ *
+ * @param devUrl 开发服务器地址；生产模式下为 `undefined`，窗口使用自定义协议加载资源。
+ * @param cfg 已读取且通过最小启动条件检查的运行时配置。
+ * @param napcatConfigPath QQ 适配器配置文件路径，传给后端监护器。
+ * @returns 所有同步初始化完成后的 Promise；后端与轮询器通过事件持续运行。
+ * @throws Error 当窗口、后端监护器、配置读取或 IPC 初始化失败时抛出。
+ * @remarks 方法会创建窗口和定时器、注册应用退出清理逻辑，并对屏幕捕获失败执行隔离处理，避免阻断文本消息发送。
+ */
 async function startApp(
   devUrl: string | undefined,
   cfg: YueliConfig,
@@ -183,7 +203,7 @@ async function startApp(
     preload: resolvePreload(),
   })
 
-  // ── 窗口控制 IPC ───────────────────────────────────────────────────
+  // 窗口控制 IPC：渲染器只传递用户交互意图，窗口状态由主进程统一维护。
   ipcMain.on(IPC.SetInteractive, (_e, interactive: boolean) => {
     if (petWindow) setInteractive(petWindow, interactive)
   })
@@ -192,7 +212,7 @@ async function startApp(
   ipcMain.on(IPC.EndDrag, () => endDrag())
   ipcMain.on(IPC.FocusInput, (_e, focus: boolean) => petWindow && focusForInput(petWindow, focus))
 
-  // ── Python 后端监护 ─────────────────────────────────────────────────
+  // Python 后端监护：后端就绪后再创建客户端，避免向尚未监听端口的服务发送请求。
   supervisor = new PythonSupervisor({
     dataDir,
     configPath: configDir,
@@ -208,7 +228,7 @@ async function startApp(
     })
     client.connect()
   })
-  // 只弹托盘，原因 supervisor 已经打过了
+  // 监护器已经记录详细故障，主进程只更新托盘提示，避免重复输出同一错误。
   supervisor.on('adapterFailed', (err) => {
     notifyTray(cfg.bot.name, err.message)
   })
@@ -220,15 +240,21 @@ async function startApp(
     disposeWindowCapture()
   })
 
-  const isVisible = () => !!petWindow && !petWindow.isDestroyed() && petWindow.isVisible()
+  /**
+   * 判断桌宠窗口当前是否可见且仍可操作。
+   *
+   * @returns {boolean} 窗口实例存在、未销毁且处于可见状态时返回 ``true``。
+   */
+  const isVisible = (): boolean => !!petWindow && !petWindow.isDestroyed() && petWindow.isVisible()
 
-  // ── 业务 IPC（全部转发给 Python，无降级）──────────────────────────
-  ipcMain.on(IPC.UserInteracted, () => { /* Python 侧通过 WS 事件流感知活跃 */ })
+  // 业务 IPC 直接转发给 Python，不在 Electron 侧维护备用业务状态。
+  ipcMain.on(IPC.UserInteracted, () => { /* Python 通过 WebSocket 事件流接收活跃状态。 */ })
   ipcMain.handle(IPC.Send, async (_e, text: string) => {
     if (!client) return 0
-    // ★ 只有他真的问起屏幕（或自己把托盘开关打开）时才截。闲聊时一张图都不截，
-    //   零延迟零费用，画面也不出本机。是他主动问的，那就同步等——Python 侧
-    //   有 8 秒截止线兜底，超时她会如实说看不清。
+    // 【关键】仅在输入命中屏幕意图或托盘持续截图开关开启时采集画面。
+    //
+    // 原因：普通聊天不需要上传屏幕内容；按需采集可同时降低延迟、请求成本和隐私暴露面。
+    // 当前处理：用户明确请求时同步等待一次采集，后端设置独立超时，失败只影响视觉上下文。
     if (watchScreen || mentionsScreen(text)) await glanceForChat()
     return client.send(text)
   })
@@ -246,10 +272,17 @@ async function startApp(
     return []
   })
 
-  // ── 前台进程轮询 → Python ───────────────────────────────────────────
-  // Electron 保持对前台窗口的读取特权；Python 侧做分类和感知判断。
+  // 前台进程轮询后交给 Python 分类；Electron 保留读取系统前台窗口所需的平台权限。
   let lastTitle = ''
-  const pollForeground = async () => {
+  /**
+   * 读取一次前台窗口和输入活动快照，并发送给 Python 后端。
+   *
+   * @returns {Promise<void>} 发送完成或当前没有可用客户端/配置时完成。
+   * @throws 不向轮询调度器传播平台读取和网络异常；异常会被记录并等待下一次轮询。
+   * @remarks 过滤桌宠自身窗口，避免把应用自身活动误判为用户正在使用的前台程序；
+   *   轮询间隔由 ``FOREGROUND_POLL_MS`` 控制。
+   */
+  const pollForeground = async (): Promise<void> => {
     if (!client || !currentCfg) return
     try {
       const fg = await readForeground(currentCfg.vision.fullscreen_silent)
@@ -266,32 +299,39 @@ async function startApp(
         },
       })
       lastTitle = fg.title ?? ''
-    } catch { /* 前台读取可能因权限失败，静默 */ }
+    } catch { /* 前台窗口读取可能因系统权限失败；保留上一状态并等待下一轮。 */ }
   }
   const fgTimer = setInterval(pollForeground, FOREGROUND_POLL_MS)
   fgTimer.unref()
   app.on('before-quit', () => clearInterval(fgTimer))
 
-  // ★ 开关读的是模块级 currentCfg（重启 Bot 时会刷新，见顶部那个 handler），
-  //   不是启动时捕获的常量——否则在设置窗口里打开视觉功能、点重启，
-  //   Electron 这一侧永远不会跟着生效，得整个应用重启才行，
-  //   和"重启 Bot"这个按钮承诺的效果对不上。
+  // 视觉行为读取模块级 currentCfg；后端重启刷新该引用后，Electron 侧无需重启进程即可应用新开关。
   currentCfg = cfg
 
   const capturePageUrl = devUrl ? new URL('capture.html', devUrl).href : APP_CAPTURE_URL
-  /** 按配置决定截前台窗口还是整屏。截整屏时不需要窗口标题。 */
+  /**
+   * 按当前视觉配置选择前台窗口或主屏截图。
+   *
+   * @param title 前台窗口标题；整屏模式下可为空字符串。
+   * @returns 捕获结果；未能取得画面时返回 `null`。
+   * @throws 传播底层捕获实现抛出的异常，由调用方统一隔离。
+   */
   const captureByMode = async (title: string) => (
     currentCfg?.vision.capture_mode === 'screen'
       ? captureScreen(capturePageUrl)
       : captureWindow(title, capturePageUrl)
   )
 
-  // ── 屏幕感知：只在他问起时跑 ────────────────────────────────────────
-  // ★ 曾经还有一条每 12s 的后台轮询链路做「全时态感知」。它和现抓两条路加起来
-  //   有九个互相牵制的时间常量横跨两种语言，排错要同时记住九个数字，实际表现
-  //   却是她拿几分钟前的旧描述当现在讲。整条删掉了：他不问，就不看。
-  //   于是这里可以放心同步等——是他主动问的，等几秒天经地义。
-  // 失败、超时、没截到都直接放行，视觉不能成为聊天的单点故障。
+  // 屏幕感知仅由显式请求或持续截图开关触发，避免后台定时采集产生过期描述和额外上传。
+  // 采集失败、超时或未得到画面都直接放行，视觉能力不能成为文本消息的单点故障。
+  /**
+   * 按需采集当前前台画面并发送给 Python 对话客户端。
+   *
+   * @param reason 触发原因，默认值为 `user_request`，用于诊断日志。
+   * @returns 采集流程完成后的 Promise；未启用视觉、客户端不存在或捕获失败时正常结束。
+   * @throws 不向上抛出截图和上传异常；方法记录错误后结束，以隔离视觉能力故障。
+   * @remarks 采集前刷新一次前台窗口标题，防止轮询延迟导致窗口匹配失败；整屏模式不要求标题。
+   */
   const glanceForChat = async (reason: string = 'user_request') => {
     if (!currentCfg?.vision.enabled || !client) {
       console.debug('[vision] 截图请求跳过：', {
@@ -300,17 +340,14 @@ async function startApp(
       })
       return
     }
-    // ★ 先刷新一次前台标题再截，不要直接用 lastTitle：前台轮询最长有 8s 延迟，
-    //   而终端、浏览器这类窗口标题一直在变，标题一漂 desktopCapturer 就匹配不上，
-    //   截图整个失败。实测就是这么丢掉一次现抓的（lastTitle 停在一个已经改掉的
-    //   终端标题上）。当前前台是桌宠自己时保留 lastTitle——那正是他转头跟她说话
-    //   之前在看的窗口。
+    // 先刷新前台标题，避免轮询间隔内标题变化导致 desktopCapturer 无法匹配目标窗口。
+    // 当前前台是桌宠自身时保留上一标题，以继续捕获用户与桌宠交互前正在查看的窗口。
     let title = lastTitle
     try {
       const fg = await readForeground(currentCfg.vision.fullscreen_silent)
       if (fg && !isSelfProcess(fg.process) && fg.title) title = fg.title
-    } catch { /* 前台读取失败就沿用 lastTitle */ }
-    // 截整屏时不需要标题，标题为空也照样能截。
+    } catch { /* 前台读取失败时沿用上一轮标题。 */ }
+    // 整屏模式不依赖窗口标题；窗口模式缺少标题时无法安全定位捕获目标。
     if (!title && currentCfg.vision.capture_mode !== 'screen') {
       console.debug('[vision] 现抓跳过：还没拿到任何前台窗口标题')
       return
@@ -325,14 +362,13 @@ async function startApp(
       }
       await client.screenshotChat(capture.jpeg)
     } catch (error) {
-      // 视觉是锦上添花，失败不能拖累发消息——但必须留痕，否则没法诊断
-      // "现抓到底有没有跑"。
+      // 视觉采集属于可选能力，失败不得阻断文本消息；保留错误记录以便确认采集是否执行。
       console.warn('[vision] 现抓请求失败：', error)
     }
   }
 
 
-  // ── 托盘 ────────────────────────────────────────────────────────────
+  // 注册托盘及其窗口、配置和后端控制动作。
   createTray(petWindow, cfg.bot.name, {
     talk: () => {
       const win = petWindow
@@ -367,13 +403,21 @@ async function startApp(
 
   petWindow.on('closed', () => { petWindow = null })
 
-  // ── 自检 ─────────────────────────────────────────────────────────────
+  // 按环境变量决定是否执行 Electron 自检。
   if (SELFTEST) runSelfTest(petWindow)
 }
 
-// ── 自检常量 ───────────────────────────────────────────────────────────
+// Electron 自检开关。
 const SELFTEST = process.env.YUELI_SELFTEST === '1' || process.argv.includes('--selftest')
 
+/**
+ * 输出一条结构化自检结果，并按环境变量要求追加到结果文件。
+ *
+ * @param tag 结果类型标识，例如窗口、托盘或渲染检查名称。
+ * @param payload 可 JSON 序列化的检查结果对象。
+ * @returns 无返回值。
+ * @throws Error 当配置的输出文件无法追加写入时抛出。
+ */
 function report(tag: string, payload: unknown): void {
   const line = `${tag} ${JSON.stringify(payload)}`
   console.log(line)
@@ -382,8 +426,12 @@ function report(tag: string, payload: unknown): void {
 }
 
 /**
- * 无头自检 —— 只验 Electron 侧的窗口和渲染机制。
- * SELFTEST-CHAT / REFLECT / AWARE 的逻辑已移至 Python CLI 自检（python bot.py --selftest）。
+ * 执行 Electron 侧的无头窗口与渲染机制自检。
+ *
+ * @param win 待检查的桌宠窗口。
+ * @returns 无返回值；检查结果通过标准输出和可选的自检输出文件报告，完成后退出应用。
+ * @throws 不主动抛出；浏览器脚本、窗口探测或报告失败会转换为失败报告后退出。
+ * @remarks Python 后端业务链路不在此处验证，由 Python 自检入口单独负责。
  */
 function runSelfTest(win: BrowserWindow): void {
   win.webContents.once('did-finish-load', async () => {
@@ -417,6 +465,13 @@ function runSelfTest(win: BrowserWindow): void {
   })
 }
 
+/**
+ * 检查桌宠窗口是否可聚焦、置顶且能够完成位置往返移动。
+ *
+ * @param win 待检查的桌宠窗口。
+ * @returns 包含窗口边界、置顶状态和移动结果的自检对象。
+ * @throws 传播 Electron 窗口属性读取或移动失败产生的异常。
+ */
 function probeWindow(win: BrowserWindow) {
   const bounds = win.getBounds()
   const pos = win.getPosition()
@@ -432,6 +487,13 @@ function probeWindow(win: BrowserWindow) {
   }
 }
 
+/**
+ * 验证点击穿透切换以及消息框、输入栏的命中区域布局。
+ *
+ * @param win 待检查的桌宠窗口。
+ * @returns 包含两个 DOM 区域位置和分离状态的自检对象。
+ * @throws 传播渲染器脚本执行失败或等待过程中的异常。
+ */
 async function probeHitRegions(win: BrowserWindow) {
   await win.webContents.executeJavaScript(`window.pet?.setInteractive(false)`)
   await new Promise((r) => setTimeout(r, 150))
@@ -467,6 +529,12 @@ async function probeHitRegions(win: BrowserWindow) {
   }
 }
 
+/**
+ * 检查托盘图标是否已加载并记录桌宠窗口的可见状态。
+ *
+ * @param win 桌宠窗口。
+ * @returns 包含图标状态和窗口可见状态的自检对象。
+ */
 function probeTray(win: BrowserWindow) {
   return {
     ok: !trayIconEmpty(),
@@ -475,6 +543,13 @@ function probeTray(win: BrowserWindow) {
   }
 }
 
+/**
+ * 打开日记窗口并验证页面桥接、列表节点和窗口生命周期。
+ *
+ * @returns 包含桥接可用性、窗口状态和列表信息的自检结果。
+ * @throws 不主动抛出；加载或脚本失败会转换为失败结果，并在 `finally` 中关闭窗口。
+ * @remarks 方法会创建并关闭一个真实的 Electron 日记窗口，运行时间受页面加载和固定等待影响。
+ */
 async function probeDiary() {
   const devUrl = process.env.ELECTRON_RENDERER_URL
   const url = devUrl ? new URL('diary.html', devUrl).href : APP_DIARY_URL

@@ -1,8 +1,9 @@
 /**
- * 主进程 ↔ 渲染进程的通道名。两端共用，避免字符串写错却没人发现。
+ * 定义 Electron 主进程、preload bridge 和各渲染窗口共享的 IPC 通道及数据结构。
  *
- * 注：src/core/ 与 src/main/observability.ts 已删除，
- * ParseEvent / DayPlan / ObservabilityPayload 因此就地定义在本文件。
+ * 主进程负责实现通道，preload 只暴露受限方法，渲染层依赖本文件的类型完成
+ * 编译期约束；聊天事件、日程、观察快照和配置结构均在此处统一声明，避免两端
+ * 使用未同步的字符串字段。
  */
 
 /** 流式响应解析事件（Python 侧通过 WS 推来，主进程原样转发）。 */
@@ -150,14 +151,14 @@ export const IPC = {
   /** 渲染层 → 主进程：开始/结束拖动窗口 */
   BeginDrag: 'pet:begin-drag',
   EndDrag: 'pet:end-drag',
-  /** 渲染层 → 主进程：要打字了，把焦点拿过来 */
+  /** 渲染层 → 主进程：请求输入栏获得或释放窗口焦点。 */
   FocusInput: 'pet:focus-input',
-  /** 渲染层 → 主进程：用户点了角色，需要暂时保持醒着。 */
+  /** 渲染层 → 主进程：用户与角色交互，暂时保持唤醒状态。 */
   UserInteracted: 'pet:user-interacted',
 
   /** 渲染层 → 主进程：发一句话。返回本轮的 turnId。 */
   Send: 'chat:send',
-  /** 渲染层 → 主进程：打断她正在说的话 */
+  /** 渲染层 → 主进程：中断当前正在输出的回复。 */
   Interrupt: 'chat:interrupt',
   /** 主进程 → 渲染层：本轮的流式事件 */
   Event: 'chat:event',
@@ -188,8 +189,8 @@ export const IPC = {
 /**
  * 推给渲染层的对话事件。
  *
- * 带 turnId 是因为用户可能在她说话时打断并重新发问 ——
- * 没有轮次标记的话，上一轮的残余 token 会串进新气泡。
+ * 每个事件携带 turnId，用于丢弃被打断轮次的迟到增量，
+ * 防止上一轮流式输出写入新一轮消息气泡。
  */
 export type ChatStreamEvent =
   | { turnId: number; kind: 'parse'; event: ParseEvent }
@@ -198,7 +199,7 @@ export type ChatStreamEvent =
 
 /**
  * 语音事件。音频走 base64 而不是 ArrayBuffer —— Electron 的结构化克隆
- * 对 Buffer 的处理在各版本间有差异，base64 是最省心的跨进程形态。
+ * 对 Buffer 的处理在各版本间存在差异，base64 能提供稳定的跨进程序列化形态。
  */
 export type VoiceEvent =
   | { turnId: number; kind: 'audio'; format?: string; data?: string }
@@ -220,14 +221,14 @@ export interface DiaryEntry {
   kind: string
   summary: string
   endedAt: number
-  /** 「什么情景下会想起这段」—— 她记这件事的理由。 */
+  /** 触发回忆该条内容的情境线索。 */
   cues: string[]
 }
 
 /** 日记内容与主进程统一业务时钟一起下发，渲染层不应自行读取 Date.now()。 */
 export interface DiaryPayload {
   entries: DiaryEntry[]
-  /** 她当天的生活计划；日记以第一人称呈现，不显示人格数值。 */
+  /** 角色当天的生活计划；日记以第一人称呈现，不暴露人格数值。 */
   today: DayPlan
   /** 全部 L3 记忆，已经按留存度排序；冻结项会单独呈现。 */
   memories: Array<{ content: string; frozen: boolean }>
@@ -247,7 +248,7 @@ export interface PetBridge {
   send(text: string): Promise<number>
   interrupt(): void
   onEvent(handler: (e: ChatStreamEvent) => void): () => void
-  /** 主进程要求打开输入栏（托盘「跟她说话」）。 */
+  /** 主进程要求打开输入栏。 */
   onOpenComposer(handler: () => void): () => void
   /** 收到一段语音（base64）或停止信号。 */
   onVoice(handler: (e: VoiceEvent) => void): () => void

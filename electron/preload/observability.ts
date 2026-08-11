@@ -1,3 +1,9 @@
+/**
+ * 为观察窗口暴露只读诊断 IPC bridge。
+ *
+ * 渲染层只能请求快照和追踪数据，不能修改聊天、配置或平台状态；通道定义统一
+ * 使用 electron/shared/ipc.ts。
+ */
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type ObservabilityBridge } from '../shared/ipc.ts'
 

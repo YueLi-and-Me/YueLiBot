@@ -1,16 +1,18 @@
+/**
+ * 使用立绘素材清单实现角色表情、动作和装扮的局部合成渲染。
+ *
+ * 本模块依赖 CharacterView 抽象和 shared/sprite-manifest.ts 的素材类型，先绘制
+ * 基础立绘，再按矩形区域覆盖眼睛和嘴部图层，供 renderer/main.ts 使用。
+ */
 import type { CharacterView, CharacterViewOptions, Emotion, Gesture, OutfitItem } from '../types.ts'
 import type { SpriteManifest } from '../../../shared/sprite-manifest.ts'
 
 /**
- * AI 立绘差分实现。
+ * 立绘差分实现。
  *
- * 核心是**局部合成**而非整图切换：
- * 先画当前表情的整图，再把眼部/嘴部矩形单独覆盖上去。
- * 如果眨眼和口型也走整图切换，她一开口表情就会退回平静脸 ——
- * 因为嘴型差分是基于 normal 生成的。
- *
- * 用 Canvas2D 而不是 PixiJS：这里要的只是画图、盖矩形、加点变换，
- * 2D 上下文全都有，没必要为此背一个 WebGL 引擎。Live2D 那份才需要。
+ * 渲染采用局部合成：先绘制当前表情整图，再覆盖眼部和嘴部矩形，使眨眼和口型
+ * 不会把表情退回默认脸。Canvas2D 已满足绘图、矩形覆盖和轻微变换需求，不引入
+ * 额外 WebGL 运行时。
  */
 export class SpriteCharacterView implements CharacterView {
   private readonly ctx: CanvasRenderingContext2D
@@ -41,11 +43,21 @@ export class SpriteCharacterView implements CharacterView {
 
   ready = false
 
-  /** 当前生效的表情。供自检读取 —— 否则「说完话脸有没有松回去」只能靠肉眼。 */
+  /**
+   * 返回当前生效的表情。
+   *
+   * @returns {Emotion} 当前立绘正在使用的表情标识。
+   */
   get currentEmotion(): Emotion {
     return this.emotion
   }
 
+  /**
+   * 创建立绘视图并初始化 Canvas2D 上下文。
+   *
+   * @param opts Canvas、素材根路径、过渡时长和眨眼间隔配置。
+   * @throws Error 浏览器无法创建 2D 上下文时抛出。
+   */
   constructor(private readonly opts: CharacterViewOptions) {
     this.canvas = opts.canvas
     const ctx = this.canvas.getContext('2d')
@@ -55,8 +67,17 @@ export class SpriteCharacterView implements CharacterView {
     this.blinkIntervalMs = opts.blinkIntervalMs ?? 4200
   }
 
+  /**
+   * 加载 manifest 和所有必要的立绘资源，并启动渲染循环。
+   *
+   * @returns 所有资源加载完成且首帧循环已安排后的 Promise。
+   * @throws Error manifest 请求失败、JSON 结构不兼容或任一图片加载失败。
+   * @sideEffects 更新资源缓存、Canvas 尺寸、ready 状态并创建 requestAnimationFrame
+   * 循环；失败时不将视图标记为就绪。
+   */
   async load(): Promise<void> {
     const base = this.opts.assetsBase.replace(/\/+$/, '')
+    // 先读取清单，再根据实际使用的图层收集文件，避免预加载未引用素材。
     const res = await fetch(`${base}/manifest.json`)
     if (!res.ok) throw new Error(`读不到 manifest.json（HTTP ${res.status}）`)
     const manifest = (await res.json()) as SpriteManifest
@@ -68,6 +89,7 @@ export class SpriteCharacterView implements CharacterView {
     }
     for (const f of Object.values(manifest.mouth)) files.add(f)
 
+    // Set 去重后并行加载，既避免同一文件重复请求，也缩短首次可用时间。
     await Promise.all(
       [...files].map(
         (f) =>
@@ -83,6 +105,7 @@ export class SpriteCharacterView implements CharacterView {
       ),
     )
 
+    // 只有清单和全部图片均可用时才公开 ready，避免渲染循环绘制半套资源。
     this.manifest = manifest
     this.canvas.width = manifest.canvas.width
     this.canvas.height = manifest.canvas.height
@@ -93,32 +116,72 @@ export class SpriteCharacterView implements CharacterView {
 
   // --- CharacterView ---
 
+  /**
+   * 设置目标表情并启动与当前表情之间的交叉淡化。
+   *
+   * @param emotion 角色词表中的目标表情。
+   * @returns 无返回值；与当前表情相同时不创建新过渡。
+   * @sideEffects 更新当前和上一表情及过渡开始时间。
+   */
   setEmotion(emotion: Emotion): void {
     if (emotion === this.emotion) return
-    // 淡出的是「当前正显示的那张」。连续快速切换时不要把中间态当起点，
-    // 否则会出现越切越淡的鬼影
+    // 淡出的是当前正显示的整图。连续快速切换时不能把中间态当起点，
+    // 否则过渡透明度会重复衰减并产生残影。
     this.prevEmotion = this.emotion
     this.emotion = emotion
     this.transitionStart = performance.now()
   }
 
+  /**
+   * 播放一个持续指定时长的动作状态。
+   *
+   * @param gesture 角色词表中的动作标识。
+   * @param durationMs 动作持续毫秒数，默认 1600；非正数会在下一帧清除。
+   * @returns 无返回值。
+   * @sideEffects 更新动作和到期时间，渲染循环会在到期后清除动作。
+   */
   playGesture(gesture: Gesture, durationMs = 1600): void {
     this.gesture = gesture
     this.gestureUntil = performance.now() + durationMs
   }
 
+  /**
+   * 设置口型开合度并限制到渲染约定的值域。
+   *
+   * @param value 期望的开合度，任意数值会被截断到 ``[0, 1]``。
+   * @returns 无返回值。
+   */
   setMouthOpen(value: number): void {
     this.mouthOpen = Math.max(0, Math.min(1, value))
   }
 
-  /** 立绘没有眼球参数，按接口契约降级为空操作。 */
+  /**
+   * 接收视线坐标以满足 CharacterView 接口；立绘素材不提供眼球局部变换，因此保持空操作。
+   *
+   * @param _x 归一化或像素视线横坐标；当前实现不使用。
+   * @param _y 归一化或像素视线纵坐标；当前实现不使用。
+   * @returns {void} 不修改当前立绘。
+   */
   lookAt(_x: number, _y: number): void {}
 
+  /**
+   * 记录当前装扮列表，等待素材清单提供对应图层后参与合成。
+   *
+   * @param items 只读装扮标识列表。
+   * @returns 无返回值；当前素材方案仅保存列表，不绘制未提供的装扮图层。
+   * @sideEffects 替换内部装扮引用。
+   */
   setOutfit(items: readonly OutfitItem[]): void {
-    // 立绘方案下装扮需要单独出图，当前素材集不含，先记录不渲染
+    // 当前清单没有装扮图层，先保存状态以便后续素材版本直接复用。
     this.outfit = items
   }
 
+  /**
+   * 销毁渲染循环并释放图片缓存。
+   *
+   * @returns 无返回值；重复调用安全。
+   * @sideEffects 取消动画帧、清空图片引用并将 ready 置为 ``false``。
+   */
   destroy(): void {
     this.disposed = true
     cancelAnimationFrame(this.raf)
@@ -134,6 +197,12 @@ export class SpriteCharacterView implements CharacterView {
     this.raf = requestAnimationFrame(this.loop)
   }
 
+  /**
+   * 根据表情获取已缓存的主立绘图片。
+   *
+   * @param emotion 目标表情。
+   * @returns 对应图片；未加载清单时返回 ``null``，缺失表情时回退到 normal/base。
+   */
   private imageFor(emotion: Emotion): HTMLImageElement | null {
     const m = this.manifest
     if (!m) return null
@@ -141,11 +210,24 @@ export class SpriteCharacterView implements CharacterView {
     return entry ? (this.images.get(entry.file) ?? null) : this.images.get(m.base) ?? null
   }
 
+  /**
+   * 获取指定表情的闭眼覆盖图。
+   *
+   * @param emotion 当前表情。
+   * @returns 闭眼图片；清单未定义闭眼图或资源未加载时返回 ``null``。
+   */
   private blinkImageFor(emotion: Emotion): HTMLImageElement | null {
     const entry = this.manifest?.expressions[emotion]
     return entry?.blink ? (this.images.get(entry.blink) ?? null) : null
   }
 
+  /**
+   * 按时间戳绘制当前立绘、过渡、待机微动、眨眼和口型图层。
+   *
+   * @param now 当前 performance 时间戳。
+   * @returns 无返回值；清单未加载时不绘制。
+   * @sideEffects 修改 Canvas2D 状态、更新动作/眨眼状态并绘制当前帧。
+   */
   private draw(now: number): void {
     const m = this.manifest
     if (!m) return
@@ -157,7 +239,7 @@ export class SpriteCharacterView implements CharacterView {
     if (this.gesture && now > this.gestureUntil) this.gesture = null
 
     // 待机微动：呼吸缩放 + 极轻微的左右摇摆。
-    // 幅度必须小 —— 大了就从「活着」变成「抽搐」
+    // 幅度必须保持在低范围，避免待机微动覆盖角色主体动作语义。
     const t = (now - this.startedAt) / 1000
     const breath = 1 + Math.sin(t * 1.15) * 0.006
     const sway = Math.sin(t * 0.47) * 0.9
@@ -195,6 +277,9 @@ export class SpriteCharacterView implements CharacterView {
   /**
    * 眨眼：把闭眼图的眼部矩形盖到当前脸上。
    * 只覆盖矩形而非整图，这样任何表情都能眨眼，不会退回 normal 脸。
+   *
+   * @returns {void} 无返回值；清单未提供眼区、眨眼阶段为零或资源未加载时直接返回。
+   * @remarks 仅修改当前 Canvas2D 绘制状态，不改变 manifest 或图片缓存。
    */
   private compositeEyes(): void {
     const r = this.manifest?.regions?.eyes
@@ -208,14 +293,18 @@ export class SpriteCharacterView implements CharacterView {
     this.ctx.globalAlpha = 1
   }
 
-  /** 口型：同理，只换嘴部矩形。 */
+  /**
+   * 将当前口型映射为离散嘴型并覆盖到脸部区域。
+   *
+   * @returns {void} 无返回值；清单、嘴区或目标图片缺失时直接返回。
+   * @remarks 使用 ``closed``、``half``、``open`` 三档阈值，避免连续插值削弱嘴型状态的可辨识度。
+   */
   private compositeMouth(): void {
     const m = this.manifest
     const r = m?.regions?.mouth
     if (!m || !r) return
 
-    // 三档映射。用阈值而不是插值 —— 真人说话嘴型本来就是跳变的，
-    // 平滑过渡反而像在嚼东西
+    // 三档映射使用阈值而不是插值，避免连续形变削弱嘴型状态的可辨识度。
     const id = this.mouthOpen > 0.55 ? 'open' : this.mouthOpen > 0.18 ? 'half' : 'closed'
     if (id === 'closed') return // 闭嘴态就是表情图本身，不用盖
 
@@ -226,7 +315,13 @@ export class SpriteCharacterView implements CharacterView {
     this.ctx.drawImage(img, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height)
   }
 
-  /** 眨眼节拍：随机间隔 + 一次约 120ms 的闭合-睁开。 */
+  /**
+   * 根据时间戳更新随机眨眼动画的闭合阶段。
+   *
+   * @param now 当前 performance 时间戳，单位为毫秒。
+   * @returns {void} 眨眼间隔不为正时直接返回。
+   * @sideEffects 更新眨眼阶段、动画起止时间和下一次触发时间。
+   */
   private updateBlink(now: number): void {
     if (this.blinkIntervalMs <= 0) return
 
@@ -237,10 +332,10 @@ export class SpriteCharacterView implements CharacterView {
       if (p >= 1) {
         this.blinkStart = 0
         this.blinkPhase = 0
-        // ±40% 抖动，规律眨眼看着像机器人
+        // 在基础间隔上加入 ±40% 抖动，避免固定节拍造成机械化观感。
         this.nextBlinkAt = now + this.blinkIntervalMs * (0.6 + Math.random() * 0.8)
       } else {
-        // 三角波：闭到底再睁开
+        // 使用三角波使闭合和睁开阶段保持对称。
         this.blinkPhase = p < 0.5 ? p * 2 : (1 - p) * 2
       }
       return

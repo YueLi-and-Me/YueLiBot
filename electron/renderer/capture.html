@@ -1,3 +1,9 @@
+<!--
+  截图采集页面，仅承载隐藏的媒体捕获 DOM。
+
+  主进程通过 capture.ts 控制页面截图和 JPEG 编码，页面不展示用户界面；采集结果
+  由主进程按聊天请求转发到 Python 视觉接口，浏览器上下文不保存截图。
+-->
 <!doctype html>
 <html lang="zh-CN">
   <head>

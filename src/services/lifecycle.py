@@ -1,8 +1,8 @@
-"""
-服务生命周期编排。
+"""集中管理进程内服务的启动与关闭顺序。
 
-粒度按这个项目的体量定：只有 4 个 service，不再往下分层。各 service 注册
-startup/shutdown 回调，manager 按注册顺序启动、逆序关停。
+调用方为每个服务注册异步 ``startup`` 和 ``shutdown`` 回调；管理器按注册顺序
+启动，遇到启动异常立即停止后续启动并向上抛出，关闭时按逆序执行并记录单个
+服务的关闭错误。模块级 ``lifecycle`` 提供进程范围的默认管理器。
 """
 
 from __future__ import annotations
@@ -21,13 +21,23 @@ ShutdownFn = Callable[[], Awaitable[None]]
 
 @dataclass
 class _Service:
+    """一项服务的名称和生命周期回调。"""
+
     name: str
     startup: StartupFn
     shutdown: ShutdownFn
 
 
 class LifecycleManager:
+    """维护服务注册表并执行有序生命周期操作。"""
+
     def __init__(self) -> None:
+        """创建空的服务注册表。
+
+        Side Effects:
+            初始化进程内服务列表；不执行启动或关闭回调。
+        """
+
         self._services: list[_Service] = []
 
     def register(
@@ -36,9 +46,30 @@ class LifecycleManager:
         startup: StartupFn,
         shutdown: ShutdownFn,
     ) -> None:
+        """注册一项服务的启动和关闭回调。
+
+        Args:
+            name: 用于日志和故障定位的服务名称。
+            startup: 无参数异步启动回调。
+            shutdown: 无参数异步关闭回调。
+
+        Side Effects:
+            将服务追加到启动顺序列表；不会立即执行任一回调。
+        """
+
         self._services.append(_Service(name=name, startup=startup, shutdown=shutdown))
 
     async def start_all(self) -> None:
+        """按注册顺序启动全部服务。
+
+        Returns:
+            ``None``。
+
+        Raises:
+            Exception: 任一启动回调失败时记录错误并立即向调用方传播，后续服务
+                不再启动。
+        """
+
         for svc in self._services:
             logger.info("service_starting", name=svc.name)
             try:
@@ -49,6 +80,15 @@ class LifecycleManager:
                 raise
 
     async def stop_all(self) -> None:
+        """按注册逆序关闭全部服务。
+
+        Returns:
+            ``None``。
+
+        Side Effects:
+            执行所有关闭回调；单个关闭异常只记录日志，继续处理其余服务。
+        """
+
         for svc in reversed(self._services):
             logger.info("service_stopping", name=svc.name)
             try:

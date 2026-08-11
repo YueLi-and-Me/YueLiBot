@@ -1,12 +1,12 @@
+/**
+ * 创建设置窗口并处理其显示、关闭和首次启动阻塞逻辑。
+ *
+ * 设置页面通过 preload/settings.ts 读取和保存配置；本模块只管理窗口生命周期，
+ * 配置解析与写盘由 main/config.ts 负责。
+ */
 import { BrowserWindow } from 'electron'
 
-/**
- * 设置窗口。一扇窗两用：
- *  · 首次启动时强制弹出（阻塞桌宠窗口/Python 监护进程的创建），填完才继续
- *  · 之后随时能从托盘重新打开，纯编辑，不阻塞任何东西
- *
- * 跟日记窗口同一种取向：普通窗口，不透明，不置顶。
- */
+/** 设置窗口负责首次配置引导和后续编辑，使用普通不透明窗口。 */
 
 let settingsWindow: BrowserWindow | null = null
 
@@ -16,6 +16,14 @@ export interface SettingsWindowOptions {
   botName: string
 }
 
+/**
+ * 创建或聚焦设置窗口。
+ *
+ * @param opts 窗口 URL、preload 脚本路径和标题中的人物名称。
+ * @returns 已存在且有效的设置窗口，或新建的 BrowserWindow 实例。
+ * @throws Error Electron 窗口创建或页面加载初始化失败时由运行时抛出。
+ * @sideEffects 创建窗口、注册关闭清理器并加载设置页面；重复调用复用窗口。
+ */
 export function openSettingsWindow(opts: SettingsWindowOptions): BrowserWindow {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     if (settingsWindow.isMinimized()) settingsWindow.restore()
@@ -36,7 +44,7 @@ export function openSettingsWindow(opts: SettingsWindowOptions): BrowserWindow {
       preload: opts.preload,
       contextIsolation: true,
       nodeIntegration: false,
-      // ESM preload 在 sandbox 中会静默失效；和其它几扇窗保持一致。
+      // ESM preload 在 sandbox 中无法注入配置 bridge，因此显式关闭 sandbox。
       sandbox: false,
     },
   })
@@ -49,10 +57,21 @@ export function openSettingsWindow(opts: SettingsWindowOptions): BrowserWindow {
   return settingsWindow
 }
 
+/**
+ * 判断设置窗口是否仍可使用。
+ *
+ * @returns 窗口存在且未销毁时为 ``true``。
+ */
 export function settingsWindowOpen(): boolean {
   return !!settingsWindow && !settingsWindow.isDestroyed()
 }
 
+/**
+ * 关闭设置窗口并清理模块级引用。
+ *
+ * @returns 无返回值；窗口不存在或已销毁时直接返回。
+ * @sideEffects 关闭 BrowserWindow，使下一次打开重新创建窗口。
+ */
 export function closeSettingsWindow(): void {
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close()
   settingsWindow = null

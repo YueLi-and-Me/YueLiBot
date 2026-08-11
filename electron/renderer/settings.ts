@@ -1,19 +1,20 @@
+/**
+ * 实现首次启动引导和后续配置编辑共用的表单控制器。
+ *
+ * 本模块负责 DOM 字段映射、表单校验、配置快照组装和保存反馈；持久化与后端重启
+ * 通过 preload/settings.ts 执行，配置类型来自 electron/shared/ipc.ts。
+ */
 import type {
   ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, ReasoningParseMode,
   SelectionStrategy, YueliConfig,
 } from '../shared/ipc.ts'
 
 /**
- * 设置窗口：首次启动引导 + 后续编辑共用一套表单。
+ * 设置窗口的表单控制器，兼容首次启动引导和后续配置编辑。
  *
- * URL 的 `?mode=first-run` 区分两种模式：首次启动时标题/文案不同，
- * 保存成功后不显示"重启"按钮（主进程本来就还没启动后端，不存在"重启"这回事），
- * 而是显示"正在启动…"——主进程收到保存成功的信号后会自己关掉这扇窗、继续正常流程。
- *
- * 表单分两半：
- *   · 静态字段（bot.* / tts.voice / advanced.* 等）走 name 路径绑定，和以前一样；
- *   · 服务商、模型、任务候选是可增删的列表，直接读写 loadedConfig，
- *     渲染出来的控件一律不带 name，免得被路径绑定当成静态字段处理。
+ * `?mode=first-run` 只改变页面文案和保存后的窗口行为。静态配置字段通过 `name` 路径
+ * 映射到配置对象；服务商、模型和任务候选使用可增删的动态节点，直接更新 `loadedConfig`，
+ * 再由主进程的保存接口执行统一结构校验和持久化。
  */
 
 const params = new URLSearchParams(location.search)
@@ -38,7 +39,7 @@ if (isFirstRun) {
 
 let loadedConfig: YueliConfig | null = null
 
-/** 厂商预设。base_url 留空时由 Python 侧按 kind 选官方地址。 */
+/** 服务商预设；`base_url` 为空时由后端按 `kind` 选择内置地址。 */
 const PROVIDER_KINDS: Array<[string, string]> = [
   ['ark', '方舟（火山引擎）'],
   ['deepseek', 'DeepSeek'],
@@ -59,8 +60,17 @@ const TASK_LABELS: Array<[keyof YueliConfig['model_tasks'], string, string]> = [
   ['embedding', '向量记忆', '备用模型必须和主力输出同样的向量维度。'],
 ]
 
-// ── DOM 小工具 ────────────────────────────────────────────────────────
+// DOM 构造工具。
 
+/**
+ * 创建指定标签、类名和子节点组成的 DOM 元素。
+ *
+ * @param tag HTML 标签名。
+ * @param className CSS 类名；默认值为空字符串。
+ * @param children 要追加的节点或文本子项。
+ * @returns 与标签名对应的 HTML 元素。
+ * @throws 传播浏览器 DOM 创建或追加失败产生的异常。
+ */
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K, className = '', ...children: Array<Node | string>
 ): HTMLElementTagNameMap[K] {
@@ -70,6 +80,15 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node
 }
 
+/**
+ * 创建文本或密码输入字段，并在输入事件发生时回调最新文本。
+ *
+ * @param label 字段展示标签。
+ * @param value 初始文本值。
+ * @param onInput 输入回调，参数为当前输入框文本。
+ * @param options 可选显示配置；`password` 默认值为 `false`，`placeholder` 默认为空。
+ * @returns 包含标签和输入框的字段容器。
+ */
 function textField(
   label: string, value: string, onInput: (value: string) => void,
   { password = false, placeholder = '' } = {},
@@ -82,6 +101,14 @@ function textField(
   return el('label', 'field', el('span', 'field-label', label), input)
 }
 
+/**
+ * 创建数字输入字段，并仅在输入可转换为有限数字时触发回调。
+ *
+ * @param label 字段展示标签。
+ * @param value 初始数字值。
+ * @param onInput 数字输入回调。
+ * @returns 包含标签和数字输入框的字段容器。
+ */
 function numberField(label: string, value: number, onInput: (value: number) => void): HTMLElement {
   const input = el('input')
   input.type = 'number'
@@ -93,6 +120,15 @@ function numberField(label: string, value: number, onInput: (value: number) => v
   return el('label', 'field', el('span', 'field-label', label), input)
 }
 
+/**
+ * 创建单选下拉字段，并在选项变化时回调选中值。
+ *
+ * @param label 字段展示标签。
+ * @param value 初始选中值。
+ * @param options 二元组数组，元素依次为选项值和展示文本。
+ * @param onChange 选项变化回调。
+ * @returns 包含标签和下拉框的字段容器。
+ */
 function selectField(
   label: string, value: string, options: Array<[string, string]>,
   onChange: (value: string) => void,
@@ -109,6 +145,14 @@ function selectField(
   return el('label', 'field', el('span', 'field-label', label), select)
 }
 
+/**
+ * 创建不提交表单的图标按钮。
+ *
+ * @param label 按钮显示文本或符号。
+ * @param title 按钮无障碍提示和悬停标题。
+ * @param onClick 点击回调。
+ * @returns 已绑定点击事件的按钮元素。
+ */
 function iconButton(label: string, title: string, onClick: () => void): HTMLButtonElement {
   const button = el('button', 'button secondary icon')
   button.type = 'button'
@@ -118,11 +162,15 @@ function iconButton(label: string, title: string, onClick: () => void): HTMLButt
   return button
 }
 
-// ── 服务商 ────────────────────────────────────────────────────────────
+// 服务商动态配置。
 
 /**
- * 改名要把引用一起改掉。否则保存时才报「引用了不存在的厂商」，
- * 而用户刚做的其实是一次完全合理的重命名。
+ * 修改服务商名称，并同步更新所有模型的服务商引用。
+ *
+ * @param cfg 当前可编辑配置。
+ * @param before 原服务商名称。
+ * @param after 新服务商名称。
+ * @returns 无返回值；配置对象会被原地修改。
  */
 function renameProvider(cfg: YueliConfig, before: string, after: string): void {
   for (const model of cfg.models) {
@@ -130,6 +178,15 @@ function renameProvider(cfg: YueliConfig, before: string, after: string): void {
   }
 }
 
+/**
+ * 创建单个服务商的动态编辑卡片，并绑定删除、字段更新和鉴权模式切换事件。
+ *
+ * @param cfg 当前可编辑配置；删除服务商时同步触发整组动态区域重绘。
+ * @param provider 当前服务商配置对象。
+ * @param index 服务商在配置数组中的索引，用于删除操作。
+ * @returns 服务商编辑卡片的根元素。
+ * @throws 传播 DOM 创建、事件绑定或重绘过程中产生的异常。
+ */
 function renderProvider(cfg: YueliConfig, provider: ApiProviderConfig, index: number): HTMLElement {
   const card = el('div', 'repeat-item')
   const header = el('div', 'repeat-header',
@@ -155,6 +212,7 @@ function renderProvider(cfg: YueliConfig, provider: ApiProviderConfig, index: nu
     password: true,
   }))
 
+  // 鉴权名称只在 header/query 模式可见，协议切换时同时更新三处字段的可见性。
   const authNameField = textField('鉴权字段名', provider.auth_name, (value) => {
     provider.auth_name = value
   }, { placeholder: 'header 或 query 模式必填' })
@@ -211,7 +269,12 @@ function renderProvider(cfg: YueliConfig, provider: ApiProviderConfig, index: nu
   return card
 }
 
-/** 只更新卡片标题，不整块重绘——重绘会把用户正在打字的输入框焦点弄丢。 */
+/**
+ * 更新服务商卡片标题而不重绘整个动态区域。
+ *
+ * @returns 无返回值；配置未加载或对应标题节点不存在时跳过。
+ * @remarks 局部更新用于保留用户正在编辑的输入框焦点和光标位置。
+ */
 function refreshProviderTitles(): void {
   if (!loadedConfig) return
   const titles = providerList.querySelectorAll<HTMLElement>('.repeat-title')
@@ -221,20 +284,37 @@ function refreshProviderTitles(): void {
   })
 }
 
-// ── 模型 ──────────────────────────────────────────────────────────────
+// 模型动态配置。
 
+/**
+ * 修改模型名称，并同步更新所有任务路由中的候选引用。
+ *
+ * @param cfg 当前可编辑配置。
+ * @param before 原模型名称。
+ * @param after 新模型名称。
+ * @returns 无返回值；配置对象会被原地修改。
+ */
 function renameModel(cfg: YueliConfig, before: string, after: string): void {
   for (const routing of Object.values(cfg.model_tasks)) {
     routing.model_list = routing.model_list.map((name) => (name === before ? after : name))
   }
 }
 
+/**
+ * 创建单个模型的动态编辑卡片，并绑定删除、重命名和字段更新事件。
+ *
+ * @param cfg 当前可编辑配置；删除模型时同步移除全部任务候选引用。
+ * @param model 当前模型配置对象。
+ * @param index 模型在配置数组中的索引，用于删除操作。
+ * @returns 模型编辑卡片的根元素。
+ * @throws 传播 DOM 创建、事件绑定或重绘过程中产生的异常。
+ */
 function renderModel(cfg: YueliConfig, model: ModelDefinitionConfig, index: number): HTMLElement {
   const card = el('div', 'repeat-item')
   const header = el('div', 'repeat-header', el('span', 'repeat-title', model.name || '（未命名）'))
   header.append(iconButton('✕', '删除这个模型', () => {
     cfg.models.splice(index, 1)
-    // 候选里也要跟着去掉，否则保存时会报引用不存在
+    // 删除模型时同步移除任务候选引用，保证保存前不会留下悬空模型名称。
     for (const routing of Object.values(cfg.model_tasks)) {
       routing.model_list = routing.model_list.filter((name) => name !== model.name)
     }
@@ -270,6 +350,11 @@ function renderModel(cfg: YueliConfig, model: ModelDefinitionConfig, index: numb
   return card
 }
 
+/**
+ * 更新模型卡片标题而不重绘整个动态区域。
+ *
+ * @returns 无返回值；配置未加载或对应标题节点不存在时跳过。
+ */
 function refreshModelTitles(): void {
   if (!loadedConfig) return
   const titles = modelList.querySelectorAll<HTMLElement>('.repeat-title')
@@ -279,8 +364,19 @@ function refreshModelTitles(): void {
   })
 }
 
-// ── 任务候选 ──────────────────────────────────────────────────────────
+// 任务候选动态配置。
 
+/**
+ * 创建单个任务的候选模型和超时参数编辑卡片。
+ *
+ * @param cfg 当前可编辑配置。
+ * @param task 任务路由键。
+ * @param label 任务展示名称。
+ * @param hint 任务用途说明。
+ * @returns 任务编辑卡片的根元素。
+ * @throws 传播 DOM 创建、事件绑定或重绘过程中产生的异常。
+ * @remarks 候选列表去重，主候选通过位置 `0` 表示；候选顺序变化后立即重绘以更新序号。
+ */
 function renderTask(
   cfg: YueliConfig, task: keyof YueliConfig['model_tasks'], label: string, hint: string,
 ): HTMLElement {
@@ -340,7 +436,7 @@ function renderTask(
   const addButton = el('button', 'button secondary small')
   addButton.type = 'button'
   addButton.textContent = '添加候选'
-  // 已经在候选里的模型不重复给——同一个模型排两遍只会让轮询白撞一次
+  // 已在候选中的模型不再提供添加选项，避免重复候选改变轮询顺序和备用切换行为。
   const available = cfg.models.filter((model) => !routing.model_list.includes(model.name))
   addButton.disabled = available.length === 0
   addButton.addEventListener('click', () => {
@@ -360,8 +456,14 @@ function renderTask(
   return card
 }
 
-// ── 渲染与收集 ────────────────────────────────────────────────────────
+// 动态区域渲染与表单收集。
 
+/**
+ * 按当前配置重绘服务商、模型和任务候选三个动态区域。
+ *
+ * @returns 无返回值；未加载配置时跳过。
+ * @throws 传播动态卡片创建和 DOM 替换过程中的异常。
+ */
 function renderDynamicSections(): void {
   const cfg = loadedConfig
   if (!cfg) return
@@ -398,7 +500,14 @@ addModelButton.addEventListener('click', () => {
   renderDynamicSections()
 })
 
-/** 新建时给个不撞车的名字——重名在保存时会被拒，不如一开始就避开。 */
+/**
+ * 生成不与现有名称重复的顺序名称。
+ *
+ * @param prefix 名称前缀。
+ * @param existing 已占用名称数组。
+ * @returns 从 `${prefix}1` 开始递增且未被占用的名称。
+ * @remarks 方法在找到空闲名称前持续递增；名称数量异常大时线性检查会增加开销。
+ */
 function uniqueName(prefix: string, existing: string[]): string {
   for (let index = 1; ; index++) {
     const candidate = `${prefix}${index}`
@@ -406,6 +515,13 @@ function uniqueName(prefix: string, existing: string[]): string {
   }
 }
 
+/**
+ * 按点分隔路径读取嵌套配置值。
+ *
+ * @param obj 配置对象或未知根值。
+ * @param path 点分隔字段路径，例如 `bot.name`。
+ * @returns 路径对应的值；中间节点不是对象或路径不存在时返回 `undefined`。
+ */
 function getByPath(obj: unknown, path: string): unknown {
   return path.split('.').reduce<unknown>((acc, key) => {
     if (acc && typeof acc === 'object') return (acc as Record<string, unknown>)[key]
@@ -413,6 +529,15 @@ function getByPath(obj: unknown, path: string): unknown {
   }, obj)
 }
 
+/**
+ * 按点分隔路径写入嵌套配置值，并为缺失的中间对象创建记录。
+ *
+ * @param obj 待修改的可变配置记录。
+ * @param path 点分隔字段路径；必须至少包含一个字段名。
+ * @param value 要写入的值。
+ * @returns 无返回值；对象会被原地修改。
+ * @throws Error 当路径为空导致无法确定目标字段时传播索引访问错误。
+ */
 function setByPath(obj: Record<string, unknown>, path: string, value: unknown): void {
   const keys = path.split('.')
   let cursor = obj
@@ -424,6 +549,13 @@ function setByPath(obj: Record<string, unknown>, path: string, value: unknown): 
   cursor[keys[keys.length - 1]!] = value
 }
 
+/**
+ * 使用配置对象填充静态表单字段，并同步功能开关控制的区块可见性。
+ *
+ * @param config 已加载的运行时配置。
+ * @returns 无返回值。
+ * @throws Error 当声明为字符串数组的字段实际不是数组，或 DOM 字段类型不一致时抛出。
+ */
 function populateForm(config: YueliConfig): void {
   for (const el of Array.from(form.elements)) {
     const name = (el as HTMLInputElement).name
@@ -449,7 +581,11 @@ function populateForm(config: YueliConfig): void {
   syncToggleVisibility()
 }
 
-/** tts.enabled / vision.enabled 两个开关控制各自区块是否可见。 */
+/**
+ * 根据表单中的功能开关更新关联配置区块的折叠状态。
+ *
+ * @returns 无返回值；找不到对应开关时按未启用处理。
+ */
 function syncToggleVisibility(): void {
   for (const body of Array.from(document.querySelectorAll<HTMLElement>('[data-toggle-target]'))) {
     const targetName = body.dataset.toggleTarget!
@@ -462,9 +598,16 @@ form.addEventListener('change', (e) => {
   if ((e.target as HTMLElement)?.matches?.('input[type="checkbox"][name$=".enabled"]')) syncToggleVisibility()
 })
 
+/**
+ * 将静态表单字段合并回配置快照，保留页面未展示的字段和动态配置数组。
+ *
+ * @param base 已加载的配置快照；方法不会修改该对象。
+ * @returns 深拷贝后应用表单值的完整配置对象。
+ * @throws Error 当表单控件声明为字符串数组但值无法按预期处理时抛出。
+ * @remarks 数字字段通过 `Number` 转换，复选框保存为布尔值，字符串数组按控件类型分别按行或逗号拆分。
+ */
 function collectFormValues(base: YueliConfig): YueliConfig {
-  // 表单里没出现的字段（比如 conversation.*）保留原来读到的值，
-  // 不能被表单提交时悄悄清空。服务商/模型/候选已经直接写在 base 上了。
+  // 先深拷贝基础配置，保留未出现在表单中的会话参数及动态列表，避免提交时静默清空。
   const result = JSON.parse(JSON.stringify(base)) as Record<string, unknown>
   for (const el of Array.from(form.elements)) {
     const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
@@ -487,6 +630,13 @@ function collectFormValues(base: YueliConfig): YueliConfig {
   return result as unknown as YueliConfig
 }
 
+/**
+ * 更新设置页状态文本及对应的样式状态。
+ *
+ * @param text 要展示的状态信息。
+ * @param kind 状态类型：`ok`、`error` 或空字符串，默认值为空字符串。
+ * @returns 无返回值。
+ */
 function setStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
   statusText.textContent = text
   statusText.className = `status-text ${kind}`
@@ -495,8 +645,7 @@ function setStatus(text: string, kind: 'ok' | 'error' | '' = ''): void {
 form.addEventListener('submit', async (e) => {
   e.preventDefault()
   if (!loadedConfig) return
-  // 结构自检在主进程那一侧统一做（writeConfigDirectory），这里只负责把它
-  // 返回的话显示出来——两边各留一套规则，迟早会对不上。
+  // 结构校验和持久化由主进程统一负责；渲染层只组装输入、提交并展示返回结果。
   const config = collectFormValues(loadedConfig)
   saveButton.disabled = true
   restartButton.hidden = true
@@ -508,8 +657,7 @@ form.addEventListener('submit', async (e) => {
     renderDynamicSections()
     if (isFirstRun) {
       setStatus(`保存成功，正在启动${config.bot.name}…`, 'ok')
-      // 主进程监听同一次 save 调用的成功结果，会自己关掉这扇窗并继续启动——
-      // 这里不用再做什么，保留提示文字直到窗口被关掉。
+      // 首次启动由主进程在同一次保存成功后关闭窗口并继续启动，此处只保留过渡提示。
     } else {
       setStatus('已保存', 'ok')
       restartButton.hidden = false
@@ -526,6 +674,12 @@ restartButton.addEventListener('click', () => {
   setStatus('已发送重启指令…', 'ok')
 })
 
+/**
+ * 读取配置、填充静态字段并首次渲染动态配置区域。
+ *
+ * @returns 页面初始化完成后的 Promise。
+ * @throws 不向上抛出读取或渲染异常；错误转换为设置页状态提示。
+ */
 async function init(): Promise<void> {
   try {
     loadedConfig = (await window.settings?.read()) ?? null

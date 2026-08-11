@@ -1,17 +1,8 @@
-"""
-视觉服务：他问起屏幕时截一帧，交给视觉模型描述。
+"""在明确请求时调用视觉模型描述当前屏幕，并管理描述缓存与失败诊断。
 
-★ 只有一条路径：**他主动问，才看**。
-  曾经还有一条后台轮询链路（每 12s 截图 + 帧差 + 关键帧序列 + 全局瞥视冷却
-  + 按 context 缓存描述），目标是「全时态感知」。它带来的复杂度远超收益——
-  光时间常量就有九个横跨两种语言、互相之间还有隐式顺序依赖，排错时要同时
-  在脑子里放着九个数字，实际表现却是她拿着几分钟前的旧描述当现在讲。
-  现在整条删掉：他不问，就不看。
-
-隐私约束：
-  · 截图绝不落盘，用完即弃
-  · 截多大范围由 vision.capture_mode 决定（window / screen），见 capture.ts
-  · 窗口标题永不外传；进程名会（见 awareness/classify.py 的说明）
+服务只接受调用方主动提交的一帧 JPEG，不执行后台截图轮询；截图仅编码到当前
+模型请求中，不写入磁盘。应用程序名可作为视觉提示先验，窗口标题等敏感上下文
+由上游捕获层控制，不在本模块外传。
 """
 
 from __future__ import annotations
@@ -32,19 +23,11 @@ from src.prompts.registry import get_prompt, prompt_metadata
 
 logger = get_logger(__name__)
 
-# 复用窗口：这段时间内重复提问直接返回上一次的描述，不再打模型。
-# 防的是「看看我屏幕」「现在呢」这种连着问，每句都摊一次视觉调用。
+# 重复请求在冷却窗口内复用最近描述，避免短时间内重复调用视觉模型。
 CHAT_GLANCE_COOLDOWN_MS = 20_000
-# 描述的有效期。★ 必须 >= 复用冷却，否则会出现「过期了但还不允许重新调用」
-# 的死窗口。两者管的是不同的事：冷却管「要不要重新花钱看」，TTL 管「这条
-# 描述还能不能算数」。缺了 TTL 就会拿旧描述冒充当前画面，她会理直气壮地
-# 描述一个早就关掉的界面。
+# TTL 必须覆盖冷却窗口，避免缓存刚允许复用却已经过期。
 CHAT_GLANCE_TTL_MS = 60_000
-# 单次调用的截止时间。★ 视觉 provider 用的是 api_provider 那套参数
-# （timeout_ms 默认 120s + max_retries 2），最坏能跑好几分钟——那是给后台
-# 任务用的，而这里他正等着回话。也必须明显小于 Electron 侧的
-# CHAT_GLANCE_TIMEOUT，否则那边先 abort，请求被掐断会让这里抛
-# CancelledError，在 uvicorn 里表现成一整屏 ASGI 报错。
+# 请求截止时间应短于上游客户端超时，避免客户端先取消而产生未分类的异步异常。
 CHAT_GLANCE_DEADLINE_S = 8.0
 
 
@@ -58,6 +41,12 @@ class VisionFailure:
     response_excerpt: str = ''
 
     def as_trace(self) -> dict[str, str | int | None]:
+        """转换为观察事件使用的可序列化错误字段。
+
+        Returns:
+            使用 camelCase 键名并将空字符串转换为 ``None`` 的字典。
+        """
+
         return {
             'errorType': self.error_type,
             'errorKind': self.error_kind or None,
@@ -68,14 +57,21 @@ class VisionFailure:
 
 @dataclass(frozen=True)
 class VisionCallResult:
-    """模型输出与失败诊断必须成对返回，不能靠 logger 猜原因。"""
+    """封装视觉描述结果及可选失败诊断。"""
 
     description: str | None
     failure: VisionFailure | None = None
 
 
 def _safe_response_excerpt(value: str) -> str:
-    """错误响应进 trace 前去掉可能出现的凭证，并限制体积。"""
+    """在错误响应进入 trace 前脱敏凭证并限制长度。
+
+    Args:
+        value: 原始错误文本或接口响应片段。
+
+    Returns:
+        将 Bearer 令牌替换为 ``[REDACTED_SECRET]`` 且最多 400 字符的文本。
+    """
     redacted = re.sub(
         r'(?i)(authorization["\']?\s*[:=]\s*["\']?bearer\s+|bearer\s+)[^\s,;"\']+',
         r'\1[REDACTED_SECRET]',
@@ -85,7 +81,14 @@ def _safe_response_excerpt(value: str) -> str:
 
 
 def _llm_failure(exc: LlmError) -> VisionFailure:
-    """把客户端已分类的错误带进 trace，供现场排障而不是猜测。"""
+    """将已分类的模型错误转换为视觉失败诊断。
+
+    Args:
+        exc: 由模型客户端分类的 ``LlmError``。
+
+    Returns:
+        包含错误类型、错误分类、可解析 HTTP 状态码和脱敏响应摘要的诊断对象。
+    """
     status_match = re.search(r'HTTP\s+(\d{3})', str(exc))
     return VisionFailure(
         error_type=type(exc).__name__,
@@ -96,7 +99,7 @@ def _llm_failure(exc: LlmError) -> VisionFailure:
 
 
 class VisionProvider(Protocol):
-    """视觉服务实际依赖的最小模型接口。"""
+    """视觉服务依赖的最小异步流式模型接口。"""
 
     model: str
 
@@ -107,13 +110,35 @@ class VisionProvider(Protocol):
         max_tokens: int | None = None,
         signal: asyncio.Event | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
+        """按增量块产生视觉模型响应。
+
+        Args:
+            messages: OpenAI 兼容的多模态消息列表。
+            temperature: 采样温度，默认 0.85。
+            max_tokens: 最大输出 token 数；``None`` 表示由提供者决定。
+            signal: 可选的取消信号。
+
+        Returns:
+            异步迭代器，每个元素包含可选的 ``text`` 字段。
+        """
+
         ...
 
 
 class VisionService:
+    """协调主动视觉请求、短期描述缓存和事件诊断。"""
+
     def __init__(self, cfg: Config,
                  push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
                  provider: VisionProvider | None) -> None:
+        """初始化视觉服务。
+
+        Args:
+            cfg: 提供视觉开关和生成参数的运行时配置。
+            push_event: 异步推送视觉观看状态的回调。
+            provider: 可选的流式视觉模型提供者；为 ``None`` 时视为不可用。
+        """
+
         self._cfg = cfg
         self._push_event = push_event
         self._provider = provider
@@ -122,6 +147,12 @@ class VisionService:
         self._glances = 0
 
     def stats(self) -> dict[str, Any]:
+        """返回视觉功能的配置状态和调用次数。
+
+        Returns:
+            不包含截图和凭证的诊断字典。
+        """
+
         return {
             'enabled': self._cfg.vision.enabled,
             'available': self._protocol_error is None,
@@ -130,10 +161,13 @@ class VisionService:
         }
 
     def chat_glance(self, ttl_ms: int = CHAT_GLANCE_TTL_MS) -> str | None:
-        """最近一次屏幕描述，过期返回 None。
+        """读取未超过有效期的最近屏幕描述。
 
-        ★ 必须判 TTL。宁可没有，也不能拿旧的冒充现在的——截图失败时旧描述
-          继续被当成「你刚瞥了一眼屏幕」，她就会描述一个早就关掉的界面。
+        Args:
+            ttl_ms: 描述有效期，单位毫秒，默认使用 ``CHAT_GLANCE_TTL_MS``。
+
+        Returns:
+            未过期的缓存描述；没有缓存或已过期时返回 ``None``。
         """
         if not self._chat_glance:
             return None
@@ -143,7 +177,20 @@ class VisionService:
         return text
 
     async def glance(self, jpeg_bytes: bytes, app: str = '') -> str | None:
-        """看一眼当前画面。只在他问起屏幕时被调用（见 Electron 侧 screenIntent）。"""
+        """调用视觉模型描述一帧当前画面。
+
+        Args:
+            jpeg_bytes: 当前画面的 JPEG 字节；空字节表示没有可用截图。
+            app: 可选的前台程序名，作为模型识别界面的先验提示。
+
+        Returns:
+            模型生成的描述；功能禁用、缓存冷却命中、模型失败或响应为空时返回
+            ``None``，禁用分支可能返回仍在有效期内的缓存描述。
+
+        Side Effects:
+            可能推送 ``vision.watching`` 开始/结束事件，调用视觉模型并更新最近
+            描述缓存、调用计数和观察事件。
+        """
         if not self._cfg.vision.enabled or not jpeg_bytes or self._protocol_error:
             trace.emit('vision_glance', result='skipped',
                        enabled=self._cfg.vision.enabled, bytes=len(jpeg_bytes),
@@ -188,13 +235,28 @@ class VisionService:
             logger.info('chat_glance_empty', reason='模型返回空描述或调用失败，详见上一条 vision_call_failed')
             failure = result.failure or VisionFailure(error_type='EmptyResponse')
             trace.emit('vision_glance', result='empty', app=app, **failure.as_trace())
-        # ★ 失败时返回 None 而不是退回旧缓存——调用方需要知道这次没看成。
+        # 失败不回退到旧缓存，调用方必须能区分本次未获得新描述。
         return description
 
     async def _call_vision_model(self, jpeg_bytes: bytes, app: str = '') -> VisionCallResult:
+        """构造多模态请求并消费视觉模型流式响应。
+
+        Args:
+            jpeg_bytes: 待发送的 JPEG 图像字节。
+            app: 可选的前台程序名提示。
+
+        Returns:
+            包含清理后文本或结构化失败原因的 ``VisionCallResult``。
+
+        Side Effects:
+            发出模型请求并写入请求、成功或失败观察事件；检测到不支持多模态协议
+            时会将服务标记为协议不可用，后续请求直接跳过。
+        """
+
         if not self._provider:
             return VisionCallResult(None, VisionFailure(error_type='ProviderUnavailable'))
         if self._protocol_error:
+            # 不重复请求已确认不兼容的接口，避免每次前台事件都产生相同失败。
             return VisionCallResult(
                 None,
                 VisionFailure(
@@ -212,6 +274,7 @@ class VisionService:
             ]
             raw = ''
             generation = self._cfg.generation.vision
+            # 观察事件只记录图片大小和消息结构，不持久化原始图像或 base64 内容。
             trace.emit(
                 'llm_request',
                 messages=[{
@@ -231,6 +294,7 @@ class VisionService:
                 max_tokens=generation.token_limit,
             ):
                 if chunk.get('text'):
+                    # 视觉提供者可能分多块返回描述，必须在结束后统一清理空白。
                     raw += chunk['text']
             description = raw.strip()
             if description:
@@ -240,6 +304,7 @@ class VisionService:
             failure = _llm_failure(exc)
             message = str(exc)
             if 'unknown variant `image_url`' in message or 'expected `text`' in message:
+                # 将协议不兼容转换为持久状态，后续调用直接返回可观察的失败类型。
                 self._protocol_error = (
                     '当前模型接口不接受 OpenAI image_url 消息块；'
                     '请配置支持图片输入的视觉 API，或为该接口实现专用协议适配器'
@@ -261,8 +326,16 @@ class VisionService:
 
     @staticmethod
     def _build_vision_prompt(app: str = '') -> str:
-        """★ app 是前台程序名。模型经常认不出小众界面，先告诉它这是什么程序，
-        描述质量立刻不一样——这是整条链路里最便宜的一个先验。
+        """根据前台程序名构造视觉提示词。
+
+        Args:
+            app: 可选的前台程序名；为空时不追加应用提示。
+
+        Returns:
+            使用 ``vision.glance`` 模板渲染的提示词。
+
+        Raises:
+            KeyError, ValueError: 视觉提示词模板不存在或占位符不匹配。
         """
         hint = f'画面里他开着的是 {app}。' if app else ''
         return get_prompt('vision.glance').render(app_hint=hint)

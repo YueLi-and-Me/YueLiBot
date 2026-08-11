@@ -1,12 +1,8 @@
-"""
-向量召回服务。
+"""协调事实向量生成、历史数据补算和查询向量计算。
 
-负责：
-  · 后台异步批量补算缺失的 embedding（进程启动后触发一次）
-  · 为每条新事实在写入后调度 embedding 计算
-  · 为查询文本实时计算 embedding，注入 store.recall_facts()
-
-features.toml 里 [vector].enabled = false（默认）时整个服务不运行，所有方法都是 no-op。
+``VectorService`` 依赖内存存储提供事实查询和向量持久化，依赖可选的嵌入客户端
+执行模型调用。未配置客户端时服务保持禁用；嵌入调用失败只影响对应向量操作，
+不会阻断事实写入或查询调用方的关键词召回路径。
 """
 
 from __future__ import annotations
@@ -20,28 +16,44 @@ logger = get_logger(__name__)
 
 
 class VectorService:
-    """
-    向量召回服务。
-
-    store: MemoryStore 实例
-    embed_client: EmbeddingClient 实例；None 表示已被配置禁用
-    """
+    """管理可选的事实向量生成与批量补算任务。"""
 
     def __init__(self, store: Any, embed_client: Any | None) -> None:
+        """初始化向量服务。
+
+        Args:
+            store: 提供 ``store_embedding`` 和 ``facts_without_embedding`` 方法的
+                事实存储。
+            embed_client: 提供 ``embed_one`` 与 ``embed`` 异步方法的嵌入客户端；
+                ``None`` 表示向量功能被配置禁用。
+        """
+
         self._store = store
         self._client = embed_client
         self._enabled = embed_client is not None
 
     @property
     def enabled(self) -> bool:
+        """返回当前是否配置了可用的嵌入客户端。
+
+        Returns:
+            客户端不为 ``None`` 时返回 ``True``，否则返回 ``False``。
+        """
+
         return self._enabled
 
     async def embed_query(self, text: str) -> bytes | None:
-        """
-        为查询文本计算实时 embedding。
+        """为查询文本计算实时 embedding。
 
-        失败时返回 None，调用方据此退回纯 BM25。
-        故意不做缓存：查询多样，缓存收益低，还增加内存压力。
+        Args:
+            text: 待向量化的查询文本。
+
+        Returns:
+            嵌入客户端返回的序列化向量；服务禁用或调用失败时返回 ``None``，
+            调用方可继续使用关键词召回。
+
+        Performance:
+            查询结果不缓存，以避免高基数查询占用常驻内存。
         """
         if not self._enabled or not self._client:
             return None
@@ -52,7 +64,16 @@ class VectorService:
             return None
 
     async def embed_fact(self, fact_id: int, content: str) -> None:
-        """为一条新事实计算并持久化 embedding。"""
+        """为一条事实计算并持久化 embedding。
+
+        Args:
+            fact_id: ``facts.id`` 稳定主键。
+            content: 事实正文。
+
+        Side Effects:
+            成功生成向量时更新事实存储；服务禁用或生成失败时记录调试日志并
+            保留事实原文，不向调用方抛出嵌入异常。
+        """
         if not self._enabled or not self._client:
             return
         try:
@@ -63,11 +84,18 @@ class VectorService:
             logger.debug("embed_fact_failed", id=fact_id, error=str(exc))
 
     async def backfill(self) -> int:
-        """
-        后台补算所有缺失 embedding 的事实。
+        """分批补算历史事实中缺失的 embedding。
 
-        在进程启动后触发一次，确保历史数据也被向量化。
-        每批之间 yield 一次以让事件循环有机会处理其他请求。
+        Returns:
+            本次成功写入向量的事实数量；服务禁用时返回 0。
+
+        Side Effects:
+            按每批 32 条读取缺失事实并更新存储；批次之间让出事件循环，避免长期
+            占用调度器。
+
+        Raises:
+            Exception: 嵌入客户端的批量调用或存储写入异常会直接传播，便于启动期
+                发现数据或配置问题。
         """
         if not self._enabled or not self._client:
             return 0
@@ -83,7 +111,7 @@ class VectorService:
                 if vec is not None:
                     self._store.store_embedding(fact_id, vec)
                     total += 1
-            # yield 让事件循环处理其他请求
+            # 批次之间主动让出事件循环，避免历史补算阻塞在线请求。
             await asyncio.sleep(0)
             if len(batch) < 32:
                 break

@@ -53,9 +53,22 @@ export class InputActivity {
     this.lastInputAt = Date.now()
   }
 
+  /**
+   * 创建输入活动聚合器。
+   *
+   * @param hook 全局输入钩子实现，默认使用 uIOhook；测试可注入兼容实现。
+   * @throws 不在构造阶段启动钩子，因此不会因权限错误抛出异常。
+   */
   constructor(private readonly hook: InputHook = uIOhook) {}
 
-  /** 返回 false 表示权限或安全软件阻止了钩子；调用者仍可用系统 idle 时间工作。 */
+  /**
+   * 注册键盘、鼠标事件并启动全局输入钩子。
+   *
+   * @returns 已启动或重复调用时返回 ``true``；权限、驱动或安全软件阻止时返回
+   * ``false``，调用方应回退到系统空闲时间。
+   * @sideEffects 注册事件监听器并开始累计数量、位移和最后输入时间；失败时撤销
+   * 已注册监听器。
+   */
   start(): boolean {
     if (this.started) return true
     try {
@@ -75,6 +88,12 @@ export class InputActivity {
     }
   }
 
+  /**
+   * 停止输入钩子、移除监听器并清空当前累计快照。
+   *
+   * @returns 无返回值；未启动时不执行任何操作。
+   * @sideEffects 停止全局钩子并重置键数、点击数、位移、时间和瞬时指针。
+   */
   stop(): void {
     if (!this.started) return
     this.hook.removeListener('keydown', this.onKeydown)
@@ -85,6 +104,13 @@ export class InputActivity {
     this.reset()
   }
 
+  /**
+   * 读取当前窗口周期的输入活动并立即开始下一周期累计。
+   *
+   * @returns 包含按键数、点击数、鼠标位移和最后输入时间的快照；读取后内部值
+   * 全部归零。
+   * @sideEffects 清空当前计数，不影响钩子是否仍在运行。
+   */
   drain(): InputActivitySnapshot {
     const snapshot = {
       keys: this.keys,
@@ -96,6 +122,12 @@ export class InputActivity {
     return snapshot
   }
 
+  /**
+   * 清除累计值和用于计算下一次鼠标位移的瞬时坐标。
+   *
+   * @returns 无返回值。
+   * @sideEffects 重置本实例的内部计数和指针状态。
+   */
   private reset(): void {
     this.keys = 0
     this.clicks = 0

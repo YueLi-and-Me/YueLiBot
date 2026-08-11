@@ -1,15 +1,12 @@
 /**
- * 素材预览与挑图。
+ * 提供角色图层素材的本地预览、差异检查和重生成清单维护。
  *
- *   npm run sprite:preview
+ * 本模块启动一个仅供本机使用的 HTTP 服务，返回由配置文件声明的表情、闭眼和嘴型
+ * 素材，并读取或写入角色目录下的审核清单。浏览器页面负责展示素材、比较图像差异，
+ * 服务器端负责路径校验、文件读取和审核结果持久化。
  *
- * 一致性漂移肉眼扫不出来 —— 头发丝、衣褶、腰线的细微变化，
- * 单看一张图完全正常，切换时才发现在抖。
- * 所以这页的核心不是「把图列出来」，而是 diff：
- * 跟底图逐像素比，改动区域高亮，模型偷偷改了衣服立刻现形。
- *
- * 标记为不合格的条目写进 raw/review.json，
- * 下次 npm run sprite:gen 会带着具体问题描述重跑那几张。
+ * 依赖关系：{@link ./config.ts} 提供素材枚举，{@link ./manifest.ts} 提供审核清单的
+ * JSON 读写，{@link ./paths.ts} 解析角色资源目录；生成流程通过审核清单决定后续重生成项。
  */
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
@@ -37,6 +34,12 @@ interface Item {
   url: string
 }
 
+/**
+ * 根据素材配置生成预览页面使用的条目清单。
+ *
+ * @returns 包含表情、闭眼和嘴型素材路径及中文标签的条目数组；数组顺序与配置枚举顺序一致。
+ * @remarks 该方法只构造内存对象，不访问文件系统，也不会验证素材文件是否已生成。
+ */
 function buildItems(): Item[] {
   const items: Item[] = []
   for (const e of EXPRESSIONS) {
@@ -99,7 +102,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(404)
     res.end('not found')
   } catch (err) {
-    // 图还没生成时 readFile 会失败，这是正常状态，不该刷屏
+    // 生成流程尚未产出文件时返回 404；其他错误保留 500，便于定位真实故障。
     const code = (err as NodeJS.ErrnoException)?.code
     res.writeHead(code === 'ENOENT' ? 404 : 500)
     res.end(code === 'ENOENT' ? 'not generated yet' : String(err))
@@ -248,15 +251,15 @@ function pixelsOf(img, w, h) {
 /**
  * 差异热力图。
  *
- * 关键在于回答「这些差异是什么性质」，而不只是「有多少」：
+ * 关键在于区分差异的来源，而不只是统计差异数量：
  *
- *  · 整体位移 —— 模型把角色整个挪了一两像素。肉眼完全无感，
+ *  · 整体位移 —— 生成结果可能产生像素级整体偏移，视觉上通常不明显，
  *    逐像素比却会把整条轮廓标红，动辄十几个百分点。
- *    这类问题 sprite:process 的对齐本来就会修掉，不该拿来吓人。
+ *    这类偏移会由 sprite:process 的对齐步骤修正，不应计入身体重绘风险。
  *    所以先按主体包围盒估出位移量，补偿之后再比。
  *
  *  · 按幅度分级上色 —— 二值化的红色会让「轻微重绘」和「整块换掉」
- *    看起来一模一样。暗蓝=细微，亮红=剧烈，一眼分得清。
+ *    二值化结果会让两类差异难以区分，因此使用暗蓝表示轻微差异、亮红表示剧烈差异。
  *
  *  · 分区统计 —— 头/身/腿三段各自的差异占比。
  *    改表情本就该只有头部变，身体一有动静立刻暴露。
@@ -357,7 +360,7 @@ async function show(i) {
   }
 
   if (S.mode === 'flicker') {
-    // A/B 快速交替 —— 位置偏移在闪烁下极其显眼，静态对比反而看不出来
+    // A/B 快速交替能放大位置偏移，弥补静态对比不易识别像素级位移的问题。
     const img = new Image(); img.src = it.url
     stage.replaceChildren(img)
     S.flickerOn = false

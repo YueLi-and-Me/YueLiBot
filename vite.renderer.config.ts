@@ -1,3 +1,9 @@
+/**
+ * 配置仅渲染层开发服务器和浏览器预览构建。
+ *
+ * 入口资源来自 electron/renderer，开发时使用可选的 window bridge；该配置不启动
+ * Electron 主进程，也不替代正式应用的 electron-vite 构建流程。
+ */
 import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 

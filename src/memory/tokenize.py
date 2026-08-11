@@ -1,17 +1,7 @@
-"""
-中文检索分词（jieba 版）。
+"""提供中文检索分词、CJK bigram 和 FTS5 查询串构造。
 
-原 TS 侧使用 Intl.Segmenter + bigram 的唯一理由是「不能分发编译型 .dll」。
-Python 侧 jieba 是纯 Python 包，这个约束消失了。
-
-分词质量提升点（对比原实现）：
-  Intl.Segmenter: 吃香菜 → 吃香/菜   ← 误分
-  jieba:          吃香菜 → 吃/香菜   ← 正确
-
-仍然保留 CJK bigram 兜底，原因：
-  · 自造专名不在 jieba 词典时，bigram 仍能让 FTS 召回连续汉字
-  · 新词、品牌名同理
-  · bigram 检索是中文 IR 的公认可靠基线，代价极低
+jieba 负责常规中文切词，CJK bigram 作为专名和新词的召回补充；索引文本保留
+重复项以提供词频信息，查询串使用 OR 和双引号避免 FTS5 语法注入。
 """
 
 from __future__ import annotations
@@ -26,10 +16,10 @@ import jieba
 # 关闭 jieba 的默认日志
 jieba.setLogLevel(60)   # logging.CRITICAL
 
-# 中日韩统一表意文字范围（同 TS 版）
+# 中日韩统一表意文字范围，用于区分中文 bigram 与英文 token。
 _CJK_RE = re.compile(r'[㐀-䶿一-鿿豈-﫿]')
 
-# 单字虚词（同 TS 版，略作扩充）
+# 单字虚词集合；过滤后可减少结构助词对召回排序的干扰。
 _STOP = frozenset(
     '的了和是在我你他她它们也就都而及与着'
     '过把被给让从到对为以之其于啊呀吗呢吧'
@@ -38,7 +28,20 @@ _STOP = frozenset(
 
 
 def words(text: str) -> list[str]:
-    """用 jieba 切词，过滤标点/空白/单字虚词。"""
+    """使用 jieba 精确模式分词，并过滤标点、空白和单字虚词。
+
+    Args:
+        text: 待分词的中文或混合文本。
+
+    Returns:
+        按原文顺序排列、已转小写的有效 token 列表；保留重复 token 以提供词频信息。
+
+    Raises:
+        TypeError: ``text`` 不是可迭代字符串时由 jieba 操作抛出。
+
+    Performance:
+        首次调用可能触发 jieba 词典加载，之后耗时与文本长度相关。
+    """
     out: list[str] = []
     for token in jieba.cut(text, cut_all=False):
         w = token.strip().lower()
@@ -55,11 +58,28 @@ def words(text: str) -> list[str]:
 
 
 def bigrams(text: str) -> list[str]:
-    """连续 CJK 片段的相邻二字组合（只对 CJK 字符做，英文不跨界）。"""
+    """生成连续 CJK 片段的相邻二字组合，不跨越英文或非 CJK 字符。
+
+    Args:
+        text: 待生成 bigram 的文本。
+
+    Returns:
+        按原文顺序排列的二字组合列表；长度不足两个字符的片段不产生结果。
+
+    Raises:
+        TypeError: ``text`` 不是可迭代字符串时抛出。
+
+    Performance:
+        时间和临时空间复杂度与输入文本长度线性相关。
+    """
     out: list[str] = []
     run = ''
 
     def flush() -> None:
+        """把当前连续 CJK 片段拆成相邻二字组合并追加到结果。
+
+        :side_effects: 读取外层 `run` 字符串并修改 `out` 列表，不清空 `run`。
+        """
         for i in range(len(run) - 1):
             out.append(run[i:i + 2])
 
@@ -74,21 +94,39 @@ def bigrams(text: str) -> list[str]:
 
 
 def index_tokens(text: str) -> str:
-    """
-    生成写入 FTS5 索引列的字符串：分词 + bigram，空格分隔。
+    """生成写入 FTS5 索引列的分词和 bigram 字符串。
 
-    重复项保留：FTS5 的 BM25 需要词频信息，去重会让打分失真。
+    重复 token 必须保留，因为 FTS5 的 BM25 使用词频参与评分，去重会改变相关度。
+
+    Args:
+        text: 待建立索引的事实或线索文本。
+
+    Returns:
+        由 jieba token 和 CJK bigram 按空格拼接的索引文本。
+
+    Raises:
+        TypeError: ``text`` 不是字符串时由分词逻辑抛出。
+
+    Performance:
+        处理时间与输入文本长度线性相关；首次调用可能包含 jieba 词典加载成本。
     """
     return ' '.join(words(text) + bigrams(text))
 
 
 def match_query(text: str) -> str:
-    """
-    生成 FTS5 MATCH 查询串。
+    """生成经过引号转义的 FTS5 MATCH 查询串。
 
-    用 OR 而不是 AND：记忆检索要的是「相关」，不是「全都命中」。
-    用户问「上次说的那个香菜」，AND 会因为「上次」不在记忆里而全部落空。
-    每个词加双引号转义，避免 FTS5 把内容当成语法（* NEAR - 等）。
+    查询词使用 OR 连接，以允许部分相关词命中；每个词使用双引号转义，避免内容被
+    FTS5 解析为 ``*``、``NEAR`` 或 ``-`` 等查询语法。
+
+    Args:
+        text: 待检索的自然语言查询文本。
+
+    Returns:
+        由去重 token 组成的 FTS5 MATCH 表达式；没有有效 token 时返回空字符串。
+
+    Raises:
+        TypeError: ``text`` 不是字符串时由分词逻辑抛出。
     """
     terms: list[str] = list(dict.fromkeys(words(text) + bigrams(text)))  # 去重保序
     if not terms:

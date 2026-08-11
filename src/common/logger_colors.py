@@ -1,13 +1,8 @@
-"""
-控制台日志的模块色表、中文别名与 ANSI 转换。
+"""维护控制台日志的模块颜色、中文别名和 ANSI 转义序列。
 
-每个模块一种固定颜色 + 一个中文别名，这样一屏日志滚过去，凭颜色就能分出哪几行是
-感知、哪几行是模型路由，不用逐行读模块名。
-
-两处刻意从简：
-  · 色表只登记本仓库真实存在的 logger，不为将来预留条目。
-    漏登记不靠运行时兜底发现，由 pytests/test_logger.py 扫 src/ 断言覆盖率。
-  · 色值元组是二元（前景、粗体）。没有任何模块需要背景色，就不为它留一位。
+颜色表只登记当前代码实际使用的 logger，别名用于控制台和日志文件中的简体中文
+展示；日志渲染器将模块名映射为颜色与别名，并根据配置决定是否输出 ANSI 控制码。
+颜色值使用 ``(前景色, 是否加粗)`` 二元组，不保留未使用的背景色字段。
 """
 
 from __future__ import annotations
@@ -21,7 +16,7 @@ import sys
 RESET_COLOR = "\033[0m"
 
 # 模块名（已去掉 src. 前缀）→ (十六进制前景色, 是否粗体)。
-# 分组着色：同一子系统的模块用相近色相，主程序亮白加粗，追踪层用深灰不抢戏。
+# 分组着色：同一子系统使用相近色相，主程序使用高亮加粗，追踪模块使用低亮度颜色。
 MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     # 核心
     "main": ("#ffffff", True),
@@ -62,7 +57,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "services.trace_console": ("#6c6c6c", False),
 }
 
-# 模块名 → 控制台上显示的中文别名。照 CLAUDE.md 的语言规范，控制台首选简体中文。
+# 模块名 → 控制台上显示的中文别名；控制台输出统一使用简体中文。
 MODULE_ALIASES: Dict[str, str] = {
     "main": "主程序",
     "selftest": "自检",
@@ -98,22 +93,26 @@ MODULE_ALIASES: Dict[str, str] = {
 
 
 def is_color_enabled() -> bool:
-    """
-    这一路输出该不该上色。
+    """判断当前控制台是否允许输出 ANSI 颜色。
 
-    ★ 光看 sys.stdout.isatty() 不够：被 Electron 的 PythonSupervisor 拉起时
-      stdout 永远是管道（isatty() 恒为 False），但这个管道最终确实会被逐行转发
-      进一个真终端（`electron/main/python/supervisor.ts` 的 `_onLine`）。
-      所以补一个显式信号 YUELI_FORCE_COLOR=1，由 supervisor 在 spawn 时设好。
-
-    logger.py 的渲染器选择、trace_console.py 的 rich Console 构造、下面的
-    supports_truecolor() 三处都用这一个判据，不再各写各的。
+    :return: 标准输出是 TTY，或环境变量 `YUELI_FORCE_COLOR` 等于 `1` 时返回 `True`。
+    :side_effects: 只读取标准输出状态和进程环境变量。
     """
     return sys.stdout.isatty() or os.environ.get("YUELI_FORCE_COLOR") == "1"
 
 
 def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
-    """`#5f87ff` / `#58f` → (95, 135, 255)。"""
+    """将三位或六位十六进制颜色转换为 RGB 整数元组。
+
+    Args:
+        hex_color: 带或不带 ``#`` 的三位或六位十六进制颜色文本。
+
+    Returns:
+        ``(red, green, blue)`` 元组，每个分量范围为 ``0`` 到 ``255``。
+
+    Raises:
+        ValueError: 颜色文本包含非十六进制字符或长度无法解析。
+    """
     value = hex_color.lstrip("#")
     if len(value) == 3:
         value = "".join(char * 2 for char in value)
@@ -121,7 +120,15 @@ def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
 
 
 def supports_truecolor() -> bool:
-    """终端是否吃 24 位真彩色转义序列；否则退到 256 色调色板。"""
+    """判断当前终端是否支持 24 位 ANSI 真彩色。
+
+    Returns:
+        检测到 ``COLORTERM`` 为 truecolor/24bit、运行于 Windows Terminal，或
+        标准输出已启用颜色时返回 ``True``；否则返回 ``False``。
+
+    Side Effects:
+        读取进程环境变量和标准输出状态，不修改终端配置。
+    """
     colorterm = os.environ.get("COLORTERM", "").lower()
     if "truecolor" in colorterm or "24bit" in colorterm:
         return True
@@ -132,14 +139,40 @@ def supports_truecolor() -> bool:
 
 
 def rgb_to_ansi_truecolor(rgb: Tuple[int, int, int], bold: bool = False) -> str:
-    """24 位真彩色前景转义序列。"""
+    """将 RGB 前景色编码为 ANSI 24 位真彩色转义序列。
+
+    Args:
+        rgb: ``(red, green, blue)`` 分量元组；分量应在 ``0`` 到 ``255`` 范围内。
+        bold: 是否追加粗体控制码，默认 ``False``。
+
+    Returns:
+        可直接写入终端的 ANSI 转义序列。
+
+    Raises:
+        ValueError: 分量无法格式化为合法整数时抛出。
+    """
     prefix = "1;" if bold else ""
     red, green, blue = rgb
     return f"\033[{prefix}38;2;{red};{green};{blue}m"
 
 
 def rgb_to_256_index(red: int, green: int, blue: int) -> int:
-    """在 xterm-256 调色板里找欧氏距离最近的一格。"""
+    """在 xterm 256 色调色板中查找与 RGB 欧氏距离最近的颜色索引。
+
+    Args:
+        red: 红色分量。
+        green: 绿色分量。
+        blue: 蓝色分量。
+
+    Returns:
+        ``0`` 到 ``255`` 范围内的最接近调色板索引。
+
+    Raises:
+        TypeError: 任一分量不支持数值减法或平方运算时抛出。
+
+    Performance:
+        每次调用遍历完整的 256 色调色板，时间复杂度为常数，但不应在单条日志中重复计算。
+    """
     # 前 16 格是系统色，接着 6×6×6 的色立方，最后 24 级灰阶
     palette: List[Tuple[int, int, int]] = [
         (0, 0, 0), (128, 0, 0), (0, 128, 0), (128, 128, 0),
@@ -165,13 +198,32 @@ def rgb_to_256_index(red: int, green: int, blue: int) -> int:
 
 
 def index_to_ansi_256(index: int, bold: bool = False) -> str:
-    """256 色前景转义序列。"""
+    """将 xterm 256 色索引编码为 ANSI 前景转义序列。
+
+    Args:
+        index: 调色板索引，建议范围为 ``0`` 到 ``255``。
+        bold: 是否追加粗体控制码，默认 ``False``。
+
+    Returns:
+        可直接写入终端的 ANSI 转义序列。
+    """
     prefix = "1;" if bold else ""
     return f"\033[{prefix}38;5;{index}m"
 
 
 def hex_to_ansi(hex_color: str, bold: bool = False) -> str:
-    """按当前终端能力，把十六进制色转成真彩色或 256 色的前景转义序列。"""
+    """按当前终端能力将十六进制颜色转换为 ANSI 前景转义序列。
+
+    Args:
+        hex_color: 三位或六位十六进制颜色文本。
+        bold: 是否追加粗体控制码，默认 ``False``。
+
+    Returns:
+        当前终端支持真彩色时返回 24 位序列，否则返回最接近的 256 色序列。
+
+    Raises:
+        ValueError: 颜色文本无法解析为 RGB 值。
+    """
     rgb = hex_to_rgb(hex_color)
     if supports_truecolor():
         return rgb_to_ansi_truecolor(rgb, bold)
@@ -185,21 +237,40 @@ CONVERTED_MODULE_COLORS: Dict[str, str] = {
 
 
 def module_color(logger_name: str) -> str:
-    """取模块的 ANSI 前景色；未登记的模块返回空串（不上色，但照常打印）。"""
+    """返回 logger 模块对应的 ANSI 前景色。
+
+    Args:
+        logger_name: 不带 ``src.`` 前缀的点分模块名。
+
+    Returns:
+        已登记模块的 ANSI 颜色序列；未登记模块返回空字符串。
+    """
     return CONVERTED_MODULE_COLORS.get(logger_name, "")
 
 
 def module_alias(logger_name: str) -> str:
-    """取模块的中文别名；未登记的模块原样返回点分模块名。"""
+    """返回 logger 模块的中文显示别名。
+
+    Args:
+        logger_name: 不带 ``src.`` 前缀的点分模块名。
+
+    Returns:
+        已登记模块的中文别名；未登记模块返回原始模块名。
+    """
     return MODULE_ALIASES.get(logger_name, logger_name)
 
 
 def normalize_logger_name(logger_name: str) -> str:
-    """
-    `src.services.proactive` → `services.proactive`。
+    """移除 logger 名称中的 ``src.`` 包前缀。
 
-    调用方基本都是 get_logger(__name__)，拿到的是带 src. 前缀的点分路径；
-    色表键统一不带这个前缀，省得每条都重复一遍包名。
+    Args:
+        logger_name: ``get_logger(__name__)`` 产生的点分模块路径。
+
+    Returns:
+        以 ``src.`` 开头时移除该前缀的模块名，否则返回原字符串。
+
+    Raises:
+        AttributeError: 参数不是字符串时由 ``startswith`` 操作触发。
     """
     if logger_name.startswith("src."):
         return logger_name[len("src."):]
@@ -207,7 +278,14 @@ def normalize_logger_name(logger_name: str) -> str:
 
 
 def level_color(level: str) -> str:
-    """日志级别对应的 ANSI 色。lite 排版下级别不占位置，只体现在时间戳颜色上。"""
+    """返回日志级别对应的 ANSI 颜色序列。
+
+    Args:
+        level: 日志级别名称，不区分大小写。
+
+    Returns:
+        已知级别的 ANSI 颜色序列；未知级别返回空字符串。
+    """
     return _LEVEL_COLORS.get(level.lower(), "")
 
 
@@ -222,13 +300,10 @@ _LEVEL_COLORS: Dict[str, str] = {
 
 
 def enable_windows_ansi() -> None:
-    """
-    让 Windows 控制台认 ANSI 转义序列。
+    """在 Windows 上启用控制台的 ANSI/VT 处理。
 
-    ★ 以前这件事是 structlog 的 ConsoleRenderer 在背后替我们做的（它内部会 init
-      colorama）。换成自己写的渲染器之后没人做了，conhost 下会把转义序列原样打成
-      乱码。just_fix_windows_console() 只开 VT 处理、不包装流，stdout 是管道时
-      是空操作——不会影响被 supervisor 转发的那条路径。
+    :return: 无返回值；非 Windows 平台直接返回。
+    :side_effects: Windows 平台调用 colorama 的控制台初始化函数。
     """
     if sys.platform != "win32":
         return

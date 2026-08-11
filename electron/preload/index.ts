@@ -1,3 +1,9 @@
+/**
+ * 为桌宠主渲染层暴露聊天、角色、前台采集和窗口控制 IPC bridge。
+ *
+ * 所有通道名和 payload 类型来自 electron/shared/ipc.ts；本模块只做参数转发，
+ * 不在隔离上下文中执行业务逻辑或保存状态。
+ */
 import { contextBridge, ipcRenderer } from 'electron'
 import {
   IPC,

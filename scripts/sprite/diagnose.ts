@@ -1,9 +1,9 @@
 /**
- * 生图接口诊断 —— sprite:test 失败时用它定位到底哪一环坏了。
+ * 生图接口诊断，用于区分网络、认证和模型可用性问题。
  *
  *   npm run sprite:diagnose
  *
- * 分三步逐层排除，每步单独报结果：
+ * 分三步逐层检查，每步单独报告结果：
  *   1. 代理是否生效（能不能出网）
  *   2. Key 是否有效（ListModels，最便宜的判据）
  *   3. 目标模型是否在可用列表里
@@ -18,7 +18,15 @@ interface ModelInfo {
   supported_generation_methods?: string[]
 }
 
-async function step(label: string, fn: () => Promise<string>) {
+/**
+ * 执行一个诊断步骤并将异常转换为失败结果，保证后续步骤继续输出。
+ *
+ * @param label 终端中展示的步骤名称。
+ * @param fn 返回诊断结果文本的异步检查函数。
+ * @returns {Promise<boolean>} 检查成功返回 ``true``，检查抛错时记录错误并返回 ``false``。
+ * @sideEffects 向标准输出写入步骤状态和错误文本；不修改配置文件。
+ */
+async function step(label: string, fn: () => Promise<string>): Promise<boolean> {
   process.stdout.write(`  ${label} … `)
   try {
     console.log(await fn())
@@ -29,6 +37,12 @@ async function step(label: string, fn: () => Promise<string>) {
   }
 }
 
+/**
+ * 读取环境配置并执行网络、密钥和目标模型诊断。
+ *
+ * @returns 所有诊断步骤完成后的 Promise。
+ * @sideEffects 发起外部模型服务请求并向标准输出打印诊断信息；不修改配置文件。
+ */
 async function main() {
   const proxy = setupProxy()
   const key = process.env.GEMINI_API_KEY?.trim() ?? ''
@@ -78,7 +92,7 @@ async function main() {
     })
 
     // 只列走 generateContent 的。imagen-* 系列用的是 :predict 端点，
-    // 本 provider 不支持，列出来只会让人填错。
+    // 当前 provider 不支持该参数，不在诊断结果中展示，避免引导用户填写无效配置。
     const imaging = models
       .filter((m) => {
         const id = (m.name ?? '').replace(/^models\//, '')

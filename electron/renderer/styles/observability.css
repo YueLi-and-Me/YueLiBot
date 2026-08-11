@@ -1,3 +1,9 @@
+/*
+ * 定义运行观察窗口的网格、状态卡片、追踪记录和人物信息布局。
+ *
+ * 样式服务于 observability.html 的只读诊断区域；颜色和间距优先复用 tokens.css，
+ * 以保证观察窗口与主桌宠窗口使用一致的视觉变量。
+ */
 body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));

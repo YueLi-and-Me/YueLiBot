@@ -1,3 +1,9 @@
+/**
+ * 捕获桌面或前台窗口的 JPEG 图像，并按配置限制尺寸和质量。
+ *
+ * 本模块封装 Electron desktopCapturer、屏幕尺寸计算及会话权限检查，返回给
+ * 主进程后由 Python 客户端按需提交视觉接口；原始图像不由本模块持久化。
+ */
 import {
   BrowserWindow,
   desktopCapturer,
@@ -8,20 +14,12 @@ import {
 } from 'electron'
 
 /**
- * 屏幕捕获。
+ * 定义屏幕捕获适配层的安全边界和资源生命周期。
  *
- * ★ platform 适配层。也是整个项目**隐私风险最高**的一个文件 ——
- *   它拿到的东西比别处都多，所以约束全部写在这里，不散到调用方。
- *
- * 三条硬规矩：
- *  1. **默认只截前台那一个窗口**，不截整个桌面 —— 全屏截会捎上第二屏、
- *     后台的聊天窗、没关的银行页面。
- *     ★ 用户可以用 vision.capture_mode = 'screen' 显式放开这一条：那样她才
- *       看得到「桌面上有什么」（只截窗口时桌面本身根本不在画面里）。放开之后
- *       上面列的那些东西都会进画面，所以它是配置项而不是默认值。
- *  2. **绝不落盘**。返回 Buffer，用完即弃；不进缓存、不进日记、不进记忆
- *  3. **截完就缩**。视觉模型看 768px 宽足够判断「发生了什么」，
- *     原分辨率既慢又贵，还平白多传一堆能认出细节的像素
+ * 默认只捕获前台窗口；只有 `vision.capture_mode = 'screen'` 时才捕获主屏。所有结果
+ * 都在内存中缩放为不超过 768×432 的 JPEG，调用方使用后不由本模块持久化。隐藏渲染器
+ * 通过独立的 Electron session 处理 `getDisplayMedia` 权限，主进程退出时由
+ * {@link disposeWindowCapture} 释放。
  */
 
 /** 送进视觉模型的宽度。再大对「画面在发生什么」的判断没有增益。 */
@@ -159,11 +157,13 @@ export interface Capture {
 }
 
 /**
- * 截取前台窗口。
+ * 按窗口标题截取前台窗口的缩略图。
  *
- * `desktopCapturer` 不告诉我们哪个是前台，只能拿窗口标题去匹配 ——
- * 所以调用方要把 active-win 读到的标题传进来。
- * 匹配不上时返回 null 而不是退回全屏截：**宁可不看，也不要多看**。
+ * @param title 前台窗口标题；空值或空白字符串表示放弃本次捕获。
+ * @param capturePageUrl 隐藏捕获渲染器加载的页面地址。
+ * @returns 成功时返回内存中的 JPEG、尺寸和本地窗口名；标题未匹配、已有捕获任务或捕获失败时返回 `null`。
+ * @throws 不向上抛出 desktopCapturer、渲染脚本或图像解码异常；方法记录错误后返回 `null`。
+ * @remarks 方法使用精确匹配优先、双向包含匹配兜底，绝不因窗口匹配失败自动扩大为整屏捕获。
  */
 export async function captureWindow(title: string | undefined, capturePageUrl: string): Promise<Capture | null> {
   if (!title?.trim() || captureInProgress) return null
@@ -198,7 +198,7 @@ export async function captureWindow(title: string | undefined, capturePageUrl: s
       sourceName: hit.name,
     }
   } catch (error) {
-    // 捕获失败不能拖垮桌宠，但必须留下原始原因，不能把系统或权限问题静默吞掉。
+    // 捕获失败不得阻断桌宠流程，同时保留原始原因，避免系统或权限错误失去诊断信息。
     console.warn('[capture] 前台窗口截图失败：', error)
     return null
   } finally {
@@ -208,12 +208,12 @@ export async function captureWindow(title: string | undefined, capturePageUrl: s
 }
 
 /**
- * 截整个主屏。
+ * 截取主显示器的屏幕缩略图。
  *
- * ★ 只在 vision.capture_mode = 'screen' 时才会走到这里。与 captureWindow 的
- *   区别不只是范围：桌面本身、任务栏、以及所有当时可见的窗口都会进画面——
- *   「我桌面上有什么」这个问题只有这条路径答得了，代价也在这儿。
- *   多显示器只截主屏：把每块屏都截了传上去，代价和暴露面都翻倍。
+ * @param capturePageUrl 隐藏捕获渲染器加载的页面地址。
+ * @returns 成功时返回主屏 JPEG、尺寸和来源名称；没有屏幕来源、已有捕获任务或捕获失败时返回 `null`。
+ * @throws 不向上抛出屏幕枚举、渲染脚本或图像解码异常；方法记录错误后返回 `null`。
+ * @remarks 该方法会把桌面、任务栏和可见窗口一并纳入图像，只在明确选择整屏模式时由调用方触发。
  */
 export async function captureScreen(capturePageUrl: string): Promise<Capture | null> {
   if (captureInProgress) return null
@@ -250,6 +250,14 @@ export async function captureScreen(capturePageUrl: string): Promise<Capture | n
   }
 }
 
+/**
+ * 创建或复用隐藏的离屏捕获渲染器及其独立会话。
+ *
+ * @param capturePageUrl 捕获页面地址。
+ * @returns 已加载捕获页面的隐藏 BrowserWindow。
+ * @throws Error 当页面加载失败时抛出；失败路径会销毁窗口并清理 session 处理器。
+ * @remarks 首次调用创建离屏窗口，后续捕获复用同一窗口以减少渲染器和权限初始化开销。
+ */
 async function ensureCaptureRenderer(capturePageUrl: string): Promise<BrowserWindow> {
   if (captureRenderer && !captureRenderer.isDestroyed()) return captureRenderer
 
@@ -284,7 +292,12 @@ async function ensureCaptureRenderer(capturePageUrl: string): Promise<BrowserWin
   }
 }
 
-/** 主进程退出前释放隐藏捕获页和它的临时会话处理器。 */
+/**
+ * 释放隐藏捕获页、媒体请求处理器和当前来源引用。
+ *
+ * @returns 无返回值；重复调用安全。
+ * @remarks 主进程退出及捕获渲染器异常关闭时使用，释放后下一次捕获会重新创建会话。
+ */
 export function disposeWindowCapture(): void {
   selectedSource = null
   captureSession?.setDisplayMediaRequestHandler(null)

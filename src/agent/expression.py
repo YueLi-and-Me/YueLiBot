@@ -1,4 +1,8 @@
-"""从 Bot 配置中抽取并渲染表达习惯。"""
+"""表达习惯候选抽取逻辑。
+
+本模块仅从配置提供的表达习惯序列中无放回抽样，并返回有限数量的原始文本；表达选择
+服务负责将抽样结果组合进模型提示词。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,23 @@ def sample_expression_habits(
     limit: int,
     rng: Optional[random.Random] = None,
 ) -> List[ExpressionSample]:
-    """从配置候选中无放回抽取；代码不补充任何表达内容。"""
+    """从配置候选中无放回抽取有限数量的表达习惯文本。
+
+    Args:
+        candidates: 配置提供的表达习惯序列；函数只返回其中已有文本。
+        limit: 最大抽取数量；小于等于 ``0`` 时返回空列表，超过候选数时按候选数截断。
+        rng: 可选的随机数生成器；省略时使用模块级随机源。
+
+    Returns:
+        按随机顺序排列且不重复的表达习惯列表。
+
+    Raises:
+        TypeError: 候选序列不可转换为列表或随机源不支持抽样时抛出。
+        ValueError: 自定义随机源拒绝给定抽样范围时抛出。
+
+    Side Effects:
+        读取随机源状态；不修改输入序列。
+    """
 
     if limit <= 0 or not candidates:
         return []
@@ -22,7 +42,17 @@ def sample_expression_habits(
 
 
 def render_expression_habits(samples: Sequence[ExpressionSample]) -> str:
-    """渲染成提示词块。空样本返回空串，让调用方直接跳过这一段。"""
+    """将表达习惯样本渲染为模型提示词中的独立文本块。
+
+    Args:
+        samples: 已选中的表达习惯文本序列；空序列表示不生成该提示词块。
+
+    Returns:
+        以说明行和项目列表组成的提示词文本；输入为空时返回空字符串。
+
+    Raises:
+        TypeError: 样本元素不是可格式化文本时由字符串格式化操作触发。
+    """
 
     if not samples:
         return ''

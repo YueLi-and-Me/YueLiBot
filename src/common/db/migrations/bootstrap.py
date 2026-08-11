@@ -1,22 +1,12 @@
-"""
-迁移链的入口对齐（bootstrap）。
+"""在运行迁移链前对齐 SQLite 原生版本号和历史配置版本号。
 
-★ 这个模块解决的是一个**只在真实库上才出现**的问题。
+历史实现把 schema 版本写在 `meta.schema_version`，没有维护 SQLite 原生的
+`PRAGMA user_version`；当前迁移管理器则按原生版本号查找迁移函数。
 
-TS 侧把 schema 版本写在 `meta` 表里（`schema_version = '3'`），
-从来没碰过 SQLite 原生的 `PRAGMA user_version` —— 它一直是 0。
-而 Python 侧的迁移管理器按 `user_version` 找迁移链。
+因此已有数据库需要先从历史版本字段领取迁移入口；新数据库直接初始化为当前版本。
 
-结果：任何一个真实的 memory.db 都会让后端在启动时崩在
-「缺少从版本 0 到 1 的迁移函数」上，因为链上只注册了 @register(3)。
-
-纯 `:memory:` 单测永远命中不到这一条 —— 空库里两个版本号都是 0，
-天然一致。这正是「单测全绿但启动就炸」的典型形态。
-
-所以在跑迁移链之前，必须先把两套版本号对齐：
-  · 空库（没有 messages 表）        → 全新安装，DDL 建表后直接标成当前版本
-  · 有表但 user_version = 0        → TS 时代的库，从 meta.schema_version 领取版本
-  · user_version > 0               → 已经由 Python 接管过，不动
+迁移前的三种情况分别是：没有 `messages` 表的新库直接标记当前版本；有业务表且
+`user_version=0` 的旧库从 `meta.schema_version` 读取；已由当前迁移器接管的库保持原值。
 """
 
 from __future__ import annotations
@@ -27,13 +17,19 @@ from src.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-# TS 侧 schema.ts 里的 SCHEMA_VERSION。写死是刻意的：
-# 它标记的是「移交给 Python 之前，TS 最后留下的形态」，是一个历史常量，
-# 不该随 Python 侧 CURRENT_VERSION 一起往上走。
+# 历史运行时最后写入的 schema 版本。该值是迁移入口常量，不能随当前版本继续递增。
 TS_FINAL_SCHEMA_VERSION = 3
 
 
 def _table_exists(db: sqlite3.Connection, name: str) -> bool:
+    """判断指定名称的 SQLite 表是否存在。
+
+    :param db: 已打开的 SQLite 连接。
+    :param name: 要查询的表名。
+    :return: 表存在时返回 `True`，否则返回 `False`。
+    :raises sqlite3.Error: 元数据查询失败时传播数据库异常。
+    :side_effects: 只读 `sqlite_master`，不修改数据库。
+    """
     row = db.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
     ).fetchone()
@@ -41,7 +37,17 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
 
 
 def _read_meta_schema_version(db: sqlite3.Connection) -> int | None:
-    """读 TS 侧写在 meta 表里的版本号。读不到或不是整数就返回 None。"""
+    """读取历史 ``meta.schema_version`` 字段。
+
+    Args:
+        db: 已打开的 SQLite 连接。
+
+    Returns:
+        可转换为整数的版本号；表、记录或字段值缺失/非法时返回 ``None``。
+
+    Raises:
+        sqlite3.Error: 元数据查询失败时传播数据库异常。
+    """
     if not _table_exists(db, "meta"):
         return None
     row = db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
@@ -50,30 +56,50 @@ def _read_meta_schema_version(db: sqlite3.Connection) -> int | None:
     try:
         return int(row[0])
     except (TypeError, ValueError):
-        # meta 里存了非整数，说明这库被别的东西写过，不猜
+        # 非整数版本无法作为迁移入口，返回空值并让上层采用明确的历史默认值。
         logger.warning("meta_schema_version_unparsable", raw=repr(row[0]))
         return None
 
 
 def is_fresh_database(db: sqlite3.Connection) -> bool:
-    """
-    空库判定。
+    """判断数据库是否尚未创建业务消息表。
 
-    用 `messages` 而不是 `meta` 作为探针：MemoryStore 建表时两者一起建，
-    但 `meta` 这个名字太通用，将来若有别的模块也用它，会误判成「已有数据」。
+    使用 ``messages`` 而不是 ``meta`` 作为探针：两个表通常同时创建，但 ``meta``
+    名称通用，其他模块单独创建它时不应阻止新库初始化。
+
+    Args:
+        db: 已打开的 SQLite 连接。
+
+    Returns:
+        ``messages`` 表不存在时返回 ``True``，否则返回 ``False``。
+
+    Raises:
+        sqlite3.Error: 查询 SQLite 元数据失败。
     """
     return not _table_exists(db, "messages")
 
 
 def bootstrap_version(db: sqlite3.Connection, current_version: int) -> int:
-    """
-    把 user_version 对齐到迁移链能识别的入口，返回对齐后的版本号。
+    """将 SQLite ``user_version`` 对齐到迁移链可识别的入口。
 
-    只写 user_version，绝不碰任何业务表 —— 这一步必须是幂等的、无损的。
+    该步骤只更新 ``user_version``，不修改业务表，保证重复执行幂等且无损。
+
+    Args:
+        db: 已打开的 SQLite 连接。
+        current_version: 当前应用支持的最新 schema 版本。
+
+    Returns:
+        对齐后的数据库版本号。
+
+    Raises:
+        sqlite3.Error: 读取或写入 SQLite 版本元数据失败。
+
+    Side Effects:
+        可能写入 ``PRAGMA user_version`` 并记录迁移接管日志；不执行业务表 DDL/DML。
     """
     existing = db.execute("PRAGMA user_version").fetchone()[0]
 
-    # 已经被 Python 管过，链条自洽，不要插手
+    # 已存在原生版本号时，数据库已由当前迁移链接管，保持原值。
     if existing > 0:
         return existing
 
@@ -83,12 +109,10 @@ def bootstrap_version(db: sqlite3.Connection, current_version: int) -> int:
         logger.info("bootstrap_fresh_database", version=current_version)
         return current_version
 
-    # TS 时代的库：从 meta 领取版本号
+    # 历史数据库从 meta 表恢复迁移入口。
     meta_version = _read_meta_schema_version(db)
     if meta_version is None:
-        # 有表但 meta 里没版本号。这种库只可能来自很早的构建，
-        # 按 TS 的最终形态处理是唯一安全的假设 —— 猜低了会重复跑迁移，
-        # 猜高了会跳过必要的迁移，而后者是不可逆的
+        # 缺失版本时使用历史最终形态；低估会重复执行迁移，高估则会跳过不可逆迁移。
         meta_version = TS_FINAL_SCHEMA_VERSION
         logger.warning("bootstrap_meta_version_missing", assumed=meta_version)
 
@@ -96,6 +120,6 @@ def bootstrap_version(db: sqlite3.Connection, current_version: int) -> int:
     logger.info(
         "bootstrap_adopted_ts_version",
         from_meta=meta_version,
-        note="TS 侧只写 meta.schema_version，未维护 user_version",
+        note="历史运行时只写入 meta.schema_version，未维护 user_version",
     )
     return meta_version

@@ -1,13 +1,9 @@
-"""
-SQLite 连接管理。
+"""管理进程级 SQLite 写连接，并将阻塞数据库操作移出事件循环。
 
-设计原则：
-  · 单写连接：WAL 下多写连接会互相阻塞；单连接 + asyncio.to_thread 是标准做法
-  · 阻塞查询一律用 asyncio.to_thread 包裹，防止事件循环在流式对话期间被卡住
-  · 测试可传入 ':memory:' 拿到隔离的内存库
-
-连接在进程生命周期内保持打开，不需要连接池。建表与迁移由 migrations.manager
-统一编排，避免旧库在创建备份前就被最新 DDL 改写。
+模块使用单写连接配合 WAL，避免多个写连接互相等待；异步调用通过
+``asyncio.to_thread`` 执行阻塞查询。连接生命周期由应用启动和关闭阶段控制，
+建表及迁移委托给 ``migrations.manager``，确保已有数据库在备份和版本判断后再变更。
+测试可传入 ``:memory:`` 创建隔离数据库。
 """
 
 from __future__ import annotations
@@ -24,11 +20,22 @@ _db: sqlite3.Connection | None = None
 
 
 def open_db(path: str | Path) -> sqlite3.Connection:
-    """
-    打开数据库并返回连接。
+    """打开或返回进程级 SQLite 写连接。
 
-    DDL/SEED 必须由 migrations.manager 在版本与备份处理之后执行：已有库若在这里
-    先执行目标 DDL，会使后续迁移失败时无法恢复为原始版本。
+    DDL 和种子数据由迁移管理器在版本判断与备份之后执行，避免已有库提前应用目标
+    结构导致迁移失败时无法恢复原始版本。
+
+    Args:
+        path: SQLite 数据库文件路径，或 ``':memory:'``。
+
+    Returns:
+        进程级共享 SQLite 连接；如果已经打开连接，则忽略本次路径并返回已有连接。
+
+    Raises:
+        sqlite3.Error: 数据库连接创建失败。
+
+    Side Effects:
+        首次调用创建连接、启用 ``sqlite3.Row`` 行工厂并保存模块级连接引用。
     """
     global _db
     if _db is not None:
@@ -41,28 +48,45 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 
 
 def get_db() -> sqlite3.Connection:
-    """获取已打开的连接；须在 open_db() 之后调用。"""
+    """返回进程级 SQLite 连接。
+
+    :return: 最近一次由 :func:`open_db` 打开的连接实例。
+    :raises RuntimeError: 尚未调用 :func:`open_db`。
+    :side_effects: 不创建连接、不执行 SQL。
+    """
     if _db is None:
         raise RuntimeError("数据库未初始化，请先调用 open_db()")
     return _db
 
 
 async def run_in_thread(fn: Callable[..., _T], *args: Any) -> _T:
-    """
-    在线程池中执行阻塞的 sqlite3 调用，避免阻塞 asyncio 事件循环。
+    """在线程池中执行阻塞的数据库调用，避免阻塞 asyncio 事件循环。
 
-    用法：
-        rows = await run_in_thread(db.execute, "SELECT ...", (param,)).fetchall()
+    Args:
+        fn: 要在线程池中调用的同步函数。
+        *args: 传递给 ``fn`` 的位置参数。
 
-    注意：sqlite3.Connection 本身不是线程安全的，但单写连接 + check_same_thread=False
-    配合这里的 serialized 访问（asyncio 是单线程调度）是安全的。
+    Returns:
+        ``fn(*args)`` 的结果，类型为 ``_T``。
+
+    Raises:
+        Exception: ``fn`` 执行失败时传播其原始异常。
+
+    Side Effects:
+        占用事件循环默认线程池线程；不会自行创建或关闭数据库连接。
     """
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, fn, *args)
 
 
 def close_db() -> None:
-    """关闭连接（进程退出前调用）。"""
+    """关闭进程级 SQLite 连接并清空单例引用。
+
+    :return: 无返回值；未打开连接时安全返回。
+    :side_effects: 关闭数据库连接，后续调用 :func:`get_db` 会失败，直到重新调用
+        :func:`open_db`。
+    :raises sqlite3.Error: 底层连接关闭失败时传播异常。
+    """
     global _db
     if _db is not None:
         _db.close()

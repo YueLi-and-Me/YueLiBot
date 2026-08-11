@@ -1,14 +1,8 @@
-"""回灌历史的读时修复。
+"""在组装模型上下文前规范化历史消息，修复中断和旧数据造成的结构不完整。
 
-把「历史结构可能是坏的」当成常态：每一轮组装请求前都重新规范化一遍，
-而不是指望写入端永远不出错。这个取向在这里尤其重要——
-
-  · 中断、崩溃、进程被杀，都会在写入端留下半截历史；
-  · 更关键的是，用户库里**已经存在**的历史就是坏的（每一次打断都损坏了
-    一轮），只修写入端救不回已经写坏的部分。
-
-所以这里做的是幂等的读时清理：无论历史怎么来的，送进模型之前都先修成
-一个结构合法、语义干净的序列。
+本模块在读取侧执行幂等清理，处理未闭合的 ``<say>`` 标签、应从上下文移除的
+副作用标签、连续同角色消息和字符预算。清理结果只用于模型请求，不修改持久化
+历史；因此既能修复既有记录，也不会让上下文格式依赖写入端始终成功。
 """
 
 from __future__ import annotations
@@ -16,10 +10,9 @@ from __future__ import annotations
 import re
 from typing import Iterable, List, Mapping
 
-# 副作用标签：它们是给后端解析用的，不该回灌给模型看。
-# 每轮都让模型看见 N 个「我上轮又记了一条」的范例，会直接对抗系统提示词里
-# 「已经记过的内容不要写」。<say> 保留——它是输出协议的 few-shot，剥掉会让
-# 模型以为纯文本也是合法输出。
+# 副作用标签只供后端解析，不应再次注入模型上下文。
+# memory、mood 和 think 标签属于已执行的后端动作；重复注入会诱导模型重复输出。
+# <say> 保留，因为它属于输出协议示例，移除后模型可能误判纯文本为唯一合法格式。
 _SIDE_EFFECT_TAGS = re.compile(
     r'<(memory|mood|think|thinking)\b[^>]*>[\s\S]*?</\1>|<(memory|mood)\b[^>]*/?>',
     re.IGNORECASE,
@@ -28,24 +21,41 @@ _SIDE_EFFECT_TAGS = re.compile(
 _OPEN_SAY = re.compile(r'<say\b[^>]*>', re.IGNORECASE)
 _CLOSE_SAY = re.compile(r'</say\s*>', re.IGNORECASE)
 
-# 单轮历史的字符预算。40 条短消息和 40 条长消息的体量能差一个量级，
-# 只按条数封顶挡不住上下文膨胀，所以再叠一道字符预算，从最老的开始丢。
+# 单轮历史的字符预算。仅按消息条数限制无法约束长文本，因此按最早消息顺序裁剪。
 DEFAULT_CHAR_BUDGET = 12_000
 
 
 def strip_side_effect_tags(raw: str) -> str:
-    """剥掉 <memory>/<mood>/<think>，保留 <say> 及其内容。"""
+    """移除只供后端执行的副作用标签，保留 ``<say>`` 及其正文。
+
+    Args:
+        raw: 待清理的模型原始文本；空字符串和空白文本返回空字符串。
+
+    Returns:
+        删除 ``memory``、``mood``、``think`` 和 ``thinking`` 标签后的文本，
+        并去除首尾空白。
+
+    Raises:
+        TypeError: ``raw`` 不是可用于正则替换的字符串时由正则操作触发。
+    """
 
     return _SIDE_EFFECT_TAGS.sub('', raw or '').strip()
 
 
 def close_dangling_say(raw: str) -> str:
-    """补齐未闭合的 <say>。
+    """补齐流式中断导致的未闭合 ``<say>`` 标签。
 
-    中断发生在流式过程中间时，`assistant_raw` 很可能停在一个没闭合的 <say>
-    上。这段内容用户已经在屏幕上看到了，不能丢；但直接入库会让后续每一轮
-    都读到一个坏掉的标签。补齐而不是截断，是因为「用户看到过」比「结构好看」
-    更重要。
+    读取侧必须保留已产生的文本，同时恢复后续上下文所需的标签结构；因此只补充
+    缺失的闭合标签，不截断原始内容。
+
+    Args:
+        raw: 可能包含未闭合 ``<say>`` 标签的原始文本。
+
+    Returns:
+        已去除首尾空白且标签闭合的文本；空输入返回空字符串。
+
+    Raises:
+        TypeError: ``raw`` 不是字符串时由正则匹配操作触发。
     """
 
     text = (raw or '').strip()
@@ -58,7 +68,7 @@ def close_dangling_say(raw: str) -> str:
 
 
 def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:
-    """把任意来源的历史修成结构合法的消息序列。
+    """将任意来源的历史消息规范化为模型端点可接受的结构。
 
     1. assistant 内容剥副作用标签、补悬空 <say>；
     2. 丢掉清理后变空的消息；
@@ -66,7 +76,19 @@ def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:
        部分 OpenAI 兼容端点会直接拒收；
     4. 丢掉开头的 assistant——system 之后必须由 user 起头。
 
-    幂等：对已经干净的历史再跑一次不会有任何变化。
+    该操作具有幂等性：对已规范化的历史重复执行不会改变结果。
+
+    Args:
+        messages: 消息迭代器；每项至少提供字符串 ``role`` 和 ``content`` 字段。
+
+    Returns:
+        删除空消息、修复助手标签、合并连续角色并移除首个助手消息后的新列表。
+
+    Raises:
+        TypeError: 消息项不支持映射访问或字段值不支持字符串处理时抛出。
+
+    Side Effects:
+        消费输入迭代器；不修改输入映射对象，仅创建新的消息字典。
     """
 
     cleaned: List[dict] = []
@@ -90,9 +112,25 @@ def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:
 
 
 def fit_char_budget(messages: List[dict], budget: int = DEFAULT_CHAR_BUDGET) -> List[dict]:
-    """超出字符预算时从最老的开始丢，丢完再修一次结构。
+    """按字符预算从最早消息开始裁剪，并重新规范化剩余历史。
 
-    裁切之后必须重新 normalize，否则可能裁出一个 assistant 开头的历史。
+    裁剪可能产生助手消息开头或连续同角色消息，因此裁剪完成后必须再次调用
+    ``normalize_history``。
+
+    Args:
+        messages: 已解析的消息字典列表；函数不会就地删除其中元素。
+        budget: 允许保留的总字符数，默认 ``DEFAULT_CHAR_BUDGET``；小于等于 ``0``
+            时直接返回原列表对象。
+
+    Returns:
+        在预算内且结构合法的新消息列表；输入为空时返回空列表。
+
+    Raises:
+        KeyError: 消息缺少 ``content`` 字段时抛出。
+        TypeError: 内容不是支持 ``len`` 的对象或预算不可比较时抛出。
+
+    Side Effects:
+        当 ``budget <= 0`` 时返回输入列表本身；其他情况不修改输入列表。
     """
 
     if budget <= 0:

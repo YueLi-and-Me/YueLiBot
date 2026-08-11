@@ -32,20 +32,49 @@ _DESKTOP_EXTERNAL_ID = "desktop"
 
 
 class StreamRegistry:
-    """集中维护归属表，阻止业务层绕过 identity 自行编造 ID。"""
+    """集中维护 persons、identities、streams 及群成员关系的数据库引用。
+
+    业务服务通过本类解析稳定主键和外部身份，避免直接拼接 ID 或绕过归属约束。
+    """
 
     def __init__(self, db: sqlite3.Connection) -> None:
+        """绑定一个已完成迁移的 SQLite 连接。
+
+        Args:
+            db: 用于读取和更新归属表的 SQLite 连接；事务提交由本类写入方法负责。
+        """
+
         self._db = db
 
     def owner_person(self) -> PersonRef:
-        """读取迁移/SEED 确定的唯一 owner；缺失说明数据库形态损坏。"""
+        """读取由迁移和种子数据确定的唯一 owner person。
+
+        Returns:
+            ``kind`` 为 ``owner`` 的 owner person 引用。
+
+        Raises:
+            RuntimeError: owner 记录不存在或其 ``kind`` 不是 ``owner``。
+            sqlite3.Error: 查询人物表失败。
+        """
         person = self.person(_OWNER_PERSON_ID)
         if person.kind != "owner":
             raise RuntimeError("owner person 不存在或 kind 不正确，确认 v6 迁移已完成")
         return person
 
     def person(self, person_id: int) -> PersonRef:
-        """按稳定主键取得 person，供需要显式人物归属的业务服务校验引用。"""
+        """按稳定数据库主键读取人物引用并校验人物类型。
+
+        Args:
+            person_id: ``persons`` 表中的人物 ID。
+
+        Returns:
+            包含 ID、人物类型和首次出现时间的 ``PersonRef``。
+
+        Raises:
+            ValueError: 人物不存在。
+            RuntimeError: 人物类型不是当前支持的 ``contact`` 或 ``owner``。
+            sqlite3.Error: 查询失败。
+        """
         row = self._db.execute(
             "SELECT id, kind, first_seen_at FROM persons WHERE id = ?",
             (person_id,),
@@ -57,7 +86,19 @@ class StreamRegistry:
         return PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
 
     def list_persons(self, stream_id: int | None = None) -> List[PersonRef]:
-        """列出全部人物，或只列出在指定会话实际发过言的人物。"""
+        """列出全部人物，或列出指定 stream 中实际发送过消息的人物。
+
+        Args:
+            stream_id: 可选 stream ID；省略时查询全部人物，传入时仅返回该 stream 的
+                user 消息发送者。
+
+        Returns:
+            按人物 ID 升序排列的 ``PersonRef`` 列表。
+
+        Raises:
+            ValueError: 指定 stream 不存在。
+            sqlite3.Error: 查询失败。
+        """
         if stream_id is None:
             rows = self._db.execute(
                 "SELECT id, kind, first_seen_at FROM persons ORDER BY id ASC"
@@ -78,7 +119,18 @@ class StreamRegistry:
         ]
 
     def list_identities(self, person_id: int) -> List[IdentityRef]:
-        """列出人物的全部平台身份；先校验人物，禁止错误 ID 静默返回空列表。"""
+        """列出指定人物的全部平台身份。
+
+        Args:
+            person_id: 目标人物 ID。
+
+        Returns:
+            按平台和外部 ID 排序的 ``IdentityRef`` 列表；没有身份时返回空列表。
+
+        Raises:
+            ValueError: 人物不存在。
+            sqlite3.Error: 查询身份表失败。
+        """
         person = self.person(person_id)
         rows = self._db.execute(
             """SELECT platform, external_id, display_name FROM identities
@@ -91,7 +143,18 @@ class StreamRegistry:
         ]
 
     def group_memberships(self, person_id: int) -> List[GroupMembershipRef]:
-        """列出人物在各 QQ 群中的当前群名片；空字符串表示当前未设置群名片。"""
+        """列出人物在各群聊 stream 中的当前群名片。
+
+        Args:
+            person_id: 目标人物 ID。
+
+        Returns:
+            按 stream ID 排序的 ``GroupMembershipRef`` 列表；空群名片表示当前未设置。
+
+        Raises:
+            ValueError: 人物不存在。
+            sqlite3.Error: 查询群成员关系失败。
+        """
         person = self.person(person_id)
         rows = self._db.execute(
             '''SELECT gm.stream_id, s.external_id, gm.group_card, gm.updated_at
@@ -112,7 +175,15 @@ class StreamRegistry:
         ]
 
     def desktop_stream(self) -> StreamRef:
-        """读取迁移/SEED 确定的唯一 desktop stream。"""
+        """读取由迁移和种子数据确定的唯一 desktop stream。
+
+        Returns:
+            标识为 ``desktop/desktop/desktop`` 的 ``StreamRef``。
+
+        Raises:
+            RuntimeError: desktop stream 缺失或其平台、类型、外部 ID 不符合固定约定。
+            sqlite3.Error: 查询失败。
+        """
         row = self._db.execute(
             """SELECT id, platform, kind, external_id FROM streams
                WHERE id = ?""",
@@ -124,7 +195,18 @@ class StreamRegistry:
         return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
 
     def stream(self, stream_id: int) -> StreamRef:
-        """按稳定主键读取 stream；不存在时直接暴露调用方传错的分区。"""
+        """按稳定数据库主键读取会话引用。
+
+        Args:
+            stream_id: ``streams`` 表中的会话 ID。
+
+        Returns:
+            包含平台、会话类型和外部 ID 的 ``StreamRef``。
+
+        Raises:
+            ValueError: stream 不存在。
+            sqlite3.Error: 查询失败。
+        """
         row = self._db.execute(
             """SELECT id, platform, kind, external_id FROM streams
                WHERE id = ?""",
@@ -135,7 +217,14 @@ class StreamRegistry:
         return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
 
     def list_streams(self) -> List[StreamRef]:
-        """列出所有可观察 stream，供只读面板选择分区。"""
+        """列出全部可观察 stream。
+
+        Returns:
+            按 stream ID 升序排列的 ``StreamRef`` 列表。
+
+        Raises:
+            sqlite3.Error: 查询失败。
+        """
         rows = self._db.execute(
             """SELECT id, platform, kind, external_id FROM streams
                ORDER BY id ASC"""
@@ -146,7 +235,18 @@ class StreamRegistry:
         ]
 
     def list_person_streams(self, person_id: int) -> List[StreamRef]:
-        """列出人物实际发过言的会话；不把仅有身份绑定误算成已经出现。"""
+        """列出指定人物在 user 消息中实际发言过的会话。
+
+        Args:
+            person_id: 目标人物 ID。
+
+        Returns:
+            按 stream ID 升序排列的会话引用；仅有身份绑定但没有消息的会话不会返回。
+
+        Raises:
+            ValueError: 人物不存在。
+            sqlite3.Error: 查询消息和会话表失败。
+        """
         person = self.person(person_id)
         rows = self._db.execute(
             """SELECT DISTINCT s.id, s.platform, s.kind, s.external_id
@@ -162,7 +262,15 @@ class StreamRegistry:
         ]
 
     def desktop_context(self) -> ConversationContext:
-        """返回桌面唯一且完整的入站上下文。"""
+        """返回桌面 stream 与 owner person 组成的完整会话上下文。
+
+        Returns:
+            包含固定 desktop stream 和 owner person 的 ``ConversationContext``。
+
+        Raises:
+            RuntimeError: 数据库缺少或损坏固定 desktop/owner 记录。
+            sqlite3.Error: 查询失败。
+        """
         return ConversationContext(stream=self.desktop_stream(), person=self.owner_person())
 
     def resolve_inbound(
@@ -175,7 +283,27 @@ class StreamRegistry:
         sender_group_card: str,
         first_seen_at: int,
     ) -> ConversationContext:
-        """按平台外部号解析人物，并分别更新账号昵称与当前群名片。"""
+        """按平台和外部标识解析人物、会话及当前显示信息。
+
+        Args:
+            platform: 平台标识，不能为空。
+            stream_kind: 会话类型，只支持 ``direct`` 和 ``group``。
+            stream_external_id: 平台侧会话外部 ID。
+            sender_external_id: 平台侧发送者外部 ID。
+            sender_nickname: 平台侧账号昵称。
+            sender_group_card: 当前群聊中的群名片；私聊时可为空。
+            first_seen_at: 新人物首次出现的 Unix 毫秒时间戳。
+
+        Returns:
+            包含稳定 stream、person、账号身份和群名片的 ``ConversationContext``。
+
+        Raises:
+            ValueError: 会话类型或任一必需外部标识为空、格式不支持。
+            sqlite3.Error: stream、person、identity 或群成员关系写入失败。
+
+        Side Effects:
+            可能创建 stream/person，更新平台账号昵称和当前群名片，并提交对应事务。
+        """
         if stream_kind not in ('direct', 'group'):
             raise ValueError('平台入站仅支持 direct 或 group stream')
         platform = _require_text(platform, 'platform')
@@ -200,7 +328,23 @@ class StreamRegistry:
         )
 
     def create_person(self, kind: PersonKind, first_seen_at: int) -> PersonRef:
-        """创建非 owner person；owner 只能由迁移或 SEED 确定性创建。"""
+        """创建一个联系人人物记录。
+
+        Args:
+            kind: 人物类型；当前仅允许 ``contact``。
+            first_seen_at: 人物首次出现的 Unix 毫秒时间戳。
+
+        Returns:
+            新建人物的 ``PersonRef``。
+
+        Raises:
+            ValueError: ``kind`` 不是 ``contact``。
+            RuntimeError: 插入后未获得人物主键。
+            sqlite3.Error: 插入或提交失败。
+
+        Side Effects:
+            向 ``persons`` 表插入一行并提交事务；owner 不由该方法创建。
+        """
         if kind != "contact":
             raise ValueError("只能通过 Registry 创建 kind='contact' 的 person")
         cur = self._db.execute(
@@ -213,7 +357,18 @@ class StreamRegistry:
         return PersonRef(id=cur.lastrowid, kind=kind, first_seen_at=first_seen_at)
 
     def find_person_by_identity(self, platform: str, external_id: str) -> PersonRef | None:
-        """按平台身份查 person；不存在时返回 None，由上层决定是否创建联系人。"""
+        """按平台和外部身份查找其归属人物。
+
+        Args:
+            platform: 平台标识。
+            external_id: 平台侧外部身份 ID。
+
+        Returns:
+            已绑定身份对应的 ``PersonRef``；没有匹配身份时返回 ``None``。
+
+        Raises:
+            sqlite3.Error: 查询身份或人物表失败。
+        """
         row = self._db.execute(
             """SELECT p.id, p.kind, p.first_seen_at
                FROM identities AS i
@@ -226,7 +381,19 @@ class StreamRegistry:
         return PersonRef(id=row[0], kind=row[1], first_seen_at=row[2])
 
     def display_name(self, person_id: int, platform: str) -> str:
-        """读取指定平台上的当前账号昵称，不混入任何群名片。"""
+        """读取人物在指定平台上的当前账号昵称，不混入群名片。
+
+        Args:
+            person_id: 目标人物 ID。
+            platform: 目标平台标识，不能为空。
+
+        Returns:
+            该人物在平台上的账号显示名。
+
+        Raises:
+            ValueError: 平台为空，或人物在平台上没有账号身份。
+            sqlite3.Error: 查询失败。
+        """
         platform = _require_text(platform, "platform")
         row = self._db.execute(
             '''SELECT display_name FROM identities
@@ -239,7 +406,19 @@ class StreamRegistry:
         return row[0]
 
     def stream_display_name(self, person_id: int, stream_id: int) -> str:
-        """读取会话内显示名：群名片非空时优先，否则使用当前账号昵称。"""
+        """读取指定会话内的显示名，并按群名片优先级回退到账号昵称。
+
+        Args:
+            person_id: 目标人物 ID。
+            stream_id: 目标 stream ID。
+
+        Returns:
+            群聊中非空群名片，或该人物在 stream 平台上的账号显示名。
+
+        Raises:
+            ValueError: stream 或人物不存在，或平台上没有账号身份。
+            sqlite3.Error: 查询失败。
+        """
         stream = self.stream(stream_id)
         self.person(person_id)
         if stream.kind == 'group':
@@ -259,7 +438,21 @@ class StreamRegistry:
         group_card: str,
         updated_at: int,
     ) -> None:
-        """按 person + 群 stream 更新当前群名片；清空名片也必须落库。"""
+        """按人物和群聊 stream 更新当前群名片。
+
+        Args:
+            person: 目标人物引用。
+            stream: 目标群聊 stream 引用。
+            group_card: 当前群名片；空字符串表示清除名片。
+            updated_at: 名片更新时间的 Unix 毫秒时间戳。
+
+        Raises:
+            ValueError: stream 不是群聊，或人物不存在。
+            sqlite3.Error: 群成员关系插入、更新或提交失败。
+
+        Side Effects:
+            插入或更新 ``group_memberships`` 记录并提交事务；清空名片也会保留更新时间记录。
+        """
         stored_stream = self.stream(stream.id)
         if stored_stream.kind != 'group':
             raise ValueError('群名片只能绑定到 group stream')
@@ -282,10 +475,25 @@ class StreamRegistry:
         external_id: str,
         display_name: str,
     ) -> None:
-        """把平台身份绑定到既有 person；跨 person 冲突直接暴露。"""
+        """将平台外部身份绑定到既有人物，并更新其账号显示名。
+
+        Args:
+            person: 已存在的目标人物引用。
+            platform: 平台标识，不能为空。
+            external_id: 平台侧外部身份 ID，不能为空。
+            display_name: 平台侧账号显示名，不能为空。
+
+        Raises:
+            ValueError: 人物不存在、标识为空，或身份已绑定到其他人物。
+            sqlite3.Error: 身份插入、显示名更新或提交失败。
+
+        Side Effects:
+            新身份会插入 ``identities``；既有同人物身份只更新显示名，并提交事务。
+        """
         platform = _require_text(platform, "platform")
         external_id = _require_text(external_id, "external_id")
         display_name = _require_text(display_name, "display_name")
+        # 先确认人物存在，再检查平台外部身份是否已归属于其他人物。
         existing_person = self._db.execute(
             "SELECT id FROM persons WHERE id = ?",
             (person.id,),
@@ -300,6 +508,7 @@ class StreamRegistry:
         ).fetchone()
         if existing is not None and existing[0] != person.id:
             raise ValueError("该平台 identity 已绑定到另一 person")
+        # 同一 person 的既有身份只更新展示名，不改变稳定外部标识或归属关系。
         if existing is None:
             self._db.execute(
                 """INSERT INTO identities (person_id, platform, external_id, display_name)
@@ -321,16 +530,29 @@ class StreamRegistry:
         external_id: str,
         display_name: str,
     ) -> None:
-        """让 person 在该平台只保留这一个身份，旧的解绑。
+        """使人物在指定平台只保留一个外部身份，并解除同平台旧绑定。
 
-        用于 owner 这类「配置里只能填一个号」的绑定：配置项是单值的，
-        数据也该跟着是单值的。留着旧号的后果是它永远解析成 owner——
-        万一曾经填错成别人的号，那个人会一直读得到用户本人的记忆。
+        该方法用于配置层声明为单值的平台身份。保留旧身份会使历史外部账号继续
+        解析到当前人物，造成账号归属错误和记忆越权风险。
+
+        Args:
+            person: 目标人物引用。
+            platform: 平台标识，不能为空。
+            external_id: 要保留的平台外部身份 ID，不能为空。
+            display_name: 要保留身份的显示名，不能为空。
+
+        Raises:
+            ValueError: 参数为空、人物不存在，或新身份已绑定到其他人物。
+            sqlite3.Error: 旧身份删除、新身份写入或提交失败。
+
+        Side Effects:
+            删除该人物在平台上的其他身份，记录解绑日志，再通过 ``link_identity``
+            写入或更新指定身份。
         """
         platform = _require_text(platform, "platform")
         external_id = _require_text(external_id, "external_id")
 
-        # 先解绑同平台上的其他号，再走正常绑定
+        # 先解除同平台其他外部账号的旧绑定，再执行统一绑定流程。
         stale = self._db.execute(
             """SELECT external_id FROM identities
                WHERE person_id = ? AND platform = ? AND external_id != ?""",
@@ -358,7 +580,24 @@ class StreamRegistry:
         kind: StreamKind,
         external_id: str,
     ) -> StreamRef:
-        """按平台、场所类别和外部标识取得稳定 stream。"""
+        """按平台、会话类型和外部标识读取或创建稳定 stream。
+
+        Args:
+            platform: 平台标识，不能为空。
+            kind: 会话类型，只支持 ``desktop``、``direct`` 和 ``group``。
+            external_id: 平台侧会话外部 ID，不能为空。
+
+        Returns:
+            已存在或新建的 ``StreamRef``。
+
+        Raises:
+            ValueError: 外部标识为空，或会话类型不受支持。
+            RuntimeError: 新建 stream 后未获得数据库主键。
+            sqlite3.Error: 查询、插入或提交失败。
+
+        Side Effects:
+            stream 不存在时向 ``streams`` 表插入记录并提交事务；存在时只读查询。
+        """
         platform = _require_text(platform, "platform")
         external_id = _require_text(external_id, "external_id")
         if kind not in ("desktop", "direct", "group"):
@@ -389,6 +628,19 @@ class StreamRegistry:
 
 
 def _require_text(value: str, name: str) -> str:
+    """校验并规范化数据库外部标识文本。
+
+    Args:
+        value: 待校验的字符串。
+        name: 错误信息中使用的字段名。
+
+    Returns:
+        去除首尾空白后的非空字符串。
+
+    Raises:
+        ValueError: 字符串为空或只包含空白。
+    """
+
     normalized = value.strip()
     if not normalized:
         raise ValueError(f"{name} 不能为空")

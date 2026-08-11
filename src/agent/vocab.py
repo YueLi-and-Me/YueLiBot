@@ -1,4 +1,8 @@
-"""角色词表（从 src/shared/character-vocab.ts 移植）。"""
+"""角色表情与动作的固定词表。
+
+本模块集中定义后端可识别的表情和动作标识，供表达选择、提示词校验和渲染层状态同步
+使用；列表内容必须与角色视图支持的标识保持一致。
+"""
 
 EMOTIONS = [
     'normal', 'happy', 'smile', 'shy', 'sad', 'cry', 'angry', 'pout',

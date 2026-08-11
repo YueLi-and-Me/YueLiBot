@@ -14,13 +14,11 @@ from .vocab import EXPRESSION_IDS, GESTURE_IDS
 from src.common.clock import now as current_time
 from src.prompts.registry import get_prompt
 
-# 重逢措辞的档位。写成一张有序表而不是几个散落的常量：
-# 它们同属一条曲线，单独调任何一个都要看着相邻档位，拆开放反而更难维护。
-# 顺序由 pytests 断言守住，不靠人记。第三档携带具体天数，由函数动态生成。
+# 重逢措辞使用有序阈值表统一维护，测试固定阈值顺序；第三档的天数由函数动态生成。
 RESUMPTION_TIERS: List[Tuple[int, str]] = [
     (6 * 60 * 60_000, '距离你们上次说话过了几个小时。'),
-    # 上界是 24 小时而不是更久：「隔了一夜」必须在这一档的每一个取值上都为真。
-    # 超过一天一律走下面的天数那一行——天数是算出来的，说多久就是多久。
+    # 上界固定为 24 小时，确保“隔了一夜”只覆盖确实不超过一天的间隔。
+    # 超过一天时转入动态天数描述，避免固定文案与实际间隔不一致。
     (24 * 60 * 60_000, '距离你们上次说话隔了一夜。'),
 ]
 
@@ -79,7 +77,17 @@ def _relationship_context(user_nickname: Optional[str], relationship: Optional[s
 
 
 def describe_resumption(gap_ms: int) -> str:
-    """把静默时长翻译成一句陈述。只说过了多久，不说她该有什么情绪。"""
+    """将上次对话至今的静默时长转换为不附带情绪判断的时间描述。
+
+    Args:
+        gap_ms: 静默时长，单位为毫秒；非负值表示经过的实际时间，负值按最短档位处理。
+
+    Returns:
+        与时长对应的中文描述：少于 6 小时、6 至 24 小时或超过 24 小时三档。
+
+    Raises:
+        TypeError: ``gap_ms`` 不支持与整数比较或整除时抛出。
+    """
     for threshold, description in RESUMPTION_TIERS:
         if gap_ms < threshold:
             return description
@@ -88,7 +96,14 @@ def describe_resumption(gap_ms: int) -> str:
 
 
 def _prefixed_block(content: Optional[str]) -> str:
-    """把可选动态上下文作为完整段落注入。"""
+    """为非空动态上下文添加提示词段落分隔符。
+
+    Args:
+        content: 可选提示词内容；``None`` 或空字符串表示不生成段落。
+
+    Returns:
+        非空内容前追加两个换行符的字符串；空内容返回空字符串。
+    """
 
     return f'\n\n{content}' if content else ''
 
@@ -101,7 +116,23 @@ def _identity_context(
     platform_name: Optional[str],
     name: str,
 ) -> Tuple[str, date | None]:
-    """只从配置和当前时间派生身份块，不提供角色默认值。"""
+    """从人格配置、生日、别名和当前时间构造身份提示词块。
+
+    Args:
+        personality: 已配置的人格描述文本。
+        birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
+        now: 用于计算年龄和生日提示的当前本地时间。
+        aliases: 可供识别的其他称呼；``None`` 表示未配置。
+        platform_name: 平台侧显示的 Bot 名称；为空时不加入别名。
+        name: 配置中的主名称，用于去除重复别名。
+
+    Returns:
+        ``(身份提示词, 解析后的生日)``；未配置生日时第二项为 ``None``。
+
+    Raises:
+        ValueError: ``birthday`` 不是合法 ISO 日期文本。
+        TypeError: 参数类型不支持日期、列表或字符串操作时抛出。
+    """
 
     lines = [personality]
     parsed_birthday: date | None = None
@@ -210,7 +241,39 @@ def build_system_prompt(
     aliases: Optional[List[str]] = None,
     platform_name: Optional[str] = None,
 ) -> str:
-    """组装主对话提示词，各段只承担一种职责。"""
+    """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
+
+    Args:
+        name: Bot 的主名称。
+        birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
+        personality: 人格和身份描述文本。
+        reply_style: 回复风格约束文本。
+        now: 用于时间、年龄和生日判断的当前时间；省略时读取系统时钟。
+        persona: 可选的额外人格上下文。
+        acquaintance: 可选的熟悉程度描述。
+        facts: 可选的长期事实记忆列表。
+        episodes: 可选的近期对话回想列表。
+        activity: 可选的当前前台活动描述。
+        schedule: 可选的当天日程文本。
+        user_nickname: 对方偏好的称呼。
+        relationship: 对方在 Bot 视角下的关系描述。
+        expression_habits: 已渲染的表达习惯提示词块。
+        tone: 当前轮临时语调提示。
+        resumption: 当前对话恢复提示。
+        aliases: 可选的其他 Bot 名称列表。
+        platform_name: 平台侧显示的 Bot 名称。
+
+    Returns:
+        可直接提交给模型服务的完整系统提示词。
+
+    Raises:
+        ValueError: 生日文本不是合法 ISO 日期，或提示词资源缺失时由资源加载逻辑抛出。
+        TypeError: 上下文参数类型不符合字符串、序列或日期操作要求时抛出。
+
+    Side Effects:
+        ``now`` 省略时读取一次系统时钟；不修改传入的列表和配置对象。
+        结果长度随记忆、活动和表达习惯文本线性增长。
+    """
 
     if now is None:
         now = datetime.fromtimestamp(current_time() / 1000)
@@ -264,7 +327,19 @@ def build_system_prompt(
 
 
 def build_proactive_prompt(base_prompt: str, situation: str) -> str:
-    """在完整人设之上追加主动搭话场景，不重复另一套人格。"""
+    """在已有系统提示词后追加一次主动搭话场景描述。
+
+    Args:
+        base_prompt: 已完成的人格和上下文系统提示词。
+        situation: 触发主动搭话的当前场景描述。
+
+    Returns:
+        由基础提示词和主动搭话模板组成的新提示词。
+
+    Raises:
+        KeyError: 主动搭话提示词资源未注册时抛出。
+        TypeError: 参数不是可拼接字符串时抛出。
+    """
 
     return '\n\n'.join([
         base_prompt,

@@ -1,19 +1,28 @@
+/**
+ * 读取并渲染后端生成的日记条目、日期分组和记忆事实。
+ *
+ * 页面只通过 preload/diary.ts 访问数据，视图层负责空状态、加载错误和关闭动作；
+ * 日期标签与事实拆分委托给 diaryState.ts。
+ */
 import type { DiaryEntry, DiaryPayload } from '../shared/ipc.ts'
 import { diaryDayLabel, splitRememberedFacts } from './diaryState.ts'
 
-/**
- * 日记界面。
- *
- * 只读，按日期分组。梦和对话摘要用不同样貌区分 ——
- * 梦不是「发生过的事」，是她脑子里的东西，混在一起看会分不清哪些真的聊过。
- */
+/** 日记界面只读渲染器，按日期展示对话摘要、梦境记录、日程和记忆事实。 */
 
 const list = document.getElementById('list') as HTMLElement
 const today = document.getElementById('today') as HTMLElement
 const memories = document.getElementById('memories') as HTMLElement
 const changeSection = document.getElementById('change-section') as HTMLElement
 
-/** 全部走 textContent 与 createElement，不拼 HTML —— 内容来自模型生成，不可信。 */
+/**
+ * 将日记条目按日期分组并写入列表容器。
+ *
+ * @param entries 后端返回的日记条目，按结束时间排序。
+ * @param now 后端提供的当前时间戳，传给日期标签计算器以保持时区和测试结果一致。
+ * @returns 无返回值。
+ * @remarks 内容全部通过 `textContent` 和 DOM 节点写入，避免把模型生成文本解释为 HTML。
+ * @throws 不主动抛出；浏览器 DOM 操作失败时传播原生异常。
+ */
 function render(entries: DiaryEntry[], now: number): void {
   list.replaceChildren()
 
@@ -28,6 +37,7 @@ function render(entries: DiaryEntry[], now: number): void {
 
   let lastDay = ''
   for (const e of entries) {
+    // 只在日期变化时创建分组标题，避免每条记录重复写入相同日期。
     const day = diaryDayLabel(e.endedAt, now)
     if (day !== lastDay) {
       lastDay = day
@@ -56,6 +66,7 @@ function render(entries: DiaryEntry[], now: number): void {
     body.append(summary)
 
     if (e.cues.length) {
+      // 提示词线索单独渲染为标签，便于区分摘要正文和触发记忆的依据。
       const cues = document.createElement('div')
       cues.className = 'cues'
       for (const c of e.cues) {
@@ -72,13 +83,25 @@ function render(entries: DiaryEntry[], now: number): void {
   }
 }
 
+/**
+ * 创建带文本内容的标题元素。
+ *
+ * @param text 标题文本。
+ * @param level 标题级别，默认使用 `h2`，仅允许 `h2` 或 `h3`。
+ * @returns 已设置文本内容的标题元素。
+ */
 function heading(text: string, level: 'h2' | 'h3' = 'h2'): HTMLHeadingElement {
   const element = document.createElement(level)
   element.textContent = text
   return element
 }
 
-/** “今天”是她的一天，不是带情绪数字的养成状态。 */
+/**
+ * 渲染当天主题和日程段。
+ *
+ * @param payload 后端返回的完整日记数据。
+ * @returns 无返回值。
+ */
 function renderToday(payload: DiaryPayload): void {
   today.replaceChildren(heading('今天'))
   const theme = document.createElement('p')
@@ -96,7 +119,13 @@ function renderToday(payload: DiaryPayload): void {
   }
 }
 
-/** 直接展示 L3 原文；已冻结的记忆单独留下，不让它悄悄消失。 */
+/**
+ * 渲染已记忆事实，并将仍有效与逐渐淡化的事实分组展示。
+ *
+ * @param payload 后端返回的完整日记数据。
+ * @returns 无返回值。
+ * @remarks 事实文本作为纯文本插入；分组规则由 `diaryState.ts` 统一提供。
+ */
 function renderMemories(payload: DiaryPayload): void {
   memories.replaceChildren(heading('我记得的'))
   const groups = splitRememberedFacts(payload.memories)
@@ -107,6 +136,15 @@ function renderMemories(payload: DiaryPayload): void {
     return
   }
 
+  /**
+   * 将事实文本列表渲染为无序列表并追加到指定容器。
+   *
+   * @param items 待显示的事实文本；元素按输入顺序渲染为空间独立的 ``li`` 节点。
+   * @param parent 接收新列表的 DOM 容器。
+   * @returns {void} 无返回值；列表节点创建并追加完成后结束。
+   * @remarks 使用 ``textContent`` 写入事实正文，避免后端文本被当作 HTML 解析；
+   *   每次调用都会创建一个新的列表节点，不复用已有子节点。
+   */
   const appendList = (items: string[], parent: HTMLElement): void => {
     const list = document.createElement('ul')
     list.className = 'remembered'
@@ -127,7 +165,12 @@ function renderMemories(payload: DiaryPayload): void {
   }
 }
 
-/** 没有快照历史或模型没有合格叙述时，整个区块不出现。 */
+/**
+ * 渲染快照变化说明；没有有效文本时隐藏整个变化区域。
+ *
+ * @param change 后端生成的变化描述，可为 `undefined`。
+ * @returns 无返回值。
+ */
 function renderChange(change: string | undefined): void {
   changeSection.replaceChildren()
   changeSection.hidden = !change
@@ -139,6 +182,12 @@ function renderChange(change: string | undefined): void {
   changeSection.append(line)
 }
 
+/**
+ * 读取日记数据并依次渲染日程、记忆、变化说明和条目列表。
+ *
+ * @returns 页面初始化完成后的 Promise。
+ * @throws 不向上抛出读取或渲染异常；错误会转换为列表中的失败提示。
+ */
 async function main(): Promise<void> {
   try {
     const diary = await window.diary?.read()

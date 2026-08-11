@@ -1,5 +1,8 @@
-"""
-HTTP 路由（已接通各 service）。
+"""提供主体后端的 HTTP API 路由和请求模型。
+
+路由覆盖登录会话、桌面及平台入站消息、聊天控制、前台活动、截图、日记、
+观测面板和运行追踪；鉴权依赖来自 `src.api.auth`，业务状态通过模块级
+`app_state` 连接到聊天、注册表、感知和语音服务。
 """
 
 from __future__ import annotations
@@ -55,6 +58,13 @@ class PlatformInboundBody(BaseModel):
     )
     @classmethod
     def _require_text(cls, value: str) -> str:
+        """去除字符串首尾空白并拒绝空字符串字段。
+
+        :param value: Pydantic 待校验的字符串字段。
+        :return: 去除首尾空白后的非空字符串。
+        :raises ValueError: 规范化结果为空。
+        :side_effects: 不修改原字符串或模型状态。
+        """
         value = value.strip()
         if not value:
             raise ValueError('字符串字段不能为空')
@@ -63,11 +73,24 @@ class PlatformInboundBody(BaseModel):
     @field_validator('sender_group_card')
     @classmethod
     def _normalize_group_card(cls, value: str) -> str:
+        """规范化群名片，允许其为空。
+
+        :param value: 原始群名片字符串。
+        :return: 去除首尾空白后的字符串。
+        :side_effects: 不执行外部查询。
+        """
         return value.strip()
 
     @field_validator('bot_name')
     @classmethod
     def _require_optional_bot_name(cls, value: str | None) -> str | None:
+        """校验可选的 Bot 名称，区分缺失和空白配置。
+
+        :param value: 入站请求中的 Bot 名称，可以为 `None`。
+        :return: `None` 或去除首尾空白后的非空名称。
+        :raises ValueError: 显式提供但只包含空白的名称。
+        :side_effects: 不修改请求对象。
+        """
         if value is None:
             return None
         normalized = value.strip()
@@ -88,6 +111,13 @@ class PlatformIdentityLinkBody(BaseModel):
     @field_validator('external_id')
     @classmethod
     def _require_qq(cls, value: str) -> str:
+        """规范化并校验 owner 的 QQ identity 外部 ID。
+
+        :param value: 平台提交的外部身份标识。
+        :return: 去除首尾空白后的数字字符串。
+        :raises ValueError: 标识为空或含非数字字符。
+        :side_effects: 不查询平台，也不修改模型外的身份数据。
+        """
         value = value.strip()
         if not value or not value.isdigit():
             raise ValueError('QQ identity 必须是非空数字')
@@ -96,6 +126,13 @@ class PlatformIdentityLinkBody(BaseModel):
     @field_validator('display_name')
     @classmethod
     def _require_display_name(cls, value: str) -> str:
+        """规范化 owner identity 的显示名称。
+
+        :param value: 平台提交的显示名称。
+        :return: 去除首尾空白后的非空字符串。
+        :raises ValueError: 名称为空或只包含空白。
+        :side_effects: 不执行身份写入。
+        """
         value = value.strip()
         if not value:
             raise ValueError('字符串字段不能为空')
@@ -112,6 +149,13 @@ class WebLoginBody(BaseModel):
     @field_validator('token')
     @classmethod
     def _require_token(cls, value: str) -> str:
+        """去除登录 token 首尾空白并拒绝空值。
+
+        :param value: 浏览器登录请求中的 token。
+        :return: 去除首尾空白后的 token。
+        :raises ValueError: token 为空。
+        :side_effects: 不执行 token 比较。
+        """
         value = value.strip()
         if not value:
             raise ValueError('token 不能为空')
@@ -122,17 +166,45 @@ def _auth(
     authorization: str | None = Header(default=None),
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> None:
+    """作为 FastAPI 依赖校验 Bearer 或 HttpOnly Cookie 鉴权。
+
+    :param authorization: 可选 Authorization 请求头，由 FastAPI 注入。
+    :param session_token: 可选会话 Cookie，由 FastAPI 注入。
+    :return: 鉴权通过时返回 `None`。
+    :raises fastapi.HTTPException: 两种凭据都无法通过校验时返回 401。
+    :side_effects: 只读取请求凭据，不修改会话状态。
+    """
     require_token(authorization, session_token)
 
 
 @router.get("/health")
 async def health() -> dict:
+    """返回不需要鉴权的进程存活探针。
+
+    :return: 固定返回 `{'ok': True}` 的 JSON 可序列化字典。
+    :side_effects: 不访问服务状态或外部系统。
+    """
     return {"ok": True}
 
 
 @router.post('/auth/login')
 async def web_login(body: WebLoginBody, response: Response) -> dict:
-    """校验用户手工输入的 token，并换成前端脚本无法读取的会话 Cookie。"""
+    """校验浏览器提交的 token，并写入 HttpOnly 会话 Cookie。
+
+    Args:
+        body: 包含用户输入认证 token 的请求模型。
+        response: FastAPI 响应对象，用于设置会话 Cookie 和禁止缓存。
+
+    Returns:
+        ``{'ok': True}``。
+
+    Raises:
+        fastapi.HTTPException: token 不匹配当前进程 token 时返回 401。
+
+    Side Effects:
+        在响应中写入 ``yueli_session`` HttpOnly、Strict Cookie；浏览器脚本无法读取
+        Cookie，响应同时设置 ``Cache-Control: no-store``。
+    """
     if not verify_token(body.token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='token 不正确')
     response.set_cookie(
@@ -151,7 +223,18 @@ async def web_session(
     authorization: str | None = Header(default=None),
     session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> dict:
-    """让首页无错误地判断是否已有登录 Cookie，不返回任何观察数据。"""
+    """返回当前请求是否已通过 Bearer 或会话 Cookie 鉴权。
+
+    Args:
+        authorization: 可选 Authorization 请求头，由 FastAPI 注入。
+        session_token: 可选 HttpOnly 会话 Cookie，由 FastAPI 注入。
+
+    Returns:
+        包含 ``authenticated`` 布尔字段的字典；不返回 token 或观察数据。
+
+    Side Effects:
+        仅读取请求凭据，不修改会话状态。
+    """
     authenticated = (
         verify_token(extract_bearer(authorization))
         or verify_token(session_token or '')
@@ -161,12 +244,29 @@ async def web_session(
 
 @router.get('/runtime/health', dependencies=[Depends(_auth)])
 async def runtime_health() -> dict:
-    """Electron 连接独立后端前，用 token 验证运行时文件与进程相匹配。"""
+    """在 Electron 连接独立后端前确认认证链路和进程实例可达。
+
+    Returns:
+        固定返回 ``{'ok': True}``。
+
+    Raises:
+        fastapi.HTTPException: 鉴权依赖未通过时由 ``_auth`` 返回 401。
+
+    Side Effects:
+        不读取业务状态，不执行外部 I/O；路由级鉴权已先验证当前 token。
+    """
     return {'ok': True}
 
 
 @router.post("/chat/send", dependencies=[Depends(_auth)])
 async def chat_send(request: Request) -> JSONResponse:
+    """接收桌面端聊天文本并把它提交给当前桌面 stream。
+
+    :param request: FastAPI 请求对象；JSON body 需要包含字符串字段 `text`。
+    :return: 包含 `turnId` 的 JSON 响应；聊天服务未初始化或文本为空时返回 `0`。
+    :raises Exception: 请求体不是合法 JSON，或聊天服务发送失败时传播原始异常。
+    :side_effects: 读取注册表桌面上下文并可能创建一次聊天轮次。
+    """
     body = await request.json()
     text = str(body.get("text", "")).strip()
     if not text or app_state.chat is None or app_state.registry is None:
@@ -178,7 +278,25 @@ async def chat_send(request: Request) -> JSONResponse:
 
 @router.post('/platform/inbound', dependencies=[Depends(_auth)])
 async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
-    """接收非桌面平台消息，完成归属解析和群聊门控后汇入 ChatService。"""
+    """接收平台入站消息，完成 stream/person 归属解析和回复门控后提交聊天服务。
+
+    Args:
+        body: 已通过 Pydantic 校验的平台入站消息，包含平台、会话、发送者和正文信息。
+
+    Returns:
+        JSON 响应；服务未初始化时返回 503，门控拒绝时返回 ``accepted=False``，
+        接受时返回聊天轮次 ``turnId`` 和 stream ID。
+
+    Raises:
+        fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+        ValueError: 注册表归属解析、记忆查询或聊天服务发现输入不一致时抛出。
+        Exception: 聊天轮次创建或持久化失败且未被服务层处理时传播。
+
+    Side Effects:
+        可能创建或更新人物、身份和 stream，写入接收/门控观测事件，记录被拒消息，
+        或启动一轮聊天生成。
+    """
+    # 服务未完成装配时返回 503，避免把平台消息误判为已处理。
     if app_state.chat is None or app_state.registry is None:
         return JSONResponse(
             {'detail': '对话服务未初始化'},
@@ -186,6 +304,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         )
 
     now = current_time()
+    # 归属解析必须先于门控，后续 trace、记忆和出站路由都依赖稳定 stream/person 引用。
     context = app_state.registry.resolve_inbound(
         platform=body.platform,
         stream_kind=body.stream_kind,
@@ -204,10 +323,12 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     group_chat = app_state.group_chat_config
     reply_count = 0
     if context.stream.kind == 'group':
+        # 频率窗口只统计当前 group stream 的助手消息，不跨群或跨平台共享配额。
         reply_count = app_state.chat.memory.assistant_reply_count_since(
             context.stream.id,
             now - group_chat.reply_window_minutes * 60_000,
         )
+    # 门控集中处理协议 @、文本称呼、睡眠状态和窗口配额，HTTP 层只负责传递完整输入。
     decision = decide_reply(
         stream_kind=context.stream.kind,
         asleep=app_state.chat.current_sleep().asleep,
@@ -229,6 +350,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         **decision.as_trace(),
     )
     if not decision.accepted:
+        # 静默消息仍写入历史和观察事件，确保下一轮上下文知道该消息已经出现。
         enter_stage(
             GATED, context.stream.id, stream_name,
             f'未回复：{decision.reason}',
@@ -267,7 +389,21 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
 
 @router.post('/platform/identity/link', dependencies=[Depends(_auth)])
 async def platform_identity_link(body: PlatformIdentityLinkBody) -> dict:
-    """在平台消息进入归属解析前，绑定适配器声明的 owner 身份。"""
+    """在平台消息进入归属解析前绑定适配器声明的 owner 外部身份。
+
+    Args:
+        body: 包含平台、owner 外部 ID 和显示名的已校验请求模型。
+
+    Returns:
+        绑定成功时返回 ``ok=True`` 和 owner person ID；注册表未初始化时返回失败详情。
+
+    Raises:
+        fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+        ValueError: 外部身份已由注册表校验为非法时抛出。
+
+    Side Effects:
+        修改 owner person 的指定平台唯一身份绑定；同平台旧绑定会被解除。
+    """
     if app_state.registry is None:
         return {'ok': False, 'detail': '身份注册表未初始化'}
 
@@ -284,6 +420,11 @@ async def platform_identity_link(body: PlatformIdentityLinkBody) -> dict:
 
 @router.post("/chat/interrupt", dependencies=[Depends(_auth)])
 async def chat_interrupt() -> dict:
+    """中断当前桌面 stream 上正在生成的聊天轮次。
+
+    :return: 固定返回 `{'ok': True}`。
+    :side_effects: 若聊天和注册表已初始化，向桌面 stream 的 ChatService 发出中断请求。
+    """
     if app_state.chat and app_state.registry:
         app_state.chat.interrupt(app_state.registry.desktop_stream().id)
     return {"ok": True}
@@ -291,7 +432,21 @@ async def chat_interrupt() -> dict:
 
 @router.post("/platform/foreground", dependencies=[Depends(_auth)])
 async def platform_foreground(request: Request) -> dict:
-    """前台进程信息（从 Electron 主进程定期推来）。"""
+    """接收 Electron 主进程定期上报的前台进程信息。
+
+    Args:
+        request: 已通过鉴权的 FastAPI 请求；请求体应为可解析的 JSON 对象。
+
+    Returns:
+        固定返回 ``{'ok': True}``。
+
+    Raises:
+        json.JSONDecodeError: 请求体不是合法 JSON 时由框架请求解析逻辑抛出。
+        Exception: 前台活动回调处理请求体失败时传播原始异常。
+
+    Side Effects:
+        若已注册前台活动回调，则将请求体交给回调更新当前前台上下文。
+    """
     body = await request.json()
     if app_state.foreground_callback:
         app_state.foreground_callback(body)
@@ -300,26 +455,39 @@ async def platform_foreground(request: Request) -> dict:
 
 @router.post("/platform/screenshot/chat", dependencies=[Depends(_auth)])
 async def platform_screenshot_chat(request: Request) -> dict:
-    """他问起屏幕时截的那一帧。
+    """接收聊天上下文所需的单帧 JPEG，并在请求内完成视觉描述更新。
 
-    ★ 这是视觉的**唯一**入口。曾经还有个 /platform/screenshot 走后台轮询，
-      每 12s 推一张图进来做帧差和关键帧序列；整条链路连同它的九个时间常量
-      一起删掉了——他不问，就不看。
-    这里用 await 而不是 create_task：调用方要等它完成之后才发 /chat/send，
-    好让这一轮的情境文本能读到刚生成的描述。
+    Args:
+        request: 已通过认证的 HTTP 请求；请求体应为 JPEG 二进制数据，空请求体
+            表示本轮不更新视觉缓存。
+
+    Returns:
+        ``{"ok": True}``；视觉功能未就绪时也返回成功，以保持前台采集端协议稳定。
+
+    Raises:
+        RuntimeError: 感知服务或视觉提供者在处理图片时报告运行时错误。
+        StarletteHTTPException: 请求体读取失败时由框架传播。
+
+    Side Effects:
+        可能调用视觉模型并更新当前会话的最新描述。函数等待描述完成后才返回，
+        确保随后发送的聊天请求能够读取本帧结果；不保存窗口标题或原始截图。
     """
     if not get_config().vision.ready or not app_state.awareness or not app_state.awareness.vision:
         return {"ok": True}
     jpeg_bytes = await request.body()
     if jpeg_bytes:
-        # 带上前台程序名：视觉模型认不出界面时，「这是 PyCharm」这个先验
-        # 比让它对着截图硬猜有用得多。窗口标题仍然不传。
+        # 前台程序名作为低敏感度上下文补充视觉提示，窗口标题不进入模型请求。
         await app_state.awareness.vision.glance(jpeg_bytes, app=app_state.awareness.current_app())
     return {"ok": True}
 
 
 @router.get("/diary", dependencies=[Depends(_auth)])
 async def diary() -> JSONResponse:
+    """返回聊天服务生成的日记面板数据。
+
+    :return: 聊天服务的日记 JSON；服务未初始化时返回 `{'_stub': True}`。
+    :side_effects: 只读取当前聊天服务状态，不触发模型调用。
+    """
     if app_state.chat is None:
         return JSONResponse({"_stub": True})
     return JSONResponse(app_state.chat.diary_payload())
@@ -327,6 +495,13 @@ async def diary() -> JSONResponse:
 
 @router.get("/observability", dependencies=[Depends(_auth)])
 async def observability(stream_id: int = Query(alias='streamId')) -> JSONResponse:
+    """返回指定 stream 的观测快照及可选感知、语音状态。
+
+    :param stream_id: 查询参数 `streamId`，目标 stream 的正整数数据库 ID。
+    :return: 可序列化的观测快照 JSON。
+    :raises fastapi.HTTPException: 服务未初始化时返回 503，stream 不存在时返回 404。
+    :side_effects: 读取注册表、聊天、感知和 TTS 服务状态，不修改业务数据。
+    """
     if app_state.chat is None:
         return JSONResponse({"_stub": True})
     if app_state.registry is None:
@@ -344,7 +519,18 @@ async def observability(stream_id: int = Query(alias='streamId')) -> JSONRespons
 
 
 def _stream_label(stream: StreamRef) -> str:
-    """面板上认得出是哪条 stream 的短名。"""
+    """生成观察面板使用的 stream 可读短名称。
+
+    Args:
+        stream: 已解析的 stream 引用，包含平台、会话类型和外部 ID。
+
+    Returns:
+        桌面 stream 返回 ``桌面``；其他 stream 返回平台大写名称、私聊或群聊类型
+        以及外部 ID 组成的短名称。
+
+    Side Effects:
+        仅读取 stream 字段，不修改注册表或业务状态。
+    """
     if stream.platform == 'desktop':
         return '桌面'
     kind = '群聊' if stream.kind == 'group' else '私聊'
@@ -353,13 +539,28 @@ def _stream_label(stream: StreamRef) -> str:
 
 @router.get('/stages', dependencies=[Depends(_auth)])
 async def stages() -> dict:
-    """每条 stream 当前停在哪一步，供观察面板轮询。"""
+    """返回每条 stream 当前观测阶段，供观察面板轮询。
+
+    Returns:
+        包含 ``stages`` 字段的可序列化阶段快照。
+
+    Side Effects:
+        仅读取阶段看板，不触发业务处理或模型调用。
+    """
     return {'stages': stage_board.snapshot()}
 
 
 @router.get('/streams', dependencies=[Depends(_auth)])
 async def streams() -> dict:
-    """列出只读观察面板可选择的全部 stream。"""
+    """列出只读观察面板可选择的全部 stream。
+
+    Returns:
+        包含每个 stream 的数据库 ID、平台、会话类型和外部 ID 的字典；注册表未就绪
+        时返回空列表。
+
+    Side Effects:
+        仅读取注册表，不创建 stream 或修改业务数据。
+    """
     if app_state.registry is None:
         return {'streams': []}
     return {
@@ -377,7 +578,17 @@ async def streams() -> dict:
 
 @router.get('/api/persons', dependencies=[Depends(_auth)])
 async def persons() -> dict:
-    """列出独立人物画像入口，不把关系数据塞回会话快照。"""
+    """列出人物画像入口，不将人物关系详情嵌入会话观测快照。
+
+    Returns:
+        包含人物画像摘要列表的 ``persons`` 字段。
+
+    Raises:
+        fastapi.HTTPException: 聊天服务未初始化时返回 503。
+
+    Side Effects:
+        仅读取聊天服务状态，不触发模型调用或人物数据写入。
+    """
     if app_state.chat is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -388,7 +599,21 @@ async def persons() -> dict:
 
 @router.get('/api/persons/{person_id}', dependencies=[Depends(_auth)])
 async def person_detail(person_id: int) -> dict:
-    """读取单个人物画像；错误 ID 必须 404，禁止回退 owner。"""
+    """按数据库 ID 读取单个人物画像，禁止将无效 ID 回退到 owner。
+
+    Args:
+        person_id: 路径参数中的人物数据库 ID；必须为正整数。
+
+    Returns:
+        指定人物的可序列化画像数据。
+
+    Raises:
+        fastapi.HTTPException: 服务未初始化时返回 503，人物 ID 不存在时返回 404。
+        ValueError: 聊天服务将人物 ID 判定为非法时转换为 404。
+
+    Side Effects:
+        仅读取人物画像，不创建人物或更新关系状态。
+    """
     if app_state.chat is None or app_state.registry is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -404,6 +629,16 @@ async def person_detail(person_id: int) -> dict:
 async def debug_trace(since: int = 0) -> JSONResponse:
     """用户输入 / LLM 请求-流式增量-最终响应 / 记忆写入 / 感知决策的运行时追踪。
 
-    增量拉取：seq 之后的条目，配合前端轮询，不用每次全量搬。
+    Args:
+        since: 已消费的最大事件序号，默认 ``0``；仅返回更大的序号。
+
+    Returns:
+        包含增量观测事件数组的 JSON 响应。
+
+    Raises:
+        fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+
+    Side Effects:
+        仅读取事件账本，不修改事件序号或业务数据。
     """
     return JSONResponse(events_since(since, 1_000).events)

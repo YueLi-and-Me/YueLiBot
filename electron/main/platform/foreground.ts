@@ -1,3 +1,9 @@
+/**
+ * 采集当前前台窗口的进程名、标题和全屏状态，并生成稳定的活动快照。
+ *
+ * 主进程使用本模块驱动前台活动轮询；标题仅用于本地截图匹配，发送到后端的
+ * 活动数据由调用方筛选，不能替代视觉接口的隐私策略。
+ */
 import { basename } from 'node:path'
 import { screen } from 'electron'
 
@@ -8,16 +14,7 @@ export interface ForegroundInfo {
   fullscreen?: boolean
 }
 
-/**
- * 前台窗口探测。
- *
- * ★ platform 适配层：唯一碰系统 API 的地方。将来迁 Tauri 只需重写本文件。
- *
- * 刻意做成「坏了就降级」而不是「坏了就报错」：
- * active-win 是原生模块，在某些环境（缺权限、被杀软拦、ABI 不匹配）下会加载失败。
- * 而屏幕感知只是锦上添花 —— 为它让整个桌宠起不来是完全不划算的。
- * 失败时返回 null，上层归类成 idle，她照样能聊天。
- */
+/** 前台探测只接触系统窗口 API；读取失败时返回空值，由上层使用 idle 状态。 */
 
 type ActiveWinFn = () => Promise<
   | {
@@ -31,6 +28,13 @@ type ActiveWinFn = () => Promise<
 let loader: Promise<ActiveWinFn | null> | null = null
 let failed = false
 
+/**
+ * 延迟加载 active-win 原生模块并缓存加载结果。
+ *
+ * @returns 可调用的前台窗口探测函数；模块缺失、权限不足或加载失败时返回
+ * ``null``，后续调用不重复加载失败模块。
+ * @sideEffects 最多执行一次动态导入并记录失败状态。
+ */
 async function load(): Promise<ActiveWinFn | null> {
   if (failed) return null
   loader ??= import('active-win')
@@ -46,8 +50,12 @@ async function load(): Promise<ActiveWinFn | null> {
 /**
  * 判断是否全屏。
  *
- * 没有直接的 API，只能拿窗口尺寸跟所在显示器比。留 2px 容差 ——
- * 有些全屏应用会差一两像素，卡死等于永远判不出全屏。
+ * @param bounds 可选窗口边界；缺省时视为非全屏，坐标和尺寸单位为屏幕像素。
+ * @returns 窗口尺寸在所在显示器边界 2 像素容差内时返回 ``true``，否则返回 ``false``。
+ * @sideEffects 读取 Electron 当前显示器信息，不修改窗口或进程状态。
+ *
+ * 没有统一的全屏 API，只能将窗口尺寸与所在显示器比较；保留 2px 容差，
+ * 避免边框或缩放误差使真实全屏窗口长期无法识别。
  */
 function isFullscreen(bounds?: { x: number; y: number; width: number; height: number }): boolean {
   if (!bounds) return false
@@ -59,6 +67,15 @@ function isFullscreen(bounds?: { x: number; y: number; width: number; height: nu
   }
 }
 
+/**
+ * 读取当前前台窗口并返回经过隐私筛选的活动信息。
+ *
+ * @param fullscreenSilent 是否将接近显示器尺寸的窗口标记为全屏并触发静默策略。
+ * @returns 前台进程、可选标题和全屏状态；探测器不可用、无窗口或单次读取失败
+ * 时返回 ``null``。
+ * @sideEffects 可能动态加载原生探测模块；窗口标题只在本地返回给调用方，不负责
+ * 持久化或网络发送。
+ */
 export async function readForeground(fullscreenSilent: boolean): Promise<ForegroundInfo | null> {
   const activeWin = await load()
   if (!activeWin) return null
@@ -67,37 +84,37 @@ export async function readForeground(fullscreenSilent: boolean): Promise<Foregro
     const w = await activeWin()
     if (!w?.owner) return null
 
-    // owner.name 在 Windows 上是**显示名**（"Kimi"、"Google Chrome"），
-    // 而分类表按 exe 文件名匹配。优先从可执行路径取，取不到才退回显示名
+    // 分类表按可执行文件名匹配，因此优先使用 owner.path，路径缺失时才使用显示名。
     const proc = w.owner.path ? basename(w.owner.path) : (w.owner.name ?? '')
 
     return {
       process: proc,
-      // 标题只在本地做归类判断用，classify() 会把它消化掉、不往外传
+      // 标题只供本地分类使用，后续分类层负责决定是否暴露应用描述。
       ...(w.title ? { title: w.title } : {}),
-      // active-win 只能通过 bounds 猜全屏，分不出真全屏和无边框窗口化。
-      // 默认静默以保守保护直播/录屏；用户主动关掉开关后不把 fullscreen 上报给 classify。
+      // bounds 只能近似判断全屏；启用静默策略时才将该结果交给上层。
       fullscreen: fullscreenSilent && isFullscreen(w.bounds),
     }
   } catch {
-    // 单次读取失败（窗口正在切换、权限瞬时不足）不该拉黑整个功能
+    // 窗口切换或临时权限错误只影响本次采样，不改变模块加载成功状态。
     return null
   }
 }
 
-/** 供自检：探测能力当前是否可用。 */
+/**
+ * 检查前台窗口探测模块当前是否可用。
+ *
+ * @returns 动态模块已成功加载时为 ``true``，否则为 ``false``。
+ */
 export async function foregroundAvailable(): Promise<boolean> {
   return (await load()) !== null
 }
 
 /**
- * 这个前台窗口是不是我们自己。
+ * 判断前台进程是否为当前 Electron 应用本身。
  *
- * 必须排除掉：你点她、打字的那一刻，前台窗口就是**她自己的窗口**，
- * 归类出来是「在用电脑做别的事」。她于是会在你正跟她说话时
- * 说出「你在忙别的呀」这种明显不对的话。
- *
- * 正确的语义是「你转向她之前在做什么」，所以读到自己时应当保留上一个状态。
+ * @param proc 前台探测器返回的进程名或可执行文件名。
+ * @returns 去除 ``.exe`` 后与当前 Electron 进程名相同时为 ``true``。
+ * @sideEffects 不修改进程或窗口状态。
  */
 export function isSelfProcess(proc: string): boolean {
   const self = basename(process.execPath).toLowerCase().replace(/\.exe$/, '')

@@ -1,13 +1,8 @@
-"""
-Python CLI 自检：`python bot.py --selftest`。
+"""执行 Python 服务的离线自检并输出机器可解析的检查结果。
 
-替换掉原来那个只打一行假日志的桩实现——CHAT/REFLECT/AWARE 必须真的跑一遍，
-不能只是「进程起来了」就算过。原来 TS 侧的 `SELFTEST-CHAT`/`REFLECT`/`AWARE`
-逻辑随 main/chat.ts 等文件一起删掉了，这是它们在 Python 侧的等价物
-（docs/python-rework.md 阶段 6 的验收标准）。
-
-★ 全程用独立临时目录建库，绝不碰 --data-dir 指向的真实 memory.db——
-  REFLECT 检查会塞假消息触发摘要，写进真实库就是污染用户数据。
+自检在独立临时目录中创建并迁移 SQLite 数据库，依次覆盖对话编排、摘要写入
+和感知状态检查。模型提供者未配置时，依赖模型的检查报告为跳过并视为通过；
+临时数据库和观察事件存储在函数结束时清理，不访问运行时数据目录。
 """
 
 from __future__ import annotations
@@ -36,13 +31,35 @@ _CHAT_TIMEOUT_S = 20.0
 
 
 def _report(tag: str, payload: dict) -> None:
+    """以单行 JSON 输出一项自检结果。
+
+    Args:
+        tag: 稳定的检查名称。
+        payload: 可 JSON 序列化的结果字段。
+
+    Side Effects:
+        向标准输出写入一行并立即刷新，便于 CLI 调用方实时消费。
+    """
+
     print(f"{tag} {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 
 async def run_selftest(cfg: Any) -> int:
-    """三项检查全 ok（含 skip）才返回 0。"""
+    """在隔离数据库中执行完整自检流程。
+
+    Args:
+        cfg: 已加载的运行时配置，用于构建模型路由和服务。
+
+    Returns:
+        三项检查均通过或跳过时返回 0，否则返回 1。
+
+    Side Effects:
+        创建临时数据库、注册观察事件存储并输出三项检查结果；函数结束时关闭
+        存储并删除临时目录。
+    """
     tmp = Path(tempfile.mkdtemp(prefix="yueli_selftest_"))
     try:
+        # 自检数据库与观察账本都绑定到临时目录，避免测试消息进入运行时数据。
         db_path = tmp / "memory.db"
         db = open_db(db_path)
         run_migrations(db, db_path)
@@ -51,6 +68,17 @@ async def run_selftest(cfg: Any) -> int:
         events: list[dict] = []
 
         async def _push_event(channel: str, payload: Any, stream_id: int = 1) -> None:
+            """将自检事件保存到内存列表，不连接真实客户端。
+
+            Args:
+                channel: 事件通道名称。
+                payload: 通道负载对象。
+                stream_id: 事件所属 stream ID，默认 ``1``。
+
+            Side Effects:
+                向当前自检作用域的事件列表追加一条事件记录。
+            """
+
             events.append({"stream_id": stream_id, "channel": channel, "payload": payload})
 
         from src.llm_models.router import create_routers
@@ -70,6 +98,7 @@ async def run_selftest(cfg: Any) -> int:
             cfg=cfg,
         )
 
+        # 三条链路分别验证对话、摘要和纯编排状态；缺少模型时由子检查报告跳过。
         chat_ok = await _check_chat(chat, chat_provider, events)
         reflect_ok = await _check_reflect(chat, summary_provider)
         aware_ok = await _check_aware(chat, cfg, _push_event)
@@ -80,10 +109,25 @@ async def run_selftest(cfg: Any) -> int:
 
 
 async def _check_chat(chat: ChatService, provider: LlmProvider | None, events: list[dict]) -> bool:
+    """验证一次真实对话请求能够完成并产生结束事件。
+
+    Args:
+        chat: 已绑定临时数据库和事件推送回调的聊天服务。
+        provider: 已选中的聊天模型提供者；为 ``None`` 时跳过检查。
+        events: 接收聊天事件的内存列表。
+
+    Returns:
+        对话完成且没有 ``chat.error`` 时返回 ``True``；无提供者时按跳过处理。
+
+    Side Effects:
+        可能调用模型提供者并向临时事件列表追加聊天事件。
+    """
+
     if provider is None:
         _report("SELFTEST-CHAT", {"ok": True, "skipped": True, "reason": "no_provider"})
         return True
     try:
+        # 发送后等待同 stream 的 inflight task，确保事件统计覆盖完整回合。
         context = chat.desktop_context
         turn = await chat.send(InboundMessage(text="自检：请用一个字回复我", context=context))
         inflight = chat._inflight.get(context.stream.id)
@@ -103,6 +147,19 @@ async def _check_chat(chat: ChatService, provider: LlmProvider | None, events: l
 
 
 async def _check_reflect(chat: ChatService, provider: LlmProvider | None) -> bool:
+    """验证摘要阈值触发后能够写入新的 episode。
+
+    Args:
+        chat: 已初始化的聊天服务。
+        provider: 已选中的摘要模型提供者；为 ``None`` 时跳过检查。
+
+    Returns:
+        摘要数量增加时返回 ``True``；无提供者时按跳过处理。
+
+    Side Effects:
+        向临时数据库写入交替的用户和助手消息，并可能调用摘要模型。
+    """
+
     if provider is None:
         _report("SELFTEST-REFLECT", {"ok": True, "skipped": True, "reason": "no_provider"})
         return True
@@ -110,7 +167,7 @@ async def _check_reflect(chat: ChatService, provider: LlmProvider | None) -> boo
         before = len(chat.memory.all_episodes())
         base = current_time() - 60 * 60_000
         desktop_context = chat.desktop_context
-        # 写满摘要触发阈值。
+        # 写入达到摘要阈值的消息数量，验证摘要服务是否真正消费了这批数据。
         for i in range(chat._summarize_trigger_messages):
             role = "user" if i % 2 == 0 else "assistant"
             sender_person_id = desktop_context.person.id if role == "user" else None
@@ -136,7 +193,20 @@ async def _check_aware(
     cfg: Any,
     push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
 ) -> bool:
-    """不需要 LLM——纯编排检查，白盒读内部状态。"""
+    """在不调用模型的情况下验证前台活动和睡眠状态编排。
+
+    Args:
+        chat: 已初始化的聊天服务，用于提供状态依赖。
+        cfg: 运行时配置。
+        push_event: 异步事件推送回调。
+
+    Returns:
+        前台活动分类、应用名解析和睡眠状态类型均符合预期时返回 ``True``。
+
+    Side Effects:
+        更新感知服务的内存状态，并短暂等待后台前台事件任务完成。
+    """
+
     try:
         awareness = AwarenessService(chat=chat, schedule=None, cfg=cfg, push_event=push_event)
 
@@ -144,8 +214,7 @@ async def _check_aware(
         activity = awareness._last_classified.activity if awareness._last_classified else None
         activity_ok = activity == "coding"
 
-        # 视觉 context 那套判定随后台截图链路一起删了（现在只在他问起时看一眼），
-        # 这里改查程序名——它是喂给视觉模型的先验，也是情境文本的一部分。
+        # 以程序名作为应用上下文输入，验证当前感知链路的确定性字段解析。
         awareness.on_foreground({"process": "steam.exe", "title": "Steam", "fullscreen": False})
         app = awareness.current_app()
         app_ok = app == "Steam"
@@ -153,7 +222,8 @@ async def _check_aware(
         sleep_state = awareness._sleep.current(current_time())
         sleep_ok = sleep_state is not None and isinstance(sleep_state.asleep, bool)
 
-        await asyncio.sleep(0.05)   # 让 on_foreground 里起的后台 task 收尾，避免残留 pending task 警告
+        # 等待前台事件启动的短任务收尾，避免自检结束时留下 pending task。
+        await asyncio.sleep(0.05)
 
         ok = activity_ok and app_ok and sleep_ok
         _report("SELFTEST-AWARE", {

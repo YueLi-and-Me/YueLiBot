@@ -1,3 +1,9 @@
+/**
+ * 配置 Electron 主进程、preload 脚本和 renderer 资源的 electron-vite 构建入口。
+ *
+ * 三类入口分别使用 electron/main、electron/preload 和 electron/renderer 目录；
+ * 该文件只提供打包路径，不参与应用运行时配置或窗口生命周期。
+ */
 import { resolve } from 'node:path'
 import { defineConfig } from 'electron-vite'
 

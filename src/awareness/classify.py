@@ -1,11 +1,7 @@
-"""
-前台窗口 → 活动类别。直接移植自 src/core/awareness/classify.ts。
+"""把前台进程和用户输入状态转换为低敏感度活动描述。
 
-★ 隐私红线：绝不把原始窗口标题送进 LLM。标题在这里被吃掉，不往外传——
-  它带的是文档名、网页地址、聊天对象这些真正敏感的东西。
-  进程名（app 字段）是另一回事，会送出去：它只是可执行文件名，而「他开的是
-  PyCharm」这个先验能显著改善视觉模型对画面的判断——认不出界面时，知道这是
-  什么程序比瞎猜强得多。
+隐私约束：原始窗口标题只参与浏览器活动细分，不进入返回值，也不会送给模型；
+进程名经过规范化和有限映射后保留为程序名，帮助视觉描述识别应用类型。
 """
 
 from __future__ import annotations
@@ -28,6 +24,13 @@ BUSY_KEYS_PER_MIN = 120
 
 @dataclass
 class ForegroundInfo:
+    """描述 Electron 上报的当前前台窗口信息。
+
+    :ivar process: 进程名，通常含可选 `.exe` 后缀。
+    :ivar title: 原始窗口标题；只在本模块内部用于浏览器细分，默认值为 `None`。
+    :ivar fullscreen: 是否全屏，默认值为 `False`，全屏时活动会被标记为静默。
+    """
+
     process: str
     title: str | None = None
     fullscreen: bool = False
@@ -35,6 +38,15 @@ class ForegroundInfo:
 
 @dataclass
 class Classified:
+    """表示脱敏后的活动类别和输入强度。
+
+    :ivar activity: 规范化后的活动枚举值。
+    :ivar label: 面向提示词的中文活动描述。
+    :ivar silent: 当前环境是否应阻止主动搭话。
+    :ivar app: 面向用户的程序名，默认值为空字符串。
+    :ivar intensity: 键鼠输入强度，默认值为 `light`。
+    """
+
     activity: Activity
     label: str
     silent: bool
@@ -84,8 +96,7 @@ _LABELS: dict[Activity, str] = {
     'idle': '没在操作电脑', 'other': '在用电脑做别的事',
 }
 
-# 进程名 → 人看得懂的程序名。没收录的程序退回进程名本身，因为"他开的是什么"
-# 本身就是这里要传达的信息，写成「某个程序」等于什么都没说。
+# 进程名映射为可读的程序名；未收录的程序保留原进程名，避免丢失活动识别信息。
 _APP_NAMES: dict[str, str] = {
     'code': 'VS Code', 'code - insiders': 'VS Code', 'cursor': 'Cursor',
     'devenv': 'Visual Studio', 'idea64': 'IntelliJ IDEA', 'pycharm64': 'PyCharm',
@@ -126,10 +137,23 @@ _BROWSERS = frozenset(['chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi
 
 
 def _normalize(proc: str) -> str:
+    """规范化进程名以便与规则表匹配。
+
+    :param proc: 原始进程名。
+    :return: 转为小写、移除末尾 `.exe` 并去除首尾空白后的名称。
+    :side_effects: 不修改输入字符串。
+    """
     return re.sub(r'\.exe$', '', proc.lower()).strip()
 
 
 def classify(info: ForegroundInfo | None) -> Classified:
+    """根据前台进程和标题推断脱敏活动类别。
+
+    :param info: 前台窗口信息；`None` 或空进程表示用户当前空闲。
+    :return: 活动类别、中文标签、静默标志、程序名和默认输入强度。
+    :side_effects: 读取 `info.title` 仅用于本地匹配，不在返回结构中保留原始标题。
+    :performance: 按固定规则表线性扫描，规则规模与输入无关。
+    """
     if not info or not info.process:
         return Classified(activity='idle', label=_LABELS['idle'], silent=False)
     proc = _normalize(info.process)
@@ -157,6 +181,22 @@ def classify_input(keys: int, clicks: int, distance: float, idle_seconds: int,
 
     clicks / distance 只随快照一并传递，方便保持采集口径完整；忙碌阈值刻意只看
     键盘速率，避免再引入一套鼠标距离、点击次数等活动类型猜测规则。
+
+    Args:
+        keys: 采样窗口内的键盘按键数。
+        clicks: 采样窗口内的鼠标点击数；当前分类规则不直接使用该值。
+        distance: 采样窗口内的鼠标移动距离；当前分类规则不直接使用该值。
+        idle_seconds: 系统连续空闲秒数。
+        span_ms: 采样窗口长度，单位为毫秒，必须大于 ``0``。
+
+    Returns:
+        ``away``、``busy`` 或 ``light`` 三档输入强度。
+
+    Raises:
+        ValueError: ``span_ms`` 小于等于 ``0``。
+
+    Side Effects:
+        不执行进程查询或持久化；输入值仅用于本次分类。
     """
     if span_ms <= 0:
         raise ValueError('键鼠采样窗口必须大于 0')
@@ -172,6 +212,13 @@ LONG_SESSION_MINUTES = 110
 
 
 def describe_activity(c: Classified, minutes: int) -> str:
+    """把活动分类和持续时间渲染为自然语言情境描述。
+
+    :param c: 已脱敏的活动分类结果。
+    :param minutes: 当前活动持续分钟数，负值会按短时活动处理。
+    :return: 中文活动描述；忙碌输入时追加“手头正忙”。
+    :side_effects: 不执行进程查询或模型调用。
+    """
     if c.intensity == 'away':
         return '他人不在电脑前。'
     if c.activity == 'idle':
@@ -186,8 +233,7 @@ def describe_activity(c: Classified, minutes: int) -> str:
         span = '两个多小时了'
     else:
         span = '很久了'
-    # 带上程序名：「他在用 PyCharm 写代码」比「他在写代码」具体得多，
-    # 视觉描述认不出界面时，这一句就是她唯一靠得住的依据。
+    # 活动描述同时保留程序名和行为，视觉描述缺失时仍能提供可追踪的前台上下文。
     label = f'在用 {c.app} {c.label[1:]}' if c.app and c.label.startswith('在') else c.label
-    text = f'他{label}，已经{span}。' if span else f'他{label}。'
+    text = f'当前用户{label}，已经{span}。' if span else f'当前用户{label}。'
     return f'{text}手头正忙。' if c.intensity == 'busy' else text

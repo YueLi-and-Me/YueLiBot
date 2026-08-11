@@ -1,12 +1,11 @@
-"""
-Pydantic 配置模型。
+"""定义四份 TOML 对应的 Pydantic 配置模型和运行时组合视图。
 
 持久化层由 providers/models/bot/features 四份 TOML 组成；加载器会把它们
 组合为本文件末尾的 Config 运行时视图，业务服务不需要知道磁盘布局。
 
 启动时一次性校验，字段缺失/类型错在进入任何业务逻辑之前就报错。
-每个字段在 TOML 里的注释由 Electron 主进程的写入模板负责
-（见 src/main/config.ts），这里的注释只是给读代码的人看。
+每个字段在 TOML 中的写入模板由 Electron 主进程维护；本模块只负责类型、范围、
+字段关系和废弃字段校验。
 """
 
 from __future__ import annotations
@@ -19,23 +18,43 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class InnerConfig(BaseModel):
+    """表示一份配置文件的版本信息。
+
+    :ivar version: 当前配置格式版本，固定为 `1.1.0`。
+    """
+
     # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
     # 旧配置由 Electron 侧在读取时就地升级，Python 只解析当前版本。
     version: Literal['1.1.0'] = '1.1.0'
 
 
 class BotConfig(BaseModel):
+    """保存 Bot 名称、别名以及与用户的称呼和关系。
+
+    :ivar name: 非空主名称。
+    :ivar aliases: 不重复且不等于主名称的别名列表。
+    :ivar user_nickname: 用户希望使用的称呼，可为空。
+    :ivar relationship: 关系描述，可为空。
+    :raises pydantic.ValidationError: 名称为空、别名为空、重复或与主名称冲突。
+    """
+
     # Bot 的显示名和提示词身份名
     name: str
-    # 群聊里可用于叫她的其它名字
+    # 群聊和私聊中可用于匹配 Bot 的其他称呼。
     aliases: List[str] = Field(default_factory=list)
-    # Bot 眼中用户的名字/称呼，留空则不特别用名字称呼他
+    # Bot 对用户的称呼偏好；留空表示不在提示词中要求使用特定称呼。
     user_nickname: str = ''
     # Bot 和用户的关系：哥哥/姐姐/朋友/自定义文本，留空则不设定这层关系
     relationship: str = ''
 
     @model_validator(mode='after')
     def _validate_names(self) -> 'BotConfig':
+        """规范化 Bot 名称与别名并验证唯一性。
+
+        :return: 当前完成校验的模型实例。
+        :raises ValueError: 主名称为空、别名为空、重复或等于主名称。
+        :side_effects: 更新当前模型中的 `name` 和 `aliases` 为去空白后的值。
+        """
         self.name = self.name.strip()
         if not self.name:
             raise ValueError('bot.name 不能为空')
@@ -96,6 +115,13 @@ class ScheduleConfig(BaseModel):
     )
     @classmethod
     def _strip_fallback_text(cls, value: str) -> str:
+        """去除日程备用文本空白并拒绝空内容。
+
+        :param value: 日程备用活动、心情、主题或承接文本。
+        :return: 去除首尾空白后的文本。
+        :raises ValueError: 文本为空或只包含空白。
+        :side_effects: 不修改原字符串。
+        """
         normalized = value.strip()
         if not normalized:
             raise ValueError('日程备用文本不能为空')
@@ -103,6 +129,12 @@ class ScheduleConfig(BaseModel):
 
     @model_validator(mode='after')
     def _validate_schedule(self) -> 'ScheduleConfig':
+        """验证日程槽位范围和三个时间字段的 `HH:MM` 格式。
+
+        :return: 当前完成校验的日程配置。
+        :raises ValueError: 最小槽位数大于最大槽位数，或时间不在合法范围内。
+        :side_effects: 不修改配置字段。
+        """
         if self.min_slots > self.max_slots:
             raise ValueError('schedule.min_slots 不能大于 schedule.max_slots')
         for field_name, value in (
@@ -130,6 +162,13 @@ class PersonalityConfig(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _reject_retired_fields(cls, value: Any) -> Any:
+        """拒绝已删除的人格字段，避免旧配置被静默解释。
+
+        :param value: Pydantic before 校验阶段的原始人格映射。
+        :return: 不含废弃字段的原始值。
+        :raises ValueError: 发现 `identity`、`behavior`、`attention` 或 `boundaries`。
+        :side_effects: 不修改输入映射。
+        """
         if not isinstance(value, dict):
             return value
         migration_errors = (
@@ -146,6 +185,13 @@ class PersonalityConfig(BaseModel):
     @field_validator('birthday')
     @classmethod
     def _validate_birthday(cls, value: str) -> str:
+        """校验生日为空或合法的过去日期。
+
+        :param value: `YYYY-MM-DD` 格式的生日文本，可以为空字符串。
+        :return: 原始生日文本；空值保持为空。
+        :raises ValueError: 格式错误、日期不存在或日期晚于当前日期。
+        :side_effects: 读取本地当前日期，不修改模型外状态。
+        """
         if not value:
             return value
         if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value) is None:
@@ -161,6 +207,13 @@ class PersonalityConfig(BaseModel):
     @field_validator('tone_variants', 'expression_habits', 'proactive_expression_habits')
     @classmethod
     def _validate_text_lists(cls, value: List[str]) -> List[str]:
+        """规范化人格文本列表并拒绝空条目。
+
+        :param value: 临时语调、表达习惯或主动表达习惯列表。
+        :return: 每项去除首尾空白后的新列表。
+        :raises ValueError: 任一条目为空或只包含空白。
+        :side_effects: 不修改输入列表。
+        """
         normalized = [variant.strip() for variant in value]
         if any(not variant for variant in normalized):
             raise ValueError('personality 的文本列表不能包含空字符串')
@@ -181,6 +234,12 @@ class ConversationConfig(BaseModel):
 
     @model_validator(mode='after')
     def _validate_summary_window(self) -> 'ConversationConfig':
+        """确保摘要批次、触发阈值和工作记忆窗口之间存在可用余量。
+
+        :return: 当前完成校验的对话配置。
+        :raises ValueError: 批次不小于触发阈值，或触发后剩余窗口超出工作记忆容量。
+        :side_effects: 不修改配置字段。
+        """
         if self.summarize_batch_messages >= self.summarize_trigger_messages:
             raise ValueError('summarize_batch_messages 必须小于 summarize_trigger_messages')
         remaining = self.summarize_trigger_messages - self.summarize_batch_messages
@@ -201,6 +260,13 @@ class GenerationTaskConfig(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _reject_thinking(cls, value: Any) -> Any:
+        """拒绝已从任务级配置移除的 `thinking` 字段。
+
+        :param value: 原始 generation 配置映射。
+        :return: 未含废弃字段的原始值。
+        :raises ValueError: 显式提供 `thinking` 字段。
+        :side_effects: 不修改输入映射。
+        """
         if isinstance(value, dict) and 'thinking' in value:
             raise ValueError(
                 'generation.<任务>.thinking 已经取消。思考模式现在是模型属性：'
@@ -211,6 +277,11 @@ class GenerationTaskConfig(BaseModel):
 
     @property
     def token_limit(self) -> int | None:
+        """把零值最大 token 配置转换为 provider 使用的可选值。
+
+        :return: `max_tokens` 大于零时返回原值，否则返回 `None`。
+        :side_effects: 不修改配置。
+        """
         return self.max_tokens or None
 
 
@@ -261,25 +332,29 @@ class TtsConfig(BaseModel):
 
 
 class VisionConfig(BaseModel):
-    # ⚠ 除非 base_url 指向本机，否则这是全项目唯一会把屏幕内容送出去的功能。
-    #   开启前想清楚：绝不落盘、缩到 768px 宽再传，但截图里仍可能有明文密码、
-    #   私信、银行页面、公司文档。capture_mode = 'screen' 时风险显著更高，
-    #   见下面那个字段的说明。
-    #   base_url 填本地推理服务（如 Ollama 的 http://127.0.0.1:11434/v1）时，
-    #   画面不出本机，上面这条顾虑不成立。
+    """定义视觉功能开关和截图范围。
+
+    :ivar enabled: 是否允许调用视觉模型。
+    :ivar fullscreen_silent: 疑似全屏时是否静默，默认值为 `True`。
+    :ivar capture_mode: 截取前台窗口或整个主屏，默认值为 `window`。
+    """
+
+    # 视觉请求可能包含屏幕中的敏感信息；服务不落盘并将图片缩放到 768px 宽，
+    # 但远程 base_url 仍会接收图像内容。使用本地推理地址时，图像不会离开本机。
     enabled: bool = False
-    # 疑似全屏时静默，避免直播/录屏把桌宠声音带进去
+    # 疑似全屏时保持静默，避免直播或录屏场景输出桌宠声音。
     fullscreen_silent: bool = True
-    # 截什么：
-    #   'window' = 只截前台那一个窗口（默认）。她看不到「桌面上有什么」，
-    #              因为桌面本身、其它窗口都不在画面里。
-    #   'screen' = 截整个主屏。她能看到桌面全貌，代价是会连带截到第二个窗口、
-    #              后台的聊天窗、没关的网页——凡是当时屏幕上有的都会被送走。
-    #              指向云端模型时尤其要想清楚。
+    # 截图范围：window 仅捕获前台窗口（默认）；screen 捕获整个主屏，包含当时可见的
+    # 桌面、任务栏和其他窗口。整屏模式会扩大上传范围，使用远程模型时应明确评估隐私边界。
     capture_mode: Literal['window', 'screen'] = 'window'
 
     @property
     def ready(self) -> bool:
+        """返回视觉功能是否已启用。
+
+        :return: `enabled` 的布尔值。
+        :side_effects: 不读取截图或模型连接状态。
+        """
         return self.enabled
 
 
@@ -293,6 +368,13 @@ class PerceptionConfig(BaseModel):
     @field_validator('surfaces', mode='before')
     @classmethod
     def _validate_surfaces(cls, value: object) -> object:
+        """校验屏幕情境允许出现的会话表面。
+
+        :param value: 原始 surfaces 配置，必须为列表。
+        :return: 原始合法列表，供 Pydantic 继续转换。
+        :raises ValueError: 值不是列表、含未知表面或尝试启用群聊。
+        :side_effects: 不修改输入列表。
+        """
         if not isinstance(value, list):
             raise ValueError('perception.surfaces 必须是列表，可填 desktop 或 direct')
         invalid = [item for item in value if item not in ('desktop', 'direct')]
@@ -308,6 +390,11 @@ class PerceptionConfig(BaseModel):
 
 
 class VectorConfig(BaseModel):
+    """定义向量混合召回功能的开关。
+
+    :ivar enabled: 是否启用向量召回；具体 embedding 模型由任务路由配置。
+    """
+
     # 向量混合召回，默认关；还需 pip install yueli[vector]
     # 用哪个 embedding 模型由 model_tasks.embedding 决定，不在这里重复。
     enabled: bool = False
@@ -349,6 +436,11 @@ class LogConfig(BaseModel):
 
 
 class AdvancedConfig(BaseModel):
+    """保存全局高级运行参数。
+
+    :ivar https_proxy: 可选的 HTTP(S) 代理地址，默认值为空字符串。
+    """
+
     # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890
     https_proxy: str = ''
 
@@ -362,8 +454,8 @@ class ApiProviderConfig(BaseModel):
     api_key: str = ''
     auth_type: Literal['bearer', 'header', 'query', 'none'] = 'bearer'
     auth_name: str = ''
-    # openai = OpenAI 兼容协议（对话/视觉/向量/TTS 都走它）
-    # volcengine = 豆包语音私有协议，只能用于 tts 任务
+    # openai = OpenAI 兼容协议，支持对话、视觉、向量和 TTS 任务。
+    # volcengine = 豆包语音私有协议，仅允许绑定 TTS 任务。
     client_type: Literal['openai', 'volcengine'] = 'openai'
     # 豆包语音要 App ID + Access Token 两个凭证，api_key 放 Access Token
     app_id: str = ''
@@ -375,6 +467,12 @@ class ApiProviderConfig(BaseModel):
 
     @model_validator(mode='after')
     def _validate_auth(self) -> 'ApiProviderConfig':
+        """根据客户端协议和鉴权类型验证厂商连接凭据。
+
+        :return: 当前完成校验的厂商配置。
+        :raises ValueError: 鉴权名称、API key 与鉴权类型组合不合法。
+        :side_effects: 规范化 `auth_name`，不发起网络请求。
+        """
         if self.client_type != 'openai':
             return self
         self.auth_name = self.auth_name.strip()
@@ -391,6 +489,8 @@ class ApiProviderConfig(BaseModel):
 
 
 class ProviderCatalog(BaseModel):
+    """表示 providers.toml 的顶层结构。"""
+
     inner: InnerConfig
     api_providers: List[ApiProviderConfig]
 
@@ -408,6 +508,13 @@ class ModelDefinitionConfig(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _reject_thinking(cls, value: Any) -> Any:
+        """拒绝已从模型定义移除的顶层 `thinking` 字段。
+
+        :param value: 原始模型定义映射。
+        :return: 未含废弃字段的原始值。
+        :raises ValueError: 发现 `thinking` 字段。
+        :side_effects: 不修改输入映射。
+        """
         if isinstance(value, dict) and 'thinking' in value:
             raise ValueError(
                 'models.*.thinking 已经取消，请把厂商参数原样写入 extra_body。'
@@ -433,19 +540,37 @@ class TaskRoutingConfig(BaseModel):
     @field_validator('model_list')
     @classmethod
     def _reject_duplicates(cls, v: List[str]) -> List[str]:
-        # 同一个模型写两遍只会让轮询白撞一次，属于明显的手误。
+        """拒绝任务候选列表中的重复模型名。
+
+        :param v: 模型名称列表。
+        :return: 原列表对象。
+        :raises ValueError: 同一个模型名出现多次。
+        :side_effects: 不修改列表。
+        """
+        # 重复候选会改变轮询顺序并增加无效尝试，因此在配置加载期直接拒绝。
         if len(set(v)) != len(v):
             raise ValueError(f'model_list 存在重复模型：{v}')
         return v
 
     @model_validator(mode='after')
     def _validate_timing(self) -> 'TaskRoutingConfig':
+        """验证慢响应阈值严格早于首 token 超时。
+
+        :return: 当前完成校验的任务路由配置。
+        :raises ValueError: 慢响应阈值非零且大于等于首 token 超时。
+        :side_effects: 不修改字段。
+        """
         if self.slow_threshold_ms and self.slow_threshold_ms >= self.first_token_timeout_ms:
             raise ValueError('slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0')
         return self
 
 
 class ModelTaskConfig(BaseModel):
+    """保存八类任务各自的模型候选和选择策略。
+
+    `extra='forbid'` 确保拼写错误的任务段在加载期直接失败，不会意外继承 chat 配置。
+    """
+
     # 段名写错必须炸在加载期。留空继承 chat 是合法语义，段名打错不是——
     # 没有这一条，[model_tasks.summry] 会静默变成「跟 chat 一样」。
     model_config = ConfigDict(extra='forbid')
@@ -498,12 +623,23 @@ class TaskRouting(BaseModel):
 
     @model_validator(mode='after')
     def _validate_timing(self) -> 'TaskRouting':
+        """验证运行时路由的慢响应阈值和首 token 超时关系。
+
+        :return: 当前完成校验的运行时路由。
+        :raises ValueError: 慢响应阈值非零且不小于首 token 超时。
+        :side_effects: 不修改路由字段。
+        """
         if self.slow_threshold_ms and self.slow_threshold_ms >= self.first_token_timeout_ms:
             raise ValueError('slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0')
         return self
 
     @property
     def ready(self) -> bool:
+        """判断该任务是否至少有一个可用模型候选。
+
+        :return: `candidates` 非空时返回 `True`。
+        :side_effects: 不修改候选列表。
+        """
         return bool(self.candidates)
 
 
@@ -521,6 +657,8 @@ class RoutingConfig(BaseModel):
 
 
 class ModelCatalog(BaseModel):
+    """表示 models.toml 的顶层结构。"""
+
     inner: InnerConfig
     model_tasks: ModelTaskConfig
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
@@ -528,6 +666,8 @@ class ModelCatalog(BaseModel):
 
 
 class BotDocument(BaseModel):
+    """表示 bot.toml 的顶层结构及默认业务配置段。"""
+
     inner: InnerConfig
     bot: BotConfig
     group_chat: GroupChatConfig = Field(default_factory=GroupChatConfig)
@@ -537,6 +677,8 @@ class BotDocument(BaseModel):
 
 
 class FeatureDocument(BaseModel):
+    """表示 features.toml 的顶层结构及各功能开关。"""
+
     inner: InnerConfig
     tts: TtsConfig
     vision: VisionConfig
@@ -547,6 +689,12 @@ class FeatureDocument(BaseModel):
 
 
 class Config(BaseModel):
+    """表示加载器组合后的完整运行时配置。
+
+    生产环境由四份 TOML 显式提供所有关键字段；字段工厂只为不经过磁盘加载器的
+    纯单元测试构造空配置，不提供运行时人格或模型兜底。
+    """
+
     # 生产加载器始终显式传入 BotDocument 的各段。这里的空 Bot 只服务于
     # 不经过磁盘加载器、且与角色内容无关的纯单元测试，不提供角色信息。
     bot: BotConfig = Field(default_factory=lambda: BotConfig.model_construct(
