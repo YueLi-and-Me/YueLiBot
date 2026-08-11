@@ -350,13 +350,13 @@ export interface YueliConfig {
     generation_retry_interval_minutes: number
   }
   personality: {
-    identity: string
-    behavior: string
+    birthday: string
+    personality: string
     reply_style: string
-    attention: string
-    boundaries: string
     tone_probability: number
     tone_variants: string[]
+    expression_habits: string[]
+    proactive_expression_habits: string[]
   }
   conversation: {
     working_memory_messages: number

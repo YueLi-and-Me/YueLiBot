@@ -13,6 +13,7 @@ let settingsWindow: BrowserWindow | null = null
 export interface SettingsWindowOptions {
   url: string
   preload: string
+  botName: string
 }
 
 export function openSettingsWindow(opts: SettingsWindowOptions): BrowserWindow {
@@ -28,7 +29,7 @@ export function openSettingsWindow(opts: SettingsWindowOptions): BrowserWindow {
     minWidth: 460,
     minHeight: 520,
     useContentSize: true,
-    title: '月璃设置',
+    title: opts.botName ? `${opts.botName}设置` : 'Bot 设置',
     backgroundColor: '#171a20',
     autoHideMenuBar: true,
     webPreferences: {

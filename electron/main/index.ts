@@ -71,7 +71,7 @@ app.setPath('crashDumps', runtimePaths.electronCrashDumpsDir)
 let petWindow: BrowserWindow | null = null
 let supervisor: PythonSupervisor | null = null
 let client: PythonClient | null = null
-/** 启动后一直保持"当前有效配置"的引用，点"重启月璃"时刷新——
+/** 启动后一直保持"当前有效配置"的引用，重启 Bot 时刷新——
  * 决定 Electron 这一侧的行为（比如要不要轮询截图）不能只看启动那一刻的值。 */
 let currentCfg: YueliConfig | null = null
 let inputActivity: InputActivity | null = null
@@ -133,6 +133,7 @@ app.whenReady().then(async () => {
     openSettingsWindow({
       url: devUrl ? new URL('settings.html', devUrl).href : APP_SETTINGS_URL,
       preload: resolveSettingsPreload(),
+      botName: currentCfg?.bot.name ?? '',
     })
   })
 
@@ -161,6 +162,7 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
         ? new URL('settings.html?mode=first-run', devUrl).href
         : `${APP_SETTINGS_URL}?mode=first-run`,
       preload: resolveSettingsPreload(),
+      botName: '',
     })
   }).then(() => {
     closeSettingsWindow()
@@ -208,7 +210,7 @@ async function startApp(
   })
   // 只弹托盘，原因 supervisor 已经打过了
   supervisor.on('adapterFailed', (err) => {
-    notifyTray(err.message)
+    notifyTray(cfg.bot.name, err.message)
   })
   supervisor.start()
   app.on('before-quit', () => {
@@ -270,10 +272,10 @@ async function startApp(
   fgTimer.unref()
   app.on('before-quit', () => clearInterval(fgTimer))
 
-  // ★ 开关读的是模块级 currentCfg（点"重启月璃"时会刷新，见顶部那个 handler），
+  // ★ 开关读的是模块级 currentCfg（重启 Bot 时会刷新，见顶部那个 handler），
   //   不是启动时捕获的常量——否则在设置窗口里打开视觉功能、点重启，
   //   Electron 这一侧永远不会跟着生效，得整个应用重启才行，
-  //   和"重启月璃"这个按钮承诺的效果对不上。
+  //   和"重启 Bot"这个按钮承诺的效果对不上。
   currentCfg = cfg
 
   const capturePageUrl = devUrl ? new URL('capture.html', devUrl).href : APP_CAPTURE_URL
@@ -331,7 +333,7 @@ async function startApp(
 
 
   // ── 托盘 ────────────────────────────────────────────────────────────
-  createTray(petWindow, {
+  createTray(petWindow, cfg.bot.name, {
     talk: () => {
       const win = petWindow
       if (!win || win.isDestroyed()) return
@@ -346,16 +348,19 @@ async function startApp(
       openDiaryWindow({
         url: devUrl ? new URL('diary.html', devUrl).href : APP_DIARY_URL,
         preload: resolveDiaryPreload(),
+        botName: cfg.bot.name,
       }),
     openObservability: () =>
       openObservabilityWindow({
         url: devUrl ? new URL('observability.html', devUrl).href : APP_OBSERVABILITY_URL,
         preload: resolveObservabilityPreload(),
+        botName: cfg.bot.name,
       }),
     openSettings: () =>
       openSettingsWindow({
         url: devUrl ? new URL('settings.html', devUrl).href : APP_SETTINGS_URL,
         preload: resolveSettingsPreload(),
+        botName: cfg.bot.name,
       }),
     restartBackend: () => { supervisor?.stop(); supervisor?.start() },
   })
@@ -473,7 +478,11 @@ function probeTray(win: BrowserWindow) {
 async function probeDiary() {
   const devUrl = process.env.ELECTRON_RENDERER_URL
   const url = devUrl ? new URL('diary.html', devUrl).href : APP_DIARY_URL
-  const win = openDiaryWindow({ url, preload: resolveDiaryPreload() })
+  const win = openDiaryWindow({
+    url,
+    preload: resolveDiaryPreload(),
+    botName: currentCfg?.bot.name ?? '',
+  })
   try {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('日记窗口加载超时')), 10_000)

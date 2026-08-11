@@ -36,8 +36,8 @@ let tray: Tray | null = null
  * QQ 适配器属于后台子进程，失败时桌宠窗口可能还没创建完成；托盘存在时用
  * Windows 气泡通知，否则退回 Electron 系统通知，确保启动期错误也能被看见。
  */
-export function notifyTray(message: string): void {
-  const title = '月璃 QQ 适配器'
+export function notifyTray(botName: string, message: string): void {
+  const title = `${botName || 'Bot'} QQ 适配器`
   if (process.platform === 'win32' && tray && !tray.isDestroyed()) {
     tray.displayBalloon({ title, content: message, iconType: 'warning' })
     return
@@ -70,30 +70,31 @@ function trayIcon(): Electron.NativeImage {
   return img.isEmpty() ? nativeImage.createEmpty() : img.resize({ width: 16, height: 16 })
 }
 
-export function createTray(win: BrowserWindow, handlers: TrayHandlers): Tray {
+export function createTray(win: BrowserWindow, botName: string, handlers: TrayHandlers): Tray {
   destroyTray()
 
   tray = new Tray(trayIcon())
-  tray.setToolTip('月璃')
+  tray.setToolTip(botName || 'Bot')
 
   const rebuild = (): void => {
     if (!tray || tray.isDestroyed()) return
     const visible = !win.isDestroyed() && win.isVisible()
+    const labelName = botName || 'Bot'
 
     tray.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: visible ? '隐藏她' : '显示她',
+          label: `${visible ? '隐藏' : '显示'}${labelName}`,
           click: () => {
             togglePet(win, !visible)
             rebuild()
           },
         },
-        { label: '跟她说话', click: handlers.talk, enabled: visible },
+        { label: `跟${labelName}说话`, click: handlers.talk, enabled: visible },
         {
           // 平时只在他问起屏幕时才看一眼；打开这个就是持续看着，
           // 适合打游戏、看视频想让她陪着聊的场景。
-          label: '让她看着屏幕',
+          label: `让${labelName}看着屏幕`,
           type: 'checkbox',
           checked: handlers.watchingScreen(),
           click: (item) => {
@@ -102,10 +103,10 @@ export function createTray(win: BrowserWindow, handlers: TrayHandlers): Tray {
           },
         },
         // 日记不依赖她显不显示 —— 想翻的时候她可能正被收着
-        { label: '看她的日记…', click: handlers.openDiary },
+        { label: `看${labelName}的日记…`, click: handlers.openDiary },
         { type: 'separator' },
         { label: '设置…', click: handlers.openSettings },
-        { label: '重启月璃', click: handlers.restartBackend },
+        { label: `重启${labelName}`, click: handlers.restartBackend },
         // 开发者验收入口，和日记严格分开，避免把数值面板做成养成功能。
         { label: '打开观察面板…', click: handlers.openObservability },
         { type: 'separator' },

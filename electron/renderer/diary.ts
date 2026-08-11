@@ -20,7 +20,7 @@ function render(entries: DiaryEntry[], now: number): void {
   if (!entries.length) {
     const empty = document.createElement('div')
     empty.className = 'empty'
-    empty.textContent = '还没有记下什么。\n多陪她聊几句，她会开始写日记，也会做梦。'
+    empty.textContent = '还没有记下什么。\n多聊几句后，这里会逐渐出现日记和梦。'
     empty.style.whiteSpace = 'pre-line'
     list.append(empty)
     return

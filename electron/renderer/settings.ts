@@ -32,7 +32,7 @@ const addProviderButton = document.getElementById('add-provider') as HTMLButtonE
 const addModelButton = document.getElementById('add-model') as HTMLButtonElement
 
 if (isFirstRun) {
-  pageTitle.textContent = '欢迎使用月璃'
+  pageTitle.textContent = '欢迎配置你的 Bot'
   pageSubtitle.textContent = '第一次启动需要先填一些基本信息，之后随时能从托盘菜单里的"设置"回来改。'
 }
 
@@ -50,7 +50,7 @@ const PROVIDER_KINDS: Array<[string, string]> = [
 ]
 
 const TASK_LABELS: Array<[keyof YueliConfig['model_tasks'], string, string]> = [
-  ['chat', '对话', '她说话用的模型。至少要有一个。'],
+  ['chat', '对话', 'Bot 说话用的模型。至少要有一个。'],
   ['proactive', '主动搭话', '留空时继承对话候选，也可以单独指定更快的模型。'],
   ['summary', '长期记忆摘要', '留空时继承对话候选，也可以单独指定低成本模型。'],
   ['schedule', '每日生活计划', '留空时继承对话候选，也可以单独指定结构化输出模型。'],
@@ -432,10 +432,17 @@ function populateForm(config: YueliConfig): void {
     if (value === undefined) continue
     if (el instanceof HTMLInputElement && el.type === 'checkbox') {
       el.checked = Boolean(value)
-    } else if (el instanceof HTMLInputElement && el.dataset.stringArray === 'true') {
+    } else if (
+      (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+      && el.dataset.stringArray === 'true'
+    ) {
       if (!Array.isArray(value)) throw new Error(`${name} 必须是字符串数组`)
-      el.value = value.join('，')
-    } else if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) {
+      el.value = el instanceof HTMLTextAreaElement ? value.join('\n') : value.join('，')
+    } else if (
+      el instanceof HTMLInputElement
+      || el instanceof HTMLSelectElement
+      || el instanceof HTMLTextAreaElement
+    ) {
       el.value = String(value)
     }
   }
@@ -460,12 +467,16 @@ function collectFormValues(base: YueliConfig): YueliConfig {
   // 不能被表单提交时悄悄清空。服务商/模型/候选已经直接写在 base 上了。
   const result = JSON.parse(JSON.stringify(base)) as Record<string, unknown>
   for (const el of Array.from(form.elements)) {
-    const input = el as HTMLInputElement | HTMLSelectElement
+    const input = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
     if (!input.name) continue
     if (input instanceof HTMLInputElement && input.type === 'checkbox') {
       setByPath(result, input.name, input.checked)
-    } else if (input instanceof HTMLInputElement && input.dataset.stringArray === 'true') {
-      const values = input.value.split(/[,，、\n]/).map((value) => value.trim()).filter(Boolean)
+    } else if (
+      (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
+      && input.dataset.stringArray === 'true'
+    ) {
+      const separator = input instanceof HTMLTextAreaElement ? /\r?\n/ : /[,，、\n]/
+      const values = input.value.split(separator).map((value) => value.trim()).filter(Boolean)
       setByPath(result, input.name, values)
     } else if (input instanceof HTMLInputElement && input.type === 'number') {
       setByPath(result, input.name, Number(input.value))
@@ -496,7 +507,7 @@ form.addEventListener('submit', async (e) => {
     loadedConfig = config
     renderDynamicSections()
     if (isFirstRun) {
-      setStatus('保存成功，正在启动月璃…', 'ok')
+      setStatus(`保存成功，正在启动${config.bot.name}…`, 'ok')
       // 主进程监听同一次 save 调用的成功结果，会自己关掉这扇窗并继续启动——
       // 这里不用再做什么，保留提示文字直到窗口被关掉。
     } else {
@@ -521,6 +532,14 @@ async function init(): Promise<void> {
     if (loadedConfig) {
       populateForm(loadedConfig)
       renderDynamicSections()
+      const configuredName = loadedConfig.bot.name.trim()
+      if (!isFirstRun && configuredName) {
+        pageTitle.textContent = `${configuredName}设置`
+        document.title = `${configuredName}设置`
+      }
+      restartButton.textContent = configuredName
+        ? `重启${configuredName}使配置生效`
+        : '重启 Bot 使配置生效'
     }
   } catch (err) {
     setStatus(`读取配置失败：${err instanceof Error ? err.message : String(err)}`, 'error')

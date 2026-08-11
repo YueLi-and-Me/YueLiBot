@@ -208,7 +208,7 @@ def main() -> None:
                     candidates=len(chat_provider.candidates), strategy=cfg.routing.chat.strategy)
     else:
         logger.warning("llm_init_failed",
-                       error="model_tasks.chat.model_list 是空的，她这轮说不出话")
+                       error="model_tasks.chat.model_list 是空的，Bot 这轮无法回复")
 
     vision_provider = None
     if cfg.vision.enabled:

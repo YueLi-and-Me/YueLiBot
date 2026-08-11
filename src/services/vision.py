@@ -164,7 +164,7 @@ class VisionService:
             )
         except asyncio.TimeoutError:
             logger.warning('chat_glance_timeout', seconds=CHAT_GLANCE_DEADLINE_S,
-                           hint='视觉接口太慢，这一轮她会如实说看不到；持续出现就换视觉模型')
+                           hint='视觉接口太慢，这一轮 Bot 会如实说看不到；持续出现就换视觉模型')
             trace.emit('vision_glance', result='timeout', seconds=CHAT_GLANCE_DEADLINE_S, app=app)
             result = VisionCallResult(
                 description=None,

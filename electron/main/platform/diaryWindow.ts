@@ -15,6 +15,7 @@ let diaryWindow: BrowserWindow | null = null
 export interface DiaryWindowOptions {
   url: string
   preload: string
+  botName: string
 }
 
 export function openDiaryWindow(opts: DiaryWindowOptions): BrowserWindow {
@@ -31,7 +32,7 @@ export function openDiaryWindow(opts: DiaryWindowOptions): BrowserWindow {
     minWidth: 380,
     minHeight: 420,
     useContentSize: true,
-    title: '月璃的日记',
+    title: opts.botName ? `${opts.botName}的日记` : 'Bot 日记',
     // 跟桌宠共用一套配色，但这里是普通窗口，需要一个不透明底
     backgroundColor: '#f7f5f2',
     autoHideMenuBar: true,

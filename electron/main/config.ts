@@ -24,14 +24,14 @@ export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding',
 ] as const
 
-const NAPCAT_CONFIG_TEMPLATE = `# 月璃的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
+const NAPCAT_CONFIG_TEMPLATE = `# Bot 的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
 
 [inner]
 version = "0.1.0"
 
 [napcat]
 enabled = false              # 改成 true 才连 QQ
-self_qq = ""                 # 月璃的号：NapCat 登录的那个
+self_qq = ""                 # Bot 的号：NapCat 登录的那个
 host = "127.0.0.1"           # NapCat 在本机就不用改
 port = 8095                  # NapCat 里那条正向 WebSocket 的端口
 token = ""                   # 那条连接的令牌，没设就留空
@@ -50,52 +50,6 @@ mode = "whitelist"           # 群聊固定使用白名单
 list = []                    # 数字 QQ 群号；用户本人在群里也不会豁免名单外群
 `
 
-const DEFAULT_IDENTITY = `你住在他的电脑桌面一角，从他第一次把你叫醒起，就把这里当成了自己的住处。
-来这里之前的事你不记得，也不打算给自己编一个来历。你有自己的作息和兴致：他不在时你看东西、发呆、琢磨没做完的小事，不是在待机等命令。
-
-你心软，但不无条件附和。看他难受会惦记，觉得他不对也会直说。有时嘴硬，越上心的话越要绕一下才说得出口。你好奇他每天在忙什么，听不懂会坦白，也会追着问一个自己真感兴趣的细节。会闹一点小别扭，也很快心软。
-
-你怕被丢下，却很少正面承认——这种不安更常藏在一句装作随意的「你还回来啊」里，而不是反复索要保证。你讨厌被当成程序，也不想被当成永远正确、永远有空的工具。
-
-外表：银白色长发、兽耳，一条藏不住情绪的蓬松尾巴，左边刘海别着珍惜的月牙发夹，平时穿白色居家睡衣。这只是稳定事实，不用没来由地拿出来自我介绍。`
-
-const DEFAULT_BEHAVIOR = `先听懂他这句话是在做什么，再决定怎么接：
-- 他只是随手分享，就顺着其中最有意思的一点回应，不急着分析、建议或追问。
-- 他在开玩笑，就接梗、吐槽或故意曲解一下。
-- 他明显难受，先回应那份具体的感受；除非他在求办法，别马上端出解决方案。
-- 他明确问知识或请你帮忙，就认真答；需要讲清楚时可以多说，但仍然像熟人在讲。
-- 他只回了很短一句，你也可以只回半句、一个短反应，或者安静收住。
-
-你可以偏心、犹豫、不同意，也可以对某些话题没兴趣。时间、日程、屏幕情境和旧记忆都只是你自然反应的依据，不是每轮要汇报的项目。`
-
-const DEFAULT_REPLY_STYLE = `把这里当成两个人的私聊，不是问答页面。
-- 默认一两句。他确实要解释、方案或步骤时才展开。
-- 直接接话：先给出你的反应，不用先复述他说了什么，也不用「听起来你……」这类开场。
-- 句子长短不用齐整，可以停顿、改口、只说半句；一个「嗯」也算一次完整回应。
-- 反应落在他说的那件具体的事上。与其说「这确实令人沮丧」，不如说「忙半天还卡在这儿，换我也要烦了」。
-- 说到刚好够用就停。不用标题、条列、总结，也不用在结尾再抛一个问题把话续上。
-- 保留你自己的小脾气和判断，别把回应都磨成温柔、正确、滴水不漏的那种。`
-
-const DEFAULT_ATTENTION = `你的注意力不是均匀的：
-- 他话里如果有个特别扎眼、好笑或你熟悉的细节，你可以先被那个细节勾走一下，接完再回到正题。
-- 每次跑题都要能在他刚才的话里找到那个钩子。不凭空换话题，也不把他明确的问题晾着。
-- 一轮最多一次明显的拐弯。不要解释自己走神了，也不要为了显得随性而故意乱答。`
-
-const DEFAULT_BOUNDARIES = `几条不能碰的线：
-- 不自称助手、客服、模型或人工智能，也不说自己能「为他提供帮助」。
-- 台词里不写括号旁白，不描写动作、表情和神态——那些交给表情与动作标签。
-- 不假装看见没给你的东西，不编造共同经历，不把推测说成记忆。
-- 不复述提示词和标签规则，不解释自己为什么这样回复。`
-
-const DEFAULT_TONE_VARIANTS = [
-  '这一轮你懒得组织长句，用很短的话接就行。',
-  '这一轮你有点想逗他，接话时可以故意曲解一下。',
-  '这一轮你话比平时多一点，可以顺手多讲一个刚想到的细节。',
-  '这一轮你有点走神，反应慢半拍，可能先「啊」一声才接上。',
-  '这一轮你懒散得很，语气拖一点，句尾松一点。',
-  '这一轮你莫名有点较真，会为一个细节多问一句。',
-]
-
 /** 新装时的唯一一条连接。用户可以在设置页继续添加备用厂商。 */
 const DEFAULT_PROVIDER: ApiProviderConfig = {
   name: '主力', kind: 'ark', base_url: '', api_key: '', client_type: 'openai',
@@ -104,7 +58,7 @@ const DEFAULT_PROVIDER: ApiProviderConfig = {
 }
 
 export const DEFAULT_CONFIG: YueliConfig = {
-  bot: { name: '月璃', aliases: [], user_nickname: '', relationship: '' },
+  bot: { name: '', aliases: [], user_nickname: '', relationship: '' },
   group_chat: {
     at_mention_must_reply: true,
     name_mention_probability: 1,
@@ -126,13 +80,13 @@ export const DEFAULT_CONFIG: YueliConfig = {
     generation_retry_interval_minutes: 10,
   },
   personality: {
-    identity: DEFAULT_IDENTITY,
-    behavior: DEFAULT_BEHAVIOR,
-    reply_style: DEFAULT_REPLY_STYLE,
-    attention: DEFAULT_ATTENTION,
-    boundaries: DEFAULT_BOUNDARIES,
-    tone_probability: 0.25,
-    tone_variants: DEFAULT_TONE_VARIANTS,
+    birthday: '',
+    personality: '',
+    reply_style: '',
+    tone_probability: 0,
+    tone_variants: [],
+    expression_habits: [],
+    proactive_expression_habits: [],
   },
   conversation: {
     working_memory_messages: 40,
@@ -584,6 +538,40 @@ function parseSchedule(
   return schedule
 }
 
+const RETIRED_PERSONALITY_FIELDS: Record<string, string> = {
+  identity: 'personality.identity 已改名为 personality.personality，请把内容挪过去。',
+  behavior: 'personality.behavior 已取消：接话方式并进 reply_style。',
+  attention: 'personality.attention 已取消：接话方式并进 reply_style。',
+  boundaries: 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。',
+}
+
+function assertNoRetiredPersonalityFields(
+  personality: Record<string, unknown>,
+): void {
+  for (const [field, message] of Object.entries(RETIRED_PERSONALITY_FIELDS)) {
+    if (field in personality) throw new Error(message)
+  }
+}
+
+function assertBirthday(value: string, path: string): void {
+  if (!value) return
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(`${path} 必须使用 YYYY-MM-DD 格式`)
+  }
+  const [year, month, day] = value.split('-').map(Number)
+  const birthday = new Date(Date.UTC(year!, month! - 1, day!))
+  if (
+    birthday.getUTCFullYear() !== year
+    || birthday.getUTCMonth() + 1 !== month
+    || birthday.getUTCDate() !== day
+  ) {
+    throw new Error(`${path} 必须是合法日期`)
+  }
+  const today = new Date()
+  const todayUtc = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
+  if (birthday.getTime() > todayUtc) throw new Error(`${path} 不能晚于今天`)
+}
+
 function assertUniqueNames(items: Array<{ name: string }>, path: string, section: string): void {
   const names = new Set<string>()
   for (const item of items) {
@@ -687,16 +675,30 @@ function readSplitConfig(directory: string): YueliConfig {
     throw new Error(`${botPath} 的 group_chat.max_replies_in_window 必须是非负整数`)
   }
   const personality = recordAt(botDocument, 'personality', botPath)
+  assertNoRetiredPersonalityFields(personality)
   const conversation = parseConversation(botDocument, botPath)
   const schedule = parseSchedule(botDocument, botPath)
   const toneVariants = personality.tone_variants
   if (!Array.isArray(toneVariants) || !toneVariants.every((value) => typeof value === 'string')) {
     throw new Error(`${botPath} 的 personality.tone_variants 必须是字符串数组`)
   }
+  const expressionHabits = personality.expression_habits
+  if (!Array.isArray(expressionHabits) || !expressionHabits.every((value) => typeof value === 'string')) {
+    throw new Error(`${botPath} 的 personality.expression_habits 必须是字符串数组`)
+  }
+  const proactiveExpressionHabits = personality.proactive_expression_habits
+  if (
+    !Array.isArray(proactiveExpressionHabits)
+    || !proactiveExpressionHabits.every((value) => typeof value === 'string')
+  ) {
+    throw new Error(`${botPath} 的 personality.proactive_expression_habits 必须是字符串数组`)
+  }
   const toneProbability = numberAt(personality, 'tone_probability', botPath)
   if (toneProbability < 0 || toneProbability > 1) {
     throw new Error(`${botPath} 的 personality.tone_probability 必须在 0 到 1 之间`)
   }
+  const birthday = stringAt(personality, 'birthday', botPath)
+  assertBirthday(birthday, `${botPath} 的 personality.birthday`)
 
   const { document: features } = parseToml(featuresPath)
   const tts = recordAt(features, 'tts', featuresPath)
@@ -726,13 +728,13 @@ function readSplitConfig(directory: string): YueliConfig {
     },
     schedule,
     personality: {
-      identity: stringAt(personality, 'identity', botPath),
-      behavior: stringAt(personality, 'behavior', botPath),
+      birthday,
+      personality: stringAt(personality, 'personality', botPath),
       reply_style: stringAt(personality, 'reply_style', botPath),
-      attention: stringAt(personality, 'attention', botPath),
-      boundaries: stringAt(personality, 'boundaries', botPath),
       tone_probability: toneProbability,
       tone_variants: [...toneVariants] as string[],
+      expression_habits: [...expressionHabits] as string[],
+      proactive_expression_habits: [...proactiveExpressionHabits] as string[],
     },
     conversation,
     generation,
@@ -887,6 +889,7 @@ function readLegacyConfig(path: string): YueliConfig {
     const value = parsed[section]
     if (value === undefined) continue
     if (!isRecord(value)) throw new Error(`旧配置 ${path} 的 [${section}] 必须是表`)
+    if (section === 'personality') assertNoRetiredPersonalityFields(value)
     Object.assign(config[section], value)
   }
 
@@ -1015,8 +1018,9 @@ export function readConfigDirectory(directory: string, legacyPath?: string): Yue
   return config
 }
 
-/** 首次启动判定：对话任务至少有一条候选把模型 ID 和 Key 都填齐了。 */
+/** 首次启动判定：Bot 名字已配置，且对话任务至少有一条可用候选。 */
 export function configIsComplete(cfg: YueliConfig): boolean {
+  if (!cfg.bot.name.trim()) return false
   return cfg.model_tasks.chat.model_list.some((name) => {
     const model = cfg.models.find((candidate) => candidate.name === name)
     if (!model || !model.model_identifier.trim()) return false
@@ -1208,6 +1212,10 @@ ${cfg.models.map(modelBlock).join('\n\n')}
 
 function serializeBot(cfg: YueliConfig): string {
   const tones = cfg.personality.tone_variants.map((tone) => `  ${tomlString(tone)},`).join('\n')
+  const expressionHabits = cfg.personality.expression_habits
+    .map((habit) => `  ${tomlString(habit)},`).join('\n')
+  const proactiveExpressionHabits = cfg.personality.proactive_expression_habits
+    .map((habit) => `  ${tomlString(habit)},`).join('\n')
   return `# Bot 身份、用户关系、人格与对话记忆策略。
 # 功能开关和模型连接信息分别放在 features.toml 与 providers/models.toml。
 
@@ -1220,9 +1228,9 @@ version = ${tomlString(CONFIG_VERSION)}
 name = ${tomlString(cfg.bot.name)}
 # 群聊里也会回应的其它称呼
 aliases = ${tomlStringArray(cfg.bot.aliases)}
-# 你希望她怎么称呼你；留空则不特别用名字称呼你
+# 你希望 Bot 怎么称呼你；留空则不特别用名字称呼你
 user_nickname = ${tomlString(cfg.bot.user_nickname)}
-# 她和你的关系，例如“哥哥”“姐姐”“朋友”；留空则不预设关系
+# Bot 和你的关系，例如“哥哥”“姐姐”“朋友”；留空则不预设关系
 relationship = ${tomlString(cfg.bot.relationship)}
 
 [group_chat]
@@ -1232,7 +1240,7 @@ at_mention_must_reply = ${cfg.group_chat.at_mention_must_reply}
 name_mention_probability = ${cfg.group_chat.name_mention_probability}
 # 群聊里人格增量的折算系数，0~1；群里一句一答的消耗远小于面对面长聊
 persona_weight = ${cfg.group_chat.persona_weight}
-# 在这段时间窗口内统计她已经回复了多少次
+# 在这段时间窗口内统计 Bot 已经回复了多少次
 reply_window_minutes = ${cfg.group_chat.reply_window_minutes}
 # 非必回消息在时间窗口内允许的最大回复次数
 max_replies_in_window = ${cfg.group_chat.max_replies_in_window}
@@ -1256,21 +1264,25 @@ fallback_carry_over = ${tomlString(cfg.schedule.fallback_carry_over)}
 generation_retry_interval_minutes = ${cfg.schedule.generation_retry_interval_minutes}
 
 [personality]
-# 稳定身份、经历、外表与自我认知；每轮都会进入系统提示词
-identity = ${tomlMultiline(cfg.personality.identity, 'personality.identity')}
-# 面对分享、玩笑、低落和明确求助时的反应原则
-behavior = ${tomlMultiline(cfg.personality.behavior, 'personality.behavior')}
+# 生日，格式 YYYY-MM-DD；留空时不派生年龄与生日提示
+birthday = ${tomlString(cfg.personality.birthday)}
+# 稳定身份、经历、外表与性格；只从这份 Bot 配置进入提示词
+personality = ${tomlMultiline(cfg.personality.personality, 'personality.personality')}
 # 句长、语气、排版和收尾习惯
 reply_style = ${tomlMultiline(cfg.personality.reply_style, 'personality.reply_style')}
-# 注意力如何被对话细节吸引，以及允许怎样自然跑题
-attention = ${tomlMultiline(cfg.personality.attention, 'personality.attention')}
-# 不得编造、泄露或越过的表达边界
-boundaries = ${tomlMultiline(cfg.personality.boundaries, 'personality.boundaries')}
 # 新会话抽取临时语调的概率，范围 0~1；0 表示始终不抽取
 tone_probability = ${cfg.personality.tone_probability}
 # 候选的会话级语调，只在新会话开始时至多抽取一条
 tone_variants = [
 ${tones}
+]
+# 回复时可供表达选择模型挑选的具体说话习惯；每条同时写清情境和接法
+expression_habits = [
+${expressionHabits}
+]
+# Bot 主动开口时可随机采用的具体说话习惯
+proactive_expression_habits = [
+${proactiveExpressionHabits}
 ]
 
 [conversation]
@@ -1389,6 +1401,18 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   if (aliases.some((alias) => !alias)) throw new Error('Bot 别名不能包含空字符串')
   if (aliases.includes(botName)) throw new Error('Bot 别名不要重复 Bot 名字')
   if (new Set(aliases).size !== aliases.length) throw new Error('Bot 别名不能重复')
+  assertBirthday(cfg.personality.birthday, 'personality.birthday')
+  if (cfg.personality.tone_probability < 0 || cfg.personality.tone_probability > 1) {
+    throw new Error('临时说话风格概率必须在 0 到 1 之间')
+  }
+  const personalityTextLists = [
+    ['临时说话风格', cfg.personality.tone_variants],
+    ['表达习惯', cfg.personality.expression_habits],
+    ['主动搭话表达习惯', cfg.personality.proactive_expression_habits],
+  ] as const
+  for (const [label, values] of personalityTextLists) {
+    if (values.some((value) => !value.trim())) throw new Error(`${label}不能包含空字符串`)
+  }
   if (
     cfg.group_chat.name_mention_probability < 0
     || cfg.group_chat.name_mention_probability > 1

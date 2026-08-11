@@ -12,6 +12,7 @@ let observabilityWindow: BrowserWindow | null = null
 export interface ObservabilityWindowOptions {
   url: string
   preload: string
+  botName: string
 }
 
 export function openObservabilityWindow(opts: ObservabilityWindowOptions): BrowserWindow {
@@ -27,7 +28,7 @@ export function openObservabilityWindow(opts: ObservabilityWindowOptions): Brows
     minWidth: 680,
     minHeight: 500,
     useContentSize: true,
-    title: '月璃观察面板',
+    title: opts.botName ? `${opts.botName}观察面板` : 'Bot 观察面板',
     backgroundColor: '#171a20',
     autoHideMenuBar: true,
     webPreferences: {

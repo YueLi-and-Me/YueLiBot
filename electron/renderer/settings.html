@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'" />
-    <title>月璃设置</title>
+    <title>Bot 设置</title>
     <link rel="stylesheet" href="./styles/tokens.css" />
     <link rel="stylesheet" href="./styles/settings.css" />
   </head>
@@ -12,7 +12,7 @@
     <div class="app-shell">
       <header class="app-header">
         <p class="eyebrow">YUELI / SETTINGS</p>
-        <h1 id="page-title">月璃设置</h1>
+        <h1 id="page-title">Bot 设置</h1>
         <p id="page-subtitle" class="subtitle">配置对话模型、语音、视觉，随时可以回来改。</p>
       </header>
 
@@ -26,14 +26,14 @@
             </label>
             <label class="field">
               <span class="field-label">群聊别名</span>
-              <input type="text" name="bot.aliases" data-string-array="true" placeholder="多个别名用逗号分隔，例如：小璃，璃璃" />
+              <input type="text" name="bot.aliases" data-string-array="true" placeholder="多个别名用逗号分隔" />
             </label>
             <label class="field">
-              <span class="field-label">你希望她怎么称呼你</span>
+              <span class="field-label">你希望 Bot 怎么称呼你</span>
               <input type="text" name="bot.user_nickname" placeholder="留空则不特别用名字称呼你" />
             </label>
             <label class="field">
-              <span class="field-label">她和你的关系</span>
+              <span class="field-label">Bot 和你的关系</span>
               <input list="relationship-presets" type="text" name="bot.relationship" placeholder="留空则不设定这层关系" />
               <datalist id="relationship-presets">
                 <option value="哥哥"></option>
@@ -48,6 +48,43 @@
             <label class="field">
               <span class="field-label">名字或别名触发回复概率</span>
               <input type="number" name="group_chat.name_mention_probability" min="0" max="1" step="0.05" required />
+            </label>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <header class="section-heading"><h2>Bot 人设与说话方式</h2></header>
+          <div class="section-body">
+            <p class="hint">
+              这里是角色信息的唯一来源。程序不内置人设，也不会在出错时换成另一个角色。
+            </p>
+            <label class="field">
+              <span class="field-label">生日</span>
+              <input type="date" name="personality.birthday" />
+            </label>
+            <label class="field">
+              <span class="field-label">人设</span>
+              <textarea name="personality.personality" rows="5" placeholder="身份、性格、经历、外表与爱好"></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">说话方式</span>
+              <textarea name="personality.reply_style" rows="5" placeholder="句长、语气、排版和收尾习惯"></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">临时说话方式概率</span>
+              <input type="number" name="personality.tone_probability" min="0" max="1" step="0.05" required />
+            </label>
+            <label class="field">
+              <span class="field-label">临时说话方式候选</span>
+              <textarea name="personality.tone_variants" data-string-array="true" rows="5" placeholder="每行一条，抽中后只影响当前会话"></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">回复表达习惯</span>
+              <textarea name="personality.expression_habits" data-string-array="true" rows="7" placeholder="每行一条，同时写清适用情境和接话方式"></textarea>
+            </label>
+            <label class="field">
+              <span class="field-label">主动搭话表达习惯</span>
+              <textarea name="personality.proactive_expression_habits" data-string-array="true" rows="5" placeholder="每行一条，Bot 主动开口时从中抽取"></textarea>
             </label>
           </div>
         </section>
@@ -120,7 +157,7 @@
             </p>
             <label class="field checkbox-field">
               <input type="checkbox" name="vision.fullscreen_silent" />
-              <span>疑似全屏时静默（避免直播/录屏把她的声音带进去）</span>
+              <span>疑似全屏时静默（避免直播/录屏把 Bot 的声音带进去）</span>
             </label>
           </div>
         </section>
@@ -132,7 +169,7 @@
           </header>
           <div class="section-body toggle-body" data-toggle-target="generation.proactive.enabled">
             <p class="hint">
-              开启后，她会根据前台活动、键鼠强度和日程在合适时机主动搭话；关闭后不会安装全局键鼠钩子，也不会主动发起互动。
+              开启后，Bot 会根据前台活动、键鼠强度和日程在合适时机主动搭话；关闭后不会安装全局键鼠钩子，也不会主动发起互动。
             </p>
           </div>
         </section>
@@ -249,7 +286,7 @@
 
         <footer class="form-footer">
           <span id="status-text" class="status-text"></span>
-          <button id="restart-button" class="button secondary" type="button" hidden>重启月璃使配置生效</button>
+          <button id="restart-button" class="button secondary" type="button" hidden>重启 Bot 使配置生效</button>
           <button id="save-button" class="button" type="submit">保存</button>
         </footer>
       </form>
