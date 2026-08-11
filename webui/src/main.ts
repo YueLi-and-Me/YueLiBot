@@ -48,6 +48,15 @@ const eventSince = document.getElementById('event-since') as HTMLInputElement
 const eventUntil = document.getElementById('event-until') as HTMLInputElement
 const eventMore = document.getElementById('event-more') as HTMLButtonElement
 const eventSearchStatus = document.getElementById('event-search-status') as HTMLElement
+const promptSelect = document.getElementById('prompt-select') as HTMLSelectElement
+const promptReload = document.getElementById('prompt-reload') as HTMLButtonElement
+const promptMetadata = document.getElementById('prompt-metadata') as HTMLElement
+const promptHistory = document.getElementById('prompt-history') as HTMLElement
+const promptContent = document.getElementById('prompt-content') as HTMLTextAreaElement
+const promptBuiltin = document.getElementById('prompt-builtin') as HTMLElement
+const promptSave = document.getElementById('prompt-save') as HTMLButtonElement
+const promptReset = document.getElementById('prompt-reset') as HTMLButtonElement
+const promptStatus = document.getElementById('prompt-status') as HTMLElement
 const logOutput = document.getElementById('log-output') as HTMLElement
 const logStatus = document.getElementById('log-status') as HTMLElement
 
@@ -64,6 +73,21 @@ let skippedEventCount = 0
 let panelRunning = false
 let traces: TraceEntry[] = []
 let eventHistoryCursor: number | null = null
+
+interface PromptSummary {
+  id: string
+  source: 'builtin' | 'override'
+  promptHash: string
+  placeholders: string[]
+  fixed: boolean
+}
+
+interface PromptDetail extends PromptSummary {
+  content: string
+  builtinContent: string
+}
+
+let promptSummaries: PromptSummary[] = []
 
 /**
  * 将未知快照字段收窄为非数组对象。
@@ -1019,6 +1043,106 @@ async function fetchTurnEvents(turnId: number): Promise<void> {
   await fetchEventHistory(false)
 }
 
+/** 渲染当前提示词的来源、哈希、占位符和只读状态。 */
+function renderPromptMetadata(detail: PromptDetail): void {
+  promptMetadata.replaceChildren()
+  const metadata: Array<[string, string]> = [
+    ['来源', detail.source === 'builtin' ? '内置' : '用户覆盖'],
+    ['哈希', detail.promptHash],
+    ['占位符', detail.placeholders.length ? detail.placeholders.join(', ') : '无'],
+    ['权限', detail.fixed ? '固定模板，只读' : '本机可编辑'],
+  ]
+  for (const [label, value] of metadata) {
+    const term = document.createElement('dt')
+    term.textContent = label
+    const description = document.createElement('dd')
+    description.textContent = value
+    if (label === '哈希' || label === '占位符') description.className = 'mono'
+    promptMetadata.append(term, description)
+  }
+  promptContent.value = detail.content
+  promptBuiltin.textContent = detail.builtinContent
+  promptContent.readOnly = detail.fixed
+  promptSave.disabled = detail.fixed
+  promptReset.disabled = detail.fixed || detail.source === 'builtin'
+}
+
+/** 读取并渲染当前模板的历史归档。 */
+async function fetchPromptHistory(promptId: string): Promise<void> {
+  const response = await fetch(`/prompts/${encodeURIComponent(promptId)}/history`, {
+    credentials: 'same-origin',
+  })
+  if (!response.ok) return
+  const payload = await response.json() as { history?: unknown }
+  const history = Array.isArray(payload.history) ? payload.history : []
+  promptHistory.replaceChildren()
+  for (const value of history.slice(0, 20)) {
+    const item = record(value)
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'prompt-version'
+    button.textContent = `${text(item.name)} · ${dateTime(item.updatedAt)}`
+    button.addEventListener('click', () => {
+      promptContent.value = text(item.content)
+      promptStatus.textContent = `已载入历史版本 ${text(item.name)}，尚未保存`
+    })
+    promptHistory.append(button)
+  }
+  if (!promptHistory.children.length) promptHistory.textContent = '尚无归档版本。'
+}
+
+/** 读取一份提示词详情并更新编辑工作台。 */
+async function fetchPromptDetail(promptId: string): Promise<void> {
+  const response = await fetch(`/prompts/${encodeURIComponent(promptId)}`, {
+    credentials: 'same-origin',
+  })
+  if (!response.ok) throw new Error(`提示词读取失败：HTTP ${response.status}`)
+  const detail = await response.json() as PromptDetail
+  renderPromptMetadata(detail)
+  await fetchPromptHistory(promptId)
+}
+
+/** 读取全部提示词摘要并保留当前选中项。 */
+async function fetchPrompts(): Promise<void> {
+  const selected = promptSelect.value
+  const response = await fetch('/prompts', { credentials: 'same-origin' })
+  if (!response.ok) throw new Error(`提示词列表读取失败：HTTP ${response.status}`)
+  const payload = await response.json() as { prompts?: unknown }
+  promptSummaries = Array.isArray(payload.prompts) ? payload.prompts as PromptSummary[] : []
+  promptSelect.replaceChildren()
+  for (const summary of promptSummaries) {
+    const option = document.createElement('option')
+    option.value = summary.id
+    option.textContent = `${summary.id} · ${summary.source === 'builtin' ? '内置' : '覆盖'}`
+    promptSelect.append(option)
+  }
+  if (selected && promptSummaries.some((item) => item.id === selected)) promptSelect.value = selected
+  if (promptSelect.value) await fetchPromptDetail(promptSelect.value)
+}
+
+/** 保存或删除提示词覆盖，并显示后端的精确校验错误。 */
+async function mutatePrompt(method: 'PUT' | 'DELETE'): Promise<void> {
+  const promptId = promptSelect.value
+  promptStatus.textContent = method === 'PUT' ? '正在校验并保存…' : '正在恢复内置版本…'
+  const response = await fetch(`/prompts/${encodeURIComponent(promptId)}`, {
+    method,
+    credentials: 'same-origin',
+    headers: method === 'PUT' ? { 'Content-Type': 'application/json' } : undefined,
+    body: method === 'PUT' ? JSON.stringify({ content: promptContent.value }) : undefined,
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: unknown }
+    promptStatus.textContent = text(payload.detail) || `操作失败：HTTP ${response.status}`
+    return
+  }
+  const detail = await response.json() as PromptDetail
+  renderPromptMetadata(detail)
+  await fetchPrompts()
+  promptStatus.textContent = method === 'PUT'
+    ? `已热重载，当前哈希 ${detail.promptHash}`
+    : `已恢复内置版本，当前哈希 ${detail.promptHash}`
+}
+
 /**
  * 建立追踪事件 WebSocket 连接，并按序号游标接收增量事件。
  *
@@ -1276,6 +1400,7 @@ async function initializePanel(): Promise<void> {
   // 会话总览先加载 stream 和快照，再连接增量事件与日志通道。
   await fetchStreams()
   await fetchSnapshot()
+  await fetchPrompts()
   renderTrace()
   if (!initialized) {
     // 静态控件只绑定一次；后续重新认证或切换页面时复用同一组监听器。
@@ -1291,6 +1416,10 @@ async function initializePanel(): Promise<void> {
       void fetchEventHistory(false)
     })
     eventMore.addEventListener('click', () => void fetchEventHistory(true))
+    promptSelect.addEventListener('change', () => void fetchPromptDetail(promptSelect.value))
+    promptReload.addEventListener('click', () => void fetchPrompts())
+    promptSave.addEventListener('click', () => void mutatePrompt('PUT'))
+    promptReset.addEventListener('click', () => void mutatePrompt('DELETE'))
     autoRefresh.addEventListener('change', () => {
       if (snapshotTimer) clearInterval(snapshotTimer)
       snapshotTimer = autoRefresh.checked

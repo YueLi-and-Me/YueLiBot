@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from ipaddress import ip_address
 from random import random
 from typing import List, Literal
 
@@ -26,6 +27,13 @@ from src.observe.stages import GATED, RECEIVED
 from src.observe.store import current_stages, search_events
 from src.platform_io.reply_gate import decide_reply
 from src.platform_io.types import InboundMessage, StreamRef
+from src.prompts.registry import (
+    delete_prompt_override,
+    list_prompts,
+    prompt_detail,
+    prompt_history,
+    update_prompt,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -159,6 +167,33 @@ class WebLoginBody(BaseModel):
         if not value:
             raise ValueError('token 不能为空')
         return value
+
+
+class PromptWriteBody(BaseModel):
+    """提示词编辑器提交的完整模板文本。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    content: str
+
+
+def _require_loopback(request: Request) -> None:
+    """拒绝来自非回环地址的提示词写请求。
+
+    :param request: FastAPI 请求对象。
+    :raises fastapi.HTTPException: 客户端地址缺失、非法或不是回环地址时返回 403。
+    :side_effects: 仅读取连接地址。
+    """
+    host = request.client.host if request.client is not None else ''
+    try:
+        loopback = ip_address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='提示词编辑仅允许从本机回环地址访问',
+        )
 
 
 def _auth(
@@ -577,6 +612,70 @@ async def event_history(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return {'events': page.events, 'nextCursor': page.next_cursor}
+
+
+@router.get('/prompts', dependencies=[Depends(_auth)])
+async def prompts() -> dict:
+    """列出全部提示词模板的来源、哈希与占位符。"""
+    return {'prompts': list_prompts()}
+
+
+@router.get('/prompts/{prompt_id}', dependencies=[Depends(_auth)])
+async def prompt(prompt_id: str) -> dict:
+    """返回一份提示词的生效文本与内置文本。"""
+    try:
+        return prompt_detail(prompt_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.put(
+    '/prompts/{prompt_id}',
+    dependencies=[Depends(_auth), Depends(_require_loopback)],
+)
+async def put_prompt(prompt_id: str, body: PromptWriteBody) -> dict:
+    """校验、写入并热重载一份提示词覆盖。"""
+    try:
+        return update_prompt(prompt_id, body.content)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@router.delete(
+    '/prompts/{prompt_id}',
+    dependencies=[Depends(_auth), Depends(_require_loopback)],
+)
+async def delete_prompt(prompt_id: str) -> dict:
+    """删除一份提示词覆盖并热重载内置版本。"""
+    try:
+        return delete_prompt_override(prompt_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get('/prompts/{prompt_id}/history', dependencies=[Depends(_auth)])
+async def prompt_versions(prompt_id: str) -> dict:
+    """列出一份提示词的有限历史归档。"""
+    try:
+        return {'history': prompt_history(prompt_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get('/streams', dependencies=[Depends(_auth)])

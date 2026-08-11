@@ -91,6 +91,39 @@
             <h3>后台事件</h3>
             <div id="trace-log" class="trace-log"></div>
           </section>
+          <section class="panel-card prompt-workbench" aria-label="提示词工作台">
+            <header class="section-heading">
+              <div>
+                <h2>提示词工作台</h2>
+                <span class="section-subtitle">本机可编辑；远程连接保持只读</span>
+              </div>
+              <div class="toolbar compact">
+                <label for="prompt-select">模板</label>
+                <select id="prompt-select"></select>
+                <button id="prompt-reload" type="button">重新读取</button>
+              </div>
+            </header>
+            <div class="prompt-layout">
+              <aside class="prompt-meta">
+                <dl id="prompt-metadata"></dl>
+                <h3>版本历史</h3>
+                <div id="prompt-history" class="prompt-history"></div>
+              </aside>
+              <div class="prompt-editor">
+                <label for="prompt-content">生效内容</label>
+                <textarea id="prompt-content" class="mono" spellcheck="false"></textarea>
+                <div class="prompt-actions">
+                  <button id="prompt-save" type="button">校验并保存</button>
+                  <button id="prompt-reset" type="button">删除覆盖并恢复内置</button>
+                  <span id="prompt-status" class="section-subtitle" aria-live="polite"></span>
+                </div>
+                <details>
+                  <summary>查看内置版本</summary>
+                  <pre id="prompt-builtin" class="mono"></pre>
+                </details>
+              </div>
+            </div>
+          </section>
           <section class="panel-card log-panel" aria-label="实时日志">
             <header class="section-heading">
               <h2>实时日志</h2>

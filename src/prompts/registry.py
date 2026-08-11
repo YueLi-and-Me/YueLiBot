@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Dict, FrozenSet, Iterable
+from typing import Any, Dict, FrozenSet, Iterable, List
 import re
 
 from src.common.logger import get_logger
@@ -198,6 +198,31 @@ def _placeholder_error(
     )
 
 
+def validate_prompt_text(template_id: str, text: str) -> FrozenSet[str]:
+    """校验一份候选模板的 ID 和占位符集合。
+
+    Args:
+        template_id: 已声明的模板 ID。
+        text: 待校验的完整 Markdown 文本。
+
+    Returns:
+        与声明一致的占位符集合。
+
+    Raises:
+        KeyError: 模板 ID 未声明。
+        ValueError: 文本占位符集合缺失或多出字段。
+    """
+
+    try:
+        declared = TEMPLATE_PLACEHOLDERS[template_id]
+    except KeyError as exc:
+        raise KeyError(f'未声明的提示词模板：{template_id}') from exc
+    actual = frozenset(_PLACEHOLDER_PATTERN.findall(text))
+    if actual != declared:
+        raise _placeholder_error(template_id, declared, actual, '占位符')
+    return actual
+
+
 def load_prompt_catalog(
     data_dir: Path | None,
     *,
@@ -241,11 +266,8 @@ def load_prompt_catalog(
         else:
             source = builtin_path
         text = source.read_text(encoding='utf-8')
-        declared = TEMPLATE_PLACEHOLDERS[template_id]
-        actual = frozenset(_PLACEHOLDER_PATTERN.findall(text))
         # 在构造目录快照前校验占位符集合，避免错误模板进入运行时全局状态。
-        if actual != declared:
-            raise _placeholder_error(template_id, declared, actual, '占位符')
+        declared = validate_prompt_text(template_id, text)
         templates[template_id] = PromptTemplate(
             id=template_id,
             text=text,
@@ -297,6 +319,7 @@ def _archive_templates(catalog: PromptCatalog, data_dir: Path) -> None:
 
 
 _catalog = load_prompt_catalog(None)
+_data_dir: Path | None = None
 
 
 def configure_prompts(data_dir: Path) -> PromptCatalog:
@@ -312,8 +335,9 @@ def configure_prompts(data_dir: Path) -> PromptCatalog:
         FileNotFoundError, ValueError, OSError: 加载或校验模板失败时直接传播。
     """
 
-    global _catalog
+    global _catalog, _data_dir
     _catalog = load_prompt_catalog(data_dir)
+    _data_dir = data_dir
     return _catalog
 
 
@@ -353,11 +377,101 @@ def prompt_metadata(prompt_id: str, template_ids: Iterable[str]) -> Dict[str, st
     }
 
 
+def list_prompts() -> List[Dict[str, Any]]:
+    """列出全部模板的生效来源、哈希与占位符声明。"""
+
+    return [
+        {
+            'id': template_id,
+            'source': (
+                'builtin'
+                if _catalog.get(template_id).source == BUILTIN_PROMPT_DIR / f'{template_id}.md'
+                else 'override'
+            ),
+            'promptHash': _catalog.get(template_id).sha256[:8],
+            'placeholders': sorted(_catalog.get(template_id).placeholders),
+            'fixed': template_id in FIXED_TEMPLATE_IDS,
+        }
+        for template_id in TEMPLATE_IDS
+    ]
+
+
+def prompt_detail(template_id: str) -> Dict[str, Any]:
+    """读取指定模板的生效文本与内置文本。"""
+
+    template = _catalog.get(template_id)
+    builtin = (BUILTIN_PROMPT_DIR / f'{template_id}.md').read_text(encoding='utf-8')
+    return {
+        **next(item for item in list_prompts() if item['id'] == template_id),
+        'content': template.text,
+        'builtinContent': builtin,
+    }
+
+
+def update_prompt(template_id: str, text: str) -> Dict[str, Any]:
+    """校验并原子写入一份用户模板覆盖，随后立即热重载。"""
+
+    if template_id in FIXED_TEMPLATE_IDS:
+        raise PermissionError(f'固定提示词模板不允许修改：{template_id}')
+    validate_prompt_text(template_id, text)
+    if _data_dir is None:
+        raise RuntimeError('提示词数据目录尚未配置')
+    override_dir = _data_dir / 'prompts'
+    override_dir.mkdir(parents=True, exist_ok=True)
+    target = override_dir / f'{template_id}.md'
+    temporary = override_dir / f'.{template_id}.md.tmp'
+    temporary.write_text(text, encoding='utf-8')
+    temporary.replace(target)
+    configure_prompts(_data_dir)
+    return prompt_detail(template_id)
+
+
+def delete_prompt_override(template_id: str) -> Dict[str, Any]:
+    """删除用户模板覆盖并立即回到内置版本。"""
+
+    if template_id in FIXED_TEMPLATE_IDS:
+        raise PermissionError(f'固定提示词模板不允许删除：{template_id}')
+    if template_id not in TEMPLATE_PLACEHOLDERS:
+        raise KeyError(f'未声明的提示词模板：{template_id}')
+    if _data_dir is None:
+        raise RuntimeError('提示词数据目录尚未配置')
+    target = _data_dir / 'prompts' / f'{template_id}.md'
+    if target.exists():
+        target.unlink()
+    configure_prompts(_data_dir)
+    return prompt_detail(template_id)
+
+
+def prompt_history(template_id: str) -> List[Dict[str, Any]]:
+    """按时间倒序列出指定模板的归档文件。"""
+
+    if template_id not in TEMPLATE_PLACEHOLDERS:
+        raise KeyError(f'未声明的提示词模板：{template_id}')
+    if _data_dir is None:
+        return []
+    history_dir = _data_dir / 'prompts' / 'history' / template_id
+    if not history_dir.exists():
+        return []
+    return [
+        {
+            'name': path.name,
+            'content': path.read_text(encoding='utf-8'),
+            'updatedAt': int(path.stat().st_mtime * 1_000),
+        }
+        for path in sorted(
+            history_dir.glob('*.md'),
+            key=lambda item: (item.stat().st_mtime_ns, item.name),
+            reverse=True,
+        )
+    ]
+
+
 def reset_prompts_for_tests() -> None:
     """将全局目录恢复为仅包含内置模板的快照。
 
     该函数只供测试隔离使用；调用会替换进程内当前目录，不写入用户覆盖目录。
     """
 
-    global _catalog
+    global _catalog, _data_dir
     _catalog = load_prompt_catalog(None)
+    _data_dir = None
