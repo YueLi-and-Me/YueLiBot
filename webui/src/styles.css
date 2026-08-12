@@ -147,6 +147,7 @@ button {
 }
 
 .page-nav a,
+.nav-button,
 .button-link,
 .person-link {
   border-radius: 8px;
@@ -155,6 +156,7 @@ button {
 }
 
 .page-nav a,
+.nav-button,
 .button-link {
   background: #191e26;
   border: 1px solid #3c4656;
@@ -163,7 +165,13 @@ button {
   padding: 9px 14px;
 }
 
+.nav-button {
+  color: #9bbdff;
+  margin: 0 0 0 auto;
+}
+
 .page-nav a:hover,
+.nav-button:hover,
 .button-link:hover,
 .person-link:hover {
   color: #d5e3ff;

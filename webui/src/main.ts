@@ -24,6 +24,7 @@ const loginPanel = document.getElementById('login-panel') as HTMLElement
 const panelShell = document.getElementById('panel-shell') as HTMLElement
 const loginForm = document.getElementById('login-form') as HTMLFormElement
 const loginError = document.getElementById('login-error') as HTMLElement
+const logoutButton = document.getElementById('logout') as HTMLButtonElement
 const streamSelect = document.getElementById('stream-select') as HTMLSelectElement
 const stageBoard = document.getElementById('stage-board') as HTMLElement
 const conversationView = document.getElementById('conversation-view') as HTMLElement
@@ -1517,6 +1518,17 @@ loginForm.addEventListener('submit', async (event) => {
     return
   }
   await initializePanel()
+})
+
+logoutButton.addEventListener('click', async () => {
+  const response = await fetch('/auth/logout', {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  if (!response.ok && response.status !== 401) {
+    throw new Error(`登出请求失败：HTTP ${response.status}`)
+  }
+  showLogin('已安全登出。')
 })
 
 void checkSession().catch(() => showLogin('连接不到后端，请确认服务已启动。'))
