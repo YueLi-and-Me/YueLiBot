@@ -20,6 +20,7 @@ from .trace_console import mark_turn_start, render_observation, render_turn, ren
 from .vector import VectorService
 
 from src.core.agent.character import pick_tone
+from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history
@@ -38,7 +39,7 @@ from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_re
 from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
-from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GENERATING, REPLIED, Stage
+from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
 from src.core.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
 from src.core.platform_io.broker import PlatformBroker
 from src.core.platform_io.registry import StreamRegistry
@@ -128,6 +129,7 @@ class ChatService:
         vector: VectorService | None = None,
         broker: PlatformBroker | None = None,
         expression_provider: LlmProvider | None = None,
+        action_policy: ActionPolicy | None = None,
     ) -> None:
         """初始化对话服务及其数据库、模型和平台依赖。
 
@@ -141,6 +143,7 @@ class ChatService:
         :param vector: 可选向量服务；省略时创建禁用实例。
         :param broker: 可选的非桌面平台出站路由器。
         :param expression_provider: 可选的表达样本选择模型。
+        :param action_policy: 可选的回合内动作策略；省略时始终回复。
 
         副作用：
             创建记忆、注册表和人格服务，读取 desktop 上下文，并保存当天 owner
@@ -154,6 +157,7 @@ class ChatService:
         self._push_event = push_event
         self._speak_audio = speak_audio
         self._broker = broker
+        self._action_policy = action_policy or AlwaysReplyPolicy()
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
         self._cancel_audio: Callable[[int], Any] | None = None
         # 流式解析时按 stream 攒当前这句 <say> 的正文，收完整句才送去合成。
@@ -407,8 +411,6 @@ class ChatService:
                 asleep = self._sleep_state().asleep if self._sleep_state else False
                 self.settle_elapsed(context, now, asleep)
                 self.memory.sweep(now)
-                if self._schedule:
-                    self._schedule.ensure_background(now)
 
                 # 必须在写入当前用户消息前计算会话间隔，否则 last_message_at 会变成 now。
                 self._refresh_session(context, now)
@@ -432,6 +434,48 @@ class ChatService:
                     source_text=trimmed,
                 )
                 self._mark_stage(context, CONTEXT, turn_id=turn)
+                session = self._session(stream_id)
+                pending_resumption = session.resumption_gap_ms
+                decision_messages = await self._build_messages_with_vector(
+                    context,
+                    trimmed,
+                    now,
+                    cancel_event,
+                    inbound.bot_name,
+                    include_model_enrichment=False,
+                )
+                action = await self._action_policy.decide(ActionContext(
+                    turn_id=turn,
+                    stream_id=stream_id,
+                    messages=tuple(decision_messages),
+                ))
+                trace.emit(
+                    'turn_action',
+                    turnId=turn,
+                    action=action.action,
+                    reason=action.reason,
+                    decisionPosition='in_turn',
+                )
+                if action.action == 'silent':
+                    self._mark_stage(
+                        context,
+                        GATED,
+                        f'未回复：{action.reason}',
+                        turn_id=turn,
+                    )
+                    if context.stream.platform == 'desktop':
+                        await self._emit(stream_id, 'chat.silent', {
+                            'turnId': turn,
+                            'kind': 'silent',
+                            'reason': action.reason,
+                        })
+                    return
+                if action.action != 'reply':
+                    raise ValueError(f'未知回合动作：{action.action}')
+                # 决策预览已经看过本轮重逢上下文；正式回复仍须使用同一份一次性信息。
+                session.resumption_gap_ms = pending_resumption
+                if self._schedule:
+                    self._schedule.ensure_background(now)
                 render_params: dict[str, dict[str, str]] = {}
                 messages = await self._build_messages_with_vector(
                     context,
@@ -440,6 +484,7 @@ class ChatService:
                     cancel_event,
                     inbound.bot_name,
                     render_params,
+                    include_model_enrichment=True,
                 )
                 self._mark_stage(context, GENERATING, turn_id=turn)
                 trace.emit(
@@ -1313,6 +1358,7 @@ class ChatService:
         signal: asyncio.Event | None = None,
         platform_bot_name: str | None = None,
         render_params: dict[str, dict[str, str]] | None = None,
+        include_model_enrichment: bool = True,
     ) -> list[dict]:
         """异步构建包含向量召回和表达样本的模型消息。
 
@@ -1321,6 +1367,8 @@ class ChatService:
         :param now: 当前毫秒时间戳。
         :param signal: 可选的模型选择取消信号。
         :param platform_bot_name: 当前平台登录昵称；仅用于当前入站消息的称呼匹配。
+        :param include_model_enrichment: 是否调用向量与表达模型；动作决策预览传
+                ``False``，正式回复保持默认值。
 
         :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
 
@@ -1330,13 +1378,18 @@ class ChatService:
         """
 
         # 查询向量只影响事实排序；即使向量服务禁用，事实召回仍保留关键词路径。
-        query_embedding = await self._vector.embed_query(query)
+        query_embedding = (
+            await self._vector.embed_query(query)
+            if include_model_enrichment
+            else None
+        )
         facts = self.memory.recall_facts(
             context.person.id,
             query,
             self._fact_recall_limit,
             now,
             query_embedding=query_embedding,
+            reinforce_matches=include_model_enrichment,
         )
         recalled = self.memory.recall_episodes(
             context.stream.id,
@@ -1382,8 +1435,12 @@ class ChatService:
             episodes=[e.summary for e in episodes],
             activity=activity,
             schedule=schedule_desc,
-            expression_habits=render_expression_habits(
-                await self._pick_expression_habits(context, query, raw_history, signal)
+            expression_habits=(
+                render_expression_habits(
+                    await self._pick_expression_habits(context, query, raw_history, signal)
+                )
+                if include_model_enrichment
+                else None
             ),
             tone=self._session(context.stream.id).tone,
             resumption=resumption,

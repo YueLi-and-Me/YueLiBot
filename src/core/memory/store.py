@@ -511,8 +511,15 @@ class MemoryStore:
                         'updated_at': c[3], 'half_life_hours': c[4]}
         return None
 
-    def recall_facts(self, person_id: int, query: str, limit: int = 6, now: int | None = None,
-                      query_embedding: bytes | None = None) -> list[RecalledFact]:
+    def recall_facts(
+        self,
+        person_id: int,
+        query: str,
+        limit: int = 6,
+        now: int | None = None,
+        query_embedding: bytes | None = None,
+        reinforce_matches: bool = True,
+    ) -> list[RecalledFact]:
         """
         按 BM25 召回人物事实，并在向量齐全时执行混合相关度排序。
 
@@ -521,6 +528,7 @@ class MemoryStore:
         :param limit: 最多返回的事实数量，默认 ``6``。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时仅使用 BM25。
+        :param reinforce_matches: 是否回补命中事实；动作决策预览应传 ``False``。
 
         :return: 按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
 
@@ -575,17 +583,18 @@ class MemoryStore:
         scored.sort(key=lambda x: x.score, reverse=True)
         result = scored[:limit]
         # 命中后回补事实强度，使重复访问逐步提高留存度。
-        for h in result:
-            row = next((r for r in rows if r[0] == h.id), None)
-            if row:
-                nxt = reinforce(h.retention)
-                self._db.execute(
-                    '''UPDATE facts SET strength = ?, updated_at = ?, due_at = ?, active = 1,
-                                         hit_count = hit_count + 1, last_hit_at = ?
-                       WHERE id = ? AND person_id = ?''',
-                    (nxt, now, freeze_due_at(nxt, now, row[5]), now, h.id, person_id)
-                )
-        if result:
+        if reinforce_matches:
+            for h in result:
+                row = next((r for r in rows if r[0] == h.id), None)
+                if row:
+                    nxt = reinforce(h.retention)
+                    self._db.execute(
+                        '''UPDATE facts SET strength = ?, updated_at = ?, due_at = ?, active = 1,
+                                             hit_count = hit_count + 1, last_hit_at = ?
+                           WHERE id = ? AND person_id = ?''',
+                        (nxt, now, freeze_due_at(nxt, now, row[5]), now, h.id, person_id)
+                    )
+        if result and reinforce_matches:
             self._db.commit()
         return result
 

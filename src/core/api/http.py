@@ -382,6 +382,14 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         botNames=list(app_state.chat.bot_names(body.bot_name)),
         **decision.as_trace(),
     )
+    trace.emit(
+        'turn_action',
+        turnId=0,
+        streamId=context.stream.id,
+        action='reply' if decision.accepted else 'silent',
+        reason=decision.reason,
+        decisionPosition='pre_gate',
+    )
     if not decision.accepted:
         # 静默消息仍写入历史和观察事件，确保下一轮上下文知道该消息已经出现。
         enter_stage(
