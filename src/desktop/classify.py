@@ -127,7 +127,7 @@ def _normalize(proc: str) -> str:
 
     :param proc: 原始进程名。
     :return: 转为小写、移除末尾 `.exe` 并去除首尾空白后的名称。
-    :side_effects: 不修改输入字符串。
+    副作用：不修改输入字符串。
     """
     return re.sub(r'\.exe$', '', proc.lower()).strip()
 
@@ -137,7 +137,7 @@ def classify(info: ForegroundInfo | None) -> Classified:
 
     :param info: 前台窗口信息；`None` 或空进程表示用户当前空闲。
     :return: 活动类别、中文标签、静默标志、程序名和默认输入强度。
-    :side_effects: 读取 `info.title` 仅用于本地匹配，不在返回结构中保留原始标题。
+    副作用：读取 `info.title` 仅用于本地匹配，不在返回结构中保留原始标题。
     :performance: 按固定规则表线性扫描，规则规模与输入无关。
     """
     if not info or not info.process:
@@ -168,20 +168,17 @@ def classify_input(keys: int, clicks: int, distance: float, idle_seconds: int,
     clicks / distance 只随快照一并传递，方便保持采集口径完整；忙碌阈值刻意只看
     键盘速率，避免再引入一套鼠标距离、点击次数等活动类型猜测规则。
 
-    Args:
-        keys: 采样窗口内的键盘按键数。
-        clicks: 采样窗口内的鼠标点击数；当前分类规则不直接使用该值。
-        distance: 采样窗口内的鼠标移动距离；当前分类规则不直接使用该值。
-        idle_seconds: 系统连续空闲秒数。
-        span_ms: 采样窗口长度，单位为毫秒，必须大于 ``0``。
+    :param keys: 采样窗口内的键盘按键数。
+    :param clicks: 采样窗口内的鼠标点击数；当前分类规则不直接使用该值。
+    :param distance: 采样窗口内的鼠标移动距离；当前分类规则不直接使用该值。
+    :param idle_seconds: 系统连续空闲秒数。
+    :param span_ms: 采样窗口长度，单位为毫秒，必须大于 ``0``。
 
-    Returns:
-        ``away``、``busy`` 或 ``light`` 三档输入强度。
+    :return: ``away``、``busy`` 或 ``light`` 三档输入强度。
 
-    Raises:
-        ValueError: ``span_ms`` 小于等于 ``0``。
+    :raises ValueError: ``span_ms`` 小于等于 ``0``。
 
-    Side Effects:
+    副作用：
         不执行进程查询或持久化；输入值仅用于本次分类。
     """
     if span_ms <= 0:
@@ -203,12 +200,12 @@ def describe_activity(c: Classified, minutes: int) -> str:
     :param c: 已脱敏的活动分类结果。
     :param minutes: 当前活动持续分钟数，负值会按短时活动处理。
     :return: 中文活动描述；忙碌输入时追加“手头正忙”。
-    :side_effects: 不执行进程查询或模型调用。
+    副作用：不执行进程查询或模型调用。
     """
     if c.intensity == 'away':
-        return '他人不在电脑前。'
+        return '当前用户不在电脑前。'
     if c.activity == 'idle':
-        return '他现在没在操作电脑。'
+        return '当前用户现在没在操作电脑。'
     if minutes < 20:
         span = ''
     elif minutes < 60:
