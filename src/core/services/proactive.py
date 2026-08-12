@@ -556,17 +556,21 @@ class AwarenessService:
         description_used = bool(self._sensor and self._sensor.has_vision_description())
         desktop_context = self.chat.desktop_context
         stream = desktop_context.stream
+        if not self.chat.claim_stream(stream.id, 'proactive'):
+            return False
         enter_stage(GENERATING, stream.id, '桌面')
         try:
             lines = await self.chat.compose_proactive(desktop_context, self._with_vision(base))
+            if not lines:
+                enter_stage(FAILED, stream.id, '桌面', '主动搭话模型未生成正文')
+                return False
+            enter_stage(DISPATCHING, stream.id, '桌面')
+            turn = self.chat.speak_claimed(desktop_context, lines)
         except Exception as exc:
             enter_stage(FAILED, stream.id, '桌面', str(exc))
             raise
-        if not lines:
-            enter_stage(FAILED, stream.id, '桌面', '主动搭话模型未生成正文')
-            return False
-        enter_stage(DISPATCHING, stream.id, '桌面')
-        turn = self.chat.speak(desktop_context, lines)
+        finally:
+            self.chat.release_stream(stream.id, 'proactive')
         enter_stage(
             REPLIED,
             stream.id,

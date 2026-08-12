@@ -232,6 +232,7 @@ class ChatService:
         self._turn_id = 0
         self._inflight: dict[int, _InflightTurn] = {}
         self._buffers: dict[int, list[InboundMessage]] = {}
+        self._stream_claims: dict[int, str] = {}
         self._poll_task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._sessions: dict[int, _SessionState] = {}
@@ -412,7 +413,7 @@ class ChatService:
             if not buffered:
                 self._buffers.pop(stream_id, None)
                 continue
-            if stream_id in self._inflight:
+            if not self.claim_stream(stream_id, 'reply'):
                 continue
             batch = buffered[:]
             self._buffers.pop(stream_id, None)
@@ -420,6 +421,7 @@ class ChatService:
                 await self._start_turn(batch)
             except Exception:
                 self._buffers.setdefault(stream_id, [])[:0] = batch
+                self.release_stream(stream_id, 'reply')
                 raise
 
     async def send(self, inbound: InboundMessage) -> None:
@@ -494,6 +496,7 @@ class ChatService:
                 'message': '对话未初始化',
                 'hint': '检查 providers.toml 和 models.toml',
             })
+            self.release_stream(stream_id, 'reply')
             return turn
 
         cancel_event = asyncio.Event()
@@ -736,9 +739,29 @@ class ChatService:
             current = self._inflight.get(stream_id)
             if current is inflight and current.task is done_task:
                 self._inflight.pop(stream_id, None)
+            self.release_stream(stream_id, 'reply')
 
         task.add_done_callback(_remove_completed)
         return turn
+
+    def claim_stream(self, stream_id: int, source: str) -> bool:
+        """尝试为一个驱动源占用 stream，并记录竞争失败。"""
+        active_source = self._stream_claims.get(stream_id)
+        if active_source is None:
+            self._stream_claims[stream_id] = source
+            return True
+        trace.emit(
+            'turn_competition',
+            streamId=stream_id,
+            activeSource=active_source,
+            blockedSource=source,
+        )
+        return False
+
+    def release_stream(self, stream_id: int, source: str) -> None:
+        """仅释放仍由指定驱动源持有的 stream。"""
+        if self._stream_claims.get(stream_id) == source:
+            self._stream_claims.pop(stream_id, None)
 
     def _mark_stage(
         self,
@@ -994,26 +1017,38 @@ class ChatService:
             except Exception as exc:
                 logger.warning('cancel_audio_failed', error=str(exc))
 
-    def speak(self, context: ConversationContext, lines: list[dict]) -> int:
+    def speak(self, context: ConversationContext, lines: list[dict]) -> int | None:
         """投放主动生成的已结构化分句。
 
         :param context: 目标会话和人物归属上下文。
         :param lines: 包含 ``text`` 和可选 ``emotion`` 字段的分句列表。
 
-        :return: 新建的回合 ID；输入为空时返回当前回合 ID。
+        :return: 新建的回合 ID；输入为空或 stream 正忙时返回 ``None``。
 
         副作用：
-            取消同一 stream 的旧回合，异步推送解析事件，触发语音回调，并将带
-            ``<say>`` 标签的助手正文写入记忆。
+            stream 空闲时异步推送解析事件，触发语音回调，并将带 ``<say>`` 标签的
+            助手正文写入记忆；stream 正忙时只记录竞争事件。
 
         :raises KeyError: 分句缺少必需的 ``text`` 字段。
         """
 
         if not lines:
-            return self._turn_id
+            return None
         stream_id = context.stream.id
-        # 主动消息复用同一 stream 的中断语义，避免旧回合的语音和事件继续投递。
-        self.interrupt(stream_id)
+        if not self.claim_stream(stream_id, 'proactive'):
+            return None
+        try:
+            return self.speak_claimed(context, lines)
+        finally:
+            self.release_stream(stream_id, 'proactive')
+
+    def speak_claimed(self, context: ConversationContext, lines: list[dict]) -> int:
+        """投放已经取得 proactive stream 占用权的结构化分句。"""
+        if not lines:
+            raise ValueError('主动分句不能为空')
+        stream_id = context.stream.id
+        if self._stream_claims.get(stream_id) != 'proactive':
+            raise RuntimeError('主动投放前必须取得 stream 占用权')
         turn = self._next_turn()
         self._active_turns[stream_id] = turn
         texts: list[str] = []
