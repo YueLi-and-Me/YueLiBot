@@ -22,6 +22,7 @@ from .schema import (
     ProviderCatalog,
     RoutingConfig,
     TaskRouting,
+    TaskRoutingConfig,
 )
 from .toml_io import read_versioned_toml
 
@@ -35,6 +36,27 @@ logger = get_logger(__name__)
 CONFIG_VERSION = '1.1.0'
 _VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
 CHAT_INHERITING_TASKS = ('proactive', 'summary', 'schedule', 'expression')
+
+
+def _model_task_config(
+    catalog: ModelCatalog,
+    task: str,
+) -> TaskRoutingConfig:
+    """按封闭任务名取得模型目录中的任务配置。"""
+    tasks = {
+        'chat': catalog.model_tasks.chat,
+        'proactive': catalog.model_tasks.proactive,
+        'summary': catalog.model_tasks.summary,
+        'schedule': catalog.model_tasks.schedule,
+        'vision': catalog.model_tasks.vision,
+        'expression': catalog.model_tasks.expression,
+        'tts': catalog.model_tasks.tts,
+        'embedding': catalog.model_tasks.embedding,
+    }
+    try:
+        return tasks[task]
+    except KeyError as exc:
+        raise ValueError(f'未知模型任务：{task}') from exc
 
 
 def _providers_by_name(catalog: ProviderCatalog) -> Dict[str, ApiProviderConfig]:
@@ -112,7 +134,7 @@ def _build_routing(
         或向量候选维度等配置不合法。
     副作用：记录继承关系日志，不写入配置文件。
     """
-    routing = getattr(models_document.model_tasks, task)
+    routing = _model_task_config(models_document, task)
     if task in CHAT_INHERITING_TASKS and not routing.model_list:
         if chat_routing is None:
             raise ValueError(f'model_tasks.{task} 缺少可继承的 chat 路由')
@@ -224,11 +246,16 @@ def _load_split_config(directory: Path) -> Config:
     features_vision = features_document.vision
     features_perception = features_document.perception
     features_vector = features_document.vector
+    feature_routes = {
+        'tts': routing.tts,
+        'vision': routing.vision,
+        'embedding': routing.embedding,
+    }
     # 已启用功能必须至少绑定一个候选模型；否则配置表面有效，但运行时无法执行该功能。
     for enabled, task in ((features_tts.enabled, 'tts'),
                           (features_vision.enabled, 'vision'),
                           (features_vector.enabled, 'embedding')):
-        if enabled and not getattr(routing, task).ready:
+        if enabled and not feature_routes[task].ready:
             raise ValueError(
                 f'features.toml 里启用了该功能，但 models.toml 的 '
                 f'model_tasks.{task}.model_list 是空的'

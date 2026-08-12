@@ -435,6 +435,16 @@ class ModelRouters:
         self.expression = self._build('expression', routing.expression)
         self.tts = self._build('tts', routing.tts)
         self.embedding = self._build('embedding', routing.embedding)
+        self._routers: Dict[str, ModelRouter] = {
+            'chat': self.chat,
+            'proactive': self.proactive,
+            'summary': self.summary,
+            'schedule': self.schedule,
+            'vision': self.vision,
+            'expression': self.expression,
+            'tts': self.tts,
+            'embedding': self.embedding,
+        }
 
     def _build(self, task: str, routing: Any) -> ModelRouter:
         """把单个配置路由转换为 `ModelRouter`。
@@ -460,9 +470,23 @@ class ModelRouters:
         副作用：只读取路由状态，不修改候选或健康记录。
         """
         return {
-            task: getattr(self, task).inspect()
-            for task in ('chat', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding')
+            task: self.for_task(task).inspect()
+            for task in self._routers
         }
+
+    def for_task(self, task: str) -> ModelRouter:
+        """按封闭任务名取得对应模型路由。
+
+        :param task: chat、proactive、summary、schedule、vision、expression、tts
+                或 embedding。
+        :return: 对应的任务级模型路由。
+        :raises ValueError: 任务名不在已声明的八类任务中。
+        副作用：只读取路由映射，不创建客户端或发起模型请求。
+        """
+        try:
+            return self._routers[task]
+        except KeyError as exc:
+            raise ValueError(f'未知模型任务：{task}') from exc
 
 
 def create_routers(config: Any) -> ModelRouters:

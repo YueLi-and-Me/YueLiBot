@@ -679,7 +679,7 @@ async def replay(body: ReplayBody) -> dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f'{task} 模型路由尚未就绪',
         )
-    provider = getattr(app_state.routers, task)
+    provider = app_state.routers.for_task(task)
     if not provider.ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
