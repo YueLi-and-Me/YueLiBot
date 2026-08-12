@@ -202,6 +202,14 @@ export function setupChat(w: ChatWiring): void {
       scheduleSettle()
       return
     }
+    if (e.kind === 'silent') {
+      stopMouth()
+      bubble.clear()
+      // 静默回合没有后续文本或音频，立即离开等待表情。
+      cancelSettle()
+      w.view.setEmotion(settledEmotion(w.sleepingNow()))
+      return
+    }
 
     const ev = e.event
     if (ev.type === 'say') {

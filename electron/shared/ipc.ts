@@ -189,6 +189,7 @@ export const IPC = {
 export type ChatStreamEvent =
   | { turnId: number; kind: 'parse'; event: ParseEvent }
   | { turnId: number; kind: 'done' }
+  | { turnId: number; kind: 'silent'; reason: string }
   | { turnId: number; kind: 'error'; message: string; hint?: string }
 
 /**

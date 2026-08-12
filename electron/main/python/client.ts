@@ -313,6 +313,7 @@ export class PythonClient {
     switch (msg.channel) {
       case 'chat.event':
       case 'chat.done':
+      case 'chat.silent':
       case 'chat.error':
         this.sink.send(IPC.Event, msg.payload)
         break
