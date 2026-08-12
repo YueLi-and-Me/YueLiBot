@@ -22,8 +22,7 @@ _VOCATIVE_SUFFIXES = frozenset('在来呢吗呀啊诶欸说看帮回醒你请给
 class ReplyGateDecision:
     """群聊回复决策及其可审计的判定输入。
 
-    布尔字段记录触发条件，计数字段记录频率窗口，概率字段保留本次随机判定值，
-    便于在不重新执行随机逻辑的情况下还原决策。
+    布尔字段记录触发条件，计数字段记录频率窗口，便于还原门控决策。
     """
 
     accepted: bool
@@ -33,13 +32,11 @@ class ReplyGateDecision:
     name_mentioned: bool = False
     replies_in_window: int = 0
     max_replies_in_window: int = 0
-    probability_draw: float = 0.0
-    name_mention_probability: float = 0.0
 
     def as_trace(self) -> dict:
         """将决策转换为观察事件使用的字典。
 
-        :return: 使用项目 trace 字段命名约定的可序列化字典；概率保留四位小数。
+        :return: 使用项目 trace 字段命名约定的可序列化字典。
         """
         return {
             'accepted': self.accepted,
@@ -49,8 +46,6 @@ class ReplyGateDecision:
             'nameMentioned': self.name_mentioned,
             'repliesInWindow': self.replies_in_window,
             'maxRepliesInWindow': self.max_replies_in_window,
-            'probabilityDraw': round(self.probability_draw, 4),
-            'nameMentionProbability': self.name_mention_probability,
         }
 
 
@@ -61,8 +56,6 @@ def decide_reply(
     text: str,
     bot_names: Sequence[str],
     at_mention_must_reply: bool,
-    name_mention_probability: float,
-    probability_draw: float,
     my_replies_in_window: int,
     max_replies_in_window: int,
 ) -> ReplyGateDecision:
@@ -74,23 +67,16 @@ def decide_reply(
     :param text: 待分析的消息正文。
     :param bot_names: 可被正文称呼匹配的主体名称序列。
     :param at_mention_must_reply: 为 ``True`` 时，明确 @ 直接绕过睡眠和窗口限制。
-    :param name_mention_probability: 文本称呼触发回复的概率，范围 [0, 1]。
-    :param probability_draw: 本次随机抽样值，范围 [0, 1)。
     :param my_replies_in_window: 当前频率窗口内已经发送的回复数。
     :param max_replies_in_window: 当前窗口允许的最大回复数。
 
     :return: 包含接受结果、原因和完整判定输入的 ``ReplyGateDecision``。
 
-    :raises ValueError: 概率参数超出约定范围，或名称序列包含空字符串。
+    :raises ValueError: 名称序列包含空字符串。
     """
     # 非群聊不受群聊门控约束，直接保留普通对话路径。
     if stream_kind != 'group':
         return ReplyGateDecision(accepted=True, reason='not_group')
-    if not 0.0 <= name_mention_probability <= 1.0:
-        raise ValueError('name_mention_probability 必须在 0 到 1 之间')
-    if not 0.0 <= probability_draw < 1.0:
-        raise ValueError('probability_draw 必须在 0 到 1 之间且不含 1')
-
     # 先完成文本称呼识别，后续所有分支复用同一判定，避免重复扫描正文。
     name_mentioned = mentions_bot_name(text, bot_names)
 
@@ -100,7 +86,7 @@ def decide_reply(
         :param accepted: 是否允许本次回复。
         :param reason: 稳定的机器可读判定原因。
 
-        :return: 填充当前群聊上下文、计数和概率字段的决策对象。
+        :return: 填充当前群聊上下文和计数字段的决策对象。
         """
 
         return ReplyGateDecision(
@@ -111,8 +97,6 @@ def decide_reply(
             name_mentioned=name_mentioned,
             replies_in_window=my_replies_in_window,
             max_replies_in_window=max_replies_in_window,
-            probability_draw=probability_draw,
-            name_mention_probability=name_mention_probability,
         )
 
     # 协议 @ 的强制回复优先级最高，必须在睡眠和窗口限制前处理。
@@ -124,7 +108,7 @@ def decide_reply(
         return decision(False, 'window_limit')
     if mentioned_me or name_mentioned:
         # 非必回 @ 与文本称呼只负责放入回合；实际概率由上下文后的动作策略决定。
-        return decision(True, 'mentioned_probability' if mentioned_me else 'name_mentioned')
+        return decision(True, 'deferred_to_action_policy')
     return decision(False, 'group_not_mentioned')
 
 

@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from random import random
 from typing import List, Literal
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
@@ -369,8 +368,6 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         text=body.text,
         bot_names=app_state.chat.bot_names(body.bot_name),
         at_mention_must_reply=app_state.chat.at_mention_must_reply,
-        name_mention_probability=app_state.chat.name_mention_probability,
-        probability_draw=random(),
         my_replies_in_window=reply_count,
         max_replies_in_window=group_chat.max_replies_in_window,
     )
@@ -381,14 +378,6 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         text=body.text,
         botNames=list(app_state.chat.bot_names(body.bot_name)),
         **decision.as_trace(),
-    )
-    trace.emit(
-        'turn_action',
-        turnId=0,
-        streamId=context.stream.id,
-        action='reply' if decision.accepted else 'silent',
-        reason=decision.reason,
-        decisionPosition='pre_gate',
     )
     if not decision.accepted:
         # 静默消息仍写入历史和观察事件，确保下一轮上下文知道该消息已经出现。
