@@ -18,6 +18,7 @@ from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.config.schema import Config
 from src.core.llm_models.openai import LlmError
+from src.core.llm_models.snapshot import bind_render_params
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
@@ -43,8 +44,7 @@ class VisionFailure:
     def as_trace(self) -> dict[str, str | int | None]:
         """转换为观察事件使用的可序列化错误字段。
 
-        Returns:
-            使用 camelCase 键名并将空字符串转换为 ``None`` 的字典。
+        :return: 使用 camelCase 键名并将空字符串转换为 ``None`` 的字典。
         """
 
         return {
@@ -66,11 +66,9 @@ class VisionCallResult:
 def _safe_response_excerpt(value: str) -> str:
     """在错误响应进入 trace 前脱敏凭证并限制长度。
 
-    Args:
-        value: 原始错误文本或接口响应片段。
+    :param value: 原始错误文本或接口响应片段。
 
-    Returns:
-        将 Bearer 令牌替换为 ``[REDACTED_SECRET]`` 且最多 400 字符的文本。
+    :return: 将 Bearer 令牌替换为 ``[REDACTED_SECRET]`` 且最多 400 字符的文本。
     """
     redacted = re.sub(
         r'(?i)(authorization["\']?\s*[:=]\s*["\']?bearer\s+|bearer\s+)[^\s,;"\']+',
@@ -83,11 +81,9 @@ def _safe_response_excerpt(value: str) -> str:
 def _llm_failure(exc: LlmError) -> VisionFailure:
     """将已分类的模型错误转换为视觉失败诊断。
 
-    Args:
-        exc: 由模型客户端分类的 ``LlmError``。
+    :param exc: 由模型客户端分类的 ``LlmError``。
 
-    Returns:
-        包含错误类型、错误分类、可解析 HTTP 状态码和脱敏响应摘要的诊断对象。
+    :return: 包含错误类型、错误分类、可解析 HTTP 状态码和脱敏响应摘要的诊断对象。
     """
     status_match = re.search(r'HTTP\s+(\d{3})', str(exc))
     return VisionFailure(
@@ -112,14 +108,12 @@ class VisionProvider(Protocol):
     ) -> AsyncIterator[dict[str, Any]]:
         """按增量块产生视觉模型响应。
 
-        Args:
-            messages: OpenAI 兼容的多模态消息列表。
-            temperature: 采样温度，默认 0.85。
-            max_tokens: 最大输出 token 数；``None`` 表示由提供者决定。
-            signal: 可选的取消信号。
+        :param messages: OpenAI 兼容的多模态消息列表。
+        :param temperature: 采样温度，默认 0.85。
+        :param max_tokens: 最大输出 token 数；``None`` 表示由提供者决定。
+        :param signal: 可选的取消信号。
 
-        Returns:
-            异步迭代器，每个元素包含可选的 ``text`` 字段。
+        :return: 异步迭代器，每个元素包含可选的 ``text`` 字段。
         """
 
         ...
@@ -133,10 +127,9 @@ class VisionService:
                  provider: VisionProvider | None) -> None:
         """初始化视觉服务。
 
-        Args:
-            cfg: 提供视觉开关和生成参数的运行时配置。
-            push_event: 异步推送视觉观看状态的回调。
-            provider: 可选的流式视觉模型提供者；为 ``None`` 时视为不可用。
+        :param cfg: 提供视觉开关和生成参数的运行时配置。
+        :param push_event: 异步推送视觉观看状态的回调。
+        :param provider: 可选的流式视觉模型提供者；为 ``None`` 时视为不可用。
         """
 
         self._cfg = cfg
@@ -149,8 +142,7 @@ class VisionService:
     def stats(self) -> dict[str, Any]:
         """返回视觉功能的配置状态和调用次数。
 
-        Returns:
-            不包含截图和凭证的诊断字典。
+        :return: 不包含截图和凭证的诊断字典。
         """
 
         return {
@@ -163,11 +155,9 @@ class VisionService:
     def chat_glance(self, ttl_ms: int = CHAT_GLANCE_TTL_MS) -> str | None:
         """读取未超过有效期的最近屏幕描述。
 
-        Args:
-            ttl_ms: 描述有效期，单位毫秒，默认使用 ``CHAT_GLANCE_TTL_MS``。
+        :param ttl_ms: 描述有效期，单位毫秒，默认使用 ``CHAT_GLANCE_TTL_MS``。
 
-        Returns:
-            未过期的缓存描述；没有缓存或已过期时返回 ``None``。
+        :return: 未过期的缓存描述；没有缓存或已过期时返回 ``None``。
         """
         if not self._chat_glance:
             return None
@@ -179,15 +169,13 @@ class VisionService:
     async def glance(self, jpeg_bytes: bytes, app: str = '') -> str | None:
         """调用视觉模型描述一帧当前画面。
 
-        Args:
-            jpeg_bytes: 当前画面的 JPEG 字节；空字节表示没有可用截图。
-            app: 可选的前台程序名，作为模型识别界面的先验提示。
+        :param jpeg_bytes: 当前画面的 JPEG 字节；空字节表示没有可用截图。
+        :param app: 可选的前台程序名，作为模型识别界面的先验提示。
 
-        Returns:
-            模型生成的描述；功能禁用、缓存冷却命中、模型失败或响应为空时返回
+        :return: 模型生成的描述；功能禁用、缓存冷却命中、模型失败或响应为空时返回
             ``None``，禁用分支可能返回仍在有效期内的缓存描述。
 
-        Side Effects:
+        副作用：
             可能推送 ``vision.watching`` 开始/结束事件，调用视觉模型并更新最近
             描述缓存、调用计数和观察事件。
         """
@@ -241,14 +229,12 @@ class VisionService:
     async def _call_vision_model(self, jpeg_bytes: bytes, app: str = '') -> VisionCallResult:
         """构造多模态请求并消费视觉模型流式响应。
 
-        Args:
-            jpeg_bytes: 待发送的 JPEG 图像字节。
-            app: 可选的前台程序名提示。
+        :param jpeg_bytes: 待发送的 JPEG 图像字节。
+        :param app: 可选的前台程序名提示。
 
-        Returns:
-            包含清理后文本或结构化失败原因的 ``VisionCallResult``。
+        :return: 包含清理后文本或结构化失败原因的 ``VisionCallResult``。
 
-        Side Effects:
+        副作用：
             发出模型请求并写入请求、成功或失败观察事件；检测到不支持多模态协议
             时会将服务标记为协议不可用，后续请求直接跳过。
         """
@@ -267,6 +253,11 @@ class VisionService:
         try:
             b64 = base64.b64encode(jpeg_bytes).decode('ascii')
             prompt = self._build_vision_prompt(app)
+            render_params = {
+                'vision.glance': {
+                    'app_hint': f'画面里他开着的是 {app}。' if app else '',
+                },
+            }
             content: list[dict] = [
                 {'type': 'text', 'text': prompt},
                 {'type': 'image_url',
@@ -286,8 +277,10 @@ class VisionService:
                 }],
                 temperature=generation.temperature,
                 maxTokens=generation.token_limit,
+                renderParams=render_params,
                 **prompt_metadata('vision.glance', ('vision.glance',)),
             )
+            bind_render_params(render_params)
             async for chunk in self._provider.stream(
                 messages=[{'role': 'user', 'content': content}],
                 temperature=generation.temperature,
@@ -328,14 +321,11 @@ class VisionService:
     def _build_vision_prompt(app: str = '') -> str:
         """根据前台程序名构造视觉提示词。
 
-        Args:
-            app: 可选的前台程序名；为空时不追加应用提示。
+        :param app: 可选的前台程序名；为空时不追加应用提示。
 
-        Returns:
-            使用 ``vision.glance`` 模板渲染的提示词。
+        :return: 使用 ``vision.glance`` 模板渲染的提示词。
 
-        Raises:
-            KeyError, ValueError: 视觉提示词模板不存在或占位符不匹配。
+        :raises KeyError, ValueError: 视觉提示词模板不存在或占位符不匹配。
         """
         hint = f'画面里他开着的是 {app}。' if app else ''
         return get_prompt('vision.glance').render(app_hint=hint)

@@ -34,7 +34,7 @@ from src.core.prompts.registry import (
     prompt_history,
     update_prompt,
 )
-from src.core.services.replay import replay_event
+from src.core.services.replay import replay_event, replay_task_for_seq
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -71,7 +71,7 @@ class PlatformInboundBody(BaseModel):
         :param value: Pydantic 待校验的字符串字段。
         :return: 去除首尾空白后的非空字符串。
         :raises ValueError: 规范化结果为空。
-        :side_effects: 不修改原字符串或模型状态。
+        副作用：不修改原字符串或模型状态。
         """
         value = value.strip()
         if not value:
@@ -85,7 +85,7 @@ class PlatformInboundBody(BaseModel):
 
         :param value: 原始群名片字符串。
         :return: 去除首尾空白后的字符串。
-        :side_effects: 不执行外部查询。
+        副作用：不执行外部查询。
         """
         return value.strip()
 
@@ -97,7 +97,7 @@ class PlatformInboundBody(BaseModel):
         :param value: 入站请求中的 Bot 名称，可以为 `None`。
         :return: `None` 或去除首尾空白后的非空名称。
         :raises ValueError: 显式提供但只包含空白的名称。
-        :side_effects: 不修改请求对象。
+        副作用：不修改请求对象。
         """
         if value is None:
             return None
@@ -124,7 +124,7 @@ class PlatformIdentityLinkBody(BaseModel):
         :param value: 平台提交的外部身份标识。
         :return: 去除首尾空白后的数字字符串。
         :raises ValueError: 标识为空或含非数字字符。
-        :side_effects: 不查询平台，也不修改模型外的身份数据。
+        副作用：不查询平台，也不修改模型外的身份数据。
         """
         value = value.strip()
         if not value or not value.isdigit():
@@ -139,7 +139,7 @@ class PlatformIdentityLinkBody(BaseModel):
         :param value: 平台提交的显示名称。
         :return: 去除首尾空白后的非空字符串。
         :raises ValueError: 名称为空或只包含空白。
-        :side_effects: 不执行身份写入。
+        副作用：不执行身份写入。
         """
         value = value.strip()
         if not value:
@@ -162,7 +162,7 @@ class WebLoginBody(BaseModel):
         :param value: 浏览器登录请求中的 token。
         :return: 去除首尾空白后的 token。
         :raises ValueError: token 为空。
-        :side_effects: 不执行 token 比较。
+        副作用：不执行 token 比较。
         """
         value = value.strip()
         if not value:
@@ -191,7 +191,7 @@ def _require_loopback(request: Request) -> None:
 
     :param request: FastAPI 请求对象。
     :raises fastapi.HTTPException: 客户端地址缺失、非法或不是回环地址时返回 403。
-    :side_effects: 仅读取连接地址。
+    副作用：仅读取连接地址。
     """
     host = request.client.host if request.client is not None else ''
     try:
@@ -215,7 +215,7 @@ def _auth(
     :param session_token: 可选会话 Cookie，由 FastAPI 注入。
     :return: 鉴权通过时返回 `None`。
     :raises fastapi.HTTPException: 两种凭据都无法通过校验时返回 401。
-    :side_effects: 只读取请求凭据，不修改会话状态。
+    副作用：只读取请求凭据，不修改会话状态。
     """
     require_token(authorization, session_token)
 
@@ -225,7 +225,7 @@ async def health() -> dict:
     """返回不需要鉴权的进程存活探针。
 
     :return: 固定返回 `{'ok': True}` 的 JSON 可序列化字典。
-    :side_effects: 不访问服务状态或外部系统。
+    副作用：不访问服务状态或外部系统。
     """
     return {"ok": True}
 
@@ -234,17 +234,14 @@ async def health() -> dict:
 async def web_login(body: WebLoginBody, response: Response) -> dict:
     """校验浏览器提交的 token，并写入 HttpOnly 会话 Cookie。
 
-    Args:
-        body: 包含用户输入认证 token 的请求模型。
-        response: FastAPI 响应对象，用于设置会话 Cookie 和禁止缓存。
+    :param body: 包含用户输入认证 token 的请求模型。
+    :param response: FastAPI 响应对象，用于设置会话 Cookie 和禁止缓存。
 
-    Returns:
-        ``{'ok': True}``。
+    :return: ``{'ok': True}``。
 
-    Raises:
-        fastapi.HTTPException: token 不匹配当前进程 token 时返回 401。
+    :raises fastapi.HTTPException: token 不匹配当前进程 token 时返回 401。
 
-    Side Effects:
+    副作用：
         在响应中写入 ``yueli_session`` HttpOnly、Strict Cookie；浏览器脚本无法读取
         Cookie，响应同时设置 ``Cache-Control: no-store``。
     """
@@ -268,14 +265,12 @@ async def web_session(
 ) -> dict:
     """返回当前请求是否已通过 Bearer 或会话 Cookie 鉴权。
 
-    Args:
-        authorization: 可选 Authorization 请求头，由 FastAPI 注入。
-        session_token: 可选 HttpOnly 会话 Cookie，由 FastAPI 注入。
+    :param authorization: 可选 Authorization 请求头，由 FastAPI 注入。
+    :param session_token: 可选 HttpOnly 会话 Cookie，由 FastAPI 注入。
 
-    Returns:
-        包含 ``authenticated`` 布尔字段的字典；不返回 token 或观察数据。
+    :return: 包含 ``authenticated`` 布尔字段的字典；不返回 token 或观察数据。
 
-    Side Effects:
+    副作用：
         仅读取请求凭据，不修改会话状态。
     """
     authenticated = (
@@ -289,13 +284,11 @@ async def web_session(
 async def runtime_health() -> dict:
     """在 Electron 连接独立后端前确认认证链路和进程实例可达。
 
-    Returns:
-        固定返回 ``{'ok': True}``。
+    :return: 固定返回 ``{'ok': True}``。
 
-    Raises:
-        fastapi.HTTPException: 鉴权依赖未通过时由 ``_auth`` 返回 401。
+    :raises fastapi.HTTPException: 鉴权依赖未通过时由 ``_auth`` 返回 401。
 
-    Side Effects:
+    副作用：
         不读取业务状态，不执行外部 I/O；路由级鉴权已先验证当前 token。
     """
     return {'ok': True}
@@ -308,7 +301,7 @@ async def chat_send(request: Request) -> JSONResponse:
     :param request: FastAPI 请求对象；JSON body 需要包含字符串字段 `text`。
     :return: 包含 `turnId` 的 JSON 响应；聊天服务未初始化或文本为空时返回 `0`。
     :raises Exception: 请求体不是合法 JSON，或聊天服务发送失败时传播原始异常。
-    :side_effects: 读取注册表桌面上下文并可能创建一次聊天轮次。
+    副作用：读取注册表桌面上下文并可能创建一次聊天轮次。
     """
     body = await request.json()
     text = str(body.get("text", "")).strip()
@@ -323,19 +316,16 @@ async def chat_send(request: Request) -> JSONResponse:
 async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     """接收平台入站消息，完成 stream/person 归属解析和回复门控后提交聊天服务。
 
-    Args:
-        body: 已通过 Pydantic 校验的平台入站消息，包含平台、会话、发送者和正文信息。
+    :param body: 已通过 Pydantic 校验的平台入站消息，包含平台、会话、发送者和正文信息。
 
-    Returns:
-        JSON 响应；服务未初始化时返回 503，门控拒绝时返回 ``accepted=False``，
+    :return: JSON 响应；服务未初始化时返回 503，门控拒绝时返回 ``accepted=False``，
         接受时返回聊天轮次 ``turnId`` 和 stream ID。
 
-    Raises:
-        fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
-        ValueError: 注册表归属解析、记忆查询或聊天服务发现输入不一致时抛出。
-        Exception: 聊天轮次创建或持久化失败且未被服务层处理时传播。
+    :raises fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+    :raises ValueError: 注册表归属解析、记忆查询或聊天服务发现输入不一致时抛出。
+    :raises Exception: 聊天轮次创建或持久化失败且未被服务层处理时传播。
 
-    Side Effects:
+    副作用：
         可能创建或更新人物、身份和 stream，写入接收/门控观测事件，记录被拒消息，
         或启动一轮聊天生成。
     """
@@ -434,17 +424,14 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
 async def platform_identity_link(body: PlatformIdentityLinkBody) -> dict:
     """在平台消息进入归属解析前绑定适配器声明的 owner 外部身份。
 
-    Args:
-        body: 包含平台、owner 外部 ID 和显示名的已校验请求模型。
+    :param body: 包含平台、owner 外部 ID 和显示名的已校验请求模型。
 
-    Returns:
-        绑定成功时返回 ``ok=True`` 和 owner person ID；注册表未初始化时返回失败详情。
+    :return: 绑定成功时返回 ``ok=True`` 和 owner person ID；注册表未初始化时返回失败详情。
 
-    Raises:
-        fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
-        ValueError: 外部身份已由注册表校验为非法时抛出。
+    :raises fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+    :raises ValueError: 外部身份已由注册表校验为非法时抛出。
 
-    Side Effects:
+    副作用：
         修改 owner person 的指定平台唯一身份绑定；同平台旧绑定会被解除。
     """
     if app_state.registry is None:
@@ -466,7 +453,7 @@ async def chat_interrupt() -> dict:
     """中断当前桌面 stream 上正在生成的聊天轮次。
 
     :return: 固定返回 `{'ok': True}`。
-    :side_effects: 若聊天和注册表已初始化，向桌面 stream 的 ChatService 发出中断请求。
+    副作用：若聊天和注册表已初始化，向桌面 stream 的 ChatService 发出中断请求。
     """
     if app_state.chat and app_state.registry:
         app_state.chat.interrupt(app_state.registry.desktop_stream().id)
@@ -477,17 +464,14 @@ async def chat_interrupt() -> dict:
 async def platform_foreground(request: Request) -> dict:
     """接收 Electron 主进程定期上报的前台进程信息。
 
-    Args:
-        request: 已通过鉴权的 FastAPI 请求；请求体应为可解析的 JSON 对象。
+    :param request: 已通过鉴权的 FastAPI 请求；请求体应为可解析的 JSON 对象。
 
-    Returns:
-        固定返回 ``{'ok': True}``。
+    :return: 固定返回 ``{'ok': True}``。
 
-    Raises:
-        json.JSONDecodeError: 请求体不是合法 JSON 时由框架请求解析逻辑抛出。
-        Exception: 前台活动回调处理请求体失败时传播原始异常。
+    :raises json.JSONDecodeError: 请求体不是合法 JSON 时由框架请求解析逻辑抛出。
+    :raises Exception: 前台活动回调处理请求体失败时传播原始异常。
 
-    Side Effects:
+    副作用：
         若已注册前台活动回调，则将请求体交给回调更新当前前台上下文。
     """
     body = await request.json()
@@ -500,18 +484,15 @@ async def platform_foreground(request: Request) -> dict:
 async def platform_screenshot_chat(request: Request) -> dict:
     """接收聊天上下文所需的单帧 JPEG，并在请求内完成视觉描述更新。
 
-    Args:
-        request: 已通过认证的 HTTP 请求；请求体应为 JPEG 二进制数据，空请求体
+    :param request: 已通过认证的 HTTP 请求；请求体应为 JPEG 二进制数据，空请求体
             表示本轮不更新视觉缓存。
 
-    Returns:
-        ``{"ok": True}``；视觉功能未就绪时也返回成功，以保持前台采集端协议稳定。
+    :return: ``{"ok": True}``；视觉功能未就绪时也返回成功，以保持前台采集端协议稳定。
 
-    Raises:
-        RuntimeError: 感知服务或视觉提供者在处理图片时报告运行时错误。
-        StarletteHTTPException: 请求体读取失败时由框架传播。
+    :raises RuntimeError: 感知服务或视觉提供者在处理图片时报告运行时错误。
+    :raises StarletteHTTPException: 请求体读取失败时由框架传播。
 
-    Side Effects:
+    副作用：
         可能调用视觉模型并更新当前会话的最新描述。函数等待描述完成后才返回，
         确保随后发送的聊天请求能够读取本帧结果；不保存窗口标题或原始截图。
     """
@@ -529,7 +510,7 @@ async def diary() -> JSONResponse:
     """返回聊天服务生成的日记面板数据。
 
     :return: 聊天服务的日记 JSON；服务未初始化时返回 `{'_stub': True}`。
-    :side_effects: 只读取当前聊天服务状态，不触发模型调用。
+    副作用：只读取当前聊天服务状态，不触发模型调用。
     """
     if app_state.chat is None:
         return JSONResponse({"_stub": True})
@@ -543,7 +524,7 @@ async def observability(stream_id: int = Query(alias='streamId')) -> JSONRespons
     :param stream_id: 查询参数 `streamId`，目标 stream 的正整数数据库 ID。
     :return: 可序列化的观测快照 JSON。
     :raises fastapi.HTTPException: 服务未初始化时返回 503，stream 不存在时返回 404。
-    :side_effects: 读取注册表、聊天、感知和 TTS 服务状态，不修改业务数据。
+    副作用：读取注册表、聊天、感知和 TTS 服务状态，不修改业务数据。
     """
     if app_state.chat is None:
         return JSONResponse({"_stub": True})
@@ -564,14 +545,12 @@ async def observability(stream_id: int = Query(alias='streamId')) -> JSONRespons
 def _stream_label(stream: StreamRef) -> str:
     """生成观察面板使用的 stream 可读短名称。
 
-    Args:
-        stream: 已解析的 stream 引用，包含平台、会话类型和外部 ID。
+    :param stream: 已解析的 stream 引用，包含平台、会话类型和外部 ID。
 
-    Returns:
-        桌面 stream 返回 ``桌面``；其他 stream 返回平台大写名称、私聊或群聊类型
+    :return: 桌面 stream 返回 ``桌面``；其他 stream 返回平台大写名称、私聊或群聊类型
         以及外部 ID 组成的短名称。
 
-    Side Effects:
+    副作用：
         仅读取 stream 字段，不修改注册表或业务状态。
     """
     if stream.platform == 'desktop':
@@ -584,10 +563,9 @@ def _stream_label(stream: StreamRef) -> str:
 async def stages() -> dict:
     """返回每条 stream 当前观测阶段，供观察面板轮询。
 
-    Returns:
-        包含 ``stages`` 字段的可序列化阶段快照。
+    :return: 包含 ``stages`` 字段的可序列化阶段快照。
 
-    Side Effects:
+    副作用：
         仅读取阶段看板，不触发业务处理或模型调用。
     """
     return {'stages': current_stages()}
@@ -690,13 +668,25 @@ async def prompt_versions(prompt_id: str) -> dict:
 @router.post('/replay', dependencies=[Depends(_auth)])
 async def replay(body: ReplayBody) -> dict:
     """使用当前模板隔离重放一条历史模型请求。"""
-    if app_state.routers is None or not app_state.routers.chat.ready:
+    try:
+        task = replay_task_for_seq(event_store, body.seq)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if app_state.routers is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='chat 模型路由尚未就绪',
+            detail=f'{task} 模型路由尚未就绪',
+        )
+    provider = getattr(app_state.routers, task)
+    if not provider.ready:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'{task} 模型路由尚未就绪',
         )
     try:
-        return await replay_event(event_store, app_state.routers.chat, body.seq)
+        return await replay_event(event_store, provider, body.seq)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
@@ -707,11 +697,10 @@ async def replay(body: ReplayBody) -> dict:
 async def streams() -> dict:
     """列出只读观察面板可选择的全部 stream。
 
-    Returns:
-        包含每个 stream 的数据库 ID、平台、会话类型和外部 ID 的字典；注册表未就绪
+    :return: 包含每个 stream 的数据库 ID、平台、会话类型和外部 ID 的字典；注册表未就绪
         时返回空列表。
 
-    Side Effects:
+    副作用：
         仅读取注册表，不创建 stream 或修改业务数据。
     """
     if app_state.registry is None:
@@ -733,13 +722,11 @@ async def streams() -> dict:
 async def persons() -> dict:
     """列出人物画像入口，不将人物关系详情嵌入会话观测快照。
 
-    Returns:
-        包含人物画像摘要列表的 ``persons`` 字段。
+    :return: 包含人物画像摘要列表的 ``persons`` 字段。
 
-    Raises:
-        fastapi.HTTPException: 聊天服务未初始化时返回 503。
+    :raises fastapi.HTTPException: 聊天服务未初始化时返回 503。
 
-    Side Effects:
+    副作用：
         仅读取聊天服务状态，不触发模型调用或人物数据写入。
     """
     if app_state.chat is None:
@@ -754,17 +741,14 @@ async def persons() -> dict:
 async def person_detail(person_id: int) -> dict:
     """按数据库 ID 读取单个人物画像，禁止将无效 ID 回退到 owner。
 
-    Args:
-        person_id: 路径参数中的人物数据库 ID；必须为正整数。
+    :param person_id: 路径参数中的人物数据库 ID；必须为正整数。
 
-    Returns:
-        指定人物的可序列化画像数据。
+    :return: 指定人物的可序列化画像数据。
 
-    Raises:
-        fastapi.HTTPException: 服务未初始化时返回 503，人物 ID 不存在时返回 404。
-        ValueError: 聊天服务将人物 ID 判定为非法时转换为 404。
+    :raises fastapi.HTTPException: 服务未初始化时返回 503，人物 ID 不存在时返回 404。
+    :raises ValueError: 聊天服务将人物 ID 判定为非法时转换为 404。
 
-    Side Effects:
+    副作用：
         仅读取人物画像，不创建人物或更新关系状态。
     """
     if app_state.chat is None or app_state.registry is None:

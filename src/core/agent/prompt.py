@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
@@ -29,7 +29,7 @@ def _time_context(now: datetime, schedule: Optional[str] = None) -> str:
     :param now: 用于显示日期、星期、时段和分钟的时间对象。
     :param schedule: 可选的当天日程文本，默认值为 `None`。
     :return: 中文时间背景；有日程时在空行后追加日程内容。
-    :side_effects: 不访问系统时钟，不修改输入对象。
+    副作用：不访问系统时钟，不修改输入对象。
     """
     hour = now.hour
     if hour < 5:
@@ -63,7 +63,7 @@ def _relationship_context(user_nickname: Optional[str], relationship: Optional[s
     :param user_nickname: 对方希望使用的称呼；`None` 或空字符串表示未配置。
     :param relationship: 对方在 Bot 视角下的关系文本；默认可为空。
     :return: 由一或两行关系规则组成的字符串，两个参数都为空时返回空字符串。
-    :side_effects: 不执行 I/O。
+    副作用：不执行 I/O。
     """
     lines: List[str] = []
     if user_nickname:
@@ -79,14 +79,11 @@ def _relationship_context(user_nickname: Optional[str], relationship: Optional[s
 def describe_resumption(gap_ms: int) -> str:
     """将上次对话至今的静默时长转换为不附带情绪判断的时间描述。
 
-    Args:
-        gap_ms: 静默时长，单位为毫秒；非负值表示经过的实际时间，负值按最短档位处理。
+    :param gap_ms: 静默时长，单位为毫秒；非负值表示经过的实际时间，负值按最短档位处理。
 
-    Returns:
-        与时长对应的中文描述：少于 6 小时、6 至 24 小时或超过 24 小时三档。
+    :return: 与时长对应的中文描述：少于 6 小时、6 至 24 小时或超过 24 小时三档。
 
-    Raises:
-        TypeError: ``gap_ms`` 不支持与整数比较或整除时抛出。
+    :raises TypeError: ``gap_ms`` 不支持与整数比较或整除时抛出。
     """
     for threshold, description in RESUMPTION_TIERS:
         if gap_ms < threshold:
@@ -98,11 +95,9 @@ def describe_resumption(gap_ms: int) -> str:
 def _prefixed_block(content: Optional[str]) -> str:
     """为非空动态上下文添加提示词段落分隔符。
 
-    Args:
-        content: 可选提示词内容；``None`` 或空字符串表示不生成段落。
+    :param content: 可选提示词内容；``None`` 或空字符串表示不生成段落。
 
-    Returns:
-        非空内容前追加两个换行符的字符串；空内容返回空字符串。
+    :return: 非空内容前追加两个换行符的字符串；空内容返回空字符串。
     """
 
     return f'\n\n{content}' if content else ''
@@ -118,20 +113,17 @@ def _identity_context(
 ) -> Tuple[str, date | None]:
     """从人格配置、生日、别名和当前时间构造身份提示词块。
 
-    Args:
-        personality: 已配置的人格描述文本。
-        birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
-        now: 用于计算年龄和生日提示的当前本地时间。
-        aliases: 可供识别的其他称呼；``None`` 表示未配置。
-        platform_name: 平台侧显示的 Bot 名称；为空时不加入别名。
-        name: 配置中的主名称，用于去除重复别名。
+    :param personality: 已配置的人格描述文本。
+    :param birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
+    :param now: 用于计算年龄和生日提示的当前本地时间。
+    :param aliases: 可供识别的其他称呼；``None`` 表示未配置。
+    :param platform_name: 平台侧显示的 Bot 名称；为空时不加入别名。
+    :param name: 配置中的主名称，用于去除重复别名。
 
-    Returns:
-        ``(身份提示词, 解析后的生日)``；未配置生日时第二项为 ``None``。
+    :return: ``(身份提示词, 解析后的生日)``；未配置生日时第二项为 ``None``。
 
-    Raises:
-        ValueError: ``birthday`` 不是合法 ISO 日期文本。
-        TypeError: 参数类型不支持日期、列表或字符串操作时抛出。
+    :raises ValueError: ``birthday`` 不是合法 ISO 日期文本。
+    :raises TypeError: 参数类型不支持日期、列表或字符串操作时抛出。
     """
 
     lines = [personality]
@@ -164,7 +156,7 @@ def _relationship_block(
     :param user_nickname: 对方称呼偏好；可为空。
     :param relationship: 关系文本；可为空。
     :return: 带段落前缀的关系块，所有输入为空时返回空字符串。
-    :side_effects: 不修改输入列表或文本。
+    副作用：不修改输入列表或文本。
     """
     lines: List[str] = []
     if acquaintance:
@@ -180,7 +172,7 @@ def _activity_block(activity: Optional[str]) -> str:
 
     :param activity: 前台活动描述；默认可为 `None`。
     :return: 带情境说明和使用限制的提示词块；无活动时返回空字符串。
-    :side_effects: 不执行屏幕读取或其他 I/O。
+    副作用：不执行屏幕读取或其他 I/O。
     """
     if not activity:
         return ''
@@ -198,7 +190,7 @@ def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> 
     :param values: 记忆文本列表；`None` 或空列表表示不注入该块。
     :param instruction: 约束模型如何使用这些记忆的说明。
     :return: 带段落前缀的 Markdown 风格列表，记忆为空时返回空字符串。
-    :side_effects: 不修改传入列表。
+    副作用：不修改传入列表。
     """
     if not values:
         return ''
@@ -214,7 +206,7 @@ def _expression_habits_block(expression_habits: Optional[str]) -> str:
 
     :param expression_habits: 已渲染的表达习惯文本；默认可为 `None`。
     :return: 以“平时的说法”为标题的提示词块，无内容时返回空字符串。
-    :side_effects: 不执行 I/O。
+    副作用：不执行 I/O。
     """
     if not expression_habits:
         return ''
@@ -240,37 +232,35 @@ def build_system_prompt(
     resumption: Optional[str] = None,
     aliases: Optional[List[str]] = None,
     platform_name: Optional[str] = None,
+    render_params: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
 
-    Args:
-        name: Bot 的主名称。
-        birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
-        personality: 人格和身份描述文本。
-        reply_style: 回复风格约束文本。
-        now: 用于时间、年龄和生日判断的当前时间；省略时读取系统时钟。
-        persona: 可选的额外人格上下文。
-        acquaintance: 可选的熟悉程度描述。
-        facts: 可选的长期事实记忆列表。
-        episodes: 可选的近期对话回想列表。
-        activity: 可选的当前前台活动描述。
-        schedule: 可选的当天日程文本。
-        user_nickname: 对方偏好的称呼。
-        relationship: 对方在 Bot 视角下的关系描述。
-        expression_habits: 已渲染的表达习惯提示词块。
-        tone: 当前轮临时语调提示。
-        resumption: 当前对话恢复提示。
-        aliases: 可选的其他 Bot 名称列表。
-        platform_name: 平台侧显示的 Bot 名称。
+    :param name: Bot 的主名称。
+    :param birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
+    :param personality: 人格和身份描述文本。
+    :param reply_style: 回复风格约束文本。
+    :param now: 用于时间、年龄和生日判断的当前时间；省略时读取系统时钟。
+    :param persona: 可选的额外人格上下文。
+    :param acquaintance: 可选的熟悉程度描述。
+    :param facts: 可选的长期事实记忆列表。
+    :param episodes: 可选的近期对话回想列表。
+    :param activity: 可选的当前前台活动描述。
+    :param schedule: 可选的当天日程文本。
+    :param user_nickname: 对方偏好的称呼。
+    :param relationship: 对方在 Bot 视角下的关系描述。
+    :param expression_habits: 已渲染的表达习惯提示词块。
+    :param tone: 当前轮临时语调提示。
+    :param resumption: 当前对话恢复提示。
+    :param aliases: 可选的其他 Bot 名称列表。
+    :param platform_name: 平台侧显示的 Bot 名称。
 
-    Returns:
-        可直接提交给模型服务的完整系统提示词。
+    :return: 可直接提交给模型服务的完整系统提示词。
 
-    Raises:
-        ValueError: 生日文本不是合法 ISO 日期，或提示词资源缺失时由资源加载逻辑抛出。
-        TypeError: 上下文参数类型不符合字符串、序列或日期操作要求时抛出。
+    :raises ValueError: 生日文本不是合法 ISO 日期，或提示词资源缺失时由资源加载逻辑抛出。
+    :raises TypeError: 上下文参数类型不符合字符串、序列或日期操作要求时抛出。
 
-    Side Effects:
+    副作用：
         ``now`` 省略时读取一次系统时钟；不修改传入的列表和配置对象。
         结果长度随记忆、活动和表达习惯文本线性增长。
     """
@@ -293,55 +283,69 @@ def build_system_prompt(
     ):
         birthday_note = '\n今天是你的生日。'
 
-    # 主骨架由资源模板决定；此处只注入配置和当前轮次上下文。
-    return get_prompt('chat.system').render(
-        name=name,
-        identity=identity,
-        relationship=_relationship_block(acquaintance, user_nickname, relationship),
-        time_context=_time_context(now, schedule),
-        birthday_note=birthday_note,
-        resumption=_prefixed_block(resumption),
-        persona=_prefixed_block(persona),
-        activity=_activity_block(activity),
-        facts=_memory_block(
+    protocol_values = {
+        'emotions': ' / '.join(EXPRESSION_IDS),
+        'gestures': ' / '.join(GESTURE_IDS),
+    }
+    protocol = get_prompt('chat.protocol').render(**protocol_values).rstrip()
+    system_values = {
+        'name': name,
+        'identity': identity,
+        'relationship': _relationship_block(acquaintance, user_nickname, relationship),
+        'time_context': _time_context(now, schedule),
+        'birthday_note': birthday_note,
+        'resumption': _prefixed_block(resumption),
+        'persona': _prefixed_block(persona),
+        'activity': _activity_block(activity),
+        'facts': _memory_block(
             '你早就知道的事',
             facts,
             '把这些当成相处已久留下的常识。用得上时自然接住，用不上就放着；不要逐条复述给对方听。',
         ),
-        episodes=_memory_block(
+        'episodes': _memory_block(
             '最近留下的聊天回想',
             episodes,
             '回想只用来理解没说完的话和关系变化，不要为了证明记得而主动翻旧账。',
         ),
-        reply_style=reply_style,
-        tone=_prefixed_block(tone),
+        'reply_style': reply_style,
+        'tone': _prefixed_block(tone),
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
-        expression_habits=_expression_habits_block(expression_habits),
-        discipline=get_prompt('chat.discipline').text.rstrip(),
-        boundaries=get_prompt('chat.boundaries').text.rstrip(),
-        protocol=get_prompt('chat.protocol').render(
-            emotions=' / '.join(EXPRESSION_IDS),
-            gestures=' / '.join(GESTURE_IDS),
-        ).rstrip(),
-    )
+        'expression_habits': _expression_habits_block(expression_habits),
+        'discipline': get_prompt('chat.discipline').text.rstrip(),
+        'boundaries': get_prompt('chat.boundaries').text.rstrip(),
+        'protocol': protocol,
+    }
+    if render_params is not None:
+        render_params.update({
+            'chat.boundaries': {},
+            'chat.discipline': {},
+            'chat.protocol': protocol_values,
+            'chat.system': system_values,
+        })
+    # 主骨架由资源模板决定；此处只注入配置和当前轮次上下文。
+    return get_prompt('chat.system').render(**system_values)
 
 
-def build_proactive_prompt(base_prompt: str, situation: str) -> str:
+def build_proactive_prompt(
+    base_prompt: str,
+    situation: str,
+    render_params: Optional[Dict[str, Dict[str, str]]] = None,
+) -> str:
     """在已有系统提示词后追加一次主动搭话场景描述。
 
-    Args:
-        base_prompt: 已完成的人格和上下文系统提示词。
-        situation: 触发主动搭话的当前场景描述。
+    :param base_prompt: 已完成的人格和上下文系统提示词。
+    :param situation: 触发主动搭话的当前场景描述。
 
-    Returns:
-        由基础提示词和主动搭话模板组成的新提示词。
+    :return: 由基础提示词和主动搭话模板组成的新提示词。
 
-    Raises:
-        KeyError: 主动搭话提示词资源未注册时抛出。
-        TypeError: 参数不是可拼接字符串时抛出。
+    :raises KeyError: 主动搭话提示词资源未注册时抛出。
+    :raises TypeError: 参数不是可拼接字符串时抛出。
     """
 
+    proactive_values = {'situation': situation}
+    if render_params is not None:
+        render_params['chat.proactive'] = proactive_values
     return '\n\n'.join([
         base_prompt,
-        get_prompt('chat.proactive').render(situation=situation),
+        get_prompt('chat.proactive').render(**proactive_values),
     ])

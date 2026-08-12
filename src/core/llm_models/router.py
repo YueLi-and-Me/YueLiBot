@@ -16,7 +16,12 @@ from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.config.schema import ModelCandidate
 from src.core.llm_models.openai import LlmError, OpenAiChatProvider, resolve_base_url
-from src.core.llm_models.snapshot import record_attempt, record_internal_request, select_candidate
+from src.core.llm_models.snapshot import (
+    current_render_params,
+    record_attempt,
+    record_internal_request,
+    select_candidate,
+)
 from src.core.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
 
 logger = get_logger(__name__)
@@ -38,7 +43,7 @@ class ProviderHealth:
         """创建厂商健康状态表。
 
         :param cooldown_ms: 单次失败后的冷却时长，单位为毫秒，默认值为 60000。
-        :side_effects: 初始化空的失败时间映射，不访问网络。
+        副作用：初始化空的失败时间映射，不访问网络。
         """
         self._cooldown_ms = cooldown_ms
         self._penalized_at: Dict[str, int] = {}
@@ -47,7 +52,7 @@ class ProviderHealth:
         """记录厂商当前时间的失败。
 
         :param provider: 厂商名称。
-        :side_effects: 覆盖该厂商最近失败时间。
+        副作用：覆盖该厂商最近失败时间。
         """
         self._penalized_at[provider] = current_time()
 
@@ -55,7 +60,7 @@ class ProviderHealth:
         """清除厂商的失败惩罚。
 
         :param provider: 厂商名称。
-        :side_effects: 从失败时间映射移除该厂商；不存在时无操作。
+        副作用：从失败时间映射移除该厂商；不存在时无操作。
         """
         self._penalized_at.pop(provider, None)
 
@@ -64,7 +69,7 @@ class ProviderHealth:
 
         :param provider: 厂商名称。
         :return: 未被惩罚或冷却已结束时返回 `True`。
-        :side_effects: 冷却结束时从映射中删除过期惩罚。
+        副作用：冷却结束时从映射中删除过期惩罚。
         """
         penalized_at = self._penalized_at.get(provider)
         if penalized_at is None:
@@ -77,10 +82,9 @@ class ProviderHealth:
     def snapshot(self) -> Dict[str, int]:
         """生成厂商冷却状态的只读快照。
 
-        Returns:
-            冷却中厂商到剩余冷却毫秒数的映射；已恢复的厂商不会出现在结果中。
+        :return: 冷却中厂商到剩余冷却毫秒数的映射；已恢复的厂商不会出现在结果中。
 
-        Side Effects:
+        副作用：
             读取当前系统时钟，不清理过期映射；状态清理由 ``available`` 负责。
         """
         now = current_time()
@@ -111,7 +115,7 @@ class ModelRouter:
         :param health: 可选共享厂商健康状态；为空时创建新实例。
         :param first_token_timeout_ms: 首个增量的任务级超时，默认值为 30000。
         :param slow_threshold_ms: 慢响应记录阈值，默认值为 8000；0 表示禁用。
-        :side_effects: 复制候选序列并初始化客户端缓存，不建立模型连接。
+        副作用：复制候选序列并初始化客户端缓存，不建立模型连接。
         """
         self.task = task
         self._candidates = list(candidates)
@@ -126,7 +130,7 @@ class ModelRouter:
         """判断当前任务是否至少配置一个模型候选。
 
         :return: 候选序列非空时返回 `True`。
-        :side_effects: 不修改路由状态。
+        副作用：不修改路由状态。
         """
         return bool(self._candidates)
 
@@ -135,7 +139,7 @@ class ModelRouter:
         """返回模型候选的浅复制列表。
 
         :return: 当前候选对象列表的副本。
-        :side_effects: 不修改内部候选序列。
+        副作用：不修改内部候选序列。
         """
         return list(self._candidates)
 
@@ -143,11 +147,10 @@ class ModelRouter:
     def model(self) -> str:
         """返回候选序列首项的模型标识，供日志和观察面板展示。
 
-        Returns:
-            首个候选的 ``identifier``；没有候选时返回空字符串。该值不代表当前轮次
+        :return: 首个候选的 ``identifier``；没有候选时返回空字符串。该值不代表当前轮次
             一定实际调用的模型，实际调用顺序由 ``order`` 决定。
 
-        Side Effects:
+        副作用：
             仅读取候选序列，不创建客户端或发起模型请求。
         """
         return self._candidates[0].identifier if self._candidates else ''
@@ -158,10 +161,9 @@ class ModelRouter:
         冷却中的服务商排到最后而不是被丢弃；当所有候选都处于冷却期时仍保留完整候选
         集合，以便本轮可以继续尝试并记录实际故障。
 
-        Returns:
-            按配置策略排序、可用候选在前且冷却候选在后的新列表；没有候选时返回空列表。
+        :return: 按配置策略排序、可用候选在前且冷却候选在后的新列表；没有候选时返回空列表。
 
-        Side Effects:
+        副作用：
             读取并可能清理已过期的厂商冷却记录；不修改候选配置。
         """
         if not self._candidates:
@@ -176,16 +178,13 @@ class ModelRouter:
     def client(self, candidate: ModelCandidate) -> OpenAiChatProvider:
         """获取候选对应的 OpenAI 兼容客户端，并按候选名称缓存实例。
 
-        Args:
-            candidate: 已校验的模型候选配置。
+        :param candidate: 已校验的模型候选配置。
 
-        Returns:
-            与候选连接参数和模型标识绑定的 ``OpenAiChatProvider``。
+        :return: 与候选连接参数和模型标识绑定的 ``OpenAiChatProvider``。
 
-        Raises:
-            ValueError: 候选 URL、鉴权方式或超时重试配置不合法时由 provider 构造函数抛出。
+        :raises ValueError: 候选 URL、鉴权方式或超时重试配置不合法时由 provider 构造函数抛出。
 
-        Side Effects:
+        副作用：
             首次访问某候选时创建并缓存客户端；不在此方法中建立网络连接。
         """
         client = self._clients.get(candidate.name)
@@ -209,7 +208,7 @@ class ModelRouter:
         """构造当前任务没有可用模型时的标准错误。
 
         :return: 包含任务名称和配置修复位置的 :class:`LlmError`。
-        :side_effects: 不修改路由状态。
+        副作用：不修改路由状态。
         """
         return LlmError(
             'model',
@@ -227,25 +226,22 @@ class ModelRouter:
         一旦向调用方产生内容就不再切换候选，避免同一请求重复输出；首 token 超时
         包含下层 provider 的内部重试时间。
 
-        Args:
-            messages: OpenAI 兼容消息列表。
-            temperature: 采样温度，默认 ``0.85``。
-            max_tokens: 可选最大输出 token 数。
-            signal: 可选取消事件，传递给底层 provider。
-            response_format: 可选响应格式配置。
+        :param messages: OpenAI 兼容消息列表。
+        :param temperature: 采样温度，默认 ``0.85``。
+        :param max_tokens: 可选最大输出 token 数。
+        :param signal: 可选取消事件，传递给底层 provider。
+        :param response_format: 可选响应格式配置。
 
-        Yields:
-            底层 provider 返回的增量字典，顺序与实际模型流一致。
+        :yield: 底层 provider 返回的增量字典，顺序与实际模型流一致。
 
-        Raises:
-            LlmError: 所有候选均失败、首 token 超时、模型响应异常或调用被中断。
-            asyncio.CancelledError: 调用方取消异步生成器时传播。
+        :raises LlmError: 所有候选均失败、首 token 超时、模型响应异常或调用被中断。
+        :raises asyncio.CancelledError: 调用方取消异步生成器时传播。
 
-        Side Effects:
+        副作用：
             记录内部请求、候选选择、失败尝试和慢响应观测；更新共享厂商健康状态，
             可能为候选创建缓存客户端并发起网络请求。
 
-        Performance:
+        性能：
             候选排序和健康判断与候选数量线性相关；模型请求耗时占主要成本。
         """
         record_internal_request(
@@ -257,6 +253,7 @@ class ModelRouter:
             temperature=temperature,
             max_tokens=max_tokens,
             response_format=response_format,
+            render_params=current_render_params(),
         )
         order = self.order()
         if not order:
@@ -341,17 +338,14 @@ class ModelRouter:
     async def run(self, call: Callable[[ModelCandidate], Awaitable[T]]) -> T:
         """执行非流式任务，并按候选顺序返回第一个成功结果。
 
-        Args:
-            call: 接收一个模型候选并异步返回任务结果的回调；回调异常触发下一候选。
+        :param call: 接收一个模型候选并异步返回任务结果的回调；回调异常触发下一候选。
 
-        Returns:
-            第一个成功候选产生的任务结果，类型由回调返回值决定。
+        :return: 第一个成功候选产生的任务结果，类型由回调返回值决定。
 
-        Raises:
-            LlmError: 未配置候选时抛出标准模型错误。
-            Exception: 所有候选均失败时重新抛出最后一次异常。
+        :raises LlmError: 未配置候选时抛出标准模型错误。
+        :raises Exception: 所有候选均失败时重新抛出最后一次异常。
 
-        Side Effects:
+        副作用：
             记录内部请求和每次候选尝试，更新共享健康状态，并可能发起多次模型请求。
         """
         record_internal_request(
@@ -363,6 +357,7 @@ class ModelRouter:
             temperature=None,
             max_tokens=None,
             response_format=None,
+            render_params=None,
         )
         order = self.order()
         if not order:
@@ -404,10 +399,9 @@ class ModelRouter:
     def inspect(self) -> Dict[str, Any]:
         """生成不包含密钥的任务路由只读快照。
 
-        Returns:
-            包含任务名、选择策略、候选模型摘要和冷却状态的可序列化字典。
+        :return: 包含任务名、选择策略、候选模型摘要和冷却状态的可序列化字典。
 
-        Side Effects:
+        副作用：
             仅读取路由和健康状态，不修改候选、客户端或认证信息。
         """
         return {
@@ -428,7 +422,7 @@ class ModelRouters:
         """从完整配置构造 chat、主动、摘要、日程、视觉、表达、TTS 和 embedding 路由。
 
         :param config: 含 `routing` 属性的配置对象。
-        :side_effects: 创建八个 `ModelRouter` 和一个共享 `ProviderHealth`，不发起模型请求。
+        副作用：创建八个 `ModelRouter` 和一个共享 `ProviderHealth`，不发起模型请求。
         :raises AttributeError: 配置缺少路由字段时传播属性错误。
         """
         self.health = ProviderHealth()
@@ -448,7 +442,7 @@ class ModelRouters:
         :param task: 任务名称。
         :param routing: 含 candidates、strategy 和超时字段的配置对象。
         :return: 使用共享健康状态的新路由器。
-        :side_effects: 不建立模型连接。
+        副作用：不建立模型连接。
         """
         return ModelRouter(
             task,
@@ -463,7 +457,7 @@ class ModelRouters:
         """生成所有任务路由的只读观测快照。
 
         :return: 任务名称到各路由 `inspect()` 结果的字典。
-        :side_effects: 只读取路由状态，不修改候选或健康记录。
+        副作用：只读取路由状态，不修改候选或健康记录。
         """
         return {
             task: getattr(self, task).inspect()
@@ -474,14 +468,11 @@ class ModelRouters:
 def create_routers(config: Any) -> ModelRouters:
     """从完整应用配置构造各模型任务路由器。
 
-    Args:
-        config: 提供 ``routing`` 及各任务候选配置的配置对象。
+    :param config: 提供 ``routing`` 及各任务候选配置的配置对象。
 
-    Returns:
-        共享厂商健康状态的 ``ModelRouters`` 实例。
+    :return: 共享厂商健康状态的 ``ModelRouters`` 实例。
 
-    Raises:
-        AttributeError: 配置缺少路由字段。
-        ValueError: 任一任务候选或路由参数校验失败。
+    :raises AttributeError: 配置缺少路由字段。
+    :raises ValueError: 任一任务候选或路由参数校验失败。
     """
     return ModelRouters(config)

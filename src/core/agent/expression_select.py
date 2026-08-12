@@ -12,6 +12,7 @@ import json
 
 from src.core.agent.expression import ExpressionSample
 from src.core.llm_models.protocol import LlmProvider
+from src.core.llm_models.snapshot import bind_render_params
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
@@ -23,14 +24,11 @@ _MAX_SELECTION_CHARS = 256
 def candidate_count(candidates: Sequence[ExpressionSample]) -> int:
     """返回表达习惯候选序列的元素数量。
 
-    Args:
-        candidates: 待统计的候选表达习惯序列。
+    :param candidates: 待统计的候选表达习惯序列。
 
-    Returns:
-        候选元素数量；不会执行去重或内容校验。
+    :return: 候选元素数量；不会执行去重或内容校验。
 
-    Raises:
-        TypeError: 参数不支持 ``len`` 操作时抛出。
+    :raises TypeError: 参数不支持 ``len`` 操作时抛出。
     """
     return len(candidates)
 
@@ -43,18 +41,15 @@ def build_selection_prompt(
 ) -> str:
     """组装受限表达选择提示词，并将候选映射为从 1 开始的编号。
 
-    Args:
-        candidates: 按展示顺序排列的候选表达习惯文本。
-        user_text: 当前用户消息，用于模型判断语境匹配度。
-        history: 最近对话历史；每项应包含 ``role`` 和 ``content`` 字段。
-        limit: 模型最多可以返回的候选数量；由调用方负责传入有效上限。
+    :param candidates: 按展示顺序排列的候选表达习惯文本。
+    :param user_text: 当前用户消息，用于模型判断语境匹配度。
+    :param history: 最近对话历史；每项应包含 ``role`` 和 ``content`` 字段。
+    :param limit: 模型最多可以返回的候选数量；由调用方负责传入有效上限。
 
-    Returns:
-        包含对话上下文、编号候选和输出上限约束的完整提示词。
+    :return: 包含对话上下文、编号候选和输出上限约束的完整提示词。
 
-    Raises:
-        KeyError: 表达选择提示词未在提示词目录中注册时抛出。
-        TypeError: 历史消息或候选文本无法序列化、格式化时抛出。
+    :raises KeyError: 表达选择提示词未在提示词目录中注册时抛出。
+    :raises TypeError: 历史消息或候选文本无法序列化、格式化时抛出。
     """
     indexed: Dict[int, ExpressionSample] = {
         index: sample for index, sample in enumerate(candidates, start=1)
@@ -78,17 +73,14 @@ def parse_selection(
 ) -> List[ExpressionSample]:
     """严格解析模型返回的编号数组，并映射回原始候选文本。
 
-    Args:
-        raw: 模型返回的 JSON 文本，长度不得超过内部协议上限。
-        candidates: 与提示词编号顺序一致的候选表达习惯序列。
-        limit: 允许选择的最大数量；必须为非负整数。
+    :param raw: 模型返回的 JSON 文本，长度不得超过内部协议上限。
+    :param candidates: 与提示词编号顺序一致的候选表达习惯序列。
+    :param limit: 允许选择的最大数量；必须为非负整数。
 
-    Returns:
-        按模型返回顺序排列的候选表达习惯列表。
+    :return: 按模型返回顺序排列的候选表达习惯列表。
 
-    Raises:
-        ValueError: 响应超长、JSON 结构不符、编号非整数、编号越界、编号重复或超过数量上限。
-        json.JSONDecodeError: 不直接向上抛出，解析错误会转换为 ``ValueError``。
+    :raises ValueError: 响应超长、JSON 结构不符、编号非整数、编号越界、编号重复或超过数量上限。
+    :raises json.JSONDecodeError: 不直接向上抛出，解析错误会转换为 ``ValueError``。
     """
     # 先限制原始响应长度，防止模型夹带正文占用解析和日志空间。
     if len(raw) > _MAX_SELECTION_CHARS:
@@ -143,7 +135,7 @@ class ExpressionSelector:
         :param max_tokens: 单次选择请求的最大输出 token 数；`None` 表示不额外指定。
         :param candidates: 可供模型选择的候选表达，不能为空。
         :raises ValueError: `candidates` 为空。
-        :side_effects: 保存候选的不可变副本，不执行模型请求。
+        副作用：保存候选的不可变副本，不执行模型请求。
         """
         if not candidates:
             raise ValueError('表达选择候选不能为空')
@@ -168,11 +160,22 @@ class ExpressionSelector:
         :return: 按模型选择顺序排列的候选表达列表。
         :raises ValueError: 模型输出不是限定 JSON、编号越界、重复或超过 `limit`。
         :raises Exception: provider 的网络、鉴权或流式读取错误向调用方传播。
-        :side_effects: 发起一次模型请求并记录 `llm_request` 观测事件；不修改候选。
+        副作用：发起一次模型请求并记录 `llm_request` 观测事件；不修改候选。
         :performance: 输出解析按候选数量线性构造索引，模型请求耗时占主要成本。
         """
         # 提示词只携带候选编号，避免模型重新生成表达文本破坏候选约束。
         prompt = build_selection_prompt(self._candidates, user_text, history, limit)
+        render_params = {
+            'expression.select': {
+                'history': json.dumps(list(history), ensure_ascii=False),
+                'user_text': user_text,
+                'options': '\n'.join(
+                    f'{index}. {sample}'
+                    for index, sample in enumerate(self._candidates, start=1)
+                ),
+                'limit': str(limit),
+            },
+        }
         raw = ''
         reasoning_length = 0
         messages = [{'role': 'system', 'content': prompt}]
@@ -181,8 +184,10 @@ class ExpressionSelector:
             messages=messages,
             temperature=self._temperature,
             maxTokens=self._max_tokens,
+            renderParams=render_params,
             **prompt_metadata('expression.select', ('expression.select',)),
         )
+        bind_render_params(render_params)
         async for chunk in self._provider.stream(
             messages=messages,
             temperature=self._temperature,

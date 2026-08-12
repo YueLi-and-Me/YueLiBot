@@ -30,6 +30,6 @@ class LlmProvider(Protocol):
         :param response_format: 可选结构化响应格式。
         :return: 异步迭代器；每项通常包含 `text`、`reasoning` 或其他 provider 约定字段。
         :raises Exception: 具体实现可抛出网络、鉴权、限流和取消异常。
-        :side_effects: 具体实现通常会发起模型网络请求。
+        副作用：具体实现通常会发起模型网络请求。
         """
         ...
