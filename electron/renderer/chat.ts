@@ -5,6 +5,7 @@
  * 文本流和回合终止状态由 chatState.ts 及本模块的 DOM 控制器共同维护。
  */
 import type { ChatStreamEvent } from '../shared/ipc.ts'
+import { gateTurnEvent } from './turnGate.ts'
 import { VoicePlayer, decodeBase64 } from './audio/player.ts'
 import { resolveEmotion, resolveGesture, type CharacterView } from './character/types.ts'
 import { settledEmotion } from './chatState.ts'
@@ -167,25 +168,27 @@ export function setupChat(w: ChatWiring): void {
    * 清理当前输入并提交一条聊天消息。
    *
    * @param text 已去除首尾空白的用户文本。
-   * @returns 主进程返回回合 ID 后完成。
+   * @returns 后端确认消息进入缓冲后完成。
    * @throws Error bridge 请求失败时向事件处理方传播。
-   * @sideEffects 清空气泡、取消表情回落、设置生成中表情并更新当前回合 ID。
+   * @sideEffects 清空气泡、取消表情回落并设置等待中的表情。
    */
   async function submit(text: string): Promise<void> {
     bubble.clear()
     cancelSettle()
     // 先更新生成中视觉反馈，再等待模型首个 token，避免请求期间页面无变化。
     w.view.setEmotion('smile')
-    currentTurn = await (window.pet?.send(text) ?? Promise.resolve(0))
+    await window.pet?.send(text)
   }
 
   const off = window.pet?.onEvent((e: ChatStreamEvent) => {
-    // 只丢弃已结束的旧回合；主动消息也可能由主进程创建新的回合 ID。
-    if (e.turnId < currentTurn) return
-    if (e.turnId > currentTurn) {
-      // 新回合到达时同步回合 ID，并清理上一回合残留文本。
-      currentTurn = e.turnId
+    const gated = gateTurnEvent(currentTurn, e)
+    if (!gated.accept) return
+    currentTurn = gated.currentTurn
+    if (gated.started) {
       bubble.clear()
+    }
+    if (e.kind === 'start') {
+      return
     }
 
     if (e.kind === 'error') {

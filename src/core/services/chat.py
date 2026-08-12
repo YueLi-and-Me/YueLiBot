@@ -489,6 +489,11 @@ class ChatService:
         )
         for message in batch:
             trace.emit('user_input', turnId=turn, text=message.text)
+        if context.stream.platform == 'desktop':
+            await self._emit(stream_id, 'chat.start', {
+                'turnId': turn,
+                'kind': 'start',
+            })
         if not self._chat_provider:
             await self._emit(stream_id, 'chat.error', {
                 'turnId': turn,
@@ -1052,6 +1057,10 @@ class ChatService:
         turn = self._next_turn()
         self._active_turns[stream_id] = turn
         texts: list[str] = []
+        asyncio.create_task(self._emit(stream_id, 'chat.start', {
+            'turnId': turn,
+            'kind': 'start',
+        }))
         for line in lines:
             # 先发解析事件再写入记忆，使桌面端和外部平台共享同一回合轨迹。
             asyncio.create_task(

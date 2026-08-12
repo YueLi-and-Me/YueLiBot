@@ -137,20 +137,19 @@ export class PythonClient {
   }
 
   /**
-   * 提交一条聊天文本并返回后端分配的回合 ID。
+   * 提交一条聊天文本并等待后端确认进入缓冲。
    *
    * @param text 待发送的 UTF-8 文本；空值校验由后端接口执行。
-   * @returns 后端返回的回合 ID；响应缺少该字段时返回 ``0``。
+   * @returns 后端确认响应读取完成后结束。
    * @throws Error 网络、超时或后端返回不可解析 JSON 时抛出。
    */
-  async send(text: string): Promise<number> {
+  async send(text: string): Promise<void> {
     const res = await this._fetch('/chat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     })
-    const json = (await res.json()) as { turnId?: number }
-    return json.turnId ?? 0
+    await res.json()
   }
 
   /**
@@ -312,6 +311,7 @@ export class PythonClient {
 
     switch (msg.channel) {
       case 'chat.event':
+      case 'chat.start':
       case 'chat.done':
       case 'chat.silent':
       case 'chat.error':

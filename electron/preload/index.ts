@@ -26,7 +26,7 @@ const bridge: PetBridge = {
   endDrag: () => ipcRenderer.send(IPC.EndDrag),
   focusInput: (focus) => ipcRenderer.send(IPC.FocusInput, focus),
   userInteracted: () => ipcRenderer.send(IPC.UserInteracted),
-  send: (text) => ipcRenderer.invoke(IPC.Send, text) as Promise<number>,
+  send: (text) => ipcRenderer.invoke(IPC.Send, text) as Promise<void>,
   interrupt: () => ipcRenderer.send(IPC.Interrupt),
   onEvent: (handler) => {
     const listener = (_e: unknown, payload: ChatStreamEvent) => handler(payload)

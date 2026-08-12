@@ -241,7 +241,7 @@ async function startApp(
   // 业务 IPC 直接转发给 Python，不在 Electron 侧维护备用业务状态。
   ipcMain.on(IPC.UserInteracted, () => { /* Python 通过 WebSocket 事件流接收活跃状态。 */ })
   ipcMain.handle(IPC.Send, async (_e, text: string) => {
-    if (!client) return 0
+    if (!client) return
     // 【关键】仅在输入命中屏幕意图或托盘持续截图开关开启时采集画面。
     //
     // 原因：普通聊天不需要上传屏幕内容；按需采集可同时降低延迟、请求成本和隐私暴露面。

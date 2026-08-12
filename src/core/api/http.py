@@ -298,17 +298,17 @@ async def chat_send(request: Request) -> JSONResponse:
     """接收桌面端聊天文本并把它提交给当前桌面 stream。
 
     :param request: FastAPI 请求对象；JSON body 需要包含字符串字段 `text`。
-    :return: 包含 `turnId` 的 JSON 响应；聊天服务未初始化或文本为空时返回 `0`。
+    :return: 明确表示消息是否进入缓冲的 JSON 响应。
     :raises Exception: 请求体不是合法 JSON，或聊天服务发送失败时传播原始异常。
-    副作用：读取注册表桌面上下文并可能创建一次聊天轮次。
+    副作用：读取注册表桌面上下文并将非空消息放入聊天缓冲区。
     """
     body = await request.json()
     text = str(body.get("text", "")).strip()
     if not text or app_state.chat is None or app_state.registry is None:
-        return JSONResponse({"turnId": 0})
+        return JSONResponse({'accepted': False})
     context = app_state.registry.desktop_context()
-    turn_id = await app_state.chat.send(InboundMessage(text=text, context=context))
-    return JSONResponse({"turnId": turn_id})
+    await app_state.chat.send(InboundMessage(text=text, context=context))
+    return JSONResponse({'accepted': True})
 
 
 @router.post('/platform/inbound', dependencies=[Depends(_auth)])
@@ -318,7 +318,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     :param body: 已通过 Pydantic 校验的平台入站消息，包含平台、会话、发送者和正文信息。
 
     :return: JSON 响应；服务未初始化时返回 503，门控拒绝时返回 ``accepted=False``，
-        接受时返回聊天轮次 ``turnId`` 和 stream ID。
+        接受时返回 stream ID 与门控原因；消息入缓冲时尚未创建回合。
 
     :raises fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
     :raises ValueError: 注册表归属解析、记忆查询或聊天服务发现输入不一致时抛出。
@@ -396,13 +396,12 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             decision.reason,
         )
         return JSONResponse({
-            'turnId': 0,
             'streamId': context.stream.id,
             'accepted': False,
             'reason': decision.reason,
         })
 
-    turn_id = await app_state.chat.send(InboundMessage(
+    await app_state.chat.send(InboundMessage(
         text=body.text,
         context=context,
         mentioned_me=body.mentioned_me,
@@ -410,7 +409,6 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         bot_name=body.bot_name,
     ))
     return JSONResponse({
-        'turnId': turn_id,
         'streamId': context.stream.id,
         'accepted': True,
         'reason': decision.reason,

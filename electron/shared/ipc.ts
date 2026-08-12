@@ -156,7 +156,7 @@ export const IPC = {
   /** 渲染层 → 主进程：用户与角色交互，暂时保持唤醒状态。 */
   UserInteracted: 'pet:user-interacted',
 
-  /** 渲染层 → 主进程：发一句话。返回本轮的 turnId。 */
+  /** 渲染层 → 主进程：发一句话并等待后端确认进入缓冲。 */
   Send: 'chat:send',
   /** 渲染层 → 主进程：中断当前正在输出的回复。 */
   Interrupt: 'chat:interrupt',
@@ -187,6 +187,7 @@ export const IPC = {
  * 防止上一轮流式输出写入新一轮消息气泡。
  */
 export type ChatStreamEvent =
+  | { turnId: number; kind: 'start' }
   | { turnId: number; kind: 'parse'; event: ParseEvent }
   | { turnId: number; kind: 'done' }
   | { turnId: number; kind: 'silent'; reason: string }
@@ -240,7 +241,7 @@ export interface PetBridge {
   endDrag(): void
   focusInput(focus: boolean): void
   userInteracted(): void
-  send(text: string): Promise<number>
+  send(text: string): Promise<void>
   interrupt(): void
   onEvent(handler: (e: ChatStreamEvent) => void): () => void
   /** 主进程要求打开输入栏。 */
