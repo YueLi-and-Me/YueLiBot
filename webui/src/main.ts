@@ -1323,6 +1323,7 @@ interface StageEntry {
   detail: string
   turnId: number | null
   stageElapsedMs: number
+  stageStartedAtTruncated: boolean
 }
 
 /**
@@ -1372,7 +1373,7 @@ async function pollStages(): Promise<void> {
     detail.textContent = entry.detail
     const elapsed = document.createElement('span')
     elapsed.className = 'muted mono'
-    elapsed.textContent = elapsedLabel(entry.stageElapsedMs)
+    elapsed.textContent = `${entry.stageStartedAtTruncated ? '至少 ' : ''}${elapsedLabel(entry.stageElapsedMs)}`
 
     row.append(name, stage, detail, elapsed)
     if (entry.turnId !== null) {

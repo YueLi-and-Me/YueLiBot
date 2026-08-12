@@ -54,7 +54,7 @@ class EventStore:
     def __init__(self) -> None:
         """创建未配置数据库路径的事件存储。
 
-        :side_effects: 初始化连接引用、保留策略、写入计数和线程锁，不打开文件。
+        副作用：初始化连接引用、保留策略、写入计数和线程锁，不打开文件。
         """
         self._connection: sqlite3.Connection | None = None
         self._retention_count = 20_000
@@ -67,7 +67,7 @@ class EventStore:
         """返回事件账本是否已配置数据库连接。
 
         :return: 已调用 :meth:`configure` 且连接仍存在时为 `True`。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         return self._connection is not None
 
@@ -85,7 +85,7 @@ class EventStore:
         :param retention_hours: 事件最大保留时长，单位小时，默认值为 72；0 表示禁用按时间清理。
         :raises ValueError: 保留数量小于 1 或保留时长小于 0。
         :raises (OSError, sqlite3.Error): 数据库打开、DDL 或提交失败。
-        :side_effects: 关闭旧连接，打开新连接，创建表并重置写入计数。
+        副作用：关闭旧连接，打开新连接，创建表并重置写入计数。
         """
         # 先校验保留策略，避免替换当前可用连接后才发现配置无效。
         if retention_count < 1:
@@ -134,7 +134,7 @@ class EventStore:
         :return: 含 seq、时间、阶段、stream 和 payload 字段的事件字典。
         :raises RuntimeError: 账本尚未配置。
         :raises (TypeError, sqlite3.Error): payload 不可序列化或写入失败。
-        :side_effects: 插入事件并提交；每 500 次写入按保留策略清理旧记录。
+        副作用：插入事件并提交；每 500 次写入按保留策略清理旧记录。
         """
         # 先序列化 payload，失败时不进入事务，避免写入不可重建的半条事件。
         event_at = current_time() if at is None else at
@@ -164,7 +164,7 @@ class EventStore:
         :return: `EventPage`；结果按 seq 正序排列。
         :raises ValueError: seq 小于 0 或 limit 小于 1。
         :raises RuntimeError: 账本尚未配置。
-        :side_effects: 只读事件表。
+        副作用：只读事件表。
         """
         if seq < 0:
             raise ValueError("事件游标不能小于 0")
@@ -198,62 +198,66 @@ class EventStore:
         :return: 按最新阶段事件时间倒序排列的阶段快照。
         :raises ValueError: 扫描上限小于 1。
         :raises RuntimeError: 账本尚未配置。
-        :side_effects: 只读 ``pipeline_events``；不修改事件或业务状态。
+        副作用：只读 ``pipeline_events``；不修改事件或业务状态。
         """
         if scan_limit < 1:
             raise ValueError("阶段扫描上限必须大于 0")
         now = current_time()
         with self._lock:
             connection = self._require_connection()
-            latest_rows = connection.execute(
+            rows = connection.execute(
                 """
-                SELECT event.seq, event.at, event.stream_id, event.turn_id,
-                       event.stage, event.payload
-                FROM pipeline_events AS event
-                INNER JOIN (
-                    SELECT stream_id, MAX(seq) AS seq
+                WITH ranked AS (
+                    SELECT seq, at, stream_id, turn_id, stage, payload,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY stream_id ORDER BY seq DESC
+                           ) AS position
                     FROM pipeline_events
                     WHERE kind = 'stage' AND stream_id IS NOT NULL
-                    GROUP BY stream_id
-                ) AS latest ON latest.seq = event.seq
-                ORDER BY event.at DESC, event.seq DESC
-                """
+                )
+                SELECT seq, at, stream_id, turn_id, stage, payload, position
+                FROM ranked
+                WHERE position <= ?
+                ORDER BY stream_id, position
+                """,
+                (scan_limit,),
             ).fetchall()
-            snapshots: List[Dict[str, Any]] = []
-            for latest in latest_rows:
-                history = connection.execute(
-                    """
-                    SELECT at, stage
-                    FROM pipeline_events
-                    WHERE kind = 'stage' AND stream_id = ? AND seq <= ?
-                    ORDER BY seq DESC
-                    LIMIT ?
-                    """,
-                    (latest["stream_id"], latest["seq"], scan_limit),
-                ).fetchall()
-                started_at = int(latest["at"])
-                for row in history:
-                    if str(row["stage"]) != str(latest["stage"]):
-                        break
-                    started_at = int(row["at"])
-                payload = json.loads(latest["payload"])
-                if not isinstance(payload, dict):
-                    raise ValueError(f"事件 {latest['seq']} 的 payload 不是对象")
-                snapshots.append({
-                    "streamId": int(latest["stream_id"]),
-                    "streamName": str(payload.get("streamName", "")),
-                    "stage": str(latest["stage"]),
-                    "stageLabel": label_for(str(latest["stage"])),
-                    "detail": str(payload.get("detail", "")),
-                    "turnId": (
-                        int(latest["turn_id"])
-                        if latest["turn_id"] is not None
-                        else None
-                    ),
-                    "stageElapsedMs": max(0, now - started_at),
-                    "updatedAt": int(latest["at"]),
-                })
-        return snapshots
+        histories: Dict[int, List[sqlite3.Row]] = {}
+        for row in rows:
+            histories.setdefault(int(row["stream_id"]), []).append(row)
+        snapshots: List[Dict[str, Any]] = []
+        for history in histories.values():
+            latest = history[0]
+            started_at = int(latest["at"])
+            started_at_truncated = True
+            for previous in history[1:]:
+                if str(previous["stage"]) != str(latest["stage"]):
+                    started_at_truncated = False
+                    break
+                started_at = int(previous["at"])
+            payload = json.loads(latest["payload"])
+            if not isinstance(payload, dict):
+                raise ValueError(f"事件 {latest['seq']} 的 payload 不是对象")
+            snapshots.append({
+                "streamId": int(latest["stream_id"]),
+                "streamName": str(payload.get("streamName", "")),
+                "stage": str(latest["stage"]),
+                "stageLabel": label_for(str(latest["stage"])),
+                "detail": str(payload.get("detail", "")),
+                "turnId": (
+                    int(latest["turn_id"])
+                    if latest["turn_id"] is not None
+                    else None
+                ),
+                "stageElapsedMs": max(0, now - started_at),
+                "stageStartedAtTruncated": started_at_truncated,
+                "updatedAt": int(latest["at"]),
+            })
+        return sorted(
+            snapshots,
+            key=lambda snapshot: snapshot["updatedAt"],
+            reverse=True,
+        )
 
     def search(
         self,
@@ -278,7 +282,7 @@ class EventStore:
         :return: 倒序事件和下一页游标。
         :raises ValueError: 参数范围或时间区间不合法。
         :raises RuntimeError: 账本尚未配置。
-        :side_effects: 只读事件表。
+        副作用：只读事件表。
         """
         if limit < 1 or limit > 1_000:
             raise ValueError("事件检索上限必须在 1 到 1000 之间")
@@ -372,7 +376,7 @@ class EventStore:
     def close(self) -> None:
         """关闭事件账本连接并重置写入计数。
 
-        :side_effects: 关闭 SQLite 连接；重复调用安全。
+        副作用：关闭 SQLite 连接；重复调用安全。
         """
         with self._lock:
             if self._connection is not None:
@@ -383,7 +387,7 @@ class EventStore:
     def clear(self) -> None:
         """删除当前账本中的全部事件。
 
-        :side_effects: 清空 pipeline_events 表并提交事务；未配置连接时无操作。
+        副作用：清空 pipeline_events 表并提交事务；未配置连接时无操作。
         :raises sqlite3.Error: 删除或提交失败。
         """
         with self._lock:
@@ -398,7 +402,7 @@ class EventStore:
 
         :param connection: 当前事件账本连接。
         :param now: 当前事件时间戳。
-        :side_effects: 删除超出时长或数量上限的事件并提交事务。
+        副作用：删除超出时长或数量上限的事件并提交事务。
         :raises sqlite3.Error: 清理 SQL 或提交失败。
         """
         cutoff = now - self._retention_hours * 60 * 60 * 1_000
@@ -422,7 +426,7 @@ class EventStore:
 
         :return: 当前账本连接。
         :raises RuntimeError: 尚未调用 :meth:`configure` 或连接已关闭。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         if self._connection is None:
             raise RuntimeError("事件账本尚未配置")
@@ -448,7 +452,7 @@ class EventStore:
         :param turn_id: turn ID，可以为 `None`。
         :param payload: 业务字段字典。
         :return: 合并后的新字典。
-        :side_effects: 不修改 payload。
+        副作用：不修改 payload。
         """
         return {
             **payload,
@@ -468,7 +472,7 @@ class EventStore:
         :return: 通过 :meth:`_flatten` 生成的事件字典。
         :raises json.JSONDecodeError: payload 不是合法 JSON。
         :raises ValueError: payload 解码后不是对象。
-        :side_effects: 不修改数据库行。
+        副作用：不修改数据库行。
         """
         payload = json.loads(row["payload"])
         if not isinstance(payload, dict):
@@ -498,7 +502,7 @@ def configure(
     :param db_path: SQLite 数据库路径。
     :param retention_count: 最大保留事件数，默认值为 20000。
     :param retention_hours: 最大保留时长，默认值为 72 小时。
-    :side_effects: 委托全局 `event_store` 替换连接并创建表。
+    副作用：委托全局 `event_store` 替换连接并创建表。
     """
     event_store.configure(
         db_path,
@@ -558,6 +562,6 @@ def search_events(
 def close() -> None:
     """关闭模块级事件账本连接。
 
-    :side_effects: 委托全局 `event_store` 关闭 SQLite 连接。
+    副作用：委托全局 `event_store` 关闭 SQLite 连接。
     """
     event_store.close()
