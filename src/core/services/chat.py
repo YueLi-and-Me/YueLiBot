@@ -407,7 +407,7 @@ class ChatService:
                 pass
 
     async def _tick(self) -> None:
-        """为每个空闲且有缓冲消息的 stream 启动一轮回复。"""
+        """为每个空闲且有缓冲消息的 stream 启动一轮同发送者回复。"""
         for stream_id in tuple(self._buffers):
             buffered = self._buffers.get(stream_id)
             if not buffered:
@@ -415,8 +415,20 @@ class ChatService:
                 continue
             if not self.claim_stream(stream_id, 'reply'):
                 continue
-            batch = buffered[:]
-            self._buffers.pop(stream_id, None)
+            # 群聊中不同人物的关系与事实彼此独立，只消费连续同一人物的前缀。
+            person_id = buffered[0].context.person.id
+            boundary = next(
+                (
+                    index
+                    for index, message in enumerate(buffered[1:], start=1)
+                    if message.context.person.id != person_id
+                ),
+                len(buffered),
+            )
+            batch = buffered[:boundary]
+            del buffered[:boundary]
+            if not buffered:
+                self._buffers.pop(stream_id, None)
             try:
                 await self._start_turn(batch)
             except Exception:
