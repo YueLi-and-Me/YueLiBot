@@ -16,6 +16,7 @@ from src.core.prompts.registry import (
     CHAT_PROTOCOL_TEMPLATE_ID,
     CHAT_SYSTEM_COMPONENTS,
     get_prompt,
+    render_chat_system,
 )
 
 # 重逢措辞使用有序阈值表统一维护，测试固定阈值顺序；第三档的天数由函数动态生成。
@@ -319,17 +320,12 @@ def build_system_prompt(
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
         'expression_habits': _expression_habits_block(expression_habits),
     }
-    system_values.update({
-        placeholder: get_prompt(template_id).render(
-            **component_values[template_id]
-        ).rstrip()
-        for template_id, placeholder in CHAT_SYSTEM_COMPONENTS.items()
-    })
+    prompt, system_values = render_chat_system(system_values, component_values)
     if render_params is not None:
         render_params.update(component_values)
         render_params['chat.system'] = system_values
-    # 主骨架由资源模板决定；此处只注入配置和当前轮次上下文。
-    return get_prompt('chat.system').render(**system_values)
+    # 主骨架由资源模板决定；公共组装函数确保生产与重放使用完全相同的空白处理。
+    return prompt
 
 
 def build_proactive_prompt(

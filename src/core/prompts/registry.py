@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Iterable, List
+from typing import Any, Dict, FrozenSet, Iterable, List, Tuple
 import re
 
 from src.core.common.logger import get_logger
@@ -330,6 +330,29 @@ def get_prompt(template_id: str) -> PromptTemplate:
     """
 
     return _catalog.get(template_id)
+
+
+def render_chat_system(
+    system_values: Dict[str, str],
+    component_values: Dict[str, Dict[str, str]],
+) -> Tuple[str, Dict[str, str]]:
+    """用当前聊天子模板补全并渲染系统提示词。
+
+    :param system_values: 不含聊天子模板正文的 ``chat.system`` 渲染参数。
+    :param component_values: 各聊天子模板自己的渲染参数。
+    :return: 完整系统提示词，以及包含当前子模板正文的完整渲染参数副本。
+    :raises KeyError: 缺少已声明子模板的渲染参数或模板未加载。
+    :raises ValueError: 子模板或系统模板的渲染参数不符合占位符声明。
+    副作用：不修改输入字典。
+    """
+    resolved_values = dict(system_values)
+    resolved_values.update({
+        placeholder: get_prompt(template_id).render(
+            **component_values[template_id]
+        ).rstrip()
+        for template_id, placeholder in CHAT_SYSTEM_COMPONENTS.items()
+    })
+    return get_prompt('chat.system').render(**resolved_values), resolved_values
 
 
 def prompt_metadata(prompt_id: str, template_ids: Iterable[str]) -> Dict[str, str]:

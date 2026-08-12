@@ -13,6 +13,7 @@ from src.core.prompts.registry import (
     CHAT_SYSTEM_COMPONENTS,
     CHAT_SYSTEM_TEMPLATE_IDS,
     get_prompt,
+    render_chat_system,
 )
 
 
@@ -80,14 +81,13 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
         params[template_id] = dict(values)
     rendered: Dict[str, str] = {}
     if 'chat.system' in template_ids:
-        for template_id in CHAT_SYSTEM_COMPONENTS:
-            rendered[template_id] = get_prompt(template_id).render(**params[template_id])
-        system_values = dict(params['chat.system'])
-        system_values.update({
-            placeholder: rendered[template_id]
-            for template_id, placeholder in CHAT_SYSTEM_COMPONENTS.items()
-        })
-        rendered['chat.system'] = get_prompt('chat.system').render(**system_values)
+        rendered['chat.system'], _ = render_chat_system(
+            params['chat.system'],
+            {
+                template_id: params[template_id]
+                for template_id in CHAT_SYSTEM_COMPONENTS
+            },
+        )
         if 'chat.proactive' in template_ids:
             rendered['chat.proactive'] = get_prompt('chat.proactive').render(
                 **params['chat.proactive']
