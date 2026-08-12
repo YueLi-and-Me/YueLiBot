@@ -2,7 +2,7 @@
 
 命令行参数决定运行时数据目录、配置文件和监听端口；入口负责先校验端口，再创建
 数据库迁移、模型路由、对话服务、可选向量/TTS/日程服务，并将生命周期回调交给
-FastAPI。实际 HTTP/WebSocket 路由由 ``src.api`` 提供。
+FastAPI。实际 HTTP/WebSocket 路由由 ``src.core.api`` 提供。
 """
 
 from __future__ import annotations
@@ -18,13 +18,13 @@ import sys
 
 import uvicorn
 
-from src.api.auth import token_manager
-from src.common.backend_runtime import create_backend_runtime
-from src.common.logger import get_logger, initialize_logging
-from src.config.loader import load_config
-from src.llm_models.protocol import LlmProvider
-from src.observe import events as trace
-from src.prompts.registry import prompt_metadata
+from src.core.api.auth import token_manager
+from src.core.common.backend_runtime import create_backend_runtime
+from src.core.common.logger import get_logger, initialize_logging
+from src.core.config.loader import load_config
+from src.core.llm_models.protocol import LlmProvider
+from src.core.observe import events as trace
+from src.core.prompts.registry import prompt_metadata
 
 
 DEFAULT_BACKEND_PORT = 7999
@@ -217,7 +217,7 @@ def main() -> None:
     initialize_logging(cfg.log, data_dir / 'logs')
     logger = get_logger("main")
 
-    from src.prompts.registry import configure_prompts
+    from src.core.prompts.registry import configure_prompts
     configure_prompts(data_dir)
 
     if args.selftest:
@@ -236,19 +236,19 @@ def main() -> None:
     _announce_port(port)
     _announce_token(backend_runtime.token)
 
-    from src.llm_models.snapshot import configure as configure_snapshots
+    from src.core.llm_models.snapshot import configure as configure_snapshots
     configure_snapshots(
         data_dir / 'logs' / 'llm_request' if cfg.log.request_snapshots else None,
         cfg.log.max_snapshot_files,
     )
 
-    from src.common.db.connection import open_db
-    from src.common.db.migrations.manager import run_migrations
-    from src.observe.store import configure as configure_event_store
-    from src.platform_io.broker import PlatformBroker
-    from src.platform_io.drivers.qq_ws import QqWebSocketDriver
-    from src.platform_io.registry import StreamRegistry
-    from src.platform_io.types import StreamRef
+    from src.core.common.db.connection import open_db
+    from src.core.common.db.migrations.manager import run_migrations
+    from src.core.observe.store import configure as configure_event_store
+    from src.core.platform_io.broker import PlatformBroker
+    from src.core.platform_io.drivers.qq_ws import QqWebSocketDriver
+    from src.core.platform_io.registry import StreamRegistry
+    from src.core.platform_io.types import StreamRef
     db = open_db(db_path)
     run_migrations(db, db_path)
     configure_event_store(
@@ -259,9 +259,9 @@ def main() -> None:
     logger.info("db_ready", path=str(db_path))
 
     # 先装配归属注册表和 broker，随后创建的聊天服务才能解析并投递外部 stream。
-    from src.api.state import app_state
-    from src.api.ws import push
-    from src.services.chat import ChatService
+    from src.core.api.state import app_state
+    from src.core.api.ws import push
+    from src.core.services.chat import ChatService
 
     app_state.registry = StreamRegistry(db)
     app_state.group_chat_config = cfg.group_chat
@@ -294,7 +294,7 @@ def main() -> None:
     )
 
     # 路由器为各模型任务维护候选序列，业务服务只接收已经选择好的 provider。
-    from src.llm_models.router import create_routers
+    from src.core.llm_models.router import create_routers
     routers = create_routers(cfg)
     app_state.routers = routers
 
@@ -347,8 +347,8 @@ def main() -> None:
     # 向量服务依赖 ChatService 已创建的 MemoryStore，因此必须在聊天服务之后装配。
     if cfg.vector.enabled:
         try:
-            from src.memory.embed import build_client
-            from src.services.vector import VectorService
+            from src.core.memory.embed import build_client
+            from src.core.services.vector import VectorService
             embed_client = build_client(routers.embedding)
             app_state.chat._vector = VectorService(app_state.chat.memory, embed_client)
             logger.info("vector_recall_enabled", model=routers.embedding.model,
@@ -358,7 +358,7 @@ def main() -> None:
 
     # TTS 只在配置启用且至少有一个可用候选时装配，避免创建永远失败的后台任务。
     if cfg.tts.enabled and routers.tts.ready:
-        from src.services.tts import TtsService
+        from src.core.services.tts import TtsService
         tts = TtsService(cfg, _push_event, routers.tts)
         app_state.chat._speak_audio = tts.speak
         app_state.chat._cancel_audio = tts.cancel
@@ -369,8 +369,8 @@ def main() -> None:
     # 日程服务是可选依赖；未成功装配时由 AwarenessService 使用配置备用日程。
     schedule = None
     try:
-        from src.schedule.plan import DayPlanService, ScheduleSleepState
-        from src.persona.state import describe_persona
+        from src.core.schedule.plan import DayPlanService, ScheduleSleepState
+        from src.core.persona.state import describe_persona
 
         chat_svc = app_state.chat
         schedule_generation = cfg.generation.schedule
@@ -406,8 +406,8 @@ def main() -> None:
 
     # 主动感知依赖聊天、日程和视觉服务；这里只登记生命周期回调，实际启动在
     # FastAPI lifespan 的事件循环中执行。
-    from src.services.lifecycle import lifecycle
-    from src.services.proactive import AwarenessService
+    from src.core.services.lifecycle import lifecycle
+    from src.core.services.proactive import AwarenessService
     awareness = AwarenessService(
         chat=app_state.chat,
         schedule=schedule,
@@ -421,7 +421,7 @@ def main() -> None:
 
     logger.info("backend_starting", port=port)
 
-    from src.api.app import create_app
+    from src.core.api.app import create_app
     config = uvicorn.Config(create_app(), log_level="warning", access_log=False)
     _ReadyAnnouncingServer(config).run(sockets=[sock])
 

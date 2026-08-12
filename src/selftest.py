@@ -15,15 +15,15 @@ import json
 import shutil
 import tempfile
 
-from src.common.clock import now as current_time
-from src.common.db.connection import open_db
-from src.common.db.migrations.manager import run_migrations
-from src.common.logger import get_logger
-from src.llm_models.protocol import LlmProvider
-from src.observe.store import close as close_event_store
-from src.observe.store import configure as configure_event_store
-from src.services.chat import ChatService, InboundMessage
-from src.services.proactive import AwarenessService
+from src.core.common.clock import now as current_time
+from src.core.common.db.connection import open_db
+from src.core.common.db.migrations.manager import run_migrations
+from src.core.common.logger import get_logger
+from src.core.llm_models.protocol import LlmProvider
+from src.core.observe.store import close as close_event_store
+from src.core.observe.store import configure as configure_event_store
+from src.core.services.chat import ChatService, InboundMessage
+from src.core.services.proactive import AwarenessService
 
 logger = get_logger(__name__)
 
@@ -81,7 +81,7 @@ async def run_selftest(cfg: Any) -> int:
 
             events.append({"stream_id": stream_id, "channel": channel, "payload": payload})
 
-        from src.llm_models.router import create_routers
+        from src.core.llm_models.router import create_routers
         routers = create_routers(cfg)
         chat_provider = routers.chat if routers.chat.ready else None
         proactive_provider = routers.proactive if routers.proactive.ready else None

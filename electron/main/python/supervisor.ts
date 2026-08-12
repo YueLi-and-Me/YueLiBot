@@ -489,7 +489,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.adapterStderrBuf = ''
 
     const adapter = spawn(this.pythonExe, [
-      '-m', 'src.adapters.napcat',
+      '-m', 'src.platforms.napcat',
       '--config-path', this.napcatConfigPath,
       '--runtime-path', join(this.dataDir, 'runtime', 'backend.json'),
     ], {

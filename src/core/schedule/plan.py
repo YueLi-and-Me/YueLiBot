@@ -1,0 +1,1126 @@
+"""
+每日生成式日程与可配置作息服务。
+
+惰性调用 ensure() 才触发模型；读取、描述和历史补叙均不会为过去日期补生成。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
+
+import asyncio
+import json
+import re
+
+from src.core.common.clock import now as current_time
+from src.core.common.logger import get_logger
+from src.core.config.schema import ScheduleConfig
+from src.core.prompts.registry import get_prompt
+
+logger = get_logger(__name__)
+
+PLAN_PREFIX = 'day_plan:'
+MAX_HOURS_FOR_HISTORY = 48
+MAX_HOURS_FOR_ELAPSED_INTEGRATION = 48
+HOUR_MS = 60 * 60_000
+
+
+@dataclass
+class DayPlanSlot:
+    """日程中的一个时间段及其活动和情绪描述。"""
+
+    from_time: str   # HH:MM
+    doing: str
+    mood: str
+
+
+@dataclass
+class DayPlan:
+    """某个自然日的完整日程和作息配置。"""
+
+    date: str
+    slots: List[DayPlanSlot]
+    bedtime_hint: str
+    wake_hint: str
+    theme: str
+    carry_over: str
+    sleep_enabled: bool
+    bedtime_day_boundary: str
+
+
+@dataclass
+class ScheduleSleepState:
+    """日程服务提供给对话编排的睡眠状态。"""
+
+    asleep: bool
+    drowsy: bool
+    just_woke: bool = False
+
+
+@dataclass
+class DayPlanGenerationIssue:
+    """最近一次日程生成失败的可观测信息。"""
+
+    kind: str      # 'invalid-output' | 'provider-error'
+    attempted_at: int
+    raw: str | None = None
+    reason: str | None = None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 纯工具函数
+# ─────────────────────────────────────────────────────────────────────
+
+def day_plan_date(now: int | datetime) -> str:
+    """将毫秒时间戳或本地日期时间转换为日程日期字符串。
+
+    Args:
+        now: 毫秒级 Unix 时间戳，或待转换的 ``datetime``。
+
+    Returns:
+        ``YYYY-MM-DD`` 格式的本地日期。
+
+    Raises:
+        TypeError: 输入不是整数或 ``datetime`` 时由类型操作直接抛出。
+    """
+
+    if isinstance(now, int):
+        now = datetime.fromtimestamp(now / 1000)
+    return now.strftime('%Y-%m-%d')
+
+
+def clock_minutes(value: str) -> int | None:
+    """解析严格的 ``HH:MM`` 时刻。
+
+    Args:
+        value: 两位小时和两位分钟组成的字符串，小时范围 00 至 23，分钟范围
+            00 至 59。
+
+    Returns:
+        从午夜起计算的分钟数；格式或范围不合法时返回 ``None``。
+    """
+
+    m = re.fullmatch(r'(\d{2}):(\d{2})', value)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _fallback_slots(settings: ScheduleConfig) -> List[DayPlanSlot]:
+    """按配置的最少时段数均匀生成备用时间段。
+
+    Args:
+        settings: 提供时段数量、活动和情绪默认文本的调度配置。
+
+    Returns:
+        从 00:00 开始均匀分布的备用时段列表。
+
+    Raises:
+        ValueError: 配置中的最少时段数不适合作为除数时由计算直接暴露。
+    """
+    return [
+        DayPlanSlot(
+            from_time=f'{index * 24 // settings.min_slots:02d}:00',
+            doing=settings.fallback_activity,
+            mood=settings.fallback_mood,
+        )
+        for index in range(settings.min_slots)
+    ]
+
+
+def fallback_day_plan(
+    date: str,
+    config: ScheduleConfig | None = None,
+) -> DayPlan:
+    """创建指定日期的配置驱动备用日程。
+
+    Args:
+        date: ``YYYY-MM-DD`` 格式的日程日期。
+        config: 可选调度配置；省略时使用默认配置。
+
+    Returns:
+        不调用模型、完全由配置默认值组成的 ``DayPlan``。
+    """
+
+    settings = config or ScheduleConfig()
+    return DayPlan(
+        date=date,
+        slots=_fallback_slots(settings),
+        bedtime_hint=settings.fallback_bedtime,
+        wake_hint=settings.fallback_wake,
+        theme=settings.fallback_theme,
+        carry_over=settings.fallback_carry_over,
+        sleep_enabled=settings.sleep_enabled,
+        bedtime_day_boundary=settings.bedtime_day_boundary,
+    )
+
+
+def planned_sleep_window_from_hints(
+    date: str,
+    bedtime_hint: str,
+    wake_hint: str,
+    bedtime_day_boundary_hint: str,
+) -> Tuple[int, int]:
+    """按明确的时刻提示计算一次跨日作息窗口。
+
+    Args:
+        date: ``YYYY-MM-DD`` 格式的基准日期。
+        bedtime_hint: 入睡时刻，严格使用 ``HH:MM``。
+        wake_hint: 起床时刻，严格使用 ``HH:MM``。
+        bedtime_day_boundary_hint: 判断入睡时刻属于次日的边界时刻。
+
+    Returns:
+        ``(bedtime_at_ms, wake_at_ms)``，单位均为本地毫秒时间戳。
+
+    Raises:
+        ValueError: 日期或任一时刻提示无法解析。
+    """
+    year, month, day = [int(x) for x in date.split('-')]
+    bedtime_minutes = clock_minutes(bedtime_hint)
+    wake_minutes = clock_minutes(wake_hint)
+    bedtime_day_boundary = clock_minutes(bedtime_day_boundary_hint)
+    if bedtime_minutes is None:
+        raise ValueError(f'非法 bedtimeHint：{bedtime_hint}')
+    if wake_minutes is None:
+        raise ValueError(f'非法 wakeHint：{wake_hint}')
+    if bedtime_day_boundary is None:
+        raise ValueError(f'非法 bedtimeDayBoundary：{bedtime_day_boundary_hint}')
+    bedtime_day_offset = (
+        1 if bedtime_minutes <= bedtime_day_boundary else 0
+    )
+    wake_day_offset = (
+        bedtime_day_offset
+        if wake_minutes > bedtime_minutes
+        else bedtime_day_offset + 1
+    )
+
+    # 必须用 timedelta 加天，避免月末直接给 day 加一触发日期越界。
+    base = datetime(year, month, day)
+    bedtime_dt = base + timedelta(
+        days=bedtime_day_offset, hours=bedtime_minutes // 60, minutes=bedtime_minutes % 60
+    )
+    wake_dt = base + timedelta(
+        days=wake_day_offset,
+        hours=wake_minutes // 60,
+        minutes=wake_minutes % 60,
+    )
+    return (int(bedtime_dt.timestamp() * 1000), int(wake_dt.timestamp() * 1000))
+
+
+def planned_sleep_window(plan: DayPlan) -> Tuple[int, int]:
+    """根据日程中的作息提示返回入睡和起床时间。
+
+    Args:
+        plan: 包含日期、入睡、起床和日期边界提示的日程。
+
+    Returns:
+        ``(bedtime_at_ms, wake_at_ms)``，单位均为本地毫秒时间戳。
+
+    Raises:
+        ValueError: 日程中的日期或时刻提示不合法。
+    """
+    return planned_sleep_window_from_hints(
+        plan.date,
+        plan.bedtime_hint,
+        plan.wake_hint,
+        plan.bedtime_day_boundary,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 文本结构与敏感信息过滤
+# ─────────────────────────────────────────────────────────────────────
+
+_SENSITIVE_TEXT = re.compile(
+    r'密码|口令|验证码|账号|银行卡|支付|金额|工资|客户|聊天记录|私信|@\w+|'
+    r'[A-Za-z]:\\|\\\\|/Users/|/home/', re.IGNORECASE
+)
+
+
+def _safe_plan_text(value: Any, min_len: int, max_len: int) -> str | None:
+    """规范化并过滤日程文本。
+
+    Args:
+        value: 待校验的任意输入值。
+        min_len: 规范化文本允许的最小字符数。
+        max_len: 规范化文本允许的最大字符数。
+
+    Returns:
+        折叠空白后的文本；类型、长度或敏感信息校验失败时返回 ``None``。
+    """
+
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r'\s+', ' ', value).strip()
+    if not min_len <= len(text) <= max_len:
+        return None
+    if _SENSITIVE_TEXT.search(text):
+        return None
+    return text
+
+
+def _safe_doing(value: Any) -> str | None:
+    """校验活动文本并移除开头的第一人称口头前缀。
+
+    Args:
+        value: 待校验的任意活动文本。
+
+    Returns:
+        可写入日程的活动描述；不合法或只剩前缀时返回 ``None``。
+    """
+
+    text = _safe_plan_text(value, 1, 72)
+    if not text:
+        return None
+    normalized = re.sub(r'^我(?!们)[，、：:\s]*', '', text).strip()
+    return normalized or None
+
+
+def activity_avoidance_items(slots: List[DayPlanSlot]) -> List[str]:
+    """提取历史日程中需要避免重复安排的活动摘要。
+
+    Args:
+        slots: 历史日程时段列表。
+
+    Returns:
+        按首次出现顺序去重、截断到 28 个字符的活动片段列表。
+    """
+
+    seen: Dict[str, None] = {}
+    for slot in slots:
+        first = re.sub(r'^我(?!们)[，、：:\s]*', '', slot.doing)
+        first = re.sub(r'^(?:正在|正|又在|还在|继续|准备|开始|慢慢|刚刚|刚|在)', '', first)
+        first = re.split(r'[，。；！？]', first, 1)[0].strip()
+        if len(first) >= 2:
+            seen[first[:28]] = None
+    return list(seen.keys())
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 日程解析
+# ─────────────────────────────────────────────────────────────────────
+
+def parse_day_plan(
+    raw: str,
+    date: str,
+    config: ScheduleConfig | None = None,
+) -> DayPlan | None:
+    """解析并严格校验模型生成的日程 JSON。
+
+    Args:
+        raw: 模型返回的 JSON 文本。
+        date: 期望的 ``YYYY-MM-DD`` 日程日期。
+        config: 可选调度配置；省略时使用默认配置。
+
+    Returns:
+        所有字段、时段顺序、长度和敏感信息检查均通过时返回 ``DayPlan``；任一
+        检查失败或 JSON 无法解析时返回 ``None``。
+    """
+    settings = config or ScheduleConfig()
+    # 解析、日期和时段数量任一不匹配都返回 None，由服务层选择备用日程。
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    if value.get('date') != date:
+        return None
+    slots_raw = value.get('slots')
+    if not isinstance(slots_raw, list) or not (
+        settings.min_slots <= len(slots_raw) <= settings.max_slots
+    ):
+        return None
+
+    slots: List[DayPlanSlot] = []
+    previous = -1
+    for item in slots_raw:
+        # 时段必须按严格递增的 HH:MM 排列，避免同一时刻存在多个活动。
+        if not isinstance(item, dict):
+            return None
+        from_val = item.get('from')
+        if not isinstance(from_val, str):
+            return None
+        from_mins = clock_minutes(from_val)
+        doing = _safe_doing(item.get('doing'))
+        mood = _safe_plan_text(item.get('mood'), 1, 40)
+        if from_mins is None or from_mins <= previous or not doing or not mood:
+            return None
+        previous = from_mins
+        slots.append(DayPlanSlot(from_time=from_val, doing=doing, mood=mood))
+
+    bedtime_hint = value.get('bedtimeHint', '')
+    if not isinstance(bedtime_hint, str) or clock_minutes(bedtime_hint) is None:
+        return None
+    wake_hint = value.get('wakeHint', '')
+    if not isinstance(wake_hint, str) or clock_minutes(wake_hint) is None:
+        return None
+    theme = _safe_plan_text(value.get('theme'), 1, 72)
+    carry_over = _safe_plan_text(value.get('carryOver'), 1, 72)
+    # 主题和延续事项属于必填上下文，缺失时不接受部分有效的模型输出。
+    if not theme or not carry_over:
+        return None
+    return DayPlan(
+        date=date,
+        slots=slots,
+        bedtime_hint=bedtime_hint,
+        wake_hint=wake_hint,
+        theme=theme,
+        carry_over=carry_over,
+        sleep_enabled=settings.sleep_enabled,
+        bedtime_day_boundary=settings.bedtime_day_boundary,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 日程描述（注入 prompt）
+# ─────────────────────────────────────────────────────────────────────
+
+def describe_mood_behavior(mood: str) -> str:
+    """把日程情绪字段转换为提示词中的行为约束。
+
+    Args:
+        mood: 当前时段的情绪描述。
+
+    Returns:
+        要求模型让情绪影响反应、但继续服从人设的中文提示文本。
+    """
+
+    return f'你此刻的状态是「{mood}」。让它自然影响反应，具体表达仍服从你的人设。'
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 提示词构建
+# ─────────────────────────────────────────────────────────────────────
+
+def _weekday(now: datetime) -> str:
+    """按 ``datetime.weekday`` 计算星期名称。
+
+    Args:
+        now: 待转换的本地日期时间。
+
+    Returns:
+        中文星期名称。
+    """
+
+    return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.weekday() % 7]
+
+
+def _weekday_cn(now: datetime) -> str:
+    """使用本地日期时间返回中文星期名称。
+
+    Args:
+        now: 待转换的本地日期时间。
+
+    Returns:
+        ``周一`` 至 ``周日`` 之一。
+    """
+
+    mapping = {1: '周一', 2: '周二', 3: '周三', 4: '周四', 5: '周五', 6: '周六', 7: '周日'}
+    return mapping[now.isoweekday()]
+
+
+def _day_occasion(now: datetime, anniversary_at: int) -> str:
+    """收集当前日期的固定节日和相识纪念日标签。
+
+    Args:
+        now: 待判断的本地日期时间。
+        anniversary_at: 相识时间的毫秒时间戳；非正值表示没有配置纪念日。
+
+    Returns:
+        以中文顿号连接的节日标签；没有匹配项时返回 ``没有特别节日``。
+    """
+
+    fixed = {'01-01': '元旦', '02-14': '情人节', '05-01': '劳动节',
+              '10-01': '国庆节', '12-25': '圣诞节'}
+    month_day = now.strftime('%m-%d')
+    labels: List[str] = []
+    if month_day in fixed:
+        labels.append(fixed[month_day])
+    if anniversary_at > 0:
+        ann = datetime.fromtimestamp(anniversary_at / 1000)
+        if ann.month == now.month and ann.day == now.day:
+            labels.append('认识纪念日')
+    return '、'.join(labels) if labels else '没有特别节日'
+
+
+def build_plan_prompt(
+    date: str,
+    weekday: str,
+    occasion: str,
+    persona: str,
+    yesterday_theme: str,
+    yesterday_bedtime: str,
+    yesterday_wake: str,
+    yesterday_carry_over: str,
+    yesterday_avoided: str,
+    density: str,
+    character_name: str,
+    character_personality: str,
+    schedule_config: ScheduleConfig | None = None,
+) -> str:
+    """构造日程模型请求的完整提示词。
+
+    Args:
+        date: 目标日程日期。
+        weekday: 目标日期的中文星期名称。
+        occasion: 节日或纪念日描述。
+        persona: 当前关系与主体状态描述。
+        yesterday_theme: 前一日日程主题；无记录时由调用方传入占位说明。
+        yesterday_bedtime: 前一日入睡提示。
+        yesterday_wake: 前一起床提示。
+        yesterday_carry_over: 前一日需要延续的事项。
+        yesterday_avoided: 前一日活动中应避免机械重复的摘要。
+        density: 近期互动密度描述。
+        character_name: 角色名称。
+        character_personality: 角色性格描述。
+        schedule_config: 可选调度配置；省略时使用默认配置。
+
+    Returns:
+        使用 ``schedule`` 模板渲染后的模型提示词。
+
+    Raises:
+        ValueError: 模板占位符集合不匹配时由模板注册表抛出。
+    """
+
+    settings = schedule_config or ScheduleConfig()
+    # 睡眠开关只影响运行时语义，时间字段仍保持合法格式以满足统一 JSON 结构。
+    sleep_rule = (
+        '- 已启用睡眠状态。bedtimeHint 与 wakeHint 可以是任意合法 HH:MM，具体节奏服从角色设定，'
+        '不强行套用人类夜间作息。'
+        if settings.sleep_enabled
+        else '- 不启用睡眠状态。bedtimeHint 与 wakeHint 仍需填写合法 HH:MM 以保持结构稳定，'
+        '但运行时会忽略它们，不要为了填字段编造睡眠情节。'
+    )
+    # 所有配置值转换为模板字符串，避免模板注册表接收未声明类型。
+    return get_prompt('schedule').render(
+        character_name=character_name,
+        date=date,
+        weekday=weekday,
+        occasion=occasion,
+        character_personality=character_personality,
+        persona=persona,
+        yesterday_theme=yesterday_theme,
+        yesterday_bedtime=yesterday_bedtime,
+        yesterday_wake=yesterday_wake,
+        yesterday_carry_over=yesterday_carry_over,
+        yesterday_avoided=yesterday_avoided,
+        density=density,
+        min_slots=str(settings.min_slots),
+        max_slots=str(settings.max_slots),
+        sleep_rule=sleep_rule,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DayPlanService
+# ─────────────────────────────────────────────────────────────────────
+
+class _DayPlanStore(Protocol):
+    """日程持久化所需的最小 JSON 读写协议。"""
+
+    def read_json(self, key: str, fallback: Any) -> Any:
+        """读取键值并在键不存在时返回备用值。
+
+        Args:
+            key: 日程存储键。
+            fallback: 键不存在时返回的值。
+
+        Returns:
+            存储中的 JSON 兼容值或 ``fallback``。
+        """
+
+        ...
+
+    def write_json(self, key: str, value: Any) -> None:
+        """写入一个 JSON 兼容值。
+
+        Args:
+            key: 日程存储键。
+            value: 待写入的 JSON 兼容值。
+
+        Side Effects:
+            更新底层日程存储。
+        """
+
+        ...
+
+
+def _plan_key(date: str) -> str:
+    """生成日程在键值存储中的稳定键名。
+
+    Args:
+        date: ``YYYY-MM-DD`` 格式的日程日期。
+
+    Returns:
+        由 ``PLAN_PREFIX`` 和日期拼接出的存储键。
+    """
+
+    return f'{PLAN_PREFIX}{date}'
+
+
+def _previous_date(now: datetime) -> str:
+    """计算给定本地日期时间的前一日日期字符串。
+
+    Args:
+        now: 当前本地日期时间。
+
+    Returns:
+        前一日的 ``YYYY-MM-DD`` 日期字符串。
+    """
+
+    return day_plan_date(now - timedelta(days=1))
+
+
+class DayPlanService:
+    """提供日程读取、惰性生成、作息计算和历史活动查询。"""
+
+    def __init__(
+        self,
+        store: _DayPlanStore,
+        persona_description: Callable[[], str],
+        interaction_density: Callable[[int], str],
+        anniversary_at: Callable[[], int],
+        energy: Callable[[], float],
+        last_interaction_at: Callable[[], int | None],
+        character_name: str,
+        character_personality: str,
+        generator: Any | None = None,
+        schedule_config: ScheduleConfig | None = None,
+    ) -> None:
+        """初始化日程服务及其依赖回调。
+
+        Args:
+            store: 提供 JSON 读写能力的日程存储。
+            persona_description: 返回当前人物状态描述的无参回调。
+            interaction_density: 根据毫秒时间戳返回互动密度描述的回调。
+            anniversary_at: 返回相识时间毫秒时间戳的回调。
+            energy: 返回当前主体精力的无参回调。
+            last_interaction_at: 返回最近互动毫秒时间戳或 ``None`` 的回调。
+            character_name: 角色名称。
+            character_personality: 角色性格描述。
+            generator: 可选的异步模型生成器，需提供 ``generate(prompt)`` 方法。
+            schedule_config: 可选调度配置；省略时使用默认配置。
+
+        Side Effects:
+            仅初始化内存状态，不读取存储或调用模型。
+        """
+        # 保存注入回调而不在构造期读取存储，确保服务可在数据库和模型装配后复用。
+        self._store = store
+        self._persona_description = persona_description
+        self._interaction_density = interaction_density
+        self._anniversary_at = anniversary_at
+        self._energy = energy
+        self._last_interaction_at = last_interaction_at
+        self._generator = generator
+        self._character_name = character_name
+        self._character_personality = character_personality
+        self._config = schedule_config or ScheduleConfig()
+        self._inflight: Dict[str, asyncio.Task[DayPlan]] = {}
+        self._generation_issues: Dict[str, DayPlanGenerationIssue] = {}
+
+    def get(self, now: int | None = None) -> DayPlan:
+        """读取当天已保存日程，不触发模型生成。
+
+        Args:
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            已保存且通过校验的当天日程；不存在或无效时返回配置备用日程。
+        """
+
+        now = now if now is not None else current_time()
+        date = day_plan_date(now)
+        return self._read(date) or fallback_day_plan(date, self._config)
+
+    async def ensure(self, now: int | None = None) -> DayPlan:
+        """确保当天存在真实日程，必要时等待一次异步生成。
+
+        Args:
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            已保存日程、生成成功的新日程或生成失败时的备用日程。
+
+        Side Effects:
+            可能调用模型、写入日程存储并更新生成失败冷却状态；同日期并发请求
+            共享同一个生成任务。
+        """
+
+        now = now if now is not None else current_time()
+        date = day_plan_date(now)
+        existing = self._read_generation_result(date)
+        if existing:
+            return existing
+        if self._generation_is_cooling_down(date, now):
+            return fallback_day_plan(date, self._config)
+        return await self._start_generation(date, now)
+
+    def ensure_background(self, now: int | None = None) -> DayPlan:
+        """当天日程缺失时立即返回备用计划并启动后台生成。
+
+        Args:
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            已保存日程、冷却期备用日程或立即生成的备用日程。
+
+        Side Effects:
+            可能创建一个异步生成任务，但不会等待模型响应。
+        """
+        now = now if now is not None else current_time()
+        date = day_plan_date(now)
+        existing = self._read_generation_result(date)
+        if existing:
+            return existing
+        if self._generation_is_cooling_down(date, now):
+            return fallback_day_plan(date, self._config)
+        self._start_generation(date, now)
+        return fallback_day_plan(date, self._config)
+
+    def _start_generation(self, date: str, now: int) -> asyncio.Task[DayPlan]:
+        """为指定日期创建或复用唯一的后台生成任务。
+
+        Args:
+            date: ``YYYY-MM-DD`` 格式的目标日期。
+            now: 启动生成时的毫秒时间戳。
+
+        Returns:
+            当前日期对应的异步日程生成任务。
+
+        Side Effects:
+            创建 asyncio task 并登记到 ``_inflight``；任务结束后自动清理登记。
+        """
+        existing = self._inflight.get(date)
+        if existing is not None:
+            return existing
+        task = asyncio.create_task(
+            self._generate(
+                date,
+                datetime.fromtimestamp(now / 1000),
+                now,
+            )
+        )
+        self._inflight[date] = task
+        task.add_done_callback(
+            lambda completed, generated_date=date: self._finish_generation(
+                generated_date,
+                completed,
+            )
+        )
+        return task
+
+    def _finish_generation(
+        self,
+        date: str,
+        task: asyncio.Task[DayPlan],
+    ) -> None:
+        """清理已结束的生成任务并记录未处理异常。
+
+        Args:
+            date: 任务对应的日程日期。
+            task: 已完成或被取消的异步生成任务。
+
+        Side Effects:
+            从 ``_inflight`` 移除当前任务；非取消异常会写入错误日志。
+        """
+        if self._inflight.get(date) is task:
+            self._inflight.pop(date, None)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logger.exception('日程后台生成任务异常', date=date)
+
+    def describe(self, now: int, sleep: ScheduleSleepState) -> str:
+        """生成当前日程和睡眠状态的中文提示文本。
+
+        Args:
+            now: 当前毫秒时间戳。
+            sleep: 当前睡眠状态。
+
+        Returns:
+            可注入对话提示词的行为描述。
+        """
+
+        return describe_day_plan(self.get(now), datetime.fromtimestamp(now / 1000), sleep)
+
+    def generation_issue(self, now: int) -> DayPlanGenerationIssue | None:
+        """读取指定日期最近一次生成失败记录。
+
+        Args:
+            now: 指定日期内的毫秒时间戳。
+
+        Returns:
+            当天生成问题，或没有失败记录时返回 ``None``。
+        """
+
+        return self._generation_issues.get(day_plan_date(now))
+
+    def _generation_is_cooling_down(self, date: str, now: int) -> bool:
+        """判断指定日期是否仍处于生成失败后的重试冷却期。
+
+        Args:
+            date: ``YYYY-MM-DD`` 格式的日程日期。
+            now: 当前毫秒时间戳。
+
+        Returns:
+            最近一次失败存在且尚未达到配置重试间隔时返回 ``True``。
+        """
+
+        issue = self._generation_issues.get(date)
+        return (
+            issue is not None
+            and now < issue.attempted_at
+            + self._config.generation_retry_interval_minutes * 60_000
+        )
+
+    def sleep_inputs(self, now: int | None = None) -> Dict[str, Any]:
+        """收集睡眠状态机所需的当前日程和交互输入。
+
+        Args:
+            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+
+        Returns:
+            包含日期、作息提示、睡眠开关、精力和最近互动时间的字典。
+        """
+
+        now = now if now is not None else current_time()
+        current_dt = datetime.fromtimestamp(now / 1000)
+        today = self.get(now)
+        yesterday_date = _previous_date(current_dt)
+        yesterday = self._read(yesterday_date) or fallback_day_plan(
+            yesterday_date,
+            self._config,
+        )
+        if today.sleep_enabled and yesterday.sleep_enabled:
+            yesterday_wake = planned_sleep_window(yesterday)[1]
+            today_bedtime = planned_sleep_window(today)[0]
+            cycle_boundary = yesterday_wake + (today_bedtime - yesterday_wake) // 2
+            plan = yesterday if now < cycle_boundary else today
+        else:
+            plan = today
+        return {
+            'date': plan.date, 'bedtime_hint': plan.bedtime_hint, 'wake_hint': plan.wake_hint,
+            'sleep_enabled': plan.sleep_enabled, 'energy': self._energy(),
+            'bedtime_day_boundary': plan.bedtime_day_boundary,
+            'last_interaction_at': self._last_interaction_at(),
+        }
+
+    def sleep_hours_between(self, from_ms: int, to_ms: int, earlier_asleep: bool = False) -> float:
+        """计算时间区间与配置作息窗口重叠的睡眠小时数。
+
+        Args:
+            from_ms: 区间起点毫秒时间戳。
+            to_ms: 区间终点毫秒时间戳。
+            earlier_asleep: 起点之前已经入睡时是否将被截断的历史区间计入。
+
+        Returns:
+            睡眠窗口重叠时长，单位为小时；终点不晚于起点时返回 0.0。
+
+        Performance:
+            最多按 ``MAX_HOURS_FOR_ELAPSED_INTEGRATION`` 小时的细粒度区间计算，
+            避免长时间跨度导致逐日读取无限增长。
+        """
+
+        if to_ms <= from_ms:
+            return 0.0
+        # 只精确计算最近 48 小时；更早部分仅在调用方确认区间起点已入睡时计入。
+        detailed_from = max(from_ms, to_ms - MAX_HOURS_FOR_ELAPSED_INTEGRATION * HOUR_MS)
+        sleep_ms = (
+            detailed_from - from_ms
+            if earlier_asleep and self._config.sleep_enabled
+            else 0
+        )
+        cursor = datetime.fromtimestamp(detailed_from / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
+        cursor -= timedelta(days=1)
+        last_date = datetime.fromtimestamp(to_ms / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
+        while cursor <= last_date:
+            # 按自然日读取日程，分别计算该日作息窗口与目标区间的交集。
+            date = day_plan_date(cursor)
+            plan = self._read(date) or fallback_day_plan(date, self._config)
+            if not plan.sleep_enabled:
+                cursor += timedelta(days=1)
+                continue
+            bedtime_at, wake_at = planned_sleep_window(plan)
+            overlap_start = max(detailed_from, bedtime_at)
+            overlap_end = min(to_ms, wake_at)
+            if overlap_end > overlap_start:
+                sleep_ms += overlap_end - overlap_start
+            cursor += timedelta(days=1)
+        return sleep_ms / HOUR_MS
+
+    def activities_between(self, from_dt: datetime, to_dt: datetime) -> List[str]:
+        """提取时间区间内按小时变化的活动描述。
+
+        Args:
+            from_dt: 本地日期时间区间起点。
+            to_dt: 本地日期时间区间终点。
+
+        Returns:
+            按时间顺序去重后的活动文本，最多检查 48 个小时。
+        """
+
+        out: List[str] = []
+        cursor = from_dt.replace(minute=0, second=0, microsecond=0)
+        last_key = ''
+        for _ in range(MAX_HOURS_FOR_HISTORY):
+            if cursor > to_dt:
+                break
+            plan_date = day_plan_date(cursor)
+            plan = self._read(plan_date) or fallback_day_plan(plan_date, self._config)
+            slot = _slot_at(plan, cursor)
+            key = f'{plan.date}:{slot.from_time}'
+            if key != last_key:
+                out.append(f'{cursor.hour}点左右{slot.doing}')
+                last_key = key
+            cursor += timedelta(hours=1)
+        return out
+
+    def _read(self, date: str) -> DayPlan | None:
+        """读取并解析指定日期的当前或兼容旧格式日程。
+
+        Args:
+            date: ``YYYY-MM-DD`` 格式的日程日期。
+
+        Returns:
+            通过当前格式或旧格式校验的日程；不存在或无法解析时返回 ``None``。
+        """
+
+        raw = self._store.read_json(_plan_key(date), None)
+        if raw is None:
+            return None
+        raw_str = json.dumps(raw) if not isinstance(raw, str) else raw
+        plan = parse_day_plan(raw_str, date, self._config)
+        if plan is None:
+            plan = self._read_legacy(raw, date)
+        return plan
+
+    def _read_generation_result(self, date: str) -> DayPlan | None:
+        """读取真实生成结果，并将模型启用时的备用日程视为缺失。
+
+        Args:
+            date: ``YYYY-MM-DD`` 格式的日程日期。
+
+        Returns:
+            可作为真实生成结果使用的日程，或 ``None``。
+        """
+
+        plan = self._read(date)
+        if self._generator is not None and plan == fallback_day_plan(date, self._config):
+            return None
+        return plan
+
+    async def _generate(
+        self,
+        date: str,
+        now: datetime,
+        attempted_at: int,
+    ) -> DayPlan:
+        """调用生成器创建、校验并保存指定日期的日程。
+
+        Args:
+            date: 目标日程日期。
+            now: 目标日期对应的本地日期时间。
+            attempted_at: 本次生成尝试的毫秒时间戳，用于记录冷却起点。
+
+        Returns:
+            校验通过并保存的模型日程，或生成器未配置、返回非法内容、抛出错误时的
+            备用日程。
+
+        Side Effects:
+            最多调用生成器两次，写入日程存储，并更新 ``_generation_issues``。
+            生成器异常会被记录为 provider-error，不会继续向后台任务传播。
+        """
+
+        fallback = fallback_day_plan(date, self._config)
+        if self._generator is None:
+            # 未配置生成器时仍保存备用计划，后续读取可区分“已初始化”与“完全缺失”。
+            self._generation_issues.pop(date, None)
+            self._store.write_json(_plan_key(date), _plan_to_dict(fallback))
+            return fallback
+        # 前一日数据只用于提示词上下文，不会因读取历史日期触发生成。
+        yesterday = self._read(_previous_date(now))
+        prompt = build_plan_prompt(
+            date=date, weekday=_weekday_cn(now),
+            occasion=_day_occasion(now, self._anniversary_at()),
+            persona=self._persona_description(),
+            yesterday_theme=yesterday.theme if yesterday else '昨天没有留存计划，不要写得像固定流水线。',
+            yesterday_bedtime=yesterday.bedtime_hint if yesterday else '没有记录',
+            yesterday_wake=yesterday.wake_hint if yesterday else '没有记录',
+            yesterday_carry_over=yesterday.carry_over if yesterday else '没有记录',
+            yesterday_avoided='、'.join(activity_avoidance_items(yesterday.slots)) if yesterday else '没有记录；今天没有旧活动需要避开。',
+            density=self._interaction_density(int(now.timestamp() * 1000)),
+            character_name=self._character_name,
+            character_personality=self._character_personality,
+            schedule_config=self._config,
+        )
+        try:
+            # 首次输出失败时只重试一次，避免单次日程请求无限占用模型资源。
+            raw = await self._generator.generate(prompt)
+            parsed = parse_day_plan(raw, date, self._config)
+            if not parsed:
+                retry_prompt = '\n'.join([prompt, '', '你上一次的 JSON 没通过本地结构校验。请从头重新生成完整 JSON。'])
+                raw = await self._generator.generate(retry_prompt)
+                parsed = parse_day_plan(raw, date, self._config)
+            if not parsed:
+                # 结构校验失败记录原始正文，便于定位模型输出格式问题。
+                self._generation_issues[date] = DayPlanGenerationIssue(
+                    kind='invalid-output',
+                    attempted_at=attempted_at,
+                    raw=raw,
+                )
+                logger.error(
+                    '日程生成结果未通过结构校验',
+                    date=date,
+                    bodyChars=len(raw),
+                )
+                return fallback
+            self._generation_issues.pop(date, None)
+            # 只有通过本地校验的日程才写入存储，防止坏 JSON 污染后续睡眠计算。
+            self._store.write_json(_plan_key(date), _plan_to_dict(parsed))
+            return parsed
+        except Exception as exc:
+            self._generation_issues[date] = DayPlanGenerationIssue(
+                kind='provider-error',
+                attempted_at=attempted_at,
+                reason=str(exc),
+            )
+            logger.error('日程生成失败', date=date, error=str(exc))
+            return fallback
+
+    def _read_legacy(self, raw: Any, date: str) -> DayPlan | None:
+        """解析早期日程数据结构并补齐当前配置字段。
+
+        Args:
+            raw: 存储中读取的任意 JSON 值。
+            date: 目标日程日期。
+
+        Returns:
+            能通过旧格式兼容校验的当前 ``DayPlan``；否则返回 ``None``。
+        """
+
+        if not isinstance(raw, dict) or not isinstance(raw.get('slots'), list):
+            return None
+        # 旧格式只在当前时段数量范围内兼容，缺少必需字段时交给备用计划处理。
+        slots_raw = raw['slots']
+        if not (
+            self._config.min_slots
+            <= len(slots_raw)
+            <= self._config.max_slots
+        ):
+            return None
+        slots: List[DayPlanSlot] = []
+        previous = -1
+        for item in slots_raw:
+            # 复用当前格式的时刻、活动和情绪校验，避免兼容路径放宽数据约束。
+            if not isinstance(item, dict):
+                return None
+            from_mins = clock_minutes(item.get('from', ''))
+            doing = _safe_doing(item.get('doing'))
+            mood = _safe_plan_text(item.get('mood'), 1, 40)
+            if from_mins is None or from_mins <= previous or not doing or not mood:
+                return None
+            previous = from_mins
+            slots.append(DayPlanSlot(from_time=item['from'], doing=doing, mood=mood))
+        bedtime_hint = raw.get('bedtimeHint', self._config.fallback_bedtime)
+        if not isinstance(bedtime_hint, str) or clock_minutes(bedtime_hint) is None:
+            bedtime_hint = self._config.fallback_bedtime
+        wake_hint = raw.get('wakeHint', self._config.fallback_wake)
+        if not isinstance(wake_hint, str) or clock_minutes(wake_hint) is None:
+            wake_hint = self._config.fallback_wake
+        theme = _safe_plan_text(raw.get('theme'), 1, 72)
+        if not theme:
+            return None
+        carry_over = (
+            _safe_plan_text(raw.get('carryOver'), 1, 72)
+            or self._config.fallback_carry_over
+        )
+        return DayPlan(
+            date=date,
+            slots=slots,
+            bedtime_hint=bedtime_hint,
+            wake_hint=wake_hint,
+            theme=theme,
+            carry_over=carry_over,
+            sleep_enabled=self._config.sleep_enabled,
+            bedtime_day_boundary=self._config.bedtime_day_boundary,
+        )
+
+
+def _plan_to_dict(plan: DayPlan) -> Dict[str, Any]:
+    """将日程数据类转换为存储格式字典。
+
+    Args:
+        plan: 待序列化的日程对象。
+
+    Returns:
+        使用持久化字段命名约定的 JSON 兼容字典。
+    """
+
+    return {
+        'date': plan.date,
+        'slots': [{'from': s.from_time, 'doing': s.doing, 'mood': s.mood} for s in plan.slots],
+        'bedtimeHint': plan.bedtime_hint,
+        'wakeHint': plan.wake_hint,
+        'theme': plan.theme,
+        'carryOver': plan.carry_over,
+        'sleepEnabled': plan.sleep_enabled,
+        'bedtimeDayBoundary': plan.bedtime_day_boundary,
+    }
+
+
+def _slot_at(plan: DayPlan, now: datetime) -> DayPlanSlot:
+    """查找当前时刻生效的最后一个日程时段。
+
+    Args:
+        plan: 按时间升序排列的日程。
+        now: 本地日期时间。
+
+    Returns:
+        当前时刻对应的时段；若尚未到首个时段则返回首个时段。
+    """
+
+    minutes = now.hour * 60 + now.minute
+    current = plan.slots[0]
+    for slot in plan.slots:
+        from_mins = clock_minutes(slot.from_time)
+        if from_mins is not None and from_mins <= minutes:
+            current = slot
+        else:
+            break
+    return current
+
+
+def describe_day_plan(plan: DayPlan, now: datetime, sleep: ScheduleSleepState) -> str:
+    """将日程时段和睡眠状态渲染为对话行为提示。
+
+    Args:
+        plan: 当前自然日的日程。
+        now: 当前本地日期时间。
+        sleep: 睡眠、困倦和刚醒状态。
+
+    Returns:
+        描述当前活动、情绪及作息行为的中文文本。
+    """
+
+    if sleep.asleep:
+        slot = DayPlanSlot(from_time='00:00', doing='在睡觉', mood='被叫醒时会有些迷迷糊糊')
+    else:
+        slot = _slot_at(plan, now)
+    doing = slot.doing if slot.doing.startswith('你') else f'你{slot.doing}'
+    if sleep.just_woke:
+        lines = ['你刚醒没多久，还在慢慢把意识拢回来；别装得已经精神十足，语气应有一点迷糊和迟缓。']
+    else:
+        lines = [f'此刻{doing}。{describe_mood_behavior(slot.mood)}']
+    if sleep.asleep:
+        lines.append('你已经睡着了；如果他现在找你说话，你是被叫醒的，反应要符合刚醒时的迷糊。')
+    elif sleep.drowsy:
+        lines.append(f'你开始犯困，原本想在{plan.bedtime_hint}左右休息；语气会带一点"再待十分钟就睡"的困意。')
+    return '\n'.join(lines)
