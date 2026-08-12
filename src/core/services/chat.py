@@ -60,6 +60,8 @@ from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState
 
 logger = get_logger(__name__)
 
+CHAT_POLL_INTERVAL_S = 0.1
+
 # 旧测试和诊断脚本仍会读取这个换算值；唯一默认来源是配置模型。
 SESSION_GAP_MS = ConversationConfig().session_gap_minutes * 60_000
 
@@ -229,6 +231,9 @@ class ChatService:
         self.persona.snapshot_daily(self._desktop_context.person.id)
         self._turn_id = 0
         self._inflight: dict[int, _InflightTurn] = {}
+        self._buffers: dict[int, list[InboundMessage]] = {}
+        self._poll_task: asyncio.Task[None] | None = None
+        self._stop = asyncio.Event()
         self._sessions: dict[int, _SessionState] = {}
         self._summarizing: set[int] = set()
         self._active_turns: dict[int, int] = {}
@@ -370,28 +375,99 @@ class ChatService:
             self.persona.apply_elapsed(person_id, now, asleep_hours)
             self.persona.snapshot_daily(person_id, now)
 
-    async def send(self, inbound: InboundMessage) -> int:
-        """异步处理一条携带完整归属上下文的入站消息。
+    async def startup(self) -> None:
+        """启动固定间隔的聊天缓冲轮询。"""
+        self._stop.clear()
+        self._poll_task = asyncio.create_task(self._poll_loop(), name='chat-poll')
+
+    async def shutdown(self) -> None:
+        """停止聊天缓冲轮询并终止仍在执行的回复。"""
+        self._stop.set()
+        task = self._poll_task
+        self._poll_task = None
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+        for stream_id in tuple(self._inflight):
+            self.interrupt(stream_id)
+
+    async def _poll_loop(self) -> None:
+        """以固定间隔处理当前各 stream 的非空缓冲区。"""
+        while not self._stop.is_set():
+            try:
+                await self._tick()
+            except Exception as exc:
+                logger.warning('chat_tick_failed', error=str(exc))
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=CHAT_POLL_INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _tick(self) -> None:
+        """为每个空闲且有缓冲消息的 stream 启动一轮回复。"""
+        for stream_id in tuple(self._buffers):
+            buffered = self._buffers.get(stream_id)
+            if not buffered:
+                self._buffers.pop(stream_id, None)
+                continue
+            if stream_id in self._inflight:
+                continue
+            batch = buffered[:]
+            self._buffers.pop(stream_id, None)
+            try:
+                await self._start_turn(batch)
+            except Exception:
+                self._buffers.setdefault(stream_id, [])[:0] = batch
+                raise
+
+    async def send(self, inbound: InboundMessage) -> None:
+        """把一条携带完整归属上下文的入站消息放入对应 stream 缓冲区。
 
         :param inbound: 已完成 stream、person 和 identity 解析的消息。
 
-        :return: 新建的对话回合 ID；空白消息返回当前回合 ID。
+        :return: ``None``；入缓冲时尚未创建回合。
 
         副作用：
-            取消同一 stream 的旧回合，写入用户和助手历史，调用模型流并推送解析、
-            完成或错误事件；非桌面 stream 还会通过 broker 投递完整分句。
+            按到达顺序将非空消息追加到对应 stream 缓冲区，不打断在飞回合。
 
         :raises ValueError: 入站上下文或平台归属不满足下游约束时由依赖服务抛出。
         :raises Exception: 任务内部异常会记录并推送 ``chat.error``，不会由返回的 task
                 再次向调用方抛出。
         """
-        context = inbound.context
-        stream_id = context.stream.id
         trimmed = inbound.text.strip()
         if not trimmed:
-            return self._turn_id
+            return
+        stream_id = inbound.context.stream.id
+        self._buffers.setdefault(stream_id, []).append(InboundMessage(
+            text=trimmed,
+            context=inbound.context,
+            mentioned_me=inbound.mentioned_me,
+            external_message_id=inbound.external_message_id,
+            bot_name=inbound.bot_name,
+        ))
 
-        self.interrupt(stream_id)
+    async def _start_turn(self, batch: list[InboundMessage]) -> int:
+        """取一个非空消息批次创建并启动回复回合。"""
+        if not batch:
+            raise ValueError('回复批次不能为空')
+        last_message = batch[-1]
+        context = last_message.context
+        stream_id = context.stream.id
+        if any(message.context.stream.id != stream_id for message in batch):
+            raise ValueError('同一回复批次只能包含一个 stream')
+        trimmed = '\n'.join(message.text for message in batch)
+        inbound = InboundMessage(
+            text=trimmed,
+            context=context,
+            mentioned_me=any(message.mentioned_me for message in batch),
+            bot_name=next(
+                (message.bot_name for message in reversed(batch) if message.bot_name is not None),
+                None,
+            ),
+        )
+
         turn = self._next_turn()
         self._active_turns[stream_id] = turn
         mark_turn_start(turn)
@@ -409,8 +485,8 @@ class ChatService:
             sender_label=sender['senderLabel'],
             bot_name=self._bot_display_name,
         )
-        trace.emit('user_input', turnId=turn, text=trimmed)
-
+        for message in batch:
+            trace.emit('user_input', turnId=turn, text=message.text)
         if not self._chat_provider:
             await self._emit(stream_id, 'chat.error', {
                 'turnId': turn,
@@ -433,7 +509,7 @@ class ChatService:
                 桌面 WebSocket 或外部平台出站驱动。
             """
 
-            user_msg_id: int | None = None
+            user_msg_ids: list[int] = []
             assistant_raw = ''
             reply_persisted = False
             try:
@@ -444,13 +520,14 @@ class ChatService:
 
                 # 必须在写入当前用户消息前计算会话间隔，否则 last_message_at 会变成 now。
                 self._refresh_session(context, now)
-                user_msg_id = self.memory.append_message(
-                    stream_id,
-                    context.person.id,
-                    'user',
-                    trimmed,
-                    now,
-                )
+                for message in batch:
+                    user_msg_ids.append(self.memory.append_message(
+                        stream_id,
+                        message.context.person.id,
+                        'user',
+                        message.text,
+                        now,
+                    ))
                 if cancel_event.is_set():
                     return
 
@@ -500,7 +577,8 @@ class ChatService:
                         turn_id=turn,
                     )
                     if context.stream.kind == 'group':
-                        self._emit_group_observation(inbound, action.reason, trimmed)
+                        for message in batch:
+                            self._emit_group_observation(message, action.reason, message.text)
                     if context.stream.platform == 'desktop':
                         await self._emit(stream_id, 'chat.silent', {
                             'turnId': turn,
@@ -596,9 +674,9 @@ class ChatService:
                     if not reply_persisted:
                         self._persist_reply(context, assistant_raw)
                     return
-                if not reply_persisted and user_msg_id is not None:
+                if not reply_persisted and user_msg_ids:
                     # 模型尚未产出正文时回滚用户消息，避免留下无法对应的未完成回合。
-                    self._rollback_or_keep(context, user_msg_id, assistant_raw)
+                    self._rollback_batch_or_keep(context, user_msg_ids, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 snapshot = dump_llm_request('chat', exc.kind, str(exc), {
                     'turnId': turn,
@@ -617,9 +695,9 @@ class ChatService:
                         'hint': hint,
                     })
             except Exception as exc:
-                if not reply_persisted and user_msg_id is not None:
+                if not reply_persisted and user_msg_ids:
                     # 非模型异常沿用同一历史一致性策略，再生成诊断快照。
-                    self._rollback_or_keep(context, user_msg_id, assistant_raw)
+                    self._rollback_batch_or_keep(context, user_msg_ids, assistant_raw)
                 snapshot = dump_llm_request('chat', type(exc).__name__, str(exc), {
                     'turnId': turn,
                     'stage': trace.current_stage_id(),
@@ -878,6 +956,19 @@ class ChatService:
         if close_dangling_say(assistant_raw):
             self._persist_reply(context, assistant_raw)
         else:
+            self.memory.delete_message(context.stream.id, user_msg_id)
+
+    def _rollback_batch_or_keep(
+        self,
+        context: ConversationContext,
+        user_msg_ids: list[int],
+        assistant_raw: str,
+    ) -> None:
+        """失败时保留整批用户消息与单份回复，或删除整批用户消息。"""
+        if close_dangling_say(assistant_raw):
+            self._persist_reply(context, assistant_raw)
+            return
+        for user_msg_id in user_msg_ids:
             self.memory.delete_message(context.stream.id, user_msg_id)
 
     def interrupt(self, stream_id: int) -> None:

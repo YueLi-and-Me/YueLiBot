@@ -123,7 +123,9 @@ async def _check_chat(chat: ChatService, provider: LlmProvider | None, events: l
     try:
         # 发送后等待同 stream 的 inflight task，确保事件统计覆盖完整回合。
         context = chat.desktop_context
-        turn = await chat.send(InboundMessage(text="自检：请用一个字回复我", context=context))
+        await chat.send(InboundMessage(text="自检：请用一个字回复我", context=context))
+        await chat._tick()
+        turn = chat._active_turns[context.stream.id]
         inflight = chat._inflight.get(context.stream.id)
         if inflight is not None:
             await asyncio.wait_for(inflight.task, timeout=_CHAT_TIMEOUT_S)

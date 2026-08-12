@@ -420,6 +420,7 @@ def main() -> None:
     )
     app_state.awareness = awareness
     app_state.foreground_callback = awareness.on_foreground
+    lifecycle.register('chat', app_state.chat.startup, app_state.chat.shutdown)
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 
     logger.info("backend_starting", port=port)
