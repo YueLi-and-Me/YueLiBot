@@ -68,6 +68,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   group_chat: {
     at_mention_must_reply: true,
     name_mention_probability: 1,
+    presence_decay_strength: 3,
     persona_weight: 0.05,
     reply_window_minutes: 10,
     max_replies_in_window: 3,
@@ -850,6 +851,15 @@ function readSplitConfig(directory: string): YueliConfig {
   if (nameMentionProbability < 0 || nameMentionProbability > 1) {
     throw new Error(`${botPath} 的 group_chat.name_mention_probability 必须在 0 到 1 之间`)
   }
+  const presenceDecayStrength = numberAtOr(
+    groupChat,
+    'presence_decay_strength',
+    DEFAULT_CONFIG.group_chat.presence_decay_strength,
+    botPath,
+  )
+  if (presenceDecayStrength < 0 || presenceDecayStrength > 20) {
+    throw new Error(`${botPath} 的 group_chat.presence_decay_strength 必须在 0 到 20 之间`)
+  }
   const personaWeight = numberAtOr(
     groupChat,
     'persona_weight',
@@ -926,6 +936,7 @@ function readSplitConfig(directory: string): YueliConfig {
         ? DEFAULT_CONFIG.group_chat.at_mention_must_reply
         : booleanAt(groupChat, 'at_mention_must_reply', botPath),
       name_mention_probability: nameMentionProbability,
+      presence_decay_strength: presenceDecayStrength,
       persona_weight: personaWeight,
       reply_window_minutes: replyWindowMinutes,
       max_replies_in_window: maxRepliesInWindow,
@@ -1598,6 +1609,8 @@ relationship = ${tomlString(cfg.bot.relationship)}
 at_mention_must_reply = ${cfg.group_chat.at_mention_must_reply}
 # 名字、别名或非必回 @ 命中后的回复概率，范围 0~1
 name_mention_probability = ${cfg.group_chat.name_mention_probability}
+# 存在感衰减强度，范围 0~20；越大，群里说得越多时越倾向于让别人先说
+presence_decay_strength = ${cfg.group_chat.presence_decay_strength}
 # 群聊里人格增量的折算系数，0~1；群里一句一答的消耗远小于面对面长聊
 persona_weight = ${cfg.group_chat.persona_weight}
 # 在这段时间窗口内统计 Bot 已经回复了多少次
@@ -1784,6 +1797,12 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     || cfg.group_chat.name_mention_probability > 1
   ) {
     throw new Error('名字或别名触发回复概率必须在 0 到 1 之间')
+  }
+  if (
+    cfg.group_chat.presence_decay_strength < 0
+    || cfg.group_chat.presence_decay_strength > 20
+  ) {
+    throw new Error('群聊存在感衰减强度必须在 0 到 20 之间')
   }
   if (cfg.group_chat.persona_weight < 0 || cfg.group_chat.persona_weight > 1) {
     throw new Error('群聊人格增量折算系数必须在 0 到 1 之间')

@@ -290,6 +290,22 @@ class MemoryStore:
         ).fetchone()
         return row[0] if row else 0
 
+    def message_count_since(self, stream_id: int, since: int) -> int:
+        """统计指定时间窗口内已落库的全部消息数量。
+
+        :param stream_id: 目标 stream ID。
+        :param since: 统计起点的 Unix 毫秒时间戳，包含该时刻。
+        :return: 满足 stream 和时间条件的用户与助手消息总数。
+        :raises sqlite3.Error: 查询消息表失败时抛出。
+        副作用：只读 messages 表。
+        """
+        row = self._db.execute(
+            '''SELECT COUNT(*) FROM messages
+               WHERE stream_id = ? AND created_at >= ?''',
+            (stream_id, since),
+        ).fetchone()
+        return row[0] if row else 0
+
     def oldest_pending(self, stream_id: int, n: int) -> list[dict[str, Any]]:
         """按消息 ID 正序读取指定数量的待归档消息。
 

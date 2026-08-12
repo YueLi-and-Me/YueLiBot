@@ -1,6 +1,6 @@
-"""根据群聊上下文和频率窗口决定是否生成平台回复。
+"""根据群聊表面上下文和频率窗口决定是否进入回合处理。
 
-本模块只处理协议 @、文本称呼、睡眠状态、名称概率和窗口配额，不访问数据库，
+本模块只处理协议 @、文本称呼、睡眠状态和窗口配额，不访问数据库，
 因此可以由入口在接线时调用并将返回的判定依据写入 trace。
 """
 
@@ -123,10 +123,8 @@ def decide_reply(
     if my_replies_in_window >= max_replies_in_window:
         return decision(False, 'window_limit')
     if mentioned_me or name_mentioned:
-        # 协议 @ 与文本称呼共用概率抽样，但返回不同原因以便观察面板区分来源。
-        if probability_draw < name_mention_probability:
-            return decision(True, 'mentioned_probability' if mentioned_me else 'name_mentioned')
-        return decision(False, 'mention_probability' if mentioned_me else 'name_probability')
+        # 非必回 @ 与文本称呼只负责放入回合；实际概率由上下文后的动作策略决定。
+        return decision(True, 'mentioned_probability' if mentioned_me else 'name_mentioned')
     return decision(False, 'group_not_mentioned')
 
 

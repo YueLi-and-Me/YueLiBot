@@ -319,6 +319,7 @@ export interface YueliConfig {
   group_chat: {
     at_mention_must_reply: boolean
     name_mention_probability: number
+    presence_decay_strength: number
     persona_weight: number
     reply_window_minutes: number
     max_replies_in_window: number

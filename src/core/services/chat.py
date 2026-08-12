@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Mapping
 
 import asyncio
 import inspect
@@ -148,6 +148,7 @@ class ChatService:
         broker: PlatformBroker | None = None,
         expression_provider: LlmProvider | None = None,
         action_policy: ActionPolicy | None = None,
+        action_policies: Mapping[str, ActionPolicy] | None = None,
     ) -> None:
         """初始化对话服务及其数据库、模型和平台依赖。
 
@@ -162,6 +163,7 @@ class ChatService:
         :param broker: 可选的非桌面平台出站路由器。
         :param expression_provider: 可选的表达样本选择模型。
         :param action_policy: 可选的回合内动作策略；省略时始终回复。
+        :param action_policies: 按 stream kind 装配的动作策略；未配置类型使用默认策略。
 
         副作用：
             创建记忆、注册表和人格服务，读取 desktop 上下文，并保存当天 owner
@@ -175,7 +177,8 @@ class ChatService:
         self._push_event = push_event
         self._speak_audio = speak_audio
         self._broker = broker
-        self._action_policy = action_policy or AlwaysReplyPolicy()
+        self._default_action_policy = action_policy or AlwaysReplyPolicy()
+        self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
         self._cancel_audio: Callable[[int], Any] | None = None
         # 流式解析时按 stream 攒当前这句 <say> 的正文，收完整句才送去合成。
@@ -261,6 +264,15 @@ class ChatService:
         """
 
         self._schedule = svc
+
+    def set_action_policy(self, stream_kind: str, policy: ActionPolicy) -> None:
+        """为一种会话类型绑定回合动作策略。
+
+        :param stream_kind: 会话类型标识，由组合根决定其平台语义。
+        :param policy: 对该类会话生效的动作策略。
+        副作用：替换后续新回合使用的策略，不影响已启动的回合。
+        """
+        self._action_policies[stream_kind] = policy
 
     def set_activity_provider(self, fn: Callable[[], str]) -> None:
         """绑定实时活动描述回调。
@@ -459,7 +471,16 @@ class ChatService:
                     inbound.bot_name,
                 )
                 decision_messages = self._render_prepared_context(prepared_context)
-                action = await self._action_policy.decide(ActionContext(
+                # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
+                action_policy = (
+                    self._default_action_policy
+                    if inbound.mentioned_me and self._at_mention_must_reply
+                    else self._action_policies.get(
+                        context.stream.kind,
+                        self._default_action_policy,
+                    )
+                )
+                action = await action_policy.decide(ActionContext(
                     turn_id=turn,
                     stream_id=stream_id,
                     messages=tuple(decision_messages),
@@ -1528,18 +1549,7 @@ class ChatService:
         render_params: dict[str, dict[str, str]] | None = None,
         include_model_enrichment: bool = True,
     ) -> list[dict]:
-        """兼容诊断入口，复用单次组装与后续增强流程构建消息。
-
-        :param context: 当前会话上下文。
-        :param query: 当前用户文本。
-        :param now: 当前毫秒时间戳。
-        :param signal: 可选的表达选择取消信号。
-        :param platform_bot_name: 当前平台登录昵称。
-        :param render_params: 可选提示词渲染参数收集字典。
-        :param include_model_enrichment: 是否在已组装上下文上附加模型增强。
-        :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
-        副作用：只组装一次上下文；启用增强时调用向量和表达模型并强化最终事实。
-        """
+        """兼容诊断入口，复用单次组装与后续增强流程构建消息。"""
         prepared = self._prepare_turn_context(
             context,
             query,

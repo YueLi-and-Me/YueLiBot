@@ -55,6 +55,11 @@
               <span class="field-label">名字或别名触发回复概率</span>
               <input type="number" name="group_chat.name_mention_probability" min="0" max="1" step="0.05" required />
             </label>
+            <label class="field">
+              <span class="field-label">群聊存在感衰减强度</span>
+              <input type="number" name="group_chat.presence_decay_strength" min="0" max="20" step="0.25" required />
+              <small class="hint">数值越大，Bot 在群里说得越多时越倾向于让别人先说；默认 3。</small>
+            </label>
           </div>
         </section>
 

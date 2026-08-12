@@ -74,6 +74,12 @@ class GroupChatConfig(BaseModel):
 
     at_mention_must_reply: bool = True
     name_mention_probability: float = Field(default=1.0, ge=0.0, le=1.0)
+    presence_decay_strength: float = Field(
+        default=3.0,
+        ge=0.0,
+        le=20.0,
+        description='群里说话占比越高，被叫到名字时越倾向于让别人先说',
+    )
     # 群里一句一答的消耗远小于面对面长聊；同一倍率作用于全部人格增量。
     persona_weight: float = Field(default=0.05, ge=0.0, le=1.0)
     reply_window_minutes: int = Field(default=10, ge=1)
