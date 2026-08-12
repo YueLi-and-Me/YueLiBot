@@ -110,28 +110,43 @@ def _replace_prompt(
 ) -> List[Dict[str, Any]]:
     """替换首条消息中的提示词正文，同时保留其余历史上下文。"""
     rebuilt = [dict(message) for message in messages]
-    expected_role = 'user' if prompt_id == 'vision.glance' else 'system'
-    if rebuilt[0]['role'] != expected_role:
-        raise ValueError(
-            f'提示词 {prompt_id} 的首条消息角色应为 {expected_role}，'
-            f'实际为 {rebuilt[0]["role"]}'
-        )
-    content = rebuilt[0].get('content')
-    if prompt_id == 'vision.glance' and not isinstance(content, list):
-        raise ValueError('提示词 vision.glance 的首条消息 content 应为分段数组')
+    _prompt_text(rebuilt, prompt_id)
+    content = rebuilt[0]['content']
     if isinstance(content, list):
         parts = [dict(part) if isinstance(part, dict) else part for part in content]
-        text_index = next((
+        text_index = next(
             index for index, part in enumerate(parts)
             if isinstance(part, dict) and part.get('type') == 'text'
-        ), None)
-        if text_index is None:
-            raise ValueError('原模型请求的首条消息没有可替换的文本提示词')
+        )
         parts[text_index]['text'] = prompt
         rebuilt[0]['content'] = parts
     else:
         rebuilt[0]['content'] = prompt
     return rebuilt
+
+
+def _prompt_text(messages: List[Dict[str, Any]], prompt_id: str) -> str:
+    """取得原模型请求中实际发送的提示词正文。"""
+    expected_role = 'user' if prompt_id == 'vision.glance' else 'system'
+    if messages[0]['role'] != expected_role:
+        raise ValueError(
+            f'提示词 {prompt_id} 的首条消息角色应为 {expected_role}，'
+            f'实际为 {messages[0]["role"]}'
+        )
+    content = messages[0].get('content')
+    if prompt_id == 'vision.glance' and not isinstance(content, list):
+        raise ValueError('提示词 vision.glance 的首条消息 content 应为分段数组')
+    if isinstance(content, list):
+        text_part = next((
+            part for part in content
+            if isinstance(part, dict) and part.get('type') == 'text'
+        ), None)
+        if text_part is None or not isinstance(text_part.get('text'), str):
+            raise ValueError('原模型请求的首条消息没有可替换的文本提示词')
+        return text_part['text']
+    if not isinstance(content, str):
+        raise ValueError('原模型请求的首条消息没有字符串提示词正文')
+    return content
 
 
 def _rebuild_messages(event: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str]:
@@ -157,8 +172,12 @@ async def replay_event(
         raise LookupError(f'事件 {seq} 不存在')
     if source['kind'] != 'llm_request':
         raise ValueError(f'事件 {seq} 不是 llm_request')
+    prompt_id = str(source.get('promptId', ''))
+    original_messages = _messages(source.get('messages'))
+    original_prompt = _prompt_text(original_messages, prompt_id)
     messages, replay_hash = _rebuild_messages(source)
-    original_hash = str(source.get('promptHash', ''))
+    original_hash = sha256(original_prompt.encode('utf-8')).hexdigest()[:8]
+    template_hash = str(source.get('promptHash', ''))
     request = store.append(
         'replay_request',
         str(source.get('stage', '')),
@@ -170,6 +189,7 @@ async def replay_event(
             'temperature': source.get('temperature', 0.85),
             'maxTokens': source.get('maxTokens'),
             'originalPromptHash': original_hash,
+            'templatePromptHash': template_hash,
             'promptHash': replay_hash,
         },
     )
@@ -202,6 +222,7 @@ async def replay_event(
         'replayOutput': output,
         'originalPromptHash': original_hash,
         'replayPromptHash': replay_hash,
+        'templatePromptHash': template_hash,
         'requestSeq': request['seq'],
         'finalSeq': final['seq'],
     }
