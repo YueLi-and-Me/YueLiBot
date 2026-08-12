@@ -14,7 +14,15 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Re
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .auth import SESSION_COOKIE_NAME, extract_bearer, require_token, verify_token
+from .auth import (
+    SESSION_COOKIE_NAME,
+    create_session,
+    extract_bearer,
+    require_token,
+    revoke_session,
+    verify_session,
+    verify_token,
+)
 from .state import app_state   # 全局服务状态
 
 from src.core.common.clock import now as current_time
@@ -248,11 +256,31 @@ async def web_login(body: WebLoginBody, response: Response) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='token 不正确')
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
-        value=body.token,
+        value=create_session(),
         httponly=True,
         samesite='strict',
         path='/',
     )
+    response.headers['Cache-Control'] = 'no-store'
+    return {'ok': True}
+
+
+@router.post('/auth/logout')
+async def web_logout(
+    response: Response,
+    session_token: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> dict:
+    """作废当前浏览器会话并清除会话 Cookie。
+
+    :param response: FastAPI 响应对象，用于清除会话 Cookie。
+    :param session_token: 当前浏览器提交的会话凭据。
+    :return: ``{'ok': True}``。
+    :raises fastapi.HTTPException: Cookie 缺失或会话已经失效时返回 401。
+    副作用：仅撤销当前会话，不影响其他浏览器会话或后端主 token。
+    """
+    if not revoke_session(session_token or ''):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='认证失败')
+    response.delete_cookie(key=SESSION_COOKIE_NAME, path='/', samesite='strict')
     response.headers['Cache-Control'] = 'no-store'
     return {'ok': True}
 
@@ -274,7 +302,7 @@ async def web_session(
     """
     authenticated = (
         verify_token(extract_bearer(authorization))
-        or verify_token(session_token or '')
+        or verify_session(session_token or '')
     )
     return {'authenticated': authenticated}
 

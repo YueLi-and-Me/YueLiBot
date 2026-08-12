@@ -2,11 +2,12 @@
 
 Python 进程启动时生成一次性 token，经显式 TokenManager 注入认证层。
 Electron 与平台适配器通过 Authorization: Bearer <token> 认证；浏览器登录
-成功后只持有 HttpOnly Cookie。其他本地进程无法伪造（仅凭 127.0.0.1
-绑定不够）。
+成功后只持有与主 token 无关的 HttpOnly 会话 Cookie。其他本地进程无法伪造
+（仅凭 127.0.0.1 绑定不够）。
 
-`TokenManager` 只保存当前进程 token；HTTP 使用 Bearer 或 HttpOnly Cookie，
-WebSocket 额外支持握手子协议中的 `yueli-<token>`。
+`TokenManager` 只保存当前进程 token，`SessionManager` 只保存当前进程的浏览器
+会话；HTTP 使用 Bearer 主 token 或 HttpOnly 会话 Cookie，WebSocket 额外支持
+握手子协议中的 `yueli-<token>`。
 """
 
 from __future__ import annotations
@@ -16,6 +17,38 @@ from fastapi import HTTPException, WebSocket, status
 import secrets
 
 SESSION_COOKIE_NAME = 'yueli_session'
+
+
+class SessionManager:
+    """管理当前后端进程内有效的浏览器会话凭据。"""
+
+    def __init__(self) -> None:
+        """创建空会话集合，不执行持久化。"""
+        self._sessions: set[str] = set()
+
+    def create(self) -> str:
+        """生成并保存一个与主 token 无关的随机会话凭据。"""
+        credential = secrets.token_urlsafe(32)
+        self._sessions.add(credential)
+        return credential
+
+    def verify(self, credential: str) -> bool:
+        """判断候选凭据是否属于当前进程的有效浏览器会话。"""
+        return credential in self._sessions
+
+    def revoke(self, credential: str) -> bool:
+        """仅作废指定浏览器会话，并返回它此前是否有效。"""
+        if credential not in self._sessions:
+            return False
+        self._sessions.remove(credential)
+        return True
+
+    def clear(self) -> None:
+        """清空所有浏览器会话，用于切换后端进程主凭据。"""
+        self._sessions.clear()
+
+
+session_manager = SessionManager()
 
 
 class TokenManager:
@@ -43,6 +76,7 @@ class TokenManager:
         if not token:
             raise ValueError('后端认证 token 不能为空')
         self._token = token
+        session_manager.clear()
 
     def get(self) -> str:
         """返回已配置的认证 token。
@@ -93,6 +127,21 @@ def verify_token(token: str) -> bool:
     return token_manager.verify(token)
 
 
+def create_session() -> str:
+    """创建只在当前进程内有效的浏览器会话凭据。"""
+    return session_manager.create()
+
+
+def verify_session(credential: str) -> bool:
+    """校验浏览器会话凭据，不接受后端主 token。"""
+    return session_manager.verify(credential)
+
+
+def revoke_session(credential: str) -> bool:
+    """作废指定浏览器会话，不影响其他会话或主 token。"""
+    return session_manager.revoke(credential)
+
+
 def extract_bearer(authorization: str | None) -> str:
     """从 Authorization 头提取 Bearer token。
 
@@ -121,7 +170,7 @@ def require_token(authorization: str | None, session_token: str | None = None) -
         仅读取请求凭据；不创建、轮换或持久化会话。
     """
     bearer_token = extract_bearer(authorization)
-    if not verify_token(bearer_token) and not verify_token(session_token or ''):
+    if not verify_token(bearer_token) and not verify_session(session_token or ''):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
 
 
@@ -150,4 +199,4 @@ async def ws_auth(websocket: WebSocket) -> bool:
     auth_header = websocket.headers.get("authorization", "")
     if verify_token(extract_bearer(auth_header)):
         return True
-    return verify_token(websocket.cookies.get(SESSION_COOKIE_NAME, ''))
+    return verify_session(websocket.cookies.get(SESSION_COOKIE_NAME, ''))
