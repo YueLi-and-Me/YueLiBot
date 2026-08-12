@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from typing import Any, Dict, List
+from typing import Any, Dict, List, NamedTuple, Tuple
 
 from src.core.llm_models.protocol import LlmProvider
 from src.core.observe.events import broadcaster
@@ -15,13 +15,20 @@ from src.core.prompts.registry import (
 )
 
 
-_PROMPT_TEMPLATES = {
-    'chat.system': CHAT_SYSTEM_TEMPLATE_IDS,
-    'chat.proactive': CHAT_PROACTIVE_TEMPLATE_IDS,
-    'summary': ('summary',),
-    'schedule': ('schedule',),
-    'expression.select': ('expression.select',),
-    'vision.glance': ('vision.glance',),
+class ReplayDefinition(NamedTuple):
+    """一类模型请求的重放路由和提示词模板定义。"""
+
+    task: str
+    template_ids: Tuple[str, ...]
+
+
+_REPLAY_DEFINITIONS: Dict[str, ReplayDefinition] = {
+    'chat.system': ReplayDefinition('chat', CHAT_SYSTEM_TEMPLATE_IDS),
+    'chat.proactive': ReplayDefinition('chat', CHAT_PROACTIVE_TEMPLATE_IDS),
+    'summary': ReplayDefinition('summary', ('summary',)),
+    'schedule': ReplayDefinition('schedule', ('schedule',)),
+    'expression.select': ReplayDefinition('expression', ('expression.select',)),
+    'vision.glance': ReplayDefinition('vision', ('vision.glance',)),
 }
 
 
@@ -40,18 +47,10 @@ def _messages(value: Any) -> List[Dict[str, Any]]:
 def replay_task(event: Dict[str, Any]) -> str:
     """返回一条可重放事件对应的模型任务名。"""
     prompt_id = str(event.get('promptId', ''))
-    tasks = {
-        'chat.system': 'chat',
-        'chat.proactive': 'chat',
-        'summary': 'summary',
-        'schedule': 'schedule',
-        'expression.select': 'expression',
-        'vision.glance': 'vision',
-    }
-    task = tasks.get(prompt_id)
-    if task is None:
+    definition = _REPLAY_DEFINITIONS.get(prompt_id)
+    if definition is None:
         raise ValueError(f'模型请求 {event["seq"]} 的 promptId 不支持重放：{prompt_id}')
-    return task
+    return definition.task
 
 
 def replay_task_for_seq(store: EventStore, seq: int) -> str:
@@ -69,7 +68,7 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
     render_params = event.get('renderParams')
     if not isinstance(render_params, dict):
         raise ValueError(f'事件 {event["seq"]} 早于渲染参数落库，无法准确重放')
-    rendered: Dict[str, str] = {}
+    params: Dict[str, Dict[str, str]] = {}
     for template_id in template_ids:
         values = render_params.get(template_id)
         if not isinstance(values, dict) or not all(
@@ -77,7 +76,25 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
             for key, value in values.items()
         ):
             raise ValueError(f'事件 {event["seq"]} 缺少模板 {template_id} 的渲染参数')
-        rendered[template_id] = get_prompt(template_id).render(**values)
+        params[template_id] = dict(values)
+    rendered: Dict[str, str] = {}
+    if 'chat.system' in template_ids:
+        for template_id in ('chat.boundaries', 'chat.discipline', 'chat.protocol'):
+            rendered[template_id] = get_prompt(template_id).render(**params[template_id])
+        system_values = dict(params['chat.system'])
+        system_values.update({
+            'boundaries': rendered['chat.boundaries'],
+            'discipline': rendered['chat.discipline'],
+            'protocol': rendered['chat.protocol'],
+        })
+        rendered['chat.system'] = get_prompt('chat.system').render(**system_values)
+        if 'chat.proactive' in template_ids:
+            rendered['chat.proactive'] = get_prompt('chat.proactive').render(
+                **params['chat.proactive']
+            )
+    else:
+        template_id = template_ids[0]
+        rendered[template_id] = get_prompt(template_id).render(**params[template_id])
     if 'chat.system' in rendered:
         parts = [rendered['chat.system']]
         if 'chat.proactive' in rendered:
@@ -86,10 +103,22 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
     return rendered[template_ids[0]]
 
 
-def _replace_prompt(messages: List[Dict[str, Any]], prompt: str) -> List[Dict[str, Any]]:
+def _replace_prompt(
+    messages: List[Dict[str, Any]],
+    prompt: str,
+    prompt_id: str,
+) -> List[Dict[str, Any]]:
     """替换首条消息中的提示词正文，同时保留其余历史上下文。"""
     rebuilt = [dict(message) for message in messages]
+    expected_role = 'user' if prompt_id == 'vision.glance' else 'system'
+    if rebuilt[0]['role'] != expected_role:
+        raise ValueError(
+            f'提示词 {prompt_id} 的首条消息角色应为 {expected_role}，'
+            f'实际为 {rebuilt[0]["role"]}'
+        )
     content = rebuilt[0].get('content')
+    if prompt_id == 'vision.glance' and not isinstance(content, list):
+        raise ValueError('提示词 vision.glance 的首条消息 content 应为分段数组')
     if isinstance(content, list):
         parts = [dict(part) if isinstance(part, dict) else part for part in content]
         text_index = next((
@@ -109,11 +138,12 @@ def _rebuild_messages(event: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str]
     """用原始渲染参数和当前模板重新构造模型消息。"""
     original = _messages(event.get('messages'))
     prompt_id = str(event.get('promptId', ''))
-    template_ids = _PROMPT_TEMPLATES.get(prompt_id)
-    if template_ids is None:
+    definition = _REPLAY_DEFINITIONS.get(prompt_id)
+    if definition is None:
         raise ValueError(f'模型请求 {event["seq"]} 的 promptId 不支持重放：{prompt_id}')
-    prompt = _render_current_prompt(event, template_ids)
-    return _replace_prompt(original, prompt), sha256(prompt.encode('utf-8')).hexdigest()[:8]
+    prompt = _render_current_prompt(event, definition.template_ids)
+    rebuilt = _replace_prompt(original, prompt, prompt_id)
+    return rebuilt, sha256(prompt.encode('utf-8')).hexdigest()[:8]
 
 
 async def replay_event(
