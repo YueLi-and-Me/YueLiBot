@@ -49,7 +49,7 @@ def label_for(stage_id: str) -> str:
 
     :param stage_id: 阶段 ID；空字符串表示未绑定阶段。
     :return: 已登记阶段的中文标签；未知 ID 原样返回，空值返回空字符串。
-    :side_effects: 不修改阶段注册表。
+    副作用：不修改阶段注册表。
     """
     if not stage_id:
         return ""

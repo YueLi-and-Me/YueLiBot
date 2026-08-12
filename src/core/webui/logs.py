@@ -29,12 +29,10 @@ class WebUiLogStream:
     def __init__(self, backlog_size: int = 300, queue_size: int = 200) -> None:
         """初始化日志积压和订阅队列。
 
-        Args:
-            backlog_size: 内存中保留的最近日志条数，默认 300。
-            queue_size: 每个订阅者队列容量，默认 200；满队列丢弃最旧事件。
+        :param backlog_size: 内存中保留的最近日志条数，默认 300。
+        :param queue_size: 每个订阅者队列容量，默认 200；满队列丢弃最旧事件。
 
-        Raises:
-            ValueError: ``deque`` 或 ``asyncio.Queue`` 对非法容量的错误由标准库
+        :raises ValueError: ``deque`` 或 ``asyncio.Queue`` 对非法容量的错误由标准库
                 直接传播。
         """
 
@@ -47,13 +45,11 @@ class WebUiLogStream:
     def publish(self, line: str) -> Dict[str, object]:
         """登记一行日志并向当前订阅者异步广播。
 
-        Args:
-            line: 已按控制台规则渲染的日志文本，通常包含 ANSI 颜色控制码。
+        :param line: 已按控制台规则渲染的日志文本，通常包含 ANSI 颜色控制码。
 
-        Returns:
-            包含单调递增 ``seq`` 和 ``line`` 字段的日志事件字典。
+        :return: 包含单调递增 ``seq`` 和 ``line`` 字段的日志事件字典。
 
-        Side Effects:
+        副作用：
             更新有限 backlog 和序号，并在线程锁外向每个订阅者事件循环安排投递回调。
             积压和队列容量由构造参数限制。
         """
@@ -69,13 +65,11 @@ class WebUiLogStream:
     def subscribe(self) -> Tuple[_Subscriber, List[Dict[str, object]]]:
         """登记当前事件循环的日志订阅者并返回注册时的积压副本。
 
-        Returns:
-            ``(订阅者, backlog)``；backlog 是注册时内存积压的独立列表副本。
+        :return: ``(订阅者, backlog)``；backlog 是注册时内存积压的独立列表副本。
 
-        Raises:
-            RuntimeError: 当前线程没有运行中的 asyncio 事件循环。
+        :raises RuntimeError: 当前线程没有运行中的 asyncio 事件循环。
 
-        Side Effects:
+        副作用：
             在线程锁保护下添加订阅者；先复制积压再登记订阅，避免注册与读取之间漏行。
         """
         subscriber = _Subscriber(
@@ -90,10 +84,9 @@ class WebUiLogStream:
     def unsubscribe(self, subscriber: _Subscriber) -> None:
         """移除一个日志订阅者。
 
-        Args:
-            subscriber: ``subscribe`` 返回的订阅对象；重复移除安全。
+        :param subscriber: ``subscribe`` 返回的订阅对象；重复移除安全。
 
-        Side Effects:
+        副作用：
             在线程锁保护下从订阅集合删除对象，不清理已经投递到其队列的事件。
         """
 
@@ -107,11 +100,10 @@ class WebUiLogStream:
     ) -> None:
         """向订阅队列写入一条日志并在满队列时丢弃最旧项。
 
-        Args:
-            queue: 目标 asyncio 队列。
-            item: 待投递的日志字典。
+        :param queue: 目标 asyncio 队列。
+        :param item: 待投递的日志字典。
 
-        Side Effects:
+        副作用：
             可能移除队列头部一条旧日志，再追加当前日志；调用发生在目标事件循环。
         """
 
@@ -122,7 +114,7 @@ class WebUiLogStream:
     def clear(self) -> None:
         """清空进程级日志积压、订阅者和序号。
 
-        Side Effects:
+        副作用：
             删除内存中的 backlog 和订阅集合，将序号重置为 ``0``；不发送关闭事件，
             仅供测试隔离使用。
         """

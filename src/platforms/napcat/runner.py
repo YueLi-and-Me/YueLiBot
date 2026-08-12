@@ -50,7 +50,7 @@ class NapcatRunner:
             :class:`NapcatTransport`，测试可传入替身。
         :param backend: 可选的主体客户端；为空时创建 :class:`BackendClient`。
         :raises ValueError: 默认客户端发现主体端口或 token 非法时抛出。
-        :side_effects: 保存配置并可能构造网络客户端，但不会建立连接。
+        副作用：保存配置并可能构造网络客户端，但不会建立连接。
         """
         self._config = config
         self._backend_port = backend_port
@@ -62,11 +62,10 @@ class NapcatRunner:
     async def run(self) -> None:
         """建立 QQ 协议端和主体连接，并按错误类型维持或终止运行。
 
-        Raises:
-            RuntimeError: 发生鉴权失败、握手失败、账号不匹配或其他不可重试错误。
-            asyncio.CancelledError: 调用方取消运行任务时原样传播。
+        :raises RuntimeError: 发生鉴权失败、握手失败、账号不匹配或其他不可重试错误。
+        :raises asyncio.CancelledError: 调用方取消运行任务时原样传播。
 
-        Side Effects:
+        副作用：
             创建并维护协议端与主体连接；可按指数退避反复重连；停机或错误时关闭连接。
         """
         if not self._config.napcat.enabled:
@@ -138,7 +137,7 @@ class NapcatRunner:
         :param self_name: 协议端实际登录昵称。
         :return: 两个消费者都结束前不会正常返回。
         :raises Exception: 任一消费者抛出异常，或任一任务提前结束。
-        :side_effects: 创建两个异步任务；一个任务结束后取消另一个任务。
+        副作用：创建两个异步任务；一个任务结束后取消另一个任务。
         :performance: 两个消费者并行运行，但每个方向保持单消费者顺序。
         """
         event_task = asyncio.create_task(self._consume_protocol_events(self_id, self_name))
@@ -161,7 +160,7 @@ class NapcatRunner:
         :param self_name: 协议端登录昵称，用于生成入站事件中的机器人名称。
         :return: 仅在事件迭代器结束时返回。
         :raises Exception: 事件结构非法、主体提交失败且未被本方法捕获，或传输层断开。
-        :side_effects: 持续读取协议事件，并通过 HTTP 写入主体后端；拒绝的消息只记录日志。
+        副作用：持续读取协议事件，并通过 HTTP 写入主体后端；拒绝的消息只记录日志。
         """
         async for payload in self._transport.iter_events():
             kind = classify_event(
@@ -239,7 +238,7 @@ class NapcatRunner:
         :return: 仅在主体出站迭代器结束时返回。
         :raises ValueError: 主体出站流类型不是 `direct` 或 `group`，或目标 QQ 号非法。
         :raises Exception: 传输层发生未被发送错误处理分支覆盖的异常。
-        :side_effects: 持续读取主体 WebSocket，并向协议端发送 action；单条发送失败只记录日志。
+        副作用：持续读取主体 WebSocket，并向协议端发送 action；单条发送失败只记录日志。
         """
         async for outbound in self._backend.iter_outbound():
             # 先映射协议 action 和目标字段，再统一校验外部 QQ 标识。
@@ -279,14 +278,12 @@ class SelfQqMismatch(RuntimeError):
 def _check_self_qq_matches(configured: str, actual_self_id: str) -> None:
     """校验配置的机器人 QQ 号与协议端实际登录身份一致。
 
-    Args:
-        configured: 配置文件中的 ``napcat.self_qq``。
-        actual_self_id: 协议端 ``get_login_info`` 返回的登录 QQ 号。
+    :param configured: 配置文件中的 ``napcat.self_qq``。
+    :param actual_self_id: 协议端 ``get_login_info`` 返回的登录 QQ 号。
 
-    Raises:
-        SelfQqMismatch: 两个身份标识不一致。
+    :raises SelfQqMismatch: 两个身份标识不一致。
 
-    Side Effects:
+    副作用：
         不执行网络请求，也不修改传入字符串或运行器状态。
     """
     if configured == actual_self_id:
@@ -304,7 +301,7 @@ def _qq_number(value: str, target_label: str) -> int:
     :param target_label: 错误信息中展示的目标名称。
     :return: 输入去除空白后的十进制整数。
     :raises ValueError: 输入为空或包含非数字字符。
-    :side_effects: 不执行 I/O。
+    副作用：不执行 I/O。
     """
     normalized = value.strip()
     if not normalized.isdigit():
@@ -318,7 +315,7 @@ def _is_retryable(error: BaseException) -> bool:
     :param error: 适配器运行期间捕获的异常。
     :return: 传输中断、连接失败或超时等可重试错误返回 ``True``；鉴权、握手、动作和
         自身账号校验错误返回 ``False``。
-    :side_effects: 不修改异常对象或适配器状态。
+    副作用：不修改异常对象或适配器状态。
     """
     if isinstance(
         error,
@@ -334,14 +331,11 @@ def _is_retryable(error: BaseException) -> bool:
 def _retry_delay(interval_sec: float, retry_count: int) -> float:
     """计算当前重试次数对应的指数退避时长。
 
-    Args:
-        interval_sec: 配置的基础重连间隔，单位为秒；应为正数。
-        retry_count: 从 ``1`` 开始的重试次数；小于 ``1`` 时按指数表达式的实际结果计算。
+    :param interval_sec: 配置的基础重连间隔，单位为秒；应为正数。
+    :param retry_count: 从 ``1`` 开始的重试次数；小于 ``1`` 时按指数表达式的实际结果计算。
 
-    Returns:
-        ``interval_sec`` 乘以 ``2 ** (retry_count - 1)``，放大倍数上限为 ``32``。
+    :return: ``interval_sec`` 乘以 ``2 ** (retry_count - 1)``，放大倍数上限为 ``32``。
 
-    Raises:
-        TypeError: 参数不是支持乘法、减法和幂运算的数值时抛出。
+    :raises TypeError: 参数不是支持乘法、减法和幂运算的数值时抛出。
     """
     return interval_sec * min(2 ** (retry_count - 1), 32)

@@ -39,7 +39,7 @@ class ActionError(RuntimeError):
         :param action: 已发送但被协议端拒绝的 action 名称。
         :param response: 协议端返回的完整响应映射。
         :return: 无返回值；实例的 `response` 是输入映射的浅复制。
-        :side_effects: 初始化异常属性，不执行网络 I/O。
+        副作用：初始化异常属性，不执行网络 I/O。
         """
         self.action = action
         self.response = dict(response)
@@ -57,7 +57,7 @@ class ProtocolHandshakeError(ConnectionError):
 
         :param status_code: 协议端返回的 HTTP 状态码。
         :return: 无返回值。
-        :side_effects: 设置 `status_code` 属性并初始化异常消息。
+        副作用：设置 `status_code` 属性并初始化异常消息。
         """
         self.status_code = status_code
         super().__init__(f'协议端拒绝 WebSocket 握手：HTTP {status_code}')
@@ -83,7 +83,7 @@ class NapcatTransport:
         :param config: 已完成字段校验的协议端连接配置。
         :raises TypeError: 配置对象不是兼容的 `NapcatConnectionConfig` 实例时，
             后续属性访问会暴露类型错误。
-        :side_effects: 初始化连接状态、发送锁、响应 Future 表和事件队列；不执行网络 I/O。
+        副作用：初始化连接状态、发送锁、响应 Future 表和事件队列；不执行网络 I/O。
         """
         self._config = config
         self._ws: ClientConnection | None = None
@@ -100,7 +100,7 @@ class NapcatTransport:
         """返回按当前主机和端口拼出的 WebSocket URI。
 
         :return: 形如 `ws://host:port` 的连接地址。
-        :side_effects: 不执行网络 I/O。
+        副作用：不执行网络 I/O。
         """
         return f'ws://{self._config.host}:{self._config.port}'
 
@@ -110,7 +110,7 @@ class NapcatTransport:
 
         :return: 协议端登录 QQ 号。
         :raises RuntimeError: 尚未成功连接并完成 `get_login_info` 时抛出。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         if self._self_id is None:
             raise RuntimeError('协议端登录信息尚未获取')
@@ -122,7 +122,7 @@ class NapcatTransport:
 
         :return: 协议端登录昵称。
         :raises RuntimeError: 尚未成功连接并完成 `get_login_info` 时抛出。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         if self._self_name is None:
             raise RuntimeError('协议端登录昵称尚未获取')
@@ -133,7 +133,7 @@ class NapcatTransport:
         """返回当前等待协议端响应的 action 数量。
 
         :return: 已登记但尚未完成的 action Future 数量。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         return len(self._pending)
 
@@ -142,23 +142,21 @@ class NapcatTransport:
         """返回 WebSocket 是否已建立且仍处于开放状态。
 
         :return: 连接存在并且状态为 `OPEN` 时返回 `True`，否则返回 `False`。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         return self._ws is not None and self._ws.state is State.OPEN
 
     async def connect(self) -> str:
         """建立协议端 WebSocket 连接，并读取登录 QQ 号和昵称。
 
-        Returns:
-            协议端实际登录的机器人 QQ 号。
+        :return: 协议端实际登录的机器人 QQ 号。
 
-        Raises:
-            ProtocolAuthenticationError: 协议端以 HTTP 401 或 403 拒绝鉴权。
-            ProtocolHandshakeError: 协议端以其他非成功状态拒绝 WebSocket 握手。
-            ValueError: 登录信息响应缺少合法 QQ 号或昵称。
-            Exception: WebSocket 建立、登录信息 action 或响应解析失败时传播原始异常。
+        :raises ProtocolAuthenticationError: 协议端以 HTTP 401 或 403 拒绝鉴权。
+        :raises ProtocolHandshakeError: 协议端以其他非成功状态拒绝 WebSocket 握手。
+        :raises ValueError: 登录信息响应缺少合法 QQ 号或昵称。
+        :raises Exception: WebSocket 建立、登录信息 action 或响应解析失败时传播原始异常。
 
-        Side Effects:
+        副作用：
             关闭旧连接，创建 WebSocket 和 reader 任务，并更新登录身份；失败时清理已创建资源。
         """
         await self.close()
@@ -197,7 +195,7 @@ class NapcatTransport:
     async def close(self) -> None:
         """关闭 WebSocket、reader 任务，并唤醒所有挂起调用。
 
-        :side_effects: 清空登录信息和连接引用，取消 reader 任务，把所有 pending
+        副作用：清空登录信息和连接引用，取消 reader 任务，把所有 pending
             Future 置为 `TransportDisconnected` 异常；重复调用安全。
         :raises Exception: 底层 WebSocket 关闭失败时可能抛出原始异常。
         """
@@ -221,21 +219,18 @@ class NapcatTransport:
     ) -> Dict[str, Any]:
         """串行发送一个协议 action，等待匹配 echo 的响应并校验成功状态。
 
-        Args:
-            action: 协议端 action 名称，必须为非空字符串。
-            params: 可选 action 参数映射；发送前复制为普通字典，默认使用空对象。
+        :param action: 协议端 action 名称，必须为非空字符串。
+        :param params: 可选 action 参数映射；发送前复制为普通字典，默认使用空对象。
 
-        Returns:
-            协议端返回的 JSON 对象。
+        :return: 协议端返回的 JSON 对象。
 
-        Raises:
-            TransportDisconnected: 当前 WebSocket 未连接或连接在等待期间断开。
-            ActionError: 协议端返回非 ``ok`` 状态。
-            asyncio.TimeoutError: 等待响应超过配置的 action 超时时间。
-            ValueError: action 响应结构不符合协议时由响应处理逻辑抛出。
-            TypeError: action 或参数映射无法序列化时抛出。
+        :raises TransportDisconnected: 当前 WebSocket 未连接或连接在等待期间断开。
+        :raises ActionError: 协议端返回非 ``ok`` 状态。
+        :raises asyncio.TimeoutError: 等待响应超过配置的 action 超时时间。
+        :raises ValueError: action 响应结构不符合协议时由响应处理逻辑抛出。
+        :raises TypeError: action 或参数映射无法序列化时抛出。
 
-        Side Effects:
+        副作用：
             登记并最终移除一个 pending Future；通过发送锁串行写入 WebSocket。
         """
         websocket = self._ws
@@ -265,14 +260,12 @@ class NapcatTransport:
     async def next_event(self) -> Dict[str, Any]:
         """按协议到达顺序读取下一条业务事件。
 
-        Returns:
-            顶层为字典的协议事件对象。
+        :return: 顶层为字典的协议事件对象。
 
-        Raises:
-            TransportDisconnected: reader 检测到连接断开或显式关闭了传输层。
-            TypeError: 队列中的事件不是 JSON 对象。
+        :raises TransportDisconnected: reader 检测到连接断开或显式关闭了传输层。
+        :raises TypeError: 队列中的事件不是 JSON 对象。
 
-        Side Effects:
+        副作用：
             消费事件队列中的一项；断线哨兵不会被重新放回队列。
         """
         item = await self._event_queue.get()
@@ -286,14 +279,12 @@ class NapcatTransport:
     async def iter_events(self) -> AsyncIterator[Dict[str, Any]]:
         """以单消费者方式持续顺序产生协议业务事件。
 
-        Yields:
-            按 WebSocket 到达顺序排列的协议 JSON 对象。
+        :yield: 按 WebSocket 到达顺序排列的协议 JSON 对象。
 
-        Raises:
-            TransportDisconnected: 连接尚未建立或在迭代期间断开。
-            TypeError: 收到的队列项不是 JSON 对象。
+        :raises TransportDisconnected: 连接尚未建立或在迭代期间断开。
+        :raises TypeError: 收到的队列项不是 JSON 对象。
 
-        Side Effects:
+        副作用：
             持续消费事件队列；生成器结束时不自动关闭 WebSocket。
         """
         while True:
@@ -305,7 +296,7 @@ class NapcatTransport:
         :param websocket: 当前连接对应的 WebSocket 实例。
         :return: 连接结束、任务取消或读取异常后返回。
         :raises asyncio.CancelledError: 调用方取消 reader 任务时原样抛出。
-        :side_effects: 完成匹配 echo 的 Future，把业务事件放入队列；异常或断开时
+        副作用：完成匹配 echo 的 Future，把业务事件放入队列；异常或断开时
             设置断开原因、失败所有 pending Future，并投递断开哨兵。
         """
         try:
@@ -335,7 +326,7 @@ class NapcatTransport:
 
         :param error: 交给每个挂起 Future 的异常实例。
         :return: `None`。
-        :side_effects: 修改所有未完成 Future 的状态；已完成 Future 保持不变。
+        副作用：修改所有未完成 Future 的状态；已完成 Future 保持不变。
         :performance: 按当前 pending 数量线性遍历。
         """
         for future in list(self._pending.values()):
@@ -351,7 +342,7 @@ def _decode_payload(raw: str | bytes) -> Dict[str, Any]:
     :raises UnicodeDecodeError: 字节报文不是合法 UTF-8。
     :raises json.JSONDecodeError: 报文不是合法 JSON。
     :raises ValueError: JSON 顶层不是对象。
-    :side_effects: 不修改连接状态。
+    副作用：不修改连接状态。
     """
     if isinstance(raw, bytes):
         raw = raw.decode('utf-8')
@@ -368,7 +359,7 @@ def _required_identifier(value: Any, label: str) -> str:
     :param label: 错误信息中使用的字段名称。
     :return: 去除首尾空白后的字符串。
     :raises ValueError: 值为 `None` 或规范化后为空。
-    :side_effects: 不执行 I/O。
+    副作用：不执行 I/O。
     """
     if value is None:
         raise ValueError(f'{label} 不能为空')

@@ -27,14 +27,12 @@ class PlatformBroker:
     def register(self, stream_id: int, driver: PlatformDriver) -> None:
         """为一个会话注册唯一的出站驱动。
 
-        Args:
-            stream_id: ``streams.id`` 稳定主键。
-            driver: 负责该会话投递的异步平台驱动。
+        :param stream_id: ``streams.id`` 稳定主键。
+        :param driver: 负责该会话投递的异步平台驱动。
 
-        Raises:
-            ValueError: 该会话已经注册驱动。
+        :raises ValueError: 该会话已经注册驱动。
 
-        Side Effects:
+        副作用：
             修改内存路由表；不会启动驱动或发送消息。
         """
         if stream_id in self._drivers:
@@ -44,25 +42,20 @@ class PlatformBroker:
     def has_driver(self, stream_id: int) -> bool:
         """判断指定会话是否已经完成出站驱动装配。
 
-        Args:
-            stream_id: ``streams.id`` 稳定主键。
+        :param stream_id: ``streams.id`` 稳定主键。
 
-        Returns:
-            已注册时返回 ``True``，否则返回 ``False``。
+        :return: 已注册时返回 ``True``，否则返回 ``False``。
         """
         return stream_id in self._drivers
 
     async def dispatch(self, message: OutboundMessage) -> DeliveryReceipt:
         """将一条出站消息单播到其所属会话的驱动。
 
-        Args:
-            message: 已按句切分并带有目标 stream 的出站消息。
+        :param message: 已按句切分并带有目标 stream 的出站消息。
 
-        Returns:
-            目标驱动返回的投递回执。
+        :return: 目标驱动返回的投递回执。
 
-        Raises:
-            DeliveryError: 目标 stream 尚未注册出站驱动，或驱动报告投递失败。
+        :raises DeliveryError: 目标 stream 尚未注册出站驱动，或驱动报告投递失败。
         """
         driver = self._drivers.get(message.stream.id)
         if driver is None:

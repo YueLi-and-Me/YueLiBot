@@ -28,7 +28,7 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
     :param name: 要查询的表名。
     :return: 表存在时返回 `True`，否则返回 `False`。
     :raises sqlite3.Error: 元数据查询失败时传播数据库异常。
-    :side_effects: 只读 `sqlite_master`，不修改数据库。
+    副作用：只读 `sqlite_master`，不修改数据库。
     """
     row = db.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
@@ -39,14 +39,11 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
 def _read_meta_schema_version(db: sqlite3.Connection) -> int | None:
     """读取历史 ``meta.schema_version`` 字段。
 
-    Args:
-        db: 已打开的 SQLite 连接。
+    :param db: 已打开的 SQLite 连接。
 
-    Returns:
-        可转换为整数的版本号；表、记录或字段值缺失/非法时返回 ``None``。
+    :return: 可转换为整数的版本号；表、记录或字段值缺失/非法时返回 ``None``。
 
-    Raises:
-        sqlite3.Error: 元数据查询失败时传播数据库异常。
+    :raises sqlite3.Error: 元数据查询失败时传播数据库异常。
     """
     if not _table_exists(db, "meta"):
         return None
@@ -67,14 +64,11 @@ def is_fresh_database(db: sqlite3.Connection) -> bool:
     使用 ``messages`` 而不是 ``meta`` 作为探针：两个表通常同时创建，但 ``meta``
     名称通用，其他模块单独创建它时不应阻止新库初始化。
 
-    Args:
-        db: 已打开的 SQLite 连接。
+    :param db: 已打开的 SQLite 连接。
 
-    Returns:
-        ``messages`` 表不存在时返回 ``True``，否则返回 ``False``。
+    :return: ``messages`` 表不存在时返回 ``True``，否则返回 ``False``。
 
-    Raises:
-        sqlite3.Error: 查询 SQLite 元数据失败。
+    :raises sqlite3.Error: 查询 SQLite 元数据失败。
     """
     return not _table_exists(db, "messages")
 
@@ -84,17 +78,14 @@ def bootstrap_version(db: sqlite3.Connection, current_version: int) -> int:
 
     该步骤只更新 ``user_version``，不修改业务表，保证重复执行幂等且无损。
 
-    Args:
-        db: 已打开的 SQLite 连接。
-        current_version: 当前应用支持的最新 schema 版本。
+    :param db: 已打开的 SQLite 连接。
+    :param current_version: 当前应用支持的最新 schema 版本。
 
-    Returns:
-        对齐后的数据库版本号。
+    :return: 对齐后的数据库版本号。
 
-    Raises:
-        sqlite3.Error: 读取或写入 SQLite 版本元数据失败。
+    :raises sqlite3.Error: 读取或写入 SQLite 版本元数据失败。
 
-    Side Effects:
+    副作用：
         可能写入 ``PRAGMA user_version`` 并记录迁移接管日志；不执行业务表 DDL/DML。
     """
     existing = db.execute("PRAGMA user_version").fetchone()[0]

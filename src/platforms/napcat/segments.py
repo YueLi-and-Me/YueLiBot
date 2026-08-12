@@ -18,15 +18,12 @@ _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI = frozenset({0, 4, 9})
 def is_emoji_image(segment: Segment) -> bool:
     """判断消息段是否为带明确表情子类型的图片消息。
 
-    Args:
-        segment: OneBot 消息段映射。
+    :param segment: OneBot 消息段映射。
 
-    Returns:
-        类型为 ``image`` 且 ``sub_type`` 存在、同时不属于普通图片子类型集合时返回
+    :return: 类型为 ``image`` 且 ``sub_type`` 存在、同时不属于普通图片子类型集合时返回
         ``True``；缺少子类型时返回 ``False``。
 
-    Raises:
-        ValueError: 图片段缺少对象型 ``data`` 字段。
+    :raises ValueError: 图片段缺少对象型 ``data`` 字段。
     """
     if segment.get('type') != 'image':
         return False
@@ -41,17 +38,14 @@ def segment_to_text(
 ) -> str:
     """将单个 OneBot 消息段转换为模型可理解的文本或稳定占位描述。
 
-    Args:
-        segment: OneBot 消息段映射，必须包含非空 ``type`` 和对象型 ``data``。
-        mention_names: 可选 QQ 号到显示名的映射，用于渲染提及文本。
+    :param segment: OneBot 消息段映射，必须包含非空 ``type`` 和对象型 ``data``。
+    :param mention_names: 可选 QQ 号到显示名的映射，用于渲染提及文本。
 
-    Returns:
-        文本段原文、提及文本、图片或其他非文本消息的中文占位描述。
+    :return: 文本段原文、提及文本、图片或其他非文本消息的中文占位描述。
 
-    Raises:
-        ValueError: 消息段缺少必要字段，或文本段的 ``data.text`` 不是字符串。
+    :raises ValueError: 消息段缺少必要字段，或文本段的 ``data.text`` 不是字符串。
 
-    Side Effects:
+    副作用：
         仅读取输入映射，不读取文件、不访问网络，也不修改输入数据。
     """
     segment_type = _segment_type(segment)
@@ -97,15 +91,12 @@ def message_to_text(
 ) -> str:
     """按协议顺序拼接消息段，并为非文本内容保留稳定占位描述。
 
-    Args:
-        segments: OneBot 消息段列表；必须为列表而不是其他序列类型。
-        mention_names: 可选 QQ 号到显示名的映射，传递给单段转换逻辑。
+    :param segments: OneBot 消息段列表；必须为列表而不是其他序列类型。
+    :param mention_names: 可选 QQ 号到显示名的映射，传递给单段转换逻辑。
 
-    Returns:
-        由各消息段转换结果无分隔符拼接而成的完整文本。
+    :return: 由各消息段转换结果无分隔符拼接而成的完整文本。
 
-    Raises:
-        ValueError: ``segments`` 不是列表，或任一消息段结构不合法。
+    :raises ValueError: ``segments`` 不是列表，或任一消息段结构不合法。
     """
     if not isinstance(segments, list):
         raise ValueError('message 必须是 array 格式的消息段列表')
@@ -115,15 +106,12 @@ def message_to_text(
 def mentions_user(segments: Sequence[Segment], user_id: str) -> bool:
     """判断消息段列表是否提及指定 QQ 号或全体成员。
 
-    Args:
-        segments: OneBot 消息段列表；必须为列表。
-        user_id: 待匹配的 QQ 号，必须为非空标识字符串。
+    :param segments: OneBot 消息段列表；必须为列表。
+    :param user_id: 待匹配的 QQ 号，必须为非空标识字符串。
 
-    Returns:
-        存在 ``@`` 指定用户或 ``@all`` 段时返回 ``True``，否则返回 ``False``。
+    :return: 存在 ``@`` 指定用户或 ``@all`` 段时返回 ``True``，否则返回 ``False``。
 
-    Raises:
-        ValueError: 用户号为空、消息段列表类型错误或某段缺少合法 ``data``。
+    :raises ValueError: 用户号为空、消息段列表类型错误或某段缺少合法 ``data``。
     """
     target = _required_value(user_id, 'user_id 不能为空')
     if not isinstance(segments, list):
@@ -140,14 +128,11 @@ def mentions_user(segments: Sequence[Segment], user_id: str) -> bool:
 def base64_image_segment(content: str) -> Dict[str, Any]:
     """构造使用 ``base64://`` 来源协议的 OneBot 出站图片段。
 
-    Args:
-        content: Base64 图片内容，可带或不带 ``base64://`` 前缀；不能为空。
+    :param content: Base64 图片内容，可带或不带 ``base64://`` 前缀；不能为空。
 
-    Returns:
-        包含 ``type=image`` 和规范化 ``data.file`` 的新字典。
+    :return: 包含 ``type=image`` 和规范化 ``data.file`` 的新字典。
 
-    Raises:
-        ValueError: 内容为空，或错误使用 ``file://`` 前缀。
+    :raises ValueError: 内容为空，或错误使用 ``file://`` 前缀。
     """
     return _image_segment(content, 'base64')
 
@@ -155,14 +140,11 @@ def base64_image_segment(content: str) -> Dict[str, Any]:
 def file_image_segment(path: str) -> Dict[str, Any]:
     """构造使用 ``file://`` 来源协议的 OneBot 本地文件图片段。
 
-    Args:
-        path: 本地图片路径，可带或不带 ``file://`` 前缀；不能为空。
+    :param path: 本地图片路径，可带或不带 ``file://`` 前缀；不能为空。
 
-    Returns:
-        包含 ``type=image`` 和规范化 ``data.file`` 的新字典。
+    :return: 包含 ``type=image`` 和规范化 ``data.file`` 的新字典。
 
-    Raises:
-        ValueError: 路径为空，或错误使用 ``base64://`` 前缀。
+    :raises ValueError: 路径为空，或错误使用 ``base64://`` 前缀。
     """
     return _image_segment(path, 'file')
 
@@ -174,7 +156,7 @@ def _image_segment(source: str, source_kind: ImageSourceKind) -> Dict[str, Any]:
     :param source_kind: 来源类型，只能为 `base64` 或 `file`。
     :return: 形如 `{'type': 'image', 'data': {'file': '...'}}` 的新字典。
     :raises ValueError: 来源为空，或错误地使用了另一种来源前缀。
-    :side_effects: 不读取文件、不编码内容，也不修改输入字符串。
+    副作用：不读取文件、不编码内容，也不修改输入字符串。
     """
     value = _required_value(source, '图片来源不能为空')
     expected_prefix = f'{source_kind}://'
@@ -193,7 +175,7 @@ def _segment_type(segment: Segment) -> str:
     :param segment: OneBot 消息段映射。
     :return: 去除首尾空白的 `type` 字段。
     :raises ValueError: `type` 缺失、不是字符串或为空白。
-    :side_effects: 不修改消息段。
+    副作用：不修改消息段。
     """
     segment_type = segment.get('type')
     if not isinstance(segment_type, str) or not segment_type.strip():
@@ -207,7 +189,7 @@ def _segment_data(segment: Segment) -> Mapping[str, Any]:
     :param segment: OneBot 消息段映射。
     :return: 原始 `data` 映射，不复制其内容。
     :raises ValueError: `data` 缺失或不是映射。
-    :side_effects: 不修改消息段。
+    副作用：不修改消息段。
     """
     data = segment.get('data')
     if not isinstance(data, Mapping):
@@ -222,7 +204,7 @@ def _required_value(value: Any, message: str) -> str:
     :param message: 字段为空时使用的中文错误信息。
     :return: 去除首尾空白后的字符串。
     :raises ValueError: 转换结果为空。
-    :side_effects: 不修改输入值。
+    副作用：不修改输入值。
     """
     normalized = _string_value(value)
     if not normalized:
@@ -235,7 +217,7 @@ def _string_value(value: Any) -> str:
 
     :param value: 任意值；`None` 表示缺失。
     :return: `None` 对应空字符串，否则返回去除首尾空白的字符串表示。
-    :side_effects: 不执行 I/O。
+    副作用：不执行 I/O。
     """
     if value is None:
         return ''

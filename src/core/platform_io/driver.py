@@ -25,34 +25,27 @@ class PlatformDriver(ABC):
     async def start(self) -> None:
         """启动驱动持有的连接或后台资源。
 
-        Returns:
-            ``None``。调用完成后驱动应具备接收 ``send`` 请求的条件。
+        :return: ``None``。调用完成后驱动应具备接收 ``send`` 请求的条件。
 
-        Raises:
-            Exception: 连接建立或资源初始化失败时由具体实现抛出。
+        :raises Exception: 连接建立或资源初始化失败时由具体实现抛出。
         """
 
     @abstractmethod
     async def stop(self) -> None:
         """停止驱动持有的连接或后台资源。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
 
-        Raises:
-            Exception: 资源关闭失败时由具体实现抛出。
+        :raises Exception: 资源关闭失败时由具体实现抛出。
         """
 
     @abstractmethod
     async def send(self, message: OutboundMessage) -> DeliveryReceipt:
         """投递一条已经按句切分的消息。
 
-        Args:
-            message: 包含目标 stream 和消息分句的出站消息。
+        :param message: 包含目标 stream 和消息分句的出站消息。
 
-        Returns:
-            记录平台、stream 与外部消息编号的投递回执。
+        :return: 记录平台、stream 与外部消息编号的投递回执。
 
-        Raises:
-            DeliveryError: 平台拒绝消息、连接不可用或投递未完成时抛出。
+        :raises DeliveryError: 平台拒绝消息、连接不可用或投递未完成时抛出。
         """

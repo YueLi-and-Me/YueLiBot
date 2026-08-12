@@ -20,7 +20,7 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     :param a: 第一个字符串集合。
     :param b: 第二个字符串集合。
     :return: 交集大小除以并集大小；两个集合都为空时返回 1.0。
-    :side_effects: 不修改输入集合。
+    副作用：不修改输入集合。
     """
     if not a and not b:
         return 1.0
@@ -31,15 +31,12 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
 def normalize(text: str) -> str:
     """使用当前正则规则移除标点和空白，并将英文转换为小写。
 
-    Args:
-        text: 待归一化的文本。
+    :param text: 待归一化的文本。
 
-    Returns:
-        删除匹配字符并转为小写后的文本。
+    :return: 删除匹配字符并转为小写后的文本。
 
-    Raises:
-        re.error: 当前 Python 正则引擎不支持配置的字符类别时抛出。
-        TypeError: ``text`` 不是字符串时抛出。
+    :raises re.error: 当前 Python 正则引擎不支持配置的字符类别时抛出。
+    :raises TypeError: ``text`` 不是字符串时抛出。
     """
     return re.sub(r'[\s\p{P}\p{S}]', '', text, flags=re.UNICODE).lower()
 
@@ -48,14 +45,11 @@ def normalize(text: str) -> str:
 def _normalize(text: str) -> str:
     """保留字母、数字和 CJK 字符，并将英文转换为小写。
 
-    Args:
-        text: 待归一化的事实文本。
+    :param text: 待归一化的事实文本。
 
-    Returns:
-        删除其他字符后的文本。
+    :return: 删除其他字符后的文本。
 
-    Raises:
-        TypeError: ``text`` 不是字符串时抛出。
+    :raises TypeError: ``text`` 不是字符串时抛出。
     """
     return re.sub(r'[^\w一-鿿㐀-䶿豈-﫿]', '',
                   text, flags=re.UNICODE).lower()
@@ -64,14 +58,11 @@ def _normalize(text: str) -> str:
 def exact_key(text: str) -> str:
     """生成事实严格去重使用的归一化键。
 
-    Args:
-        text: 原始事实文本。
+    :param text: 原始事实文本。
 
-    Returns:
-        ``_normalize(text)`` 的结果；键相同时表示归一化后字面完全重复。
+    :return: ``_normalize(text)`` 的结果；键相同时表示归一化后字面完全重复。
 
-    Raises:
-        TypeError: ``text`` 不是字符串时由归一化函数抛出。
+    :raises TypeError: ``text`` 不是字符串时由归一化函数抛出。
     """
     return _normalize(text)
 
@@ -82,7 +73,7 @@ def is_same_fact(a: str, b: str) -> bool:
     :param a: 第一条事实文本。
     :param b: 第二条事实文本。
     :return: 归一化文本相同，或字符与 bigram 相似度同时达到阈值时返回 `True`。
-    :side_effects: 不修改输入文本。
+    副作用：不修改输入文本。
     :performance: 复杂度与两条文本归一化后的长度线性相关。
     """
     na = _normalize(a)
@@ -99,15 +90,12 @@ def is_same_fact(a: str, b: str) -> bool:
 def similarity(a: str, b: str) -> dict[str, float]:
     """计算两条文本的字符集合和 bigram 集合 Jaccard 相似度。
 
-    Args:
-        a: 第一条待比较文本。
-        b: 第二条待比较文本。
+    :param a: 第一条待比较文本。
+    :param b: 第二条待比较文本。
 
-    Returns:
-        包含 ``char`` 和 ``bigram`` 两个 ``[0, 1]`` 相似度值的字典。
+    :return: 包含 ``char`` 和 ``bigram`` 两个 ``[0, 1]`` 相似度值的字典。
 
-    Raises:
-        TypeError: 输入不是字符串时由归一化函数抛出。
+    :raises TypeError: 输入不是字符串时由归一化函数抛出。
     """
     na = _normalize(a)
     nb = _normalize(b)

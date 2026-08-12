@@ -22,7 +22,7 @@ class _AppState:
         """创建未启动服务的默认状态。
 
         :return: 无返回值。
-        :side_effects: 初始化所有服务引用为空，并创建默认群聊配置。
+        副作用：初始化所有服务引用为空，并创建默认群聊配置。
         """
         self.chat: Any = None          # ChatService
         self.awareness: Any = None     # AwarenessService

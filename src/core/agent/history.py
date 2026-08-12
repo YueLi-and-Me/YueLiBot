@@ -28,15 +28,12 @@ DEFAULT_CHAR_BUDGET = 12_000
 def strip_side_effect_tags(raw: str) -> str:
     """移除只供后端执行的副作用标签，保留 ``<say>`` 及其正文。
 
-    Args:
-        raw: 待清理的模型原始文本；空字符串和空白文本返回空字符串。
+    :param raw: 待清理的模型原始文本；空字符串和空白文本返回空字符串。
 
-    Returns:
-        删除 ``memory``、``mood``、``think`` 和 ``thinking`` 标签后的文本，
+    :return: 删除 ``memory``、``mood``、``think`` 和 ``thinking`` 标签后的文本，
         并去除首尾空白。
 
-    Raises:
-        TypeError: ``raw`` 不是可用于正则替换的字符串时由正则操作触发。
+    :raises TypeError: ``raw`` 不是可用于正则替换的字符串时由正则操作触发。
     """
 
     return _SIDE_EFFECT_TAGS.sub('', raw or '').strip()
@@ -48,14 +45,11 @@ def close_dangling_say(raw: str) -> str:
     读取侧必须保留已产生的文本，同时恢复后续上下文所需的标签结构；因此只补充
     缺失的闭合标签，不截断原始内容。
 
-    Args:
-        raw: 可能包含未闭合 ``<say>`` 标签的原始文本。
+    :param raw: 可能包含未闭合 ``<say>`` 标签的原始文本。
 
-    Returns:
-        已去除首尾空白且标签闭合的文本；空输入返回空字符串。
+    :return: 已去除首尾空白且标签闭合的文本；空输入返回空字符串。
 
-    Raises:
-        TypeError: ``raw`` 不是字符串时由正则匹配操作触发。
+    :raises TypeError: ``raw`` 不是字符串时由正则匹配操作触发。
     """
 
     text = (raw or '').strip()
@@ -78,16 +72,13 @@ def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:
 
     该操作具有幂等性：对已规范化的历史重复执行不会改变结果。
 
-    Args:
-        messages: 消息迭代器；每项至少提供字符串 ``role`` 和 ``content`` 字段。
+    :param messages: 消息迭代器；每项至少提供字符串 ``role`` 和 ``content`` 字段。
 
-    Returns:
-        删除空消息、修复助手标签、合并连续角色并移除首个助手消息后的新列表。
+    :return: 删除空消息、修复助手标签、合并连续角色并移除首个助手消息后的新列表。
 
-    Raises:
-        TypeError: 消息项不支持映射访问或字段值不支持字符串处理时抛出。
+    :raises TypeError: 消息项不支持映射访问或字段值不支持字符串处理时抛出。
 
-    Side Effects:
+    副作用：
         消费输入迭代器；不修改输入映射对象，仅创建新的消息字典。
     """
 
@@ -117,19 +108,16 @@ def fit_char_budget(messages: List[dict], budget: int = DEFAULT_CHAR_BUDGET) -> 
     裁剪可能产生助手消息开头或连续同角色消息，因此裁剪完成后必须再次调用
     ``normalize_history``。
 
-    Args:
-        messages: 已解析的消息字典列表；函数不会就地删除其中元素。
-        budget: 允许保留的总字符数，默认 ``DEFAULT_CHAR_BUDGET``；小于等于 ``0``
+    :param messages: 已解析的消息字典列表；函数不会就地删除其中元素。
+    :param budget: 允许保留的总字符数，默认 ``DEFAULT_CHAR_BUDGET``；小于等于 ``0``
             时直接返回原列表对象。
 
-    Returns:
-        在预算内且结构合法的新消息列表；输入为空时返回空列表。
+    :return: 在预算内且结构合法的新消息列表；输入为空时返回空列表。
 
-    Raises:
-        KeyError: 消息缺少 ``content`` 字段时抛出。
-        TypeError: 内容不是支持 ``len`` 的对象或预算不可比较时抛出。
+    :raises KeyError: 消息缺少 ``content`` 字段时抛出。
+    :raises TypeError: 内容不是支持 ``len`` 的对象或预算不可比较时抛出。
 
-    Side Effects:
+    副作用：
         当 ``budget <= 0`` 时返回输入列表本身；其他情况不修改输入列表。
     """
 

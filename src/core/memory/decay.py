@@ -36,7 +36,7 @@ def half_life_for(kind: str | None) -> float:
 
     :param kind: 事实类型；未提供或不在配置表中时使用默认半衰期。
     :return: 半衰期，单位为小时。
-    :side_effects: 不修改衰减配置。
+    副作用：不修改衰减配置。
     """
     return HALF_LIFE_HOURS.get(kind or '', DEFAULT_HALF_LIFE) if kind else DEFAULT_HALF_LIFE
 
@@ -46,7 +46,7 @@ def clamp_unit(v: float) -> float:
 
     :param v: 任意浮点值。
     :return: 小于 0 时返回 0，大于 1 时返回 1，否则返回原值。
-    :side_effects: 不修改输入对象。
+    副作用：不修改输入对象。
     """
     return max(0.0, min(1.0, v))
 
@@ -59,7 +59,7 @@ def retention(strength: float, updated_at: int, half_life_hours: float, now: int
     :param half_life_hours: 半衰期，单位为小时，必须为正数。
     :param now: 当前 Unix 毫秒时间戳。
     :return: 当前留存度，范围为 0~1。
-    :side_effects: 不修改输入值或衰减配置。
+    副作用：不修改输入值或衰减配置。
     """
     hours = max(0.0, (now - updated_at) / MS_PER_HOUR)
     return clamp_unit(strength) * (2 ** (-hours / half_life_hours))
@@ -68,17 +68,14 @@ def retention(strength: float, updated_at: int, half_life_hours: float, now: int
 def freeze_due_at(strength: float, updated_at: int, half_life_hours: float) -> int:
     """预计算留存度首次降至冻结阈值的 Unix 毫秒时间戳。
 
-    Args:
-        strength: 更新时的留存强度，按 ``0`` 到 ``1`` 截断。
-        updated_at: 强度更新时间的 Unix 毫秒时间戳。
-        half_life_hours: 半衰期，单位为小时，必须为正数。
+    :param strength: 更新时的留存强度，按 ``0`` 到 ``1`` 截断。
+    :param updated_at: 强度更新时间的 Unix 毫秒时间戳。
+    :param half_life_hours: 半衰期，单位为小时，必须为正数。
 
-    Returns:
-        留存度达到 ``FREEZE`` 的预计时间；初始强度已不高于阈值时返回 ``updated_at``。
+    :return: 留存度达到 ``FREEZE`` 的预计时间；初始强度已不高于阈值时返回 ``updated_at``。
 
-    Raises:
-        ValueError: 半衰期为零或负数，导致衰减时间无法计算。
-        TypeError: 参数不是支持数值运算的类型。
+    :raises ValueError: 半衰期为零或负数，导致衰减时间无法计算。
+    :raises TypeError: 参数不是支持数值运算的类型。
     """
     s = clamp_unit(strength)
     if s <= FREEZE:
@@ -90,15 +87,12 @@ def freeze_due_at(strength: float, updated_at: int, half_life_hours: float) -> i
 def reinforce(current: float, boost: float = 0.35) -> float:
     """在事实被检索命中后按递减增量回补其留存强度。
 
-    Args:
-        current: 当前留存强度，计算前按 ``0`` 到 ``1`` 截断。
-        boost: 最大回补系数，默认 ``0.35``；回补量为 ``boost * (1-current)``。
+    :param current: 当前留存强度，计算前按 ``0`` 到 ``1`` 截断。
+    :param boost: 最大回补系数，默认 ``0.35``；回补量为 ``boost * (1-current)``。
 
-    Returns:
-        叠加回补量并限制在 ``[0, 1]`` 内的新强度。
+    :return: 叠加回补量并限制在 ``[0, 1]`` 内的新强度。
 
-    Raises:
-        TypeError: 参数不支持数值运算时抛出。
+    :raises TypeError: 参数不支持数值运算时抛出。
     """
     return clamp_unit(current + boost * (1 - current))
 
@@ -106,14 +100,11 @@ def reinforce(current: float, boost: float = 0.35) -> float:
 def relevance_from_bm25(bm25: float) -> float:
     """将 FTS5 ``bm25`` 分数转换为单调递增的词面相关度。
 
-    Args:
-        bm25: FTS5 返回的 BM25 分数；该实现按负值表示相关度。
+    :param bm25: FTS5 返回的 BM25 分数；该实现按负值表示相关度。
 
-    Returns:
-        ``[0, 1)`` 范围内的相关度；BM25 为正时按零相关度处理。
+    :return: ``[0, 1)`` 范围内的相关度；BM25 为正时按零相关度处理。
 
-    Raises:
-        TypeError: 参数不支持比较和算术运算时抛出。
+    :raises TypeError: 参数不支持比较和算术运算时抛出。
     """
     r = max(0.0, -bm25)
     return r / (1.0 + r)
@@ -122,14 +113,11 @@ def relevance_from_bm25(bm25: float) -> float:
 def retention_weight(retention_value: float) -> float:
     """将事实留存度映射为检索排序权重。
 
-    Args:
-        retention_value: 当前留存度，通常范围为 ``0`` 到 ``1``。
+    :param retention_value: 当前留存度，通常范围为 ``0`` 到 ``1``。
 
-    Returns:
-        线性映射后的排序权重，留存度为 ``0`` 时为 ``0.35``，为 ``1`` 时为 ``1.0``。
+    :return: 线性映射后的排序权重，留存度为 ``0`` 时为 ``0.35``，为 ``1`` 时为 ``1.0``。
 
-    Raises:
-        TypeError: 参数不支持乘法和加法时抛出。
+    :raises TypeError: 参数不支持乘法和加法时抛出。
     """
     return 0.35 + 0.65 * retention_value
 
@@ -140,15 +128,12 @@ def score(bm25: float, retention_value: float) -> float:
     SQLite FTS5 的 BM25 值越小表示词面越相关；函数先取负值并归一化到 ``[0, 1)``，
     再乘以留存度权重，确保最终分数随词面相关度和留存度单调增加。
 
-    Args:
-        bm25: FTS5 返回的 BM25 分数。
-        retention_value: 当前事实留存度，通常范围为 ``0`` 到 ``1``。
+    :param bm25: FTS5 返回的 BM25 分数。
+    :param retention_value: 当前事实留存度，通常范围为 ``0`` 到 ``1``。
 
-    Returns:
-        词面相关度与留存度权重的乘积。
+    :return: 词面相关度与留存度权重的乘积。
 
-    Raises:
-        TypeError: 参数不支持数值运算时抛出。
+    :raises TypeError: 参数不支持数值运算时抛出。
     """
     return relevance_from_bm25(bm25) * retention_weight(retention_value)
 
@@ -186,16 +171,13 @@ class DecayEval:
 def evaluate(state: DecayState, now: int) -> DecayEval:
     """按当前时刻计算事实留存度、活跃状态和下一次评估时间。
 
-    Args:
-        state: 包含强度、更新时间、半衰期和当前活跃状态的衰减状态。
-        now: 当前 Unix 毫秒时间戳。
+    :param state: 包含强度、更新时间、半衰期和当前活跃状态的衰减状态。
+    :param now: 当前 Unix 毫秒时间戳。
 
-    Returns:
-        ``DecayEval``，其中活跃状态使用冻结/复活双阈值滞回规则计算。
+    :return: ``DecayEval``，其中活跃状态使用冻结/复活双阈值滞回规则计算。
 
-    Raises:
-        ValueError: 半衰期不为正数时由衰减计算抛出。
-        TypeError: 状态字段或时间戳不支持数值运算时抛出。
+    :raises ValueError: 半衰期不为正数时由衰减计算抛出。
+    :raises TypeError: 状态字段或时间戳不支持数值运算时抛出。
     """
     r = retention(state.strength, state.updated_at, state.half_life_hours, now)
     # 滞回：活跃态跌破 FREEZE 才冻结；非活跃态必须升过 REVIVE 才解冻

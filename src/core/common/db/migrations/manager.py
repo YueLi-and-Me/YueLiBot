@@ -29,7 +29,7 @@ def get_user_version(db: sqlite3.Connection) -> int:
     :param db: 已打开的 SQLite 连接。
     :return: 数据库版本号；PRAGMA 没有行时返回 `0`。
     :raises sqlite3.Error: 读取 PRAGMA 失败时传播数据库异常。
-    :side_effects: 只读数据库元信息。
+    副作用：只读数据库元信息。
     """
     row = db.execute("PRAGMA user_version").fetchone()
     return row[0] if row else 0
@@ -42,7 +42,7 @@ def set_user_version(db: sqlite3.Connection, version: int) -> None:
     :param version: 要写入的整数版本号。
     :return: 无返回值。
     :raises sqlite3.Error: PRAGMA 执行失败时传播数据库异常。
-    :side_effects: 修改数据库的 `user_version` 元信息；不提交事务。
+    副作用：修改数据库的 `user_version` 元信息；不提交事务。
     """
     # PRAGMA user_version 不支持参数绑定，整数字面量是安全的
     db.execute(f"PRAGMA user_version = {version}")
@@ -56,7 +56,7 @@ def backup(db: sqlite3.Connection, db_path: Path) -> Path:
     :return: 备份文件路径；同名备份已存在时直接返回该路径。
     :raises OSError: 备份目录或目标文件无法创建时抛出。
     :raises sqlite3.Error: SQLite 快照复制失败时抛出。
-    :side_effects: 创建备份目录和数据库文件，不修改源数据库。
+    副作用：创建备份目录和数据库文件，不修改源数据库。
     """
     backups_dir = db_path.parent / "backups"
     backups_dir.mkdir(exist_ok=True)
@@ -78,13 +78,11 @@ def backup(db: sqlite3.Connection, db_path: Path) -> Path:
 def _initialize_fresh_database(db: sqlite3.Connection) -> None:
     """使用当前 DDL 和种子数据初始化一个全新的数据库。
 
-    Args:
-        db: 已打开且确认为空的 SQLite 连接。
+    :param db: 已打开且确认为空的 SQLite 连接。
 
-    Raises:
-        sqlite3.Error: DDL、种子数据或版本号写入失败。
+    :raises sqlite3.Error: DDL、种子数据或版本号写入失败。
 
-    Side Effects:
+    副作用：
         创建当前 schema，写入初始数据，将 ``user_version`` 设为 ``CURRENT_VERSION``
         并提交事务。
     """
@@ -98,13 +96,11 @@ def _initialize_fresh_database(db: sqlite3.Connection) -> None:
 def _apply_current_schema(db: sqlite3.Connection) -> None:
     """幂等执行当前 DDL 和种子数据，补齐迁移后的最新结构。
 
-    Args:
-        db: 已完成历史迁移的 SQLite 连接。
+    :param db: 已完成历史迁移的 SQLite 连接。
 
-    Raises:
-        sqlite3.Error: 当前 DDL 或种子数据执行失败。
+    :raises sqlite3.Error: 当前 DDL 或种子数据执行失败。
 
-    Side Effects:
+    副作用：
         可能创建缺失表、索引和种子记录，并提交当前事务。
     """
     db.executescript(DDL)
@@ -115,16 +111,14 @@ def _apply_current_schema(db: sqlite3.Connection) -> None:
 def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
     """将数据库按注册迁移链推进到 ``CURRENT_VERSION``。
 
-    Args:
-        db: 已打开的 SQLite 连接；可以是持久化数据库或内存数据库。
-        db_path: 持久化数据库文件路径；传入 ``None`` 或 ``:memory:`` 时不创建迁移备份。
+    :param db: 已打开的 SQLite 连接；可以是持久化数据库或内存数据库。
+    :param db_path: 持久化数据库文件路径；传入 ``None`` 或 ``:memory:`` 时不创建迁移备份。
 
-    Raises:
-        RuntimeError: 历史版本没有对应迁移函数，或迁移完整性检查失败。
-        OSError: 持久化数据库备份或文件操作失败。
-        sqlite3.Error: 迁移 SQL、事务提交或版本号写入失败。
+    :raises RuntimeError: 历史版本没有对应迁移函数，或迁移完整性检查失败。
+    :raises OSError: 持久化数据库备份或文件操作失败。
+    :raises sqlite3.Error: 迁移 SQL、事务提交或版本号写入失败。
 
-    Side Effects:
+    副作用：
         空库直接初始化；已有库在迁移前创建同目录备份，逐步更新 schema、数据和
         ``user_version``，任一步骤失败时回滚当前事务并传播异常。
     """

@@ -17,13 +17,11 @@ _WEBUI_DIST = Path(__file__).resolve().parents[2] / 'out' / 'webui'
 def mount_webui(app: FastAPI) -> None:
     """在 API 路由之后挂载 WebUI 静态入口。
 
-    Args:
-        app: 目标 FastAPI 应用。
+    :param app: 目标 FastAPI 应用。
 
-    Returns:
-        ``None``。
+    :return: ``None``。
 
-    Side Effects:
+    副作用：
         构建产物存在时注册人物 SPA 路由和根静态挂载；产物不存在时注册构建提示
         页面。路由注册顺序确保静态服务不会抢占后端 API。
     """
@@ -34,11 +32,9 @@ def mount_webui(app: FastAPI) -> None:
         async def person_list_page() -> FileResponse:
             """返回人物列表页共用的 SPA 入口文件。
 
-            Returns:
-                ``index.html`` 文件响应；人物数据由前端调用只读 API 获取。
+            :return: ``index.html`` 文件响应；人物数据由前端调用只读 API 获取。
 
-            Raises:
-                OSError: WebUI 构建文件不存在或无法读取时由文件响应层抛出。
+            :raises OSError: WebUI 构建文件不存在或无法读取时由文件响应层抛出。
             """
 
             return FileResponse(index_path)
@@ -47,11 +43,9 @@ def mount_webui(app: FastAPI) -> None:
         async def person_detail_page(person_id: int) -> FileResponse:
             """返回人物详情 SPA 入口。
 
-            Args:
-                person_id: 路由中的人物 ID；实际数据由前端调用只读 API 获取。
+            :param person_id: 路由中的人物 ID；实际数据由前端调用只读 API 获取。
 
-            Returns:
-                WebUI ``index.html`` 文件响应。
+            :return: WebUI ``index.html`` 文件响应。
             """
 
             # person_id 由前端再向只读 API 查询；路由只负责交付同一份 SPA 入口。
@@ -64,10 +58,9 @@ def mount_webui(app: FastAPI) -> None:
     async def webui_not_built() -> str:
         """返回 WebUI 构建产物缺失时的提示 HTML。
 
-        Returns:
-            指导执行前端构建命令的简体中文 HTML 页面。
+        :return: 指导执行前端构建命令的简体中文 HTML 页面。
 
-        Side Effects:
+        副作用：
             不访问文件系统之外的服务，不触发 API 或人物数据读取。
         """
 

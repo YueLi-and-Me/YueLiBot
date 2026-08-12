@@ -34,7 +34,7 @@ class LifecycleManager:
     def __init__(self) -> None:
         """创建空的服务注册表。
 
-        Side Effects:
+        副作用：
             初始化进程内服务列表；不执行启动或关闭回调。
         """
 
@@ -48,12 +48,11 @@ class LifecycleManager:
     ) -> None:
         """注册一项服务的启动和关闭回调。
 
-        Args:
-            name: 用于日志和故障定位的服务名称。
-            startup: 无参数异步启动回调。
-            shutdown: 无参数异步关闭回调。
+        :param name: 用于日志和故障定位的服务名称。
+        :param startup: 无参数异步启动回调。
+        :param shutdown: 无参数异步关闭回调。
 
-        Side Effects:
+        副作用：
             将服务追加到启动顺序列表；不会立即执行任一回调。
         """
 
@@ -62,11 +61,9 @@ class LifecycleManager:
     async def start_all(self) -> None:
         """按注册顺序启动全部服务。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
 
-        Raises:
-            Exception: 任一启动回调失败时记录错误并立即向调用方传播，后续服务
+        :raises Exception: 任一启动回调失败时记录错误并立即向调用方传播，后续服务
                 不再启动。
         """
 
@@ -82,10 +79,9 @@ class LifecycleManager:
     async def stop_all(self) -> None:
         """按注册逆序关闭全部服务。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
 
-        Side Effects:
+        副作用：
             执行所有关闭回调；单个关闭异常只记录日志，继续处理其余服务。
         """
 

@@ -70,8 +70,7 @@ class ConversationContext:
     def relationship_signals_enabled(self) -> bool:
         """判断上下文是否允许应用 owner 关系信号。
 
-        Returns:
-            ``person.kind`` 为 ``owner`` 时返回 ``True``，与消息来源平台无关。
+        :return: ``person.kind`` 为 ``owner`` 时返回 ``True``，与消息来源平台无关。
         """
         return self.person.kind == 'owner'
 

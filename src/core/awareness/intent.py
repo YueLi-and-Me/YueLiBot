@@ -23,14 +23,12 @@ class IntentType(IntEnum):
     def ttl_ms(self) -> int:
         """返回当前意图类型的有效期，单位为毫秒。
 
-        Returns:
-            ``Idle`` 为 15 分钟、``Scene`` 为 5 分钟、``Plan`` 为 20 分钟、
+        :return: ``Idle`` 为 15 分钟、``Scene`` 为 5 分钟、``Plan`` 为 20 分钟、
             ``Promise`` 为 2 小时对应的毫秒数。
 
-        Raises:
-            ValueError: 枚举实例不属于已支持的意图类型。
+        :raises ValueError: 枚举实例不属于已支持的意图类型。
 
-        Side Effects:
+        副作用：
             仅读取枚举值，不修改意图或全局状态。
         """
         match self:
@@ -68,17 +66,14 @@ class PendingIntent:
 def stash(pending: list[PendingIntent], intent: PendingIntent) -> list[PendingIntent]:
     """将一条待投放意图加入列表，并确保同类型只保留最早的候选。
 
-    Args:
-        pending: 当前待处理意图列表。
-        intent: 待加入的新意图。
+    :param pending: 当前待处理意图列表。
+    :param intent: 待加入的新意图。
 
-    Returns:
-        不含同类型较晚意图的新列表；若现有同类型意图更早，则返回原列表对象。
+    :return: 不含同类型较晚意图的新列表；若现有同类型意图更早，则返回原列表对象。
 
-    Raises:
-        TypeError: 列表项不是 ``PendingIntent`` 或时间字段不可比较时抛出。
+    :raises TypeError: 列表项不是 ``PendingIntent`` 或时间字段不可比较时抛出。
 
-    Side Effects:
+    副作用：
         不修改列表中的现有对象；在新意图更早时创建替换后的列表。
     """
     for existing in pending:
@@ -94,14 +89,12 @@ def eligible_intents(pending: list[PendingIntent], now: int) -> tuple[
 ]:
     """剔除过期项并筛出已到点候选；调用方随后执行投放资格校验。
 
-    Args:
-        pending: 当前等待处理的意图列表。
-        now: 当前 Unix 毫秒时间戳。
+    :param pending: 当前等待处理的意图列表。
+    :param now: 当前 Unix 毫秒时间戳。
 
-    Returns:
-        依次为未过期意图、已到最早投放时间的候选和本次剔除的过期意图。
+    :return: 依次为未过期意图、已到最早投放时间的候选和本次剔除的过期意图。
 
-    Side Effects:
+    副作用：
         不修改输入列表；候选列表按 ``IntentType`` 数值从高到低排序。
     """
     remaining: list[PendingIntent] = []

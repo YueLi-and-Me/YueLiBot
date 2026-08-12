@@ -25,16 +25,13 @@ def open_db(path: str | Path) -> sqlite3.Connection:
     DDL 和种子数据由迁移管理器在版本判断与备份之后执行，避免已有库提前应用目标
     结构导致迁移失败时无法恢复原始版本。
 
-    Args:
-        path: SQLite 数据库文件路径，或 ``':memory:'``。
+    :param path: SQLite 数据库文件路径，或 ``':memory:'``。
 
-    Returns:
-        进程级共享 SQLite 连接；如果已经打开连接，则忽略本次路径并返回已有连接。
+    :return: 进程级共享 SQLite 连接；如果已经打开连接，则忽略本次路径并返回已有连接。
 
-    Raises:
-        sqlite3.Error: 数据库连接创建失败。
+    :raises sqlite3.Error: 数据库连接创建失败。
 
-    Side Effects:
+    副作用：
         首次调用创建连接、启用 ``sqlite3.Row`` 行工厂并保存模块级连接引用。
     """
     global _db
@@ -52,7 +49,7 @@ def get_db() -> sqlite3.Connection:
 
     :return: 最近一次由 :func:`open_db` 打开的连接实例。
     :raises RuntimeError: 尚未调用 :func:`open_db`。
-    :side_effects: 不创建连接、不执行 SQL。
+    副作用：不创建连接、不执行 SQL。
     """
     if _db is None:
         raise RuntimeError("数据库未初始化，请先调用 open_db()")
@@ -62,17 +59,14 @@ def get_db() -> sqlite3.Connection:
 async def run_in_thread(fn: Callable[..., _T], *args: Any) -> _T:
     """在线程池中执行阻塞的数据库调用，避免阻塞 asyncio 事件循环。
 
-    Args:
-        fn: 要在线程池中调用的同步函数。
-        *args: 传递给 ``fn`` 的位置参数。
+    :param fn: 要在线程池中调用的同步函数。
+    :param *args: 传递给 ``fn`` 的位置参数。
 
-    Returns:
-        ``fn(*args)`` 的结果，类型为 ``_T``。
+    :return: ``fn(*args)`` 的结果，类型为 ``_T``。
 
-    Raises:
-        Exception: ``fn`` 执行失败时传播其原始异常。
+    :raises Exception: ``fn`` 执行失败时传播其原始异常。
 
-    Side Effects:
+    副作用：
         占用事件循环默认线程池线程；不会自行创建或关闭数据库连接。
     """
     loop = asyncio.get_event_loop()
@@ -83,7 +77,7 @@ def close_db() -> None:
     """关闭进程级 SQLite 连接并清空单例引用。
 
     :return: 无返回值；未打开连接时安全返回。
-    :side_effects: 关闭数据库连接，后续调用 :func:`get_db` 会失败，直到重新调用
+    副作用：关闭数据库连接，后续调用 :func:`get_db` 会失败，直到重新调用
         :func:`open_db`。
     :raises sqlite3.Error: 底层连接关闭失败时传播异常。
     """

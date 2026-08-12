@@ -55,7 +55,7 @@ class EventBroadcaster:
 
         :param queue_size: 每个订阅者队列容量，默认值为 200，必须大于 0。
         :raises ValueError: `queue_size` 小于 1。
-        :side_effects: 初始化订阅者集合、锁和队列容量。
+        副作用：初始化订阅者集合、锁和队列容量。
         """
         if queue_size < 1:
             raise ValueError("事件广播队列容量必须大于 0")
@@ -68,7 +68,7 @@ class EventBroadcaster:
 
         :return: 新的订阅者对象。
         :raises RuntimeError: 当前线程没有运行中的 asyncio 事件循环。
-        :side_effects: 修改订阅者集合。
+        副作用：修改订阅者集合。
         """
         subscriber = EventSubscriber(
             loop=asyncio.get_running_loop(),
@@ -83,7 +83,7 @@ class EventBroadcaster:
         """移除订阅者，重复移除安全。
 
         :param subscriber: 要移除的订阅者。
-        :side_effects: 修改订阅者集合。
+        副作用：修改订阅者集合。
         """
         with self._lock:
             self._subscribers.discard(subscriber)
@@ -92,7 +92,7 @@ class EventBroadcaster:
         """向当前所有订阅者异步投递一条事件。
 
         :param entry: 可 JSON 序列化的事件字典。
-        :side_effects: 在线程锁外向每个订阅者的事件循环安排投递回调；队列满时标记溢出。
+        副作用：在线程锁外向每个订阅者的事件循环安排投递回调；队列满时标记溢出。
         :performance: 按订阅者数量线性安排回调，不等待网络发送。
         """
         with self._lock:
@@ -106,7 +106,7 @@ class EventBroadcaster:
 
         :param subscriber: 目标订阅者。
         :param entry: 待投递事件。
-        :side_effects: 可能设置 `overflowed` 或向有界队列写入事件。
+        副作用：可能设置 `overflowed` 或向有界队列写入事件。
         """
         if subscriber.overflowed.is_set():
             return
@@ -118,7 +118,7 @@ class EventBroadcaster:
     def clear(self) -> None:
         """清空订阅者集合，不主动关闭各 WebSocket。
 
-        :side_effects: 删除所有订阅记录；已安排的事件循环回调仍可能执行。
+        副作用：删除所有订阅记录；已安排的事件循环回调仍可能执行。
         """
         with self._lock:
             self._subscribers.clear()
@@ -141,19 +141,18 @@ def bind_origin(
 ) -> None:
     """将当前异步上下文绑定到本轮消息来源。
 
-    Args:
-        stream_id: 当前 stream 数据库 ID。
-        platform: 消息来源平台标识。
-        person_id: 当前发送者人物 ID。
-        person_kind: 人物类型，例如 ``owner`` 或 ``contact``。
-        sender_external_id: 平台侧发送者外部 ID。
-        sender_nickname: 平台侧账号昵称。
-        sender_group_card: 当前群聊中的群名片；非群聊为空字符串。
-        sender_display_name: 当前会话最终使用的显示名。
-        sender_label: 观测面板展示的发送者标签。
-        bot_name: 当前平台使用的 Bot 名称。
+    :param stream_id: 当前 stream 数据库 ID。
+    :param platform: 消息来源平台标识。
+    :param person_id: 当前发送者人物 ID。
+    :param person_kind: 人物类型，例如 ``owner`` 或 ``contact``。
+    :param sender_external_id: 平台侧发送者外部 ID。
+    :param sender_nickname: 平台侧账号昵称。
+    :param sender_group_card: 当前群聊中的群名片；非群聊为空字符串。
+    :param sender_display_name: 当前会话最终使用的显示名。
+    :param sender_label: 观测面板展示的发送者标签。
+    :param bot_name: 当前平台使用的 Bot 名称。
 
-    Side Effects:
+    副作用：
         覆盖当前异步上下文的来源字段；不写入事件账本或广播事件。
     """
     _origin.set({
@@ -174,7 +173,7 @@ def current_stage_id() -> str:
     """返回当前异步上下文绑定的阶段 ID。
 
     :return: 阶段 ID；未绑定时为空字符串。
-    :side_effects: 不修改上下文。
+    副作用：不修改上下文。
     """
     return _current_stage.get()
 
@@ -183,7 +182,7 @@ def current_stream_id() -> int | None:
     """返回当前异步上下文绑定的 stream ID。
 
     :return: stream ID；未绑定时为 `None`。
-    :side_effects: 不修改上下文。
+    副作用：不修改上下文。
     """
     return _current_stream_id.get()
 
@@ -192,7 +191,7 @@ def current_turn_id() -> int | None:
     """返回当前异步上下文绑定的聊天轮次 ID。
 
     :return: turn ID；未绑定时为 `None`。
-    :side_effects: 不修改上下文。
+    副作用：不修改上下文。
     """
     return _current_turn_id.get()
 
@@ -200,18 +199,15 @@ def current_turn_id() -> int | None:
 def emit(event_kind: str, **fields: Any) -> Dict[str, Any]:
     """登记、持久化并广播一条管线事件。
 
-    Args:
-        event_kind: 事件类型名称；属于 ``LIVE_ONLY_KINDS`` 时只实时广播，否则写入事件账本。
-        **fields: 事件附加字段；保留字段由当前上下文或函数参数统一管理。
+    :param event_kind: 事件类型名称；属于 ``LIVE_ONLY_KINDS`` 时只实时广播，否则写入事件账本。
+    :param **fields: 事件附加字段；保留字段由当前上下文或函数参数统一管理。
 
-    Returns:
-        已补充序号、时间、阶段、stream 和 turn 字段的事件字典；实时事件的序号为 ``None``。
+    :return: 已补充序号、时间、阶段、stream 和 turn 字段的事件字典；实时事件的序号为 ``None``。
 
-    Raises:
-        sqlite3.Error: 持久化事件写入失败。
-        TypeError: 字段无法被事件存储或广播逻辑处理时抛出。
+    :raises sqlite3.Error: 持久化事件写入失败。
+    :raises TypeError: 字段无法被事件存储或广播逻辑处理时抛出。
 
-    Side Effects:
+    副作用：
         可能写入事件账本，向全部订阅者队列投递事件，并记录调试日志。
     """
     merged = {**_origin.get(), **fields}
@@ -249,20 +245,17 @@ def enter_stage(
 ) -> Dict[str, Any]:
     """更新当前管线阶段和事件上下文，并登记阶段事件。
 
-    Args:
-        stage: 目标阶段定义。
-        stream_id: 目标 stream 数据库 ID。
-        stream_name: 观察面板使用的 stream 可读名称。
-        detail: 阶段附加说明，默认为空字符串。
-        turn_id: 可选聊天轮次 ID；无轮次时为 ``None``。
+    :param stage: 目标阶段定义。
+    :param stream_id: 目标 stream 数据库 ID。
+    :param stream_name: 观察面板使用的 stream 可读名称。
+    :param detail: 阶段附加说明，默认为空字符串。
+    :param turn_id: 可选聊天轮次 ID；无轮次时为 ``None``。
 
-    Returns:
-        已写入并广播的阶段事件字典。
+    :return: 已写入并广播的阶段事件字典。
 
-    Raises:
-        sqlite3.Error: 阶段事件持久化失败。
+    :raises sqlite3.Error: 阶段事件持久化失败。
 
-    Side Effects:
+    副作用：
         更新 ContextVar，随后调用 ``emit`` 写入并广播阶段事件。
     """
     _current_stage.set(stage.id)
@@ -280,7 +273,7 @@ def enter_stage(
 def reset_for_tests() -> None:
     """清除当前事件上下文和广播订阅者。
 
-    :side_effects: 重置 ContextVar 并清空全局 broadcaster；仅供测试隔离使用，
+    副作用：重置 ContextVar 并清空全局 broadcaster；仅供测试隔离使用，
         不删除事件账本中的历史记录。
     """
     _origin.set({})

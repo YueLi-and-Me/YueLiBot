@@ -31,7 +31,7 @@ def _normalize_process(process: str | None) -> str:
 
     :param process: 原始进程名，可以为 `None`。
     :return: 小写、移除 `.exe` 后缀并去除空白的进程名。
-    :side_effects: 不执行系统进程查询。
+    副作用：不执行系统进程查询。
     """
     import re
     return re.sub(r'\.exe$', '', (process or '').lower()).strip()
@@ -42,7 +42,7 @@ def _fingerprint(value: str) -> int:
 
     :param value: 进程名与窗口标题组成的内部字符串。
     :return: 32 位无符号整数指纹；只用于比较，不可还原原文。
-    :side_effects: 不保存输入字符串。
+    副作用：不保存输入字符串。
     :performance: 时间复杂度与字符串长度线性相关。
     """
     h = 0x811c9dc5
@@ -62,7 +62,7 @@ class ForegroundProcessMonitor:
         """创建尚未观察过前台窗口的监控器。
 
         :return: 无返回值。
-        :side_effects: 初始化首次观察标志和上一次比较值。
+        副作用：初始化首次观察标志和上一次比较值。
         """
         self._initialized = False
         self._last_process = ''
@@ -73,7 +73,7 @@ class ForegroundProcessMonitor:
 
         :param foreground: 当前前台窗口信息，可以为 `None`。
         :return: 包含原始本次对象引用和两个变化标志的观察结果。
-        :side_effects: 保存规范化进程名和标题指纹，不保存标题原文。
+        副作用：保存规范化进程名和标题指纹，不保存标题原文。
         """
         process = _normalize_process(foreground.process if foreground else None)
         fp = _fingerprint(f'{process}\x00{foreground.title if foreground and foreground.title else ""}')

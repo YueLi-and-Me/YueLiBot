@@ -39,7 +39,7 @@ class LlmError(Exception):
         :param kind: 供重试和候选切换判断的错误类别。
         :param message: 面向日志或用户的错误消息。
         :param detail: 可选的服务端原始响应片段，默认值为空字符串。
-        :side_effects: 初始化异常属性，不执行网络操作。
+        副作用：初始化异常属性，不执行网络操作。
         """
         super().__init__(message)
         self.kind = kind   # auth | quota | model | network | timeout | blocked | aborted | unknown
@@ -61,7 +61,7 @@ def _classify_status(status: int) -> str:
 
     :param status: 模型接口返回的 HTTP 状态码。
     :return: `auth`、`quota`、`model`、`network` 或 `unknown` 类别。
-    :side_effects: 不访问网络。
+    副作用：不访问网络。
     """
     if status in (401, 403): return 'auth'
     if status == 429: return 'quota'
@@ -75,7 +75,7 @@ def _classify_code(code: str) -> str:
 
     :param code: 服务端返回的 code 或 type 文本。
     :return: `blocked`、`quota`、`auth`、`model` 或 `unknown` 类别。
-    :side_effects: 不修改输入文本。
+    副作用：不修改输入文本。
     """
     if re.search(r'SensitiveContent|Sensitive|Risk|Policy|content_filter', code, re.I): return 'blocked'
     if re.search(r'Quota|RateLimit|TPM|RPM|Throttl|insufficient', code, re.I): return 'quota'
@@ -96,7 +96,7 @@ class _ReasoningTagParser:
     def __init__(self) -> None:
         """创建处于正文状态的空标签解析器。
 
-        :side_effects: 初始化缓冲区和标签嵌套状态，不执行 I/O。
+        副作用：初始化缓冲区和标签嵌套状态，不执行 I/O。
         """
         self._inside = False
         self._buffer = ''
@@ -106,7 +106,7 @@ class _ReasoningTagParser:
 
         :param text: 新收到的文本分片。
         :return: 每项含 `text` 或 `reasoning` 键的增量块列表。
-        :side_effects: 修改内部缓冲区和 `<think>` 状态。
+        副作用：修改内部缓冲区和 `<think>` 状态。
         :performance: 处理量与已消费分片长度线性相关。
         """
         self._buffer += text
@@ -132,7 +132,7 @@ class _ReasoningTagParser:
         """结束流并把剩余缓冲区作为当前状态的文本块输出。
 
         :return: 未完成标签之外的剩余增量块。
-        :side_effects: 清空内部缓冲区，不重置实例的 `_inside` 标志。
+        副作用：清空内部缓冲区，不重置实例的 `_inside` 标志。
         """
         chunks: list[dict[str, str]] = []
         self._append(chunks, self._buffer)
@@ -144,7 +144,7 @@ class _ReasoningTagParser:
 
         :param chunks: 当前输出块列表。
         :param value: 待追加文本。
-        :side_effects: 仅在 `value` 非空时修改 `chunks`。
+        副作用：仅在 `value` 非空时修改 `chunks`。
         """
         if value:
             key = 'reasoning' if self._inside else 'text'
@@ -155,7 +155,7 @@ class _ReasoningTagParser:
 
         :param marker: 当前期待的 `<think>` 或 `</think>` 标记。
         :return: 应保留等待下个分片的后缀字符数。
-        :side_effects: 不修改缓冲区。
+        副作用：不修改缓冲区。
         """
         maximum = min(len(self._buffer), len(marker) - 1)
         for size in range(maximum, 0, -1):
@@ -192,7 +192,7 @@ class OpenAiChatProvider:
         :param max_retries: 尚未产出内容时的内部重试次数，默认值为 2。
         :param retry_interval_ms: 重试间隔毫秒数，默认值为 800。
         :raises LlmError: `model` 为空。
-        :side_effects: 保存配置，不在构造阶段建立 HTTP 连接。
+        副作用：保存配置，不在构造阶段建立 HTTP 连接。
         """
         # 连接延迟到首次 stream 调用，允许路由器在启动期先完成候选装配。
         if not model.strip():
@@ -219,21 +219,18 @@ class OpenAiChatProvider:
         流已经交给上层后再重放请求会产生重复文本和重复副作用，因此无论错误
         类型如何，一旦 yield 过内容就立即向上抛出。
 
-        Args:
-            messages: OpenAI 兼容消息列表。
-            temperature: 采样温度，默认 ``0.85``。
-            max_tokens: 可选最大输出 token 数。
-            signal: 可选取消事件；重试间隔期间触发时转换为 ``aborted`` 错误。
-            response_format: 可选结构化响应格式；当前支持 JSON object 格式。
+        :param messages: OpenAI 兼容消息列表。
+        :param temperature: 采样温度，默认 ``0.85``。
+        :param max_tokens: 可选最大输出 token 数。
+        :param signal: 可选取消事件；重试间隔期间触发时转换为 ``aborted`` 错误。
+        :param response_format: 可选结构化响应格式；当前支持 JSON object 格式。
 
-        Yields:
-            解析后的增量字典，顺序与服务端流式响应一致。
+        :yield: 解析后的增量字典，顺序与服务端流式响应一致。
 
-        Raises:
-            LlmError: 网络、配额、HTTP、协议或主动取消错误；输出产生后不再重试。
-            asyncio.CancelledError: 调用方取消异步生成器时传播。
+        :raises LlmError: 网络、配额、HTTP、协议或主动取消错误；输出产生后不再重试。
+        :raises asyncio.CancelledError: 调用方取消异步生成器时传播。
 
-        Side Effects:
+        副作用：
             发起一次或多次 HTTP 流式请求，记录请求快照和重试日志；输出后失败不会重放。
         """
         for attempt in range(self._max_retries + 1):
@@ -285,7 +282,7 @@ class OpenAiChatProvider:
         :param signal: 可选取消事件。
         :return: 下游 SSE 解析得到的增量字典。
         :raises LlmError: 网络、HTTP、服务端或取消错误。
-        :side_effects: 发起一次 HTTP 流式请求。
+        副作用：发起一次 HTTP 流式请求。
         """
         async for chunk in self._stream_http(
             messages,
@@ -314,7 +311,7 @@ class OpenAiChatProvider:
         :return: 下游 SSE 解析得到的增量字典。
         :raises ValueError: response_format 不是支持的 JSON object 结构。
         :raises LlmError: 网络、HTTP、服务端或取消错误。
-        :side_effects: 发起一次 HTTP 流式请求。
+        副作用：发起一次 HTTP 流式请求。
         """
         if response_format != {'type': 'json_object'}:
             raise ValueError(f'不支持的结构化输出格式：{response_format!r}')
@@ -344,7 +341,7 @@ class OpenAiChatProvider:
         :param response_format: 可选响应格式字段。
         :return: 文本、推理或结束标记前的增量字典。
         :raises LlmError: HTTP 状态错误、服务端错误、超时、网络错误或主动中断。
-        :side_effects: 记录脱敏请求快照并建立一次 HTTP 流式连接。
+        副作用：记录脱敏请求快照并建立一次 HTTP 流式连接。
         :performance: 流式消费响应，不缓存完整模型输出。
         """
         # 认证类型只影响 URL/header 组装，其他请求字段保持同一协议结构。
@@ -446,7 +443,7 @@ def _parse_sse_line(
     :param reasoning_parse_mode: 推理字段解析模式，默认值为 `field`。
     :return: 增量字典、字符串 `done` 或不可处理行对应的 `None`。
     :raises LlmError: 负载包含模型服务端错误。
-    :side_effects: 不修改输入行或 provider 状态。
+    副作用：不修改输入行或 provider 状态。
     """
     line = line.strip()
     # 注释行、空行和非 data 行不产生模型事件，保持 SSE 心跳透明。
@@ -487,17 +484,14 @@ def _parse_sse_line(
 def resolve_base_url(kind: str, base_url: str) -> str:
     """解析模型提供者的请求基地址，并在配置不完整时立即报告原因。
 
-    Args:
-        kind: 提供者类型名称，用于查找内置基地址。
-        base_url: 配置中的显式基地址；去除首尾空白后非空时优先使用。
+    :param kind: 提供者类型名称，用于查找内置基地址。
+    :param base_url: 配置中的显式基地址；去除首尾空白后非空时优先使用。
 
-    Returns:
-        可用于拼接模型接口路径的非空基地址。
+    :return: 可用于拼接模型接口路径的非空基地址。
 
-    Raises:
-        LlmError: ``base_url`` 为空且 ``kind`` 没有对应内置地址。
+    :raises LlmError: ``base_url`` 为空且 ``kind`` 没有对应内置地址。
 
-    Side Effects:
+    副作用：
         不执行网络请求，不修改提供者配置。
     """
     explicit = base_url.strip()

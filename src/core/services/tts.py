@@ -29,10 +29,9 @@ class TtsService:
     def __init__(self, cfg: Any, push_event: Callable, router: ModelRouter) -> None:
         """初始化 TTS 服务。
 
-        Args:
-            cfg: 提供 ``tts`` 配置的运行时配置对象。
-            push_event: 异步事件推送回调，接收事件名称和载荷字典。
-            router: 提供候选模型轮询的 ``ModelRouter``。
+        :param cfg: 提供 ``tts`` 配置的运行时配置对象。
+        :param push_event: 异步事件推送回调，接收事件名称和载荷字典。
+        :param router: 提供候选模型轮询的 ``ModelRouter``。
         """
 
         self._cfg = cfg
@@ -47,8 +46,7 @@ class TtsService:
     def enabled(self) -> bool:
         """判断当前是否允许创建新的 TTS 合成任务。
 
-        Returns:
-            TTS 配置启用、路由器就绪且连续失败次数未达到阈值时返回 ``True``。
+        :return: TTS 配置启用、路由器就绪且连续失败次数未达到阈值时返回 ``True``。
         """
 
         return self._cfg.tts.enabled and self._router.ready and self._failures < GIVE_UP_AFTER
@@ -56,11 +54,10 @@ class TtsService:
     def speak(self, text: str, turn_id: int) -> None:
         """异步合成一条文本并推送播放事件。
 
-        Args:
-            text: 待合成文本；去除首尾空白后为空时忽略。
-            turn_id: 关联对话回合 ID。
+        :param text: 待合成文本；去除首尾空白后为空时忽略。
+        :param turn_id: 关联对话回合 ID。
 
-        Side Effects:
+        副作用：
             服务启用且文本非空时创建后台 asyncio task；任务可能调用远端 TTS
             接口并推送音频事件。
         """
@@ -72,10 +69,9 @@ class TtsService:
     def cancel(self, turn_id: int) -> None:
         """向客户端发送停止当前回合语音播放的事件。
 
-        Args:
-            turn_id: 要停止的对话回合 ID。
+        :param turn_id: 要停止的对话回合 ID。
 
-        Side Effects:
+        副作用：
             创建后台事件推送任务；不取消已经创建的远端合成请求。
         """
 
@@ -84,11 +80,10 @@ class TtsService:
     async def _run(self, text: str, turn_id: int) -> None:
         """执行缓存查找、语音合成和音频事件推送。
 
-        Args:
-            text: 已去除首尾空白的待合成文本。
-            turn_id: 关联对话回合 ID。
+        :param text: 已去除首尾空白的待合成文本。
+        :param turn_id: 关联对话回合 ID。
 
-        Side Effects:
+        副作用：
             更新缓存命中统计和连续失败计数，可能调用远端服务并推送 base64 音频；
             合成失败只记录日志，不向后台 task 调度方抛出。
         """
@@ -118,27 +113,21 @@ class TtsService:
     async def _synth(self, text: str) -> bytes:
         """通过模型路由器选择候选并生成音频。
 
-        Args:
-            text: 待合成文本。
+        :param text: 待合成文本。
 
-        Returns:
-            远端接口返回的非空音频字节。
+        :return: 远端接口返回的非空音频字节。
 
-        Raises:
-            Exception: 所有候选均失败或返回空音频时由路由器直接传播。
+        :raises Exception: 所有候选均失败或返回空音频时由路由器直接传播。
         """
 
         async def call(candidate: ModelCandidate) -> bytes:
             """根据候选协议类型调用对应的语音合成实现。
 
-            Args:
-                candidate: 当前路由尝试的模型候选配置。
+            :param candidate: 当前路由尝试的模型候选配置。
 
-            Returns:
-                当前候选生成的非空音频字节。
+            :return: 当前候选生成的非空音频字节。
 
-            Raises:
-                Exception: 候选协议调用、HTTP 请求或音频解码失败时传播。
+            :raises Exception: 候选协议调用、HTTP 请求或音频解码失败时传播。
             """
 
             if candidate.client_type == 'volcengine':
@@ -150,16 +139,13 @@ class TtsService:
     async def _synth_openai(self, candidate: ModelCandidate, text: str) -> bytes:
         """调用 OpenAI 兼容的 ``/audio/speech`` 接口。
 
-        Args:
-            candidate: 提供基础 URL、模型标识和可选 API 密钥的候选配置。
-            text: 待合成文本。
+        :param candidate: 提供基础 URL、模型标识和可选 API 密钥的候选配置。
+        :param text: 待合成文本。
 
-        Returns:
-            非空音频响应体。
+        :return: 非空音频响应体。
 
-        Raises:
-            RuntimeError: HTTP 状态非成功或响应体为空。
-            httpx.HTTPError: 网络请求失败时由客户端抛出。
+        :raises RuntimeError: HTTP 状态非成功或响应体为空。
+        :raises httpx.HTTPError: 网络请求失败时由客户端抛出。
         """
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -189,17 +175,14 @@ class TtsService:
     async def _synth_volcengine(self, candidate: ModelCandidate, text: str) -> bytes:
         """调用火山语音协议并解码响应中的 base64 音频。
 
-        Args:
-            candidate: 提供 App ID、访问令牌、基础 URL 和模型标识的候选配置。
-            text: 待合成文本。
+        :param candidate: 提供 App ID、访问令牌、基础 URL 和模型标识的候选配置。
+        :param text: 待合成文本。
 
-        Returns:
-            解码后的非空音频字节。
+        :return: 解码后的非空音频字节。
 
-        Raises:
-            RuntimeError: HTTP 请求失败、返回码不是 3000 或响应缺少音频数据。
-            ValueError: base64 音频字段格式非法。
-            httpx.HTTPError: 网络请求失败时由客户端抛出。
+        :raises RuntimeError: HTTP 请求失败、返回码不是 3000 或响应缺少音频数据。
+        :raises ValueError: base64 音频字段格式非法。
+        :raises httpx.HTTPError: 网络请求失败时由客户端抛出。
         """
         cfg = self._cfg.tts
         base = (candidate.base_url or 'https://openspeech.bytedance.com').rstrip('/')
@@ -243,8 +226,7 @@ class TtsService:
     def inspect(self) -> dict:
         """返回 TTS 配置、失败计数、缓存规模和路由状态。
 
-        Returns:
-            可序列化的诊断字典；不包含音频内容或认证密钥。
+        :return: 可序列化的诊断字典；不包含音频内容或认证密钥。
         """
 
         return {

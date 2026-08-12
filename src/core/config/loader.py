@@ -43,7 +43,7 @@ def _providers_by_name(catalog: ProviderCatalog) -> Dict[str, ApiProviderConfig]
     :param catalog: 已完成 Pydantic 校验的厂商目录。
     :return: 厂商名称到配置对象的字典。
     :raises ValueError: 厂商名称为空或重复。
-    :side_effects: 不修改目录及其中的配置对象。
+    副作用：不修改目录及其中的配置对象。
     """
     providers: Dict[str, ApiProviderConfig] = {}
     for provider in catalog.api_providers:
@@ -61,7 +61,7 @@ def _models_by_name(catalog: ModelCatalog) -> Dict[str, ModelDefinitionConfig]:
     :param catalog: 已完成 Pydantic 校验的模型目录。
     :return: 模型名称到模型定义的字典。
     :raises ValueError: 模型名称为空或重复。
-    :side_effects: 不修改模型目录。
+    副作用：不修改模型目录。
     """
     models: Dict[str, ModelDefinitionConfig] = {}
     for model in catalog.models:
@@ -83,7 +83,7 @@ def _selected_provider(
     :param providers: 厂商名称索引。
     :return: `model.api_provider` 对应的厂商配置。
     :raises ValueError: 模型引用了不存在的厂商。
-    :side_effects: 不修改输入映射。
+    副作用：不修改输入映射。
     """
     try:
         return providers[model.api_provider]
@@ -110,7 +110,7 @@ def _build_routing(
     :return: 按 TOML 列表顺序排列的运行时任务路由。
     :raises ValueError: 模型/厂商引用缺失、协议类型不匹配、模型 ID 缺失、继承路由缺失
         或向量候选维度等配置不合法。
-    :side_effects: 记录继承关系日志，不写入配置文件。
+    副作用：记录继承关系日志，不写入配置文件。
     """
     routing = getattr(models_document.model_tasks, task)
     if task in CHAT_INHERITING_TASKS and not routing.model_list:
@@ -186,7 +186,7 @@ def _load_split_config(directory: Path) -> Config:
     :return: 已校验的 :class:`Config`。
     :raises ValueError: 版本、字段、引用、任务路由或功能开关配置不一致。
     :raises OSError: 配置文件无法读取。
-    :side_effects: 读取配置文件并记录必要的任务继承日志，不修改磁盘内容。
+    副作用：读取配置文件并记录必要的任务继承日志，不修改磁盘内容。
     """
     providers_document = ProviderCatalog.model_validate(
         read_versioned_toml(directory / 'providers.toml', CONFIG_VERSION, _VERSION_HINT)
@@ -267,16 +267,13 @@ def load_config(path: Path) -> Config:
     仅接受由四个 TOML 文件组成的配置目录。旧版单文件配置必须在进入本模块前完成
     迁移；直接按新结构读取会丢失模型引用，因此目录结构不符合要求时显式失败。
 
-    Args:
-        path: 配置目录路径。
+    :param path: 配置目录路径。
 
-    Returns:
-        进程级缓存的 ``Config``；同一进程后续调用返回同一对象。
+    :return: 进程级缓存的 ``Config``；同一进程后续调用返回同一对象。
 
-    Raises:
-        SystemExit: 路径不是目录、配置读取或字段校验失败时以状态码 ``1`` 退出。
+    :raises SystemExit: 路径不是目录、配置读取或字段校验失败时以状态码 ``1`` 退出。
 
-    Side Effects:
+    副作用：
         首次调用读取配置文件并写入模块级缓存；失败时向标准错误输出诊断信息。
     """
     global _config
@@ -301,7 +298,7 @@ def get_config() -> Config:
 
     :return: 最近一次由 :func:`load_config` 成功加载的配置对象。
     :raises RuntimeError: 尚未调用 :func:`load_config` 或加载尚未成功。
-    :side_effects: 不读取磁盘，不修改配置。
+    副作用：不读取磁盘，不修改配置。
     """
     if _config is None:
         raise RuntimeError('配置未初始化，请先调用 load_config(path)')
@@ -312,7 +309,7 @@ def reset_config() -> None:
     """清空进程级配置缓存。
 
     :return: 无返回值。
-    :side_effects: 将后续 :func:`get_config` 置为未初始化；仅供测试隔离配置使用。
+    副作用：将后续 :func:`get_config` 置为未初始化；仅供测试隔离配置使用。
     """
     global _config
     _config = None

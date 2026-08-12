@@ -135,7 +135,7 @@ class MemoryStore:
         """绑定已打开的 SQLite 连接并确保当前表结构和种子存在。
 
         :param db: `check_same_thread=False` 的 SQLite 连接。
-        :side_effects: 执行 DDL、SEED、schema_version 写入并提交事务。
+        副作用：执行 DDL、SEED、schema_version 写入并提交事务。
         :raises sqlite3.Error: 建表、种子写入或提交失败。
         """
         self._db = db
@@ -155,7 +155,7 @@ class MemoryStore:
         :return: 人物的 `first_seen_at`。
         :raises RuntimeError: 人物不存在。
         :raises sqlite3.Error: 查询失败。
-        :side_effects: 只读 persons 表。
+        副作用：只读 persons 表。
         """
         row = self._db.execute(
             "SELECT first_seen_at FROM persons WHERE id = ?", (person_id,)
@@ -183,7 +183,7 @@ class MemoryStore:
         :return: 新消息的数据库 ID。
         :raises ValueError: 用户消息缺少发送者人物 ID。
         :raises sqlite3.Error: 插入或提交失败。
-        :side_effects: 写入 messages 表并提交事务。
+        副作用：写入 messages 表并提交事务。
         """
         if role == 'user' and sender_person_id is None:
             raise ValueError('user 消息必须携带 sender_person_id')
@@ -203,7 +203,7 @@ class MemoryStore:
         :param id: 消息主键。
         :return: 无返回值；目标不存在时不报错。
         :raises sqlite3.Error: 删除或提交失败。
-        :side_effects: 从 messages 表删除匹配行并提交事务。
+        副作用：从 messages 表删除匹配行并提交事务。
         """
         self._db.execute('DELETE FROM messages WHERE id = ? AND stream_id = ?', (id, stream_id))
         self._db.commit()
@@ -215,7 +215,7 @@ class MemoryStore:
         :param limit: 最多返回的消息数，默认值为 40。
         :return: 按时间正序排列的 `StoredMessage` 列表。
         :raises sqlite3.Error: 查询失败。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         rows = self._db.execute(
             '''SELECT role, content, created_at, sender_person_id FROM messages
@@ -230,7 +230,7 @@ class MemoryStore:
 
         :param stream_id: 目标 stream ID。
         :return: 最大 `created_at`；没有消息时返回 `None`。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         row = self._db.execute(
             'SELECT MAX(created_at) FROM messages WHERE stream_id = ?', (stream_id,)
@@ -243,7 +243,7 @@ class MemoryStore:
         :param stream_id: 目标 stream ID。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :return: 用于日程/提示词的中文密度描述。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         now = now if now is not None else current_time()
         since = now - 3 * 24 * 60 * 60_000
@@ -263,7 +263,7 @@ class MemoryStore:
 
         :param stream_id: 目标 stream ID。
         :return: `episode_id IS NULL` 的消息数量。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         row = self._db.execute(
             'SELECT COUNT(*) FROM messages WHERE stream_id = ? AND episode_id IS NULL',
@@ -278,7 +278,7 @@ class MemoryStore:
         :param since: 统计起点的 Unix 毫秒时间戳，包含该时刻。
         :return: 满足 stream、角色和时间条件的助手消息数量。
         :raises sqlite3.Error: 查询消息表失败时抛出。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         row = self._db.execute(
             '''SELECT COUNT(*) FROM messages
@@ -293,7 +293,7 @@ class MemoryStore:
         :param stream_id: 目标 stream ID。
         :param n: 最多返回的消息数量。
         :return: 包含 id、role、content、created_at 和 sender_person_id 的字典列表。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         rows = self._db.execute(
             '''SELECT id, role, content, created_at, sender_person_id FROM messages
@@ -313,7 +313,7 @@ class MemoryStore:
         :param now: 可选创建时间戳；省略时读取当前毫秒时钟。
         :return: 新情节的数据库 ID。
         :raises sqlite3.Error: 情节、线索、FTS 或消息更新失败。
-        :side_effects: 写入 episodes、episode_cues、cues_fts，更新 messages.episode_id，
+        副作用：写入 episodes、episode_cues、cues_fts，更新 messages.episode_id，
             并提交事务。
         """
         # 先写主记录取得 episode_id，后续线索和消息归档都依赖该外键。
@@ -355,7 +355,7 @@ class MemoryStore:
         :param stream_id: 目标 stream ID。
         :param limit: 最多返回的情节数，默认值为 4。
         :return: 按结束时间倒序排列的情节列表，分数固定为 1.0。
-        :side_effects: 只读 episodes 表。
+        副作用：只读 episodes 表。
         """
         rows = self._db.execute(
             '''SELECT id, summary, kind, ended_at FROM episodes
@@ -370,7 +370,7 @@ class MemoryStore:
 
         :param limit: 最多读取的情节数量，默认值为 200。
         :return: 含 `id`、`kind`、`summary`、`ended_at`、`streamId` 和 `cues` 的字典列表。
-        :side_effects: 只读 episodes 和 episode_cues 表。
+        副作用：只读 episodes 和 episode_cues 表。
         """
         rows = self._db.execute(
             '''SELECT id, kind, summary, ended_at, stream_id FROM episodes
@@ -400,7 +400,7 @@ class MemoryStore:
         :param limit: 最多返回的情节数，默认值为 3。
         :return: 按 BM25 归一化分数降序截取的情节列表；查询无有效词时返回空列表。
         :raises sqlite3.Error: FTS 查询失败。
-        :side_effects: 只读 FTS 和情节表。
+        副作用：只读 FTS 和情节表。
         """
         match = match_query(query)
         if not match:
@@ -431,7 +431,7 @@ class MemoryStore:
         :param now: 可选更新时间戳；省略时读取当前毫秒时钟。
         :return: 新建或强化的事实 ID；正文归一化后为空时返回 0。
         :raises sqlite3.Error: 查询、插入、更新、FTS 写入或提交失败。
-        :side_effects: 可能更新已有事实强度，或写入 facts 与 facts_fts 并提交事务。
+        副作用：可能更新已有事实强度，或写入 facts 与 facts_fts 并提交事务。
         """
         # 先规范化正文和去重键，空内容不创建事实记录。
         now = now if now is not None else current_time()
@@ -485,7 +485,7 @@ class MemoryStore:
         :param key: `exact_key(content)` 生成的严格去重键。
         :return: 含事实 ID、正文、强度和衰减参数的字典；没有相似事实时返回 `None`。
         :raises sqlite3.Error: 查询失败。
-        :side_effects: 只读 facts 和 facts_fts 表。
+        副作用：只读 facts 和 facts_fts 表。
         :performance: 精确键优先；未命中时最多检查 8 个 FTS 候选。
         """
         row = self._db.execute(
@@ -516,24 +516,21 @@ class MemoryStore:
         """
         按 BM25 召回人物事实，并在向量齐全时执行混合相关度排序。
 
-        Args:
-            person_id: 目标人物 ID。
-            query: 待检索的自然语言文本。
-            limit: 最多返回的事实数量，默认 ``6``。
-            now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
-            query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时仅使用 BM25。
+        :param person_id: 目标人物 ID。
+        :param query: 待检索的自然语言文本。
+        :param limit: 最多返回的事实数量，默认 ``6``。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时仅使用 BM25。
 
-        Returns:
-            按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
+        :return: 按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
 
-        Raises:
-            sqlite3.Error: FTS 查询、事实更新或事务提交失败。
-            struct.error: 查询向量与事实向量维度不匹配时，向量分支捕获该错误并回退 BM25。
+        :raises sqlite3.Error: FTS 查询、事实更新或事务提交失败。
+        :raises struct.error: 查询向量与事实向量维度不匹配时，向量分支捕获该错误并回退 BM25。
 
-        Side Effects:
+        副作用：
             读取 FTS 和 facts 表；对最终命中的事实回补强度、更新时间、命中次数并提交事务。
 
-        Performance:
+        性能：
             最多读取 ``limit * 3`` 个 FTS 候选，向量融合仅在查询向量和事实向量同时存在时执行。
         """
         now = now if now is not None else current_time()
@@ -595,14 +592,12 @@ class MemoryStore:
     def store_embedding(self, fact_id: int, embedding: bytes) -> None:
         """为指定事实写入已打包的向量数据。
 
-        Args:
-            fact_id: ``facts`` 表中的事实 ID。
-            embedding: 小端 float32 packed 向量字节串；维度由调用方保证与索引一致。
+        :param fact_id: ``facts`` 表中的事实 ID。
+        :param embedding: 小端 float32 packed 向量字节串；维度由调用方保证与索引一致。
 
-        Raises:
-            sqlite3.Error: 更新或提交失败。
+        :raises sqlite3.Error: 更新或提交失败。
 
-        Side Effects:
+        副作用：
             更新 ``facts.embedding`` 并提交事务；不存在的 fact ID 不会新增记录。
         """
         self._db.execute('UPDATE facts SET embedding = ? WHERE id = ?', (embedding, fact_id))
@@ -611,16 +606,13 @@ class MemoryStore:
     def facts_without_embedding(self, limit: int = 128) -> list[dict]:
         """读取尚未计算 embedding 的事实摘要，供后台批量补算。
 
-        Args:
-            limit: 最多返回的事实数量，默认 ``128``；应为非负整数。
+        :param limit: 最多返回的事实数量，默认 ``128``；应为非负整数。
 
-        Returns:
-            包含 ``id`` 和 ``content`` 字段的事实字典列表。
+        :return: 包含 ``id`` 和 ``content`` 字段的事实字典列表。
 
-        Raises:
-            sqlite3.Error: 查询失败。
+        :raises sqlite3.Error: 查询失败。
 
-        Side Effects:
+        副作用：
             只读 ``facts`` 表，不修改记录或提交事务。
         """
         rows = self._db.execute(
@@ -634,7 +626,7 @@ class MemoryStore:
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :return: 本次转为非活跃的事实数量。
         :raises sqlite3.Error: 查询、更新或提交失败。
-        :side_effects: 更新 facts.active 和 due_at，并提交事务。
+        副作用：更新 facts.active 和 due_at，并提交事务。
         """
         now = now if now is not None else current_time()
         due = self._db.execute(
@@ -660,7 +652,7 @@ class MemoryStore:
         :param limit: 最多返回的事实数，默认值为 8。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :return: 按留存度降序排列的事实列表。
-        :side_effects: 只读 facts 表，不执行命中回补。
+        副作用：只读 facts 表，不执行命中回补。
         """
         now = now if now is not None else current_time()
         rows = self._db.execute(
@@ -681,7 +673,7 @@ class MemoryStore:
         :param person_id: 目标人物 ID。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :return: 按留存度降序排列的完整事实列表。
-        :side_effects: 只读 facts 表，不改变 active 字段。
+        副作用：只读 facts 表，不改变 active 字段。
         """
         now = now if now is not None else current_time()
         rows = self._db.execute(
@@ -704,7 +696,7 @@ class MemoryStore:
 
         :param person_id: 目标人物 ID。
         :return: 含 `total` 和 `active` 两个整数键的字典。
-        :side_effects: 只读 facts 表。
+        副作用：只读 facts 表。
         """
         row = self._db.execute(
             'SELECT COUNT(*), SUM(active) FROM facts WHERE person_id = ?', (person_id,)
@@ -717,21 +709,18 @@ class MemoryStore:
                         now: int | None = None) -> int:
         """向待说话队列表写入一条带投放窗口的文本。
 
-        Args:
-            source: 产生该文本的来源标识。
-            text: 待投放正文；首尾空白会移除，规范化后为空时不写入。
-            deliver_after: 最早允许投放的 Unix 毫秒时间戳。
-            expires_at: 投放截止 Unix 毫秒时间戳。
-            emotion: 可选情绪标识。
-            now: 可选创建时间戳；省略时读取当前毫秒时钟。
+        :param source: 产生该文本的来源标识。
+        :param text: 待投放正文；首尾空白会移除，规范化后为空时不写入。
+        :param deliver_after: 最早允许投放的 Unix 毫秒时间戳。
+        :param expires_at: 投放截止 Unix 毫秒时间戳。
+        :param emotion: 可选情绪标识。
+        :param now: 可选创建时间戳；省略时读取当前毫秒时钟。
 
-        Returns:
-            新建待说话记录的 ID；文本为空时返回 ``0``。
+        :return: 新建待说话记录的 ID；文本为空时返回 ``0``。
 
-        Raises:
-            sqlite3.Error: 插入或提交失败。
+        :raises sqlite3.Error: 插入或提交失败。
 
-        Side Effects:
+        副作用：
             写入 ``pending_utterances`` 并提交事务。
         """
         now = now if now is not None else current_time()
@@ -749,17 +738,14 @@ class MemoryStore:
     def due_utterances(self, now: int | None = None, limit: int = 4) -> list[dict[str, Any]]:
         """读取当前已到投放时间且尚未过期的待说话记录。
 
-        Args:
-            now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
-            limit: 最多返回的记录数，默认 ``4``。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :param limit: 最多返回的记录数，默认 ``4``。
 
-        Returns:
-            按记录 ID 升序排列、包含 ``id``、``source``、``emotion`` 和 ``text`` 字段的列表。
+        :return: 按记录 ID 升序排列、包含 ``id``、``source``、``emotion`` 和 ``text`` 字段的列表。
 
-        Raises:
-            sqlite3.Error: 查询失败。
+        :raises sqlite3.Error: 查询失败。
 
-        Side Effects:
+        副作用：
             只读 ``pending_utterances`` 表，不标记记录已投放。
         """
         now = now if now is not None else current_time()
@@ -774,14 +760,12 @@ class MemoryStore:
     def mark_delivered(self, ids: list[int], now: int | None = None) -> None:
         """将指定待说话记录标记为已投放。
 
-        Args:
-            ids: 待更新的记录 ID 列表；空列表不执行数据库操作。
-            now: 可选投放时间戳；省略时读取当前毫秒时钟。
+        :param ids: 待更新的记录 ID 列表；空列表不执行数据库操作。
+        :param now: 可选投放时间戳；省略时读取当前毫秒时钟。
 
-        Raises:
-            sqlite3.Error: 更新或提交失败。
+        :raises sqlite3.Error: 更新或提交失败。
 
-        Side Effects:
+        副作用：
             更新匹配记录的 ``delivered_at`` 并提交事务；不存在的 ID 被忽略。
         """
         if not ids:
@@ -797,15 +781,12 @@ class MemoryStore:
     def has_queued_since(self, source: str, since: int) -> bool:
         """判断指定来源在给定时间之后是否创建过待说话记录。
 
-        Args:
-            source: 待匹配的来源标识。
-            since: 起始 Unix 毫秒时间戳，包含该时刻。
+        :param source: 待匹配的来源标识。
+        :param since: 起始 Unix 毫秒时间戳，包含该时刻。
 
-        Returns:
-            存在满足条件的记录时返回 ``True``，否则返回 ``False``。
+        :return: 存在满足条件的记录时返回 ``True``，否则返回 ``False``。
 
-        Raises:
-            sqlite3.Error: 查询失败。
+        :raises sqlite3.Error: 查询失败。
         """
         row = self._db.execute(
             'SELECT 1 FROM pending_utterances WHERE source = ? AND created_at >= ? LIMIT 1',
@@ -816,11 +797,9 @@ class MemoryStore:
     def pending_utterance_count(self) -> int:
         """统计尚未标记为已投放的待说话记录数量。
 
-        Returns:
-            ``delivered_at IS NULL`` 的待说话记录数量。
+        :return: ``delivered_at IS NULL`` 的待说话记录数量。
 
-        Raises:
-            sqlite3.Error: 查询失败。
+        :raises sqlite3.Error: 查询失败。
         """
         row = self._db.execute(
             'SELECT COUNT(*) FROM pending_utterances WHERE delivered_at IS NULL'
@@ -831,11 +810,9 @@ class MemoryStore:
     def load_pending_promises(self) -> list[dict[str, Any]]:
         """读取持久化的跨重启约定列表。
 
-        Returns:
-            仅包含字典项的约定列表；meta 值缺失、解析失败或顶层不是列表时返回空列表。
+        :return: 仅包含字典项的约定列表；meta 值缺失、解析失败或顶层不是列表时返回空列表。
 
-        Raises:
-            sqlite3.Error: 读取 meta 表失败。
+        :raises sqlite3.Error: 读取 meta 表失败。
         """
         raw = self.read_json(_PENDING_PROMISES_KEY, [])
         if not isinstance(raw, list):
@@ -845,14 +822,12 @@ class MemoryStore:
     def save_pending_promises(self, promises: list[dict[str, Any]]) -> None:
         """整批覆盖持久化的跨重启约定快照。
 
-        Args:
-            promises: 可 JSON 序列化的约定字典列表。
+        :param promises: 可 JSON 序列化的约定字典列表。
 
-        Raises:
-            sqlite3.Error: meta 值写入或提交失败。
-            TypeError: 约定列表不可 JSON 序列化。
+        :raises sqlite3.Error: meta 值写入或提交失败。
+        :raises TypeError: 约定列表不可 JSON 序列化。
 
-        Side Effects:
+        副作用：
             覆盖 meta 表中的约定 JSON 值并提交事务。
         """
         self.write_json(_PENDING_PROMISES_KEY, promises)
@@ -863,7 +838,7 @@ class MemoryStore:
         :param key: meta 表键名。
         :param fallback: 键不存在或 JSON 无效时返回的值。
         :return: JSON 解码后的对象，或 `fallback`。
-        :side_effects: 只读 meta 表。
+        副作用：只读 meta 表。
         """
         row = self._db.execute('SELECT value FROM meta WHERE key = ?', (key,)).fetchone()
         if not row:
@@ -881,7 +856,7 @@ class MemoryStore:
         :return: 无返回值。
         :raises TypeError: 值不可 JSON 序列化。
         :raises sqlite3.Error: 写入或提交失败。
-        :side_effects: 插入/更新 meta 记录并提交事务。
+        副作用：插入/更新 meta 记录并提交事务。
         """
         self._db.execute(
             'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
@@ -895,7 +870,7 @@ class MemoryStore:
         :param stream_id: 目标 stream ID。
         :param at: 比较用的 Unix 毫秒时间戳，严格使用 `created_at > at`。
         :return: 存在匹配用户消息时返回 `True`。
-        :side_effects: 只读 messages 表。
+        副作用：只读 messages 表。
         """
         row = self._db.execute(
             """SELECT 1 FROM messages

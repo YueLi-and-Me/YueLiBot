@@ -27,7 +27,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     :return: 正常退出或用户中断返回 `0`，配置/运行错误返回 `1`。
     :raises SystemExit: `argparse` 参数错误时由解析器抛出；适配器加载配置失败时
         由 `load_config` 抛出并在本函数中转为返回码。
-    :side_effects: 初始化日志、读取配置与运行时 token，并在校验通过后启动异步适配器。
+    副作用：初始化日志、读取配置与运行时 token，并在校验通过后启动异步适配器。
     """
     parser = argparse.ArgumentParser(description='YueLiBot QQ 私聊适配器')
     parser.add_argument(

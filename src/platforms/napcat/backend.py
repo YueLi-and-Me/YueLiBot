@@ -55,7 +55,7 @@ class BackendClient:
         :param http_timeout_sec: HTTP 请求超时时间，单位为秒，默认值为 30.0；
             非正值由底层 HTTP 客户端拒绝。
         :raises ValueError: `port` 超出合法端口范围，或 `token` 为空白字符串。
-        :side_effects: 只保存连接参数，不会在构造阶段创建网络连接。
+        副作用：只保存连接参数，不会在构造阶段创建网络连接。
         """
         if port <= 0 or port > 65535:
             raise ValueError('主体 backend 端口必须在 1 到 65535 之间')
@@ -73,7 +73,7 @@ class BackendClient:
         """返回主体 WebSocket 当前是否处于开放状态。
 
         :return: WebSocket 已创建且状态为 `OPEN` 时返回 `True`，否则返回 `False`。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         return self._ws is not None and self._ws.state is State.OPEN
 
@@ -82,7 +82,7 @@ class BackendClient:
 
         :raises Exception: WebSocket 握手或 HTTP 客户端创建失败时重新抛出原始异常；
             失败前已创建的资源会先关闭。
-        :side_effects: 关闭旧连接，创建带 Bearer 鉴权头的 HTTP 客户端和 WebSocket
+        副作用：关闭旧连接，创建带 Bearer 鉴权头的 HTTP 客户端和 WebSocket
             连接；成功后 `connected` 返回 `True`。
         :performance: 每次调用都会关闭并重新建立连接，不应在单条消息级别频繁调用。
         """
@@ -102,7 +102,7 @@ class BackendClient:
     async def close(self) -> None:
         """幂等关闭主体 WebSocket 和 HTTP 客户端。
 
-        :side_effects: 释放网络连接并清空内部连接引用；重复调用不会产生额外错误。
+        副作用：释放网络连接并清空内部连接引用；重复调用不会产生额外错误。
         :raises Exception: 底层 WebSocket 或 HTTP 客户端关闭操作失败时向调用方暴露该错误。
         """
         websocket = self._ws
@@ -117,18 +117,15 @@ class BackendClient:
     async def submit_inbound(self, event: QqInboundEvent) -> Dict[str, Any]:
         """按主体入站协议提交一条已规范化的 QQ 消息。
 
-        Args:
-            event: 由事件解析器生成的 QQ 入站事件，字段必须满足主体接口协议。
+        :param event: 由事件解析器生成的 QQ 入站事件，字段必须满足主体接口协议。
 
-        Returns:
-            主体 ``/platform/inbound`` 返回的 JSON 对象。
+        :return: 主体 ``/platform/inbound`` 返回的 JSON 对象。
 
-        Raises:
-            BackendDisconnected: HTTP 客户端尚未建立连接。
-            httpx.HTTPError: 请求失败或主体返回非成功 HTTP 状态码。
-            ValueError: 主体响应顶层不是 JSON 对象。
+        :raises BackendDisconnected: HTTP 客户端尚未建立连接。
+        :raises httpx.HTTPError: 请求失败或主体返回非成功 HTTP 状态码。
+        :raises ValueError: 主体响应顶层不是 JSON 对象。
 
-        Side Effects:
+        副作用：
             向主体服务提交一条入站消息并等待响应；不修改 ``event``。
         """
         client = self._http
@@ -158,15 +155,13 @@ class BackendClient:
     async def link_owner_identity(self, owner_qq: str) -> None:
         """在启动消息消费者前，将配置中的 owner QQ 号绑定到主体 owner 身份。
 
-        Args:
-            owner_qq: owner 的 QQ 号；允许输入首尾空白，但规范化后必须为数字字符串。
+        :param owner_qq: owner 的 QQ 号；允许输入首尾空白，但规范化后必须为数字字符串。
 
-        Raises:
-            BackendDisconnected: HTTP 客户端尚未建立连接。
-            ValueError: QQ 号为空、包含非数字字符，或主体未确认绑定成功。
-            httpx.HTTPError: 请求失败或主体返回非成功 HTTP 状态码。
+        :raises BackendDisconnected: HTTP 客户端尚未建立连接。
+        :raises ValueError: QQ 号为空、包含非数字字符，或主体未确认绑定成功。
+        :raises httpx.HTTPError: 请求失败或主体返回非成功 HTTP 状态码。
 
-        Side Effects:
+        副作用：
             向主体身份绑定接口发送一次 POST 请求；不修改配置对象。
         """
         client = self._http
@@ -191,15 +186,13 @@ class BackendClient:
     async def next_outbound(self) -> BackendOutbound:
         """从主体出站 WebSocket 读取下一条 QQ 通道消息。
 
-        Returns:
-            下一条通过协议校验的 ``BackendOutbound`` 消息。
+        :return: 下一条通过协议校验的 ``BackendOutbound`` 消息。
 
-        Raises:
-            BackendDisconnected: WebSocket 尚未连接、连接关闭或读取过程中断开。
-            ValueError: 收到的报文不是合法 JSON 对象或不符合 ``qq.send`` 协议。
-            json.JSONDecodeError: WebSocket 文本不是合法 JSON。
+        :raises BackendDisconnected: WebSocket 尚未连接、连接关闭或读取过程中断开。
+        :raises ValueError: 收到的报文不是合法 JSON 对象或不符合 ``qq.send`` 协议。
+        :raises json.JSONDecodeError: WebSocket 文本不是合法 JSON。
 
-        Side Effects:
+        副作用：
             持续消费 WebSocket 帧；非 ``qq.send`` 通道消息被记录后丢弃。
         """
         websocket = self._ws
@@ -224,7 +217,7 @@ class BackendClient:
         :return: 每次迭代返回一条已校验的 :class:`BackendOutbound`。
         :raises BackendDisconnected: 尚未连接或主体连接中途断开。
         :raises ValueError: 主体报文不是符合协议的 JSON 对象。
-        :side_effects: 持续消费 WebSocket；生成器取消时由底层异步迭代器结束。
+        副作用：持续消费 WebSocket；生成器取消时由底层异步迭代器结束。
         """
         while True:
             yield await self.next_outbound()
@@ -238,7 +231,7 @@ def _decode_payload(raw: str | bytes) -> Dict[str, Any]:
     :raises UnicodeDecodeError: 字节报文不是合法 UTF-8。
     :raises json.JSONDecodeError: 报文不是合法 JSON。
     :raises ValueError: JSON 顶层不是对象。
-    :side_effects: 不修改输入或客户端状态。
+    副作用：不修改输入或客户端状态。
     """
     if isinstance(raw, bytes):
         raw = raw.decode('utf-8')
@@ -255,7 +248,7 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         `payload`，其内部必须包含合法流类型、流 ID 与非空字符串数组 `segments`。
     :return: 去除段首尾空白后的 :class:`BackendOutbound`。
     :raises ValueError: 缺少字段、字段类型错误、流类型不支持或段内容为空。
-    :side_effects: 不执行 I/O，也不修改传入映射。
+    副作用：不执行 I/O，也不修改传入映射。
     """
     stream_id = payload.get('stream_id')
     if not isinstance(stream_id, int) or isinstance(stream_id, bool) or stream_id <= 0:

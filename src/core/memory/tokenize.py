@@ -30,16 +30,13 @@ _STOP = frozenset(
 def words(text: str) -> list[str]:
     """使用 jieba 精确模式分词，并过滤标点、空白和单字虚词。
 
-    Args:
-        text: 待分词的中文或混合文本。
+    :param text: 待分词的中文或混合文本。
 
-    Returns:
-        按原文顺序排列、已转小写的有效 token 列表；保留重复 token 以提供词频信息。
+    :return: 按原文顺序排列、已转小写的有效 token 列表；保留重复 token 以提供词频信息。
 
-    Raises:
-        TypeError: ``text`` 不是可迭代字符串时由 jieba 操作抛出。
+    :raises TypeError: ``text`` 不是可迭代字符串时由 jieba 操作抛出。
 
-    Performance:
+    性能：
         首次调用可能触发 jieba 词典加载，之后耗时与文本长度相关。
     """
     out: list[str] = []
@@ -60,16 +57,13 @@ def words(text: str) -> list[str]:
 def bigrams(text: str) -> list[str]:
     """生成连续 CJK 片段的相邻二字组合，不跨越英文或非 CJK 字符。
 
-    Args:
-        text: 待生成 bigram 的文本。
+    :param text: 待生成 bigram 的文本。
 
-    Returns:
-        按原文顺序排列的二字组合列表；长度不足两个字符的片段不产生结果。
+    :return: 按原文顺序排列的二字组合列表；长度不足两个字符的片段不产生结果。
 
-    Raises:
-        TypeError: ``text`` 不是可迭代字符串时抛出。
+    :raises TypeError: ``text`` 不是可迭代字符串时抛出。
 
-    Performance:
+    性能：
         时间和临时空间复杂度与输入文本长度线性相关。
     """
     out: list[str] = []
@@ -78,7 +72,7 @@ def bigrams(text: str) -> list[str]:
     def flush() -> None:
         """把当前连续 CJK 片段拆成相邻二字组合并追加到结果。
 
-        :side_effects: 读取外层 `run` 字符串并修改 `out` 列表，不清空 `run`。
+        副作用：读取外层 `run` 字符串并修改 `out` 列表，不清空 `run`。
         """
         for i in range(len(run) - 1):
             out.append(run[i:i + 2])
@@ -98,16 +92,13 @@ def index_tokens(text: str) -> str:
 
     重复 token 必须保留，因为 FTS5 的 BM25 使用词频参与评分，去重会改变相关度。
 
-    Args:
-        text: 待建立索引的事实或线索文本。
+    :param text: 待建立索引的事实或线索文本。
 
-    Returns:
-        由 jieba token 和 CJK bigram 按空格拼接的索引文本。
+    :return: 由 jieba token 和 CJK bigram 按空格拼接的索引文本。
 
-    Raises:
-        TypeError: ``text`` 不是字符串时由分词逻辑抛出。
+    :raises TypeError: ``text`` 不是字符串时由分词逻辑抛出。
 
-    Performance:
+    性能：
         处理时间与输入文本长度线性相关；首次调用可能包含 jieba 词典加载成本。
     """
     return ' '.join(words(text) + bigrams(text))
@@ -119,14 +110,11 @@ def match_query(text: str) -> str:
     查询词使用 OR 连接，以允许部分相关词命中；每个词使用双引号转义，避免内容被
     FTS5 解析为 ``*``、``NEAR`` 或 ``-`` 等查询语法。
 
-    Args:
-        text: 待检索的自然语言查询文本。
+    :param text: 待检索的自然语言查询文本。
 
-    Returns:
-        由去重 token 组成的 FTS5 MATCH 表达式；没有有效 token 时返回空字符串。
+    :return: 由去重 token 组成的 FTS5 MATCH 表达式；没有有效 token 时返回空字符串。
 
-    Raises:
-        TypeError: ``text`` 不是字符串时由分词逻辑抛出。
+    :raises TypeError: ``text`` 不是字符串时由分词逻辑抛出。
     """
     terms: list[str] = list(dict.fromkeys(words(text) + bigrams(text)))  # 去重保序
     if not terms:

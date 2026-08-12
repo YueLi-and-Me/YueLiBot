@@ -22,7 +22,7 @@ def _table_columns(db: sqlite3.Connection, table: str) -> list[str]:
     :param table: 要检查的表名，必须来自固定迁移 SQL。
     :return: 按列序排列的列名列表。
     :raises sqlite3.Error: 表结构查询失败时抛出。
-    :side_effects: 只读 SQLite 表结构。
+    副作用：只读 SQLite 表结构。
     """
     return [str(row[1]) for row in db.execute(f'PRAGMA table_info({table})').fetchall()]
 
@@ -34,7 +34,7 @@ def _rebuild_persona_bond(db: sqlite3.Connection) -> tuple[int, int]:
     :return: `(迁移前行数, 迁移后行数)`。
     :raises RuntimeError: 旧表列结构不符合 v6 预期。
     :raises sqlite3.Error: 表创建、复制或替换失败。
-    :side_effects: 替换 `persona_bond` 表，不提交事务。
+    副作用：替换 `persona_bond` 表，不提交事务。
     """
     columns = _table_columns(db, 'persona_bond')
     expected = ['person_id', 'intimacy', 'tsundere', 'reliance', 'updated_at']
@@ -68,7 +68,7 @@ def _rebuild_persona_snapshots(db: sqlite3.Connection) -> tuple[int, int]:
     :return: `(迁移前行数, 迁移后行数)`。
     :raises RuntimeError: 旧表列结构不符合 v6 预期。
     :raises sqlite3.Error: 表创建、复制、替换或索引创建失败。
-    :side_effects: 替换 `persona_snapshots` 表，不提交事务。
+    副作用：替换 `persona_snapshots` 表，不提交事务。
     """
     # 只允许从已知 v6 列结构迁移，防止在未知 schema 上误删数据。
     columns = _table_columns(db, 'persona_snapshots')
@@ -114,7 +114,7 @@ def _assert_migration_integrity(
     :param snapshot_counts: 人格快照表迁移前后的行数。
     :return: 所有检查通过时返回 `None`。
     :raises RuntimeError: 行数变化、关键列为空、外键检查或 SQLite 完整性检查失败。
-    :side_effects: 只读迁移后的表和 SQLite 检查结果。
+    副作用：只读迁移后的表和 SQLite 检查结果。
     """
     # 两张表都必须保持行数不变，关系维度收敛不能改变历史记录数量。
     if bond_counts[0] != bond_counts[1]:
@@ -150,14 +150,12 @@ def _assert_migration_integrity(
 def v6_to_v7(db: sqlite3.Connection) -> None:
     """将关系和人格快照表收敛为当前字段，并保持保留数据的行数与数值不变。
 
-    Args:
-        db: 当前迁移事务使用的 SQLite 连接。
+    :param db: 当前迁移事务使用的 SQLite 连接。
 
-    Raises:
-        RuntimeError: v6 表结构不符合预期，或迁移后行数、字段、外键和完整性检查失败。
-        sqlite3.Error: 表创建、数据复制、表替换或索引创建失败。
+    :raises RuntimeError: v6 表结构不符合预期，或迁移后行数、字段、外键和完整性检查失败。
+    :raises sqlite3.Error: 表创建、数据复制、表替换或索引创建失败。
 
-    Side Effects:
+    副作用：
         替换 ``persona_bond`` 和 ``persona_snapshots`` 表，移除已废弃字段并保留
         intimacy、energy 和时间字段；不提交事务。
     """

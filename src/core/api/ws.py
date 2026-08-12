@@ -52,7 +52,7 @@ class _ConnectionManager:
         """创建空的桌面端和 QQ 适配器连接集合。
 
         :return: 无返回值。
-        :side_effects: 初始化连接字典和异步锁，不接受网络连接。
+        副作用：初始化连接字典和异步锁，不接受网络连接。
         """
         self._connections: Dict[ClientKind, Set[WebSocket]] = {
             'desktop': set(),
@@ -66,7 +66,7 @@ class _ConnectionManager:
         :param client: 客户端分区，只能为 `desktop` 或 `napcat`。
         :param ws: 待登记的 FastAPI WebSocket 对象。
         :return: 无返回值。
-        :side_effects: 在锁保护下向对应集合加入连接。
+        副作用：在锁保护下向对应集合加入连接。
         """
         async with self._lock:
             self._connections[client].add(ws)
@@ -77,7 +77,7 @@ class _ConnectionManager:
         :param client: 客户端分区，只能为 `desktop` 或 `napcat`。
         :param ws: 待移除的 WebSocket 对象。
         :return: 无返回值。
-        :side_effects: 在锁保护下修改对应连接集合。
+        副作用：在锁保护下修改对应连接集合。
         """
         async with self._lock:
             self._connections[client].discard(ws)
@@ -85,23 +85,20 @@ class _ConnectionManager:
     async def push(self, stream_id: int, channel: str, payload: Any) -> int:
         """向 stream 对应的客户端分区推送一条 JSON 信封消息。
 
-        Args:
-            stream_id: 目标 stream 数据库 ID；固定桌面 stream 发送至 desktop 分区，
+        :param stream_id: 目标 stream 数据库 ID；固定桌面 stream 发送至 desktop 分区，
                 其他 stream 发送至 napcat 分区。
-            channel: 推送通道名称，例如 ``chat.event`` 或 ``voice.play``。
-            payload: 通道负载；必须可由 ``json.dumps`` 序列化。
+        :param channel: 推送通道名称，例如 ``chat.event`` 或 ``voice.play``。
+        :param payload: 通道负载；必须可由 ``json.dumps`` 序列化。
 
-        Returns:
-            成功调用 ``send_text`` 的连接数量；没有目标连接时返回 ``0``。
+        :return: 成功调用 ``send_text`` 的连接数量；没有目标连接时返回 ``0``。
 
-        Raises:
-            TypeError: 负载无法 JSON 序列化或参数不符合协议时抛出。
+        :raises TypeError: 负载无法 JSON 序列化或参数不符合协议时抛出。
 
-        Side Effects:
+        副作用：
             在锁外向连接发送网络消息；发送失败的连接会从对应分区移除，napcat 无订阅者
             时记录 ``outbound_dropped`` 观测事件。
 
-        Performance:
+        性能：
             连接快照复制在锁内完成，网络发送按快照顺序串行执行，发送阶段不会阻塞连接登记。
         """
         client: ClientKind = 'desktop' if stream_id == _DESKTOP_STREAM_ID else 'napcat'
@@ -136,16 +133,13 @@ manager = _ConnectionManager()
 async def push(stream_id: int, channel: str, payload: Any) -> int:
     """通过模块级连接管理器向指定 stream 推送一条消息。
 
-    Args:
-        stream_id: 目标 stream 数据库 ID。
-        channel: 推送通道名称。
-        payload: 可 JSON 序列化的通道负载。
+    :param stream_id: 目标 stream 数据库 ID。
+    :param channel: 推送通道名称。
+    :param payload: 可 JSON 序列化的通道负载。
 
-    Returns:
-        实际完成发送的 WebSocket 连接数量。
+    :return: 实际完成发送的 WebSocket 连接数量。
 
-    Raises:
-        TypeError: 负载无法 JSON 序列化时抛出。
+    :raises TypeError: 负载无法 JSON 序列化时抛出。
     """
     return await manager.push(stream_id, channel, payload)
 
@@ -161,7 +155,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     :param websocket: FastAPI 注入的 WebSocket，必须带合法鉴权和 `client` 查询参数。
     :return: 客户端断开、鉴权失败或协议参数非法后返回。
     :raises Exception: 接收循环出现未覆盖的底层异常时记录后结束连接。
-    :side_effects: 在握手后登记连接，持续读取客户端心跳/帧，并在结束时移除连接。
+    副作用：在握手后登记连接，持续读取客户端心跳/帧，并在结束时移除连接。
     """
     # [WORKAROUND] WebSocket 鉴权失败连接兼容性约束
     #
@@ -210,13 +204,11 @@ async def ws_endpoint(websocket: WebSocket) -> None:
 async def webui_logs_endpoint(websocket: WebSocket) -> None:
     """向已登录浏览器回放并持续推送 ANSI 彩色日志。
 
-    Args:
-        websocket: FastAPI 注入的 WebSocket 对象，必须携带有效认证凭据。
+    :param websocket: FastAPI 注入的 WebSocket 对象，必须携带有效认证凭据。
 
-    Raises:
-        Exception: 日志回放或实时发送发生未覆盖的底层 WebSocket 错误时传播。
+    :raises Exception: 日志回放或实时发送发生未覆盖的底层 WebSocket 错误时传播。
 
-    Side Effects:
+    副作用：
         鉴权通过后接受连接、发送现有 backlog 并订阅实时日志；连接结束时取消订阅。
     """
     if not await ws_auth(websocket):
@@ -240,14 +232,12 @@ async def webui_logs_endpoint(websocket: WebSocket) -> None:
 async def webui_events_endpoint(websocket: WebSocket) -> None:
     """按事件游标回放历史观测事件，再逐条推送实时事件。
 
-    Args:
-        websocket: FastAPI 注入的 WebSocket 对象；查询参数 ``since`` 为可选非负序号。
+    :param websocket: FastAPI 注入的 WebSocket 对象；查询参数 ``since`` 为可选非负序号。
 
-    Raises:
-        ValueError: ``since`` 不是整数或为负数时关闭连接并返回协议错误。
-        Exception: 事件回放、实时订阅或 WebSocket 发送发生未覆盖错误时传播。
+    :raises ValueError: ``since`` 不是整数或为负数时关闭连接并返回协议错误。
+    :raises Exception: 事件回放、实时订阅或 WebSocket 发送发生未覆盖错误时传播。
 
-    Side Effects:
+    副作用：
         鉴权通过后接受连接，先订阅实时广播再读取事件账本，按序号去重后发送；
         连接结束时取消广播订阅，队列溢出时以 1013 关闭连接。
     """

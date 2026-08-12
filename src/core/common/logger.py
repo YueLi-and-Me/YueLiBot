@@ -71,7 +71,7 @@ class ModuleColoredConsoleRenderer:
         :param colors: 是否启用 ANSI 颜色，默认值为 `True`。
         :param level_style: 级别显示方式，支持 `lite`、`compact` 或完整大写，默认值为 `lite`。
         :param color_scope: 颜色覆盖范围，默认值为 `full`；`lite` 仅着色标题区域。
-        :side_effects: 保存渲染选项，不配置全局 structlog。
+        副作用：保存渲染选项，不配置全局 structlog。
         """
         self._colors = colors
         self._level_style = level_style
@@ -84,7 +84,7 @@ class ModuleColoredConsoleRenderer:
         :param method_name: 调用的日志方法名，例如 `info` 或 `error`。
         :param event_dict: 已由前置处理器补充字段的可变事件字典。
         :return: 带时间、模块别名、事件正文和结构化字段的文本；异常字段单独换行。
-        :side_effects: 只读取事件字典，不修改它。
+        副作用：只读取事件字典，不修改它。
         :performance: 对事件字段执行一次线性遍历和必要的 JSON 序列化。
         """
         timestamp = str(event_dict.get("timestamp", ""))
@@ -139,7 +139,7 @@ class WebUiLogHandler:
     def __init__(self) -> None:
         """创建使用彩色控制台渲染器的 WebUI 处理器。
 
-        :side_effects: 创建一个独立渲染器，不注册全局处理器。
+        副作用：创建一个独立渲染器，不注册全局处理器。
         """
         self._renderer = ModuleColoredConsoleRenderer(colors=True)
 
@@ -155,7 +155,7 @@ class WebUiLogHandler:
         :param method_name: 日志方法名。
         :param event_dict: 当前事件字典。
         :return: 原始 `event_dict`，供后续处理器继续使用。
-        :side_effects: 向 `webui_logs` 发布一条日志。
+        副作用：向 `webui_logs` 发布一条日志。
         """
         webui_logs.publish(self._renderer(logger, method_name, event_dict.copy()))
         return event_dict
@@ -169,7 +169,7 @@ class FileLogHandler:
 
         :param sink: 接收落盘事件的 JSONL sink。
         :param level: 允许写入的最低 Python logging 等级。
-        :side_effects: 保存 sink 和等级，不写入日志。
+        副作用：保存 sink 和等级，不写入日志。
         """
         self._sink = sink
         self._level = level
@@ -186,7 +186,7 @@ class FileLogHandler:
         :param method_name: 日志方法名。
         :param event_dict: 当前事件字典。
         :return: 原始 `event_dict`。
-        :side_effects: 事件等级达到阈值时向 sink 写入一行。
+        副作用：事件等级达到阈值时向 sink 写入一行。
         """
         if _LEVELS.get(str(event_dict.get('level', 'info')).upper(), logging.INFO) >= self._level:
             self._sink.write(render_json_line(event_dict))
@@ -201,7 +201,7 @@ def current_log_file() -> Path | None:
     """返回当前 JSONL sink 正在写入的日志文件路径。
 
     :return: 当前文件路径；未初始化文件 sink 或尚未写入时返回 `None`。
-    :side_effects: 不执行文件 I/O。
+    副作用：不执行文件 I/O。
     """
     return _file_sink.current_path() if _file_sink is not None else None
 
@@ -212,14 +212,11 @@ def _stringify(value: Any) -> str:
     字典和列表使用 ``ensure_ascii=False`` 的 JSON 编码，以保留人格、日程和记忆
     文本中的中文字符。
 
-    Args:
-        value: 任意日志字段值。
+    :param value: 任意日志字段值。
 
-    Returns:
-        字符串原样返回；字典和列表返回非 ASCII 转义 JSON；其他值返回 ``str(value)``。
+    :return: 字符串原样返回；字典和列表返回非 ASCII 转义 JSON；其他值返回 ``str(value)``。
 
-    Raises:
-        TypeError: 字典或列表包含无法 JSON 序列化的值时抛出。
+    :raises TypeError: 字典或列表包含无法 JSON 序列化的值时抛出。
     """
     if isinstance(value, str):
         return value
@@ -235,7 +232,7 @@ class _ConsoleLevelGate:
         """创建控制台等级过滤器。
 
         :param level: 允许继续渲染的最低 Python logging 等级。
-        :side_effects: 保存等级，不修改全局日志配置。
+        副作用：保存等级，不修改全局日志配置。
         """
         self._level = level
 
@@ -252,7 +249,7 @@ class _ConsoleLevelGate:
         :param event_dict: 当前事件字典。
         :return: 达到等级阈值时返回原字典。
         :raises structlog.DropEvent: 事件等级低于控制台阈值。
-        :side_effects: 不修改事件字典。
+        副作用：不修改事件字典。
         """
         if _LEVELS.get(str(event_dict.get('level', 'info')).upper(), logging.INFO) < self._level:
             raise structlog.DropEvent
@@ -262,15 +259,12 @@ class _ConsoleLevelGate:
 def _resolve_level(name: str, field: str) -> int:
     """将配置中的日志级别名称解析为 Python logging 数值。
 
-    Args:
-        name: 日志级别名称，不区分大小写。
-        field: 配置字段路径，用于构造错误信息。
+    :param name: 日志级别名称，不区分大小写。
+    :param field: 配置字段路径，用于构造错误信息。
 
-    Returns:
-        对应的 Python logging 等级整数。
+    :return: 对应的 Python logging 等级整数。
 
-    Raises:
-        ValueError: 名称不在支持的日志等级集合中；函数不会静默降级为 INFO。
+    :raises ValueError: 名称不在支持的日志等级集合中；函数不会静默降级为 INFO。
     """
     try:
         return _LEVELS[name.upper()]
@@ -283,14 +277,12 @@ def _resolve_level(name: str, field: str) -> int:
 def _apply_library_levels(config: LogConfig, fallback: int) -> None:
     """应用第三方库日志等级和抑制列表。
 
-    Args:
-        config: 包含库级别和抑制库名称的日志配置。
-        fallback: 根 logger 在未单独配置时使用的日志等级。
+    :param config: 包含库级别和抑制库名称的日志配置。
+    :param fallback: 根 logger 在未单独配置时使用的日志等级。
 
-    Raises:
-        ValueError: 某个库级别名称无法解析。
+    :raises ValueError: 某个库级别名称无法解析。
 
-    Side Effects:
+    副作用：
         修改指定 logger 的 handler、传播标志、禁用状态和日志等级，并更新根 logger 等级。
     """
     for name in config.suppress_libraries:
@@ -311,15 +303,13 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
     控制台根据终端能力输出彩色文本或 JSON，文件始终使用 JSONL；未提供日志目录
     或关闭文件输出时不创建文件 sink。
 
-    Args:
-        config: 日志配置；省略时创建默认 ``LogConfig``。
-        log_dir: 可选日志目录；为 ``None`` 时禁用文件落盘。
+    :param config: 日志配置；省略时创建默认 ``LogConfig``。
+    :param log_dir: 可选日志目录；为 ``None`` 时禁用文件落盘。
 
-    Raises:
-        ValueError: 任一日志级别名称无法解析。
-        OSError: 文件日志目录或滚动文件无法创建。
+    :raises ValueError: 任一日志级别名称无法解析。
+    :raises OSError: 文件日志目录或滚动文件无法创建。
 
-    Side Effects:
+    副作用：
         修改 structlog 全局处理器和第三方库 logger 配置，可能创建文件日志 sink；
         重复调用会替换当前文件 sink。
     """
@@ -395,10 +385,8 @@ def get_logger(name: str):
     使用 ``bind(logger=...)`` 而不是依赖 stdlib logger 的 ``name`` 属性，确保与
     当前 PrintLoggerFactory 兼容。
 
-    Args:
-        name: 要写入结构化日志的模块名。
+    :param name: 要写入结构化日志的模块名。
 
-    Returns:
-        绑定了 ``logger=name`` 字段的 structlog logger。
+    :return: 绑定了 ``logger=name`` 字段的 structlog logger。
     """
     return structlog.get_logger().bind(logger=name)

@@ -69,7 +69,7 @@ class NapcatConnectionConfig(BaseModel):
         :param value: 原始配置值，通常为字符串或整数。
         :return: 整数转成的十进制字符串；其他值原样返回给 Pydantic。
         :raises TypeError: 不由本方法主动抛出，非法类型交给模型字段校验处理。
-        :side_effects: 不修改传入对象。
+        副作用：不修改传入对象。
         """
         # TOML 数字值统一转换为字符串，使后续校验只处理一种字段类型。
         if isinstance(value, int) and not isinstance(value, bool):
@@ -84,7 +84,7 @@ class NapcatConnectionConfig(BaseModel):
         :param value: Pydantic 已转换的机器人 QQ 号。
         :return: 规范化后的数字字符串；允许空字符串表示未配置。
         :raises ValueError: 非空值包含非数字字符。
-        :side_effects: 不修改模型状态。
+        副作用：不修改模型状态。
         """
         value = value.strip()
         if value and not value.isdigit():
@@ -99,7 +99,7 @@ class NapcatConnectionConfig(BaseModel):
         :param value: 配置文件中的主机名或 IP 地址。
         :return: 去除首尾空白后的主机名。
         :raises ValueError: 地址为空或只包含空白。
-        :side_effects: 不执行 DNS 或网络检查。
+        副作用：不执行 DNS 或网络检查。
         """
         value = value.strip()
         if not value:
@@ -123,7 +123,7 @@ class PrivateAccessConfig(BaseModel):
 
         :param value: 原始名单值；非列表值交给 Pydantic 处理。
         :return: 列表中的整数转为字符串后的新列表，或原始非列表值。
-        :side_effects: 不修改传入列表，转换列表时创建新对象。
+        副作用：不修改传入列表，转换列表时创建新对象。
         """
         if not isinstance(value, list):
             return value
@@ -140,7 +140,7 @@ class PrivateAccessConfig(BaseModel):
         :param value: Pydantic 转换后的字符串列表。
         :return: 去除每项首尾空白后的数字 QQ 号列表。
         :raises ValueError: 列表项为空或包含非数字字符。
-        :side_effects: 创建并返回新列表，不修改原列表。
+        副作用：创建并返回新列表，不修改原列表。
         """
         normalized: List[str] = []
         for item in value:
@@ -153,18 +153,15 @@ class PrivateAccessConfig(BaseModel):
     def allows(self, sender_qq: str, owner_qq: str) -> bool:
         """根据私聊访问策略判断发送者是否可以进入消息处理流程。
 
-        Args:
-            sender_qq: 当前消息发送者的 QQ 号；应为已规范化的数字字符串。
-            owner_qq: 配置的 owner QQ 号；owner 始终具有访问权限。
+        :param sender_qq: 当前消息发送者的 QQ 号；应为已规范化的数字字符串。
+        :param owner_qq: 配置的 owner QQ 号；owner 始终具有访问权限。
 
-        Returns:
-            owner 请求始终返回 ``True``；其他发送者在白名单模式下仅名单成员
+        :return: owner 请求始终返回 ``True``；其他发送者在白名单模式下仅名单成员
             返回 ``True``，黑名单模式下仅非名单成员返回 ``True``。
 
-        Raises:
-            TypeError: 参数不是可比较字符串时抛出。
+        :raises TypeError: 参数不是可比较字符串时抛出。
 
-        Side Effects:
+        副作用：
             仅读取当前策略和名单，不修改配置对象。
         """
         if sender_qq == owner_qq:
@@ -188,7 +185,7 @@ class GroupAccessConfig(BaseModel):
 
         :param value: 原始名单值；非列表值交给 Pydantic 处理。
         :return: 列表中的整数转为字符串后的新列表，或原始非列表值。
-        :side_effects: 不修改传入列表。
+        副作用：不修改传入列表。
         """
         if not isinstance(value, list):
             return value
@@ -205,7 +202,7 @@ class GroupAccessConfig(BaseModel):
         :param value: Pydantic 转换后的字符串列表。
         :return: 去除每项首尾空白后的数字群号列表。
         :raises ValueError: 列表项为空或包含非数字字符。
-        :side_effects: 创建并返回新列表，不修改原列表。
+        副作用：创建并返回新列表，不修改原列表。
         """
         normalized: List[str] = []
         for item in value:
@@ -218,16 +215,13 @@ class GroupAccessConfig(BaseModel):
     def allows(self, group_qq: str) -> bool:
         """判断群号是否存在于群聊白名单中。
 
-        Args:
-            group_qq: 当前消息所属群的 QQ 群号；应为已规范化的数字字符串。
+        :param group_qq: 当前消息所属群的 QQ 群号；应为已规范化的数字字符串。
 
-        Returns:
-            群号在 ``list`` 中时返回 ``True``，否则返回 ``False``。
+        :return: 群号在 ``list`` 中时返回 ``True``，否则返回 ``False``。
 
-        Raises:
-            TypeError: 参数不是可用于成员判断的值时抛出。
+        :raises TypeError: 参数不是可用于成员判断的值时抛出。
 
-        Side Effects:
+        副作用：
             仅读取白名单，不执行 owner 或人物级别的额外豁免判断。
         """
         return group_qq in self.list
@@ -252,7 +246,7 @@ class OwnerConfig(BaseModel):
         :param value: 配置文件中的 owner QQ 号。
         :return: 去除首尾空白后的数字字符串，空字符串保留给未启用配置。
         :raises ValueError: 非空值包含非数字字符。
-        :side_effects: 不执行网络或身份查询。
+        副作用：不执行网络或身份查询。
         """
         value = value.strip()
         if not value:
@@ -286,13 +280,11 @@ class NapcatDocument(BaseModel):
     def _require_two_distinct_qq_numbers(self) -> 'NapcatDocument':
         """校验启用适配器时机器人与 owner 使用两个不同的完整 QQ 号。
 
-        Returns:
-            当前已校验的配置模型实例。
+        :return: 当前已校验的配置模型实例。
 
-        Raises:
-            ValueError: 适配器启用但机器人 QQ 号或 owner QQ 号为空，或两者相同。
+        :raises ValueError: 适配器启用但机器人 QQ 号或 owner QQ 号为空，或两者相同。
 
-        Side Effects:
+        副作用：
             仅读取模型字段，不修改配置值。
         """
         if not self.napcat.enabled:
@@ -312,16 +304,13 @@ class NapcatDocument(BaseModel):
 def read_config(path: Path) -> NapcatDocument:
     """读取并校验一份完整的 NapCat TOML 配置文件。
 
-    Args:
-        path: 配置文件路径；文件必须包含当前支持的版本字段和完整配置结构。
+    :param path: 配置文件路径；文件必须包含当前支持的版本字段和完整配置结构。
 
-    Returns:
-        校验通过的 ``NapcatDocument`` 实例。
+    :return: 校验通过的 ``NapcatDocument`` 实例。
 
-    Raises:
-        OSError: 配置文件无法读取时抛出。
-        ValueError: 版本字段不匹配或 TOML 结构不合法时抛出。
-        pydantic.ValidationError: 配置字段类型、范围或跨字段约束校验失败。
+    :raises OSError: 配置文件无法读取时抛出。
+    :raises ValueError: 版本字段不匹配或 TOML 结构不合法时抛出。
+    :raises pydantic.ValidationError: 配置字段类型、范围或跨字段约束校验失败。
     """
     document = read_versioned_toml(path, NAPCAT_CONFIG_VERSION, _CONFIG_HINT)
     return NapcatDocument.model_validate(document)
@@ -330,14 +319,11 @@ def read_config(path: Path) -> NapcatDocument:
 def _readable_error(exc: Exception) -> str:
     """将 Pydantic 校验错误格式化为逐字段的中文诊断文本。
 
-    Args:
-        exc: 待格式化的异常；非 ``ValidationError`` 按字符串直接转换。
+    :param exc: 待格式化的异常；非 ``ValidationError`` 按字符串直接转换。
 
-    Returns:
-        每行包含字段路径和错误原因的文本；字段路径为空时仅显示原因。
+    :return: 每行包含字段路径和错误原因的文本；字段路径为空时仅显示原因。
 
-    Raises:
-        TypeError: 异常对象无法转换为字符串时由 ``str`` 操作触发。
+    :raises TypeError: 异常对象无法转换为字符串时由 ``str`` 操作触发。
     """
     if not isinstance(exc, ValidationError):
         return str(exc)
@@ -352,14 +338,11 @@ def _readable_error(exc: Exception) -> str:
 def load_config(path: Path) -> NapcatDocument:
     """读取 NapCat 配置；校验失败时输出诊断信息并以状态码 1 终止进程。
 
-    Args:
-        path: NapCat TOML 配置文件路径。
+    :param path: NapCat TOML 配置文件路径。
 
-    Returns:
-        校验通过的 ``NapcatDocument`` 实例。
+    :return: 校验通过的 ``NapcatDocument`` 实例。
 
-    Raises:
-        SystemExit: 文件读取、版本解析或字段校验失败时以状态码 ``1`` 退出。
+    :raises SystemExit: 文件读取、版本解析或字段校验失败时以状态码 ``1`` 退出。
     """
     try:
         return read_config(path)

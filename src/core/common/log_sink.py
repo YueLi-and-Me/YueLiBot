@@ -25,7 +25,7 @@ def _file_name(moment: datetime) -> str:
 
     :param moment: 用于文件名的本地时间。
     :return: 带固定前缀、秒级时间和 `.log.jsonl` 后缀的文件名。
-    :side_effects: 不创建文件或访问文件系统。
+    副作用：不创建文件或访问文件系统。
     """
     return f'{_FILE_PREFIX}{moment.strftime("%Y%m%d_%H%M%S")}{_FILE_SUFFIX}'
 
@@ -50,7 +50,7 @@ class JsonlFileSink:
         :param max_bytes: 单文件最大字节数；写入超出后滚动。
         :param max_files: 目录最多保留的日志文件数。
         :param cleanup_days: 按修改时间清理的保留天数；小于等于 0 时禁用按天清理。
-        :side_effects: 只保存配置并初始化锁，不创建目录或文件。
+        副作用：只保存配置并初始化锁，不创建目录或文件。
         """
         self._directory = directory
         self._max_bytes = max_bytes
@@ -69,7 +69,7 @@ class JsonlFileSink:
         :return: 无返回值。
         :raises TypeError: payload 中存在无法序列化的值时抛出。
         :raises OSError: 目录、滚动文件或写入操作失败时抛出。
-        :side_effects: 创建日志目录/文件、追加一行内容，并可能删除旧日志文件。
+        副作用：创建日志目录/文件、追加一行内容，并可能删除旧日志文件。
         :performance: 每次写入都会执行一次 JSON 序列化和文件追加；并发写入按锁串行化。
         """
         line = json.dumps(payload, ensure_ascii=False)
@@ -84,10 +84,9 @@ class JsonlFileSink:
     def current_path(self) -> Path | None:
         """返回当前日志文件路径。
 
-        Returns:
-            当前已打开或已创建的日志文件路径；尚未写入任何事件时返回 ``None``。
+        :return: 当前已打开或已创建的日志文件路径；尚未写入任何事件时返回 ``None``。
 
-        Side Effects:
+        副作用：
             仅读取内存中的路径引用，不访问文件系统。
         """
         return self._path
@@ -95,13 +94,11 @@ class JsonlFileSink:
     def _ensure_open(self, incoming: int) -> None:
         """确保当前文件能够容纳即将写入的字节，不足时创建新文件并清理旧文件。
 
-        Args:
-            incoming: 下一条 JSONL 记录的 UTF-8 字节数，必须为非负整数。
+        :param incoming: 下一条 JSONL 记录的 UTF-8 字节数，必须为非负整数。
 
-        Raises:
-            OSError: 日志目录创建、文件创建、滚动或清理失败。
+        :raises OSError: 日志目录创建、文件创建、滚动或清理失败。
 
-        Side Effects:
+        副作用：
             必要时创建日志目录和新文件，更新当前路径及大小，并调用 ``_prune``。
         """
         if self._path is not None and self._size + incoming <= self._max_bytes:
@@ -117,10 +114,9 @@ class JsonlFileSink:
     def _prune(self) -> None:
         """按保留天数和最大文件数清理旧日志，始终保留当前写入文件。
 
-        Raises:
-            OSError: 读取文件状态或删除旧日志失败。
+        :raises OSError: 读取文件状态或删除旧日志失败。
 
-        Side Effects:
+        副作用：
             删除超过日期期限或数量上限的历史日志文件；不删除当前文件。
         """
         files = self._existing_files()
@@ -139,12 +135,10 @@ class JsonlFileSink:
     def _existing_files(self) -> List[Path]:
         """枚举当前目录中的日志文件并按修改时间稳定排序。
 
-        Returns:
-            匹配固定前缀和后缀的日志路径列表，按修改时间升序、文件名作为同刻次序；
+        :return: 匹配固定前缀和后缀的日志路径列表，按修改时间升序、文件名作为同刻次序；
             目录不存在时返回空列表。
 
-        Raises:
-            OSError: 目录枚举或文件状态读取失败。
+        :raises OSError: 目录枚举或文件状态读取失败。
         """
         if not self._directory.exists():
             return []
@@ -155,17 +149,14 @@ class JsonlFileSink:
 def render_json_line(event_dict: MutableMapping[str, Any]) -> Dict[str, Any]:
     """将结构化日志事件规范化为稳定的 JSONL 记录结构。
 
-    Args:
-        event_dict: structlog 事件映射；保留时间、级别、logger、事件和异常字段，
+    :param event_dict: structlog 事件映射；保留时间、级别、logger、事件和异常字段，
             其他键归入 ``fields``。
 
-    Returns:
-        可直接 JSON 序列化的普通字典；不可序列化的 fields 值使用其字符串表示。
+    :return: 可直接 JSON 序列化的普通字典；不可序列化的 fields 值使用其字符串表示。
 
-    Raises:
-        TypeError: 事件映射不支持键访问或字段转换时抛出。
+    :raises TypeError: 事件映射不支持键访问或字段转换时抛出。
 
-    Side Effects:
+    副作用：
         仅读取事件映射，不修改输入对象；对 fields 执行一次 JSON 往返以统一类型。
     """
     payload: Dict[str, Any] = {

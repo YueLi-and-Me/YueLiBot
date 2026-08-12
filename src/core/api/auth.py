@@ -29,7 +29,7 @@ class TokenManager:
         """创建尚未配置 token 的管理器。
 
         :return: 无返回值。
-        :side_effects: 把内部 token 初始化为空字符串，不执行 I/O。
+        副作用：把内部 token 初始化为空字符串，不执行 I/O。
         """
         self._token = ''
 
@@ -38,7 +38,7 @@ class TokenManager:
 
         :param token: 非空认证 token；默认值不适用。
         :raises ValueError: `token` 为空字符串。
-        :side_effects: 覆盖当前保存的 token；调用后旧 token 立即失效。
+        副作用：覆盖当前保存的 token；调用后旧 token 立即失效。
         """
         if not token:
             raise ValueError('后端认证 token 不能为空')
@@ -49,7 +49,7 @@ class TokenManager:
 
         :return: 当前进程 token。
         :raises RuntimeError: 尚未调用 :meth:`configure` 或 token 为空。
-        :side_effects: 不执行 I/O。
+        副作用：不执行 I/O。
         """
         if not self._token:
             raise RuntimeError('后端认证 token 尚未初始化')
@@ -60,7 +60,7 @@ class TokenManager:
 
         :param token: 待校验的候选 token。
         :return: 管理器已配置且候选值匹配时返回 `True`，否则返回 `False`。
-        :side_effects: 不修改 token 或管理器状态。
+        副作用：不修改 token 或管理器状态。
         """
         if not self._token:
             return False
@@ -75,7 +75,7 @@ def get_token() -> str:
 
     :return: 当前进程认证 token。
     :raises RuntimeError: token 尚未初始化。
-    :side_effects: 不执行 I/O。
+    副作用：不执行 I/O。
     """
     return token_manager.get()
 
@@ -83,13 +83,11 @@ def get_token() -> str:
 def verify_token(token: str) -> bool:
     """使用恒定时间比较校验候选认证 token。
 
-    Args:
-        token: 待校验的候选 token；未配置当前 token 时校验必定失败。
+    :param token: 待校验的候选 token；未配置当前 token 时校验必定失败。
 
-    Returns:
-        候选 token 与当前进程 token 完全匹配时返回 ``True``，否则返回 ``False``。
+    :return: 候选 token 与当前进程 token 完全匹配时返回 ``True``，否则返回 ``False``。
 
-    Side Effects:
+    副作用：
         仅读取进程内 token；不修改管理器状态，不执行网络或持久化操作。
     """
     return token_manager.verify(token)
@@ -100,7 +98,7 @@ def extract_bearer(authorization: str | None) -> str:
 
     :param authorization: 原始 Authorization 头，可为 `None`。
     :return: 头部格式为 `Bearer <token>` 时返回 `<token>`，其他情况返回空字符串。
-    :side_effects: 不执行鉴权比较，也不修改输入。
+    副作用：不执行鉴权比较，也不修改输入。
     """
     if not authorization:
         return ""
@@ -113,15 +111,13 @@ def extract_bearer(authorization: str | None) -> str:
 def require_token(authorization: str | None, session_token: str | None = None) -> None:
     """校验 HTTP Bearer 头或 HttpOnly 会话 Cookie，并在失败时返回 401。
 
-    Args:
-        authorization: 可选 ``Authorization`` 请求头，支持 ``Bearer <token>`` 格式。
-        session_token: 可选会话 Cookie；默认值为 ``None``。
+    :param authorization: 可选 ``Authorization`` 请求头，支持 ``Bearer <token>`` 格式。
+    :param session_token: 可选会话 Cookie；默认值为 ``None``。
 
-    Raises:
-        fastapi.HTTPException: Bearer token 和会话 Cookie 均未通过恒定时间校验时，
+    :raises fastapi.HTTPException: Bearer token 和会话 Cookie 均未通过恒定时间校验时，
             抛出状态码为 401 的异常。
 
-    Side Effects:
+    副作用：
         仅读取请求凭据；不创建、轮换或持久化会话。
     """
     bearer_token = extract_bearer(authorization)
@@ -136,13 +132,11 @@ async def ws_auth(websocket: WebSocket) -> bool:
     使用 Authorization 头或 ``yueli_session`` Cookie。浏览器 WebSocket API
     不支持自定义请求头，因此子协议是浏览器端的兼容认证路径。
 
-    Args:
-        websocket: FastAPI 注入的 WebSocket 对象。
+    :param websocket: FastAPI 注入的 WebSocket 对象。
 
-    Returns:
-        任一凭据通过 token 校验时返回 ``True``，否则返回 ``False``。
+    :return: 任一凭据通过 token 校验时返回 ``True``，否则返回 ``False``。
 
-    Side Effects:
+    副作用：
         仅读取握手头、Cookie 和子协议，不接受连接、不发送关闭帧。
     """
     subprotocols = websocket.headers.get("sec-websocket-protocol", "")

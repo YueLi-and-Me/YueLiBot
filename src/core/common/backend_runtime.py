@@ -27,19 +27,16 @@ class BackendRuntime:
 def create_backend_runtime(data_dir: Path, port: int) -> BackendRuntime:
     """生成后端连接坐标，并以受限权限原子写入运行时 JSON 文件。
 
-    Args:
-        data_dir: 应用运行时数据根目录；函数在其下创建 ``runtime`` 子目录。
-        port: 后端 HTTP/WebSocket 监听端口，范围为 ``1`` 到 ``65535``。
+    :param data_dir: 应用运行时数据根目录；函数在其下创建 ``runtime`` 子目录。
+    :param port: 后端 HTTP/WebSocket 监听端口，范围为 ``1`` 到 ``65535``。
 
-    Returns:
-        包含端口和 64 个十六进制字符认证 token 的 ``BackendRuntime``。
+    :return: 包含端口和 64 个十六进制字符认证 token 的 ``BackendRuntime``。
 
-    Raises:
-        ValueError: 端口不在合法范围内。
-        OSError: 运行时目录、临时文件或目标文件无法创建、写入、同步或替换。
-        RuntimeError: 当前操作系统用户无法确定，或 Windows 权限限制失败。
+    :raises ValueError: 端口不在合法范围内。
+    :raises OSError: 运行时目录、临时文件或目标文件无法创建、写入、同步或替换。
+    :raises RuntimeError: 当前操作系统用户无法确定，或 Windows 权限限制失败。
 
-    Side Effects:
+    副作用：
         生成新的随机 token，创建并限制 ``runtime`` 目录权限，原子更新
         ``backend.json``；临时文件在成功和异常路径都会清理。
     """
@@ -76,14 +73,12 @@ def create_backend_runtime(data_dir: Path, port: int) -> BackendRuntime:
 def _restrict_runtime_directory(runtime_dir: Path) -> None:
     """将运行时目录及其子项限制为当前操作系统用户可访问。
 
-    Args:
-        runtime_dir: 已存在的运行时目录路径。
+    :param runtime_dir: 已存在的运行时目录路径。
 
-    Raises:
-        OSError: Unix 权限或 Windows ACL 操作失败。
-        RuntimeError: 无法获取当前 Windows 用户，或 ACL 命令返回失败。
+    :raises OSError: Unix 权限或 Windows ACL 操作失败。
+    :raises RuntimeError: 无法获取当前 Windows 用户，或 ACL 命令返回失败。
 
-    Side Effects:
+    副作用：
         Unix 修改目录权限为 ``0700``；Windows 关闭继承并为当前用户授予递归完全控制。
     """
     # Unix 使用目录权限；Windows 使用 ACL，避免把 token 保护逻辑混用到两套权限模型。
@@ -126,16 +121,13 @@ def _restrict_runtime_directory(runtime_dir: Path) -> None:
 def read_backend_runtime(runtime_path: Path) -> BackendRuntime:
     """读取并严格校验后端运行时连接信息。
 
-    Args:
-        runtime_path: ``backend.json`` 文件路径。
+    :param runtime_path: ``backend.json`` 文件路径。
 
-    Returns:
-        包含合法监听端口和 64 位十六进制 token 的 ``BackendRuntime``。
+    :return: 包含合法监听端口和 64 位十六进制 token 的 ``BackendRuntime``。
 
-    Raises:
-        OSError: 文件无法读取。
-        json.JSONDecodeError: 文件内容不是合法 JSON。
-        ValueError: 顶层不是对象、端口不在范围内、token 长度不是 64 或包含非十六进制字符。
+    :raises OSError: 文件无法读取。
+    :raises json.JSONDecodeError: 文件内容不是合法 JSON。
+    :raises ValueError: 顶层不是对象、端口不在范围内、token 长度不是 64 或包含非十六进制字符。
     """
     payload: Any = json.loads(runtime_path.read_text('utf-8'))
     if not isinstance(payload, dict):

@@ -20,8 +20,7 @@ class QqWebSocketDriver(PlatformDriver):
     def __init__(self, push: Callable[[int, str, Any], Awaitable[int]]) -> None:
         """初始化 QQ WebSocket 出站驱动。
 
-        Args:
-            push: 异步消息分发回调，参数依次为 stream ID、事件名称和事件载荷，
+        :param push: 异步消息分发回调，参数依次为 stream ID、事件名称和事件载荷，
                 返回已接收事件的订阅者数量。
         """
 
@@ -32,8 +31,7 @@ class QqWebSocketDriver(PlatformDriver):
 
         QQ 连接由独立适配器维护，因此该实现不额外创建资源。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
         """
 
         return None
@@ -43,8 +41,7 @@ class QqWebSocketDriver(PlatformDriver):
 
         该驱动不持有连接，适配器生命周期由调用方管理。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
         """
 
         return None
@@ -52,17 +49,14 @@ class QqWebSocketDriver(PlatformDriver):
     async def send(self, message: OutboundMessage) -> DeliveryReceipt:
         """将一轮 QQ 回复作为单个事件发送到适配器。
 
-        Args:
-            message: 目标必须是 QQ 的 direct 或 group stream；``segments`` 会
+        :param message: 目标必须是 QQ 的 direct 或 group stream；``segments`` 会
                 按原顺序复制到事件载荷。
 
-        Returns:
-            记录 QQ 平台和 stream ID 的投递回执；当前通道不提供外部消息编号。
+        :return: 记录 QQ 平台和 stream ID 的投递回执；当前通道不提供外部消息编号。
 
-        Raises:
-            DeliveryError: 目标平台或 stream 类型不匹配，或没有适配器订阅者。
+        :raises DeliveryError: 目标平台或 stream 类型不匹配，或没有适配器订阅者。
 
-        Side Effects:
+        副作用：
             调用一次注入的 ``push`` 回调，可能通过 WebSocket 向适配器发送消息。
         """
         # 先校验平台和 stream 类型，再调用适配器，避免向错误目标发送协议事件。

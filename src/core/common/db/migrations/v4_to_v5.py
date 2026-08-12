@@ -20,13 +20,11 @@ logger = get_logger(__name__)
 def v4_to_v5(db: sqlite3.Connection) -> None:
     """为 ``facts`` 表添加可为空的 embedding BLOB 列。
 
-    Args:
-        db: 当前迁移事务使用的 SQLite 连接。
+    :param db: 当前迁移事务使用的 SQLite 连接。
 
-    Raises:
-        sqlite3.Error: 表结构查询或列添加失败。
+    :raises sqlite3.Error: 表结构查询或列添加失败。
 
-    Side Effects:
+    副作用：
         在 ``facts`` 缺少 ``embedding`` 列时添加该列；已有列时保持数据不变，
         不提交事务。
     """

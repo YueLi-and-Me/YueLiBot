@@ -33,11 +33,10 @@ _CHAT_TIMEOUT_S = 20.0
 def _report(tag: str, payload: dict) -> None:
     """以单行 JSON 输出一项自检结果。
 
-    Args:
-        tag: 稳定的检查名称。
-        payload: 可 JSON 序列化的结果字段。
+    :param tag: 稳定的检查名称。
+    :param payload: 可 JSON 序列化的结果字段。
 
-    Side Effects:
+    副作用：
         向标准输出写入一行并立即刷新，便于 CLI 调用方实时消费。
     """
 
@@ -47,13 +46,11 @@ def _report(tag: str, payload: dict) -> None:
 async def run_selftest(cfg: Any) -> int:
     """在隔离数据库中执行完整自检流程。
 
-    Args:
-        cfg: 已加载的运行时配置，用于构建模型路由和服务。
+    :param cfg: 已加载的运行时配置，用于构建模型路由和服务。
 
-    Returns:
-        三项检查均通过或跳过时返回 0，否则返回 1。
+    :return: 三项检查均通过或跳过时返回 0，否则返回 1。
 
-    Side Effects:
+    副作用：
         创建临时数据库、注册观察事件存储并输出三项检查结果；函数结束时关闭
         存储并删除临时目录。
     """
@@ -70,12 +67,11 @@ async def run_selftest(cfg: Any) -> int:
         async def _push_event(channel: str, payload: Any, stream_id: int = 1) -> None:
             """将自检事件保存到内存列表，不连接真实客户端。
 
-            Args:
-                channel: 事件通道名称。
-                payload: 通道负载对象。
-                stream_id: 事件所属 stream ID，默认 ``1``。
+            :param channel: 事件通道名称。
+            :param payload: 通道负载对象。
+            :param stream_id: 事件所属 stream ID，默认 ``1``。
 
-            Side Effects:
+            副作用：
                 向当前自检作用域的事件列表追加一条事件记录。
             """
 
@@ -111,15 +107,13 @@ async def run_selftest(cfg: Any) -> int:
 async def _check_chat(chat: ChatService, provider: LlmProvider | None, events: list[dict]) -> bool:
     """验证一次真实对话请求能够完成并产生结束事件。
 
-    Args:
-        chat: 已绑定临时数据库和事件推送回调的聊天服务。
-        provider: 已选中的聊天模型提供者；为 ``None`` 时跳过检查。
-        events: 接收聊天事件的内存列表。
+    :param chat: 已绑定临时数据库和事件推送回调的聊天服务。
+    :param provider: 已选中的聊天模型提供者；为 ``None`` 时跳过检查。
+    :param events: 接收聊天事件的内存列表。
 
-    Returns:
-        对话完成且没有 ``chat.error`` 时返回 ``True``；无提供者时按跳过处理。
+    :return: 对话完成且没有 ``chat.error`` 时返回 ``True``；无提供者时按跳过处理。
 
-    Side Effects:
+    副作用：
         可能调用模型提供者并向临时事件列表追加聊天事件。
     """
 
@@ -149,14 +143,12 @@ async def _check_chat(chat: ChatService, provider: LlmProvider | None, events: l
 async def _check_reflect(chat: ChatService, provider: LlmProvider | None) -> bool:
     """验证摘要阈值触发后能够写入新的 episode。
 
-    Args:
-        chat: 已初始化的聊天服务。
-        provider: 已选中的摘要模型提供者；为 ``None`` 时跳过检查。
+    :param chat: 已初始化的聊天服务。
+    :param provider: 已选中的摘要模型提供者；为 ``None`` 时跳过检查。
 
-    Returns:
-        摘要数量增加时返回 ``True``；无提供者时按跳过处理。
+    :return: 摘要数量增加时返回 ``True``；无提供者时按跳过处理。
 
-    Side Effects:
+    副作用：
         向临时数据库写入交替的用户和助手消息，并可能调用摘要模型。
     """
 
@@ -195,15 +187,13 @@ async def _check_aware(
 ) -> bool:
     """在不调用模型的情况下验证前台活动和睡眠状态编排。
 
-    Args:
-        chat: 已初始化的聊天服务，用于提供状态依赖。
-        cfg: 运行时配置。
-        push_event: 异步事件推送回调。
+    :param chat: 已初始化的聊天服务，用于提供状态依赖。
+    :param cfg: 运行时配置。
+    :param push_event: 异步事件推送回调。
 
-    Returns:
-        前台活动分类、应用名解析和睡眠状态类型均符合预期时返回 ``True``。
+    :return: 前台活动分类、应用名解析和睡眠状态类型均符合预期时返回 ``True``。
 
-    Side Effects:
+    副作用：
         更新感知服务的内存状态，并短暂等待后台前台事件任务完成。
     """
 

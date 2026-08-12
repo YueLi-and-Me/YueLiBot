@@ -21,10 +21,9 @@ class VectorService:
     def __init__(self, store: Any, embed_client: Any | None) -> None:
         """初始化向量服务。
 
-        Args:
-            store: 提供 ``store_embedding`` 和 ``facts_without_embedding`` 方法的
+        :param store: 提供 ``store_embedding`` 和 ``facts_without_embedding`` 方法的
                 事实存储。
-            embed_client: 提供 ``embed_one`` 与 ``embed`` 异步方法的嵌入客户端；
+        :param embed_client: 提供 ``embed_one`` 与 ``embed`` 异步方法的嵌入客户端；
                 ``None`` 表示向量功能被配置禁用。
         """
 
@@ -36,8 +35,7 @@ class VectorService:
     def enabled(self) -> bool:
         """返回当前是否配置了可用的嵌入客户端。
 
-        Returns:
-            客户端不为 ``None`` 时返回 ``True``，否则返回 ``False``。
+        :return: 客户端不为 ``None`` 时返回 ``True``，否则返回 ``False``。
         """
 
         return self._enabled
@@ -45,14 +43,12 @@ class VectorService:
     async def embed_query(self, text: str) -> bytes | None:
         """为查询文本计算实时 embedding。
 
-        Args:
-            text: 待向量化的查询文本。
+        :param text: 待向量化的查询文本。
 
-        Returns:
-            嵌入客户端返回的序列化向量；服务禁用或调用失败时返回 ``None``，
+        :return: 嵌入客户端返回的序列化向量；服务禁用或调用失败时返回 ``None``，
             调用方可继续使用关键词召回。
 
-        Performance:
+        性能：
             查询结果不缓存，以避免高基数查询占用常驻内存。
         """
         if not self._enabled or not self._client:
@@ -66,11 +62,10 @@ class VectorService:
     async def embed_fact(self, fact_id: int, content: str) -> None:
         """为一条事实计算并持久化 embedding。
 
-        Args:
-            fact_id: ``facts.id`` 稳定主键。
-            content: 事实正文。
+        :param fact_id: ``facts.id`` 稳定主键。
+        :param content: 事实正文。
 
-        Side Effects:
+        副作用：
             成功生成向量时更新事实存储；服务禁用或生成失败时记录调试日志并
             保留事实原文，不向调用方抛出嵌入异常。
         """
@@ -86,15 +81,13 @@ class VectorService:
     async def backfill(self) -> int:
         """分批补算历史事实中缺失的 embedding。
 
-        Returns:
-            本次成功写入向量的事实数量；服务禁用时返回 0。
+        :return: 本次成功写入向量的事实数量；服务禁用时返回 0。
 
-        Side Effects:
+        副作用：
             按每批 32 条读取缺失事实并更新存储；批次之间让出事件循环，避免长期
             占用调度器。
 
-        Raises:
-            Exception: 嵌入客户端的批量调用或存储写入异常会直接传播，便于启动期
+        :raises Exception: 嵌入客户端的批量调用或存储写入异常会直接传播，便于启动期
                 发现数据或配置问题。
         """
         if not self._enabled or not self._client:

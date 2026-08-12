@@ -27,7 +27,7 @@ def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
     :param table: 要检查的表名，必须来自固定迁移 SQL。
     :return: 表结构中的列名集合。
     :raises sqlite3.Error: 表结构查询失败时抛出。
-    :side_effects: 只读 SQLite 表结构。
+    副作用：只读 SQLite 表结构。
     """
     return {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
 
@@ -39,7 +39,7 @@ def _read_owner_persona(db: sqlite3.Connection) -> sqlite3.Row:
     :return: 包含 intimacy、tsundere、reliance、energy 和 updated_at 的行。
     :raises RuntimeError: 缺少 `persona.id=1` 行。
     :raises sqlite3.Error: 查询失败时抛出。
-    :side_effects: 只读旧人格表。
+    副作用：只读旧人格表。
     """
     row = db.execute(
         """SELECT intimacy, tsundere, reliance, energy, updated_at
@@ -57,7 +57,7 @@ def _read_first_seen_at(db: sqlite3.Connection) -> int:
     :return: `meta.first_seen_at` 的整数时间戳。
     :raises RuntimeError: 字段缺失或不是整数。
     :raises sqlite3.Error: 查询失败时抛出。
-    :side_effects: 只读 `meta` 表。
+    副作用：只读 `meta` 表。
     """
     row = db.execute(
         "SELECT value FROM meta WHERE key = 'first_seen_at'"
@@ -75,7 +75,7 @@ def _create_ownership_tables(db: sqlite3.Connection) -> None:
 
     :param db: 当前迁移事务使用的 SQLite 连接。
     :return: 无返回值。
-    :side_effects: 在当前事务中创建缺失表和索引；不提交事务。
+    副作用：在当前事务中创建缺失表和索引；不提交事务。
     :raises sqlite3.Error: DDL 执行失败时抛出。
     """
     # 先创建被外键引用的主体表，再创建身份、关系和状态表，避免迁移顺序依赖隐式行为。
@@ -128,7 +128,7 @@ def _add_partition_columns(db: sqlite3.Connection) -> None:
 
     :param db: 当前迁移事务使用的 SQLite 连接。
     :return: 无返回值。
-    :side_effects: 可能修改 `messages`、`episodes` 的结构和数据，并创建索引；不提交事务。
+    副作用：可能修改 `messages`、`episodes` 的结构和数据，并创建索引；不提交事务。
     :raises sqlite3.Error: DDL、DML 或索引创建失败时抛出。
     """
     message_columns = _table_columns(db, "messages")
@@ -165,7 +165,7 @@ def _rebuild_facts(db: sqlite3.Connection) -> None:
 
     :param db: 当前迁移事务使用的 SQLite 连接。
     :return: 无返回值；已含 `person_id` 列时直接返回。
-    :side_effects: 创建临时事实表、复制数据、替换旧表并重建普通索引；不操作 FTS 表，
+    副作用：创建临时事实表、复制数据、替换旧表并重建普通索引；不操作 FTS 表，
         不提交事务。
     :raises sqlite3.Error: 表替换、数据复制或索引创建失败时抛出。
     """
@@ -224,7 +224,7 @@ def _write_owner_records(
     :param persona: 从旧 `persona` 表读取的人格状态行。
     :param first_seen_at: owner 首次出现的 Unix 毫秒时间戳。
     :return: 无返回值。
-    :side_effects: 插入或更新人物归属、desktop stream 和两张人格表；不提交事务。
+    副作用：插入或更新人物归属、desktop stream 和两张人格表；不提交事务。
     :raises sqlite3.Error: 目标表写入失败时抛出。
     """
     # 使用固定主键写入 owner 与 desktop stream，使历史消息的默认分区保持稳定。
@@ -277,7 +277,7 @@ def _assert_migration_integrity(db: sqlite3.Connection) -> None:
     :return: 所有检查通过时返回 `None`。
     :raises RuntimeError: 分区列存在空值、用户消息缺少 owner、精力行数错误、外键或
         SQLite 完整性检查失败。
-    :side_effects: 只读迁移后的表和 SQLite 检查结果。
+    副作用：只读迁移后的表和 SQLite 检查结果。
     """
     nullable_columns = (
         ("messages", "stream_id"),
@@ -317,14 +317,12 @@ def _assert_migration_integrity(db: sqlite3.Connection) -> None:
 def v5_to_v6(db: sqlite3.Connection) -> None:
     """将单桌面 v5 数据迁移到 owner person 和 desktop stream 分区。
 
-    Args:
-        db: 当前迁移事务使用的 SQLite 连接。
+    :param db: 当前迁移事务使用的 SQLite 连接。
 
-    Raises:
-        RuntimeError: 旧库缺少 owner 人格、首次出现时间或迁移后完整性校验失败。
-        sqlite3.Error: 分区表创建、数据复制、索引创建或完整性检查失败。
+    :raises RuntimeError: 旧库缺少 owner 人格、首次出现时间或迁移后完整性校验失败。
+    :raises sqlite3.Error: 分区表创建、数据复制、索引创建或完整性检查失败。
 
-    Side Effects:
+    副作用：
         创建人物、stream、identity 和人格分区表，补充消息与情节分区列，重建
         ``facts`` 表并保留原始主键，写入 owner 记录；不提交事务。
     """

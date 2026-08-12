@@ -100,15 +100,12 @@ class PromptTemplate:
     def render(self, **values: str) -> str:
         """使用完整占位符集合渲染模板文本。
 
-        Args:
-            **values: 占位符名称到替换文本的映射。键集合必须与模板声明完全相同，
+        :param **values: 占位符名称到替换文本的映射。键集合必须与模板声明完全相同，
                 值按字符串处理，不会再次解释其中的模板语法。
 
-        Returns:
-            仅替换 ``{{name}}`` 形式占位符后的模板文本。
+        :return: 仅替换 ``{{name}}`` 形式占位符后的模板文本。
 
-        Raises:
-            ValueError: 提供的键缺失或多于模板声明。
+        :raises ValueError: 提供的键缺失或多于模板声明。
         """
 
         provided = frozenset(values)
@@ -126,8 +123,7 @@ class PromptCatalog:
     def __init__(self, templates: Dict[str, PromptTemplate]) -> None:
         """创建模板目录副本。
 
-        Args:
-            templates: 模板 ID 到模板对象的映射；构造后目录不会引用调用方的
+        :param templates: 模板 ID 到模板对象的映射；构造后目录不会引用调用方的
                 可变字典。
         """
 
@@ -136,14 +132,11 @@ class PromptCatalog:
     def get(self, template_id: str) -> PromptTemplate:
         """按声明的模板 ID 取得模板。
 
-        Args:
-            template_id: ``TEMPLATE_IDS`` 中的模板标识。
+        :param template_id: ``TEMPLATE_IDS`` 中的模板标识。
 
-        Returns:
-            对应的不可变模板对象。
+        :return: 对应的不可变模板对象。
 
-        Raises:
-            KeyError: 模板 ID 未加载或未在注册表中声明。
+        :raises KeyError: 模板 ID 未加载或未在注册表中声明。
         """
 
         try:
@@ -154,14 +147,11 @@ class PromptCatalog:
     def combined_hash(self, template_ids: Iterable[str]) -> str:
         """计算一组模板内容的稳定八位调用指纹。
 
-        Args:
-            template_ids: 要参与计算的模板 ID 可迭代对象；顺序不影响结果。
+        :param template_ids: 要参与计算的模板 ID 可迭代对象；顺序不影响结果。
 
-        Returns:
-            按模板 ID 排序后拼接各模板 SHA-256，再计算得到的十六进制前八位。
+        :return: 按模板 ID 排序后拼接各模板 SHA-256，再计算得到的十六进制前八位。
 
-        Raises:
-            KeyError: 集合中包含未加载模板。
+        :raises KeyError: 集合中包含未加载模板。
         """
 
         hashes = ''.join(self.get(template_id).sha256 for template_id in sorted(template_ids))
@@ -176,14 +166,12 @@ def _placeholder_error(
 ) -> ValueError:
     """构造占位符声明与实际输入不一致的错误。
 
-    Args:
-        template_id: 出错模板 ID。
-        declared: 模板声明的占位符集合。
-        actual: 调用方或文件实际提供的占位符集合。
-        source: 错误来源标签，例如 ``渲染参数`` 或 ``占位符``。
+    :param template_id: 出错模板 ID。
+    :param declared: 模板声明的占位符集合。
+    :param actual: 调用方或文件实际提供的占位符集合。
+    :param source: 错误来源标签，例如 ``渲染参数`` 或 ``占位符``。
 
-    Returns:
-        包含缺失项和多余项的 ``ValueError`` 实例。
+    :return: 包含缺失项和多余项的 ``ValueError`` 实例。
     """
 
     missing = sorted(declared - actual)
@@ -201,16 +189,13 @@ def _placeholder_error(
 def validate_prompt_text(template_id: str, text: str) -> FrozenSet[str]:
     """校验一份候选模板的 ID 和占位符集合。
 
-    Args:
-        template_id: 已声明的模板 ID。
-        text: 待校验的完整 Markdown 文本。
+    :param template_id: 已声明的模板 ID。
+    :param text: 待校验的完整 Markdown 文本。
 
-    Returns:
-        与声明一致的占位符集合。
+    :return: 与声明一致的占位符集合。
 
-    Raises:
-        KeyError: 模板 ID 未声明。
-        ValueError: 文本占位符集合缺失或多出字段。
+    :raises KeyError: 模板 ID 未声明。
+    :raises ValueError: 文本占位符集合缺失或多出字段。
     """
 
     try:
@@ -230,20 +215,17 @@ def load_prompt_catalog(
 ) -> PromptCatalog:
     """加载并校验全部提示词模板。
 
-    Args:
-        data_dir: 可选的运行时数据目录；存在时从其 ``prompts`` 子目录读取用户
+    :param data_dir: 可选的运行时数据目录；存在时从其 ``prompts`` 子目录读取用户
             覆盖并归档生效内容。
-        builtin_dir: 内置模板目录，默认指向当前模块所在目录。
+    :param builtin_dir: 内置模板目录，默认指向当前模块所在目录。
 
-    Returns:
-        已完成占位符校验的模板目录快照。
+    :return: 已完成占位符校验的模板目录快照。
 
-    Raises:
-        FileNotFoundError: 必需的内置模板缺失。
-        ValueError: 模板内容的占位符集合与声明不一致。
-        OSError: 模板读取或归档失败。
+    :raises FileNotFoundError: 必需的内置模板缺失。
+    :raises ValueError: 模板内容的占位符集合与声明不一致。
+    :raises OSError: 模板读取或归档失败。
 
-    Side Effects:
+    副作用：
         当 ``data_dir`` 非空时，内容变化会写入模板历史并删除超出保留数量的旧版本。
     """
 
@@ -284,12 +266,10 @@ def load_prompt_catalog(
 def _archive_templates(catalog: PromptCatalog, data_dir: Path) -> None:
     """归档发生变化的模板，并限制每个模板的历史文件数量。
 
-    Args:
-        catalog: 已加载并校验的模板目录。
-        data_dir: 运行时数据目录，历史写入其 ``prompts/history`` 子目录。
+    :param catalog: 已加载并校验的模板目录。
+    :param data_dir: 运行时数据目录，历史写入其 ``prompts/history`` 子目录。
 
-    Raises:
-        OSError: 历史目录创建、读取、写入或清理失败。
+    :raises OSError: 历史目录创建、读取、写入或清理失败。
     """
 
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -325,14 +305,11 @@ _data_dir: Path | None = None
 def configure_prompts(data_dir: Path) -> PromptCatalog:
     """在启动期加载指定数据目录中的用户提示词覆盖。
 
-    Args:
-        data_dir: 运行时数据目录。
+    :param data_dir: 运行时数据目录。
 
-    Returns:
-        新的全局提示词目录快照。
+    :return: 新的全局提示词目录快照。
 
-    Raises:
-        FileNotFoundError, ValueError, OSError: 加载或校验模板失败时直接传播。
+    :raises FileNotFoundError, ValueError, OSError: 加载或校验模板失败时直接传播。
     """
 
     global _catalog, _data_dir
@@ -344,14 +321,11 @@ def configure_prompts(data_dir: Path) -> PromptCatalog:
 def get_prompt(template_id: str) -> PromptTemplate:
     """从当前全局目录取得指定提示词模板。
 
-    Args:
-        template_id: 已声明的模板标识。
+    :param template_id: 已声明的模板标识。
 
-    Returns:
-        当前生效的模板对象。
+    :return: 当前生效的模板对象。
 
-    Raises:
-        KeyError: 模板标识不存在。
+    :raises KeyError: 模板标识不存在。
     """
 
     return _catalog.get(template_id)
@@ -360,15 +334,12 @@ def get_prompt(template_id: str) -> PromptTemplate:
 def prompt_metadata(prompt_id: str, template_ids: Iterable[str]) -> Dict[str, str]:
     """生成调用日志使用的提示词 ID 与内容指纹。
 
-    Args:
-        prompt_id: 当前调用场景的逻辑标识。
-        template_ids: 参与当前调用的模板 ID 可迭代对象。
+    :param prompt_id: 当前调用场景的逻辑标识。
+    :param template_ids: 参与当前调用的模板 ID 可迭代对象。
 
-    Returns:
-        包含 ``promptId`` 和八位 ``promptHash`` 的字典。
+    :return: 包含 ``promptId`` 和八位 ``promptHash`` 的字典。
 
-    Raises:
-        KeyError: ``template_ids`` 包含未知模板。
+    :raises KeyError: ``template_ids`` 包含未知模板。
     """
 
     return {

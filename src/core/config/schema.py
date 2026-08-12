@@ -53,7 +53,7 @@ class BotConfig(BaseModel):
 
         :return: 当前完成校验的模型实例。
         :raises ValueError: 主名称为空、别名为空、重复或等于主名称。
-        :side_effects: 更新当前模型中的 `name` 和 `aliases` 为去空白后的值。
+        副作用：更新当前模型中的 `name` 和 `aliases` 为去空白后的值。
         """
         self.name = self.name.strip()
         if not self.name:
@@ -120,7 +120,7 @@ class ScheduleConfig(BaseModel):
         :param value: 日程备用活动、心情、主题或承接文本。
         :return: 去除首尾空白后的文本。
         :raises ValueError: 文本为空或只包含空白。
-        :side_effects: 不修改原字符串。
+        副作用：不修改原字符串。
         """
         normalized = value.strip()
         if not normalized:
@@ -133,7 +133,7 @@ class ScheduleConfig(BaseModel):
 
         :return: 当前完成校验的日程配置。
         :raises ValueError: 最小槽位数大于最大槽位数，或时间不在合法范围内。
-        :side_effects: 不修改配置字段。
+        副作用：不修改配置字段。
         """
         if self.min_slots > self.max_slots:
             raise ValueError('schedule.min_slots 不能大于 schedule.max_slots')
@@ -167,7 +167,7 @@ class PersonalityConfig(BaseModel):
         :param value: Pydantic before 校验阶段的原始人格映射。
         :return: 不含废弃字段的原始值。
         :raises ValueError: 发现 `identity`、`behavior`、`attention` 或 `boundaries`。
-        :side_effects: 不修改输入映射。
+        副作用：不修改输入映射。
         """
         if not isinstance(value, dict):
             return value
@@ -190,7 +190,7 @@ class PersonalityConfig(BaseModel):
         :param value: `YYYY-MM-DD` 格式的生日文本，可以为空字符串。
         :return: 原始生日文本；空值保持为空。
         :raises ValueError: 格式错误、日期不存在或日期晚于当前日期。
-        :side_effects: 读取本地当前日期，不修改模型外状态。
+        副作用：读取本地当前日期，不修改模型外状态。
         """
         if not value:
             return value
@@ -212,7 +212,7 @@ class PersonalityConfig(BaseModel):
         :param value: 临时语调、表达习惯或主动表达习惯列表。
         :return: 每项去除首尾空白后的新列表。
         :raises ValueError: 任一条目为空或只包含空白。
-        :side_effects: 不修改输入列表。
+        副作用：不修改输入列表。
         """
         normalized = [variant.strip() for variant in value]
         if any(not variant for variant in normalized):
@@ -238,7 +238,7 @@ class ConversationConfig(BaseModel):
 
         :return: 当前完成校验的对话配置。
         :raises ValueError: 批次不小于触发阈值，或触发后剩余窗口超出工作记忆容量。
-        :side_effects: 不修改配置字段。
+        副作用：不修改配置字段。
         """
         if self.summarize_batch_messages >= self.summarize_trigger_messages:
             raise ValueError('summarize_batch_messages 必须小于 summarize_trigger_messages')
@@ -265,7 +265,7 @@ class GenerationTaskConfig(BaseModel):
         :param value: 原始 generation 配置映射。
         :return: 未含废弃字段的原始值。
         :raises ValueError: 显式提供 `thinking` 字段。
-        :side_effects: 不修改输入映射。
+        副作用：不修改输入映射。
         """
         if isinstance(value, dict) and 'thinking' in value:
             raise ValueError(
@@ -280,7 +280,7 @@ class GenerationTaskConfig(BaseModel):
         """把零值最大 token 配置转换为 provider 使用的可选值。
 
         :return: `max_tokens` 大于零时返回原值，否则返回 `None`。
-        :side_effects: 不修改配置。
+        副作用：不修改配置。
         """
         return self.max_tokens or None
 
@@ -353,7 +353,7 @@ class VisionConfig(BaseModel):
         """返回视觉功能是否已启用。
 
         :return: `enabled` 的布尔值。
-        :side_effects: 不读取截图或模型连接状态。
+        副作用：不读取截图或模型连接状态。
         """
         return self.enabled
 
@@ -373,7 +373,7 @@ class PerceptionConfig(BaseModel):
         :param value: 原始 surfaces 配置，必须为列表。
         :return: 原始合法列表，供 Pydantic 继续转换。
         :raises ValueError: 值不是列表、含未知表面或尝试启用群聊。
-        :side_effects: 不修改输入列表。
+        副作用：不修改输入列表。
         """
         if not isinstance(value, list):
             raise ValueError('perception.surfaces 必须是列表，可填 desktop 或 direct')
@@ -471,7 +471,7 @@ class ApiProviderConfig(BaseModel):
 
         :return: 当前完成校验的厂商配置。
         :raises ValueError: 鉴权名称、API key 与鉴权类型组合不合法。
-        :side_effects: 规范化 `auth_name`，不发起网络请求。
+        副作用：规范化 `auth_name`，不发起网络请求。
         """
         if self.client_type != 'openai':
             return self
@@ -513,7 +513,7 @@ class ModelDefinitionConfig(BaseModel):
         :param value: 原始模型定义映射。
         :return: 未含废弃字段的原始值。
         :raises ValueError: 发现 `thinking` 字段。
-        :side_effects: 不修改输入映射。
+        副作用：不修改输入映射。
         """
         if isinstance(value, dict) and 'thinking' in value:
             raise ValueError(
@@ -545,7 +545,7 @@ class TaskRoutingConfig(BaseModel):
         :param v: 模型名称列表。
         :return: 原列表对象。
         :raises ValueError: 同一个模型名出现多次。
-        :side_effects: 不修改列表。
+        副作用：不修改列表。
         """
         # 重复候选会改变轮询顺序并增加无效尝试，因此在配置加载期直接拒绝。
         if len(set(v)) != len(v):
@@ -558,7 +558,7 @@ class TaskRoutingConfig(BaseModel):
 
         :return: 当前完成校验的任务路由配置。
         :raises ValueError: 慢响应阈值非零且大于等于首 token 超时。
-        :side_effects: 不修改字段。
+        副作用：不修改字段。
         """
         if self.slow_threshold_ms and self.slow_threshold_ms >= self.first_token_timeout_ms:
             raise ValueError('slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0')
@@ -627,7 +627,7 @@ class TaskRouting(BaseModel):
 
         :return: 当前完成校验的运行时路由。
         :raises ValueError: 慢响应阈值非零且不小于首 token 超时。
-        :side_effects: 不修改路由字段。
+        副作用：不修改路由字段。
         """
         if self.slow_threshold_ms and self.slow_threshold_ms >= self.first_token_timeout_ms:
             raise ValueError('slow_threshold_ms 必须小于 first_token_timeout_ms，或设为 0')
@@ -638,7 +638,7 @@ class TaskRouting(BaseModel):
         """判断该任务是否至少有一个可用模型候选。
 
         :return: `candidates` 非空时返回 `True`。
-        :side_effects: 不修改候选列表。
+        副作用：不修改候选列表。
         """
         return bool(self.candidates)
 

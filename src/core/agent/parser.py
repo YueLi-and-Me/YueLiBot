@@ -112,7 +112,7 @@ def _parse_attrs(src: str) -> dict[str, str]:
 
     :param src: 不含外层尖括号的标签文本。
     :return: 属性名转小写后的字符串映射；无法匹配的片段被忽略。
-    :side_effects: 不修改输入字符串，也不抛出格式异常。
+    副作用：不修改输入字符串，也不抛出格式异常。
     :performance: 使用一次正则扫描，时间复杂度与标签长度线性相关。
     """
     attrs: dict[str, str] = {}
@@ -126,7 +126,7 @@ def _parse_num(v: str | None) -> float | None:
 
     :param v: 原始数字文本；`None` 表示属性缺失。
     :return: 解析后的 `float`，缺失或格式非法时返回 `None`。
-    :side_effects: 不修改解析器状态。
+    副作用：不修改解析器状态。
     """
     if v is None:
         return None
@@ -139,15 +139,12 @@ def _parse_num(v: str | None) -> float | None:
 def _could_be_known_tag(partial: str) -> bool:
     """判断未闭合标签片段是否仍可能匹配已知协议标签。
 
-    Args:
-        partial: 以 ``<`` 开头且通常尚未出现 ``>`` 的标签片段。
+    :param partial: 以 ``<`` 开头且通常尚未出现 ``>`` 的标签片段。
 
-    Returns:
-        片段名称是已知标签前缀、已知标签前缀包含片段名称或名称为空时返回
+    :return: 片段名称是已知标签前缀、已知标签前缀包含片段名称或名称为空时返回
         ``True``；明确不可能匹配时返回 ``False``。
 
-    Raises:
-        TypeError: ``partial`` 不是字符串时由字符串操作触发。
+    :raises TypeError: ``partial`` 不是字符串时由字符串操作触发。
     """
     body = partial[1:].lstrip('/').lower()
     if not body:
@@ -173,7 +170,7 @@ class ResponseParser:
         """创建处于文档外部状态的空解析器。
 
         :return: 无返回值。
-        :side_effects: 初始化内部缓冲区和标签状态，不执行 I/O。
+        副作用：初始化内部缓冲区和标签状态，不执行 I/O。
         """
         self._buf = ''
         self._state: _State = 'outside'
@@ -188,7 +185,7 @@ class ResponseParser:
         :param chunk: 当前收到的文本分片，可以是空字符串。
         :return: 当前分片足以确定的事件列表；未闭合标签会留在内部缓冲区。
         :raises TypeError: `chunk` 不是字符串时由字符串操作暴露类型错误。
-        :side_effects: 修改内部缓冲区、状态和已打开的说话段标记。
+        副作用：修改内部缓冲区、状态和已打开的说话段标记。
         :performance: 每次调用只处理当前可推进的缓冲区，超长未闭合标签会保留内存。
         """
         self._buf += chunk
@@ -198,7 +195,7 @@ class ResponseParser:
         """结束当前流并输出残留文本及必要的收尾事件。
 
         :return: 包含待完成记忆、残留文本和 `SayEndEvent` 的最终事件列表。
-        :side_effects: 清空文本缓冲区，重置标签状态；重复调用只返回空列表。
+        副作用：清空文本缓冲区，重置标签状态；重复调用只返回空列表。
         :performance: 处理量与尚未消费的缓冲区长度线性相关。
         """
         out = self._run()
@@ -230,7 +227,7 @@ class ResponseParser:
         """反复推进状态机，直到当前缓冲区无法继续解析。
 
         :return: 本轮新增的解析事件。
-        :side_effects: 消费内部缓冲区并更新解析状态。
+        副作用：消费内部缓冲区并更新解析状态。
         :performance: 每个已消费字符只会沿状态机处理，整体为线性复杂度。
         """
         out: list[ParseEvent] = []
@@ -249,7 +246,7 @@ class ResponseParser:
 
         :param out: 用于追加解析事件的当前输出列表。
         :return: 本次是否推进了缓冲区；返回 `False` 表示需要等待更多分片。
-        :side_effects: 消费文本缓冲区，并可能切换说话状态或调用标签处理逻辑。
+        副作用：消费文本缓冲区，并可能切换说话状态或调用标签处理逻辑。
         """
         if not self._buf:
             return False
@@ -288,7 +285,7 @@ class ResponseParser:
         :param out: 用于追加结构化事件的当前输出列表。
         :param raw: 不含外层尖括号的原始标签体，允许包含闭合斜杠。
         :return: `None`；未知或属性不完整的标签被忽略。
-        :side_effects: 修改说话、记忆和跳过状态，并可能向 `out` 追加事件。
+        副作用：修改说话、记忆和跳过状态，并可能向 `out` 追加事件。
         """
         closing = raw.startswith('/')
         self_closing = raw.rstrip().endswith('/')
@@ -358,7 +355,7 @@ class ResponseParser:
 
         :param out: 用于追加完成的 `MemoryEvent` 的当前输出列表。
         :return: 找到并处理闭合标签时返回 `True`，否则保留尾部片段并返回 `False`。
-        :side_effects: 消费内部缓冲区并修改记忆正文缓冲区。
+        副作用：消费内部缓冲区并修改记忆正文缓冲区。
         """
         # 接受两种闭合写法：<memory> 正式名和遗留的 <system_reminder>
         buf_lower = self._buf.lower()
@@ -386,7 +383,7 @@ class ResponseParser:
 
         :param _out: 为保持状态机接口一致而传入的输出列表，本方法不会写入它。
         :return: 找到结束标记并切回文本状态时返回 `True`，否则返回 `False`。
-        :side_effects: 消费或保留内部缓冲区，并恢复说话/外部状态。
+        副作用：消费或保留内部缓冲区，并恢复说话/外部状态。
         """
         idx = self._buf.lower().find(self._skip_until)
         if idx == -1:
@@ -403,7 +400,7 @@ class ResponseParser:
         :param out: 用于追加 `SayEvent` 和 `TextEvent` 的输出列表。
         :param text: 待输出的原始文本。
         :return: `None`；空文本或外部纯空白文本不会追加事件。
-        :side_effects: 必要时打开说话状态并向 `out` 追加事件。
+        副作用：必要时打开说话状态并向 `out` 追加事件。
         """
         if not text:
             return
@@ -422,7 +419,7 @@ def _parse_promise_at(value: str | None) -> int | None:
 
     :param value: `YYYY-MM-DD HH:MM` 格式的时间文本；缺失值为 `None`。
     :return: 解析后的 Unix 毫秒时间戳；格式非法或为空时返回 `None`。
-    :side_effects: 不访问系统时钟以外的外部资源，也不替模型推断缺失日期。
+    副作用：不访问系统时钟以外的外部资源，也不替模型推断缺失日期。
     """
     if not value:
         return None

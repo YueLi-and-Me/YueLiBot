@@ -21,7 +21,7 @@ def read_versioned_toml(path: Path, expected_version: str, hint: str) -> Dict[st
     :raises OSError: 文件无法打开时抛出。
     :raises tomllib.TOMLDecodeError: 文件内容不是合法 TOML。
     :raises ValueError: 顶层缺少匹配的 `[inner].version`。
-    :side_effects: 只读取文件，不写入配置。
+    副作用：只读取文件，不写入配置。
     """
     with open(path, 'rb') as file:
         document = tomllib.load(file)

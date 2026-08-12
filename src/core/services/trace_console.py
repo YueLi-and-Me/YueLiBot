@@ -30,8 +30,7 @@ _starts: dict[int, float] = {}
 def mark_turn_start(turn: int) -> None:
     """记录对话回合开始时间。
 
-    Args:
-        turn: 对话回合 ID。
+    :param turn: 对话回合 ID。
 
         非交互终端不会写入计时表，因为后续渲染也不会发生。
     """
@@ -44,13 +43,11 @@ def mark_turn_start(turn: int) -> None:
 def _elapsed_ms(turn: int) -> str:
     """取出回合开始时间并格式化耗时。
 
-    Args:
-        turn: 对话回合 ID。
+    :param turn: 对话回合 ID。
 
-    Returns:
-        以毫秒表示的耗时文本；没有开始记录时返回 ``—``。
+    :return: 以毫秒表示的耗时文本；没有开始记录时返回 ``—``。
 
-    Side Effects:
+    副作用：
         消费并删除该回合的开始时间记录。
     """
 
@@ -63,11 +60,9 @@ def _elapsed_ms(turn: int) -> str:
 def _prompt_preview(messages: list[dict]) -> str:
     """提取系统提示词的有限长度预览。
 
-    Args:
-        messages: 对话消息字典列表。
+    :param messages: 对话消息字典列表。
 
-    Returns:
-        最多 400 字符的系统消息预览及消息总数说明。
+    :return: 最多 400 字符的系统消息预览及消息总数说明。
     """
 
     system = next((m.get('content') for m in messages if m.get('role') == 'system'), '')
@@ -82,11 +77,9 @@ def _prompt_preview(messages: list[dict]) -> str:
 def _side_effect_lines(side_effects: list[dict]) -> list[str]:
     """将记忆和情绪副作用转换为面板行文本。
 
-    Args:
-        side_effects: 解析事件产生的副作用字典列表。
+    :param side_effects: 解析事件产生的副作用字典列表。
 
-    Returns:
-        当前支持的 ``memory_fact`` 和 ``mood_delta`` 副作用行；未知类型被忽略。
+    :return: 当前支持的 ``memory_fact`` 和 ``mood_delta`` 副作用行；未知类型被忽略。
     """
 
     lines = []
@@ -109,16 +102,15 @@ def render_turn(
 ) -> None:
     """渲染一轮对话的摘要面板。
 
-    Args:
-        turn: 对话回合 ID。
-        sender_label: 发送者展示名。
-        user_text: 用户原始文本。
-        messages: 发送给模型的消息列表，仅展示系统消息预览。
-        response_text: 最终响应文本。
-        side_effects: 本轮解析出的副作用列表。
-        bot_name: 主体展示名。
+    :param turn: 对话回合 ID。
+    :param sender_label: 发送者展示名。
+    :param user_text: 用户原始文本。
+    :param messages: 发送给模型的消息列表，仅展示系统消息预览。
+    :param response_text: 最终响应文本。
+    :param side_effects: 本轮解析出的副作用列表。
+    :param bot_name: 主体展示名。
 
-    Side Effects:
+    副作用：
         在交互终端写入 rich 面板；面板渲染异常只记录调试日志，不影响聊天主流程。
     """
     if not _is_tty:
@@ -145,12 +137,11 @@ def render_turn(
 def render_observation(sender_label: str, user_text: str, reason: str) -> None:
     """以单行显示被回复门控拦截的群消息。
 
-    Args:
-        sender_label: 发送者展示名。
-        user_text: 用户原始文本。
-        reason: 未回复的机器可读或可读原因。
+    :param sender_label: 发送者展示名。
+    :param user_text: 用户原始文本。
+    :param reason: 未回复的机器可读或可读原因。
 
-    Side Effects:
+    副作用：
         在交互终端写入观察行；渲染异常只记录调试日志。
     """
     if not _is_tty:
@@ -175,14 +166,13 @@ def render_turn_error(
 ) -> None:
     """渲染对话回合失败面板。
 
-    Args:
-        turn: 对话回合 ID。
-        sender_label: 发送者展示名。
-        user_text: 用户原始文本。
-        kind: 错误类别。
-        message: 错误消息。
+    :param turn: 对话回合 ID。
+    :param sender_label: 发送者展示名。
+    :param user_text: 用户原始文本。
+    :param kind: 错误类别。
+    :param message: 错误消息。
 
-    Side Effects:
+    副作用：
         在交互终端写入错误面板；渲染异常只记录调试日志。
     """
 

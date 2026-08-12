@@ -22,7 +22,7 @@ def _tokenize(text: str) -> str:
 
     :param text: 待分词的事实或召回线索文本。
     :return: 以单个空格连接的非空分词结果。
-    :side_effects: 首次调用可能加载 jieba 词典；不修改数据库。
+    副作用：首次调用可能加载 jieba 词典；不修改数据库。
     :performance: 首次调用包含词典加载成本，后续复杂度与文本长度相关。
     """
     import jieba
@@ -34,18 +34,16 @@ def _tokenize(text: str) -> str:
 def v3_to_v4(db: sqlite3.Connection) -> None:
     """将全文索引预分词列切换为 jieba 精确模式结果并重建 FTS 表。
 
-    Args:
-        db: 当前迁移事务使用的 SQLite 连接。
+    :param db: 当前迁移事务使用的 SQLite 连接。
 
-    Raises:
-        sqlite3.Error: 列添加、索引重建或批量写入失败。
-        ImportError: 运行环境未安装 jieba。
+    :raises sqlite3.Error: 列添加、索引重建或批量写入失败。
+    :raises ImportError: 运行环境未安装 jieba。
 
-    Side Effects:
+    副作用：
         为 ``facts`` 添加 ``tokens_v2`` 列，更新事实和情节线索分词结果，删除并重建
         ``facts_fts`` 和 ``cues_fts``；不提交事务，由迁移管理器统一提交。
 
-    Performance:
+    性能：
         首次分词可能加载词典，整体耗时与事实和线索文本总长度线性相关。
     """
 

@@ -89,7 +89,7 @@ class InterestFactors:
         """返回五个兴趣乘数和基础速率的乘积。
 
         :return: 每分钟兴趣增长量，单位为兴趣值/分钟。
-        :side_effects: 不修改任何乘数。
+        副作用：不修改任何乘数。
         """
         return BASE * self.activity * self.favor * self.energy * self.ignored * self.absence
 
@@ -97,7 +97,7 @@ class InterestFactors:
         """生成用于运行时追踪的四舍五入乘数快照。
 
         :return: 含五个乘数及每分钟速率的字典，数值保留三位小数。
-        :side_effects: 不修改当前因素。
+        副作用：不修改当前因素。
         """
         return {
             'fActivity': round(self.activity, 3),
@@ -116,18 +116,16 @@ def factors_for(activity: Activity, intensity: InputIntensity, favor: float, ene
     favor / energy 是 persona 的 0~100 轴，除以 100 后参与计算；两者设置下限，
     防止数值过低使主动消息永远不可达。
 
-    Args:
-        activity: 当前前台活动类别。
-        intensity: 当前键鼠输入强度。
-        favor: 人物好感度，通常范围为 ``0`` 到 ``100``。
-        energy: Bot 精力值，通常范围为 ``0`` 到 ``100``。
-        ignored: 连续被忽略的主动意图次数，负值按 ``0`` 处理。
-        absence_hours: 用户离开时长，单位为小时，负值按 ``0`` 处理。
+    :param activity: 当前前台活动类别。
+    :param intensity: 当前键鼠输入强度。
+    :param favor: 人物好感度，通常范围为 ``0`` 到 ``100``。
+    :param energy: Bot 精力值，通常范围为 ``0`` 到 ``100``。
+    :param ignored: 连续被忽略的主动意图次数，负值按 ``0`` 处理。
+    :param absence_hours: 用户离开时长，单位为小时，负值按 ``0`` 处理。
 
-    Returns:
-        包含活动、好感、精力、忽略衰减和离线补偿五个乘数的 ``InterestFactors``。
+    :return: 包含活动、好感、精力、忽略衰减和离线补偿五个乘数的 ``InterestFactors``。
 
-    Side Effects:
+    副作用：
         不修改输入状态和配置；计算结果使用固定上下限和衰减系数。
     """
     return InterestFactors(
@@ -144,7 +142,7 @@ def initial_state(now: int) -> InterestState:
 
     :param now: 当前 Unix 毫秒时间戳。
     :return: `value=0.0` 且 `updated_at=now` 的不可变状态。
-    :side_effects: 不修改外部状态。
+    副作用：不修改外部状态。
     """
     return InterestState(value=0.0, updated_at=now)
 
@@ -152,15 +150,13 @@ def initial_state(now: int) -> InterestState:
 def grow(state: InterestState, factors: InterestFactors, now: int) -> InterestState:
     """按真实流逝时间累积兴趣。
 
-    Args:
-        state: 上一次兴趣状态。
-        factors: 当前情境对应的增长乘数。
-        now: 当前 Unix 毫秒时间戳。
+    :param state: 上一次兴趣状态。
+    :param factors: 当前情境对应的增长乘数。
+    :param now: 当前 Unix 毫秒时间戳。
 
-    Returns:
-        使用实际经过分钟数计算的新状态；结果值限制在 ``[0, FULL]``。
+    :return: 使用实际经过分钟数计算的新状态；结果值限制在 ``[0, FULL]``。
 
-    Side Effects:
+    副作用：
         不修改输入状态。使用时间差而非调用次数，保证不同轮询间隔得到相同结果。
     """
     if state.updated_at <= 0:
@@ -177,7 +173,7 @@ def wants_to_speak(state: InterestState) -> bool:
 
     :param state: 当前兴趣状态。
     :return: `value` 大于等于 `FULL` 时返回 `True`。
-    :side_effects: 不修改状态。
+    副作用：不修改状态。
     """
     return state.value >= FULL
 
@@ -185,14 +181,12 @@ def wants_to_speak(state: InterestState) -> bool:
 def spend(state: InterestState, now: int) -> InterestState:
     """消耗一次主动发送资格并重置兴趣累计。
 
-    Args:
-        state: 当前兴趣状态；仅用于保持调用接口一致，函数不会修改它。
-        now: 重置后的 Unix 毫秒时间戳。
+    :param state: 当前兴趣状态；仅用于保持调用接口一致，函数不会修改它。
+    :param now: 重置后的 Unix 毫秒时间戳。
 
-    Returns:
-        ``value=0.0`` 且 ``updated_at=now`` 的新状态。
+    :return: ``value=0.0`` 且 ``updated_at=now`` 的新状态。
 
-    Side Effects:
+    副作用：
         不修改输入状态。投放被拦截或意图入队时也必须调用，避免同一兴趣值重复触发。
     """
     return InterestState(value=0.0, updated_at=now)
@@ -201,12 +195,10 @@ def spend(state: InterestState, now: int) -> InterestState:
 def minutes_to_full(state: InterestState, factors: InterestFactors) -> float | None:
     """计算达到主动发送阈值所需的预计分钟数。
 
-    Args:
-        state: 当前兴趣状态。
-        factors: 当前增长乘数。
+    :param state: 当前兴趣状态。
+    :param factors: 当前增长乘数。
 
-    Returns:
-        预计分钟数；增长速率不为正时返回 ``None``。
+    :return: 预计分钟数；增长速率不为正时返回 ``None``。
     """
     rate = factors.rate_per_minute
     if rate <= 0:

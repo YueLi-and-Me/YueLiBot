@@ -19,14 +19,12 @@ logger = get_logger(__name__)
 def v7_to_v8(db: sqlite3.Connection) -> None:
     """创建按群聊 stream 和人物保存群成员名片的关联表。
 
-    Args:
-        db: 当前迁移事务使用的 SQLite 连接。
+    :param db: 当前迁移事务使用的 SQLite 连接。
 
-    Raises:
-        RuntimeError: 迁移后外键完整性检查失败。
-        sqlite3.Error: 关联表或索引创建失败。
+    :raises RuntimeError: 迁移后外键完整性检查失败。
+    :raises sqlite3.Error: 关联表或索引创建失败。
 
-    Side Effects:
+    副作用：
         创建 ``group_memberships`` 表及人物索引，并执行外键检查；不提交事务。
     """
     db.execute(

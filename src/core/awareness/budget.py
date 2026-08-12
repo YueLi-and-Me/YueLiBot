@@ -71,7 +71,7 @@ def day_key_of(now: int) -> str:
     :return: `年-月-日` 格式的本地日期字符串。
     :raises (OverflowError, OSError, ValueError): 时间戳超出系统日期转换范围时由
         `datetime.fromtimestamp` 抛出。
-    :side_effects: 读取本地时区规则，不修改状态。
+    副作用：读取本地时区规则，不修改状态。
     """
     d = datetime.fromtimestamp(now / 1000)
     return f'{d.year}-{d.month}-{d.day}'
@@ -82,7 +82,7 @@ def initial_state(now: int) -> ProactiveState:
 
     :param now: Unix 毫秒时间戳。
     :return: `used=0`、`ignored=0` 且日期为 `now` 所在本地日的状态。
-    :side_effects: 不修改外部状态。
+    副作用：不修改外部状态。
     """
     return ProactiveState(day_key=day_key_of(now))
 
@@ -93,7 +93,7 @@ def _rollover(state: ProactiveState, now: int) -> ProactiveState:
     :param state: 旧预算状态。
     :param now: 当前 Unix 毫秒时间戳。
     :return: 日期未变化时返回原实例；跨日时返回新状态。
-    :side_effects: 不修改输入状态。
+    副作用：不修改输入状态。
     """
     key = day_key_of(now)
     if key == state.day_key:
@@ -107,7 +107,7 @@ def decide(state: ProactiveState, ctx: InterruptContext) -> Decision:
     :param state: 当前预算状态。
     :param ctx: 当前环境及优先级。
     :return: 带允许标志和拒绝原因的决策；`high` 优先级可绕过预算。
-    :side_effects: 不修改输入状态，跨日计算只创建临时状态。
+    副作用：不修改输入状态，跨日计算只创建临时状态。
     """
     if ctx.silent:
         return Decision(allow=False, reason='silent')
@@ -129,7 +129,7 @@ def decide_scene(state: ProactiveState, ctx: InterruptContext) -> Decision:
     :param state: 当前预算状态。
     :param ctx: 当前环境及优先级。
     :return: 场景可用时的基础决策；触及预留槽位时返回 `scene-reserve` 拒绝原因。
-    :side_effects: 不修改输入状态。
+    副作用：不修改输入状态。
     """
     base = decide(state, ctx)
     if not base.allow or ctx.priority == 'high':
@@ -146,7 +146,7 @@ def after_speak(state: ProactiveState, ctx: InterruptContext) -> ProactiveState:
     :param state: 搭话前预算状态。
     :param ctx: 这次搭话使用的时间和优先级信息。
     :return: 更新后的不可变预算状态；高优先级搭话不消耗普通额度。
-    :side_effects: 不修改输入状态。
+    副作用：不修改输入状态。
     """
     s = _rollover(state, ctx.now)
     return ProactiveState(
@@ -162,7 +162,7 @@ def after_user_spoke(state: ProactiveState) -> ProactiveState:
 
     :param state: 当前预算状态。
     :return: `ignored` 已清零的新状态；原值为 0 时直接返回原实例。
-    :side_effects: 不修改输入状态。
+    副作用：不修改输入状态。
     """
     if state.ignored == 0:
         return state
@@ -176,7 +176,7 @@ def describe_budget(state: ProactiveState, now: int) -> dict:
     :param state: 当前预算状态。
     :param now: 当前 Unix 毫秒时间戳，用于处理跨日滚动。
     :return: 含日期、已用次数、剩余次数和未回应次数的字典。
-    :side_effects: 不修改输入状态。
+    副作用：不修改输入状态。
     """
     s = _rollover(state, now)
     return {
