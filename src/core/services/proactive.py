@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Awaitable, Callable, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Protocol
 
 import asyncio
 
@@ -22,13 +22,12 @@ from src.core.awareness.budget import (
     decide_scene,
     initial_state,
 )
-from src.desktop.classify import Classified, ForegroundInfo, classify, classify_input, describe_activity
 from src.core.awareness.intent import IntentType, PendingIntent, eligible_intents, stash
 from src.core.awareness.interest import (
     InterestFactors, InterestState, factors_for, grow, initial_state as initial_interest_state,
     minutes_to_full, spend, wants_to_speak,
 )
-from src.desktop.monitor import ForegroundProcessMonitor
+from src.core.awareness.signals import Classified
 from src.core.awareness.sleep import SleepInputs, SleepStateController
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
@@ -37,13 +36,40 @@ from src.core.observe.events import enter_stage
 from src.core.observe.stages import DISPATCHING, FAILED, GENERATING, REPLIED
 from src.core.schedule.plan import _slot_at, day_plan_date, describe_day_plan, fallback_day_plan
 
-if TYPE_CHECKING:
-    from src.desktop.vision import VisionProvider, VisionService
-
-
 logger = get_logger(__name__)
 
 POLL_INTERVAL_S = 60.0
+
+
+class ProactiveSensor(Protocol):
+    """定义主动感知内核消费的平台中立信号接口。"""
+
+    @property
+    def signal(self) -> Classified | None: ...
+
+    @property
+    def visible(self) -> bool: ...
+
+    @property
+    def vision(self) -> Any | None: ...
+
+    def startup(self) -> None: ...
+
+    def ingest(self, body: dict[str, Any]) -> tuple[Classified, bool]: ...
+
+    def minutes(self, now: int) -> int: ...
+
+    def activity_text(self, now: int | None = None) -> str: ...
+
+    def with_vision(self, situation: str) -> str: ...
+
+    def has_vision_description(self) -> bool: ...
+
+    def note_vision_spoke(self) -> None: ...
+
+    def vision_stats(self) -> dict[str, Any]: ...
+
+    def current_app(self) -> str: ...
 
 
 class AwarenessService:
@@ -55,18 +81,17 @@ class AwarenessService:
         schedule: Any | None,
         cfg: Any,
         push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
-        vision_provider: VisionProvider | None = None,
+        sensor: ProactiveSensor | None = None,
     ) -> None:
         """初始化主动感知服务及其状态控制器。
 
-        Args:
-            chat: 提供记忆、人物、当前睡眠和主动生成能力的聊天服务。
-            schedule: 可选日程服务；缺失时使用配置生成备用作息。
-            cfg: 提供主动感知、视觉和日程配置的运行时配置。
-            push_event: 异步向客户端推送状态事件的回调。
-            vision_provider: 可选视觉模型提供者。
+        :param chat: 提供记忆、人物、当前睡眠和主动生成能力的聊天服务。
+        :param schedule: 可选日程服务；缺失时使用配置生成备用作息。
+        :param cfg: 提供主动感知、视觉和日程配置的运行时配置。
+        :param push_event: 异步向客户端推送状态事件的回调。
+        :param sensor: 可选的平台信号提供者；缺失时服务以无信号模式运行。
 
-        Side Effects:
+        副作用：
             读取并恢复持久化的 promise 意图，创建前台监控、睡眠控制器和停止
             事件；不会启动后台轮询，需显式调用 ``startup``。
         """
@@ -76,23 +101,16 @@ class AwarenessService:
         self._schedule = schedule
         self._cfg = cfg
         self._push_event = push_event
-        self._vision_provider = vision_provider
+        self._sensor = sensor
         self._enabled = cfg.generation.proactive.enabled
 
         # 启动前恢复 promise，保证服务重建不会丢失尚未到期的主动意图。
-        self._monitor = ForegroundProcessMonitor()
         self._sleep = SleepStateController(input_source=self._sleep_inputs, state_store=chat.memory)
         self._budget: ProactiveState = initial_state(started_at)
         self._interest: InterestState = initial_interest_state(started_at)
         self._pending: list[PendingIntent] = self._restore_promises()
-        self._vision: VisionService | None = None
-
-        self._last_classified: Classified | None = None
-        self._last_activity_since = started_at
-        self._last_visible = True
         self._last_pushed_asleep: bool | None = None
         self._last_plan_slot = ''
-        self._vision_spoke_count = 0
 
         self._poll_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -102,14 +120,11 @@ class AwarenessService:
     def _sleep_inputs(self, now: int) -> SleepInputs:
         """根据日程或备用配置组装睡眠状态机输入。
 
-        Args:
-            now: 当前毫秒时间戳。
+        :param now: 当前毫秒时间戳。
 
-        Returns:
-            包含作息提示、精力、最近互动时间和睡眠开关的 ``SleepInputs``。
+        :return: 包含作息提示、精力、最近互动时间和睡眠开关的 ``SleepInputs``。
 
-        Raises:
-            Exception: 日程、人物或记忆存储读取失败时直接传播，避免使用错误的
+        :raises Exception: 日程、人物或记忆存储读取失败时直接传播，避免使用错误的
                 默认状态掩盖数据问题。
         """
 
@@ -142,11 +157,10 @@ class AwarenessService:
     def _restore_promises(self) -> list[PendingIntent]:
         """从记忆存储恢复仍属于 promise 类型的待投放意图。
 
-        Returns:
-            通过字段和枚举校验的 promise 意图列表；损坏记录会记录警告并跳过，
+        :return: 通过字段和枚举校验的 promise 意图列表；损坏记录会记录警告并跳过，
             短时情境意图不会从存储恢复。
 
-        Side Effects:
+        副作用：
             读取记忆存储并为无效记录写入警告日志。
         """
         restored: list[PendingIntent] = []
@@ -170,7 +184,7 @@ class AwarenessService:
     def _persist_promises(self) -> None:
         """将当前待投放列表中的 promise 意图写回记忆存储。
 
-        Side Effects:
+        副作用：
             覆盖存储中的 pending promise 集合；短 TTL 的 scene、idle 和 plan 意图
             不写入持久化数据。
         """
@@ -189,22 +203,19 @@ class AwarenessService:
     def _interest_factors(self, now: int) -> InterestFactors:
         """根据前台活动、关系状态和用户缺席时间计算兴趣增长因子。
 
-        Args:
-            now: 当前毫秒时间戳。
+        :param now: 当前毫秒时间戳。
 
-        Returns:
-            供兴趣状态机使用的 ``InterestFactors``。
+        :return: 供兴趣状态机使用的 ``InterestFactors``。
 
-        Raises:
-            Exception: 记忆或人物状态读取失败时直接传播。
+        :raises Exception: 记忆或人物状态读取失败时直接传播。
         """
-        classified = self._last_classified or classify(None)
+        classified = self._sensor.signal if self._sensor else None
         last_message_at = self.chat.memory.last_message_at(self.chat.desktop_context.stream.id)
         absence_hours = 0.0 if last_message_at is None else max(0.0, (now - last_message_at) / 3_600_000)
         persona = self.chat.persona.get(self.chat.desktop_context.person.id)
         return factors_for(
-            classified.activity,
-            classified.intensity,
+            classified.activity if classified else 'idle',
+            classified.intensity if classified else 'light',
             persona.intimacy,
             persona.energy,
             self._budget.ignored,
@@ -214,10 +225,9 @@ class AwarenessService:
     def _grow_interest(self, now: int) -> None:
         """按当前因子推进兴趣状态并记录观察事件。
 
-        Args:
-            now: 当前毫秒时间戳。
+        :param now: 当前毫秒时间戳。
 
-        Side Effects:
+        副作用：
             更新内存中的兴趣值，并写入带因子快照的 ``interest`` 观察事件。
         """
 
@@ -228,70 +238,54 @@ class AwarenessService:
     def _activity_text(self) -> str:
         """生成注入聊天提示词的实时活动描述。
 
-        Returns:
-            当前前台活动及有效视觉描述；没有前台分类结果时返回空字符串。
+        :return: 当前前台活动及有效视觉描述；没有前台分类结果时返回空字符串。
 
         Note:
             每次调用都从视觉服务读取当前有效缓存，避免把过期描述持久化到意图。
         """
-        if not self._last_classified:
+        if self._sensor is None:
             return ''
-        minutes = max(0, (current_time() - self._last_activity_since) // 60_000)
-        return self._with_vision(describe_activity(self._last_classified, minutes))
+        return self._sensor.with_vision(self._sensor.activity_text())
 
     def _with_vision(self, situation: str) -> str:
         """将当前有效视觉描述附加到活动情境。
 
-        Args:
-            situation: 已生成的前台活动描述。
+        :param situation: 已生成的前台活动描述。
 
-        Returns:
-            含视觉描述的情境文本；视觉服务未配置或没有有效缓存时明确标注不可见。
+        :return: 含视觉描述的情境文本；视觉服务未配置或没有有效缓存时明确标注不可见。
         """
-        if not self._vision:
-            return situation
-        description = self._vision.chat_glance()
-        if not description:
-            return f'{situation}\n（你这会儿看不到他的屏幕。他要是问起，就直说这会儿没看清，别拿以前看到过的界面充数。）'
-        return (
-            f'{situation}\n（你刚瞥了一眼屏幕，看到的就是这些：{description}。'
-            '问到屏幕上有什么，只能依据这一句；以前看到过的界面、文件夹属于回忆，'
-            '别当成现在还在那儿。）'
-        )
+        return self._sensor.with_vision(situation) if self._sensor else situation
 
     # ------------------------------------------------------------ 对外只读（供 http.py 用）
 
     def current_app(self) -> str:
         """读取当前前台程序名，供视觉请求作为识别先验。
 
-        Returns:
-            最近分类结果中的应用名；尚未收到前台事件时返回空字符串。
+        :return: 最近分类结果中的应用名；尚未收到前台事件时返回空字符串。
         """
-        return self._last_classified.app if self._last_classified else ''
+        return self._sensor.current_app() if self._sensor else ''
 
     @property
-    def vision(self) -> VisionService | None:
+    def vision(self) -> Any | None:
         """返回已初始化的视觉服务。
 
-        Returns:
-            已配置且在启动时成功创建的 ``VisionService``，否则为 ``None``。
+        :return: 已配置且在启动时成功创建的 ``VisionService``，否则为 ``None``。
         """
 
-        return self._vision
+        return self._sensor.vision if self._sensor else None
 
     def observability_fields(self, now: int | None = None) -> dict:
         """构造观察面板使用的睡眠、兴趣、前台和待投放状态。
 
-        Args:
-            now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+        :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
 
-        Returns:
-            使用 camelCase 字段名的可序列化诊断字典；不包含截图内容。
+        :return: 使用 camelCase 字段名的可序列化诊断字典；不包含截图内容。
         """
         now = now if now is not None else current_time()
         sleep_eval = self._sleep.inspect(now)
         factors = self._interest_factors(now)
-        minutes = max(0, (now - self._last_activity_since) // 60_000)
+        classified = self._sensor.signal if self._sensor else None
+        minutes = self._sensor.minutes(now) if self._sensor else 0
         # 所有面板字段基于同一个 now 计算，避免前端看到跨毫秒采样的混合状态。
         return {
             'sleep': {
@@ -314,10 +308,10 @@ class AwarenessService:
                 **factors.as_trace(),
             },
             'sensing': {
-                'activity': self._last_classified.activity if self._last_classified else 'idle',
-                'description': self._activity_text(),
+                'activity': classified.activity if classified else 'idle',
+                'description': self._with_vision(self._sensor.activity_text(now)) if self._sensor else '',
                 'minutes': minutes,
-                'silent': self._last_classified.silent if self._last_classified else False,
+                'silent': classified.silent if classified else False,
                 'pending': [
                     {
                         'type': intent.intent_type.name,
@@ -326,8 +320,8 @@ class AwarenessService:
                     for intent in self._pending
                 ],
                 # 仅输出视觉调用计数，不输出截图或模型原文，避免观察接口泄露屏幕内容。
-                'visionStats': ({**self._vision.stats(), 'spoke': self._vision_spoke_count}
-                                if self._vision else {'enabled': False, 'looks': 0, 'spoke': 0}),
+                'visionStats': (self._sensor.vision_stats() if self._sensor
+                                else {'enabled': False, 'looks': 0, 'spoke': 0}),
             },
         }
 
@@ -336,10 +330,9 @@ class AwarenessService:
     async def startup(self) -> None:
         """绑定聊天回调并启动主动感知后台轮询。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
 
-        Side Effects:
+        副作用：
             注入活动、睡眠和 promise 回调，按配置初始化视觉服务，并在主动感知
             开启时创建轮询 task。
         """
@@ -347,12 +340,8 @@ class AwarenessService:
         self.chat.set_activity_provider(self._activity_text)
         self.chat.set_sleep_state_provider(lambda: self._sleep.current())
         self.chat.set_promise_handler(self.stash_promise)
-        if self._cfg.vision.ready and self._vision_provider:
-            from src.desktop.vision import VisionService
-            self._vision = VisionService(self._cfg, self._push_event, self._vision_provider)
-            logger.info('vision_service_ready', model=self._vision_provider.model)
-        elif self._cfg.vision.ready:
-            logger.warning('vision_service_disabled', reason='视觉模型配置无效，请检查后端启动日志')
+        if self._sensor:
+            self._sensor.startup()
         if not self._enabled:
             logger.info('proactive_service_disabled')
             return
@@ -362,10 +351,9 @@ class AwarenessService:
     async def shutdown(self) -> None:
         """请求停止主动感知轮询并等待其退出。
 
-        Returns:
-            ``None``。
+        :return: ``None``。
 
-        Side Effects:
+        副作用：
             设置停止事件并最多等待 5 秒；超时或取消时取消轮询 task。
         """
 
@@ -383,54 +371,20 @@ class AwarenessService:
     def on_foreground(self, body: dict) -> None:
         """接收一次前台窗口和输入强度快照。
 
-        Args:
-            body: 至少可包含 ``process``、``title``、``fullscreen`` 和 ``visible``；
+        :param body: 至少可包含 ``process``、``title``、``fullscreen`` 和 ``visible``；
                 ``input`` 可提供 keys、clicks、mouseDistance、idleSeconds、spanMs。
 
-        Side Effects:
+        副作用：
             更新前台分类和活动起始时间，写入不含窗口标题的观察事件；主动感知启用
             时创建前台处理和睡眠刷新后台任务。该同步入口不等待任何异步操作。
         """
+        if self._sensor is None:
+            return
         now = current_time()
-        info = ForegroundInfo(
-            process=str(body.get('process') or ''),
-            title=body.get('title'),
-            fullscreen=bool(body.get('fullscreen')),
-        )
-        if 'visible' in body:
-            self._last_visible = bool(body.get('visible'))
-
-        input_snapshot = body.get('input')
-        if isinstance(input_snapshot, dict):
-            intensity = classify_input(
-                int(input_snapshot.get('keys', 0)),
-                int(input_snapshot.get('clicks', 0)),
-                float(input_snapshot.get('mouseDistance', 0)),
-                int(input_snapshot.get('idleSeconds', 0)),
-                int(input_snapshot.get('spanMs', 8_000)),
-            )
-        else:
-            intensity = 'light'
-
-        obs = self._monitor.observe(info)
-        classified = classify(info)
-        classified.intensity = intensity
-        if obs.process_changed or self._last_classified is None or classified.activity != self._last_classified.activity:
-            self._last_activity_since = now
-        self._last_classified = classified
-
-        # 观察事件只记录进程和分类结果，不记录窗口标题，避免把窗口文本外传。
-        trace.emit(
-            'foreground',
-            process=info.process,
-            activity=classified.activity,
-            intensity=classified.intensity,
-            silent=classified.silent,
-            windowChanged=obs.window_changed,
-        )
+        classified, window_changed = self._sensor.ingest(body)
         if not self._enabled:
             return
-        asyncio.create_task(self._handle_foreground(classified, now, obs.window_changed))
+        asyncio.create_task(self._handle_foreground(classified, now, window_changed))
         asyncio.create_task(self._refresh_sleep(now))
 
     # ------------------------------------------------------------ 主动搭话决策
@@ -438,12 +392,11 @@ class AwarenessService:
     async def _handle_foreground(self, classified: Classified, now: int, window_changed: bool) -> None:
         """处理前台变化触发的待投放意图和场景意图。
 
-        Args:
-            classified: 当前前台活动分类。
-            now: 事件发生的毫秒时间戳。
-            window_changed: 当前窗口是否相对上一条快照发生变化。
+        :param classified: 当前前台活动分类。
+        :param now: 事件发生的毫秒时间戳。
+        :param window_changed: 当前窗口是否相对上一条快照发生变化。
 
-        Side Effects:
+        副作用：
             刷新待投放队列；窗口变化时可能生成并投放一条 scene 意图。异常只记录
             警告，避免后台任务未处理异常。
         """
@@ -459,32 +412,28 @@ class AwarenessService:
     def _interrupt_context(self, classified: Classified, now: int) -> InterruptContext:
         """将当前前台、可见性和最近互动状态组合成打扰判定输入。
 
-        Args:
-            classified: 当前前台活动分类。
-            now: 当前毫秒时间戳。
+        :param classified: 当前前台活动分类。
+        :param now: 当前毫秒时间戳。
 
-        Returns:
-            供预算和场景决策函数使用的 ``InterruptContext``。
+        :return: 供预算和场景决策函数使用的 ``InterruptContext``。
         """
 
         return InterruptContext(
             now=now,
             silent=classified.silent,
             asleep=self.chat.current_sleep().asleep,
-            visible=self._last_visible,
+            visible=self._sensor.visible if self._sensor else True,
             responded_since_last=self._responded_since_last(now),
         )
 
     def _decision_for(self, intent: PendingIntent, classified: Classified, now: int) -> tuple[InterruptContext, Any]:
         """根据意图类型选择对应的打扰规则并计算判定。
 
-        Args:
-            intent: 待判断的主动意图。
-            classified: 当前前台活动分类。
-            now: 当前毫秒时间戳。
+        :param intent: 待判断的主动意图。
+        :param classified: 当前前台活动分类。
+        :param now: 当前毫秒时间戳。
 
-        Returns:
-            ``(InterruptContext, decision)``，后者为场景或普通主动打扰决策对象。
+        :return: ``(InterruptContext, decision)``，后者为场景或普通主动打扰决策对象。
         """
 
         ctx = self._interrupt_context(classified, now)
@@ -494,11 +443,10 @@ class AwarenessService:
     def _stash(self, intent: PendingIntent, now: int) -> None:
         """将未获准或暂时无法投放的意图加入待处理队列。
 
-        Args:
-            intent: 待保存的主动意图。
-            now: 当前毫秒时间戳，用于 trace 中计算等待时长。
+        :param intent: 待保存的主动意图。
+        :param now: 当前毫秒时间戳，用于 trace 中计算等待时长。
 
-        Side Effects:
+        副作用：
             可能更新内存队列、写入 promise 持久化数据并发出 ``proactive_intent``
             观察事件；重复意图由 ``stash`` 规则处理。
         """
@@ -516,11 +464,10 @@ class AwarenessService:
     def stash_promise(self, earliest_at: int, subject: str) -> None:
         """登记一条由聊天服务识别出的 promise 意图。
 
-        Args:
-            earliest_at: 允许主动提及该约定的最早毫秒时间戳。
-            subject: 用户原话；持久化时不使用模型改写内容。
+        :param earliest_at: 允许主动提及该约定的最早毫秒时间戳。
+        :param subject: 用户原话；持久化时不使用模型改写内容。
 
-        Side Effects:
+        副作用：
             将 promise 加入待投放队列并按需写入记忆存储。
         """
         self._stash(PendingIntent(
@@ -535,12 +482,11 @@ class AwarenessService:
     async def _consider_speak(self, classified: Classified, now: int, intent_type: IntentType) -> None:
         """创建并尝试投放由当前活动触发的主动意图。
 
-        Args:
-            classified: 当前前台活动分类。
-            now: 当前毫秒时间戳。
-            intent_type: scene 或 idle 等主动意图类型。
+        :param classified: 当前前台活动分类。
+        :param now: 当前毫秒时间戳。
+        :param intent_type: scene 或 idle 等主动意图类型。
 
-        Side Effects:
+        副作用：
             可能消耗兴趣值、写入待投放队列、请求截图、调用主动模型并投放消息。
         """
         if not self.chat.ready:
@@ -561,7 +507,10 @@ class AwarenessService:
         if not decision.allow:
             self._stash(intent, now)
             return
-        waiting_for_vision = bool(intent.wants_vision and self._vision and not self._vision.chat_glance())
+        waiting_for_vision = bool(
+            intent.wants_vision and self._sensor and self._sensor.vision
+            and not self._sensor.has_vision_description()
+        )
         delivered = await self._deliver(intent, classified, ctx, now)
         if not delivered and waiting_for_vision:
             self._stash(intent, now)
@@ -570,28 +519,29 @@ class AwarenessService:
                        now: int, expired_vision: bool = False) -> bool:
         """生成并投放一条已经通过打扰判定的主动意图。
 
-        Args:
-            intent: 待投放意图。
-            classified: 当前前台活动分类。
-            ctx: 已计算的打扰上下文，用于更新预算。
-            now: 当前毫秒时间戳。
-            expired_vision: 视觉意图等待超时后是否允许在不可见状态下继续生成，
+        :param intent: 待投放意图。
+        :param classified: 当前前台活动分类。
+        :param ctx: 已计算的打扰上下文，用于更新预算。
+        :param now: 当前毫秒时间戳。
+        :param expired_vision: 视觉意图等待超时后是否允许在不可见状态下继续生成，
                 默认 ``False``。
 
-        Returns:
-            成功生成并投放时返回 ``True``；需要等待截图或模型没有正文时返回
+        :return: 成功生成并投放时返回 ``True``；需要等待截图或模型没有正文时返回
             ``False``。
 
-        Side Effects:
+        副作用：
             可能请求截图、调用主动模型、发送桌面消息、更新预算和观察事件。
             模型异常会记录失败阶段后继续向上抛出。
         """
-        if intent.wants_vision and self._vision and not self._vision.chat_glance() and not expired_vision:
+        if (
+            intent.wants_vision and self._sensor and self._sensor.vision
+            and not self._sensor.has_vision_description() and not expired_vision
+        ):
             # 单程请求：不等截图回传，更不把截图内容冻进这条 intent。
             await self._push_event('vision.capture_request', {'reason': intent.intent_type.name.lower()})
             return False
 
-        minutes = max(0, (now - self._last_activity_since) // 60_000)
+        minutes = self._sensor.minutes(now) if self._sensor else 0
         if intent.intent_type == IntentType.Plan and self._schedule:
             base = describe_day_plan(
                 self._schedule.get(now), datetime.fromtimestamp(now / 1000), self.chat.current_sleep(),
@@ -602,8 +552,8 @@ class AwarenessService:
                 '不要把它说成已经确定的共同安排。'
             )
         else:
-            base = describe_activity(classified, minutes)
-        description_used = bool(self._vision and self._vision.chat_glance())
+            base = self._sensor.activity_text(now) if self._sensor else ''
+        description_used = bool(self._sensor and self._sensor.has_vision_description())
         desktop_context = self.chat.desktop_context
         stream = desktop_context.stream
         enter_stage(GENERATING, stream.id, '桌面')
@@ -625,7 +575,7 @@ class AwarenessService:
             turn,
         )
         if description_used:
-            self._vision_spoke_count += 1
+            self._sensor.note_vision_spoke()
         self._budget = after_speak(self._budget, ctx)
         trace.emit(
             'proactive_intent',
@@ -638,14 +588,14 @@ class AwarenessService:
     async def _flush_pending(self, now: int) -> None:
         """清理过期意图并按优先级最多投放一条待处理消息。
 
-        Args:
-            now: 当前毫秒时间戳。
+        :param now: 当前毫秒时间戳。
 
-        Side Effects:
+        副作用：
             更新待投放队列和 promise 持久化，可能调用主动模型并发送消息；每次
             调用最多完成一条投放。
         """
-        if not self.chat.ready or not self._pending or self._last_classified is None:
+        classified = self._sensor.signal if self._sensor else None
+        if not self.chat.ready or not self._pending or classified is None:
             return
         remaining, candidates, expired = eligible_intents(self._pending, now)
         self._pending = remaining
@@ -666,12 +616,12 @@ class AwarenessService:
             self._persist_promises()
 
         for intent in sorted([*candidates, *expired_vision], key=lambda item: item.intent_type, reverse=True):
-            ctx, decision = self._decision_for(intent, self._last_classified, now)
+            ctx, decision = self._decision_for(intent, classified, now)
             if not decision.allow:
                 continue
             delivered = await self._deliver(
                 intent,
-                self._last_classified,
+                classified,
                 ctx,
                 now,
                 expired_vision=intent in expired_vision,
@@ -684,11 +634,9 @@ class AwarenessService:
     def _responded_since_last(self, now: int) -> bool:
         """判断最近一条桌面消息是否发生在上次预算更新之后。
 
-        Args:
-            now: 当前毫秒时间戳（保留在接口中用于调用方统一传递时间）。
+        :param now: 当前毫秒时间戳（保留在接口中用于调用方统一传递时间）。
 
-        Returns:
-            没有历史消息或最近消息晚于预算时间时返回 ``True``。
+        :return: 没有历史消息或最近消息晚于预算时间时返回 ``True``。
         """
         last_msg = self.chat.memory.last_message_at(self.chat.desktop_context.stream.id)
         if last_msg is None:
@@ -700,10 +648,9 @@ class AwarenessService:
     async def _refresh_sleep(self, now: int) -> None:
         """刷新睡眠状态并在状态变化时推送客户端事件。
 
-        Args:
-            now: 当前毫秒时间戳。
+        :param now: 当前毫秒时间戳。
 
-        Side Effects:
+        副作用：
             可能写入睡眠转换观察事件并推送 ``sleep.state``；状态评估异常只记录
             警告，不中断前台事件处理。
         """
@@ -728,7 +675,7 @@ class AwarenessService:
     async def _poll_loop(self) -> None:
         """以固定间隔执行主动感知 tick，直到收到停止事件。
 
-        Side Effects:
+        副作用：
             周期性刷新待投放队列、作息、日程和兴趣值；单次 tick 异常只记录日志。
         """
         while not self._stop.is_set():
@@ -747,7 +694,7 @@ class AwarenessService:
         该流程刷新待投放队列、按日程时段变化登记 plan 意图、更新睡眠状态，并
         在兴趣达到阈值时尝试生成 idle 意图。
 
-        Side Effects:
+        副作用：
             可能创建日程生成 task、更新兴趣与待投放队列并发送主动消息。
         """
         now = current_time()
@@ -762,12 +709,13 @@ class AwarenessService:
                     intent_type=IntentType.Plan,
                     earliest_at=now,
                     expires_at=now + IntentType.Plan.ttl_ms,
-                    activity=self._last_classified.activity if self._last_classified else 'idle',
+                    activity=self._sensor.signal.activity if self._sensor and self._sensor.signal else 'idle',
                     wants_vision=False,
                 ), now)
             self._last_plan_slot = slot_key
         await self._refresh_sleep(now)
-        if self._last_classified is not None:
+        classified = self._sensor.signal if self._sensor else None
+        if classified is not None:
             self._grow_interest(now)
             if wants_to_speak(self._interest):
-                await self._consider_speak(self._last_classified, now, IntentType.Idle)
+                await self._consider_speak(classified, now, IntentType.Idle)

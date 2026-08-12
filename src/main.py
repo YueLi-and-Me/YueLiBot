@@ -23,6 +23,7 @@ from src.core.common.backend_runtime import create_backend_runtime
 from src.core.common.logger import get_logger, initialize_logging
 from src.core.config.loader import load_config
 from src.core.llm_models.protocol import LlmProvider
+from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
 from src.core.prompts.registry import prompt_metadata
 
@@ -41,30 +42,29 @@ class _LLMGenerator:
     ) -> None:
         """绑定日程模型提供者及生成参数。
 
-        Args:
-            schedule_provider: 已选中的日程模型提供者。
-            temperature: 模型采样温度。
-            max_tokens: 最大输出 token 数；``None`` 表示由提供者决定。
+        :param schedule_provider: 已选中的日程模型提供者。
+        :param temperature: 模型采样温度。
+        :param max_tokens: 最大输出 token 数；``None`` 表示由提供者决定。
         """
 
         self._schedule_provider = schedule_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
 
-    async def generate(self, prompt: str) -> str:
+    async def generate(
+        self,
+        prompt: str,
+    ) -> str:
         """流式生成并拼接一份日程 JSON 文本。
 
-        Args:
-            prompt: 已渲染的日程生成提示词。
+        :param prompt: 已渲染的日程生成提示词。
 
-        Returns:
-            模型返回的非空正文。
+        :return: 模型返回的非空正文。
 
-        Raises:
-            ValueError: 模型只返回推理内容或空正文。
-            Exception: 提供者连接、协议或流式迭代错误直接传播。
+        :raises ValueError: 模型只返回推理内容或空正文。
+        :raises Exception: 提供者连接、协议或流式迭代错误直接传播。
 
-        Side Effects:
+        副作用：
             写入模型请求观察事件；不会持久化日程，持久化由日程服务负责。
         """
 
@@ -77,6 +77,7 @@ class _LLMGenerator:
             messages=messages,
             temperature=self._temperature,
             maxTokens=self._max_tokens,
+            renderParams=current_render_params(),
             **prompt_metadata('schedule', ('schedule',)),
         )
         async for chunk in self._schedule_provider.stream(
@@ -103,16 +104,13 @@ class _LLMGenerator:
 def _bind_backend_socket(port: int) -> socket.socket:
     """绑定并持有本地后端端口，避免探测完成后被其他进程抢占。
 
-    Args:
-        port: 监听端口，范围为 ``1`` 到 ``65535``。
+    :param port: 监听端口，范围为 ``1`` 到 ``65535``。
 
-    Returns:
-        已绑定到 ``127.0.0.1`` 的 TCP socket；调用方负责在服务器接管后管理其生命周期。
+    :return: 已绑定到 ``127.0.0.1`` 的 TCP socket；调用方负责在服务器接管后管理其生命周期。
 
-    Raises:
-        OSError: 端口被占用时抛出带排查提示的异常，其他绑定失败传播原始异常。
+    :raises OSError: 端口被占用时抛出带排查提示的异常，其他绑定失败传播原始异常。
 
-    Side Effects:
+    副作用：
         成功时占用本地端口；绑定失败时关闭临时 socket。
     """
     # 要一直持有这个 socket，探完就放会被别人占走。
@@ -135,10 +133,9 @@ def _bind_backend_socket(port: int) -> socket.socket:
 def _announce_port(port: int) -> None:
     """向父进程以固定键值格式输出实际监听端口。
 
-    Args:
-        port: 后端实际绑定的端口。
+    :param port: 后端实际绑定的端口。
 
-    Side Effects:
+    副作用：
         向标准输出写入并立即刷新 ``YUELI_PORT=<port>``。
     """
 
@@ -148,10 +145,9 @@ def _announce_port(port: int) -> None:
 def _announce_token(token: str) -> None:
     """向父进程以固定键值格式输出当前后端认证令牌。
 
-    Args:
-        token: 当前进程认证 token。
+    :param token: 当前进程认证 token。
 
-    Side Effects:
+    副作用：
         向标准输出写入并立即刷新 ``YUELI_TOKEN=<token>``；调用方必须确保输出通道受信任。
     """
 
@@ -161,7 +157,7 @@ def _announce_token(token: str) -> None:
 def _announce_ready() -> None:
     """向父进程输出后端已完成监听初始化的就绪标记。
 
-    Side Effects:
+    副作用：
         向标准输出写入并立即刷新 ``YUELI_READY=1``。
     """
 
@@ -174,10 +170,9 @@ class _ReadyAnnouncingServer(uvicorn.Server):
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
         """完成 Uvicorn 启动后再输出就绪标记。
 
-        Args:
-            sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入。
+        :param sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入。
 
-        Side Effects:
+        副作用：
             先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1``。
         """
 
@@ -188,17 +183,15 @@ class _ReadyAnnouncingServer(uvicorn.Server):
 def main() -> None:
     """解析命令行参数并启动后端进程。
 
-    Returns:
-        ``None``；服务由 Uvicorn 事件循环持续运行。
+    :return: ``None``；服务由 Uvicorn 事件循环持续运行。
 
-    Side Effects:
+    副作用：
         创建运行时目录、数据库和日志，初始化模型与可选服务，绑定本地端口并启动
         FastAPI。使用 ``--selftest`` 时改为在隔离临时目录执行自检并通过进程退出码
         返回结果。
 
-    Raises:
-        OSError: 端口占用、目录创建或数据库初始化失败。
-        Exception: 配置读取、服务装配或 Uvicorn 启动错误直接传播。
+    :raises OSError: 端口占用、目录创建或数据库初始化失败。
+    :raises Exception: 配置读取、服务装配或 Uvicorn 启动错误直接传播。
     """
 
     parser = argparse.ArgumentParser(description="YueLiBot Python backend")
@@ -271,10 +264,9 @@ def main() -> None:
     def _register_platform_stream(stream: StreamRef) -> None:
         """为 QQ stream 注册唯一的 WebSocket 出站驱动。
 
-        Args:
-            stream: 已由注册表解析的 stream 引用。
+        :param stream: 已由注册表解析的 stream 引用。
 
-        Side Effects:
+        副作用：
             当 stream 属于 QQ 平台且尚未注册驱动时，向平台 broker 写入该 stream 的
             驱动绑定；重复调用不会重复注册。
         """
@@ -322,13 +314,11 @@ def main() -> None:
     ) -> int:
         """将服务事件转发到指定 stream 的 WebSocket 订阅者。
 
-        Args:
-            channel: 事件频道名称。
-            payload: 事件载荷。
-            stream_id: 目标 stream ID，默认使用 desktop stream。
+        :param channel: 事件频道名称。
+        :param payload: 事件载荷。
+        :param stream_id: 目标 stream ID，默认使用 desktop stream。
 
-        Returns:
-            实际收到事件的订阅者数量。
+        :return: 实际收到事件的订阅者数量。
         """
 
         return await push(stream_id, channel, payload)
@@ -408,12 +398,14 @@ def main() -> None:
     # FastAPI lifespan 的事件循环中执行。
     from src.core.services.lifecycle import lifecycle
     from src.core.services.proactive import AwarenessService
+    from src.desktop.sensor import DesktopSensor
+    sensor = DesktopSensor(cfg, _push_event, vision_provider)
     awareness = AwarenessService(
         chat=app_state.chat,
         schedule=schedule,
         cfg=cfg,
         push_event=_push_event,
-        vision_provider=vision_provider,
+        sensor=sensor,
     )
     app_state.awareness = awareness
     app_state.foreground_callback = awareness.on_foreground

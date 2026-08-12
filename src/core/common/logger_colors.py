@@ -51,6 +51,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "schedule.plan": ("#87d7af", False),
     "services.proactive": ("#ff8700", False),
     "desktop.vision": ("#5fafff", False),
+    "desktop.sensor": ("#5fafd7", False),
     "services.tts": ("#ffaf00", False),
     "services.lifecycle": ("#af00ff", False),
     "observe.events": ("#6c6c6c", False),
@@ -85,6 +86,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "schedule.plan": "日程",
     "services.proactive": "感知",
     "desktop.vision": "视觉",
+    "desktop.sensor": "桌面感知",
     "services.tts": "语音",
     "services.lifecycle": "生命周期",
     "observe.events": "追踪",
@@ -96,7 +98,7 @@ def is_color_enabled() -> bool:
     """判断当前控制台是否允许输出 ANSI 颜色。
 
     :return: 标准输出是 TTY，或环境变量 `YUELI_FORCE_COLOR` 等于 `1` 时返回 `True`。
-    :side_effects: 只读取标准输出状态和进程环境变量。
+    副作用：只读取标准输出状态和进程环境变量。
     """
     return sys.stdout.isatty() or os.environ.get("YUELI_FORCE_COLOR") == "1"
 
@@ -104,14 +106,11 @@ def is_color_enabled() -> bool:
 def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
     """将三位或六位十六进制颜色转换为 RGB 整数元组。
 
-    Args:
-        hex_color: 带或不带 ``#`` 的三位或六位十六进制颜色文本。
+    :param hex_color: 带或不带 ``#`` 的三位或六位十六进制颜色文本。
 
-    Returns:
-        ``(red, green, blue)`` 元组，每个分量范围为 ``0`` 到 ``255``。
+    :return: ``(red, green, blue)`` 元组，每个分量范围为 ``0`` 到 ``255``。
 
-    Raises:
-        ValueError: 颜色文本包含非十六进制字符或长度无法解析。
+    :raises ValueError: 颜色文本包含非十六进制字符或长度无法解析。
     """
     value = hex_color.lstrip("#")
     if len(value) == 3:
@@ -122,11 +121,10 @@ def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
 def supports_truecolor() -> bool:
     """判断当前终端是否支持 24 位 ANSI 真彩色。
 
-    Returns:
-        检测到 ``COLORTERM`` 为 truecolor/24bit、运行于 Windows Terminal，或
+    :return: 检测到 ``COLORTERM`` 为 truecolor/24bit、运行于 Windows Terminal，或
         标准输出已启用颜色时返回 ``True``；否则返回 ``False``。
 
-    Side Effects:
+    副作用：
         读取进程环境变量和标准输出状态，不修改终端配置。
     """
     colorterm = os.environ.get("COLORTERM", "").lower()
@@ -141,15 +139,12 @@ def supports_truecolor() -> bool:
 def rgb_to_ansi_truecolor(rgb: Tuple[int, int, int], bold: bool = False) -> str:
     """将 RGB 前景色编码为 ANSI 24 位真彩色转义序列。
 
-    Args:
-        rgb: ``(red, green, blue)`` 分量元组；分量应在 ``0`` 到 ``255`` 范围内。
-        bold: 是否追加粗体控制码，默认 ``False``。
+    :param rgb: ``(red, green, blue)`` 分量元组；分量应在 ``0`` 到 ``255`` 范围内。
+    :param bold: 是否追加粗体控制码，默认 ``False``。
 
-    Returns:
-        可直接写入终端的 ANSI 转义序列。
+    :return: 可直接写入终端的 ANSI 转义序列。
 
-    Raises:
-        ValueError: 分量无法格式化为合法整数时抛出。
+    :raises ValueError: 分量无法格式化为合法整数时抛出。
     """
     prefix = "1;" if bold else ""
     red, green, blue = rgb
@@ -159,18 +154,15 @@ def rgb_to_ansi_truecolor(rgb: Tuple[int, int, int], bold: bool = False) -> str:
 def rgb_to_256_index(red: int, green: int, blue: int) -> int:
     """在 xterm 256 色调色板中查找与 RGB 欧氏距离最近的颜色索引。
 
-    Args:
-        red: 红色分量。
-        green: 绿色分量。
-        blue: 蓝色分量。
+    :param red: 红色分量。
+    :param green: 绿色分量。
+    :param blue: 蓝色分量。
 
-    Returns:
-        ``0`` 到 ``255`` 范围内的最接近调色板索引。
+    :return: ``0`` 到 ``255`` 范围内的最接近调色板索引。
 
-    Raises:
-        TypeError: 任一分量不支持数值减法或平方运算时抛出。
+    :raises TypeError: 任一分量不支持数值减法或平方运算时抛出。
 
-    Performance:
+    性能：
         每次调用遍历完整的 256 色调色板，时间复杂度为常数，但不应在单条日志中重复计算。
     """
     # 前 16 格是系统色，接着 6×6×6 的色立方，最后 24 级灰阶
@@ -200,12 +192,10 @@ def rgb_to_256_index(red: int, green: int, blue: int) -> int:
 def index_to_ansi_256(index: int, bold: bool = False) -> str:
     """将 xterm 256 色索引编码为 ANSI 前景转义序列。
 
-    Args:
-        index: 调色板索引，建议范围为 ``0`` 到 ``255``。
-        bold: 是否追加粗体控制码，默认 ``False``。
+    :param index: 调色板索引，建议范围为 ``0`` 到 ``255``。
+    :param bold: 是否追加粗体控制码，默认 ``False``。
 
-    Returns:
-        可直接写入终端的 ANSI 转义序列。
+    :return: 可直接写入终端的 ANSI 转义序列。
     """
     prefix = "1;" if bold else ""
     return f"\033[{prefix}38;5;{index}m"
@@ -214,15 +204,12 @@ def index_to_ansi_256(index: int, bold: bool = False) -> str:
 def hex_to_ansi(hex_color: str, bold: bool = False) -> str:
     """按当前终端能力将十六进制颜色转换为 ANSI 前景转义序列。
 
-    Args:
-        hex_color: 三位或六位十六进制颜色文本。
-        bold: 是否追加粗体控制码，默认 ``False``。
+    :param hex_color: 三位或六位十六进制颜色文本。
+    :param bold: 是否追加粗体控制码，默认 ``False``。
 
-    Returns:
-        当前终端支持真彩色时返回 24 位序列，否则返回最接近的 256 色序列。
+    :return: 当前终端支持真彩色时返回 24 位序列，否则返回最接近的 256 色序列。
 
-    Raises:
-        ValueError: 颜色文本无法解析为 RGB 值。
+    :raises ValueError: 颜色文本无法解析为 RGB 值。
     """
     rgb = hex_to_rgb(hex_color)
     if supports_truecolor():
@@ -239,11 +226,9 @@ CONVERTED_MODULE_COLORS: Dict[str, str] = {
 def module_color(logger_name: str) -> str:
     """返回 logger 模块对应的 ANSI 前景色。
 
-    Args:
-        logger_name: 不带 ``src.`` 前缀的点分模块名。
+    :param logger_name: 不带 ``src.`` 前缀的点分模块名。
 
-    Returns:
-        已登记模块的 ANSI 颜色序列；未登记模块返回空字符串。
+    :return: 已登记模块的 ANSI 颜色序列；未登记模块返回空字符串。
     """
     return CONVERTED_MODULE_COLORS.get(logger_name, "")
 
@@ -251,11 +236,9 @@ def module_color(logger_name: str) -> str:
 def module_alias(logger_name: str) -> str:
     """返回 logger 模块的中文显示别名。
 
-    Args:
-        logger_name: 不带 ``src.`` 前缀的点分模块名。
+    :param logger_name: 不带 ``src.`` 前缀的点分模块名。
 
-    Returns:
-        已登记模块的中文别名；未登记模块返回原始模块名。
+    :return: 已登记模块的中文别名；未登记模块返回原始模块名。
     """
     return MODULE_ALIASES.get(logger_name, logger_name)
 
@@ -267,14 +250,11 @@ def normalize_logger_name(logger_name: str) -> str:
     不提供区分度。``desktop.`` 与 ``platforms.`` 保留，它们标明来源是桌面外壳
     还是某个协议适配器，排查时有用。
 
-    Args:
-        logger_name: ``get_logger(__name__)`` 产生的点分模块路径。
+    :param logger_name: ``get_logger(__name__)`` 产生的点分模块路径。
 
-    Returns:
-        剥掉 ``src.core.`` 或 ``src.`` 前缀后的模块名，两者都不匹配时返回原字符串。
+    :return: 剥掉 ``src.core.`` 或 ``src.`` 前缀后的模块名，两者都不匹配时返回原字符串。
 
-    Raises:
-        AttributeError: 参数不是字符串时由 ``startswith`` 操作触发。
+    :raises AttributeError: 参数不是字符串时由 ``startswith`` 操作触发。
     """
     for prefix in ("src.core.", "src."):
         if logger_name.startswith(prefix):
@@ -285,11 +265,9 @@ def normalize_logger_name(logger_name: str) -> str:
 def level_color(level: str) -> str:
     """返回日志级别对应的 ANSI 颜色序列。
 
-    Args:
-        level: 日志级别名称，不区分大小写。
+    :param level: 日志级别名称，不区分大小写。
 
-    Returns:
-        已知级别的 ANSI 颜色序列；未知级别返回空字符串。
+    :return: 已知级别的 ANSI 颜色序列；未知级别返回空字符串。
     """
     return _LEVEL_COLORS.get(level.lower(), "")
 
@@ -308,7 +286,7 @@ def enable_windows_ansi() -> None:
     """在 Windows 上启用控制台的 ANSI/VT 处理。
 
     :return: 无返回值；非 Windows 平台直接返回。
-    :side_effects: Windows 平台调用 colorama 的控制台初始化函数。
+    副作用：Windows 平台调用 colorama 的控制台初始化函数。
     """
     if sys.platform != "win32":
         return
