@@ -499,6 +499,8 @@ class ChatService:
                         f'未回复：{action.reason}',
                         turn_id=turn,
                     )
+                    if context.stream.kind == 'group':
+                        self._emit_group_observation(inbound, action.reason, trimmed)
                     if context.stream.platform == 'desktop':
                         await self._emit(stream_id, 'chat.silent', {
                             'turnId': turn,
@@ -713,6 +715,31 @@ class ChatService:
             text,
             current_time(),
         )
+        self._emit_group_observation(inbound, reason, text)
+        return message_id
+
+    def _emit_group_observation(
+        self,
+        inbound: InboundMessage,
+        reason: str,
+        text: str,
+    ) -> None:
+        """登记已保存群聊消息的观察事件并渲染控制台输出。
+
+        :param inbound: 已完成 stream、人物和身份解析的群聊消息。
+        :param reason: 本次不回复消息的策略原因。
+        :param text: 已去除首尾空白且已经写入历史的消息正文。
+
+        :raises ValueError: 入站消息不是群聊，或正文为空。
+
+        副作用：
+            登记 observation 事件并渲染观察输出，不重复写入消息历史。
+        """
+        context = inbound.context
+        if context.stream.kind != 'group':
+            raise ValueError('_emit_group_observation 只接受群聊消息')
+        if not text:
+            raise ValueError('群聊消息正文不能为空')
         sender = self._sender_metadata(context)
         trace.emit(
             'observation',
@@ -723,7 +750,6 @@ class ChatService:
             **sender,
         )
         render_observation(sender['senderLabel'], text, reason)
-        return message_id
 
     def _session(self, stream_id: int) -> _SessionState:
         """取得或创建一个 stream 的内存会话状态。
