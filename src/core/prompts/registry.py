@@ -21,12 +21,13 @@ logger = get_logger(__name__)
 BUILTIN_PROMPT_DIR = Path(__file__).parent
 MAX_TEMPLATE_HISTORY = 50
 FIXED_TEMPLATE_IDS = frozenset({'chat.discipline', 'chat.boundaries'})
-CHAT_SYSTEM_TEMPLATE_IDS = (
-    'chat.boundaries',
-    'chat.discipline',
-    'chat.protocol',
-    'chat.system',
-)
+CHAT_PROTOCOL_TEMPLATE_ID = 'chat.protocol'
+CHAT_SYSTEM_COMPONENTS: Dict[str, str] = {
+    'chat.boundaries': 'boundaries',
+    'chat.discipline': 'discipline',
+    CHAT_PROTOCOL_TEMPLATE_ID: 'protocol',
+}
+CHAT_SYSTEM_TEMPLATE_IDS = (*CHAT_SYSTEM_COMPONENTS, 'chat.system')
 CHAT_PROACTIVE_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.proactive')
 TEMPLATE_IDS = (
     'chat.protocol',

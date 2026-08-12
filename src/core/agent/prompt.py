@@ -12,7 +12,11 @@ from typing import Dict, List, Optional, Tuple
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.core.common.clock import now as current_time
-from src.core.prompts.registry import get_prompt
+from src.core.prompts.registry import (
+    CHAT_PROTOCOL_TEMPLATE_ID,
+    CHAT_SYSTEM_COMPONENTS,
+    get_prompt,
+)
 
 # 重逢措辞使用有序阈值表统一维护，测试固定阈值顺序；第三档的天数由函数动态生成。
 RESUMPTION_TIERS: List[Tuple[int, str]] = [
@@ -283,11 +287,14 @@ def build_system_prompt(
     ):
         birthday_note = '\n今天是你的生日。'
 
-    protocol_values = {
+    component_values = {
+        template_id: {}
+        for template_id in CHAT_SYSTEM_COMPONENTS
+    }
+    component_values[CHAT_PROTOCOL_TEMPLATE_ID] = {
         'emotions': ' / '.join(EXPRESSION_IDS),
         'gestures': ' / '.join(GESTURE_IDS),
     }
-    protocol = get_prompt('chat.protocol').render(**protocol_values).rstrip()
     system_values = {
         'name': name,
         'identity': identity,
@@ -311,17 +318,16 @@ def build_system_prompt(
         'tone': _prefixed_block(tone),
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
         'expression_habits': _expression_habits_block(expression_habits),
-        'discipline': get_prompt('chat.discipline').text.rstrip(),
-        'boundaries': get_prompt('chat.boundaries').text.rstrip(),
-        'protocol': protocol,
     }
+    system_values.update({
+        placeholder: get_prompt(template_id).render(
+            **component_values[template_id]
+        ).rstrip()
+        for template_id, placeholder in CHAT_SYSTEM_COMPONENTS.items()
+    })
     if render_params is not None:
-        render_params.update({
-            'chat.boundaries': {},
-            'chat.discipline': {},
-            'chat.protocol': protocol_values,
-            'chat.system': system_values,
-        })
+        render_params.update(component_values)
+        render_params['chat.system'] = system_values
     # 主骨架由资源模板决定；此处只注入配置和当前轮次上下文。
     return get_prompt('chat.system').render(**system_values)
 

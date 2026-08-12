@@ -10,6 +10,7 @@ from src.core.observe.events import broadcaster
 from src.core.observe.store import EventStore
 from src.core.prompts.registry import (
     CHAT_PROACTIVE_TEMPLATE_IDS,
+    CHAT_SYSTEM_COMPONENTS,
     CHAT_SYSTEM_TEMPLATE_IDS,
     get_prompt,
 )
@@ -79,13 +80,12 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
         params[template_id] = dict(values)
     rendered: Dict[str, str] = {}
     if 'chat.system' in template_ids:
-        for template_id in ('chat.boundaries', 'chat.discipline', 'chat.protocol'):
+        for template_id in CHAT_SYSTEM_COMPONENTS:
             rendered[template_id] = get_prompt(template_id).render(**params[template_id])
         system_values = dict(params['chat.system'])
         system_values.update({
-            'boundaries': rendered['chat.boundaries'],
-            'discipline': rendered['chat.discipline'],
-            'protocol': rendered['chat.protocol'],
+            placeholder: rendered[template_id]
+            for template_id, placeholder in CHAT_SYSTEM_COMPONENTS.items()
         })
         rendered['chat.system'] = get_prompt('chat.system').render(**system_values)
         if 'chat.proactive' in template_ids:
