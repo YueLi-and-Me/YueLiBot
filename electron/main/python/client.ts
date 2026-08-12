@@ -184,17 +184,6 @@ export class PythonClient {
   }
 
   /**
-   * 获取指定序号之后的追踪事件。
-   *
-   * @param since 起始事件序号，传入 ``0`` 表示从当前保留窗口开始读取。
-   * @returns 经过 JSON 解码的追踪 payload。
-   * @throws Error 网络、超时或响应不是合法 JSON 时抛出。
-   */
-  async debugTrace(since: number): Promise<unknown> {
-    return (await this._fetch(`/debug/trace?since=${since}`, { method: 'GET' })).json()
-  }
-
-  /**
    * 提交前台活动快照供后端感知服务更新。
    *
    * @param info 前台采集模块产生的可序列化活动对象。

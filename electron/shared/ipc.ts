@@ -124,7 +124,7 @@ export interface ObservabilityPayload {
   }
 }
 
-/** `/debug/trace` 的稳定公共字段；各 kind 的业务字段保留为 unknown。 */
+/** `/ws/events` 与 `/events` 事件载荷的稳定公共字段；各 kind 的业务字段保留为 unknown。 */
 export interface TraceEntry {
   seq: number | null
   at: number
