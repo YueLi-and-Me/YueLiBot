@@ -211,20 +211,34 @@ class MemoryStore:
         self._db.execute('DELETE FROM messages WHERE id = ? AND stream_id = ?', (id, stream_id))
         self._db.commit()
 
-    def working_memory(self, stream_id: int, limit: int = 40) -> list[StoredMessage]:
+    def working_memory(
+        self,
+        stream_id: int,
+        limit: int = 40,
+        through_message_id: int | None = None,
+    ) -> list[StoredMessage]:
         """读取指定 stream 尚未归档的最近工作记忆。
 
         :param stream_id: 目标 stream ID。
         :param limit: 最多返回的消息数，默认值为 40。
+        :param through_message_id: 可选的消息 ID 上界，用于读取某个已持久化批次的历史快照。
         :return: 按时间正序排列的 `StoredMessage` 列表。
         :raises sqlite3.Error: 查询失败。
         副作用：只读 messages 表。
         """
-        rows = self._db.execute(
-            '''SELECT role, content, created_at, sender_person_id FROM messages
-               WHERE stream_id = ? AND episode_id IS NULL ORDER BY id DESC LIMIT ?''',
-            (stream_id, limit)
-        ).fetchall()
+        if through_message_id is None:
+            rows = self._db.execute(
+                '''SELECT role, content, created_at, sender_person_id FROM messages
+                   WHERE stream_id = ? AND episode_id IS NULL ORDER BY id DESC LIMIT ?''',
+                (stream_id, limit),
+            ).fetchall()
+        else:
+            rows = self._db.execute(
+                '''SELECT role, content, created_at, sender_person_id FROM messages
+                   WHERE stream_id = ? AND episode_id IS NULL AND id <= ?
+                   ORDER BY id DESC LIMIT ?''',
+                (stream_id, through_message_id, limit),
+            ).fetchall()
         return [StoredMessage(role=r[0], content=r[1], created_at=r[2], sender_person_id=r[3])
                 for r in reversed(rows)]
 

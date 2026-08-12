@@ -83,6 +83,19 @@ class _InflightTurn:
     cancel_event: asyncio.Event
 
 
+@dataclass(frozen=True)
+class _BufferedMessage:
+    """一条已经持久化、等待聊天循环消费的入站消息。"""
+
+    text: str
+    context: ConversationContext
+    mentioned_me: bool
+    external_message_id: str | None
+    bot_name: str | None
+    message_id: int
+    previous_message_at: int | None
+
+
 @dataclass
 class _SessionState:
     """一个 stream 内稳定的语气、表达样本和单次重逢上下文。"""
@@ -231,7 +244,7 @@ class ChatService:
         self.persona.snapshot_daily(self._desktop_context.person.id)
         self._turn_id = 0
         self._inflight: dict[int, _InflightTurn] = {}
-        self._buffers: dict[int, list[InboundMessage]] = {}
+        self._buffers: dict[int, list[_BufferedMessage]] = {}
         self._stream_claims: dict[int, str] = {}
         self._poll_task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
@@ -454,16 +467,27 @@ class ChatService:
         if not trimmed:
             return
         stream_id = inbound.context.stream.id
-        self._buffers.setdefault(stream_id, []).append(InboundMessage(
+        accepted_at = current_time()
+        previous_message_at = self.memory.last_message_at(stream_id)
+        message_id = self.memory.append_message(
+            stream_id,
+            inbound.context.person.id,
+            'user',
+            trimmed,
+            accepted_at,
+        )
+        self._buffers.setdefault(stream_id, []).append(_BufferedMessage(
             text=trimmed,
             context=inbound.context,
             mentioned_me=inbound.mentioned_me,
             external_message_id=inbound.external_message_id,
             bot_name=inbound.bot_name,
+            message_id=message_id,
+            previous_message_at=previous_message_at,
         ))
 
-    async def _start_turn(self, batch: list[InboundMessage]) -> int:
-        """取一个非空消息批次创建并启动回复回合。"""
+    async def _start_turn(self, batch: list[_BufferedMessage]) -> int:
+        """取一个已持久化的非空消息批次创建并启动回复回合。"""
         if not batch:
             raise ValueError('回复批次不能为空')
         last_message = batch[-1]
@@ -529,7 +553,6 @@ class ChatService:
                 桌面 WebSocket 或外部平台出站驱动。
             """
 
-            user_msg_ids: list[int] = []
             assistant_raw = ''
             reply_persisted = False
             try:
@@ -538,16 +561,13 @@ class ChatService:
                 self.settle_elapsed(context, now, asleep)
                 self.memory.sweep(now)
 
-                # 必须在写入当前用户消息前计算会话间隔，否则 last_message_at 会变成 now。
-                self._refresh_session(context, now)
-                for message in batch:
-                    user_msg_ids.append(self.memory.append_message(
-                        stream_id,
-                        message.context.person.id,
-                        'user',
-                        message.text,
-                        now,
-                    ))
+                # 用户消息已在确认接收时落库，使用批次首条入队前的历史位置计算会话间隔。
+                self._refresh_session(
+                    context,
+                    now,
+                    last_message_at=batch[0].previous_message_at,
+                    read_history=False,
+                )
                 if cancel_event.is_set():
                     return
 
@@ -566,6 +586,7 @@ class ChatService:
                     trimmed,
                     now,
                     inbound.bot_name,
+                    through_message_id=batch[-1].message_id,
                 )
                 decision_messages = self._render_prepared_context(prepared_context)
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
@@ -694,9 +715,9 @@ class ChatService:
                     if not reply_persisted:
                         self._persist_reply(context, assistant_raw)
                     return
-                if not reply_persisted and user_msg_ids:
-                    # 模型尚未产出正文时回滚用户消息，避免留下无法对应的未完成回合。
-                    self._rollback_batch_or_keep(context, user_msg_ids, assistant_raw)
+                if not reply_persisted:
+                    # 已确认接收的用户消息属于历史；失败时只保存已经产生的助手正文。
+                    self._persist_reply(context, assistant_raw)
                 hint = _HINTS.get(exc.kind, '')
                 snapshot = dump_llm_request('chat', exc.kind, str(exc), {
                     'turnId': turn,
@@ -715,9 +736,9 @@ class ChatService:
                         'hint': hint,
                     })
             except Exception as exc:
-                if not reply_persisted and user_msg_ids:
-                    # 非模型异常沿用同一历史一致性策略，再生成诊断快照。
-                    self._rollback_batch_or_keep(context, user_msg_ids, assistant_raw)
+                if not reply_persisted:
+                    # 准备或投递失败不能删除已确认接收的用户消息。
+                    self._persist_reply(context, assistant_raw)
                 snapshot = dump_llm_request('chat', type(exc).__name__, str(exc), {
                     'turnId': turn,
                     'stage': trace.current_stage_id(),
@@ -886,12 +907,22 @@ class ChatService:
             self._sessions[stream_id] = state
         return state
 
-    def _refresh_session(self, context: ConversationContext, now: int) -> int | None:
+    def _refresh_session(
+        self,
+        context: ConversationContext,
+        now: int,
+        last_message_at: int | None = None,
+        *,
+        read_history: bool = True,
+    ) -> int | None:
         """根据静默间隔刷新会话状态、临时语气和表达样本随机种子。
 
         :param context: 当前消息的会话上下文。
         :param now: 当前 Unix 毫秒时间戳。
 
+        :param last_message_at: 已知的上一条消息时间；默认值为 ``None``。
+        :param read_history: 是否从历史读取最近消息；普通主动消息使用默认值 ``True``，
+            已持久化的缓冲批次传入 ``False``。
         :return: 本次应注入提示词的重逢间隔毫秒数；首次会话、群聊或间隔未超过阈值时返回
             ``None``。
 
@@ -900,7 +931,7 @@ class ChatService:
         """
         stream_id = context.stream.id
         state = self._session(stream_id)
-        last = self.memory.last_message_at(stream_id)
+        last = self.memory.last_message_at(stream_id) if read_history else last_message_at
         gap_ms = now - last if last is not None else None
         if (state.started_at is None
                 or last is None
@@ -972,44 +1003,6 @@ class ChatService:
                 text,
                 current_time(),
             )
-
-    def _rollback_or_keep(
-        self,
-        context: ConversationContext,
-        user_msg_id: int,
-        assistant_raw: str,
-    ) -> None:
-        """按已展示正文决定失败回合的历史保留策略。
-
-        如果模型没有产生可见正文，则删除对应用户消息；如果已经产生正文，则保留
-        用户消息和规范化后的助手消息，避免历史只剩无来源的助手回复。
-
-        :param context: 当前会话上下文。
-        :param user_msg_id: 已写入的用户消息 ID。
-        :param assistant_raw: 模型已产生的原始助手文本。
-
-        :raises sqlite3.Error: 删除用户消息或写入助手消息失败。
-
-        副作用：
-            修改当前回合的 L1 历史记录；不回滚已经发送给客户端的内容。
-        """
-        if close_dangling_say(assistant_raw):
-            self._persist_reply(context, assistant_raw)
-        else:
-            self.memory.delete_message(context.stream.id, user_msg_id)
-
-    def _rollback_batch_or_keep(
-        self,
-        context: ConversationContext,
-        user_msg_ids: list[int],
-        assistant_raw: str,
-    ) -> None:
-        """失败时保留整批用户消息与单份回复，或删除整批用户消息。"""
-        if close_dangling_say(assistant_raw):
-            self._persist_reply(context, assistant_raw)
-            return
-        for user_msg_id in user_msg_ids:
-            self.memory.delete_message(context.stream.id, user_msg_id)
 
     def interrupt(self, stream_id: int) -> None:
         """仅取消指定 stream 的活动对话、语音任务和未完成语音缓冲。
@@ -1559,6 +1552,7 @@ class ChatService:
         query: str,
         now: int,
         platform_bot_name: str | None = None,
+        through_message_id: int | None = None,
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -1566,6 +1560,7 @@ class ChatService:
         :param query: 当前用户文本。
         :param now: 当前毫秒时间戳。
         :param platform_bot_name: 当前平台登录昵称；仅用于当前入站消息的称呼匹配。
+        :param through_message_id: 可选的历史消息 ID 上界；缓冲回合用它隔离稍后批次。
         :return: 可供动作决策读取、并可在确认回复后继续增强的上下文。
 
         副作用：
@@ -1608,6 +1603,7 @@ class ChatService:
         wm = self.memory.working_memory(
             context.stream.id,
             self._working_memory_messages,
+            through_message_id,
         )
         raw_history = self._history_for_context(context, wm)
         # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。
