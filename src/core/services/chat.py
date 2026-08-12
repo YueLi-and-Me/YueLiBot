@@ -36,7 +36,7 @@ from src.core.config.schema import Config, ConversationConfig
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_request
-from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
+from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, RecalledFact
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
@@ -106,6 +106,24 @@ class _TurnSink:
     segments: list[str] = field(default_factory=list)
     segment: list[str] | None = None
     interrupted: bool = False
+
+
+@dataclass(frozen=True)
+class _PreparedTurnContext:
+    """保存一次性组装完成、可继续附加模型增强的回合上下文。"""
+
+    context: ConversationContext
+    query: str
+    now: int
+    platform_bot_name: str | None
+    fact_candidates: list[RecalledFact]
+    episodes: list[str]
+    persona: str
+    acquaintance: str
+    activity: str | None
+    schedule: str | None
+    resumption: str | None
+    raw_history: list[dict[str, str]]
 
 
 class ChatService:
@@ -434,16 +452,13 @@ class ChatService:
                     source_text=trimmed,
                 )
                 self._mark_stage(context, CONTEXT, turn_id=turn)
-                session = self._session(stream_id)
-                pending_resumption = session.resumption_gap_ms
-                decision_messages = await self._build_messages_with_vector(
+                prepared_context = self._prepare_turn_context(
                     context,
                     trimmed,
                     now,
-                    cancel_event,
                     inbound.bot_name,
-                    include_model_enrichment=False,
                 )
+                decision_messages = self._render_prepared_context(prepared_context)
                 action = await self._action_policy.decide(ActionContext(
                     turn_id=turn,
                     stream_id=stream_id,
@@ -472,19 +487,13 @@ class ChatService:
                     return
                 if action.action != 'reply':
                     raise ValueError(f'未知回合动作：{action.action}')
-                # 决策预览已经看过本轮重逢上下文；正式回复仍须使用同一份一次性信息。
-                session.resumption_gap_ms = pending_resumption
                 if self._schedule:
                     self._schedule.ensure_background(now)
                 render_params: dict[str, dict[str, str]] = {}
-                messages = await self._build_messages_with_vector(
-                    context,
-                    trimmed,
-                    now,
+                messages = await self._enrich_prepared_context(
+                    prepared_context,
                     cancel_event,
-                    inbound.bot_name,
                     render_params,
-                    include_model_enrichment=True,
                 )
                 self._mark_stage(context, GENERATING, turn_id=turn)
                 trace.emit(
@@ -1350,46 +1359,32 @@ class ChatService:
                    snapshotPath=str(snapshot) if snapshot else None)
         return []
 
-    async def _build_messages_with_vector(
+    def _prepare_turn_context(
         self,
         context: ConversationContext,
         query: str,
         now: int,
-        signal: asyncio.Event | None = None,
         platform_bot_name: str | None = None,
-        render_params: dict[str, dict[str, str]] | None = None,
-        include_model_enrichment: bool = True,
-    ) -> list[dict]:
-        """异步构建包含向量召回和表达样本的模型消息。
+    ) -> _PreparedTurnContext:
+        """组装不依赖模型调用的完整回合上下文。
 
         :param context: 当前会话上下文。
         :param query: 当前用户文本。
         :param now: 当前毫秒时间戳。
-        :param signal: 可选的模型选择取消信号。
         :param platform_bot_name: 当前平台登录昵称；仅用于当前入站消息的称呼匹配。
-        :param include_model_enrichment: 是否调用向量与表达模型；动作决策预览传
-                ``False``，正式回复保持默认值。
-
-        :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
+        :return: 可供动作决策读取、并可在确认回复后继续增强的上下文。
 
         副作用：
-            可能调用嵌入模型、读取记忆和日程、消费一次重逢提示，并调用表达样本
-            选择模型。
+            读取记忆、人格、日程和活动状态，并消费一次重逢提示；不调用模型，
+            不强化召回事实。
         """
-
-        # 查询向量只影响事实排序；即使向量服务禁用，事实召回仍保留关键词路径。
-        query_embedding = (
-            await self._vector.embed_query(query)
-            if include_model_enrichment
-            else None
-        )
-        facts = self.memory.recall_facts(
+        fact_candidates = self.memory.recall_facts(
             context.person.id,
             query,
             self._fact_recall_limit,
             now,
-            query_embedding=query_embedding,
-            reinforce_matches=include_model_enrichment,
+            reinforce_matches=False,
+            return_candidates=True,
         )
         recalled = self.memory.recall_episodes(
             context.stream.id,
@@ -1427,30 +1422,137 @@ class ChatService:
                 and context.person.kind == 'owner'
                 and self._activity is not None):
             activity = self._activity()
-        system = build_system_prompt(
-            now=datetime.fromtimestamp(now / 1000),
+        return _PreparedTurnContext(
+            context=context,
+            query=query,
+            now=now,
+            platform_bot_name=platform_bot_name,
+            fact_candidates=fact_candidates,
+            episodes=[episode.summary for episode in episodes],
             persona=persona_desc,
             acquaintance=acquaintance,
-            facts=[f.content for f in facts],
-            episodes=[e.summary for e in episodes],
             activity=activity,
             schedule=schedule_desc,
-            expression_habits=(
-                render_expression_habits(
-                    await self._pick_expression_habits(context, query, raw_history, signal)
-                )
-                if include_model_enrichment
-                else None
-            ),
-            tone=self._session(context.stream.id).tone,
             resumption=resumption,
-            platform_name=platform_bot_name,
+            raw_history=raw_history,
+        )
+
+    def _render_prepared_context(
+        self,
+        prepared: _PreparedTurnContext,
+        *,
+        facts: list[RecalledFact] | None = None,
+        expression_habits: str | None = None,
+        render_params: dict[str, dict[str, str]] | None = None,
+    ) -> list[dict]:
+        """将同一份已组装上下文渲染为模型消息。
+
+        :param prepared: 决策前已完成一次性组装的回合上下文。
+        :param facts: 可选的增强后事实列表；省略时使用词面排序结果。
+        :param expression_habits: 可选表达习惯提示词块。
+        :param render_params: 可选提示词渲染参数收集字典。
+        :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
+        副作用：只读取配置和会话语调，不读写数据库、不调用模型。
+        """
+        selected_facts = (
+            prepared.fact_candidates[:self._fact_recall_limit]
+            if facts is None
+            else facts
+        )
+        system = build_system_prompt(
+            now=datetime.fromtimestamp(prepared.now / 1000),
+            persona=prepared.persona,
+            acquaintance=prepared.acquaintance,
+            facts=[fact.content for fact in selected_facts],
+            episodes=prepared.episodes,
+            activity=prepared.activity,
+            schedule=prepared.schedule,
+            expression_habits=expression_habits,
+            tone=self._session(prepared.context.stream.id).tone,
+            resumption=prepared.resumption,
+            platform_name=prepared.platform_bot_name,
             render_params=render_params,
             **self._prompt_config_kwargs(),
         )
         # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
-        history = normalize_history(raw_history)
+        history = normalize_history(prepared.raw_history)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
+
+    async def _enrich_prepared_context(
+        self,
+        prepared: _PreparedTurnContext,
+        signal: asyncio.Event | None,
+        render_params: dict[str, dict[str, str]],
+    ) -> list[dict]:
+        """确认回复后，在既有上下文上附加向量与表达模型增强。
+
+        :param prepared: 动作决策实际读取的同一份上下文。
+        :param signal: 可选的表达选择取消信号。
+        :param render_params: 提示词渲染参数收集字典。
+        :return: 使用增强后事实排序和表达习惯渲染的最终模型消息。
+        副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID。
+        """
+        query_embedding = await self._vector.embed_query(prepared.query)
+        facts = self.memory.rank_recalled_facts(
+            prepared.fact_candidates,
+            query_embedding,
+            self._fact_recall_limit,
+        )
+        self.memory.reinforce_recalled_facts(
+            prepared.context.person.id,
+            facts,
+            prepared.now,
+        )
+        expression_habits = render_expression_habits(
+            await self._pick_expression_habits(
+                prepared.context,
+                prepared.query,
+                prepared.raw_history,
+                signal,
+            )
+        )
+        return self._render_prepared_context(
+            prepared,
+            facts=facts,
+            expression_habits=expression_habits,
+            render_params=render_params,
+        )
+
+    async def _build_messages_with_vector(
+        self,
+        context: ConversationContext,
+        query: str,
+        now: int,
+        signal: asyncio.Event | None = None,
+        platform_bot_name: str | None = None,
+        render_params: dict[str, dict[str, str]] | None = None,
+        include_model_enrichment: bool = True,
+    ) -> list[dict]:
+        """兼容诊断入口，复用单次组装与后续增强流程构建消息。
+
+        :param context: 当前会话上下文。
+        :param query: 当前用户文本。
+        :param now: 当前毫秒时间戳。
+        :param signal: 可选的表达选择取消信号。
+        :param platform_bot_name: 当前平台登录昵称。
+        :param render_params: 可选提示词渲染参数收集字典。
+        :param include_model_enrichment: 是否在已组装上下文上附加模型增强。
+        :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
+        副作用：只组装一次上下文；启用增强时调用向量和表达模型并强化最终事实。
+        """
+        prepared = self._prepare_turn_context(
+            context,
+            query,
+            now,
+            platform_bot_name,
+        )
+        if not include_model_enrichment:
+            return self._render_prepared_context(prepared, render_params=render_params)
+        return await self._enrich_prepared_context(
+            prepared,
+            signal,
+            render_params if render_params is not None else {},
+        )
 
     def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
         """返回群聊文本称呼候选。

@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import json
@@ -72,6 +72,9 @@ class RecalledFact:
     content: str
     retention: float
     score: float
+    lexical_relevance: float = field(default=0.0, repr=False, compare=False)
+    embedding: bytes | None = field(default=None, repr=False, compare=False)
+    half_life_hours: float = field(default=0.0, repr=False, compare=False)
 
 
 @dataclass
@@ -519,6 +522,7 @@ class MemoryStore:
         now: int | None = None,
         query_embedding: bytes | None = None,
         reinforce_matches: bool = True,
+        return_candidates: bool = False,
     ) -> list[RecalledFact]:
         """
         按 BM25 召回人物事实，并在向量齐全时执行混合相关度排序。
@@ -529,6 +533,7 @@ class MemoryStore:
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时仅使用 BM25。
         :param reinforce_matches: 是否回补命中事实；动作决策预览应传 ``False``。
+        :param return_candidates: 是否返回截取前的候选池，供同一轮后续向量重排。
 
         :return: 按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
 
@@ -578,13 +583,22 @@ class MemoryStore:
                     # 向量计算失败时保留 BM25 相关度，确保单条坏向量不阻断整批召回。
                     pass
             final_score = relevance * retention_weight(ret)
-            scored.append(RecalledFact(id=r[0], kind=r[1], content=r[2],
-                                        retention=ret, score=final_score))
+            scored.append(RecalledFact(
+                id=r[0],
+                kind=r[1],
+                content=r[2],
+                retention=ret,
+                score=final_score,
+                lexical_relevance=relevance_from_bm25(r[7]),
+                embedding=r[8],
+                half_life_hours=r[5],
+            ))
         scored.sort(key=lambda x: x.score, reverse=True)
-        result = scored[:limit]
+        selected = scored[:limit]
+        result = scored if return_candidates else selected
         # 命中后回补事实强度，使重复访问逐步提高留存度。
         if reinforce_matches:
-            for h in result:
+            for h in selected:
                 row = next((r for r in rows if r[0] == h.id), None)
                 if row:
                     nxt = reinforce(h.retention)
@@ -594,9 +608,76 @@ class MemoryStore:
                            WHERE id = ? AND person_id = ?''',
                         (nxt, now, freeze_due_at(nxt, now, row[5]), now, h.id, person_id)
                     )
-        if result and reinforce_matches:
+        if selected and reinforce_matches:
             self._db.commit()
         return result
+
+    def rank_recalled_facts(
+        self,
+        candidates: list[RecalledFact],
+        query_embedding: bytes | None,
+        limit: int,
+    ) -> list[RecalledFact]:
+        """在已召回候选上附加向量相关度，不重新查询数据库。
+
+        :param candidates: 同一轮决策前通过 :meth:`recall_facts` 取得的候选池。
+        :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时保留词面排序。
+        :param limit: 最多返回的事实数量。
+        :return: 按增强后分数降序截取的原候选对象列表。
+        :raises ValueError: ``limit`` 小于零。
+        副作用：不读写数据库，不修改传入候选对象。
+        """
+        if limit < 0:
+            raise ValueError('事实召回上限不能小于零')
+        ranked: list[tuple[float, RecalledFact]] = []
+        for fact in candidates:
+            relevance = fact.lexical_relevance
+            if query_embedding is not None and fact.embedding is not None:
+                try:
+                    from .embed import cosine
+                    dim = len(query_embedding) // 4
+                    cosine_score = cosine(query_embedding, fact.embedding, dim)
+                    relevance = 0.4 * relevance + 0.6 * ((cosine_score + 1) / 2)
+                except Exception:
+                    # 与召回入口保持一致：单条坏向量只放弃该条语义融合。
+                    pass
+            ranked.append((relevance * retention_weight(fact.retention), fact))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [fact for _, fact in ranked[:limit]]
+
+    def reinforce_recalled_facts(
+        self,
+        person_id: int,
+        facts: list[RecalledFact],
+        now: int | None = None,
+    ) -> None:
+        """强化同一轮最终实际用于回复的事实，不再次执行召回。
+
+        :param person_id: 目标人物 ID。
+        :param facts: 已确认用于回复的召回事实名单。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :raises sqlite3.Error: 更新或提交失败。
+        副作用：按传入事实 ID 更新强度、命中次数和下次评估时间并提交。
+        """
+        if not facts:
+            return
+        now = now if now is not None else current_time()
+        for fact in facts:
+            next_strength = reinforce(fact.retention)
+            self._db.execute(
+                '''UPDATE facts SET strength = ?, updated_at = ?, due_at = ?, active = 1,
+                                     hit_count = hit_count + 1, last_hit_at = ?
+                   WHERE id = ? AND person_id = ?''',
+                (
+                    next_strength,
+                    now,
+                    freeze_due_at(next_strength, now, fact.half_life_hours),
+                    now,
+                    fact.id,
+                    person_id,
+                ),
+            )
+        self._db.commit()
 
     def store_embedding(self, fact_id: int, embedding: bytes) -> None:
         """为指定事实写入已打包的向量数据。
