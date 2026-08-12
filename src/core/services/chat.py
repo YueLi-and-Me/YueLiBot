@@ -490,7 +490,7 @@ class ChatService:
                     turnId=turn,
                     action=action.action,
                     reason=action.reason,
-                    decisionPosition='in_turn',
+                    decisionSource=type(action_policy).__name__,
                 )
                 if action.action == 'silent':
                     self._mark_stage(
