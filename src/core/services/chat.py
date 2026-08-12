@@ -1539,31 +1539,6 @@ class ChatService:
             render_params=render_params,
         )
 
-    async def _build_messages_with_vector(
-        self,
-        context: ConversationContext,
-        query: str,
-        now: int,
-        signal: asyncio.Event | None = None,
-        platform_bot_name: str | None = None,
-        render_params: dict[str, dict[str, str]] | None = None,
-        include_model_enrichment: bool = True,
-    ) -> list[dict]:
-        """兼容诊断入口，复用单次组装与后续增强流程构建消息。"""
-        prepared = self._prepare_turn_context(
-            context,
-            query,
-            now,
-            platform_bot_name,
-        )
-        if not include_model_enrichment:
-            return self._render_prepared_context(prepared, render_params=render_params)
-        return await self._enrich_prepared_context(
-            prepared,
-            signal,
-            render_params if render_params is not None else {},
-        )
-
     def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
         """返回群聊文本称呼候选。
 
