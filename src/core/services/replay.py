@@ -83,24 +83,33 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
             isinstance(key, str) and isinstance(value, str)
             for key, value in values.items()
         ):
-            raise ValueError(f'事件 {event["seq"]} 缺少模板 {template_id} 的渲染参数')
-        params[template_id] = dict(values)
-    rendered: Dict[str, str] = {}
-    if 'chat.system' in template_ids:
-        rendered['chat.system'], _ = render_chat_system(
-            params['chat.system'],
-            {
-                template_id: params[template_id]
-                for template_id in CHAT_SYSTEM_COMPONENTS
-            },
-        )
-        if 'chat.proactive' in template_ids:
-            rendered['chat.proactive'] = get_prompt('chat.proactive').render(
-                **params['chat.proactive']
+            raise ValueError(
+                '事件早于当前模板结构，无法准确重放'
+                f'（事件 {event["seq"]} 缺少模板 {template_id} 的渲染参数）'
             )
-    else:
-        template_id = template_ids[0]
-        rendered[template_id] = get_prompt(template_id).render(**params[template_id])
+        params[template_id] = dict(values)
+    try:
+        rendered: Dict[str, str] = {}
+        if 'chat.system' in template_ids:
+            rendered['chat.system'], _ = render_chat_system(
+                params['chat.system'],
+                {
+                    template_id: params[template_id]
+                    for template_id in CHAT_SYSTEM_COMPONENTS
+                },
+            )
+            if 'chat.proactive' in template_ids:
+                rendered['chat.proactive'] = get_prompt('chat.proactive').render(
+                    **params['chat.proactive']
+                )
+        else:
+            template_id = template_ids[0]
+            rendered[template_id] = get_prompt(template_id).render(**params[template_id])
+    except ValueError as exc:
+        raise ValueError(
+            '事件早于当前模板结构，无法准确重放'
+            f'（事件 {event["seq"]} 的渲染参数与当前占位符不一致）'
+        ) from exc
     if 'chat.system' in rendered:
         parts = [rendered['chat.system']]
         if 'chat.proactive' in rendered:
