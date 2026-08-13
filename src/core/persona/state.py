@@ -302,14 +302,16 @@ class Persona:
         person_id: int,
         delta: MoodDelta,
         now: int | None = None,
-        weight: float = 1.0,
+        *,
+        weight: float,
     ) -> PersonaState:
         """将情绪事件转换为亲密度和精力变化并持久化。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param delta: 情绪事件提供的亲密度和精力原始增量。
         :param now: 可选的本次写入毫秒时间戳；省略时读取统一时钟。
-        :param weight: 事件权重，默认 1.0；同时作用于两个维度。
+        :param weight: 事件权重，仅限关键字且必填；同时作用于亲密度和精力两个维度。
+            不设默认值：漏传会让群聊按全速消耗全局精力且测试无感，故要求调用点显式打折。
 
         :return: 应用增量并限制到 [0, 100] 后的新状态。
 
@@ -337,13 +339,15 @@ class Persona:
         self,
         person_id: int,
         now: int | None = None,
-        weight: float = 1.0,
+        *,
+        weight: float,
     ) -> PersonaState:
         """应用一次对话回合的固定亲密度收益与精力消耗。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的本次写入毫秒时间戳；省略时读取统一时钟。
-        :param weight: 回合权重，默认 1.0；同时缩放亲密度收益和精力消耗。
+        :param weight: 回合权重，仅限关键字且必填；同时缩放亲密度收益和精力消耗。
+            不设默认值：漏传会让群聊按全速消耗全局精力且测试无感，故要求调用点显式打折。
 
         :return: 应用变化并限制到 [0, 100] 后的新状态。
 
