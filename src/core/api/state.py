@@ -22,14 +22,15 @@ class _AppState:
         """创建未启动服务的默认状态。
 
         :return: 无返回值。
-        副作用：初始化所有服务引用为空，并创建默认群聊配置。
+        副作用：初始化所有服务引用为空；群聊配置留空，等待启动流程显式写入。
         """
         self.chat: Any = None          # ChatService
         self.awareness: Any = None     # AwarenessService
         self.tts: Any = None           # TtsService
         self.routers: Any = None       # ModelRouters（八个任务的候选与熔断状态）
         self.registry: Any = None       # StreamRegistry（stream/person/identity 的唯一入口）
-        self.group_chat_config = GroupChatConfig()
+        # 不默认构造 GroupChatConfig：漏赋值必须在入站调用点暴露，而不是安静地用默认窗口跑。
+        self.group_chat_config: GroupChatConfig | None = None
         self.foreground_callback: Callable[[dict], None] | None = None
         self.broker: Any = None         # PlatformBroker（非桌面唯一出站接缝）
         self.register_platform_stream: Callable[[StreamRef], None] | None = None
