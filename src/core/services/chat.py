@@ -619,7 +619,11 @@ class ChatService:
                     action=action.action,
                     reason=action.reason,
                     length=action.length,
-                    decisionSource=type(action_policy).__name__,
+                    decisionSource=(
+                        action_policy.decision_source
+                        if isinstance(action_policy, TurnPlanner)
+                        else type(action_policy).__name__
+                    ),
                 )
                 if action.action == 'silent':
                     self._mark_stage(

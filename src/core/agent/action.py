@@ -35,6 +35,21 @@ class TurnAction:
 
 
 @dataclass(frozen=True)
+class ReplyDecision:
+    """内层回复判据只返回是否回复及其可观测理由。"""
+
+    should_reply: bool
+    reason: str
+
+    def __post_init__(self) -> None:
+        """拒绝非布尔结论与空理由。"""
+        if not isinstance(self.should_reply, bool):
+            raise TypeError('回复判据必须返回布尔结论')
+        if not self.reason.strip():
+            raise ValueError('回复判据理由不能为空')
+
+
+@dataclass(frozen=True)
 class ActionContext:
     """动作策略可读取的已组织回合上下文。"""
 
@@ -52,12 +67,20 @@ class ActionPolicy(Protocol):
         ...
 
 
-class AlwaysReplyPolicy:
-    """保持现有行为的默认动作策略。"""
+class ReplyPolicy(Protocol):
+    """仅判断本轮是否回复的内层窄协议。"""
 
-    async def decide(self, context: ActionContext) -> TurnAction:
+    async def decide(self, context: ActionContext) -> ReplyDecision:
+        """返回是否回复及其理由。"""
+        ...
+
+
+class AlwaysReplyPolicy:
+    """保持现有行为的默认回复判据。"""
+
+    async def decide(self, context: ActionContext) -> ReplyDecision:
         """始终选择回复，不读取或修改上下文。"""
-        return TurnAction(action='reply', reason='默认策略始终回复', length='brief')
+        return ReplyDecision(should_reply=True, reason='默认策略始终回复')
 
 
 class PresenceActionPolicy:
@@ -92,7 +115,7 @@ class PresenceActionPolicy:
         self._probability_draw = probability_draw
         self._clock = clock
 
-    async def decide(self, context: ActionContext) -> TurnAction:
+    async def decide(self, context: ActionContext) -> ReplyDecision:
         """按 ``1 / (1 + k * presence)`` 计算实际回复概率。"""
         since = self._clock() - self._window_ms
         assistant_count = self._assistant_reply_count_since(context.stream_id, since)
@@ -107,31 +130,33 @@ class PresenceActionPolicy:
             f'群聊存在感：占比={presence:.4f}，实际概率={actual_probability:.4f}，'
             f'抽样值={draw:.4f}'
         )
-        return TurnAction(
-            action='reply' if draw < actual_probability else 'silent',
+        return ReplyDecision(
+            should_reply=draw < actual_probability,
             reason=reason,
-            length='brief' if draw < actual_probability else None,
         )
 
 
 class TurnPlanner:
     """复用动作策略，并按当前输入长度补全本轮回复篇幅。"""
 
-    def __init__(self, action_policy: ActionPolicy, *, long_input_chars: int = 80) -> None:
+    def __init__(self, reply_policy: ReplyPolicy, *, long_input_chars: int = 80) -> None:
         """保存动作判据与长输入阈值。
 
         :raises ValueError: 长输入阈值小于 1 时抛出。
         """
         if long_input_chars < 1:
             raise ValueError('长输入字符阈值必须大于 0')
-        self._action_policy = action_policy
+        self._reply_policy = reply_policy
         self._long_input_chars = long_input_chars
+
+    @property
+    def decision_source(self) -> str:
+        """返回同时包含规划器与内层回复判据的事件来源。"""
+        return f'{type(self).__name__}({type(self._reply_policy).__name__})'
 
     async def decide(self, context: ActionContext) -> TurnAction:
         """沿用既有动作结论，并以本批用户输入总长度选择篇幅。"""
-        action = await self._action_policy.decide(context)
-        if action.action == 'silent':
-            return action
+        decision = await self._reply_policy.decide(context)
         user_texts = []
         for message in reversed(context.messages):
             if message.get('role') != 'user':
@@ -145,6 +170,9 @@ class TurnPlanner:
                 ).strip()
             user_texts.append(text)
         batch_input_chars = sum(len(text) for text in user_texts)
+        reason = f'{decision.reason}；本批输入字符数={batch_input_chars}'
+        if not decision.should_reply:
+            return TurnAction(action='silent', reason=reason)
         length: ReplyLength = (
             'long'
             if batch_input_chars >= self._long_input_chars
@@ -152,6 +180,6 @@ class TurnPlanner:
         )
         return TurnAction(
             action='reply',
-            reason=action.reason,
+            reason=reason,
             length=length,
         )
