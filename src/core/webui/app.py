@@ -11,7 +11,11 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 
-_WEBUI_DIST = Path(__file__).resolve().parents[2] / 'out' / 'webui'
+# 本模块位于 src/core/webui/，项目根在第 3 层父目录；构建产物由前端写到根下的 out/webui。
+# 层数随模块位置变化：本文件从 src/webui/ 移到 src/core/webui/ 时层数没跟着加，
+# 于是目录指向了不存在的 src/out/webui，页面长期显示「尚未构建」而构建本身一直是成功的。
+# 移动本文件时必须同步复核这个层数。
+_WEBUI_DIST = Path(__file__).resolve().parents[3] / 'out' / 'webui'
 
 
 def mount_webui(app: FastAPI) -> None:
@@ -64,9 +68,11 @@ def mount_webui(app: FastAPI) -> None:
             不访问文件系统之外的服务，不触发 API 或人物数据读取。
         """
 
+        # 带上实际查找的目录：只说「尚未构建」时，路径算错和真的没构建看起来一模一样。
         return (
             '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             '<title>Bot 观察面板</title><body>'
             '<h1>WebUI 尚未构建</h1><p>请先运行 npm run build，再重新打开本页。</p>'
+            f'<p>查找目录：{_WEBUI_DIST}</p>'
             '</body></html>'
         )
