@@ -71,7 +71,13 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
     if not isinstance(render_params, dict):
         raise ValueError(f'事件 {event["seq"]} 早于渲染参数落库，无法准确重放')
     params: Dict[str, Dict[str, str]] = {}
-    for template_id in template_ids:
+    if 'chat.system' in template_ids:
+        render_template_ids = (*CHAT_SYSTEM_COMPONENTS, 'chat.system')
+        if 'chat.proactive' in template_ids:
+            render_template_ids = (*render_template_ids, 'chat.proactive')
+    else:
+        render_template_ids = template_ids
+    for template_id in render_template_ids:
         values = render_params.get(template_id)
         if not isinstance(values, dict) or not all(
             isinstance(key, str) and isinstance(value, str)

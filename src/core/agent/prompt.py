@@ -13,12 +13,16 @@ from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.core.common.clock import now as current_time
 from src.core.prompts.registry import (
-    CHAT_LENGTH_TEMPLATE_ID,
     CHAT_PROTOCOL_TEMPLATE_ID,
     CHAT_SYSTEM_COMPONENTS,
     get_prompt,
     render_chat_system,
 )
+
+_REPLY_LENGTH_TEMPLATE_IDS: Dict[str, str] = {
+    'brief': 'chat.length.brief',
+    'long': 'chat.length.long',
+}
 
 # 重逢措辞使用有序阈值表统一维护，测试固定阈值顺序；第三档的天数由函数动态生成。
 RESUMPTION_TIERS: List[Tuple[int, str]] = [
@@ -299,15 +303,13 @@ def build_system_prompt(
         'emotions': ' / '.join(EXPRESSION_IDS),
         'gestures': ' / '.join(GESTURE_IDS),
     }
-    length_instructions = {
-        'brief': '尽量用一两句简短回应，直接接住对方这句话，不要自行展开成长篇。',
-        'long': '可以用一段较完整的回应，接住对方提供的背景、重点和具体问题。',
-    }
-    if reply_length is not None and reply_length not in length_instructions:
-        raise ValueError(f'未知回复篇幅：{reply_length}')
-    component_values[CHAT_LENGTH_TEMPLATE_ID] = {
-        'instruction': length_instructions.get(reply_length, ''),
-    }
+    length_instruction = ''
+    if reply_length is not None:
+        try:
+            length_template_id = _REPLY_LENGTH_TEMPLATE_IDS[reply_length]
+        except KeyError as exc:
+            raise ValueError(f'未知回复篇幅：{reply_length}') from exc
+        length_instruction = get_prompt(length_template_id).render().rstrip()
     system_values = {
         'name': name,
         'identity': identity,
@@ -329,6 +331,7 @@ def build_system_prompt(
         ),
         'reply_style': reply_style,
         'tone': _prefixed_block(tone),
+        'length': length_instruction,
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
         'expression_habits': _expression_habits_block(expression_habits),
     }
