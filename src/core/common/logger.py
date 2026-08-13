@@ -206,6 +206,27 @@ def current_log_file() -> Path | None:
     return _file_sink.current_path() if _file_sink is not None else None
 
 
+def _flatten(text: str) -> str:
+    """压平日志文本里的换行与制表符，保证一条日志在终端只占一行。
+
+    提示词、模型响应等字段自带大量换行；不压平时一条日志会把控制台
+    输出撑成几十行，与后续日志交错后无法阅读。字面反斜杠转义保持原样，
+    避免误改 Windows 路径等普通文本。
+
+    :param text: 待压平的日志字段文本。
+
+    :return: 换行、回车、制表符全部替换为空格后的单行文本。
+
+    副作用：不修改原字符串。
+    """
+    return (
+        text
+        .replace('\n', ' ')
+        .replace('\r', ' ')
+        .replace('\t', ' ')
+    )
+
+
 def _stringify(value: Any) -> str:
     """将日志字段转换为适合控制台展示的字符串。
 
@@ -214,14 +235,14 @@ def _stringify(value: Any) -> str:
 
     :param value: 任意日志字段值。
 
-    :return: 字符串原样返回；字典和列表返回非 ASCII 转义 JSON；其他值返回 ``str(value)``。
+    :return: 字符串与 JSON 输出统一经过 :func:`_flatten` 压平为单行；其他值返回 ``str(value)``。
 
     :raises TypeError: 字典或列表包含无法 JSON 序列化的值时抛出。
     """
     if isinstance(value, str):
-        return value
+        return _flatten(value)
     if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
+        return _flatten(json.dumps(value, ensure_ascii=False))
     return str(value)
 
 
