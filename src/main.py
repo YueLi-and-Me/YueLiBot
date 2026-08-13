@@ -18,7 +18,7 @@ import sys
 
 import uvicorn
 
-from src.core.agent.action import PresenceActionPolicy
+from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.api.auth import token_manager
 from src.core.common.backend_runtime import create_backend_runtime
 from src.core.common.logger import get_logger, initialize_logging
@@ -336,13 +336,13 @@ def main() -> None:
     )
     app_state.chat.set_action_policy(
         'group',
-        PresenceActionPolicy(
+        TurnPlanner(PresenceActionPolicy(
             base_probability=cfg.group_chat.name_mention_probability,
             decay_strength=cfg.group_chat.presence_decay_strength,
             window_minutes=cfg.group_chat.reply_window_minutes,
             assistant_reply_count_since=app_state.chat.memory.assistant_reply_count_since,
             message_count_since=app_state.chat.memory.message_count_since,
-        ),
+        )),
     )
 
     # 向量服务依赖 ChatService 已创建的 MemoryStore，因此必须在聊天服务之后装配。

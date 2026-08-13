@@ -20,7 +20,7 @@ from .trace_console import mark_turn_start, render_observation, render_turn, ren
 from .vector import VectorService
 
 from src.core.agent.character import pick_tone
-from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy
+from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy, TurnPlanner
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history
@@ -192,7 +192,7 @@ class ChatService:
         self._push_event = push_event
         self._speak_audio = speak_audio
         self._broker = broker
-        self._default_action_policy = action_policy or AlwaysReplyPolicy()
+        self._default_action_policy = action_policy or TurnPlanner(AlwaysReplyPolicy())
         self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
         self._cancel_audio: Callable[[int], Any] | None = None

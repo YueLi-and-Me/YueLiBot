@@ -11,6 +11,7 @@ from src.core.common.clock import now as current_time
 
 
 ActionKind = Literal['reply', 'silent']
+ReplyLength = Literal['brief', 'long']
 
 
 @dataclass(frozen=True)
@@ -19,13 +20,18 @@ class TurnAction:
 
     action: ActionKind
     reason: str
+    length: ReplyLength | None = None
 
     def __post_init__(self) -> None:
-        """拒绝未声明动作和不可观测的空理由。"""
+        """拒绝未声明动作、空理由和自相矛盾的篇幅。"""
         if self.action not in ('reply', 'silent'):
             raise ValueError(f'未知回合动作：{self.action}')
         if not self.reason.strip():
             raise ValueError('回合动作理由不能为空')
+        if self.action == 'reply' and self.length not in ('brief', 'long'):
+            raise ValueError('回复动作必须声明有效篇幅')
+        if self.action == 'silent' and self.length is not None:
+            raise ValueError('静默动作不能声明回复篇幅')
 
 
 @dataclass(frozen=True)
@@ -50,7 +56,7 @@ class AlwaysReplyPolicy:
 
     async def decide(self, context: ActionContext) -> TurnAction:
         """始终选择回复，不读取或修改上下文。"""
-        return TurnAction(action='reply', reason='默认策略始终回复')
+        return TurnAction(action='reply', reason='默认策略始终回复', length='brief')
 
 
 class PresenceActionPolicy:
@@ -103,4 +109,43 @@ class PresenceActionPolicy:
         return TurnAction(
             action='reply' if draw < actual_probability else 'silent',
             reason=reason,
+            length='brief' if draw < actual_probability else None,
+        )
+
+
+class TurnPlanner:
+    """复用动作策略，并按当前输入长度补全本轮回复篇幅。"""
+
+    def __init__(self, action_policy: ActionPolicy, *, long_input_chars: int = 80) -> None:
+        """保存动作判据与长输入阈值。
+
+        :raises ValueError: 长输入阈值小于 1 时抛出。
+        """
+        if long_input_chars < 1:
+            raise ValueError('长输入字符阈值必须大于 0')
+        self._action_policy = action_policy
+        self._long_input_chars = long_input_chars
+
+    async def decide(self, context: ActionContext) -> TurnAction:
+        """沿用既有动作结论，并以最新用户输入是否达到阈值选择篇幅。"""
+        action = await self._action_policy.decide(context)
+        if action.action == 'silent':
+            return action
+        latest_user_text = next(
+            (
+                str(message.get('content', '')).strip()
+                for message in reversed(context.messages)
+                if message.get('role') == 'user'
+            ),
+            '',
+        )
+        length: ReplyLength = (
+            'long'
+            if len(latest_user_text) >= self._long_input_chars
+            else 'brief'
+        )
+        return TurnAction(
+            action='reply',
+            reason=action.reason,
+            length=length,
         )
