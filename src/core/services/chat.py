@@ -440,10 +440,11 @@ class ChatService:
             )
             batch = buffered[:boundary]
             del buffered[:boundary]
+            excluded_message_ids = {message.message_id for message in buffered}
             if not buffered:
                 self._buffers.pop(stream_id, None)
             try:
-                await self._start_turn(batch)
+                await self._start_turn(batch, excluded_message_ids)
             except Exception:
                 self._buffers.setdefault(stream_id, [])[:0] = batch
                 self.release_stream(stream_id, 'reply')
@@ -486,7 +487,11 @@ class ChatService:
             previous_message_at=previous_message_at,
         ))
 
-    async def _start_turn(self, batch: list[_BufferedMessage]) -> int:
+    async def _start_turn(
+        self,
+        batch: list[_BufferedMessage],
+        excluded_message_ids: set[int] | None = None,
+    ) -> int:
         """取一个已持久化的非空消息批次创建并启动回复回合。"""
         if not batch:
             raise ValueError('回复批次不能为空')
@@ -586,7 +591,7 @@ class ChatService:
                     trimmed,
                     now,
                     inbound.bot_name,
-                    through_message_id=batch[-1].message_id,
+                    excluded_message_ids=excluded_message_ids,
                 )
                 decision_messages = self._render_prepared_context(prepared_context)
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
@@ -1552,7 +1557,7 @@ class ChatService:
         query: str,
         now: int,
         platform_bot_name: str | None = None,
-        through_message_id: int | None = None,
+        excluded_message_ids: set[int] | None = None,
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -1560,7 +1565,7 @@ class ChatService:
         :param query: 当前用户文本。
         :param now: 当前毫秒时间戳。
         :param platform_bot_name: 当前平台登录昵称；仅用于当前入站消息的称呼匹配。
-        :param through_message_id: 可选的历史消息 ID 上界；缓冲回合用它隔离稍后批次。
+        :param excluded_message_ids: 可选的待处理消息 ID 集合；缓冲回合用它隔离稍后批次。
         :return: 可供动作决策读取、并可在确认回复后继续增强的上下文。
 
         副作用：
@@ -1603,7 +1608,7 @@ class ChatService:
         wm = self.memory.working_memory(
             context.stream.id,
             self._working_memory_messages,
-            through_message_id,
+            excluded_message_ids,
         )
         raw_history = self._history_for_context(context, wm)
         # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。

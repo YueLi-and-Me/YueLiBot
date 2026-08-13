@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Set
 
 import json
 import sqlite3
@@ -215,29 +215,30 @@ class MemoryStore:
         self,
         stream_id: int,
         limit: int = 40,
-        through_message_id: int | None = None,
+        excluded_message_ids: Set[int] | None = None,
     ) -> list[StoredMessage]:
         """读取指定 stream 尚未归档的最近工作记忆。
 
         :param stream_id: 目标 stream ID。
         :param limit: 最多返回的消息数，默认值为 40。
-        :param through_message_id: 可选的消息 ID 上界，用于读取某个已持久化批次的历史快照。
+        :param excluded_message_ids: 可选的待处理消息 ID 集合；这些消息不进入当前批次历史。
         :return: 按时间正序排列的 `StoredMessage` 列表。
         :raises sqlite3.Error: 查询失败。
         副作用：只读 messages 表。
         """
-        if through_message_id is None:
+        if not excluded_message_ids:
             rows = self._db.execute(
                 '''SELECT role, content, created_at, sender_person_id FROM messages
                    WHERE stream_id = ? AND episode_id IS NULL ORDER BY id DESC LIMIT ?''',
                 (stream_id, limit),
             ).fetchall()
         else:
+            placeholders = ', '.join('?' for _ in excluded_message_ids)
             rows = self._db.execute(
-                '''SELECT role, content, created_at, sender_person_id FROM messages
-                   WHERE stream_id = ? AND episode_id IS NULL AND id <= ?
-                   ORDER BY id DESC LIMIT ?''',
-                (stream_id, through_message_id, limit),
+                f'''SELECT role, content, created_at, sender_person_id FROM messages
+                    WHERE stream_id = ? AND episode_id IS NULL
+                    AND id NOT IN ({placeholders}) ORDER BY id DESC LIMIT ?''',
+                (stream_id, *sorted(excluded_message_ids), limit),
             ).fetchall()
         return [StoredMessage(role=r[0], content=r[1], created_at=r[2], sender_person_id=r[3])
                 for r in reversed(rows)]
