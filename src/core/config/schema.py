@@ -32,10 +32,10 @@ class BotConfig(BaseModel):
     """保存 Bot 名称、别名以及与用户的称呼和关系。
 
     :ivar name: 非空主名称。
-    :ivar aliases: 不重复且不等于主名称的别名列表。
+    :ivar aliases: 至少两个字符、不重复且不等于主名称的别名列表。
     :ivar user_nickname: 用户希望使用的称呼，可为空。
     :ivar relationship: 关系描述，可为空。
-    :raises pydantic.ValidationError: 名称为空、别名为空、重复或与主名称冲突。
+    :raises pydantic.ValidationError: 名称或别名不满足长度、唯一性约束。
     """
 
     # Bot 的显示名和提示词身份名
@@ -49,10 +49,10 @@ class BotConfig(BaseModel):
 
     @model_validator(mode='after')
     def _validate_names(self) -> 'BotConfig':
-        """规范化 Bot 名称与别名并验证唯一性。
+        """规范化 Bot 名称与别名并验证长度和唯一性。
 
         :return: 当前完成校验的模型实例。
-        :raises ValueError: 主名称为空、别名为空、重复或等于主名称。
+        :raises ValueError: 主名称为空，或别名为空、过短、重复、等于主名称。
         副作用：更新当前模型中的 `name` 和 `aliases` 为去空白后的值。
         """
         self.name = self.name.strip()
@@ -61,6 +61,8 @@ class BotConfig(BaseModel):
         normalized = [alias.strip() for alias in self.aliases]
         if any(not alias for alias in normalized):
             raise ValueError('bot.aliases 不能包含空字符串')
+        if any(len(alias) < 2 for alias in normalized):
+            raise ValueError('bot.aliases 每个别名至少需要 2 个字符')
         if self.name in normalized:
             raise ValueError('bot.aliases 不要重复 bot.name')
         if len(set(normalized)) != len(normalized):
