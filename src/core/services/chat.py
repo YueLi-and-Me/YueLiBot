@@ -611,7 +611,7 @@ class ChatService:
                     turn_id=turn,
                     stream_id=stream_id,
                     messages=tuple(decision_messages),
-                    stream_kind=context.stream.kind,
+                    batch_text=trimmed,
                 ))
                 trace.emit(
                     'turn_action',

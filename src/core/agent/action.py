@@ -56,7 +56,7 @@ class ActionContext:
     turn_id: int
     stream_id: int
     messages: Tuple[Dict[str, Any], ...]
-    stream_kind: str = ''
+    batch_text: str
 
 
 class ActionPolicy(Protocol):
@@ -155,21 +155,9 @@ class TurnPlanner:
         return f'{type(self).__name__}({type(self._reply_policy).__name__})'
 
     async def decide(self, context: ActionContext) -> TurnAction:
-        """沿用既有动作结论，并以本批用户输入总长度选择篇幅。"""
+        """沿用既有动作结论，并以显式传入的本批原文长度选择篇幅。"""
         decision = await self._reply_policy.decide(context)
-        user_texts = []
-        for message in reversed(context.messages):
-            if message.get('role') != 'user':
-                break
-            text = str(message.get('content', '')).strip()
-            if context.stream_kind == 'group':
-                # 群聊历史在读取时为每条正文添加“显示名: ”，篇幅只统计原始正文。
-                text = '\n'.join(
-                    line.partition(': ')[2] if ': ' in line else line
-                    for line in text.splitlines()
-                ).strip()
-            user_texts.append(text)
-        batch_input_chars = sum(len(text) for text in user_texts)
+        batch_input_chars = len(context.batch_text.strip())
         reason = f'{decision.reason}；本批输入字符数={batch_input_chars}'
         if not decision.should_reply:
             return TurnAction(action='silent', reason=reason)
