@@ -617,6 +617,7 @@ class ChatService:
                     turnId=turn,
                     action=action.action,
                     reason=action.reason,
+                    length=action.length,
                     decisionSource=type(action_policy).__name__,
                 )
                 if action.action == 'silent':
@@ -645,6 +646,7 @@ class ChatService:
                     prepared_context,
                     cancel_event,
                     render_params,
+                    action.length,
                 )
                 self._mark_stage(context, GENERATING, turn_id=turn)
                 trace.emit(
@@ -1643,6 +1645,7 @@ class ChatService:
         facts: list[RecalledFact] | None = None,
         expression_habits: str | None = None,
         render_params: dict[str, dict[str, str]] | None = None,
+        reply_length: str | None = None,
     ) -> list[dict]:
         """将同一份已组装上下文渲染为模型消息。
 
@@ -1650,6 +1653,7 @@ class ChatService:
         :param facts: 可选的增强后事实列表；省略时使用词面排序结果。
         :param expression_habits: 可选表达习惯提示词块。
         :param render_params: 可选提示词渲染参数收集字典。
+        :param reply_length: 当前轮规划出的回复篇幅。
         :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
         副作用：只读取配置和会话语调，不读写数据库、不调用模型。
         """
@@ -1667,6 +1671,7 @@ class ChatService:
             activity=prepared.activity,
             schedule=prepared.schedule,
             expression_habits=expression_habits,
+            reply_length=reply_length,
             tone=self._session(prepared.context.stream.id).tone,
             resumption=prepared.resumption,
             platform_name=prepared.platform_bot_name,
@@ -1682,12 +1687,14 @@ class ChatService:
         prepared: _PreparedTurnContext,
         signal: asyncio.Event | None,
         render_params: dict[str, dict[str, str]],
+        reply_length: str,
     ) -> list[dict]:
         """确认回复后，在既有上下文上附加向量与表达模型增强。
 
         :param prepared: 动作决策实际读取的同一份上下文。
         :param signal: 可选的表达选择取消信号。
         :param render_params: 提示词渲染参数收集字典。
+        :param reply_length: 规划器选出的回复篇幅。
         :return: 使用增强后事实排序和表达习惯渲染的最终模型消息。
         副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID。
         """
@@ -1715,6 +1722,7 @@ class ChatService:
             facts=facts,
             expression_habits=expression_habits,
             render_params=render_params,
+            reply_length=reply_length,
         )
 
     def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:

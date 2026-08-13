@@ -22,9 +22,11 @@ BUILTIN_PROMPT_DIR = Path(__file__).parent
 MAX_TEMPLATE_HISTORY = 50
 FIXED_TEMPLATE_IDS = frozenset({'chat.discipline', 'chat.boundaries'})
 CHAT_PROTOCOL_TEMPLATE_ID = 'chat.protocol'
+CHAT_LENGTH_TEMPLATE_ID = 'chat.length'
 CHAT_SYSTEM_COMPONENTS: Dict[str, str] = {
     'chat.boundaries': 'boundaries',
     'chat.discipline': 'discipline',
+    CHAT_LENGTH_TEMPLATE_ID: 'length',
     CHAT_PROTOCOL_TEMPLATE_ID: 'protocol',
 }
 CHAT_SYSTEM_TEMPLATE_IDS = (*CHAT_SYSTEM_COMPONENTS, 'chat.system')
@@ -33,6 +35,7 @@ TEMPLATE_IDS = (
     'chat.protocol',
     'chat.discipline',
     'chat.boundaries',
+    'chat.length',
     'chat.system',
     'chat.proactive',
     'summary',
@@ -44,6 +47,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures'}),
     'chat.discipline': frozenset(),
     'chat.boundaries': frozenset(),
+    'chat.length': frozenset({'instruction'}),
     'chat.system': frozenset({
         'name',
         'identity',
@@ -58,6 +62,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'reply_style',
         'tone',
         'expression_habits',
+        'length',
         'discipline',
         'boundaries',
         'protocol',

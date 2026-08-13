@@ -9,6 +9,9 @@
 # 说话的味道
 {{reply_style}}{{tone}}{{expression_habits}}
 
+# 这一轮的篇幅
+{{length}}
+
 # 有一说一
 {{discipline}}
 

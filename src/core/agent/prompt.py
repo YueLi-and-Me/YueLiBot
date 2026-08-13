@@ -13,6 +13,7 @@ from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.core.common.clock import now as current_time
 from src.core.prompts.registry import (
+    CHAT_LENGTH_TEMPLATE_ID,
     CHAT_PROTOCOL_TEMPLATE_ID,
     CHAT_SYSTEM_COMPONENTS,
     get_prompt,
@@ -233,6 +234,7 @@ def build_system_prompt(
     user_nickname: Optional[str] = None,
     relationship: Optional[str] = None,
     expression_habits: Optional[str] = None,
+    reply_length: Optional[str] = None,
     tone: Optional[str] = None,
     resumption: Optional[str] = None,
     aliases: Optional[List[str]] = None,
@@ -255,6 +257,7 @@ def build_system_prompt(
     :param user_nickname: 对方偏好的称呼。
     :param relationship: 对方在 Bot 视角下的关系描述。
     :param expression_habits: 已渲染的表达习惯提示词块。
+    :param reply_length: 当前轮规划出的回复篇幅枚举；非回复场景可为空。
     :param tone: 当前轮临时语调提示。
     :param resumption: 当前对话恢复提示。
     :param aliases: 可选的其他 Bot 名称列表。
@@ -295,6 +298,15 @@ def build_system_prompt(
     component_values[CHAT_PROTOCOL_TEMPLATE_ID] = {
         'emotions': ' / '.join(EXPRESSION_IDS),
         'gestures': ' / '.join(GESTURE_IDS),
+    }
+    length_instructions = {
+        'brief': '尽量用一两句简短回应，直接接住对方这句话，不要自行展开成长篇。',
+        'long': '可以用一段较完整的回应，接住对方提供的背景、重点和具体问题。',
+    }
+    if reply_length is not None and reply_length not in length_instructions:
+        raise ValueError(f'未知回复篇幅：{reply_length}')
+    component_values[CHAT_LENGTH_TEMPLATE_ID] = {
+        'instruction': length_instructions.get(reply_length, ''),
     }
     system_values = {
         'name': name,
