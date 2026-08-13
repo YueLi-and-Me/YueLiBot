@@ -1,9 +1,10 @@
 /*
  * 后端观察 WebUI 的「月海玻璃」设计系统与业务组件样式。
  *
- * 视觉语言：深海夜色画布 + 三枚缓慢漂移的极光光斑（月光琥珀 / 荧光青 / 深紫），
+ * 视觉语言：深海夜色画布 + 三枚缓慢漂移的极光光斑（月光蓝 / 荧光青 / 深紫），
  * 叠一层 SVG 分形噪点颗粒与暗角；界面主体使用磨砂玻璃表面（backdrop-filter +
- * 半透明渐变 + 顶部高光描边），主色为暖橙渐变，代码与日志保持恒定深色终端。
+ * 半透明渐变 + 顶部高光描边），品牌主色为青蓝渐变（星月水母的蓝白形象），
+ * 代码与日志保持恒定深色终端。
  * 所有材质通过 CSS 变量注入，明暗双主题共享同一套规则；外部字体与图片资源
  * 被 CSP 禁止，噪点纹理以 data URI 内联，图标全部为内联 SVG。
  *
@@ -13,21 +14,21 @@
  */
 
 /* ============================================================================
- * 设计令牌：亮色主题（默认，海沫白）
+ * 设计令牌：亮色主题（默认，月雾蓝：带蓝调的雾面，降低整体亮度避免刺眼）
  * ========================================================================== */
 :root {
   color-scheme: light;
 
-  /* 画布与文字 */
-  --canvas: radial-gradient(130% 110% at 50% -10%, hsl(202 60% 98%), hsl(206 55% 95%) 62%);
-  --background: hsl(202 60% 98%);
-  --foreground: hsl(222 70% 12%);
-  --card-foreground: hsl(222 70% 12%);
-  --muted-foreground: hsl(205 25% 42%);
-  --primary: hsl(28.9 94.8% 45.1%);
-  --primary-hover: hsl(28.9 94.8% 40%);
+  /* 画布与文字：整体压暗为带蓝调的雾面，避免纯白高亮刺眼 */
+  --canvas: radial-gradient(130% 110% at 50% -10%, hsl(212 58% 94%), hsl(216 44% 88%) 62%);
+  --background: hsl(214 45% 91%);
+  --foreground: hsl(220 45% 16%);
+  --card-foreground: hsl(220 45% 16%);
+  --muted-foreground: hsl(215 28% 45%);
+  --primary: hsl(210 92% 48%);
+  --primary-hover: hsl(210 92% 42%);
   --primary-foreground: hsl(210 40% 98%);
-  --primary-soft: hsl(28.9 94.8% 45.1% / 0.12);
+  --primary-soft: hsl(210 92% 48% / 0.12);
   --destructive: hsl(0 78% 52%);
   --destructive-foreground: hsl(210 40% 98%);
   --destructive-soft: hsl(0 78% 52% / 0.1);
@@ -35,31 +36,31 @@
   --warning: hsl(38 92% 45%);
   --warning-soft: hsl(38 92% 45% / 0.12);
 
-  /* 玻璃材质（亮色：白雾玻璃，描边用深色半透明保证对比度） */
-  --glass: linear-gradient(180deg, rgb(255 255 255 / 0.82), rgb(255 255 255 / 0.55));
-  --glass-strong: linear-gradient(180deg, rgb(255 255 255 / 0.94), rgb(255 255 255 / 0.74));
-  --glass-border: rgb(25 48 84 / 0.14);
-  --glass-border-strong: rgb(25 48 84 / 0.26);
-  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 0.95);
-  --glass-shadow: 0 10px 30px -12px rgb(30 64 110 / 0.2);
+  /* 玻璃材质（亮色：蓝雾玻璃，表面本身带蓝调而非纯白） */
+  --glass: linear-gradient(180deg, rgb(238 246 254 / 0.86), rgb(224 238 251 / 0.6));
+  --glass-strong: linear-gradient(180deg, rgb(242 249 255 / 0.95), rgb(230 243 253 / 0.8));
+  --glass-border: rgb(55 96 150 / 0.16);
+  --glass-border-strong: rgb(55 96 150 / 0.3);
+  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 0.85);
+  --glass-shadow: 0 10px 30px -12px rgb(45 80 130 / 0.22);
   --glass-blur: 14px;
-  --control: rgb(255 255 255 / 0.6);
-  --control-hover: rgb(255 255 255 / 0.9);
-  --hover-surface: rgb(25 48 84 / 0.06);
+  --control: rgb(255 255 255 / 0.55);
+  --control-hover: rgb(255 255 255 / 0.85);
+  --hover-surface: rgb(45 80 130 / 0.07);
 
   /* 极光光斑与噪点 */
-  --aurora-amber: hsl(32 96% 60% / 0.16);
-  --aurora-teal: hsl(170 70% 48% / 0.13);
-  --aurora-violet: hsl(264 80% 64% / 0.14);
-  --vignette: radial-gradient(130% 100% at 50% 0%, transparent 52%, rgb(214 232 246 / 0.55) 100%);
-  --noise-opacity: 0.05;
+  --aurora-blue: hsl(212 96% 60% / 0.14);
+  --aurora-cyan: hsl(188 86% 48% / 0.11);
+  --aurora-violet: hsl(262 82% 62% / 0.11);
+  --vignette: radial-gradient(130% 100% at 50% 0%, transparent 52%, rgb(196 220 244 / 0.55) 100%);
+  --noise-opacity: 0.045;
 
   /* 语义色板（亮色下加深以保对比度） */
-  --tint-amber: hsl(28 96% 46%);
-  --tint-teal: hsl(164 62% 34%);
-  --tint-sky: hsl(204 82% 42%);
-  --tint-violet: hsl(266 60% 48%);
-  --eyebrow-grad: linear-gradient(90deg, hsl(24 98% 44%), hsl(10 92% 42%));
+  --tint-blue: hsl(213 90% 44%);
+  --tint-cyan: hsl(192 84% 38%);
+  --tint-teal: hsl(166 72% 33%);
+  --tint-violet: hsl(262 58% 50%);
+  --eyebrow-grad: linear-gradient(90deg, hsl(204 95% 46%), hsl(228 86% 54%));
 
   /* 代码块保持恒定深色，亮暗主题下一致，避免日志可读性随主题抖动 */
   --code-bg: #0a1222;
@@ -81,7 +82,7 @@
   --radius-xl: 16px;
   --radius-full: 9999px;
   --shadow-sm: 0 1px 2px rgb(20 40 70 / 0.08);
-  --shadow-primary: 0 1px 2px hsl(24 96% 38% / 0.3), 0 8px 22px -8px hsl(24 96% 46% / 0.55),
+  --shadow-primary: 0 1px 2px hsl(213 90% 34% / 0.3), 0 8px 22px -8px hsl(213 90% 50% / 0.5),
     inset 0 1px 0 rgb(255 255 255 / 0.3);
 
   /* 布局与动效 */
@@ -106,8 +107,8 @@
   --foreground: hsl(214 42% 92%);
   --card-foreground: hsl(214 42% 92%);
   --muted-foreground: hsl(210 22% 62%);
-  --primary-hover: hsl(28.9 94.8% 50%);
-  --primary-soft: hsl(28.9 94.8% 45.1% / 0.18);
+  --primary-hover: hsl(210 92% 56%);
+  --primary-soft: hsl(210 92% 48% / 0.18);
   --destructive: hsl(0 78% 62%);
   --destructive-soft: hsl(0 78% 62% / 0.14);
   --success: hsl(164 72% 56%);
@@ -125,24 +126,24 @@
   --control-hover: rgb(255 255 255 / 0.12);
   --hover-surface: rgb(255 255 255 / 0.08);
 
-  --aurora-amber: hsl(30 96% 58% / 0.17);
-  --aurora-teal: hsl(168 72% 50% / 0.12);
-  --aurora-violet: hsl(262 82% 64% / 0.14);
+  --aurora-blue: hsl(212 96% 64% / 0.16);
+  --aurora-cyan: hsl(188 88% 52% / 0.12);
+  --aurora-violet: hsl(262 84% 64% / 0.13);
   --vignette: radial-gradient(130% 100% at 50% 0%, transparent 52%, rgb(2 4 12 / 0.62) 100%);
   --noise-opacity: 0.06;
 
-  --tint-amber: hsl(32 98% 64%);
-  --tint-teal: hsl(164 74% 56%);
-  --tint-sky: hsl(204 92% 66%);
+  --tint-blue: hsl(212 96% 68%);
+  --tint-cyan: hsl(188 90% 58%);
+  --tint-teal: hsl(165 78% 58%);
   --tint-violet: hsl(266 88% 74%);
-  --eyebrow-grad: linear-gradient(90deg, hsl(32 98% 66%), hsl(14 94% 58%));
+  --eyebrow-grad: linear-gradient(90deg, hsl(202 96% 66%), hsl(230 90% 68%));
 
   --code-bg: #0a1222;
   --code-fg: #d7e4f5;
   --code-border: rgb(148 187 255 / 0.14);
 
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-primary: 0 1px 2px hsl(24 96% 36% / 0.35), 0 10px 26px -8px hsl(26 96% 52% / 0.55),
+  --shadow-primary: 0 1px 2px hsl(213 90% 36% / 0.35), 0 10px 26px -8px hsl(213 92% 56% / 0.5),
     inset 0 1px 0 rgb(255 255 255 / 0.28);
 }
 
@@ -155,8 +156,8 @@
     --foreground: hsl(214 42% 92%);
     --card-foreground: hsl(214 42% 92%);
     --muted-foreground: hsl(210 22% 62%);
-    --primary-hover: hsl(28.9 94.8% 50%);
-    --primary-soft: hsl(28.9 94.8% 45.1% / 0.18);
+    --primary-hover: hsl(210 92% 56%);
+    --primary-soft: hsl(210 92% 48% / 0.18);
     --destructive: hsl(0 78% 62%);
     --destructive-soft: hsl(0 78% 62% / 0.14);
     --success: hsl(164 72% 56%);
@@ -174,24 +175,24 @@
     --control-hover: rgb(255 255 255 / 0.12);
     --hover-surface: rgb(255 255 255 / 0.08);
 
-    --aurora-amber: hsl(30 96% 58% / 0.17);
-    --aurora-teal: hsl(168 72% 50% / 0.12);
-    --aurora-violet: hsl(262 82% 64% / 0.14);
+    --aurora-blue: hsl(212 96% 64% / 0.16);
+    --aurora-cyan: hsl(188 88% 52% / 0.12);
+    --aurora-violet: hsl(262 84% 64% / 0.13);
     --vignette: radial-gradient(130% 100% at 50% 0%, transparent 52%, rgb(2 4 12 / 0.62) 100%);
     --noise-opacity: 0.06;
 
-    --tint-amber: hsl(32 98% 64%);
-    --tint-teal: hsl(164 74% 56%);
-    --tint-sky: hsl(204 92% 66%);
+    --tint-blue: hsl(212 96% 68%);
+    --tint-cyan: hsl(188 90% 58%);
+    --tint-teal: hsl(165 78% 58%);
     --tint-violet: hsl(266 88% 74%);
-    --eyebrow-grad: linear-gradient(90deg, hsl(32 98% 66%), hsl(14 94% 58%));
+    --eyebrow-grad: linear-gradient(90deg, hsl(202 96% 66%), hsl(230 90% 68%));
 
     --code-bg: #0a1222;
     --code-fg: #d7e4f5;
     --code-border: rgb(148 187 255 / 0.14);
 
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-    --shadow-primary: 0 1px 2px hsl(24 96% 36% / 0.35), 0 10px 26px -8px hsl(26 96% 52% / 0.55),
+    --shadow-primary: 0 1px 2px hsl(213 90% 36% / 0.35), 0 10px 26px -8px hsl(213 92% 56% / 0.5),
       inset 0 1px 0 rgb(255 255 255 / 0.28);
   }
 }
@@ -216,7 +217,7 @@
 /* 光斑用 radial-gradient 软衰减实现，不用 filter: blur，避免大面积模糊带来的合成开销。 */
 .aurora-a {
   animation: aurora-a 46s var(--ease-standard) infinite alternate;
-  background: radial-gradient(closest-side, var(--aurora-amber), transparent 72%);
+  background: radial-gradient(closest-side, var(--aurora-blue), transparent 72%);
   height: 62vmax;
   left: -16vmax;
   top: -24vmax;
@@ -225,7 +226,7 @@
 
 .aurora-b {
   animation: aurora-b 58s var(--ease-standard) infinite alternate;
-  background: radial-gradient(closest-side, var(--aurora-teal), transparent 72%);
+  background: radial-gradient(closest-side, var(--aurora-cyan), transparent 72%);
   height: 54vmax;
   right: -20vmax;
   top: 24%;
@@ -313,10 +314,10 @@
   background: conic-gradient(
     from var(--angle),
     transparent 0deg,
-    hsl(30 98% 58% / 0.9) 12%,
+    hsl(202 96% 62% / 0.9) 12%,
     transparent 24%,
     transparent 56%,
-    hsl(168 74% 52% / 0.8) 68%,
+    hsl(262 84% 68% / 0.8) 68%,
     transparent 80%
   );
   border-radius: calc(var(--radius-xl) + 1px);
@@ -372,7 +373,7 @@ h3 {
 }
 
 ::selection {
-  background: hsl(28.9 94.8% 45.1% / 0.3);
+  background: hsl(210 92% 55% / 0.28);
 }
 
 :focus-visible {
@@ -384,8 +385,8 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
   outline: none;
-  border-color: var(--tint-amber);
-  box-shadow: 0 0 0 3px hsl(28.9 94.8% 45.1% / 0.22);
+  border-color: var(--tint-blue);
+  box-shadow: 0 0 0 3px hsl(210 92% 55% / 0.2);
 }
 
 * {
@@ -478,7 +479,7 @@ button svg,
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, hsl(30 98% 56%), hsl(16 94% 47%));
+  background: linear-gradient(135deg, hsl(200 95% 54%), hsl(228 88% 58%));
   border-color: rgb(255 255 255 / 0.18);
   box-shadow: var(--shadow-primary);
   color: var(--primary-foreground);
@@ -488,7 +489,7 @@ button svg,
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, hsl(30 98% 60%), hsl(16 94% 51%));
+  background: linear-gradient(135deg, hsl(200 95% 58%), hsl(228 88% 62%));
   border-color: rgb(255 255 255 / 0.26);
   transform: translateY(-1px);
 }
@@ -645,8 +646,8 @@ select {
 }
 
 .toggle input:checked {
-  background: linear-gradient(90deg, hsl(30 98% 56%), hsl(16 94% 47%));
-  box-shadow: 0 0 12px -2px hsl(28.9 94.8% 50% / 0.7);
+  background: linear-gradient(90deg, hsl(200 95% 54%), hsl(228 88% 58%));
+  box-shadow: 0 0 12px -2px hsl(210 92% 58% / 0.65);
 }
 
 .toggle input:checked::after {
@@ -774,10 +775,10 @@ select {
 
 .brand-mark {
   align-items: center;
-  background: linear-gradient(135deg, hsl(32 98% 58%), hsl(16 94% 46%));
+  background: linear-gradient(135deg, hsl(200 95% 58%), hsl(228 88% 60%));
   border: 1px solid rgb(255 255 255 / 0.22);
   border-radius: 11px;
-  box-shadow: 0 0 22px -4px hsl(28.9 94.8% 50% / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.35);
+  box-shadow: 0 0 22px -4px hsl(210 92% 58% / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.35);
   display: flex;
   height: 36px;
   justify-content: center;
@@ -788,7 +789,7 @@ select {
 /* 品牌标记的呼吸光环，强调「月」的意象。 */
 .brand-mark::after {
   animation: halo 3.4s var(--ease-standard) infinite;
-  border: 1px solid hsl(28.9 94.8% 55% / 0.45);
+  border: 1px solid hsl(210 92% 60% / 0.4);
   border-radius: 15px;
   content: '';
   inset: -5px;
@@ -890,10 +891,10 @@ select {
 
 /* 激活态：琥珀渐变胶囊 + 柔和外发光。 */
 .nav-item.active {
-  background: linear-gradient(135deg, hsl(30 96% 58% / 0.22), hsl(14 94% 52% / 0.14));
-  border-color: hsl(28.9 94.8% 55% / 0.3);
-  box-shadow: 0 0 18px -6px hsl(28.9 94.8% 50% / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.08);
-  color: var(--tint-amber);
+  background: linear-gradient(135deg, hsl(202 95% 60% / 0.22), hsl(230 88% 62% / 0.14));
+  border-color: hsl(210 92% 60% / 0.3);
+  box-shadow: 0 0 18px -6px hsl(210 92% 58% / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  color: var(--tint-blue);
   font-weight: 600;
 }
 
@@ -933,8 +934,8 @@ select {
 
 .page {
   margin: 0 auto;
-  max-width: 1160px;
-  padding: 28px 32px 56px;
+  max-width: 1320px;
+  padding: 24px 28px 48px;
 }
 
 /* ============================================================================
@@ -943,11 +944,13 @@ select {
 .app-header {
   align-items: flex-start;
   animation: rise 380ms var(--ease-out) both;
+  border-bottom: 1px solid var(--glass-border);
   display: flex;
   flex-wrap: wrap;
   gap: 16px 24px;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
 }
 
 .page-heading {
@@ -1002,7 +1005,7 @@ select {
 }
 
 .status-item {
-  --tint: var(--tint-amber);
+  --tint: var(--tint-blue);
   align-items: center;
   backdrop-filter: blur(var(--glass-blur)) saturate(150%);
   background: var(--glass);
@@ -1021,11 +1024,11 @@ select {
 }
 
 .status-item:nth-child(2) {
-  --tint: var(--tint-teal);
+  --tint: var(--tint-cyan);
 }
 
 .status-item:nth-child(3) {
-  --tint: var(--tint-sky);
+  --tint: var(--tint-teal);
 }
 
 .status-item:nth-child(4) {
@@ -1072,21 +1075,35 @@ select {
 .status-item .metric-row {
   display: grid;
   flex: 1;
-  gap: 2px;
-  justify-items: start;
+  gap: 2px 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
 }
 
 .status-item .metric-name {
   font-size: 12px;
+  grid-column: 1;
+  grid-row: 1;
 }
 
 .status-item .metric-value {
   font-size: 21px;
   font-weight: 600;
+  grid-column: 2;
+  grid-row: 1;
   letter-spacing: -0.01em;
   line-height: 1.25;
   text-align: left;
+}
+
+/* 状态卡第二行：从快照中补充一条可读细节，让卡片更饱满。 */
+.status-item .metric-detail {
+  color: var(--muted-foreground);
+  font-size: 11.5px;
+  grid-column: 1 / -1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ============================================================================
@@ -1094,9 +1111,9 @@ select {
  * ========================================================================== */
 .panel-grid {
   display: grid;
-  gap: 16px;
+  gap: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 16px;
+  margin-top: 14px;
 }
 
 .panel-card {
@@ -1140,7 +1157,7 @@ select {
   display: grid;
   gap: 4px 16px;
   grid-template-columns: minmax(0, 1fr) auto;
-  padding: 16px 20px 14px;
+  padding: 14px 20px 12px;
 }
 
 .section-heading h2 {
@@ -1157,9 +1174,9 @@ select {
 
 /* 动态卡片（main.ts 生成）没有图标瓷砖，用渐变圆点作视觉锚点。 */
 .section-heading h2:not(:has(.heading-icon))::before {
-  background: linear-gradient(135deg, hsl(32 98% 60%), hsl(16 94% 48%));
+  background: linear-gradient(135deg, hsl(202 96% 62%), hsl(230 88% 62%));
   border-radius: 50%;
-  box-shadow: 0 0 10px -1px hsl(28.9 94.8% 50% / 0.7);
+  box-shadow: 0 0 10px -1px hsl(210 92% 58% / 0.6);
   content: '';
   flex-shrink: 0;
   height: 8px;
@@ -1168,7 +1185,7 @@ select {
 
 /* 分区图标瓷砖：静态 HTML 中按分区挂 tint-* 类，色相与分区语义对应。 */
 .heading-icon {
-  --tint: var(--tint-amber);
+  --tint: var(--tint-blue);
   align-items: center;
   background: color-mix(in srgb, var(--tint) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--tint) 30%, transparent);
@@ -1182,16 +1199,16 @@ select {
   width: 30px;
 }
 
-.heading-icon.tint-teal {
-  --tint: var(--tint-teal);
+.heading-icon.tint-cyan {
+  --tint: var(--tint-cyan);
 }
 
 .heading-icon.tint-violet {
   --tint: var(--tint-violet);
 }
 
-.heading-icon.tint-sky {
-  --tint: var(--tint-sky);
+.heading-icon.tint-teal {
+  --tint: var(--tint-teal);
 }
 
 .heading-icon svg {
@@ -1216,7 +1233,7 @@ select {
 }
 
 .section-body {
-  padding: 14px 20px 20px;
+  padding: 12px 20px 18px;
 }
 
 .panel-card > h3 {
@@ -1224,7 +1241,7 @@ select {
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  padding: 16px 20px 10px;
+  padding: 14px 20px 8px;
 }
 
 .axis-list,
@@ -1269,7 +1286,7 @@ select {
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-full);
   box-shadow: var(--glass-highlight);
-  filter: drop-shadow(0 0 6px hsl(28.9 94.8% 50% / 0.35));
+  filter: drop-shadow(0 0 6px hsl(210 92% 58% / 0.3));
   height: 8px;
   overflow: hidden;
   width: 100%;
@@ -1280,12 +1297,12 @@ select {
 }
 
 .progress::-webkit-progress-value {
-  background: linear-gradient(90deg, hsl(30 98% 56%), hsl(16 94% 47%));
+  background: linear-gradient(90deg, hsl(200 95% 54%), hsl(228 88% 58%));
   border-radius: var(--radius-full);
 }
 
 .progress::-moz-progress-bar {
-  background: linear-gradient(90deg, hsl(30 98% 56%), hsl(16 94% 47%));
+  background: linear-gradient(90deg, hsl(200 95% 54%), hsl(228 88% 58%));
   border-radius: var(--radius-full);
 }
 
@@ -1335,9 +1352,9 @@ select {
 
 .timeline-item::before {
   background: var(--background);
-  border: 2px solid hsl(30 98% 58%);
+  border: 2px solid hsl(202 96% 60%);
   border-radius: 50%;
-  box-shadow: 0 0 8px -1px hsl(28.9 94.8% 50% / 0.8);
+  box-shadow: 0 0 8px -1px hsl(210 92% 58% / 0.7);
   content: '';
   height: 10px;
   left: -6px;
@@ -1388,11 +1405,11 @@ select {
 }
 
 .stage-name {
-  background: hsl(28.9 94.8% 45.1% / 0.16);
-  border: 1px solid hsl(28.9 94.8% 55% / 0.28);
+  background: hsl(210 92% 55% / 0.15);
+  border: 1px solid hsl(210 92% 60% / 0.28);
   border-radius: var(--radius-full);
-  box-shadow: 0 0 12px -4px hsl(28.9 94.8% 50% / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.08);
-  color: var(--tint-amber);
+  box-shadow: 0 0 12px -4px hsl(210 92% 58% / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  color: var(--tint-blue);
   font-size: 12px;
   font-weight: 600;
   justify-self: start;
@@ -1433,7 +1450,7 @@ select {
 .trace-panel,
 .prompt-workbench,
 .log-panel {
-  margin-top: 16px;
+  margin-top: 14px;
 }
 
 .trace-count {
@@ -1542,16 +1559,16 @@ select {
 }
 
 .trace-card summary {
-  color: var(--tint-amber);
+  color: var(--tint-blue);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
 }
 
 .trace-response {
-  background: hsl(28.9 94.8% 45.1% / 0.12);
-  border: 1px solid hsl(28.9 94.8% 55% / 0.2);
-  border-left: 3px solid hsl(30 98% 58%);
+  background: hsl(210 92% 55% / 0.12);
+  border: 1px solid hsl(210 92% 60% / 0.22);
+  border-left: 3px solid hsl(202 96% 60%);
   border-radius: 6px;
   padding: 5px 12px;
 }
@@ -1702,7 +1719,7 @@ select {
 }
 
 .prompt-editor details summary {
-  color: var(--tint-amber);
+  color: var(--tint-blue);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
@@ -1756,7 +1773,7 @@ select {
   line-height: 1.65;
   margin: 0 20px 20px;
   max-height: 460px;
-  min-height: 200px;
+  min-height: 240px;
   overflow: auto;
   padding: 16px 18px;
   white-space: pre-wrap;
@@ -1789,10 +1806,10 @@ pre {
 }
 
 .replay-button {
-  background: hsl(28.9 94.8% 45.1% / 0.16);
-  border: 1px solid hsl(28.9 94.8% 55% / 0.3);
+  background: hsl(210 92% 55% / 0.15);
+  border: 1px solid hsl(210 92% 60% / 0.32);
   box-shadow: none;
-  color: var(--tint-amber);
+  color: var(--tint-blue);
   font-size: 12px;
   font-weight: 600;
   height: 32px;
@@ -1801,7 +1818,7 @@ pre {
 }
 
 .replay-button:hover {
-  background: linear-gradient(135deg, hsl(30 98% 56%), hsl(16 94% 47%));
+  background: linear-gradient(135deg, hsl(200 95% 54%), hsl(228 88% 58%));
   border-color: transparent;
   color: var(--primary-foreground);
 }
@@ -1945,7 +1962,7 @@ tr.frozen {
   animation: spin 0.9s linear infinite;
   border: 2px solid var(--glass-border-strong);
   border-radius: 50%;
-  border-top-color: hsl(30 98% 58%);
+  border-top-color: hsl(202 96% 60%);
   content: '';
   display: inline-block;
   height: 15px;

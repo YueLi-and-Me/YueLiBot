@@ -188,6 +188,21 @@ function fixed(value: unknown, digits = 0): string {
 }
 
 /**
+ * 将分钟数格式化为「x小时y分钟」的中文时长文本。
+ *
+ * @param totalMinutes 分钟数；负值按 0 处理，用于睡眠倒计时展示。
+ * @returns 例如 `3小时5分钟`、`45分钟`、`2小时`。
+ */
+function durationCn(totalMinutes: number): string {
+  const minutes = Math.max(0, Math.round(totalMinutes))
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  if (hours > 0 && rest > 0) return `${hours}小时${rest}分钟`
+  if (hours > 0) return `${hours}小时`
+  return `${rest}分钟`
+}
+
+/**
  * 将毫秒时间戳格式化为中文月日、时分秒文本。
  *
  * @param value 待格式化的未知时间戳，单位为毫秒。
@@ -323,6 +338,17 @@ function renderStatus(payload: ObservabilityPayload): void {
     ['视觉响应', `${fixed(vision.looks)} 看 / ${fixed(vision.spoke)} 说`],
     ['会话人物', `${payload.conversation.participants.length} 人`],
   ]
+  // 第二行细节从快照补充真实数据，让四张状态卡信息更饱满。
+  const details = [
+    `睡意 ${fixed(sleep.probability, 2)} · 距入睡 ${fixed(sleep.minutesFromBedtime)} 分钟`,
+    `剩余 ${remaining} · 攒满还需 ${fixed(impulse.minutesToFull)} 分钟`,
+    `视觉${vision.enabled === true ? '已开启' : '未开启'} · 静默 ${text(record(payload.sensing).silent)}`,
+    payload.conversation.participants.length
+      ? payload.conversation.participants
+          .map((person) => qqSenderLabel(person.displayName, person.nickname, person.externalId, person.groupCard))
+          .join('、')
+      : '暂无参与人物',
+  ]
   for (const [index, [label, value]] of values.entries()) {
     const item = document.createElement('div')
     item.className = 'status-item'
@@ -330,8 +356,19 @@ function renderStatus(payload: ObservabilityPayload): void {
     tile.className = 'status-icon'
     // 图标路径是模块内常量，直接写入 innerHTML 不受后端文本注入影响。
     tile.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${STATUS_ICONS[index] ?? ''}</svg>`
-    item.append(tile)
-    metric(item, label, value)
+    const row = document.createElement('div')
+    row.className = 'metric-row'
+    const name = document.createElement('span')
+    name.className = 'metric-name'
+    name.textContent = label
+    const output = document.createElement('strong')
+    output.className = 'metric-value'
+    output.textContent = value
+    const detail = document.createElement('span')
+    detail.className = 'metric-detail'
+    detail.textContent = details[index] ?? ''
+    row.append(name, output, detail)
+    item.append(tile, row)
     statusStrip.append(item)
   }
 }
@@ -374,7 +411,16 @@ function renderSleep(payload: ObservabilityPayload): void {
   metric(list, '当前判断', sleep.asleep === true ? '已睡着' : sleep.drowsy === true ? '正在犯困' : sleep.justWoke === true ? '刚醒' : '清醒')
   metric(list, '睡意概率', fixed(sleep.probability, 3))
   metric(list, '睡眠判定线', fixed(sleep.cutoff, 3))
-  metric(list, '距计划入睡', `${fixed(sleep.minutesFromBedtime)} 分钟`)
+  // 入睡前倒数到计划就寝，入睡后倒数到自然醒；两个剩余量都由后端按同一 now 计算。
+  const asleep = sleep.asleep === true
+  const untilBedtime = numeric(sleep.minutesFromBedtime)
+  const remaining = asleep
+    ? numeric(sleep.minutesUntilWake)
+    : untilBedtime === null ? null : -untilBedtime
+  const countdownValue = remaining === null
+    ? '—'
+    : remaining > 0 ? `预计还有 ${durationCn(remaining)}` : `已过 ${durationCn(-remaining)}`
+  metric(list, asleep ? '距离起床' : '距离入睡', countdownValue)
   metric(list, '自然醒目标', dateTime(sleep.naturalWakeTargetAt))
   metric(list, '有效醒来时刻', dateTime(sleep.effectiveWakeAt))
   metric(list, '睡眠债延迟', `${fixed(sleep.sleepDebtDelayMinutes)} 分钟`)
@@ -456,6 +502,13 @@ function renderSensing(payload: ObservabilityPayload): void {
   const body = section('感知与视觉', 'visionStats')
   const list = document.createElement('div')
   list.className = 'metric-list'
+  const looks = numeric(vision.looks) ?? 0
+  const spoke = numeric(vision.spoke) ?? 0
+  if (looks > 0) {
+    // 看过/开口占比进度条：只有发生过视觉事件时才渲染，避免空进度条。
+    progress(list, spoke, looks, '视觉开口占比')
+    metric(list, '视觉开口占比', `${Math.round((spoke / looks) * 100)}%`)
+  }
   metric(list, '当前活动', text(sensing.activity))
   metric(list, '活动描述', text(sensing.description))
   metric(list, '持续时间', `${fixed(sensing.minutes)} 分钟`)
@@ -516,6 +569,14 @@ function renderVoice(payload: ObservabilityPayload): void {
   const body = section('语音与缓存', 'voice')
   const list = document.createElement('div')
   list.className = 'metric-list'
+  const cacheHits = numeric(voice.cacheHits) ?? 0
+  const cacheMisses = numeric(voice.cacheMisses) ?? 0
+  const cacheTotal = cacheHits + cacheMisses
+  if (cacheTotal > 0) {
+    // 命中率进度条补足卡片视觉密度，同时给出比计数更直观的比率。
+    progress(list, cacheHits, cacheTotal, '语音缓存命中率')
+    metric(list, '缓存命中率', `${Math.round((cacheHits / cacheTotal) * 100)}%`)
+  }
   metric(list, '运行状态', voice.enabled === true ? '已启用' : '未启用')
   metric(list, '服务配置', voice.configured === true ? '已配置' : '未配置')
   metric(list, '模型 / 音色', `${text(voice.model)} / ${text(voice.voice)}`)
