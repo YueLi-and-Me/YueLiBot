@@ -1734,23 +1734,13 @@ class ChatService:
             reply_length=reply_length,
         )
 
-    def bot_names(self, platform_name: str | None = None) -> tuple[str, ...]:
-        """返回群聊文本称呼候选。
+    def bot_names(self) -> tuple[str, ...]:
+        """返回 ``bot.toml`` 声明的主体名称和别名。
 
-        :param platform_name: 可选的当前平台登录昵称；仅追加到本次调用结果，不修改
-                全局配置。
-
-        :return: 去重后的主体名称和别名元组。
-
-        :raises ValueError: ``platform_name`` 只有空白字符。
+        :return: 配置加载时固定的主名称与别名元组。
         """
-        names = list(self._bot_names)
-        if platform_name is not None:
-            normalized = platform_name.strip()
-            if not normalized:
-                raise ValueError('平台机器人昵称不能为空')
-            names.append(normalized)
-        return tuple(dict.fromkeys(names))
+
+        return self._bot_names
 
     @property
     def at_mention_must_reply(self) -> bool:

@@ -14,7 +14,7 @@ from datetime import date
 from typing import Any, Dict, List, Literal
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 class InnerConfig(BaseModel):
@@ -32,10 +32,10 @@ class BotConfig(BaseModel):
     """保存 Bot 名称、别名以及与用户的称呼和关系。
 
     :ivar name: 非空主名称。
-    :ivar aliases: 至少两个字符、不重复且不等于主名称的别名列表。
+    :ivar aliases: 非空、不重复且不等于主名称的别名列表。
     :ivar user_nickname: 用户希望使用的称呼，可为空。
     :ivar relationship: 关系描述，可为空。
-    :raises pydantic.ValidationError: 名称或别名不满足长度、唯一性约束。
+    :raises pydantic.ValidationError: 名称或别名不满足非空、唯一性约束。
     """
 
     # Bot 的显示名和提示词身份名
@@ -49,10 +49,10 @@ class BotConfig(BaseModel):
 
     @model_validator(mode='after')
     def _validate_names(self) -> 'BotConfig':
-        """规范化 Bot 名称与别名并验证长度和唯一性。
+        """规范化 Bot 名称与别名并验证非空和唯一性。
 
         :return: 当前完成校验的模型实例。
-        :raises ValueError: 主名称为空，或别名为空、过短、重复、等于主名称。
+        :raises ValueError: 主名称为空，或别名为空、重复、等于主名称。
         副作用：更新当前模型中的 `name` 和 `aliases` 为去空白后的值。
         """
         self.name = self.name.strip()
@@ -61,8 +61,6 @@ class BotConfig(BaseModel):
         normalized = [alias.strip() for alias in self.aliases]
         if any(not alias for alias in normalized):
             raise ValueError('bot.aliases 不能包含空字符串')
-        if any(len(alias) < 2 for alias in normalized):
-            raise ValueError('bot.aliases 每个别名至少需要 2 个字符')
         if self.name in normalized:
             raise ValueError('bot.aliases 不要重复 bot.name')
         if len(set(normalized)) != len(normalized):
@@ -74,7 +72,7 @@ class BotConfig(BaseModel):
 class GroupChatConfig(BaseModel):
     """白名单群进入主体后的回复策略；群准入仍由 QQ 适配器负责。"""
 
-    at_mention_must_reply: bool = True
+    at_mention_must_reply: StrictBool = True
     name_mention_probability: float = Field(default=1.0, ge=0.0, le=1.0)
     presence_decay_strength: float = Field(
         default=3.0,
@@ -682,6 +680,26 @@ class BotDocument(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     personality: PersonalityConfig
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _require_at_mention_switch(cls, value: Any) -> Any:
+        """要求 bot.toml 显式声明协议 @ 必回开关。
+
+        :param value: Bot 配置文档的原始映射。
+        :return: 包含必填开关的原始映射。
+        :raises ValueError: 缺少 ``group_chat.at_mention_must_reply``。
+        副作用：不修改输入映射。
+        """
+        if not isinstance(value, dict):
+            return value
+        group_chat = value.get('group_chat')
+        if not isinstance(group_chat, dict) or 'at_mention_must_reply' not in group_chat:
+            raise ValueError(
+                'group_chat.at_mention_must_reply 必须在 bot.toml 中显式设置；'
+                'true 开启 @ 必回，false 关闭'
+            )
+        return value
 
 
 class FeatureDocument(BaseModel):

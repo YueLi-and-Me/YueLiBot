@@ -388,13 +388,14 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             context.stream.id,
             now - group_chat.reply_window_minutes * 60_000,
         )
-    # 门控集中处理协议 @、文本称呼、睡眠状态和窗口配额，HTTP 层只负责传递完整输入。
+    # 文本称呼只读取 bot.toml；协议登录昵称仅用于上下文展示，不能旁路配置触发回合。
+    bot_names = app_state.chat.bot_names()
     decision = decide_reply(
         stream_kind=context.stream.kind,
         asleep=app_state.chat.current_sleep().asleep,
         mentioned_me=body.mentioned_me,
         text=body.text,
-        bot_names=app_state.chat.bot_names(body.bot_name),
+        bot_names=bot_names,
         at_mention_must_reply=app_state.chat.at_mention_must_reply,
         my_replies_in_window=reply_count,
         max_replies_in_window=group_chat.max_replies_in_window,
@@ -404,7 +405,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         streamId=context.stream.id,
         personId=context.person.id,
         text=body.text,
-        botNames=list(app_state.chat.bot_names(body.bot_name)),
+        botNames=list(bot_names),
         **decision.as_trace(),
     )
     if not decision.accepted:

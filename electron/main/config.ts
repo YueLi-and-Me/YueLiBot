@@ -820,7 +820,7 @@ function readSplitConfig(directory: string): YueliConfig {
   const { models, tasks, generation } = parseModels(modelsPath)
   assertReferencesResolve(models, tasks, providers, modelsPath, providersPath)
 
-  // bot.toml 同时承载身份、群聊、人格和会话参数；缺失的可选段使用独立默认副本。
+  // bot.toml 同时承载身份、群聊、人格和会话参数；@ 必回属于用户选择，必须显式配置。
   const { document: botDocument } = parseToml(botPath)
   const bot = recordAt(botDocument, 'bot', botPath)
   const aliases = bot.aliases ?? DEFAULT_CONFIG.bot.aliases
@@ -839,9 +839,8 @@ function readSplitConfig(directory: string): YueliConfig {
   if (new Set(normalizedAliases).size !== normalizedAliases.length) {
     throw new Error(`${botPath} 的 bot.aliases 不能包含重复别名`)
   }
-  const groupChat = botDocument.group_chat === undefined
-    ? structuredClone(DEFAULT_CONFIG.group_chat)
-    : recordAt(botDocument, 'group_chat', botPath)
+  const groupChat = recordAt(botDocument, 'group_chat', botPath)
+  const atMentionMustReply = booleanAt(groupChat, 'at_mention_must_reply', botPath)
   const nameMentionProbability = numberAtOr(
     groupChat,
     'name_mention_probability',
@@ -932,9 +931,7 @@ function readSplitConfig(directory: string): YueliConfig {
       relationship: stringAt(bot, 'relationship', botPath),
     },
     group_chat: {
-      at_mention_must_reply: groupChat.at_mention_must_reply === undefined
-        ? DEFAULT_CONFIG.group_chat.at_mention_must_reply
-        : booleanAt(groupChat, 'at_mention_must_reply', botPath),
+      at_mention_must_reply: atMentionMustReply,
       name_mention_probability: nameMentionProbability,
       presence_decay_strength: presenceDecayStrength,
       persona_weight: personaWeight,

@@ -107,12 +107,12 @@ def decide_reply(
 
 
 def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:
-    """判断正文是否直接包含主体名称。
+    """判断正文是否包含配置声明的主体名称或别名。
 
     :param text: 待匹配的消息正文。
     :param bot_names: 可用名称序列；每个名称必须非空，比较时忽略大小写。
 
-    :return: 发现满足中英文边界规则的名称时返回 ``True``，否则返回 ``False``。
+    :return: 正文包含任一完整配置值时返回 ``True``，否则返回 ``False``。
 
     :raises ValueError: ``bot_names`` 包含空字符串。
     :raises TypeError: 输入元素不支持字符串操作时由 Python 直接抛出。
@@ -122,42 +122,7 @@ def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:
         name = raw_name.strip().casefold()
         if not name:
             raise ValueError('bot_names 不能包含空字符串')
-        start = normalized_text.find(name)
-        while start >= 0:
-            end = start + len(name)
-            if _is_name_boundary(normalized_text, start, end, name):
-                return True
-            start = normalized_text.find(name, start + 1)
+        # 名称可以由任意文字或符号组成；这里只比较配置值，不推断字符类别或语义边界。
+        if name in normalized_text:
+            return True
     return False
-
-
-def _is_name_boundary(text: str, start: int, end: int, name: str) -> bool:
-    """判断名称是否满足中文命中或 ASCII 单词边界规则。
-
-    :param text: 已规范化的正文。
-    :param start: 名称匹配的起始索引。
-    :param end: 名称匹配的结束索引（不包含）。
-    :param name: 已规范化的名称。
-
-    :return: 中文名出现或 ASCII 名不嵌入其他标识符时返回 ``True``。
-    """
-
-    # 中文没有可靠的字符级称呼边界；出现名字即进入回合，是否回复由动作策略决定。
-    if not all(character.isascii() for character in name):
-        return True
-    before = text[start - 1] if start > 0 else ''
-    after = text[end] if end < len(text) else ''
-    return not _is_ascii_identifier(before) and not _is_ascii_identifier(after)
-
-
-def _is_ascii_identifier(character: str) -> bool:
-    """判断字符是否属于 ASCII 标识符字符。
-
-    :param character: 待判断的单字符字符串；空字符串表示文本边界。
-
-    :return: 字符为 ASCII 字母、数字或下划线时返回 ``True``。
-    """
-
-    return bool(character) and character.isascii() and (
-        character.isalnum() or character == '_'
-    )
