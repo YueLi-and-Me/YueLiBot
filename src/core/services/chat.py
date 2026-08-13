@@ -701,7 +701,7 @@ class ChatService:
                     sender['senderLabel'],
                     trimmed,
                     messages,
-                    assistant_raw,
+                    sink.segments,
                     sink.side_effects,
                     self._bot_display_name,
                 )
@@ -1793,6 +1793,7 @@ class ChatService:
         副作用：
             写入事实、人格和 promise 状态，推送桌面解析事件，或向非桌面 sink
             聚合按 ``<say>`` 边界切分的出站文本；取消信号会提前结束消费。
+            分句收集不区分平台，控制台摘要面板始终能拿到剥掉标签后的可见正文。
         """
         context = sink.context
         for event in events:
@@ -1805,8 +1806,7 @@ class ChatService:
             if context.stream.platform == 'desktop':
                 self._track_speech(context, event, sink.turn)
                 await self._emit_parse_event(context, sink.turn, event)
-            else:
-                sink.segment = _collect_outbound_segment(event, sink.segments, sink.segment)
+            sink.segment = _collect_outbound_segment(event, sink.segments, sink.segment)
 
     def _handle_side_effects(
         self, context: ConversationContext, event: ParseEvent, now: int, turn: int,

@@ -74,12 +74,25 @@ def _prompt_preview(messages: list[dict]) -> str:
     return f'{preview}\n（共 {len(messages)} 条消息，完整内容见观察面板）'
 
 
+def _reply_text(segments: list[str]) -> str:
+    """把解析器切分出的分句合并为控制台可见正文。
+
+    :param segments: 按 ``<say>`` 边界切分的出站分句列表。
+
+    :return: 非空分句按换行连接后的文本；全部为空时返回空字符串。
+
+    副作用：不修改传入列表。
+    """
+    return '\n'.join(segment.strip() for segment in segments if segment.strip())
+
+
 def _side_effect_lines(side_effects: list[dict]) -> list[str]:
-    """将记忆和情绪副作用转换为面板行文本。
+    """将记忆、情绪和约定副作用转换为面板行文本。
 
     :param side_effects: 解析事件产生的副作用字典列表。
 
-    :return: 当前支持的 ``memory_fact`` 和 ``mood_delta`` 副作用行；未知类型被忽略。
+    :return: 当前支持的 ``memory_fact``、``mood_delta`` 和 ``promise_stashed``
+        副作用行；未知类型被忽略。
     """
 
     lines = []
@@ -88,6 +101,8 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
             lines.append(f"  · 记忆: [{effect.get('memoryKind', '')}] {effect.get('content', '')}")
         elif effect.get('kind') == 'mood_delta':
             lines.append(f"  · 心情: favor={effect.get('favor')} energy={effect.get('energy')}")
+        elif effect.get('kind') == 'promise_stashed':
+            lines.append(f"  · 约定: {effect.get('subject', '')} → {effect.get('at')}")
     return lines
 
 
@@ -96,7 +111,7 @@ def render_turn(
     sender_label: str,
     user_text: str,
     messages: list[dict],
-    response_text: str,
+    reply_segments: list[str],
     side_effects: list[dict],
     bot_name: str,
 ) -> None:
@@ -106,7 +121,8 @@ def render_turn(
     :param sender_label: 发送者展示名。
     :param user_text: 用户原始文本。
     :param messages: 发送给模型的消息列表，仅展示系统消息预览。
-    :param response_text: 最终响应文本。
+    :param reply_segments: 解析器按 ``<say>`` 边界切分出的出站分句；模型原始
+        输出（含协议标签）由事件账本保留，控制台只展示剥掉标签后的可见正文。
     :param side_effects: 本轮解析出的副作用列表。
     :param bot_name: 主体展示名。
 
@@ -116,13 +132,24 @@ def render_turn(
     if not _is_tty:
         return
     try:
-        # 仅组装有限预览和结构化副作用，完整提示词仍由观察事件存储保留。
+        # 仅组装有限预览、结构化副作用和解析后的可见正文，完整提示词与原始响应
+        # 仍由观察事件存储保留。
         parts: list[Any] = [
             Text(f'{sender_label}: {user_text}', style='bold'),
             Text(_prompt_preview(messages), style='dim'),
-            Text(f'{bot_name}: {response_text}', style='green'),
         ]
-        # 副作用逐行追加，便于在交互终端中区分记忆写入和情绪变化。
+        reply = _reply_text(reply_segments)
+        if reply:
+            parts.append(
+                Text(f'{bot_name}: ', style='bold green')
+                + Text(reply, style='green'),
+            )
+        else:
+            parts.append(Text(
+                f'{bot_name}: （本轮没有可见回复，仅处理内部事件）',
+                style='dim italic',
+            ))
+        # 副作用逐行追加，便于在交互终端中区分记忆写入、情绪变化和约定登记。
         for line in _side_effect_lines(side_effects):
             parts.append(Text(line, style='yellow'))
         console.print(Panel(
