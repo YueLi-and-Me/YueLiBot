@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, Set
+from typing import Any, Optional
 
 import json
 import sqlite3
@@ -215,30 +215,29 @@ class MemoryStore:
         self,
         stream_id: int,
         limit: int = 40,
-        excluded_message_ids: Set[int] | None = None,
+        user_message_id_watermark: int | None = None,
     ) -> list[StoredMessage]:
         """读取指定 stream 尚未归档的最近工作记忆。
 
         :param stream_id: 目标 stream ID。
         :param limit: 最多返回的消息数，默认值为 40。
-        :param excluded_message_ids: 可选的待处理消息 ID 集合；这些消息不进入当前批次历史。
+        :param user_message_id_watermark: 可选的本批末条用户消息 ID；水位后的用户消息不进入历史。
         :return: 按时间正序排列的 `StoredMessage` 列表。
         :raises sqlite3.Error: 查询失败。
         副作用：只读 messages 表。
         """
-        if not excluded_message_ids:
+        if user_message_id_watermark is None:
             rows = self._db.execute(
                 '''SELECT role, content, created_at, sender_person_id FROM messages
                    WHERE stream_id = ? AND episode_id IS NULL ORDER BY id DESC LIMIT ?''',
                 (stream_id, limit),
             ).fetchall()
         else:
-            placeholders = ', '.join('?' for _ in excluded_message_ids)
             rows = self._db.execute(
-                f'''SELECT role, content, created_at, sender_person_id FROM messages
-                    WHERE stream_id = ? AND episode_id IS NULL
-                    AND id NOT IN ({placeholders}) ORDER BY id DESC LIMIT ?''',
-                (stream_id, *sorted(excluded_message_ids), limit),
+                '''SELECT role, content, created_at, sender_person_id FROM messages
+                   WHERE stream_id = ? AND episode_id IS NULL
+                   AND NOT (role = 'user' AND id > ?) ORDER BY id DESC LIMIT ?''',
+                (stream_id, user_message_id_watermark, limit),
             ).fetchall()
         return [StoredMessage(role=r[0], content=r[1], created_at=r[2], sender_person_id=r[3])
                 for r in reversed(rows)]
