@@ -62,6 +62,11 @@ class ActionContext:
 class ActionPolicy(Protocol):
     """根据已组织上下文选择本轮动作的窄协议。"""
 
+    @property
+    def decision_source(self) -> str:
+        """返回写入动作事件的稳定策略来源。"""
+        ...
+
     async def decide(self, context: ActionContext) -> TurnAction:
         """返回本轮应执行的动作。"""
         ...
