@@ -248,6 +248,7 @@ class ChatService:
         self._stream_claims: dict[int, str] = {}
         self._poll_task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+        self._wake = asyncio.Event()
         self._sessions: dict[int, _SessionState] = {}
         self._summarizing: set[int] = set()
         self._active_turns: dict[int, int] = {}
@@ -390,13 +391,15 @@ class ChatService:
             self.persona.snapshot_daily(person_id, now)
 
     async def startup(self) -> None:
-        """启动固定间隔的聊天缓冲轮询。"""
+        """启动由入站消息唤醒、固定心跳兜底的聊天缓冲循环。"""
         self._stop.clear()
+        self._wake.clear()
         self._poll_task = asyncio.create_task(self._poll_loop(), name='chat-poll')
 
     async def shutdown(self) -> None:
         """停止聊天缓冲轮询并终止仍在执行的回复。"""
         self._stop.set()
+        self._wake.set()
         task = self._poll_task
         self._poll_task = None
         if task is not None:
@@ -408,14 +411,16 @@ class ChatService:
             self.interrupt(stream_id)
 
     async def _poll_loop(self) -> None:
-        """以固定间隔处理当前各 stream 的非空缓冲区。"""
+        """在消息到达时处理缓冲区，并用固定间隔心跳兜底。"""
         while not self._stop.is_set():
+            # 先清除已消费的唤醒信号；若 tick 期间又有消息到达，新信号会保留。
+            self._wake.clear()
             try:
                 await self._tick()
             except Exception as exc:
                 logger.warning('chat_tick_failed', error=str(exc))
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=CHAT_POLL_INTERVAL_S)
+                await asyncio.wait_for(self._wake.wait(), timeout=CHAT_POLL_INTERVAL_S)
             except asyncio.TimeoutError:
                 pass
 
@@ -485,6 +490,7 @@ class ChatService:
             message_id=message_id,
             previous_message_at=previous_message_at,
         ))
+        self._wake.set()
 
     async def _start_turn(
         self,
