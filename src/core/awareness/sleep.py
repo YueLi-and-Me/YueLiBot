@@ -72,6 +72,7 @@ class SleepEvaluation(SleepState):
     :ivar effective_wake_at: 应用迟睡补偿和滞回后的有效醒来时间戳。
     :ivar natural_wake_target_at: 未叠加醒来概率滞回的自然醒目标时间戳。
     :ivar sleep_debt_delay_minutes: 因睡眠债延后的分钟数，默认值为 0.0。
+    :ivar minutes_until_wake: 距自然醒目标的剩余分钟数，负值表示已过目标，默认值为 0.0。
     """
 
     cutoff: float = 0.0
@@ -79,6 +80,7 @@ class SleepEvaluation(SleepState):
     effective_wake_at: int = 0
     natural_wake_target_at: int = 0
     sleep_debt_delay_minutes: float = 0.0
+    minutes_until_wake: float = 0.0
 
 
 def _sigmoid(x: float) -> float:
@@ -201,6 +203,8 @@ def evaluate_sleep(
     effective_wake_at = natural_wake_target_at + int(wake_threshold_offset * _MINUTE_MS)
 
     minutes_from_bedtime = (now - bedtime_at) / _MINUTE_MS
+    # 距自然醒的剩余分钟：入睡后作倒计时用，负值表示已过目标（醒来滞回期）。
+    minutes_until_wake = (natural_wake_target_at - now) / _MINUTE_MS
     bedtime_rise = _sigmoid((now - effective_bedtime_at) / _MINUTE_MS / _SLEEP_SIGMOID_MINUTES)
     wake_fall = _sigmoid((effective_wake_at - now) / _MINUTE_MS / _SLEEP_SIGMOID_MINUTES)
     probability = bedtime_rise * wake_fall
@@ -217,6 +221,7 @@ def evaluate_sleep(
         effective_wake_at=effective_wake_at,
         natural_wake_target_at=natural_wake_target_at,
         sleep_debt_delay_minutes=sleep_debt_delay_minutes,
+        minutes_until_wake=minutes_until_wake,
     )
 
 

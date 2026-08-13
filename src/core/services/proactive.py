@@ -295,6 +295,7 @@ class AwarenessService:
                 'probability': sleep_eval.probability,
                 'cutoff': sleep_eval.cutoff,
                 'minutesFromBedtime': sleep_eval.minutes_from_bedtime,
+                'minutesUntilWake': sleep_eval.minutes_until_wake,
                 'naturalWakeTargetAt': sleep_eval.natural_wake_target_at,
                 'effectiveWakeAt': sleep_eval.effective_wake_at,
                 'sleepDebtDelayMinutes': sleep_eval.sleep_debt_delay_minutes,
