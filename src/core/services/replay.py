@@ -132,7 +132,7 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
     except ValueError as exc:
         raise ValueError(
             '事件早于当前模板结构，无法准确重放'
-            f'（事件 {event["seq"]} 的渲染参数与当前占位符不一致）'
+            f'（事件 {event["seq"]} 的渲染参数与当前占位符不一致：{exc}）'
         ) from exc
     if 'chat.system' in rendered:
         parts = [rendered['chat.system']]
