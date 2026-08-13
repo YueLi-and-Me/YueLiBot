@@ -41,6 +41,7 @@ class ActionContext:
     turn_id: int
     stream_id: int
     messages: Tuple[Dict[str, Any], ...]
+    stream_kind: str = ''
 
 
 class ActionPolicy(Protocol):
@@ -127,21 +128,26 @@ class TurnPlanner:
         self._long_input_chars = long_input_chars
 
     async def decide(self, context: ActionContext) -> TurnAction:
-        """沿用既有动作结论，并以最新用户输入是否达到阈值选择篇幅。"""
+        """沿用既有动作结论，并以本批用户输入总长度选择篇幅。"""
         action = await self._action_policy.decide(context)
         if action.action == 'silent':
             return action
-        latest_user_text = next(
-            (
-                str(message.get('content', '')).strip()
-                for message in reversed(context.messages)
-                if message.get('role') == 'user'
-            ),
-            '',
-        )
+        user_texts = []
+        for message in reversed(context.messages):
+            if message.get('role') != 'user':
+                break
+            text = str(message.get('content', '')).strip()
+            if context.stream_kind == 'group':
+                # 群聊历史在读取时为每条正文添加“显示名: ”，篇幅只统计原始正文。
+                text = '\n'.join(
+                    line.partition(': ')[2] if ': ' in line else line
+                    for line in text.splitlines()
+                ).strip()
+            user_texts.append(text)
+        batch_input_chars = sum(len(text) for text in user_texts)
         length: ReplyLength = (
             'long'
-            if len(latest_user_text) >= self._long_input_chars
+            if batch_input_chars >= self._long_input_chars
             else 'brief'
         )
         return TurnAction(
