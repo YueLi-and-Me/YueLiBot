@@ -98,7 +98,10 @@ class TokenManager:
         """
         if not self._token:
             return False
-        return secrets.compare_digest(token, self._token)
+        # compare_digest 比较 str 时要求两侧均为 ASCII，非 ASCII 候选 token 会抛
+        # TypeError 而不是返回 False，使 web_login 等入口 500。改为按 UTF-8 编码成
+        # bytes 比较：bytes 无此限制，仍是恒定时间，不匹配的候选（含非 ASCII）正常返回 False。
+        return secrets.compare_digest(token.encode('utf-8'), self._token.encode('utf-8'))
 
 
 token_manager = TokenManager()
