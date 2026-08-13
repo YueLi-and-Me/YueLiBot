@@ -295,6 +295,14 @@ function chip(parent: HTMLElement, label: string, value: string): void {
   parent.append(item)
 }
 
+/** 状态条四类关键状态的描边图标路径，顺序与 renderStatus 的展示项一一对应。 */
+const STATUS_ICONS: readonly string[] = [
+  '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+  '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+]
+
 /**
  * 渲染顶部状态摘要，包括睡眠、预算、视觉响应和会话人数。
  *
@@ -315,9 +323,14 @@ function renderStatus(payload: ObservabilityPayload): void {
     ['视觉响应', `${fixed(vision.looks)} 看 / ${fixed(vision.spoke)} 说`],
     ['会话人物', `${payload.conversation.participants.length} 人`],
   ]
-  for (const [label, value] of values) {
+  for (const [index, [label, value]] of values.entries()) {
     const item = document.createElement('div')
     item.className = 'status-item'
+    const tile = document.createElement('span')
+    tile.className = 'status-icon'
+    // 图标路径是模块内常量，直接写入 innerHTML 不受后端文本注入影响。
+    tile.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${STATUS_ICONS[index] ?? ''}</svg>`
+    item.append(tile)
     metric(item, label, value)
     statusStrip.append(item)
   }

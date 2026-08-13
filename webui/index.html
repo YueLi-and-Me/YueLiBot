@@ -16,13 +16,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'"
     />
     <title>Bot 观察面板</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
+    <!-- 背景舞台：极光光斑、噪点颗粒与暗角叠层；固定在视口底部，不参与交互。 -->
+    <div class="bg-stage" aria-hidden="true">
+      <div class="aurora-blob aurora-a"></div>
+      <div class="aurora-blob aurora-b"></div>
+      <div class="aurora-blob aurora-c"></div>
+      <div class="bg-grain"></div>
+      <div class="bg-vignette"></div>
+    </div>
     <!-- 登录页：仅在校验 token 前可见，登录成功后由 main.ts 切换隐藏。 -->
     <section id="login-panel" class="auth-screen" aria-labelledby="login-title">
       <div class="auth-card">
@@ -122,18 +130,20 @@
           <section id="overview" class="panel-card" aria-label="各会话当前阶段">
             <header class="section-heading">
               <div class="section-title">
+<span class="heading-icon tint-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg></span>
                 <h2>此刻在做什么</h2>
                 <span class="section-subtitle">每条会话停在哪一步、停了多久</span>
               </div>
             </header>
-            <div id="stage-board" class="stage-board"><p class="empty">尚未收到任何消息。</p></div>
+            <div id="stage-board" class="stage-board"><p class="empty loading">尚未收到任何消息。</p></div>
           </section>
 
-          <div id="grid" class="panel-grid"><p class="empty">正在读取内部状态…</p></div>
+          <div id="grid" class="panel-grid"><p class="empty loading">正在读取内部状态…</p></div>
 
           <section id="events" class="panel-card trace-panel" aria-label="运行时调试追踪">
             <header class="section-heading">
               <div class="section-title">
+<span class="heading-icon tint-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg></span>
                 <h2>事件账本</h2>
                 <span class="section-subtitle">按轮次聚合对话，按时间追溯后台事件</span>
               </div>
@@ -175,6 +185,7 @@
           <section id="prompts" class="panel-card prompt-workbench" aria-label="提示词工作台">
             <header class="section-heading">
               <div class="section-title">
+<span class="heading-icon tint-violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg></span>
                 <h2>提示词工作台</h2>
                 <span class="section-subtitle">本机可编辑；远程连接保持只读</span>
               </div>
@@ -214,6 +225,7 @@
           <section id="logs" class="panel-card log-panel" aria-label="实时日志">
             <header class="section-heading">
               <div class="section-title">
+<span class="heading-icon tint-sky"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg></span>
                 <h2>实时日志</h2>
                 <span id="log-status" class="section-subtitle">正在连接</span>
               </div>
@@ -231,7 +243,7 @@
             </div>
             <a class="btn-secondary button-link" href="/">返回会话观察</a>
           </header>
-          <div id="persons-grid" class="panel-grid"><p class="empty">正在读取人物画像…</p></div>
+          <div id="persons-grid" class="panel-grid"><p class="empty loading">正在读取人物画像…</p></div>
         </section>
       </main>
     </div>
