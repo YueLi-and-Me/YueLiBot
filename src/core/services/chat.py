@@ -598,7 +598,6 @@ class ChatService:
                     inbound.bot_name,
                     user_message_id_watermark=batch[-1].message_id,
                 )
-                decision_messages = self._render_prepared_context(prepared_context)
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
                 action_policy = (
                     self._default_action_policy
@@ -611,7 +610,7 @@ class ChatService:
                 action = await action_policy.decide(ActionContext(
                     turn_id=turn,
                     stream_id=stream_id,
-                    messages=tuple(decision_messages),
+                    messages=tuple(prepared_context.raw_history),
                     batch_text=trimmed,
                 ))
                 trace.emit(

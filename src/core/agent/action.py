@@ -51,7 +51,12 @@ class ReplyDecision:
 
 @dataclass(frozen=True)
 class ActionContext:
-    """动作策略可读取的已组织回合上下文。"""
+    """动作策略可读取的已组织回合上下文。
+
+    ``messages`` 是未拼系统提示词、未按模型字符预算裁剪的会话历史；群聊
+    user 条目已在读取时带上说话人前缀。策略由此直接理解“刚才说了什么”，
+    不依赖最终提交给模型的消息形态。
+    """
 
     turn_id: int
     stream_id: int
