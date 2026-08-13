@@ -9,13 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-import unicodedata
-
 from src.core.platform_io.types import StreamKind
-
-
-_VOCATIVE_PREFIXES = frozenset('叫喊找问让喂@')
-_VOCATIVE_SUFFIXES = frozenset('在来呢吗呀啊诶欸说看帮回醒你请给陪要能可好出')
 
 
 @dataclass(frozen=True)
@@ -138,30 +132,21 @@ def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:
 
 
 def _is_name_boundary(text: str, start: int, end: int, name: str) -> bool:
-    """判断名称两侧是否满足中文或 ASCII 单词边界规则。
+    """判断名称是否满足中文命中或 ASCII 单词边界规则。
 
     :param text: 已规范化的正文。
     :param start: 名称匹配的起始索引。
     :param end: 名称匹配的结束索引（不包含）。
     :param name: 已规范化的名称。
 
-    :return: 名称不嵌入其他 ASCII 标识符且符合中文称呼边界时返回 ``True``。
+    :return: 中文名出现或 ASCII 名不嵌入其他标识符时返回 ``True``。
     """
 
+    # 中文没有可靠的字符级称呼边界；出现名字即进入回合，是否回复由动作策略决定。
+    if not all(character.isascii() for character in name):
+        return True
     before = text[start - 1] if start > 0 else ''
     after = text[end] if end < len(text) else ''
-    if not all(character.isascii() for character in name):
-        before_ok = (
-            not before
-            or _is_separator(before)
-            or before in _VOCATIVE_PREFIXES
-        )
-        after_ok = (
-            not after
-            or _is_separator(after)
-            or after in _VOCATIVE_SUFFIXES
-        )
-        return before_ok and after_ok
     return not _is_ascii_identifier(before) and not _is_ascii_identifier(after)
 
 
@@ -176,14 +161,3 @@ def _is_ascii_identifier(character: str) -> bool:
     return bool(character) and character.isascii() and (
         character.isalnum() or character == '_'
     )
-
-
-def _is_separator(character: str) -> bool:
-    """判断字符是否为空白或 Unicode 标点/符号分隔符。
-
-    :param character: 待判断的单字符字符串。
-
-    :return: 字符可作为名称边界分隔符时返回 ``True``。
-    """
-
-    return character.isspace() or unicodedata.category(character).startswith(('P', 'S'))
