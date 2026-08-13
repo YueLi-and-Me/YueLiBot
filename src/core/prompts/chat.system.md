@@ -7,10 +7,7 @@
 {{time_context}}{{birthday_note}}{{resumption}}{{persona}}{{activity}}{{facts}}{{episodes}}
 
 # 说话的味道
-{{reply_style}}{{tone}}{{expression_habits}}
-
-# 这一轮的篇幅
-{{length}}
+{{reply_style}}{{tone}}{{expression_habits}}{{length}}
 
 # 有一说一
 {{discipline}}

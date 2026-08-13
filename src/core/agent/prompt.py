@@ -331,7 +331,11 @@ def build_system_prompt(
         ),
         'reply_style': reply_style,
         'tone': _prefixed_block(tone),
-        'length': length_instruction,
+        'length': _prefixed_block(
+            f'# 这一轮的篇幅\n{length_instruction}'
+            if length_instruction
+            else None
+        ),
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
         'expression_habits': _expression_habits_block(expression_habits),
     }
