@@ -20,7 +20,7 @@ import uvicorn
 
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.api.auth import token_manager
-from src.core.common.backend_runtime import create_backend_runtime
+from src.core.common.backend_runtime import create_backend_runtime, runtime_file_path
 from src.core.common.logger import get_logger, initialize_logging
 from src.core.config.loader import load_config
 from src.core.llm_models.protocol import LlmProvider
@@ -165,20 +165,66 @@ def _announce_ready() -> None:
     print("YUELI_READY=1", flush=True)
 
 
+def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
+    """向人输出 WebUI 地址与本次进程的登录 token。
+
+    :param port: 后端实际监听端口。
+    :param token: 当前进程认证 token；每次启动重新生成。
+    :param runtime_path: 运行时凭据文件路径，供用户事后再取一次 token。
+
+    副作用：
+        向标准输出写入三行明文，其中包含 token。
+
+    这里刻意用 ``print`` 而不是 logger，两个原因缺一不可：
+
+    1. **token 不能进文件日志。** logger 会同时写 ``data/logs`` 下的 JSONL 并推给
+       WebUI 日志流；而 token 的落盘位置 ``data/runtime/`` 由
+       ``_restrict_runtime_directory()`` 限制了权限，日志目录没有。写进日志等于绕开
+       那道限制，而日志文件长期留存、又经常被整份复制去排障。
+    2. **stdout 在两种启动方式下都看得见。** supervisor 只吞掉 ``YUELI_`` 前缀的协议行
+       （`supervisor.ts` 的 `_onLine`），其余 stdout 原样转发到 Electron 控制台。
+       反过来，这三行**不能**加 ``YUELI_`` 前缀，否则会被当成协议行吃掉。
+
+    token 不拼进 URL：URL 会进浏览器历史和 referrer，而 token 是当前进程的主凭据。
+    """
+
+    print(f"WebUI 观察面板：http://127.0.0.1:{port}", flush=True)
+    print(f"登录 token：{token}", flush=True)
+    print(f"token 每次启动重新生成，也可从 {runtime_path} 读取", flush=True)
+
+
 class _ReadyAnnouncingServer(uvicorn.Server):
-    """在端口真正开始监听之后才打印就绪公告。"""
+    """在端口真正开始监听之后才打印就绪公告与 WebUI 入口。"""
+
+    def __init__(self, config: uvicorn.Config, port: int, token: str, runtime_path: Path) -> None:
+        """记录公告所需的运行时坐标。
+
+        :param config: Uvicorn 配置。
+        :param port: 后端实际监听端口。
+        :param token: 当前进程认证 token。
+        :param runtime_path: 运行时凭据文件路径。
+        """
+
+        super().__init__(config)
+        self._entry_port = port
+        self._entry_token = token
+        self._entry_runtime_path = runtime_path
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        """完成 Uvicorn 启动后再输出就绪标记。
+        """完成 Uvicorn 启动后再输出就绪标记与 WebUI 入口。
 
         :param sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入。
 
         副作用：
-            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1``。
+            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1`` 与 WebUI 入口三行。
+
+        入口公告放在监听真正建立之后：端口在 ``main()`` 里早就绑好了，但那时 Uvicorn
+        还没接管，先打地址会让人点进一个尚未响应的连接。
         """
 
         await super().startup(sockets=sockets)
         _announce_ready()
+        _announce_webui_entry(self._entry_port, self._entry_token, self._entry_runtime_path)
 
 
 def main() -> None:
@@ -427,7 +473,12 @@ def main() -> None:
 
     from src.core.api.app import create_app
     config = uvicorn.Config(create_app(), log_level="warning", access_log=False)
-    _ReadyAnnouncingServer(config).run(sockets=[sock])
+    _ReadyAnnouncingServer(
+        config,
+        port=port,
+        token=backend_runtime.token,
+        runtime_path=runtime_file_path(data_dir),
+    ).run(sockets=[sock])
 
 
 if __name__ == "__main__":

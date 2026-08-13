@@ -24,6 +24,21 @@ class BackendRuntime:
     token: str
 
 
+def runtime_file_path(data_dir: Path) -> Path:
+    """返回运行时凭据文件在数据目录中的位置。
+
+    :param data_dir: 应用运行时数据根目录。
+
+    :return: ``<data_dir>/runtime/backend.json``。
+
+    调用方需要展示或读取这个位置时一律走本函数，不要再各自拼一次路径：
+    TS 侧（`supervisor.ts`）和适配器入口已经各持有一份字面量，Python 内部再拼第三份，
+    改目录结构时必然漏改其中一处，而漏改的表现是「文件明明在那儿却读不到」。
+    """
+
+    return data_dir / 'runtime' / 'backend.json'
+
+
 def create_backend_runtime(data_dir: Path, port: int) -> BackendRuntime:
     """生成后端连接坐标，并以受限权限原子写入运行时 JSON 文件。
 
@@ -48,7 +63,7 @@ def create_backend_runtime(data_dir: Path, port: int) -> BackendRuntime:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     _restrict_runtime_directory(runtime_dir)
 
-    runtime_path = runtime_dir / 'backend.json'
+    runtime_path = runtime_file_path(data_dir)
     temporary_path = runtime_dir / f'.backend-{secrets.token_hex(8)}.tmp'
     payload = json.dumps(
         {'port': runtime.port, 'token': runtime.token},
