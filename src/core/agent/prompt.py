@@ -303,13 +303,12 @@ def build_system_prompt(
         'emotions': ' / '.join(EXPRESSION_IDS),
         'gestures': ' / '.join(GESTURE_IDS),
     }
-    length_instruction = ''
     if reply_length is not None:
         try:
             length_template_id = _REPLY_LENGTH_TEMPLATE_IDS[reply_length]
         except KeyError as exc:
             raise ValueError(f'未知回复篇幅：{reply_length}') from exc
-        length_instruction = get_prompt(length_template_id).render().rstrip()
+        component_values[length_template_id] = {}
     system_values = {
         'name': name,
         'identity': identity,
@@ -331,11 +330,6 @@ def build_system_prompt(
         ),
         'reply_style': reply_style,
         'tone': _prefixed_block(tone),
-        'length': _prefixed_block(
-            f'# 这一轮的篇幅\n{length_instruction}'
-            if length_instruction
-            else None
-        ),
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
         'expression_habits': _expression_habits_block(expression_habits),
     }

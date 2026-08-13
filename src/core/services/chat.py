@@ -54,6 +54,7 @@ from src.core.platform_io.types import (
 from src.core.prompts.registry import (
     CHAT_PROACTIVE_TEMPLATE_IDS,
     CHAT_SYSTEM_TEMPLATE_IDS,
+    CHAT_SYSTEM_VARIANT_COMPONENTS,
     prompt_metadata,
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState
@@ -653,6 +654,14 @@ class ChatService:
                     render_params,
                     action.length,
                 )
+                system_template_ids = (
+                    *CHAT_SYSTEM_TEMPLATE_IDS,
+                    *(
+                        template_id
+                        for template_id in CHAT_SYSTEM_VARIANT_COMPONENTS
+                        if template_id in render_params
+                    ),
+                )
                 self._mark_stage(context, GENERATING, turn_id=turn)
                 trace.emit(
                     'llm_request',
@@ -661,7 +670,7 @@ class ChatService:
                     temperature=self._chat_temperature,
                     maxTokens=self._chat_max_tokens,
                     renderParams=render_params,
-                    **prompt_metadata('chat.system', CHAT_SYSTEM_TEMPLATE_IDS),
+                    **prompt_metadata('chat.system', system_template_ids),
                 )
                 bind_render_params(render_params)
                 async for chunk in self._chat_provider.stream(

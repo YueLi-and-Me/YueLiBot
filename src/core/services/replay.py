@@ -12,6 +12,7 @@ from src.core.prompts.registry import (
     CHAT_PROACTIVE_TEMPLATE_IDS,
     CHAT_SYSTEM_COMPONENTS,
     CHAT_SYSTEM_TEMPLATE_IDS,
+    CHAT_SYSTEM_VARIANT_COMPONENTS,
     get_prompt,
     render_chat_system,
 )
@@ -72,8 +73,28 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
         raise ValueError(f'事件 {event["seq"]} 早于渲染参数落库，无法准确重放')
     params: Dict[str, Dict[str, str]] = {}
     if 'chat.system' in template_ids:
-        render_template_ids = (*CHAT_SYSTEM_COMPONENTS, 'chat.system')
-        if 'chat.proactive' in template_ids:
+        proactive = 'chat.proactive' in template_ids
+        variant_template_ids = tuple(
+            template_id
+            for template_id in CHAT_SYSTEM_VARIANT_COMPONENTS
+            if template_id in render_params
+        )
+        if proactive and variant_template_ids:
+            raise ValueError(
+                '事件早于当前模板结构，无法准确重放'
+                f'（事件 {event["seq"]} 的主动搭话渲染参数不应包含篇幅变体）'
+            )
+        if not proactive and len(variant_template_ids) != 1:
+            raise ValueError(
+                '事件早于当前模板结构，无法准确重放'
+                f'（事件 {event["seq"]} 必须恰好包含一个篇幅变体）'
+            )
+        render_template_ids = (
+            *CHAT_SYSTEM_COMPONENTS,
+            *variant_template_ids,
+            'chat.system',
+        )
+        if proactive:
             render_template_ids = (*render_template_ids, 'chat.proactive')
     else:
         render_template_ids = template_ids
@@ -95,7 +116,10 @@ def _render_current_prompt(event: Dict[str, Any], template_ids: tuple[str, ...])
                 params['chat.system'],
                 {
                     template_id: params[template_id]
-                    for template_id in CHAT_SYSTEM_COMPONENTS
+                    for template_id in (
+                        *CHAT_SYSTEM_COMPONENTS,
+                        *variant_template_ids,
+                    )
                 },
             )
             if 'chat.proactive' in template_ids:

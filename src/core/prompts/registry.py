@@ -28,9 +28,12 @@ CHAT_SYSTEM_COMPONENTS: Dict[str, str] = {
     'chat.discipline': 'discipline',
     CHAT_PROTOCOL_TEMPLATE_ID: 'protocol',
 }
+CHAT_SYSTEM_VARIANT_COMPONENTS: Dict[str, str] = {
+    'chat.length.brief': 'length',
+    'chat.length.long': 'length',
+}
 CHAT_SYSTEM_TEMPLATE_IDS = (
     *CHAT_SYSTEM_COMPONENTS,
-    *CHAT_LENGTH_TEMPLATE_IDS,
     'chat.system',
 )
 CHAT_PROACTIVE_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.proactive')
@@ -205,13 +208,15 @@ def validate_prompt_text(template_id: str, text: str) -> FrozenSet[str]:
     :return: 与声明一致的占位符集合。
 
     :raises KeyError: 模板 ID 未声明。
-    :raises ValueError: 文本占位符集合缺失或多出字段。
+    :raises ValueError: 文本为空，或占位符集合缺失或多出字段。
     """
 
     try:
         declared = TEMPLATE_PLACEHOLDERS[template_id]
     except KeyError as exc:
         raise KeyError(f'未声明的提示词模板：{template_id}') from exc
+    if not text.strip():
+        raise ValueError(f'提示词模板 {template_id} 不能为空')
     actual = frozenset(_PLACEHOLDER_PATTERN.findall(text))
     if actual != declared:
         raise _placeholder_error(template_id, declared, actual, '占位符')
@@ -348,12 +353,21 @@ def render_chat_system(
     """用当前聊天子模板补全并渲染系统提示词。
 
     :param system_values: 不含聊天子模板正文的 ``chat.system`` 渲染参数。
-    :param component_values: 各聊天子模板自己的渲染参数。
+    :param component_values: 固定聊天组件与至多一个同槽位变体的渲染参数。
     :return: 完整系统提示词，以及包含当前子模板正文的完整渲染参数副本。
     :raises KeyError: 缺少已声明子模板的渲染参数或模板未加载。
     :raises ValueError: 子模板或系统模板的渲染参数不符合占位符声明。
     副作用：不修改输入字典。
     """
+    fixed_template_ids = set(CHAT_SYSTEM_COMPONENTS)
+    missing_fixed = fixed_template_ids - component_values.keys()
+    if missing_fixed:
+        raise KeyError(f'系统提示词缺少固定组件：{", ".join(sorted(missing_fixed))}')
+    known_template_ids = fixed_template_ids | set(CHAT_SYSTEM_VARIANT_COMPONENTS)
+    unknown = component_values.keys() - known_template_ids
+    if unknown:
+        raise ValueError(f'系统提示词包含未知组件：{", ".join(sorted(unknown))}')
+
     resolved_values = dict(system_values)
     resolved_values.update({
         placeholder: get_prompt(template_id).render(
@@ -361,6 +375,24 @@ def render_chat_system(
         ).rstrip()
         for template_id, placeholder in CHAT_SYSTEM_COMPONENTS.items()
     })
+    selected_variants: Dict[str, str] = {}
+    for template_id, placeholder in CHAT_SYSTEM_VARIANT_COMPONENTS.items():
+        if template_id not in component_values:
+            continue
+        previous = selected_variants.get(placeholder)
+        if previous is not None:
+            raise ValueError(
+                f'系统提示词变体占位符 {placeholder} 同时选择了 '
+                f'{previous} 与 {template_id}'
+            )
+        selected_variants[placeholder] = template_id
+    for placeholder in set(CHAT_SYSTEM_VARIANT_COMPONENTS.values()):
+        template_id = selected_variants.get(placeholder)
+        resolved_values[placeholder] = (
+            f'\n\n{get_prompt(template_id).render(**component_values[template_id]).rstrip()}'
+            if template_id is not None
+            else ''
+        )
     return get_prompt('chat.system').render(**resolved_values), resolved_values
 
 
