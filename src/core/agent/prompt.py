@@ -15,14 +15,10 @@ from src.core.common.clock import now as current_time
 from src.core.prompts.registry import (
     CHAT_PROTOCOL_TEMPLATE_ID,
     CHAT_SYSTEM_COMPONENTS,
+    REPLY_LENGTH_TEMPLATE_IDS,
     get_prompt,
     render_chat_system,
 )
-
-_REPLY_LENGTH_TEMPLATE_IDS: Dict[str, str] = {
-    'brief': 'chat.length.brief',
-    'long': 'chat.length.long',
-}
 
 # 重逢措辞使用有序阈值表统一维护，测试固定阈值顺序；第三档的天数由函数动态生成。
 RESUMPTION_TIERS: List[Tuple[int, str]] = [
@@ -305,7 +301,7 @@ def build_system_prompt(
     }
     if reply_length is not None:
         try:
-            length_template_id = _REPLY_LENGTH_TEMPLATE_IDS[reply_length]
+            length_template_id = REPLY_LENGTH_TEMPLATE_IDS[reply_length]
         except KeyError as exc:
             raise ValueError(f'未知回复篇幅：{reply_length}') from exc
         component_values[length_template_id] = {}
