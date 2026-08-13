@@ -1532,3 +1532,85 @@ logoutButton.addEventListener('click', async () => {
 })
 
 void checkSession().catch(() => showLogin('连接不到后端，请确认服务已启动。'))
+
+/**
+ * 界面主题与侧栏导航高亮。
+ *
+ * 主题保存在 localStorage 并在模块加载时立即应用，避免刷新后回退到系统偏好；
+ * 浏览器禁用存储（如隐私模式）时写入失败只影响持久化，不影响本次会话展示。
+ * 导航高亮按当前路径切换；人物画像页没有会话分区锚点，整组锚点导航隐藏。
+ */
+const themeToggle = document.getElementById('theme-toggle') as HTMLButtonElement | null
+const THEME_STORAGE_KEY = 'yueli-webui-theme'
+
+type ThemeName = 'light' | 'dark'
+
+/**
+ * 读取本地存储的主题偏好。
+ *
+ * @returns 保存的主题名；未保存、值非法或读取失败时返回 `null`。
+ */
+function savedTheme(): ThemeName | null {
+  try {
+    const value = localStorage.getItem(THEME_STORAGE_KEY)
+    return value === 'light' || value === 'dark' ? value : null
+  } catch {
+    // 隐私模式下 localStorage 访问会抛异常，按无偏好处理。
+    return null
+  }
+}
+
+/**
+ * 应用界面主题并写入本地存储。
+ *
+ * @param theme 目标主题名，取值范围为 `light` 或 `dark`。
+ * @returns 无返回值。
+ */
+function applyTheme(theme: ThemeName): void {
+  document.documentElement.dataset.theme = theme
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
+  } catch {
+    // 写入失败不阻断主题切换，本次会话内仍生效。
+  }
+}
+
+/**
+ * 计算当前应生效的主题。
+ *
+ * @returns 显式保存的主题；没有保存值时按系统 prefers-color-scheme 推导。
+ */
+function resolveTheme(): ThemeName {
+  return savedTheme() ?? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+}
+
+applyTheme(resolveTheme())
+themeToggle?.addEventListener('click', () => {
+  applyTheme(resolveTheme() === 'dark' ? 'light' : 'dark')
+})
+
+// 系统偏好变化只在用户未显式选择主题时生效，避免覆盖手动切换结果。
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (savedTheme() === null) applyTheme(resolveTheme())
+})
+
+/**
+ * 按当前路径高亮侧栏路由项，并切换人物画像页的锚点组可见性。
+ *
+ * @returns 无返回值。
+ * @remarks 路由切换是整页导航，监听 popstate 覆盖浏览器前进后退导致的高亮错位。
+ */
+function highlightNav(): void {
+  const rawPath = window.location.pathname
+  const path = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath
+  const onPersons = path.startsWith('/persons')
+  document.body.classList.toggle('on-persons', onPersons)
+  const activeKey = onPersons ? 'persons' : 'home'
+  document.querySelectorAll<HTMLElement>('[data-nav]').forEach((item) => {
+    item.classList.toggle('active', item.dataset.nav === activeKey)
+  })
+}
+
+highlightNav()
+window.addEventListener('popstate', highlightNav)
+
