@@ -20,7 +20,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 8  # 当前 schema 版本，QQ 账号昵称与群名片已分离
+CURRENT_VERSION = 9  # 当前 schema 版本，历史群聊发言者已补齐群成员关系
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -128,7 +128,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         return
 
     # 先导入所有迁移模块，触发 @register 装饰器
-    from . import v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8  # noqa: F401
+    from . import v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9  # noqa: F401
 
     registry = get_registry()
 
