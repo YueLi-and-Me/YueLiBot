@@ -40,6 +40,8 @@ CHAT_SYSTEM_TEMPLATE_IDS = (
     'chat.system',
 )
 CHAT_PROACTIVE_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.proactive')
+# Conversation Agent 的系统提示词在正文协议之外追加动作头协议模板。
+CHAT_CONVERSATION_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.action.protocol')
 TEMPLATE_IDS = (
     'chat.protocol',
     'chat.discipline',

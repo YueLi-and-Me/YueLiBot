@@ -21,13 +21,33 @@ from .vector import VectorService
 
 from src.core.agent.character import pick_tone
 from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy, TurnPlanner
+from src.core.agent.action_protocol import (
+    ActionDecisionEvent,
+    DecisionFrame,
+    GateDisposition,
+    GateInputFacts,
+    PlatformCapabilities,
+    available_actions,
+)
+from src.core.agent.conversation import ConversationAgent
+from src.core.agent.conversation_gate import (
+    GateRequest,
+    GateResult,
+    decide_disposition,
+    mentions_bot_name,
+)
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history
 from src.core.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
-from src.core.agent.prompt import build_proactive_prompt, build_system_prompt, describe_resumption
+from src.core.agent.prompt import (
+    build_proactive_prompt,
+    build_system_prompt,
+    describe_resumption,
+    render_action_protocol,
+)
 from src.core.agent.summarize import summarize
 from src.core.awareness.sleep import SleepState
 from src.core.common.clock import now as current_time
@@ -52,6 +72,7 @@ from src.core.platform_io.types import (
     StreamRef,
 )
 from src.core.prompts.registry import (
+    CHAT_CONVERSATION_TEMPLATE_IDS,
     CHAT_PROACTIVE_TEMPLATE_IDS,
     CHAT_SYSTEM_TEMPLATE_IDS,
     CHAT_SYSTEM_VARIANT_COMPONENTS,
@@ -142,6 +163,17 @@ class _PreparedTurnContext:
     raw_history: list[dict[str, str]]
 
 
+@dataclass(frozen=True)
+class _BatchGate:
+    """本批合并事实的三态门控结果与判定输入。"""
+
+    result: GateResult
+    asleep: bool
+    name_mentioned: bool
+    reply_count: int
+    mentioned_me: bool
+
+
 class ChatService:
     """协调消息归属、记忆召回、模型流式输出、解析副作用和平台投递。
 
@@ -215,6 +247,19 @@ class ChatService:
         self._episode_context_limit = conversation.episode_context_limit
         self._chat_temperature = generation.chat.temperature
         self._chat_max_tokens = generation.chat.token_limit
+        conversation_agent_cfg = cfg.conversation_agent
+        self._conversation_mode = conversation_agent_cfg.mode
+        self._conversation_selected_streams = frozenset(conversation_agent_cfg.selected_streams)
+        # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
+        self._conversation_agent = (
+            ConversationAgent(
+                chat_provider,
+                temperature=self._chat_temperature,
+                max_tokens=self._chat_max_tokens,
+            )
+            if chat_provider is not None and conversation_agent_cfg.mode != 'off'
+            else None
+        )
         self._proactive_temperature = generation.proactive.temperature
         self._proactive_max_tokens = generation.proactive.token_limit
         self._summary_temperature = generation.summary.temperature
@@ -598,6 +643,36 @@ class ChatService:
                     inbound.bot_name,
                     user_message_id_watermark=batch[-1].message_id,
                 )
+                render_params: dict[str, dict[str, str]] = {}
+                batch_gate = self._batch_gate(context, trimmed, inbound.mentioned_me)
+                scope = self._agent_scope(context, batch_gate.result.disposition)
+                if scope == 'shadow':
+                    # shadow 只记录 Agent 决策，之后仍走旧管线，可见行为不变。
+                    await self._run_shadow_decision(
+                        context,
+                        batch,
+                        prepared_context,
+                        turn,
+                        cancel_event,
+                        batch_gate,
+                    )
+                elif scope == 'live':
+                    if batch_gate.result.disposition == 'drop':
+                        await self._handle_live_drop(context, batch, turn, batch_gate)
+                        return
+                    await self._run_conversation_turn(
+                        context=context,
+                        batch=batch,
+                        trimmed=trimmed,
+                        turn=turn,
+                        cancel_event=cancel_event,
+                        sink=sink,
+                        prepared=prepared_context,
+                        batch_gate=batch_gate,
+                        sender=sender,
+                        render_params=render_params,
+                    )
+                    return
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
                 action_policy = (
                     self._default_action_policy
@@ -642,7 +717,6 @@ class ChatService:
                     raise ValueError(f'未知回合动作：{action.action}')
                 if self._schedule:
                     self._schedule.ensure_background(now)
-                render_params: dict[str, dict[str, str]] = {}
                 messages = await self._enrich_prepared_context(
                     prepared_context,
                     cancel_event,
@@ -1696,7 +1770,7 @@ class ChatService:
         prepared: _PreparedTurnContext,
         signal: asyncio.Event | None,
         render_params: dict[str, dict[str, str]],
-        reply_length: str,
+        reply_length: str | None,
     ) -> list[dict]:
         """确认回复后，在既有上下文上附加向量与表达模型增强。
 
@@ -1734,7 +1808,343 @@ class ChatService:
             reply_length=reply_length,
         )
 
+    def _batch_gate(
+        self,
+        context: ConversationContext,
+        batch_text: str,
+        mentioned_me: bool,
+    ) -> _BatchGate:
+        """按本批合并事实重算三态门控；只读取确定性输入，不调用模型。
+
+        :param context: 本批消息的会话上下文。
+        :param batch_text: 合并后的本批正文。
+        :param mentioned_me: 本批是否包含协议 @。
+        :return: 门控结果与全部判定输入事实。
+        """
+        asleep = self._sleep_state().asleep if self._sleep_state else False
+        reply_count = 0
+        if context.stream.kind == 'group':
+            reply_count = self.memory.assistant_reply_count_since(
+                context.stream.id,
+                current_time() - self._cfg.group_chat.reply_window_minutes * 60_000,
+            )
+        name_mentioned = (
+            mentions_bot_name(batch_text, self._bot_names)
+            if context.stream.kind == 'group'
+            else False
+        )
+        result = decide_disposition(GateRequest(
+            stream_kind=context.stream.kind,
+            mentioned_me=mentioned_me,
+            name_mentioned=name_mentioned,
+            asleep=asleep,
+            at_mention_must_reply=self._at_mention_must_reply,
+            replies_in_window=reply_count,
+            max_replies_in_window=self._cfg.group_chat.max_replies_in_window,
+        ))
+        return _BatchGate(
+            result=result,
+            asleep=asleep,
+            name_mentioned=name_mentioned,
+            reply_count=reply_count,
+            mentioned_me=mentioned_me,
+        )
+
+    def _agent_scope(
+        self,
+        context: ConversationContext,
+        disposition: GateDisposition,
+    ) -> str:
+        """返回本 stream 在当前灰度配置下的 Agent 归属。
+
+        :param context: 本批消息的会话上下文。
+        :param disposition: 本批门控态。
+        :return: live（真实决策）/ shadow（只记录）/ off（旧管线）。
+        """
+        mode = self._conversation_mode
+        if mode == 'off' or self._conversation_agent is None:
+            return 'off'
+        if mode == 'enabled':
+            return 'live'
+        if mode == 'selected_streams':
+            return (
+                'live'
+                if context.stream.external_id in self._conversation_selected_streams
+                else 'off'
+            )
+        # shadow 只观察 DELIBERATE 候选；FORCE 场景不重复付费。
+        return 'shadow' if disposition == 'deliberate' else 'off'
+
+    def _agent_frame(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        turn: int,
+        disposition: GateDisposition,
+    ) -> DecisionFrame:
+        """按本批消息快照构造回合固定帧；平台能力当前为空。"""
+        capabilities = PlatformCapabilities()
+        return DecisionFrame(
+            turn_id=turn,
+            snapshot_id=f'turn-{turn}',
+            stream_kind=context.stream.kind,
+            disposition=disposition,
+            selectable_message_ids=tuple(message.message_id for message in batch),
+            message_watermark=batch[-1].message_id,
+            available_actions=available_actions(
+                context.stream.kind,
+                disposition,
+                capabilities,
+            ),
+            capabilities=capabilities,
+        )
+
+    def _agent_gate_inputs(
+        self,
+        frame: DecisionFrame,
+        batch_gate: _BatchGate,
+    ) -> GateInputFacts:
+        """把本批门控事实组装为行动事件第 1 层。"""
+        return GateInputFacts(
+            stream_kind=frame.stream_kind,
+            mentioned_me=batch_gate.mentioned_me,
+            name_mentioned=batch_gate.name_mentioned,
+            must_reply=frame.disposition == 'force',
+            asleep=batch_gate.asleep,
+            rate_limited='rate_limited' in batch_gate.result.reason_codes,
+            recent_bot_replies=batch_gate.reply_count,
+            candidate_message_ids=frame.selectable_message_ids,
+            selectable_message_ids=frame.selectable_message_ids,
+        )
+
+    async def _run_shadow_decision(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        prepared: _PreparedTurnContext,
+        turn: int,
+        cancel_event: asyncio.Event,
+        batch_gate: _BatchGate,
+    ) -> None:
+        """shadow 灰度：对 DELIBERATE 候选调用 Agent 只记录决策，不改可见行为。
+
+        决策由 Agent 自行落账 action_decision 事件；正文与副作用全部丢弃。
+        任何异常都不能阻断其后的旧管线。
+        """
+        frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
+        gate_inputs = self._agent_gate_inputs(frame, batch_gate)
+        messages = self._render_prepared_context(prepared)
+        messages[0]['content'] += '\n\n' + render_action_protocol(
+            sorted(frame.available_actions),
+            frame.selectable_message_ids,
+            quote_supported=frame.capabilities.quote,
+        )
+        metadata = prompt_metadata(
+            'chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS,
+        )
+        trace.emit(
+            'llm_request',
+            turnId=turn,
+            messages=messages,
+            temperature=self._chat_temperature,
+            maxTokens=self._chat_max_tokens,
+            **metadata,
+        )
+        try:
+            await self._conversation_agent.run(
+                frame,
+                messages,
+                gate_inputs,
+                batch_gate.result.reason_codes,
+                prompt_hash=metadata['promptHash'],
+                model_task='chat.conversation.shadow',
+                signal=cancel_event,
+            )
+        except Exception as exc:
+            # shadow 只是观察通道，失败记录日志即可，绝不能影响旧管线行为。
+            logger.warning('shadow_decision_failed', turnId=turn, error=str(exc))
+
+    async def _run_conversation_turn(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        trimmed: str,
+        turn: int,
+        cancel_event: asyncio.Event,
+        sink: _TurnSink,
+        prepared: _PreparedTurnContext,
+        batch_gate: _BatchGate,
+        sender: Dict[str, str],
+        render_params: dict[str, dict[str, str]],
+    ) -> None:
+        """执行一次 Conversation Agent 调用并处理其结果。
+
+        silent 只写行动决策事件，不产生任何用户可见输出；reply 复用既有 sink
+        消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
+        流出任何正文，按失败状态呈现。
+        """
+        frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
+        gate_inputs = self._agent_gate_inputs(frame, batch_gate)
+        messages = await self._enrich_prepared_context(
+            prepared, cancel_event, render_params, reply_length=None,
+        )
+        messages[0]['content'] += '\n\n' + render_action_protocol(
+            sorted(frame.available_actions),
+            frame.selectable_message_ids,
+            quote_supported=frame.capabilities.quote,
+        )
+        self._mark_stage(context, GENERATING, turn_id=turn)
+        metadata = prompt_metadata(
+            'chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS,
+        )
+        trace.emit(
+            'llm_request',
+            turnId=turn,
+            messages=messages,
+            temperature=self._chat_temperature,
+            maxTokens=self._chat_max_tokens,
+            renderParams=render_params,
+            **metadata,
+        )
+        bind_render_params(render_params)
+        assistant_raw: list[str] = []
+
+        async def on_events(events: Iterable[ParseEvent]) -> None:
+            await self._consume_events(events, sink)
+
+        def on_chunk(chunk: dict[str, Any]) -> None:
+            text = chunk.get('text')
+            if text:
+                assistant_raw.append(text)
+            trace.emit('llm_chunk', turnId=turn, text=text, reasoning=chunk.get('reasoning'))
+
+        outcome = await self._conversation_agent.run(
+            frame,
+            messages,
+            gate_inputs,
+            batch_gate.result.reason_codes,
+            prompt_hash=metadata['promptHash'],
+            model_task='chat.conversation',
+            provider_name=getattr(self._chat_provider, 'provider', ''),
+            model_name=getattr(self._chat_provider, 'model', ''),
+            on_events=on_events,
+            on_chunk=on_chunk,
+            signal=cancel_event,
+        )
+        raw_text = ''.join(assistant_raw)
+        trace.emit('llm_final', turnId=turn, text=raw_text)
+        if outcome.event_status == 'silent_by_choice':
+            assert outcome.decision is not None
+            # silent 只写行动决策事件：不产生助手历史、TTS、事实或观察事件。
+            self._mark_stage(
+                context, GATED,
+                f'她选择沉默：{", ".join(outcome.decision.reason_codes)}',
+                turn_id=turn,
+            )
+            return
+        if outcome.event_status != 'committed':
+            render_turn_error(
+                turn, sender['senderLabel'], trimmed,
+                outcome.event_status, outcome.action_event.detail,
+            )
+            self._mark_stage(
+                context, FAILED,
+                f'{outcome.event_status}：{outcome.action_event.detail}',
+                turn_id=turn,
+            )
+            if context.stream.platform == 'desktop':
+                await self._emit(context.stream.id, 'chat.error', {
+                    'turnId': turn,
+                    'kind': 'error',
+                    'message': outcome.action_event.detail,
+                    'hint': '',
+                })
+            return
+        assert outcome.decision is not None and outcome.decision.reply is not None
+        # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
+        self.memory.append_message(
+            context.stream.id,
+            None,
+            'assistant',
+            ''.join(f'<say>{segment}</say>' for segment in sink.segments),
+        )
+        render_turn(
+            turn,
+            sender['senderLabel'],
+            trimmed,
+            messages,
+            sink.segments,
+            sink.side_effects,
+            self._bot_display_name,
+        )
+        try:
+            self.persona.apply_turn(
+                context.person.id,
+                current_time(),
+                weight=self._persona_weight(context),
+            )
+        except Exception as exc:
+            # 人格结算是附加状态，失败不能回滚已经展示并持久化的对话正文。
+            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
+        if context.stream.platform == 'desktop':
+            self._mark_stage(context, DISPATCHING, turn_id=turn)
+            await self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'})
+        else:
+            try:
+                await self._dispatch_outbound(context, turn, sink.segments)
+            except Exception as exc:
+                # 投递失败与决策分离：追加一条 delivery_failed 行动事件再上抛。
+                delivery_event = ActionDecisionEvent(
+                    turn_id=turn,
+                    snapshot_id=frame.snapshot_id,
+                    turn_message_watermark=frame.message_watermark,
+                    gate_inputs=gate_inputs,
+                    gate_disposition=frame.disposition,
+                    gate_reason_codes=batch_gate.result.reason_codes,
+                    available_actions=tuple(sorted(frame.available_actions)),
+                    decision=None,
+                    event_status='delivery_failed',
+                    detail=str(exc),
+                )
+                trace.emit('action_decision', **delivery_event.to_dict())
+                raise
+        self._mark_stage(
+            context, REPLIED, f'{len(raw_text)} 字', turn_id=turn,
+        )
+        asyncio.create_task(self._maybe_summarize(context.stream.id))
+
+    async def _handle_live_drop(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        turn: int,
+        batch_gate: _BatchGate,
+    ) -> None:
+        """Agent 模式下批次级 DROP：与入口 DROP 相同的可见语义与审计。"""
+        reason = batch_gate.result.reason_codes[0]
+        self._mark_stage(context, GATED, f'未回复：{reason}', turn_id=turn)
+        if context.stream.kind == 'group':
+            for message in batch:
+                self._emit_group_observation(message, reason, message.text)
+        frame = self._agent_frame(
+            context, batch, turn, 'drop',
+        )
+        gate_inputs = self._agent_gate_inputs(frame, batch_gate)
+        gate_event = ActionDecisionEvent(
+            turn_id=turn,
+            snapshot_id=frame.snapshot_id,
+            turn_message_watermark=frame.message_watermark,
+            gate_inputs=gate_inputs,
+            gate_disposition='drop',
+            gate_reason_codes=batch_gate.result.reason_codes,
+            available_actions=(),
+            decision=None,
+            event_status='gate_dropped',
+        )
+        trace.emit('action_decision', **gate_event.to_dict())
+
     def bot_names(self) -> tuple[str, ...]:
+
         """返回 ``bot.toml`` 声明的主体名称和别名。
 
         :return: 配置加载时固定的主名称与别名元组。
