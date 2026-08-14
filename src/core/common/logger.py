@@ -246,6 +246,83 @@ def _stringify(value: Any) -> str:
     return str(value)
 
 
+# 管线 trace 事件的控制台出口。``src.core.observe.events`` 在 main 启动早期被
+# 导入，模块级 ``logger`` 先于 ``initialize_logging`` 创建，会冻结到 structlog
+# 默认渲染器——既无颜色又把整段提示词原样塞一行。trace 行改走这个自有出口，
+# 复用项目统一的彩色渲染器，并把重型字段压缩成摘要，与 structlog 是否初始化解耦。
+_TRACE_CONSOLE_RENDERER = ModuleColoredConsoleRenderer(
+    colors=is_color_enabled(),
+    level_style='lite',
+    color_scope='full',
+)
+_trace_date_format = '%m-%d %H:%M:%S'
+# LIVE_ONLY 事件高频且本身就是给观察面板的实时流，控制台逐条打印会淹没其它日志。
+_trace_console_silent_kinds = frozenset({'llm_chunk', 'foreground'})
+
+
+def _summarize_trace_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """把重型 trace 字段压缩成控制台摘要，避免整段提示词或原始响应占满一行。
+
+    :param fields: 已去掉保留字段的事件字段。
+
+    :return: ``messages``/``renderParams``/``text`` 替换为计数或键名摘要后的副本；
+        其余字段原样保留，换行由渲染器统一压平。
+
+    副作用：不修改传入字典。
+    """
+    summary: Dict[str, Any] = {}
+    for key, value in fields.items():
+        if key == 'messages':
+            messages = value or []
+            total_chars = sum(len(str(message.get('content', ''))) for message in messages)
+            summary[key] = f'{len(messages)} 条消息、共 {total_chars} 字（完整提示词见观察面板）'
+        elif key == 'renderParams':
+            params = value or {}
+            if params:
+                summary[key] = '、'.join(params)
+            # 空参数表直接略去，避免在行尾留下 ``renderParams=`` 空值。
+        elif key == 'text':
+            summary[key] = f'{len(str(value or ""))} 字（完整响应见观察面板）'
+        else:
+            summary[key] = value
+    return summary
+
+
+def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
+    """把一条管线 trace 事件直接渲染成彩色紧凑单行并打到控制台与 WebUI 日志面板。
+
+    该出口绕开 ``src.core.observe.events`` 模块级 logger（被冻结在 structlog 默认
+    配置），保证无论 ``initialize_logging`` 是否已运行、trace 都按项目统一配色
+    输出。事件账本与观察面板订阅者由调用方另行处理，本函数只负责控制台与日志面板
+    这两条展示支路。
+
+    :param entry: ``emit`` 已组装完的事件字典，包含 ``at``、``kind`` 等保留字段。
+
+    副作用：
+        向标准输出写一行（颜色能力随终端而定），并把同一行字符串发布到
+        ``webui_logs``；``llm_chunk``、``foreground`` 等高频实时事件被静音，
+        只广播不进控制台。
+    """
+    if entry.get('kind') in _trace_console_silent_kinds:
+        return
+    from datetime import datetime
+    timestamp = datetime.fromtimestamp((entry.get('at') or 0) / 1000).strftime(_trace_date_format)
+    fields: Dict[str, Any] = {
+        key: value for key, value in entry.items()
+        if key not in {'at', 'seq'}
+    }
+    event_dict: MutableMapping[str, Any] = {
+        'timestamp': timestamp,
+        'level': 'debug',
+        'logger': 'src.core.observe.events',
+        'event': 'trace',
+        **_summarize_trace_fields(fields),
+    }
+    line = _TRACE_CONSOLE_RENDERER(None, 'debug', event_dict)
+    print(line)
+    webui_logs.publish(line)
+
+
 class _ConsoleLevelGate:
     """丢弃低于控制台等级的事件，同时保留文件和 WebUI 支路已接收的副本。"""
 
@@ -335,11 +412,14 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
         重复调用会替换当前文件 sink。
     """
     global _file_sink
+    global _trace_date_format
 
     if config is None:
         # 延迟到函数内导入：config 依赖 common.logger，模块层反向依赖会成环
         from src.core.config.schema import LogConfig
         config = LogConfig()
+    # trace 控制台出口和 structlog 渲染器共用同一份时间戳格式，行首风格保持一致。
+    _trace_date_format = config.date_format
     level = _resolve_level(config.level, 'log.level')
     console_level = _resolve_level(config.console_level, 'log.console_level')         if config.console_level else level
     file_level = _resolve_level(config.file_level, 'log.file_level')         if config.file_level else level

@@ -14,12 +14,10 @@ import asyncio
 import threading
 
 from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.common.logger import emit_console_trace
 from src.core.observe.stages import Stage, label_for
 from src.core.observe.store import event_store
 
-
-logger = get_logger(__name__)
 
 LIVE_ONLY_KINDS = frozenset({"llm_chunk", "foreground"})
 _RESERVED_FIELDS = frozenset({"seq", "at", "kind", "stage", "stageLabel", "streamId", "turnId"})
@@ -232,7 +230,7 @@ def emit(event_kind: str, **fields: Any) -> Dict[str, Any]:
         entry = event_store.append(event_kind, stage, stream_id, turn_id, merged)
 
     broadcaster.publish(entry)
-    logger.debug("trace", **entry)
+    emit_console_trace(entry)
     return entry
 
 
