@@ -458,7 +458,8 @@ class ActionDecisionEvent:
     自主沉默绝不能混进同一个状态。
     """
 
-    turn_id: int
+    # DROP 发生在任何回合之前，该层没有回合编号，因此允许为 None。
+    turn_id: int | None
     snapshot_id: str
     turn_message_watermark: int
     gate_inputs: GateInputFacts

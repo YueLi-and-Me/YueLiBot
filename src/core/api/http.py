@@ -25,6 +25,8 @@ from .auth import (
 )
 from .state import app_state   # 全局服务状态
 
+from src.core.agent.action_protocol import ActionDecisionEvent, GateInputFacts
+from src.core.agent.conversation_gate import GateRequest, decide_disposition, mentions_bot_name
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.config.loader import get_config
@@ -32,7 +34,6 @@ from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
-from src.core.platform_io.reply_gate import decide_reply
 from src.core.platform_io.types import InboundMessage, StreamRef
 from src.core.prompts.registry import (
     delete_prompt_override,
@@ -390,31 +391,45 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         )
     # 文本称呼只读取 bot.toml；协议登录昵称仅用于上下文展示，不能旁路配置触发回合。
     bot_names = app_state.chat.bot_names()
-    decision = decide_reply(
-        stream_kind=context.stream.kind,
-        asleep=app_state.chat.current_sleep().asleep,
-        mentioned_me=body.mentioned_me,
-        text=body.text,
-        bot_names=bot_names,
-        at_mention_must_reply=app_state.chat.at_mention_must_reply,
-        my_replies_in_window=reply_count,
-        max_replies_in_window=group_chat.max_replies_in_window,
+    asleep = app_state.chat.current_sleep().asleep
+    # 名称匹配只在群聊门控中有意义；直接对话不读取名称，避免空名称配置报错。
+    name_mentioned = (
+        mentions_bot_name(body.text, bot_names)
+        if context.stream.kind == 'group'
+        else False
     )
+    gate_result = decide_disposition(GateRequest(
+        stream_kind=context.stream.kind,
+        mentioned_me=body.mentioned_me,
+        name_mentioned=name_mentioned,
+        asleep=asleep,
+        at_mention_must_reply=app_state.chat.at_mention_must_reply,
+        replies_in_window=reply_count,
+        max_replies_in_window=group_chat.max_replies_in_window,
+    ))
     trace.emit(
         'reply_gate',
         streamId=context.stream.id,
         personId=context.person.id,
         text=body.text,
         botNames=list(bot_names),
-        **decision.as_trace(),
+        accepted=gate_result.disposition != 'drop',
+        reason=gate_result.reason_codes[0],
+        asleep=asleep,
+        mentionedMe=body.mentioned_me,
+        nameMentioned=name_mentioned,
+        repliesInWindow=reply_count,
+        maxRepliesInWindow=group_chat.max_replies_in_window,
+        **gate_result.as_trace(),
     )
-    if not decision.accepted:
+    if gate_result.disposition == 'drop':
+        reason = gate_result.reason_codes[0]
         # 静默消息仍写入历史和观察事件，确保下一轮上下文知道该消息已经出现。
         enter_stage(
             GATED, context.stream.id, stream_name,
-            f'未回复：{decision.reason}',
+            f'未回复：{reason}',
         )
-        app_state.chat.record_group_observation(
+        message_id = app_state.chat.record_group_observation(
             InboundMessage(
                 text=body.text,
                 context=context,
@@ -422,12 +437,35 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 external_message_id=body.external_message_id,
                 bot_name=body.bot_name,
             ),
-            decision.reason,
+            reason,
         )
+        # DROP 不调用模型，但必须落一条可审计行动事件，回答「代码根本没让她考虑」。
+        gate_event = ActionDecisionEvent(
+            turn_id=None,
+            snapshot_id=f'gate-{message_id}',
+            turn_message_watermark=message_id,
+            gate_inputs=GateInputFacts(
+                stream_kind=context.stream.kind,
+                mentioned_me=body.mentioned_me,
+                name_mentioned=name_mentioned,
+                must_reply=False,
+                asleep=asleep,
+                rate_limited=reason == 'rate_limited',
+                recent_bot_replies=reply_count,
+                candidate_message_ids=(message_id,),
+                selectable_message_ids=(),
+            ),
+            gate_disposition=gate_result.disposition,
+            gate_reason_codes=gate_result.reason_codes,
+            available_actions=(),
+            decision=None,
+            event_status='gate_dropped',
+        )
+        trace.emit('action_decision', **gate_event.to_dict())
         return JSONResponse({
             'streamId': context.stream.id,
             'accepted': False,
-            'reason': decision.reason,
+            'reason': reason,
         })
 
     await app_state.chat.send(InboundMessage(
@@ -440,7 +478,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     return JSONResponse({
         'streamId': context.stream.id,
         'accepted': True,
-        'reason': decision.reason,
+        'reason': gate_result.reason_codes[0],
     })
 
 
