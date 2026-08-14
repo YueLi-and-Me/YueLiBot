@@ -94,7 +94,14 @@ class AlwaysReplyPolicy:
 
 
 class PresenceActionPolicy:
-    """根据最近窗口内主体发言占比平滑降低回复概率。"""
+    """根据最近窗口内主体发言占比平滑降低回复概率。
+
+    Conversation 行动核心落地后，本策略已退化为流量控制器：仅在灰度
+    off / shadow 及 selected_streams 清单外的 stream 上参与决定是否进入
+    回复（保留旧行为）；Agent 灰度 live 的 stream 不再调用本策略，最终
+    reply/silent 全部由 Conversation Agent 决定，硬上限由三态门控执行，
+    最近发言频次作为 Agent 的确定性输入事实。
+    """
 
     def __init__(
         self,
@@ -147,7 +154,11 @@ class PresenceActionPolicy:
 
 
 class TurnPlanner:
-    """复用动作策略，并按当前输入长度补全本轮回复篇幅。"""
+    """复用动作策略，并按当前输入长度补全本轮回复篇幅。
+
+    仅服务于灰度 off 的旧管线；Conversation Agent live 路径由模型在
+    动作头中自选篇幅，不再经过本规划器。
+    """
 
     def __init__(self, reply_policy: ReplyPolicy, *, long_input_chars: int = 80) -> None:
         """保存动作判据与长输入阈值。
