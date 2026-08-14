@@ -1,13 +1,15 @@
 <!--
   后端观察 WebUI 的入口文档。
 
-  Vite 将该页面加载为 webui/src/main.ts 的挂载容器；页面只声明基础元信息、侧栏导航
-  和各业务分区骨架，观察数据、事件流以及人物面板由前端模块按接口快照渲染。
+  页面只声明基础元信息与 #root 挂载容器，全部界面由 src/main.tsx 装配的 React
+  应用渲染；样式经 src/index.css 由 Tailwind 编译后随构建产物注入。
 
   约束说明：
-  - 所有带 id 的节点是 main.ts 的渲染锚点，结构调整时不得删除或改名；
-  - 页面启用了严格 CSP，图标一律使用内联 SVG，样式全部来自 src/styles.css；
-  - 主题由 data-theme 属性控制（light / dark），默认跟随系统并允许手动切换。
+  - 严格 CSP 禁止内联脚本与外部资源，图标一律使用打包进 JS 的内联 SVG，字体只
+    使用系统栈；开发服务器下该 meta 由 vite.config.ts 的钩子移除，以放行
+    react-refresh 必需的内联 preamble。
+  - 主题由 <html> 上的 data-theme 属性控制（light / dark），属性在 React 首次
+    渲染前由 src/lib/theme.ts 写入。
 -->
 <!doctype html>
 <html lang="zh-CN">
@@ -20,233 +22,10 @@
     />
     <title>Bot 观察面板</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <!-- 背景舞台：极光光斑、噪点颗粒与暗角叠层；固定在视口底部，不参与交互。 -->
-    <div class="bg-stage" aria-hidden="true">
-      <div class="aurora-blob aurora-a"></div>
-      <div class="aurora-blob aurora-b"></div>
-      <div class="aurora-blob aurora-c"></div>
-      <div class="bg-grain"></div>
-      <div class="bg-vignette"></div>
-    </div>
-    <!-- 登录页：仅在校验 token 前可见，登录成功后由 main.ts 切换隐藏。 -->
-    <section id="login-panel" class="auth-screen" aria-labelledby="login-title">
-      <div class="auth-card">
-        <div class="brand-mark" aria-hidden="true"><span class="brand-glyph">Y</span></div>
-        <p class="eyebrow">YUELI / WEBUI</p>
-        <h1 id="login-title">Bot 观察面板</h1>
-        <p class="subtitle">输入后端启动时公告的 token。登录后凭据只保存在 HttpOnly Cookie 中。</p>
-        <form id="login-form">
-          <label for="token">后端 token</label>
-          <input id="token" name="token" type="password" autocomplete="off" required />
-          <button type="submit" class="btn-primary">登录</button>
-          <p id="login-error" class="error" role="alert" aria-live="polite"></p>
-        </form>
-      </div>
-    </section>
-
-    <!-- 面板主体：登录后可见；侧栏 + 内容区组成桌面布局，窄屏退化为顶部导航。 -->
-    <div id="panel-shell" class="app-frame" hidden>
-      <aside class="sidebar" aria-label="观察面板导航">
-        <div class="sidebar-brand">
-          <div class="brand-mark" aria-hidden="true"><span class="brand-glyph">Y</span></div>
-          <div class="brand-text">
-            <strong>Bot 观察面板</strong>
-            <span>YUELI / WEBUI</span>
-          </div>
-        </div>
-        <nav class="sidebar-nav">
-          <p class="nav-section-title">概览</p>
-          <a class="nav-item" data-nav="home" href="/">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-            <span>会话观察</span>
-          </a>
-          <a class="nav-item" data-nav="persons" href="/persons">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-            <span>人物画像</span>
-          </a>
-          <div class="nav-anchor-group">
-            <p class="nav-section-title">会话分区</p>
-            <a class="nav-item" href="#overview">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1" /><rect width="7" height="7" x="14" y="3" rx="1" /><rect width="7" height="7" x="14" y="14" rx="1" /><rect width="7" height="7" x="3" y="14" rx="1" /></svg>
-              <span>运行总览</span>
-            </a>
-            <a class="nav-item" href="#events">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg>
-              <span>事件账本</span>
-            </a>
-            <a class="nav-item" href="#prompts">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-              <span>提示词工作台</span>
-            </a>
-            <a class="nav-item" href="#logs">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg>
-              <span>实时日志</span>
-            </a>
-          </div>
-        </nav>
-        <div class="sidebar-footer">
-          <button id="theme-toggle" class="nav-item" type="button" aria-label="切换明暗主题">
-            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2" /><path d="M12 20v2" /><path d="M4.93 4.93l1.41 1.41" /><path d="M17.66 17.66l1.41 1.41" /><path d="M2 12h2" /><path d="M20 12h2" /><path d="M6.34 17.66l-1.41 1.41" /><path d="M19.07 4.93l-1.41 1.41" /></svg>
-            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
-            <span>切换主题</span>
-          </button>
-          <button id="logout" class="nav-item" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>
-            <span>登出</span>
-          </button>
-        </div>
-      </aside>
-
-      <main class="app-main">
-        <section id="conversation-view" class="page">
-          <header class="app-header">
-            <div class="page-heading">
-              <p class="eyebrow">YUELI / WEBUI</p>
-              <h1>Bot 观察面板</h1>
-              <p class="subtitle">按会话流读取的只读运行快照</p>
-            </div>
-            <div class="toolbar" aria-label="快照读取控制">
-              <div class="field">
-                <label for="stream-select">会话流</label>
-                <div class="select-wrap">
-                  <select id="stream-select"></select>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
-                </div>
-              </div>
-              <button id="refresh" class="btn-secondary" type="button">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36" /><polyline points="21 3 21 9 15 9" /></svg>
-                刷新快照
-              </button>
-              <label class="toggle"><input id="auto-refresh" type="checkbox" /><span>自动刷新</span></label>
-              <time id="fetched-at" class="fetched-pill mono">尚未读取</time>
-            </div>
-          </header>
-
-          <aside id="status" class="status-strip" aria-label="关键状态"></aside>
-
-          <section id="overview" class="panel-card" aria-label="各会话当前阶段">
-            <header class="section-heading">
-              <div class="section-title">
-<span class="heading-icon tint-blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg></span>
-                <h2>此刻在做什么</h2>
-                <span class="section-subtitle">每条会话停在哪一步、停了多久</span>
-              </div>
-            </header>
-            <div id="stage-board" class="stage-board"><p class="empty loading">尚未收到任何消息。</p></div>
-          </section>
-
-          <div id="grid" class="panel-grid"><p class="empty loading">正在读取内部状态…</p></div>
-
-          <section id="events" class="panel-card trace-panel" aria-label="运行时调试追踪">
-            <header class="section-heading">
-              <div class="section-title">
-<span class="heading-icon tint-cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg></span>
-                <h2>事件账本</h2>
-                <span class="section-subtitle">按轮次聚合对话，按时间追溯后台事件</span>
-              </div>
-              <div class="toolbar compact">
-                <div class="field">
-                  <label for="trace-filter">kind 过滤</label>
-                  <div class="select-wrap">
-                    <select id="trace-filter">
-                      <option value="all">全部</option>
-                      <option value="observation">observation（没回的群消息）</option>
-                      <option value="reply_gate">reply_gate（回不回的判定）</option>
-                      <option value="expression_select">expression_select</option>
-                      <option value="interest">interest</option>
-                      <option value="proactive_intent">proactive_intent</option>
-                      <option value="vision_glance">vision_glance</option>
-                    </select>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
-                  </div>
-                </div>
-                <span id="trace-count" class="trace-count">0 条</span>
-              </div>
-            </header>
-            <form id="event-search-form" class="event-search" aria-label="历史事件检索">
-              <label class="toggle"><input id="event-current-stream" type="checkbox" checked /><span>当前会话</span></label>
-              <label class="field">轮次<input id="event-turn-id" class="mono" type="number" min="1" placeholder="全部" /></label>
-              <label class="field">类型<input id="event-kinds" class="mono" type="text" placeholder="llm_request, llm_final" /></label>
-              <label class="field">开始<input id="event-since" type="datetime-local" /></label>
-              <label class="field">结束<input id="event-until" type="datetime-local" /></label>
-              <button id="event-search" class="btn-primary" type="submit">检索历史</button>
-              <button id="event-more" class="btn-secondary" type="button" disabled>更早事件</button>
-              <span id="event-search-status" class="event-search-status" aria-live="polite"></span>
-            </form>
-            <h3>对话轮次</h3>
-            <div id="turn-cards" class="turn-card-list"></div>
-            <h3>后台事件</h3>
-            <div id="trace-log" class="trace-log"></div>
-          </section>
-
-          <section id="prompts" class="panel-card prompt-workbench" aria-label="提示词工作台">
-            <header class="section-heading">
-              <div class="section-title">
-<span class="heading-icon tint-violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg></span>
-                <h2>提示词工作台</h2>
-                <span class="section-subtitle">本机可编辑；远程连接保持只读</span>
-              </div>
-              <div class="toolbar compact">
-                <div class="field">
-                  <label for="prompt-select">模板</label>
-                  <div class="select-wrap">
-                    <select id="prompt-select"></select>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9" /></svg>
-                  </div>
-                </div>
-                <button id="prompt-reload" class="btn-secondary" type="button">重新读取</button>
-              </div>
-            </header>
-            <div class="prompt-layout">
-              <aside class="prompt-meta">
-                <dl id="prompt-metadata"></dl>
-                <h3>版本历史</h3>
-                <div id="prompt-history" class="prompt-history"></div>
-              </aside>
-              <div class="prompt-editor">
-                <label for="prompt-content">生效内容</label>
-                <textarea id="prompt-content" class="mono" spellcheck="false"></textarea>
-                <div class="prompt-actions">
-                  <button id="prompt-save" class="btn-primary" type="button">校验并保存</button>
-                  <button id="prompt-reset" class="btn-danger-outline" type="button">删除覆盖并恢复内置</button>
-                  <span id="prompt-status" class="prompt-status" aria-live="polite"></span>
-                </div>
-                <details>
-                  <summary>查看内置版本</summary>
-                  <pre id="prompt-builtin" class="mono"></pre>
-                </details>
-              </div>
-            </div>
-          </section>
-
-          <section id="logs" class="panel-card log-panel" aria-label="实时日志">
-            <header class="section-heading">
-              <div class="section-title">
-<span class="heading-icon tint-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg></span>
-                <h2>实时日志</h2>
-                <span id="log-status" class="section-subtitle">正在连接</span>
-              </div>
-            </header>
-            <div id="log-output" class="log-output" aria-live="polite"></div>
-          </section>
-        </section>
-
-        <section id="persons-view" class="page" hidden>
-          <header class="app-header">
-            <div class="page-heading">
-              <p class="eyebrow">YUELI / PERSONS</p>
-              <h1 id="persons-title">人物画像</h1>
-              <p id="persons-subtitle" class="subtitle">每个人的身份、关系与事实记忆彼此独立。</p>
-            </div>
-            <a class="btn-secondary button-link" href="/">返回会话观察</a>
-          </header>
-          <div id="persons-grid" class="panel-grid"><p class="empty loading">正在读取人物画像…</p></div>
-        </section>
-      </main>
-    </div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <noscript>观察面板需要启用 JavaScript 才能读取后端运行状态。</noscript>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

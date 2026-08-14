@@ -13,7 +13,11 @@
     "types": ["node"],
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["./webui/src/*"]
+    }
   },
-  "include": ["scripts/**/*.ts", "electron/**/*.ts", "electron/**/*.d.ts", "webui/**/*.ts", "tests/**/*.ts", "electron.vite.config.ts"]
+  "include": ["scripts/**/*.ts", "electron/**/*.ts", "electron/**/*.d.ts", "webui/**/*.ts", "webui/**/*.tsx", "tests/**/*.ts", "electron.vite.config.ts"]
 }

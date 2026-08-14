@@ -1,0 +1,523 @@
+/*
+ * 后端观察 WebUI 的设计令牌与全局样式入口。
+ *
+ * 视觉语言：蓝白扁平仪表盘。亮色主题（默认）为白底微蓝画布 + 纯白卡片 + 发丝级
+ * 蓝灰描边 + 品牌蓝主色；侧栏为深藏青撞色，明暗两主题下保持藏青不变；暗色主题为
+ * 藏青蓝夜底 + 白字。日志与代码面板保持恒定深色终端，避免可读性随主题抖动。
+ *
+ * 令牌分层：语义色（background/card/primary/...）→ Tailwind 主题映射 → 组件直接
+ * 使用语义类名；主题切换由 <html data-theme="light|dark"> 驱动，属性由前端主题
+ * 模块在挂载前写入，因此无需 prefers-color-scheme 兜底分支。
+ *
+ * 依赖关系：本文件是样式唯一入口，经 Tailwind v4 编译；图标全部为 lucide 内联
+ * SVG，外部字体与图片资源被 CSP 禁止，字体只使用系统栈。
+ */
+@import 'tailwindcss';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-soft: hsl(var(--primary-soft));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-destructive-soft: hsl(var(--destructive-soft));
+  --color-success: hsl(var(--success));
+  --color-success-soft: hsl(var(--success-soft));
+  --color-warning: hsl(var(--warning));
+  --color-warning-soft: hsl(var(--warning-soft));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* 侧栏专用令牌：深藏青撞色，明暗主题共享同一组取值 */
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-deep: hsl(var(--sidebar-deep));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-muted: hsl(var(--sidebar-muted));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-active: hsl(var(--sidebar-active));
+  --color-sidebar-active-foreground: hsl(var(--sidebar-active-foreground));
+
+  /* 恒定深色终端：日志、Prompt 与代码块专用，不随主题变化 */
+  --color-terminal: var(--terminal-bg);
+  --color-terminal-foreground: var(--terminal-fg);
+  --color-terminal-border: var(--terminal-border);
+
+  /* 分区标题图标的四个协调色调 */
+  --color-tint-blue: hsl(var(--tint-blue));
+  --color-tint-cyan: hsl(var(--tint-cyan));
+  --color-tint-teal: hsl(var(--tint-teal));
+  --color-tint-violet: hsl(var(--tint-violet));
+
+  --font-sans: var(--font-family-sans);
+  --font-mono: var(--font-family-mono);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --shadow-card: var(--shadow-surface);
+  --shadow-lifted: var(--shadow-raised);
+
+  --animate-fade-in: fade-in 0.25s ease-out;
+  --animate-rise: rise 0.35s cubic-bezier(0, 0, 0.2, 1) both;
+  --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
+  --animate-spin-slow: spin 1s linear infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ============================================================================
+ * 设计令牌：亮色主题（默认，蓝白）
+ * ========================================================================== */
+:root {
+  color-scheme: light;
+
+  /* 画布与文字：白底带一丝蓝调，避免纯白刺眼 */
+  --background: 213 45% 97.6%;
+  --foreground: 222 47% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 14%;
+  --muted: 213 40% 95%;
+  --muted-foreground: 215 18% 46%;
+  --secondary: 213 45% 94%;
+  --secondary-foreground: 220 45% 22%;
+  --accent: 212 70% 94.5%;
+  --accent-foreground: 216 80% 38%;
+
+  /* 品牌主色：星月水母的品牌蓝 */
+  --primary: 212 96% 48%;
+  --primary-foreground: 210 40% 99%;
+  --primary-soft: 212 96% 48% / 0.1;
+
+  /* 语义状态色 */
+  --destructive: 0 74% 50%;
+  --destructive-foreground: 210 40% 99%;
+  --destructive-soft: 0 74% 50% / 0.09;
+  --success: 160 66% 34%;
+  --success-soft: 160 66% 34% / 0.1;
+  --warning: 38 92% 42%;
+  --warning-soft: 38 92% 42% / 0.12;
+
+  /* 描边与焦点环：发丝级蓝灰 */
+  --border: 214 32% 89%;
+  --input: 214 28% 84%;
+  --ring: 212 96% 48%;
+
+  /* 深藏青侧栏（明暗主题共享） */
+  --sidebar: 225 55% 10%;
+  --sidebar-deep: 227 60% 7%;
+  --sidebar-foreground: 214 35% 84%;
+  --sidebar-muted: 217 20% 58%;
+  --sidebar-border: 223 38% 20%;
+  --sidebar-active: 213 90% 54%;
+  --sidebar-active-foreground: 210 40% 99%;
+
+  /* 分区图标色调 */
+  --tint-blue: 213 90% 46%;
+  --tint-cyan: 192 84% 38%;
+  --tint-teal: 168 70% 34%;
+  --tint-violet: 262 58% 52%;
+
+  /* 恒定深色终端 */
+  --terminal-bg: #0a1428;
+  --terminal-fg: #d7e4f5;
+  --terminal-border: rgb(148 187 255 / 0.16);
+
+  /* 字体：CSP 禁止网络字体，仅使用系统栈 */
+  --font-family-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-family-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'SF Mono',
+    'Sarasa Mono SC', monospace;
+
+  /* 阴影：克制单层，深色以蓝黑为基 */
+  --shadow-surface: 0 1px 2px rgb(18 45 90 / 0.05);
+  --shadow-raised: 0 4px 14px -4px rgb(18 45 90 / 0.12);
+
+  /* 布局尺寸 */
+  --sidebar-width: 244px;
+}
+
+/* ============================================================================
+ * 设计令牌：暗色主题（藏青蓝夜）
+ * ========================================================================== */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --background: 226 52% 7%;
+  --foreground: 213 40% 94%;
+  --card: 224 42% 11%;
+  --card-foreground: 213 40% 94%;
+  --muted: 223 35% 16%;
+  --muted-foreground: 215 22% 64%;
+  --secondary: 223 35% 18%;
+  --secondary-foreground: 213 40% 92%;
+  --accent: 219 45% 20%;
+  --accent-foreground: 212 90% 72%;
+
+  --primary: 212 96% 56%;
+  --primary-foreground: 224 60% 8%;
+  --primary-soft: 212 96% 56% / 0.16;
+
+  --destructive: 0 74% 60%;
+  --destructive-foreground: 210 40% 99%;
+  --destructive-soft: 0 74% 60% / 0.14;
+  --success: 162 72% 46%;
+  --success-soft: 162 72% 46% / 0.14;
+  --warning: 40 94% 58%;
+  --warning-soft: 40 94% 58% / 0.14;
+
+  --border: 222 30% 21%;
+  --input: 222 28% 28%;
+  --ring: 212 96% 56%;
+
+  /* 暗色下侧栏略深于内容底，维持撞色层次 */
+  --sidebar: 227 58% 8%;
+  --sidebar-deep: 228 62% 5.5%;
+  --sidebar-foreground: 214 35% 84%;
+  --sidebar-muted: 217 20% 58%;
+  --sidebar-border: 223 36% 17%;
+  --sidebar-active: 213 90% 54%;
+  --sidebar-active-foreground: 210 40% 99%;
+
+  --tint-blue: 212 96% 66%;
+  --tint-cyan: 188 90% 56%;
+  --tint-teal: 165 78% 54%;
+  --tint-violet: 266 88% 72%;
+
+  --shadow-surface: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow-raised: 0 6px 18px -6px rgb(0 0 0 / 0.5);
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    min-height: 100%;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-family-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* 选中文本使用品牌蓝淡底，呼应主色 */
+  ::selection {
+    background: hsl(var(--primary) / 0.18);
+  }
+
+  /* 全局焦点环：无障碍必须，统一品牌蓝 */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring) / 0.65);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm, 6px);
+  }
+
+  /* 细滚动条：亮色贴近发丝描边，暗色略亮于卡片底 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--input));
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* 隐藏数字输入框的默认上下箭头，保持控件观感统一 */
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+}
+
+@layer components {
+  /*
+   * 日月昼夜主题开关：天空胶囊 + 日月滑块。
+   *
+   * 尺寸全部以 --switch-unit 为基准用 em 表达，改这一个变量即可整体缩放，
+   * 无需逐条改像素值。图层自下而上为：天空底色、云带、星场、胶囊内壁投影、
+   * 滑块光晕与日月盘。切换时云带下沉出画、星场自上方落到居中、光晕右移，
+   * 同时月盘从日盘右侧推入完成擦除式互换。
+   *
+   * 交互状态统一由 button[aria-pressed] 驱动；悬停时光晕额外位移 0.18em，
+   * 该规则必须排在 aria-pressed 规则之前，两者特异性相同、后者需要胜出。
+   */
+  .theme-switch {
+    --switch-unit: 13px;
+    --switch-w: 5.6em;
+    --switch-h: 2.5em;
+    --switch-halo: 3.4em;
+    --switch-orb: 2.1em;
+    /* 光晕直径大于胶囊高度，用负偏移把多出的部分均分到上下两侧 */
+    --switch-offset: calc((var(--switch-halo) - var(--switch-h)) / -2);
+    --switch-day: hsl(206 48% 46%);
+    --switch-night: hsl(230 30% 14%);
+    --switch-sun: hsl(45 82% 55%);
+    --switch-sun-shade: hsl(43 62% 40%);
+    --switch-moon: hsl(214 14% 79%);
+    --switch-moon-shade: hsl(215 10% 59%);
+    --switch-crater: hsl(218 13% 64%);
+    --switch-cloud: hsl(190 100% 97%);
+    --switch-cloud-back: hsl(205 45% 77%);
+    --switch-ease: 0.5s cubic-bezier(0, -0.02, 0.4, 1.25);
+    --switch-ease-fast: 0.3s cubic-bezier(0, -0.02, 0.35, 1.17);
+
+    position: relative;
+    flex: none;
+    width: var(--switch-w);
+    height: var(--switch-h);
+    padding: 0;
+    border: 0;
+    border-radius: 999px;
+    font-size: var(--switch-unit);
+    overflow: hidden;
+    cursor: pointer;
+    background-color: var(--switch-day);
+    box-shadow:
+      0 -0.06em 0.06em rgb(0 0 0 / 0.25),
+      0 0.06em 0.12em rgb(255 255 255 / 0.9);
+    transition: background-color var(--switch-ease);
+  }
+
+  .theme-switch[aria-pressed='true'] {
+    background-color: var(--switch-night);
+  }
+
+  /* 胶囊内壁投影：压在天空与装饰层之上、滑块之下，制造凹陷质感 */
+  .theme-switch::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+    box-shadow: 0 0.05em 0.19em rgb(0 0 0 / 0.3) inset;
+    pointer-events: none;
+  }
+
+  /*
+   * 云带：一个圆形本体加十个 box-shadow 副本拼成的云团。
+   * 前排（--switch-cloud）先写、后排（--switch-cloud-back）后写：box-shadow
+   * 列表中靠后的阴影绘制在更下层，后排才能从前排缝隙中露头。
+   */
+  .theme-switch-clouds {
+    position: absolute;
+    left: 0.3em;
+    bottom: -0.6em;
+    width: 1.2em;
+    height: 1.2em;
+    border-radius: 999px;
+    background: var(--switch-cloud);
+    box-shadow:
+      0.9em 0.25em var(--switch-cloud),
+      1.8em 0.35em var(--switch-cloud),
+      2.7em 0.2em var(--switch-cloud),
+      3.6em 0.35em var(--switch-cloud),
+      4.5em 0.25em var(--switch-cloud),
+      -0.3em -0.25em var(--switch-cloud-back),
+      1.35em -0.15em var(--switch-cloud-back),
+      2.25em -0.3em var(--switch-cloud-back),
+      3.15em -0.15em var(--switch-cloud-back),
+      4.05em -0.3em var(--switch-cloud-back);
+    transition: bottom var(--switch-ease);
+  }
+
+  .theme-switch[aria-pressed='true'] .theme-switch-clouds {
+    bottom: -3.8em;
+  }
+
+  /* 星场：亮色态整体藏在胶囊上方，暗色态落回垂直居中 */
+  .theme-switch-stars {
+    position: absolute;
+    left: 0.35em;
+    top: -100%;
+    width: 2.9em;
+    color: #fff;
+    transition:
+      top var(--switch-ease),
+      transform var(--switch-ease);
+  }
+
+  .theme-switch-stars svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .theme-switch[aria-pressed='true'] .theme-switch-stars {
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  /* 滑块光晕：多层半透明白环，滑动时形成水波扩散的层次 */
+  .theme-switch-halo {
+    position: absolute;
+    left: var(--switch-offset);
+    top: var(--switch-offset);
+    z-index: 2;
+    display: flex;
+    width: var(--switch-halo);
+    height: var(--switch-halo);
+    border-radius: 999px;
+    box-shadow:
+      inset 0 0 0 var(--switch-halo) rgb(255 255 255 / 0.1),
+      0 0 0 0.6em rgb(255 255 255 / 0.1),
+      0 0 0 1.2em rgb(255 255 255 / 0.1);
+    transition: left var(--switch-ease-fast);
+    pointer-events: none;
+  }
+
+  .theme-switch:hover .theme-switch-halo {
+    left: calc(var(--switch-offset) + 0.18em);
+  }
+
+  .theme-switch[aria-pressed='true'] .theme-switch-halo {
+    left: calc(100% - var(--switch-offset) - var(--switch-halo));
+  }
+
+  .theme-switch[aria-pressed='true']:hover .theme-switch-halo {
+    left: calc(100% - var(--switch-offset) - var(--switch-halo) - 0.18em);
+  }
+
+  /* 日盘：滑块本体，overflow 裁剪出月盘的推入边界 */
+  .theme-switch-orb {
+    position: relative;
+    z-index: 2;
+    width: var(--switch-orb);
+    height: var(--switch-orb);
+    margin: auto;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--switch-sun);
+    box-shadow:
+      0.06em 0.06em 0.06em 0 rgb(255 255 240 / 0.6) inset,
+      0 -0.06em 0.06em 0 var(--switch-sun-shade) inset;
+    filter:
+      drop-shadow(0.06em 0.12em 0.12em rgb(0 0 0 / 0.25))
+      drop-shadow(0 0.06em 0.12em rgb(0 0 0 / 0.25));
+  }
+
+  /* 月盘：暗色态由右向左推入，把日盘完全覆盖 */
+  .theme-switch-moon {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--switch-moon);
+    box-shadow:
+      0.06em 0.06em 0.06em 0 rgb(255 255 240 / 0.6) inset,
+      0 -0.06em 0.06em 0 var(--switch-moon-shade) inset;
+    transform: translateX(100%);
+    transition: transform var(--switch-ease);
+  }
+
+  .theme-switch[aria-pressed='true'] .theme-switch-moon {
+    transform: translateX(0);
+  }
+
+  /* 环形山：三枚尺寸递减的凹坑，位置固定在月盘局部坐标内 */
+  .theme-switch-crater {
+    position: absolute;
+    top: 0.74em;
+    left: 0.3em;
+    width: 0.74em;
+    height: 0.74em;
+    border-radius: 999px;
+    background: var(--switch-crater);
+    box-shadow: 0 0.03em 0.06em rgb(0 0 0 / 0.25) inset;
+  }
+
+  .theme-switch-crater:nth-of-type(2) {
+    top: 0.92em;
+    left: 1.36em;
+    width: 0.37em;
+    height: 0.37em;
+  }
+
+  .theme-switch-crater:nth-of-type(3) {
+    top: 0.3em;
+    left: 0.8em;
+    width: 0.25em;
+    height: 0.25em;
+  }
+
+  /* 阶段看板等活动状态指示点 */
+  .live-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: hsl(var(--success));
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch,
+  .theme-switch-clouds,
+  .theme-switch-stars,
+  .theme-switch-halo,
+  .theme-switch-moon {
+    transition: none;
+  }
+
+  .live-dot {
+    animation: none;
+  }
+}
