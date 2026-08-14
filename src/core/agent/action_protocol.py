@@ -72,6 +72,31 @@ SILENT_REASON_CODES: frozenset[str] = frozenset({
 ALL_REASON_CODES: frozenset[str] = REPLY_REASON_CODES | SILENT_REASON_CODES
 
 
+def _validate_reason_codes(
+    action: ConversationAction,
+    reason_codes: tuple[str, ...],
+) -> None:
+    """校验理由码的形状与动作分域，完整决策与动作头共用。
+
+    :param action: 已确认属于封闭动作集的当前动作。
+    :param reason_codes: 模型声明的理由码元组。
+    :raises IllegalActionError: 理由码为空、重复、未知或与动作分域矛盾。
+    """
+    if not reason_codes:
+        raise IllegalActionError('reason_codes 不能为空')
+    if len(set(reason_codes)) != len(reason_codes):
+        raise IllegalActionError('reason_codes 不允许重复')
+    # react 不单独说话，其理由与回复同域；沉默理由不能与回复动作混用。
+    domain = REPLY_REASON_CODES if action != 'silent' else SILENT_REASON_CODES
+    for code in reason_codes:
+        if code not in ALL_REASON_CODES:
+            raise IllegalActionError(
+                f'未知 reason_code：{code}（封闭枚举，不允许自由字符串）'
+            )
+        if code not in domain:
+            raise IllegalActionError(f'reason_code {code} 不能与动作 {action} 组合')
+
+
 class IllegalActionError(ValueError):
     """决策违反行动协议或回合帧约束时抛出，代表模型协议错误。
 
@@ -156,6 +181,57 @@ class ReplyPayload:
             raise ValueError('表达意图不能为空字符串')
 
 
+def _validate_frame_choice(
+    action: ConversationAction,
+    target_message_ids: tuple[int, ...],
+    quote_message_id: int | None,
+    frame: DecisionFrame,
+) -> None:
+    """校验动作、目标与引用在回合帧内的合法性，完整决策与动作头共用。
+
+    目标必须属于本回合 selectable_message_ids 且不晚于水位；引用还必须
+    具备平台能力。任何违反都按协议错误抛出，调用方不得静默降级。
+
+    :param action: 当前动作。
+    :param target_message_ids: 目标消息 ID 元组。
+    :param quote_message_id: 可选的引用消息 ID。
+    :param frame: 本回合固定快照。
+    :raises IllegalActionError: DROP 帧带决策、动作超出动作空间、FORCE 场景
+        silent、目标或引用越界、引用能力缺失。
+    """
+    if frame.disposition == 'drop':
+        raise IllegalActionError('DROP 候选不调用模型，不存在合法决策')
+    if action not in frame.available_actions:
+        raise IllegalActionError(
+            f'动作 {action} 不在本回合可用动作'
+            f' {sorted(frame.available_actions)} 中'
+        )
+    if frame.disposition == 'force' and action == 'silent':
+        raise IllegalActionError('FORCE 场景不允许 silent')
+    selectable = frozenset(frame.selectable_message_ids)
+    for target in target_message_ids:
+        if target not in selectable:
+            raise IllegalActionError(
+                f'目标消息 {target} 不在本回合 selectable_message_ids 内'
+            )
+        if target > frame.message_watermark:
+            raise IllegalActionError(
+                f'目标消息 {target} 晚于回合消息水位 {frame.message_watermark}'
+            )
+    if quote_message_id is not None:
+        if not frame.capabilities.quote:
+            raise IllegalActionError('平台不支持引用时不能携带 quote_message_id')
+        if quote_message_id not in selectable:
+            raise IllegalActionError(
+                f'引用消息 {quote_message_id} 不在本回合 selectable_message_ids 内'
+            )
+        if quote_message_id > frame.message_watermark:
+            raise IllegalActionError(
+                f'引用消息 {quote_message_id} 晚于回合消息水位'
+                f' {frame.message_watermark}'
+            )
+
+
 @dataclass(frozen=True)
 class ConversationDecision:
     """一次模型调用产出的行动决策外壳及可选 reply 负载。
@@ -174,20 +250,7 @@ class ConversationDecision:
         """拒绝形状矛盾：未知动作、自由 reason_code、动作与负载不匹配。"""
         if self.action not in ('reply', 'silent', 'react'):
             raise IllegalActionError(f'未知动作：{self.action}')
-        if not self.reason_codes:
-            raise IllegalActionError('reason_codes 不能为空')
-        if len(set(self.reason_codes)) != len(self.reason_codes):
-            raise IllegalActionError('reason_codes 不允许重复')
-        for code in self.reason_codes:
-            if code not in ALL_REASON_CODES:
-                raise IllegalActionError(
-                    f'未知 reason_code：{code}（封闭枚举，不允许自由字符串）'
-                )
-        # react 不单独说话，其理由与回复同域；沉默理由不能与回复动作混用。
-        domain = REPLY_REASON_CODES if self.action != 'silent' else SILENT_REASON_CODES
-        for code in self.reason_codes:
-            if code not in domain:
-                raise IllegalActionError(f'reason_code {code} 不能与动作 {self.action} 组合')
+        _validate_reason_codes(self.action, self.reason_codes)
         if self.action == 'reply':
             if self.reply is None:
                 raise IllegalActionError('reply 动作必须携带 reply 负载')
@@ -216,37 +279,105 @@ class ConversationDecision:
         :raises IllegalActionError: 目标超出可选集、引用能力缺失、动作不在
             动作空间或 FORCE 场景返回 silent 时抛出。
         """
-        if frame.disposition == 'drop':
-            raise IllegalActionError('DROP 候选不调用模型，不存在合法决策')
-        if self.action not in frame.available_actions:
-            raise IllegalActionError(
-                f'动作 {self.action} 不在本回合可用动作'
-                f' {sorted(frame.available_actions)} 中'
+        _validate_frame_choice(
+            self.action,
+            self.target_message_ids,
+            self.quote_message_id,
+            frame,
+        )
+
+
+@dataclass(frozen=True)
+class DecisionHead:
+    """动作头：正文流式输出前必须完整且通过校验的决策外壳。
+
+    与 ConversationDecision 的区别是 reply 的正文此刻尚未产生：reply 动作
+    用 length 声明篇幅，正文随后以 <say> 流式输出；silent 只存在动作
+    头本身，其后不允许任何正文。
+    """
+
+    action: ConversationAction
+    target_message_ids: tuple[int, ...]
+    quote_message_id: int | None
+    reason_codes: tuple[str, ...]
+    length: ReplyLength | None = None
+
+    def __post_init__(self) -> None:
+        """拒绝形状矛盾：未知动作、自由 reason_code、篇幅与动作不匹配。"""
+        if self.action not in ('reply', 'silent', 'react'):
+            raise IllegalActionError(f'未知动作：{self.action}')
+        _validate_reason_codes(self.action, self.reason_codes)
+        if self.action == 'reply':
+            if not self.target_message_ids:
+                raise IllegalActionError('reply 动作必须指定至少一条目标消息')
+            if self.length not in ('brief', 'long'):
+                raise IllegalActionError('reply 动作头必须声明 brief 或 long 篇幅')
+        if self.action == 'silent':
+            if self.target_message_ids:
+                raise IllegalActionError('silent 动作不能指定目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('silent 动作不能携带引用')
+            if self.length is not None:
+                raise IllegalActionError('silent 动作不能声明回复篇幅')
+        if self.action == 'react':
+            if len(self.target_message_ids) != 1:
+                raise IllegalActionError('react 动作必须且只能指定一条目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('react 动作不能携带引用')
+            if self.length is not None:
+                raise IllegalActionError('react 动作不能声明回复篇幅')
+
+    def validate(self, frame: DecisionFrame) -> None:
+        """按回合帧校验动作头，违反时抛出协议错误。
+
+        :param frame: 本回合固定快照。
+        :raises IllegalActionError: 目标越界、引用能力缺失、动作超出动作
+            空间或 FORCE 场景 silent。
+        """
+        _validate_frame_choice(
+            self.action,
+            self.target_message_ids,
+            self.quote_message_id,
+            frame,
+        )
+
+    def to_decision(self, body_text: str) -> ConversationDecision:
+        """结合流式正文组装完整决策。
+
+        :param body_text: reply 动作的完整可见正文；silent 与 react 忽略该
+            参数，传入非空值视为协议错误。
+        :return: 通过结构自检的 ConversationDecision。
+        :raises IllegalActionError: silent/react 传入正文或组装结果结构非法。
+        """
+        if self.action == 'silent':
+            if body_text.strip():
+                raise IllegalActionError('silent 动作头之后不能有正文')
+            return ConversationDecision(
+                action='silent',
+                target_message_ids=(),
+                quote_message_id=None,
+                reason_codes=self.reason_codes,
+                reply=None,
             )
-        if frame.disposition == 'force' and self.action == 'silent':
-            raise IllegalActionError('FORCE 场景不允许 silent')
-        selectable = frozenset(frame.selectable_message_ids)
-        for target in self.target_message_ids:
-            if target not in selectable:
-                raise IllegalActionError(
-                    f'目标消息 {target} 不在本回合 selectable_message_ids 内'
-                )
-            if target > frame.message_watermark:
-                raise IllegalActionError(
-                    f'目标消息 {target} 晚于回合消息水位 {frame.message_watermark}'
-                )
-        if self.quote_message_id is not None:
-            if not frame.capabilities.quote:
-                raise IllegalActionError('平台不支持引用时不能携带 quote_message_id')
-            if self.quote_message_id not in selectable:
-                raise IllegalActionError(
-                    f'引用消息 {self.quote_message_id} 不在本回合 selectable_message_ids 内'
-                )
-            if self.quote_message_id > frame.message_watermark:
-                raise IllegalActionError(
-                    f'引用消息 {self.quote_message_id} 晚于回合消息水位'
-                    f' {frame.message_watermark}'
-                )
+        if self.action == 'react':
+            if body_text.strip():
+                raise IllegalActionError('react 动作头之后不能有正文')
+            return ConversationDecision(
+                action='react',
+                target_message_ids=self.target_message_ids,
+                quote_message_id=None,
+                reason_codes=self.reason_codes,
+                reply=None,
+            )
+        if not body_text.strip():
+            raise IllegalActionError('reply 动作头之后没有正文')
+        return ConversationDecision(
+            action='reply',
+            target_message_ids=self.target_message_ids,
+            quote_message_id=self.quote_message_id,
+            reason_codes=self.reason_codes,
+            reply=ReplyPayload(text=body_text.strip(), length=self.length or 'brief'),
+        )
 
 
 def available_actions(
@@ -336,6 +467,7 @@ class ActionDecisionEvent:
     available_actions: tuple[str, ...]
     decision: ConversationDecision | None
     event_status: EventStatus
+    detail: str = ''
     prompt_hash: str = ''
     model_task: str = ''
     provider: str = ''
@@ -374,6 +506,7 @@ class ActionDecisionEvent:
             'snapshotId': self.snapshot_id,
             'messageWatermark': self.turn_message_watermark,
             'eventStatus': self.event_status,
+            'detail': self.detail,
             'inputs': self.gate_inputs.to_dict(),
             'gate': {
                 'disposition': self.gate_disposition,
