@@ -97,12 +97,43 @@ class PromiseEvent:
     what: str = ''
 
 
-ParseEvent = Union[SayEvent, TextEvent, SayEndEvent, MemoryEvent, MoodEvent, PromiseEvent]
+@dataclass
+class DecisionEvent:
+    """表示模型声明的行动决策头，必须先于任何正文出现。
+
+    属性保持解析器产出的原始字符串，语义校验（动作枚举、目标范围、理由码
+    分域）由 Conversation Agent 完成，解析器不做判断。
+
+    :ivar type: 固定为 `decision`。
+    :ivar action: 动作名原文，例如 `reply`；缺失时为 `None`。
+    :ivar targets: 逗号分隔的目标消息 ID 原文；缺失时为 `None`。
+    :ivar quote: 引用消息 ID 原文；缺失时为 `None`。
+    :ivar reasons: 逗号分隔的理由码原文；缺失时为 `None`。
+    :ivar length: 回复篇幅原文；缺失时为 `None`。
+    """
+
+    type: str = 'decision'
+    action: str | None = None
+    targets: str | None = None
+    quote: str | None = None
+    reasons: str | None = None
+    length: str | None = None
+
+
+ParseEvent = Union[
+    SayEvent,
+    TextEvent,
+    SayEndEvent,
+    MemoryEvent,
+    MoodEvent,
+    PromiseEvent,
+    DecisionEvent,
+]
 
 # ─────────────────────────────────────────────────────────────────────
 # 内部会处理的标签名。其余一律当普通文本。
 # ─────────────────────────────────────────────────────────────────────
-_KNOWN = frozenset(['say', 'memory', 'mood', 'promise'])
+_KNOWN = frozenset(['say', 'memory', 'mood', 'promise', 'decision'])
 
 _State = Literal['outside', 'say', 'memory', 'skip']
 
@@ -160,7 +191,7 @@ def _could_be_known_tag(partial: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────
 
 class ResponseParser:
-    """增量解析 `<say>`、`<memory>`、`<mood>` 和 `<promise>` 标签。
+    """增量解析 `<say>`、`<memory>`、`<mood>`、`<promise>` 和 `<decision>` 标签。
 
     实例维护跨网络分片的文本缓冲区和当前标签状态；调用方应持续调用
     :meth:`push`，在流结束时调用 :meth:`flush` 释放残留文本并补齐说话结束事件。
@@ -348,6 +379,19 @@ class ResponseParser:
             what = attrs.get('what', '').strip()
             if at is not None and what:
                 out.append(PromiseEvent(at=at, what=what))
+            return
+
+        if name == 'decision':
+            # 动作头是即时事件，不进文本状态机；属性语义留给 Agent 校验。
+            if closing:
+                return
+            out.append(DecisionEvent(
+                action=attrs.get('action'),
+                targets=attrs.get('targets'),
+                quote=attrs.get('quote'),
+                reasons=attrs.get('reasons'),
+                length=attrs.get('length'),
+            ))
             return
 
     def _step_memory(self, out: list[ParseEvent]) -> bool:
