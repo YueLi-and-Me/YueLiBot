@@ -86,6 +86,18 @@ class GroupChatConfig(BaseModel):
     max_replies_in_window: int = Field(default=3, ge=0)
 
 
+class ConversationAgentConfig(BaseModel):
+    """Conversation 行动核心的灰度开关与测试流清单。
+
+    mode 为三段灰度：off 保留旧管线；shadow 对 DELIBERATE 候选调用
+    Conversation Agent 只记录决策、不改可见行为；selected_streams 只对
+    清单内的 stream 启用真实决策；enabled 把全部真实候选交给 Agent。
+    """
+
+    mode: Literal['off', 'shadow', 'selected_streams', 'enabled'] = 'off'
+    selected_streams: List[str] = Field(default_factory=list)
+
+
 class ScheduleConfig(BaseModel):
     """日程形状与作息开关；这些是用户选择，不由解析器写死。"""
 
@@ -680,6 +692,7 @@ class BotDocument(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     personality: PersonalityConfig
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
 
     @model_validator(mode='before')
     @classmethod
@@ -743,6 +756,7 @@ class Config(BaseModel):
         proactive_expression_habits=[],
     ))
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     # 八类任务的候选模型与轮询策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)

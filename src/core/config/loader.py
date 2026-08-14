@@ -277,6 +277,7 @@ def _load_split_config(directory: Path) -> Config:
         schedule=bot_document.schedule,
         personality=bot_document.personality,
         conversation=bot_document.conversation,
+        conversation_agent=bot_document.conversation_agent,
         generation=models_document.generation,
         routing=routing,
         tts=features_tts,
