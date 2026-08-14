@@ -51,6 +51,8 @@ TEMPLATE_IDS = (
     'schedule',
     'expression.select',
     'vision.glance',
+    # 追加在末尾：既有验收断言 TEMPLATE_IDS[3:5] 固定为篇幅变体。
+    'chat.action.protocol',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures'}),
@@ -98,6 +100,11 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     }),
     'expression.select': frozenset({'history', 'user_text', 'options', 'limit'}),
     'vision.glance': frozenset({'app_hint'}),
+    'chat.action.protocol': frozenset({
+        'available_actions',
+        'selectable_messages',
+        'quote_rule',
+    }),
 }
 
 _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')

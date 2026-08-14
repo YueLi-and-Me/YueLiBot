@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
@@ -360,3 +360,33 @@ def build_proactive_prompt(
         base_prompt,
         get_prompt('chat.proactive').render(**proactive_values),
     ])
+
+def render_action_protocol(
+    available_actions: Iterable[str],
+    selectable_message_ids: Iterable[int],
+    quote_supported: bool,
+) -> str:
+    """渲染 Conversation Agent 的动作头协议提示词块。
+
+    :param available_actions: 运行时给出的本回合动作枚举值。
+    :param selectable_message_ids: 本回合可选消息 ID。
+    :param quote_supported: 平台是否支持引用；不支持时提示词明确禁止 quote。
+
+    :return: 已通过模板占位符严格校验的协议文本。
+    :raises KeyError: 模板未加载时由注册表抛出。
+    """
+    actions_text = ' / '.join(sorted(available_actions))
+    ids = list(selectable_message_ids)
+    selectable_text = ('、'.join(str(message_id) for message_id in ids)
+                      if ids else "（本批没有可选消息）")
+    quote_rule = (
+        'quote 只能引用上面列出的可选消息之一；不引用就不写 quote 属性'
+        if quote_supported
+        else '本平台不支持引用，不要写 quote 属性'
+    )
+    return get_prompt('chat.action.protocol').render(
+        available_actions=actions_text,
+        selectable_messages=selectable_text,
+        quote_rule=quote_rule,
+    )
+
