@@ -125,23 +125,26 @@ class GateResult:
 
 def mentions_bot_name(text: str, bot_names: Sequence[str]) -> bool:
     """判断正文是否包含配置声明的主体名称或别名。
+
     :param text: 待匹配的消息正文。
-    :param bot_names: 可用名称序列；每个名称必须非空，比较时忽略大小写。
+    :param bot_names: 可用名称序列；比较时忽略大小写。空字符串条目被跳过：
+        空名称配置不可能被任何正文匹配，跳过是名称匹配的合法语义而非兜底。
 
-    :return: 正文包含任一完整配置值时返回 True，否则返回 False。
+    :return: 正文包含任一非空完整配置值时返回 True，否则返回 False。
 
-    :raises ValueError: bot_names 包含空字符串。
     :raises TypeError: 输入元素不支持字符串操作时由 Python 直接抛出。
     """
     normalized_text = text.casefold()
     for raw_name in bot_names:
         name = raw_name.strip().casefold()
         if not name:
-            raise ValueError('bot_names 不能包含空字符串')
+            continue
         # 名称可以由任意文字或符号组成；这里只比较配置值，不推断字符类别或语义边界。
         if name in normalized_text:
             return True
     return False
+
+
 def decide_disposition(request: GateRequest) -> GateResult:
     """按硬边界与注意力信号计算一次候选批次的门控态。
 
