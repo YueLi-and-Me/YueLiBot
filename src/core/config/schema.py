@@ -87,15 +87,24 @@ class GroupChatConfig(BaseModel):
 
 
 class ConversationAgentConfig(BaseModel):
-    """Conversation 行动核心的灰度开关与测试流清单。
+    """Conversation 行动核心的灰度开关、触发口径与测试流清单。
 
-    mode 为三段灰度：off 保留旧管线；shadow 对 DELIBERATE 候选调用
+    mode 为四段灰度：off 保留旧管线；shadow 对 DELIBERATE 候选调用
     Conversation Agent 只记录决策、不改可见行为；selected_streams 只对
     清单内的 stream 启用真实决策；enabled 把全部真实候选交给 Agent。
+
+    trigger_mode 决定无点名/无 @ 的普通群消息何时进入 DELIBERATE：
+    ``signal`` 沿用原口径，无信号直接 DROP；``frequency`` 按发言频率预算
+    攒够候选消息后给一次 DELIBERATE；``reply_necessity`` 按回复必要性
+    评分是否达到阈值决定。两种扩展模式都不会让纯沉默自动触发，也不会
+    绕过休眠、频率硬上限等确定性边界。
     """
 
     mode: Literal['off', 'shadow', 'selected_streams', 'enabled'] = 'off'
     selected_streams: List[str] = Field(default_factory=list)
+    trigger_mode: Literal['signal', 'frequency', 'reply_necessity'] = 'signal'
+    frequency_talk_value: float = Field(default=0.6, gt=0.0, le=1.0)
+    reply_necessity_threshold: int = Field(default=80, ge=0, le=100)
 
 
 class ScheduleConfig(BaseModel):

@@ -48,6 +48,10 @@ from src.core.agent.prompt import (
     describe_resumption,
     render_action_protocol,
 )
+from src.core.agent.reply_necessity import (
+    frequency_trigger_threshold,
+    score_reply_necessity,
+)
 from src.core.agent.summarize import summarize
 from src.core.awareness.sleep import SleepState
 from src.core.common.clock import now as current_time
@@ -250,6 +254,11 @@ class ChatService:
         conversation_agent_cfg = cfg.conversation_agent
         self._conversation_mode = conversation_agent_cfg.mode
         self._conversation_selected_streams = frozenset(conversation_agent_cfg.selected_streams)
+        self._trigger_mode = conversation_agent_cfg.trigger_mode
+        self._frequency_talk_value = conversation_agent_cfg.frequency_talk_value
+        self._reply_necessity_threshold = conversation_agent_cfg.reply_necessity_threshold
+        # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
+        self._extended_pending: dict[int, int] = {}
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
@@ -644,7 +653,20 @@ class ChatService:
                     user_message_id_watermark=batch[-1].message_id,
                 )
                 render_params: dict[str, dict[str, str]] = {}
-                batch_gate = self._batch_gate(context, trimmed, inbound.mentioned_me)
+                batch_gate = self._batch_gate(
+                    context,
+                    trimmed,
+                    inbound.mentioned_me,
+                    candidate_count=len(batch),
+                )
+                if batch_gate.result.reason_codes[0] in (
+                    'frequency_wait',
+                    'low_necessity',
+                ):
+                    # 扩展触发模式放行的无信号群消息未达到候选条件，由这里
+                    # 补记 gate_dropped 并结束回合，不再走旧管线。
+                    await self._handle_live_drop(context, batch, turn, batch_gate)
+                    return
                 scope = self._agent_scope(context, batch_gate.result.disposition)
                 if scope == 'shadow':
                     # shadow 只记录 Agent 决策，之后仍走旧管线，可见行为不变。
@@ -656,6 +678,10 @@ class ChatService:
                         cancel_event,
                         batch_gate,
                     )
+                    if not self._has_legacy_attention_signal(batch_gate):
+                        # 仅由 frequency_budget / reply_necessity 产生的候选在旧
+                        # signal 口径下本会被 DROP；shadow 阶段不因此唤醒旧管线。
+                        return
                 elif scope == 'live':
                     if batch_gate.result.disposition == 'drop':
                         await self._handle_live_drop(context, batch, turn, batch_gate)
@@ -1821,12 +1847,14 @@ class ChatService:
         context: ConversationContext,
         batch_text: str,
         mentioned_me: bool,
+        candidate_count: int = 1,
     ) -> _BatchGate:
         """按本批合并事实重算三态门控；只读取确定性输入，不调用模型。
 
         :param context: 本批消息的会话上下文。
         :param batch_text: 合并后的本批正文。
         :param mentioned_me: 本批是否包含协议 @。
+        :param candidate_count: 本批候选消息数；扩展触发模式用它累计频率预算。
         :return: 门控结果与全部判定输入事实。
         """
         asleep = self._sleep_state().asleep if self._sleep_state else False
@@ -1850,6 +1878,29 @@ class ChatService:
             replies_in_window=reply_count,
             max_replies_in_window=self._cfg.group_chat.max_replies_in_window,
         ))
+        plain_group_drop = (
+            context.stream.kind == 'group'
+            and result.disposition == 'drop'
+            and result.reason_codes == ('attention_filtered',)
+        )
+        if plain_group_drop and self.extended_trigger_enabled(context):
+            if self._trigger_mode != 'signal':
+                result = self._extended_group_gate(
+                    context,
+                    batch_text,
+                    mentioned_me,
+                    name_mentioned,
+                    reply_count,
+                    candidate_count,
+                )
+            else:
+                # signal 口径不使用累计器；清掉历史残留，避免切回扩展模式时
+                # 旧计数造成立即触发。
+                self._extended_pending.pop(context.stream.id, None)
+        elif context.stream.kind == 'group':
+            # 任一常规注意力信号命中都表示该 stream 已获得一次候选机会，
+            # 扩展模式的待处理累计一并清零，避免与下一次频率预算叠加。
+            self._extended_pending.pop(context.stream.id, None)
         return _BatchGate(
             result=result,
             asleep=asleep,
@@ -1857,6 +1908,101 @@ class ChatService:
             reply_count=reply_count,
             mentioned_me=mentioned_me,
         )
+
+    def _extended_group_gate(
+        self,
+        context: ConversationContext,
+        batch_text: str,
+        mentioned_me: bool,
+        name_mentioned: bool,
+        reply_count: int,
+        candidate_count: int,
+    ) -> GateResult:
+        """按配置的扩展口径决定无信号群消息是否进入 DELIBERATE。
+
+        frequency 使用发言频率预算累计候选数；reply_necessity 使用确定性
+        评分，并把累计候选数作为压力项。两种模式都保留休眠、频率硬上限等
+        上游边界，且都只产生确定性候选，不替 Agent 决定回复与否。
+
+        :param context: 当前会话上下文。
+        :param batch_text: 本批合并正文。
+        :param mentioned_me: 本批是否包含协议 @。
+        :param name_mentioned: 本批是否包含 Bot 名称/别名。
+        :param reply_count: 最近窗口内 Bot 回复数。
+        :param candidate_count: 本批候选消息数。
+        :return: 扩展门控产生的 drop 或 deliberate 结果。
+        """
+        stream_id = context.stream.id
+        pending = self._extended_pending.get(stream_id, 0) + candidate_count
+        if self._trigger_mode == 'frequency':
+            threshold = frequency_trigger_threshold(self._frequency_talk_value)
+            if pending >= threshold:
+                self._extended_pending.pop(stream_id, None)
+                return GateResult('deliberate', ('frequency_budget',))
+            self._extended_pending[stream_id] = pending
+            return GateResult('drop', ('frequency_wait',))
+        if self._trigger_mode == 'reply_necessity':
+            threshold = max(1, self._reply_necessity_threshold)
+            window_ms = self._cfg.group_chat.reply_window_minutes * 60_000
+            recent_window_messages = self.memory.message_count_since(
+                stream_id,
+                current_time() - window_ms,
+            )
+            score = score_reply_necessity(
+                [batch_text],
+                has_at=mentioned_me,
+                has_mention=name_mentioned,
+                is_group_chat=True,
+                recent_self_replies=reply_count,
+                recent_window_messages=recent_window_messages,
+                pending_count=pending,
+                trigger_threshold=threshold,
+            )
+            if score.score >= threshold:
+                self._extended_pending.pop(stream_id, None)
+                return GateResult('deliberate', ('reply_necessity',))
+            self._extended_pending[stream_id] = pending
+            return GateResult('drop', ('low_necessity',))
+        return GateResult('drop', ('attention_filtered',))
+
+    def _has_legacy_attention_signal(self, batch_gate: _BatchGate) -> bool:
+        """判断本批是否携带旧 signal 口径下的可见注意力信号。
+
+        shadow 阶段扩展触发模式可能单独产生 frequency_budget /
+        reply_necessity 候选；这些候选在旧口径下会被 attention_filtered
+        DROP，因此不应顺手唤醒旧管线改变可见行为。
+
+        :param batch_gate: 本批门控快照。
+        :return: 存在 @、名字提及或自然回应窗口时返回 True。
+        """
+        return (
+            batch_gate.mentioned_me
+            or batch_gate.name_mentioned
+            or batch_gate.reply_count > 0
+        )
+
+    def extended_trigger_enabled(self, context: ConversationContext) -> bool:
+        """判断当前 stream 是否启用 frequency / reply_necessity 扩展口径。
+
+        off 与 selected_streams 清单外的 stream 保持原 signal 行为，避免
+        灰度观察之外的群聊被新触发模式改变候选边界。
+
+        :param context: 当前消息的会话上下文。
+        :return: 该 stream 可应用扩展触发模式时返回 True。
+        """
+        if self._conversation_mode == 'off' or self._conversation_agent is None:
+            return False
+        if self._conversation_mode in ('shadow', 'enabled'):
+            return True
+        return (
+            self._conversation_mode == 'selected_streams'
+            and context.stream.external_id in self._conversation_selected_streams
+        )
+
+    @property
+    def conversation_trigger_mode(self) -> str:
+        """返回当前配置的候选触发口径；仅供入口门控读取。"""
+        return self._trigger_mode
 
     def _agent_scope(
         self,

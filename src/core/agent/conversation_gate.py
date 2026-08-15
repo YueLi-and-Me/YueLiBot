@@ -31,6 +31,8 @@ DROP_GATE_CODES: frozenset[str] = frozenset({
     'asleep',                   # 休眠
     'rate_limited',             # 频率窗口硬上限
     'attention_filtered',       # 无任何注意力信号，不值得进入意识
+    'frequency_wait',           # 频率预算尚未攒够候选消息
+    'low_necessity',            # 回复必要性评分未达阈值
     'consumed',                 # 已被消费的重复消息
     'timeout_window',           # 超出超时窗
     'message_type_disallowed',  # 配置禁止的消息类型
@@ -53,6 +55,8 @@ DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
     'clear_question',          # 明确问题
     'natural_reply_window',    # Bot 最近发言后的自然回应窗口
     'recognizable_target',     # 批次含可识别目标
+    'frequency_budget',        # 频率预算已攒够，进入一次候选
+    'reply_necessity',         # 回复必要性评分达到阈值
 })
 
 _DISPOSITION_CODE_SETS: dict[GateDisposition, frozenset[str]] = {

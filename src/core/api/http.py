@@ -407,14 +407,25 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         replies_in_window=reply_count,
         max_replies_in_window=group_chat.max_replies_in_window,
     ))
+    plain_group_deferred = (
+        context.stream.kind == 'group'
+        and gate_result.disposition == 'drop'
+        and gate_result.reason_codes == ('attention_filtered',)
+        and app_state.chat.conversation_trigger_mode != 'signal'
+        and app_state.chat.extended_trigger_enabled(context)
+    )
     trace.emit(
         'reply_gate',
         streamId=context.stream.id,
         personId=context.person.id,
         text=body.text,
         botNames=list(bot_names),
-        accepted=gate_result.disposition != 'drop',
-        reason=gate_result.reason_codes[0],
+        accepted=gate_result.disposition != 'drop' or plain_group_deferred,
+        reason=(
+            'deferred_to_trigger_mode'
+            if plain_group_deferred
+            else gate_result.reason_codes[0]
+        ),
         asleep=asleep,
         mentionedMe=body.mentioned_me,
         nameMentioned=name_mentioned,
@@ -422,7 +433,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         maxRepliesInWindow=group_chat.max_replies_in_window,
         **gate_result.as_trace(),
     )
-    if gate_result.disposition == 'drop':
+    if gate_result.disposition == 'drop' and not plain_group_deferred:
         reason = gate_result.reason_codes[0]
         # 静默消息仍写入历史和观察事件，确保下一轮上下文知道该消息已经出现。
         enter_stage(
@@ -478,7 +489,11 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     return JSONResponse({
         'streamId': context.stream.id,
         'accepted': True,
-        'reason': gate_result.reason_codes[0],
+        'reason': (
+            'deferred_to_trigger_mode'
+            if plain_group_deferred
+            else gate_result.reason_codes[0]
+        ),
     })
 
 
