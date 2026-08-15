@@ -16,7 +16,7 @@ import inspect
 import random
 import sqlite3
 
-from .trace_console import mark_turn_start, render_observation, render_turn, render_turn_error
+from .trace_console import mark_turn_start, render_action_decision, render_observation, render_turn, render_turn_error
 from .vector import VectorService
 
 from src.core.agent.character import pick_tone
@@ -1972,7 +1972,7 @@ class ChatService:
             **metadata,
         )
         try:
-            await self._conversation_agent.run(
+            outcome = await self._conversation_agent.run(
                 frame,
                 messages,
                 gate_inputs,
@@ -1984,6 +1984,19 @@ class ChatService:
         except Exception as exc:
             # shadow 只是观察通道，失败记录日志即可，绝不能影响旧管线行为。
             logger.warning('shadow_decision_failed', turnId=turn, error=str(exc))
+            return
+        decision = outcome.decision
+        render_action_decision(
+            turn=turn,
+            agent_scope='shadow',
+            event_status=outcome.event_status,
+            detail=outcome.action_event.detail,
+            action=decision.action if decision is not None else '',
+            reason_codes=decision.reason_codes if decision is not None else (),
+            target_message_ids=(
+                decision.target_message_ids if decision is not None else ()
+            ),
+        )
 
     async def _run_conversation_turn(
         self,

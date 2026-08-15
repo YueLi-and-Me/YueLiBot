@@ -184,6 +184,56 @@ def render_observation(sender_label: str, user_text: str, reason: str) -> None:
         logger.debug('render_observation_failed', error=str(exc))
 
 
+def render_action_decision(
+    turn: int,
+    agent_scope: str,
+    event_status: str,
+    detail: str = "",
+    action: str = "",
+    reason_codes: tuple[str, ...] | list[str] = (),
+    target_message_ids: tuple[int, ...] | list[int] = (),
+) -> None:
+    """以单行渲染 Conversation Agent 的行动决策摘要。
+
+    该入口只做观察展示，不触碰事件账本与业务行为；非交互终端自动跳过，
+    避免把决策行混入服务日志。
+
+    :param turn: 对话回合 ID。
+    :param agent_scope: Agent 灰度路径标识，例如 shadow。
+    :param event_status: action_decision 的事件状态。
+    :param detail: 失败状态的人类可读原因；成功状态通常为空。
+    :param action: 已提交决策的动作名；失败状态为空。
+    :param reason_codes: 已提交决策的理由码。
+    :param target_message_ids: 已提交决策的目标消息 ID。
+
+    副作用：
+        在交互终端写入一行决策摘要；渲染异常只记录调试日志。
+    """
+    if not _is_tty:
+        return
+    try:
+        parts: list[Any] = [
+            Text('· ', style='dim'),
+            Text(f'Agent[{agent_scope}] turn#{turn}', style='bold cyan'),
+        ]
+        if action:
+            summary = f' → {action}'
+            if reason_codes:
+                summary += f" reasons={','.join(reason_codes)}"
+            if target_message_ids:
+                summary += f" target={','.join(str(target) for target in target_message_ids)}"
+            style = 'green' if action == 'reply' else 'yellow'
+            parts.append(Text(summary, style=style))
+        else:
+            summary = f' → {event_status}'
+            if detail:
+                summary += f'  ({detail})'
+            parts.append(Text(summary, style='bold red'))
+        console.print(Text.assemble(*parts))
+    except Exception as exc:
+        logger.debug('render_action_decision_failed', error=str(exc))
+
+
 def render_turn_error(
     turn: int,
     sender_label: str,
