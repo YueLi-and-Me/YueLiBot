@@ -40,8 +40,14 @@ CHAT_SYSTEM_TEMPLATE_IDS = (
     'chat.system',
 )
 CHAT_PROACTIVE_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.proactive')
-# Conversation Agent 的系统提示词在正文协议之外追加动作头协议模板。
-CHAT_CONVERSATION_TEMPLATE_IDS = (*CHAT_SYSTEM_TEMPLATE_IDS, 'chat.action.protocol')
+# Conversation Agent 的系统提示词用「先动作头、后正文」协议替换既有直接发言协议，
+# 避免同一段提示词同时给出两条冲突的输出指令。
+CHAT_CONVERSATION_TEMPLATE_IDS = (
+    'chat.discipline',
+    'chat.boundaries',
+    'chat.system',
+    'chat.action.protocol',
+)
 TEMPLATE_IDS = (
     'chat.protocol',
     'chat.discipline',
@@ -106,6 +112,9 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'available_actions',
         'selectable_messages',
         'quote_rule',
+        'emotions',
+        'gestures',
+        'example_target_id',
     }),
 }
 

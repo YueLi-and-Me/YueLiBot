@@ -240,6 +240,7 @@ def build_system_prompt(
     aliases: Optional[List[str]] = None,
     platform_name: Optional[str] = None,
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
+    protocol_text: Optional[str] = None,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
 
@@ -262,6 +263,9 @@ def build_system_prompt(
     :param resumption: 当前对话恢复提示。
     :param aliases: 可选的其他 Bot 名称列表。
     :param platform_name: 平台侧显示的 Bot 名称。
+    :param protocol_text: 可选的整体输出协议文本；提供时直接替换 ``chat.protocol``
+        在「输出格式」块中的位置，用于 Agent 模式把「先 <decision> 再 <say>」
+        变成唯一主指令，而不是追加成与既有直接发言指令竞争的第二套规则。
 
     :return: 可直接提交给模型服务的完整系统提示词。
 
@@ -330,6 +334,11 @@ def build_system_prompt(
         'expression_habits': _expression_habits_block(expression_habits),
     }
     prompt, system_values = render_chat_system(system_values, component_values)
+    if protocol_text is not None:
+        # 动作协议必须在系统提示词内整体替换「只输出 <say>」协议，不能在末尾追加。
+        # 追加会让模型同时收到两条竞争指令，shadow 实测约 2/3 会退回直接输出 <say>。
+        system_values = {**system_values, 'protocol': protocol_text.rstrip()}
+        prompt = get_prompt('chat.system').render(**system_values)
     if render_params is not None:
         render_params.update(component_values)
         render_params['chat.system'] = system_values
@@ -368,6 +377,10 @@ def render_action_protocol(
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
+    该文本会整体替换主对话提示词中的直接发言协议，而不是追加在末尾：动作头
+    先于正文是 Agent 模式的唯一输出格式，必须避免与 ``chat.protocol`` 的
+    「直接输出 <say>」指令竞争。
+
     :param available_actions: 运行时给出的本回合动作枚举值。
     :param selectable_message_ids: 本回合可选消息 ID。
     :param quote_supported: 平台是否支持引用；不支持时提示词明确禁止 quote。
@@ -384,9 +397,14 @@ def render_action_protocol(
         if quote_supported
         else '本平台不支持引用，不要写 quote 属性'
     )
+    # 示例里的目标 ID 也必须是运行时真实可选 ID，避免模型照抄示例中的越界数字。
+    example_target_id = str(ids[0]) if ids else '0'
     return get_prompt('chat.action.protocol').render(
         available_actions=actions_text,
         selectable_messages=selectable_text,
         quote_rule=quote_rule,
+        emotions=' / '.join(EXPRESSION_IDS),
+        gestures=' / '.join(GESTURE_IDS),
+        example_target_id=example_target_id,
     )
 

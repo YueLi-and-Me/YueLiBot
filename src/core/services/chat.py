@@ -1729,6 +1729,7 @@ class ChatService:
         expression_habits: str | None = None,
         render_params: dict[str, dict[str, str]] | None = None,
         reply_length: str | None = None,
+        protocol_text: str | None = None,
     ) -> list[dict]:
         """将同一份已组装上下文渲染为模型消息。
 
@@ -1737,6 +1738,8 @@ class ChatService:
         :param expression_habits: 可选表达习惯提示词块。
         :param render_params: 可选提示词渲染参数收集字典。
         :param reply_length: 当前轮规划出的回复篇幅。
+        :param protocol_text: 可选的 Agent 动作协议文本；提供时整体替换
+            系统提示词中的直接发言协议，而不是追加在末尾。
         :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
         副作用：只读取配置和会话语调，不读写数据库、不调用模型。
         """
@@ -1759,6 +1762,7 @@ class ChatService:
             resumption=prepared.resumption,
             platform_name=prepared.platform_bot_name,
             render_params=render_params,
+            protocol_text=protocol_text,
             **self._prompt_config_kwargs(),
         )
         # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
@@ -1771,6 +1775,7 @@ class ChatService:
         signal: asyncio.Event | None,
         render_params: dict[str, dict[str, str]],
         reply_length: str | None,
+        protocol_text: str | None = None,
     ) -> list[dict]:
         """确认回复后，在既有上下文上附加向量与表达模型增强。
 
@@ -1778,6 +1783,8 @@ class ChatService:
         :param signal: 可选的表达选择取消信号。
         :param render_params: 提示词渲染参数收集字典。
         :param reply_length: 规划器选出的回复篇幅。
+        :param protocol_text: 可选的 Agent 动作协议文本；透传给系统提示词
+            渲染，使动作头先于正文成为唯一输出协议。
         :return: 使用增强后事实排序和表达习惯渲染的最终模型消息。
         副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID。
         """
@@ -1806,6 +1813,7 @@ class ChatService:
             expression_habits=expression_habits,
             render_params=render_params,
             reply_length=reply_length,
+            protocol_text=protocol_text,
         )
 
     def _batch_gate(
@@ -1917,6 +1925,21 @@ class ChatService:
             selectable_message_ids=frame.selectable_message_ids,
         )
 
+    def _render_agent_protocol(self, frame: DecisionFrame) -> str:
+        """渲染本回合的动作头协议文本。
+
+        该文本由调用方整体替换系统提示词中的直接发言协议；shadow 与 live 共用，
+        保证两条灰度路径看到的输出规则完全一致。
+
+        :param frame: 本回合固定快照，提供动作空间、可选消息与平台能力。
+        :return: 已注入运行时动作集与目标范围的协议文本。
+        """
+        return render_action_protocol(
+            sorted(frame.available_actions),
+            frame.selectable_message_ids,
+            quote_supported=frame.capabilities.quote,
+        )
+
     async def _run_shadow_decision(
         self,
         context: ConversationContext,
@@ -1933,11 +1956,9 @@ class ChatService:
         """
         frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
-        messages = self._render_prepared_context(prepared)
-        messages[0]['content'] += '\n\n' + render_action_protocol(
-            sorted(frame.available_actions),
-            frame.selectable_message_ids,
-            quote_supported=frame.capabilities.quote,
+        messages = self._render_prepared_context(
+            prepared,
+            protocol_text=self._render_agent_protocol(frame),
         )
         metadata = prompt_metadata(
             'chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS,
@@ -1986,12 +2007,11 @@ class ChatService:
         frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
         messages = await self._enrich_prepared_context(
-            prepared, cancel_event, render_params, reply_length=None,
-        )
-        messages[0]['content'] += '\n\n' + render_action_protocol(
-            sorted(frame.available_actions),
-            frame.selectable_message_ids,
-            quote_supported=frame.capabilities.quote,
+            prepared,
+            cancel_event,
+            render_params,
+            reply_length=None,
+            protocol_text=self._render_agent_protocol(frame),
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
         metadata = prompt_metadata(
