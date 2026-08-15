@@ -20,6 +20,9 @@ _SIDE_EFFECT_TAGS = re.compile(
 
 _OPEN_SAY = re.compile(r'<say\b[^>]*>', re.IGNORECASE)
 _CLOSE_SAY = re.compile(r'</say\s*>', re.IGNORECASE)
+# Agent 模式的输出协议是「先 <decision> 再 <say>」；历史里的 <say> 标签会诱导
+# 模型继续以 <say> 开头，因此读入 Agent 上下文时只保留可见台词。
+_SAY_TAGS = re.compile(r'</?say\b[^>]*>', re.IGNORECASE)
 
 # 单轮历史的字符预算。仅按消息条数限制无法约束长文本，因此按最早消息顺序裁剪。
 DEFAULT_CHAR_BUDGET = 12_000
@@ -59,6 +62,20 @@ def close_dangling_say(raw: str) -> str:
     if unclosed > 0:
         text += '</say>' * unclosed
     return text
+
+
+def strip_say_tags(raw: str) -> str:
+    """移除历史回复中的 ``<say>`` 外壳，只保留可见台词。
+
+    普通对话提示词需要保留 ``<say>`` 作为输出示例；Conversation Agent 的输出
+    协议以 ``<decision>`` 开头，历史中大量 ``<say>`` 开头会让模型模仿旧格式，
+    因此 Agent 上下文单独调用本函数做纯文本化。
+
+    :param raw: 已去除副作用标签的助手回复文本。
+    :return: 仅含台词内容的纯文本。
+    :raises TypeError: ``raw`` 不是字符串时由正则操作触发。
+    """
+    return _SAY_TAGS.sub('', raw or '').strip()
 
 
 def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:

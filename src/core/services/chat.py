@@ -38,7 +38,7 @@ from src.core.agent.conversation_gate import (
 )
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.core.agent.expression_select import ExpressionSelector
-from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history
+from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history, strip_say_tags
 from src.core.agent.parser import (
     MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
 )
@@ -1940,6 +1940,97 @@ class ChatService:
             quote_supported=frame.capabilities.quote,
         )
 
+    def _render_agent_messages(
+        self,
+        frame: DecisionFrame,
+        messages: list[dict],
+    ) -> list[dict]:
+        """把已渲染消息整理为 Conversation Agent 实际提交的上下文。
+
+        与旧管线不同，Agent 的助手历史必须去掉 ``<say>`` 外壳，否则模型会
+        继续模仿历史里「回复以 <say> 开头」的旧格式；随后在真实用户消息前
+        插入 reply/silent 两条完整 few-shot，并在末条用户消息上追加输出
+        起点指令，使动作头先于正文成为生成侧最近的约束。
+
+        :param frame: 本回合固定快照，提供动作空间与可选消息。
+        :param messages: ``_render_prepared_context`` 产出的系统与历史消息。
+        :return: 历史助手已纯文本化、带 few-shot 与末轮输出指令的新消息列表。
+        """
+        if len(messages) < 2:
+            return messages
+        history: list[dict] = []
+        for message in messages[1:]:
+            item = dict(message)
+            if item.get('role') == 'assistant':
+                content = item.get('content')
+                if isinstance(content, str):
+                    item['content'] = strip_say_tags(content)
+            history.append(item)
+        user_indexes = [
+            index for index, message in enumerate(history)
+            if message.get('role') == 'user'
+        ]
+        if not user_indexes:
+            return messages
+        last_user_index = user_indexes[-1]
+        # 上一回合的 assistant 回复可能晚于当前用户消息落库；Agent 模式必须截断
+        # 这些尾部 assistant，否则模型会看到自己的旧回复排在待回复消息之后。
+        history = history[:last_user_index + 1]
+        history[last_user_index] = {
+            **history[last_user_index],
+            'content': (
+                f"{history[last_user_index]['content']}\n\n"
+                '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
+                '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 '
+                '<say>、普通文字或解释。'
+            ),
+        }
+        return [
+            messages[0],
+            *history[:last_user_index],
+            *self._agent_output_examples(frame),
+            *history[last_user_index:],
+        ]
+
+    def _agent_output_examples(self, frame: DecisionFrame) -> list[dict[str, str]]:
+        """构造紧邻当前轮次的 reply 与 silent 输出示例。
+
+        系统提示词末尾的示例离生成位置较远；在真实用户消息前放两条同格式
+        few-shot，可显著压低模型退回「先 <say>」旧习惯的概率。
+
+        :param frame: 本回合固定快照，示例目标只取真实可选消息。
+        :return: 按当前动作空间生成的 user/assistant 示例消息列表。
+        """
+        examples: list[dict[str, str]] = []
+        targets = frame.selectable_message_ids
+        if 'reply' in frame.available_actions and targets:
+            examples.extend([
+                {
+                    'role': 'user',
+                    'content': '[输出格式示例] 群友发来一条与你有关的消息。',
+                },
+                {
+                    'role': 'assistant',
+                    'content': (
+                        f'<decision action="reply" targets="{targets[0]}" '
+                        'reasons="direct_question" length="brief"/>'
+                        '<say emotion="normal">在的，你说。</say>'
+                    ),
+                },
+            ])
+        if 'silent' in frame.available_actions:
+            examples.extend([
+                {
+                    'role': 'user',
+                    'content': '[输出格式示例] 群友在聊与你无关的事情。',
+                },
+                {
+                    'role': 'assistant',
+                    'content': '<decision action="silent" reasons="others_conversation"/>',
+                },
+            ])
+        return examples
+
     async def _run_shadow_decision(
         self,
         context: ConversationContext,
@@ -1956,9 +2047,12 @@ class ChatService:
         """
         frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
-        messages = self._render_prepared_context(
-            prepared,
-            protocol_text=self._render_agent_protocol(frame),
+        messages = self._render_agent_messages(
+            frame,
+            self._render_prepared_context(
+                prepared,
+                protocol_text=self._render_agent_protocol(frame),
+            ),
         )
         metadata = prompt_metadata(
             'chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS,
@@ -2019,12 +2113,15 @@ class ChatService:
         """
         frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
-        messages = await self._enrich_prepared_context(
-            prepared,
-            cancel_event,
-            render_params,
-            reply_length=None,
-            protocol_text=self._render_agent_protocol(frame),
+        messages = self._render_agent_messages(
+            frame,
+            await self._enrich_prepared_context(
+                prepared,
+                cancel_event,
+                render_params,
+                reply_length=None,
+                protocol_text=self._render_agent_protocol(frame),
+            ),
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
         metadata = prompt_metadata(
