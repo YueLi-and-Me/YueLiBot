@@ -45,7 +45,6 @@ FORCE_GATE_CODES: frozenset[str] = frozenset({
 
 # DELIBERATE 原因：便宜注意力信号，只决定「进入意识」，不决定「回不回」。
 DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
-    'ordinary_group_message',  # 普通群消息候选
     'name_mention',            # 出现名字/别名但无真实 @
     'direct_mention',          # 真实 @ 但 @必回 未开启
     'reply_to_bot',            # 回复了 Bot 的消息
