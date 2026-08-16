@@ -37,7 +37,7 @@ DEFAULT_DB = PROJECT_ROOT / 'data' / 'memory.db'
 DEFAULT_REPORT = PROJECT_ROOT / 'data' / 'logs' / 'shadow-watch.md'
 DEFAULT_CURSOR = PROJECT_ROOT / 'data' / 'logs' / 'shadow-watch.cursor'
 
-SHADOW_MODEL_TASK = 'chat.conversation.shadow'
+DEFAULT_MODEL_TASK = 'chat.conversation.shadow'
 FAILURE_STATUSES = ('parse_error', 'illegal_action', 'provider_error', 'timeout')
 DANGEROUS_SILENT_SIGNALS = frozenset({
     'name_mention', 'direct_mention', 'clear_question', 'reply_to_bot',
@@ -253,18 +253,22 @@ def _load_samples(
     conn: sqlite3.Connection,
     min_seq: int = 0,
     prompt_hash: str = '',
+    model_task: str = DEFAULT_MODEL_TASK,
 ) -> List[ShadowSample]:
-    """读取序号大于 ``min_seq`` 的 shadow action_decision 事件。
+    """读取序号大于 ``min_seq`` 的 Conversation Agent 行动决策事件。
 
     :param prompt_hash: 非空时只读取该 promptHash；旧版本样本会干扰当前
         闸门通过率的判断，观察期建议固定传入当前版本指纹。
+    :param model_task: 事件版本层模型任务；shadow 观察用
+        ``chat.conversation.shadow``，selected_streams / enabled 用
+        ``chat.conversation``。
     """
     conn.row_factory = sqlite3.Row
     sql = '''SELECT seq, at, stream_id, turn_id, payload FROM pipeline_events
            WHERE kind = 'action_decision'
              AND json_extract(payload, '$.version.modelTask') = ?
              AND seq > ?'''
-    params: List[Any] = [SHADOW_MODEL_TASK, min_seq]
+    params: List[Any] = [model_task, min_seq]
     if prompt_hash:
         sql += " AND json_extract(payload, '$.version.promptHash') = ?"
         params.append(prompt_hash)
@@ -289,11 +293,15 @@ def _load_samples(
     return samples
 
 
-def _current_max_seq(conn: sqlite3.Connection, prompt_hash: str = '') -> int:
+def _current_max_seq(
+    conn: sqlite3.Connection,
+    prompt_hash: str = '',
+    model_task: str = DEFAULT_MODEL_TASK,
+) -> int:
     sql = '''SELECT COALESCE(MAX(seq), 0) FROM pipeline_events
            WHERE kind = 'action_decision'
              AND json_extract(payload, '$.version.modelTask') = ?'''
-    params: List[Any] = [SHADOW_MODEL_TASK]
+    params: List[Any] = [model_task]
     if prompt_hash:
         sql += " AND json_extract(payload, '$.version.promptHash') = ?"
         params.append(prompt_hash)
@@ -456,6 +464,11 @@ def _parse_args() -> Namespace:
     parser.add_argument('--cursor', type=Path, default=DEFAULT_CURSOR, help='游标文件路径')
     parser.add_argument('--interval', type=float, default=15.0, help='轮询间隔秒数')
     parser.add_argument('--hash', default='', help='只统计该 promptHash，留空表示全部')
+    parser.add_argument(
+        '--model-task',
+        default=DEFAULT_MODEL_TASK,
+        help='观察的 version.modelTask；selected_streams/enabled 填 chat.conversation',
+    )
     parser.add_argument('--once', action='store_true', help='只统计一次并退出')
     parser.add_argument('--full', action='store_true', help='从 seq=0 重放全部历史事件')
     return parser.parse_args()
@@ -473,7 +486,7 @@ def _initial_cursor(args: Namespace, conn: sqlite3.Connection) -> int:
 def _run_once(args: Namespace) -> int:
     try:
         with _connect(args.db) as conn:
-            samples = _load_samples(conn, min_seq=0, prompt_hash=args.hash)
+            samples = _load_samples(conn, min_seq=0, prompt_hash=args.hash, model_task=args.model_task)
     except (FileNotFoundError, sqlite3.Error) as exc:
         print(f'[shadow] 读取失败：{exc}', file=sys.stderr)
         return 1
@@ -488,9 +501,9 @@ def _run_once(args: Namespace) -> int:
 def _run_watch(args: Namespace) -> int:
     try:
         with _connect(args.db) as conn:
-            samples = _load_samples(conn, min_seq=0, prompt_hash=args.hash)
+            samples = _load_samples(conn, min_seq=0, prompt_hash=args.hash, model_task=args.model_task)
             cursor = _initial_cursor(args, conn)
-            max_seq = _current_max_seq(conn, args.hash)
+            max_seq = _current_max_seq(conn, args.hash, args.model_task)
     except (FileNotFoundError, sqlite3.Error) as exc:
         print(f'[shadow] 启动失败：{exc}', file=sys.stderr)
         return 1
@@ -513,7 +526,7 @@ def _run_watch(args: Namespace) -> int:
             time.sleep(args.interval)
             try:
                 with _connect(args.db) as conn:
-                    incoming = _load_samples(conn, min_seq=cursor, prompt_hash=args.hash)
+                    incoming = _load_samples(conn, min_seq=cursor, prompt_hash=args.hash, model_task=args.model_task)
                 if not incoming:
                     continue
                 for sample in incoming:
