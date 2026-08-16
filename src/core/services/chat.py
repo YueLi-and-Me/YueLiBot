@@ -1231,9 +1231,11 @@ class ChatService:
             await self._schedule.ensure(now)
         # 主动消息使用与普通对话相同的人格和记忆边界，但只读取少量上下文以控制延迟。
         persona_desc = describe_persona(self.persona.get(context.person.id))
-        acquaintance = describe_acquaintance(
-            self.memory.first_seen_at(context.person.id),
-            now,
+        # 熟悉程度（认识了多少天）属 owner 专属关系信号，非 owner 不注入。
+        acquaintance = (
+            describe_acquaintance(self.memory.first_seen_at(context.person.id), now)
+            if context.relationship_signals_enabled
+            else ''
         )
         schedule_desc = (self._schedule.describe(now, self.current_sleep())
                          if self._schedule else '')
@@ -1260,7 +1262,7 @@ class ChatService:
             tone=self._session(context.stream.id).tone,
             resumption=self._take_resumption(context.stream.id),
             render_params=render_params,
-            **self._prompt_config_kwargs(),
+            **self._prompt_config_kwargs(context.relationship_signals_enabled),
         )
         system = build_proactive_prompt(base_prompt, situation, render_params)
         raw = ''
@@ -1581,9 +1583,13 @@ class ChatService:
             'relationship': bot_cfg.relationship,
         }
 
-    def _prompt_config_kwargs(self) -> dict:
+    def _prompt_config_kwargs(self, relationship_enabled: bool) -> dict:
         """读取系统提示词所需的角色与用户配置。
 
+        :param relationship_enabled: 是否注入 owner 专属关系信号（称呼偏好与关系）。
+            非 owner（如群聊中的其他成员）必须传 ``False``；否则「对方希望你称呼 X /
+            把对方当 Y 看待」会把 owner 的关系错误地套到每一个说话人身上（她会对
+            群里所有人叫「哥哥」）。
         :return: 包含角色名、别名、用户称呼、关系、生日、人设和回复风格的字典。
         """
         bot = self._cfg.bot
@@ -1591,8 +1597,8 @@ class ChatService:
         return {
             'name': bot.name,
             'aliases': bot.aliases,
-            'user_nickname': bot.user_nickname,
-            'relationship': bot.relationship,
+            'user_nickname': bot.user_nickname if relationship_enabled else '',
+            'relationship': bot.relationship if relationship_enabled else '',
             'birthday': personality.birthday,
             'personality': personality.personality,
             'reply_style': personality.reply_style,
@@ -1714,9 +1720,11 @@ class ChatService:
         episodes = episodes[:self._episode_context_limit]
         state = self.persona.get(context.person.id)
         persona_desc = describe_persona(state)
-        acquaintance = describe_acquaintance(
-            self.memory.first_seen_at(context.person.id),
-            now,
+        # 熟悉程度（认识了多少天）属 owner 专属关系信号，非 owner 不注入。
+        acquaintance = (
+            describe_acquaintance(self.memory.first_seen_at(context.person.id), now)
+            if context.relationship_signals_enabled
+            else ''
         )
         schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
         resumption = self._take_resumption(context.stream.id)
@@ -1789,7 +1797,7 @@ class ChatService:
             platform_name=prepared.platform_bot_name,
             render_params=render_params,
             protocol_text=protocol_text,
-            **self._prompt_config_kwargs(),
+            **self._prompt_config_kwargs(prepared.context.relationship_signals_enabled),
         )
         # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
         history = normalize_history(prepared.raw_history)
