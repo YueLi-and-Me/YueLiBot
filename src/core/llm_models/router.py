@@ -197,6 +197,8 @@ class ModelRouter:
                 auth_name=candidate.auth_name,
                 extra_body=candidate.extra_body,
                 reasoning_parse_mode=candidate.reasoning_parse_mode,
+                headers=candidate.default_headers,
+                query=candidate.default_query,
                 timeout_ms=candidate.timeout_ms,
                 max_retries=candidate.max_retries,
                 retry_interval_ms=candidate.retry_interval_ms,
@@ -272,10 +274,20 @@ class ModelRouter:
                 options: Dict[str, Any] = {}
                 if response_format is not None:
                     options['response_format'] = response_format
+                effective_temperature = (
+                    candidate.temperature
+                    if candidate.temperature is not None
+                    else temperature
+                )
+                effective_max_tokens = (
+                    candidate.max_tokens
+                    if candidate.max_tokens is not None
+                    else max_tokens
+                )
                 chunks = client.stream(
                     messages,
-                    temperature,
-                    max_tokens,
+                    effective_temperature,
+                    effective_max_tokens,
                     signal,
                     **options,
                 )

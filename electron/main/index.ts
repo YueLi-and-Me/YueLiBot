@@ -9,7 +9,7 @@
 
 import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { app, BrowserWindow, ipcMain, powerMonitor, screen } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, screen } from 'electron'
 import 'dotenv/config'
 
 import {
@@ -30,8 +30,8 @@ import {
   createTray, destroyTray, notifyTray, resetPetPosition, togglePet, trayIconEmpty,
 } from './platform/tray.ts'
 import {
-  assertConfigConsistent, configIsComplete, ensureNapcatConfig, readConfigDirectory,
-  tryPrefillFromLegacyEnv, writeConfigDirectory,
+  assertConfigConsistent, configIsComplete, ensureNapcatConfig, mergeLegacyEnvPrefill,
+  readConfigDirectory, tryPrefillFromLegacyEnv, writeConfigDirectory,
 } from './config.ts'
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
 import { mentionsScreen } from './screenIntent.ts'
@@ -138,22 +138,49 @@ app.whenReady().then(async () => {
   }
 
   await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath), napcatConfigPath)
+}).catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error('[main] 启动初始化失败：', error)
+  if (app.isReady()) dialog.showErrorBox('启动失败', message)
+  app.quit()
 })
 
 /**
- * 执行首次启动配置向导，并将旧环境变量中的连接字段预填入拆分配置目录。
+ * 执行首次启动配置引导：先自动迁移旧 `.env`，再按迁移后的完整性决定是否显示设置窗口。
  *
  * @param devUrl 开发服务器地址；生产模式下为 `undefined`。
- * @returns 设置窗口保存配置后完成的 Promise。
- * @throws Error 当旧环境变量无法解析、配置目录无法读写或设置窗口初始化失败时抛出。
- * @remarks 预填值先写入配置目录，使设置窗口通过既有读取 IPC 获取初始数据；向导完成后关闭设置窗口。
+ * @returns 迁移后配置已完整时立即完成；否则在设置窗口保存配置后完成。
+ * @throws Error 当配置目录无法读写或设置窗口初始化失败时抛出。
+ * @remarks 预填值通过合并写入配置目录，不会覆盖已有服务商、模型和任务候选；旧 `.env`
+ *   无法解析时记录错误并弹出说明，但继续打开设置窗口，避免未处理的异步异常终止启动。
  */
 function runFirstRunWizard(devUrl?: string): Promise<void> {
   const legacyEnvPath = join(app.getAppPath(), '.env')
-  const prefill = tryPrefillFromLegacyEnv(legacyEnvPath)
-  if (prefill) {
-    const base = readConfigDirectory(configDir, legacyConfigPath)
-    writeConfigDirectory(configDir, { ...base, ...prefill })
+  try {
+    const prefill = tryPrefillFromLegacyEnv(legacyEnvPath)
+    if (prefill) {
+      const base = readConfigDirectory(configDir, legacyConfigPath)
+      const migrated = mergeLegacyEnvPrefill(base, prefill)
+      writeConfigDirectory(configDir, migrated)
+      const current = readConfigDirectory(configDir, legacyConfigPath)
+      console.log('[config] 迁移完毕，配置目录已更新')
+      if (configIsComplete(current)) {
+        console.log('[config] 迁移后配置已满足启动条件，跳过设置页，直接启动主进程')
+        return Promise.resolve()
+      }
+      console.log('[config] 迁移后配置仍不完整，打开设置页补充')
+    } else {
+      console.log('[config] 迁移检查完毕，打开设置页补充缺失配置')
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`[main] ${message}`)
+    dialog.showErrorBox(
+      '旧版 .env 未能自动迁移',
+      `${message}
+
+请按提示处理 .env 后，在弹出的设置页中手动完成模型配置；本次不会自动带入 .env 中的连接信息。`,
+    )
   }
 
   return new Promise<void>((resolve) => {

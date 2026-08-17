@@ -1,0 +1,1282 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "file": "bot.toml",
+      "label": "Bot 与人格",
+      "description": "Bot 身份、群聊回复策略、日程、人格与对话记忆参数。",
+      "sections": [
+        {
+          "kind": "object",
+          "key": "bot",
+          "label": "身份与关系",
+          "description": "Bot 的显示名、别名和对用户的称呼。",
+          "fields": [
+            {
+              "key": "name",
+              "type": "string",
+              "label": "Bot 名字",
+              "required": true,
+              "help": "Bot 的显示名，也会作为系统提示词中的身份名；不能为空，也不能与别名重复。"
+            },
+            {
+              "key": "aliases",
+              "type": "string_list",
+              "label": "群聊别名",
+              "help": "群聊里也会回应的其它称呼，每行一个；不能为空、重复或等于 Bot 名字。"
+            },
+            {
+              "key": "user_nickname",
+              "type": "string",
+              "label": "对你的称呼",
+              "help": "Bot 对用户的称呼偏好；留空表示不主动使用特定称呼。"
+            },
+            {
+              "key": "relationship",
+              "type": "string",
+              "label": "和你的关系",
+              "help": "Bot 和用户的关系，例如“哥哥”“姐姐”“朋友”；留空则不预设关系。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "group_chat",
+          "label": "群聊策略",
+          "description": "群聊中 @、名字触发和回复频率的控制参数。",
+          "fields": [
+            {
+              "key": "at_mention_must_reply",
+              "type": "boolean",
+              "label": "@ 提及必回",
+              "help": "开启时协议 @ 提及不受睡眠与群聊回复窗口限制。"
+            },
+            {
+              "key": "name_mention_probability",
+              "type": "number",
+              "label": "名字触发回复概率",
+              "min": 0,
+              "max": 1,
+              "step": 0.05,
+              "help": "名字、别名或非必回 @ 命中后的回复概率，范围 0~1。"
+            },
+            {
+              "key": "presence_decay_strength",
+              "type": "number",
+              "label": "存在感衰减强度",
+              "min": 0,
+              "max": 20,
+              "step": 0.25,
+              "help": "数值越大，Bot 在群里说得越多时越倾向于让别人先说；范围 0~20。"
+            },
+            {
+              "key": "persona_weight",
+              "type": "number",
+              "label": "人格增量折算系数",
+              "min": 0,
+              "max": 1,
+              "step": 0.05,
+              "help": "群聊里人格增量的折算系数；一句一答的消耗远小于面对面长聊。"
+            },
+            {
+              "key": "reply_window_minutes",
+              "type": "integer",
+              "label": "回复统计窗口（分钟）",
+              "min": 1,
+              "help": "在这段时间窗口内统计 Bot 已经回复了多少次。"
+            },
+            {
+              "key": "max_replies_in_window",
+              "type": "integer",
+              "label": "窗口内最大回复次数",
+              "min": 0,
+              "help": "非必回消息在时间窗口内允许的最大回复次数；0 表示不限制。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "schedule",
+          "label": "日程与作息",
+          "description": "每日日程段数、自动睡眠和生成失败时的备用文本。",
+          "fields": [
+            {
+              "key": "min_slots",
+              "type": "integer",
+              "label": "最少日程段数",
+              "min": 1,
+              "max": 24,
+              "help": "每天生成的日程段数下限。"
+            },
+            {
+              "key": "max_slots",
+              "type": "integer",
+              "label": "最多日程段数",
+              "min": 1,
+              "max": 24,
+              "help": "每天生成的日程段数上限；不能小于最少段数。"
+            },
+            {
+              "key": "sleep_enabled",
+              "type": "boolean",
+              "label": "自动睡眠",
+              "help": "是否启用自动睡眠状态；关闭后 bedtime/wake 仅保留为结构字段。"
+            },
+            {
+              "key": "fallback_bedtime",
+              "type": "time",
+              "label": "备用入睡时间",
+              "help": "模型不可用或输出不合法时使用的入睡时间，格式 HH:MM。"
+            },
+            {
+              "key": "fallback_wake",
+              "type": "time",
+              "label": "备用醒来时间",
+              "help": "模型不可用或输出不合法时使用的醒来时间，格式 HH:MM。"
+            },
+            {
+              "key": "bedtime_day_boundary",
+              "type": "time",
+              "label": "跨日分界",
+              "help": "小于等于此时间的 bedtime 视为计划日结束后的次日时间。"
+            },
+            {
+              "key": "fallback_activity",
+              "type": "string",
+              "label": "备用活动",
+              "maxLength": 72,
+              "help": "日程生成失败时使用的活动文本，1~72 字符。"
+            },
+            {
+              "key": "fallback_mood",
+              "type": "string",
+              "label": "备用状态",
+              "maxLength": 40,
+              "help": "日程生成失败时使用的状态文本，1~40 字符。"
+            },
+            {
+              "key": "fallback_theme",
+              "type": "string",
+              "label": "备用日主题",
+              "maxLength": 72,
+              "help": "日程生成失败时使用的当日主题，1~72 字符。"
+            },
+            {
+              "key": "fallback_carry_over",
+              "type": "string",
+              "label": "备用承接事项",
+              "maxLength": 72,
+              "help": "日程生成失败时使用的明日承接事项，1~72 字符。"
+            },
+            {
+              "key": "generation_retry_interval_minutes",
+              "type": "integer",
+              "label": "生成失败重试间隔（分钟）",
+              "min": 1,
+              "max": 1440,
+              "help": "日程生成失败后再次尝试前等待的分钟数。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "personality",
+          "label": "人设与说话方式",
+          "description": "Bot 的稳定人设、生日、回复风格和表达习惯候选。",
+          "fields": [
+            {
+              "key": "birthday",
+              "type": "date",
+              "label": "生日",
+              "help": "格式 YYYY-MM-DD；留空时不派生年龄与生日提示，也不能晚于今天。"
+            },
+            {
+              "key": "personality",
+              "type": "textarea",
+              "label": "人设",
+              "help": "稳定身份、经历、外表与性格；只从这份配置进入提示词。"
+            },
+            {
+              "key": "reply_style",
+              "type": "textarea",
+              "label": "说话方式",
+              "help": "句长、语气、排版和收尾习惯。"
+            },
+            {
+              "key": "tone_probability",
+              "type": "number",
+              "label": "临时说话方式概率",
+              "min": 0,
+              "max": 1,
+              "step": 0.05,
+              "help": "新会话抽取临时语调的概率；0 表示始终不抽取。"
+            },
+            {
+              "key": "tone_variants",
+              "type": "string_list",
+              "label": "临时说话方式候选",
+              "help": "候选的会话级语调，每行一条，只在新会话开始时至多抽取一条。"
+            },
+            {
+              "key": "expression_habits",
+              "type": "string_list",
+              "label": "回复表达习惯",
+              "help": "回复时可供表达选择模型挑选的具体说话习惯；每条同时写清情境和接法。"
+            },
+            {
+              "key": "proactive_expression_habits",
+              "type": "string_list",
+              "label": "主动搭话表达习惯",
+              "help": "Bot 主动开口时可随机采用的具体说话习惯，每行一条。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "conversation",
+          "label": "对话与记忆",
+          "description": "工作记忆窗口、摘要节奏和记忆召回数量。",
+          "fields": [
+            {
+              "key": "working_memory_messages",
+              "type": "integer",
+              "label": "工作记忆消息数",
+              "min": 8,
+              "max": 200,
+              "help": "每轮送进模型的最近消息条数，不含系统提示词。"
+            },
+            {
+              "key": "summarize_trigger_messages",
+              "type": "integer",
+              "label": "摘要触发消息数",
+              "min": 12,
+              "max": 500,
+              "help": "未摘要消息达到此数量后触发一次长期记忆摘要。"
+            },
+            {
+              "key": "summarize_batch_messages",
+              "type": "integer",
+              "label": "单次摘要消息数",
+              "min": 4,
+              "max": 200,
+              "help": "每次摘要消化的最老消息条数；必须小于触发数量。"
+            },
+            {
+              "key": "session_gap_minutes",
+              "type": "integer",
+              "label": "会话间隔（分钟）",
+              "min": 1,
+              "max": 1440,
+              "help": "超过此空闲时长视为新会话，并重新抽取临时语调。"
+            },
+            {
+              "key": "fact_recall_limit",
+              "type": "integer",
+              "label": "事实召回上限",
+              "min": 0,
+              "max": 50,
+              "help": "每轮最多召回的事实记忆数量；0 表示不召回事实。"
+            },
+            {
+              "key": "recalled_episode_limit",
+              "type": "integer",
+              "label": "相关情节召回数",
+              "min": 0,
+              "max": 20,
+              "help": "按当前输入相关性召回的情节数量。"
+            },
+            {
+              "key": "recent_episode_limit",
+              "type": "integer",
+              "label": "最近情节补充数",
+              "min": 0,
+              "max": 20,
+              "help": "无论相关性如何都补充的最近情节数量。"
+            },
+            {
+              "key": "episode_context_limit",
+              "type": "integer",
+              "label": "情节上下文上限",
+              "min": 0,
+              "max": 30,
+              "help": "去重后最终写入系统提示词的情节总上限。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "conversation_agent",
+          "label": "Conversation 行动核心",
+          "description": "多智能体行动核心的灰度开关、触发口径与测试流清单。",
+          "fields": [
+            {
+              "key": "mode",
+              "type": "enum",
+              "label": "运行模式",
+              "options": [
+                {
+                  "value": "off",
+                  "label": "关闭（旧管线）"
+                },
+                {
+                  "value": "shadow",
+                  "label": "影子记录（不改行为）"
+                },
+                {
+                  "value": "selected_streams",
+                  "label": "仅指定会话"
+                },
+                {
+                  "value": "enabled",
+                  "label": "全部启用"
+                }
+              ],
+              "help": "off 保留旧管线；shadow 只记录决策；selected_streams 只对清单内会话生效；enabled 对全部真实候选生效。"
+            },
+            {
+              "key": "selected_streams",
+              "type": "string_list",
+              "label": "指定会话 ID",
+              "help": "mode=selected_streams 时生效的 stream ID 清单，每行一个。"
+            },
+            {
+              "key": "trigger_mode",
+              "type": "enum",
+              "label": "普通群消息触发口径",
+              "options": [
+                {
+                  "value": "signal",
+                  "label": "信号（signal）"
+                },
+                {
+                  "value": "frequency",
+                  "label": "发言频率（frequency）"
+                },
+                {
+                  "value": "reply_necessity",
+                  "label": "回复必要性（reply_necessity）"
+                }
+              ],
+              "help": "signal 沿用原口径；frequency 按发言频率给候选；reply_necessity 按回复必要性评分。"
+            },
+            {
+              "key": "frequency_talk_value",
+              "type": "number",
+              "label": "频率尺度",
+              "min": 0.01,
+              "max": 1,
+              "step": 0.05,
+              "help": "frequency 模式的消息条数尺度，必须大于 0 且不超过 1。"
+            },
+            {
+              "key": "reply_necessity_threshold",
+              "type": "integer",
+              "label": "回复必要性阈值",
+              "min": 0,
+              "max": 100,
+              "help": "reply_necessity 模式的评分阈值，0~100。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "features.toml",
+      "label": "功能开关",
+      "description": "语音合成、屏幕视觉、感知出口、向量召回、日志与代理等运行参数。",
+      "sections": [
+        {
+          "kind": "object",
+          "key": "tts",
+          "label": "语音合成",
+          "description": "TTS 功能开关与音色；服务地址和密钥在 providers.toml 中维护。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用语音合成",
+              "help": "关闭时保持纯文字回复。"
+            },
+            {
+              "key": "voice",
+              "type": "string",
+              "label": "音色 ID",
+              "help": "厂商提供的音色 ID；不是显示名称。豆包语音这里填 voice_type。"
+            },
+            {
+              "key": "format",
+              "type": "enum",
+              "label": "音频格式",
+              "options": [
+                {
+                  "value": "mp3",
+                  "label": "mp3"
+                },
+                {
+                  "value": "wav",
+                  "label": "wav"
+                },
+                {
+                  "value": "opus",
+                  "label": "opus"
+                }
+              ],
+              "help": "返回音频格式：mp3 / wav / opus。"
+            },
+            {
+              "key": "speed",
+              "type": "number",
+              "label": "语速倍率",
+              "min": 0.25,
+              "max": 4,
+              "step": 0.05,
+              "help": "语速倍率；陪伴场景建议略低于 1。"
+            },
+            {
+              "key": "cluster",
+              "type": "string",
+              "label": "豆包语音集群",
+              "help": "仅 client_type=volcengine 时生效：豆包语音的集群名。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "vision",
+          "label": "屏幕视觉",
+          "description": "屏幕截图与视觉模型的隐私控制。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用屏幕视觉",
+              "help": "用户询问屏幕内容时截取一帧发送给视觉模型；未询问时不截取。默认关闭。"
+            },
+            {
+              "key": "chat_image_enabled",
+              "type": "boolean",
+              "label": "启用聊天图片描述",
+              "help": "是否允许 QQ 聊天图片调用视觉模型描述；与桌面屏幕视觉独立开关。"
+            },
+            {
+              "key": "fullscreen_silent",
+              "type": "boolean",
+              "label": "全屏时静默",
+              "help": "检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报。"
+            },
+            {
+              "key": "capture_mode",
+              "type": "enum",
+              "label": "截图范围",
+              "options": [
+                {
+                  "value": "window",
+                  "label": "仅前台窗口（window）"
+                },
+                {
+                  "value": "screen",
+                  "label": "整个主屏（screen）"
+                }
+              ],
+              "help": "window 只截前台那一个窗口；screen 截整个主屏，可能包含其他窗口和隐私内容。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "perception",
+          "label": "屏幕情境出口",
+          "description": "允许 Bot 在哪些会话出口提及前台程序和屏幕内容。",
+          "fields": [
+            {
+              "key": "surfaces",
+              "type": "multi_enum",
+              "label": "允许提及的出口",
+              "options": [
+                {
+                  "value": "desktop",
+                  "label": "桌宠窗口"
+                },
+                {
+                  "value": "direct",
+                  "label": "QQ 私聊"
+                }
+              ],
+              "help": "留空表示不在任何出口提及；群聊不允许，配置 group 会在加载期直接报错。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "vector",
+          "label": "向量召回",
+          "description": "长期记忆的向量混合召回开关。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用向量召回",
+              "help": "是否启用向量混合召回；还需要安装项目的 vector 可选依赖。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "log",
+          "label": "日志",
+          "description": "日志等级、文件轮转、控制台样式与事件保留策略。",
+          "fields": [
+            {
+              "key": "level",
+              "type": "enum",
+              "label": "全局日志等级",
+              "options": [
+                {
+                  "value": "DEBUG",
+                  "label": "DEBUG"
+                },
+                {
+                  "value": "INFO",
+                  "label": "INFO"
+                },
+                {
+                  "value": "WARNING",
+                  "label": "WARNING"
+                },
+                {
+                  "value": "ERROR",
+                  "label": "ERROR"
+                },
+                {
+                  "value": "CRITICAL",
+                  "label": "CRITICAL"
+                }
+              ],
+              "help": "全局日志等级：DEBUG / INFO / WARNING / ERROR / CRITICAL。"
+            },
+            {
+              "key": "console_level",
+              "type": "enum",
+              "label": "控制台等级",
+              "options": [
+                {
+                  "value": "",
+                  "label": "跟随全局"
+                },
+                {
+                  "value": "DEBUG",
+                  "label": "DEBUG"
+                },
+                {
+                  "value": "INFO",
+                  "label": "INFO"
+                },
+                {
+                  "value": "WARNING",
+                  "label": "WARNING"
+                },
+                {
+                  "value": "ERROR",
+                  "label": "ERROR"
+                },
+                {
+                  "value": "CRITICAL",
+                  "label": "CRITICAL"
+                }
+              ],
+              "help": "终端日志等级，留空跟随全局 level。"
+            },
+            {
+              "key": "file_level",
+              "type": "enum",
+              "label": "文件等级",
+              "options": [
+                {
+                  "value": "",
+                  "label": "跟随全局"
+                },
+                {
+                  "value": "DEBUG",
+                  "label": "DEBUG"
+                },
+                {
+                  "value": "INFO",
+                  "label": "INFO"
+                },
+                {
+                  "value": "WARNING",
+                  "label": "WARNING"
+                },
+                {
+                  "value": "ERROR",
+                  "label": "ERROR"
+                },
+                {
+                  "value": "CRITICAL",
+                  "label": "CRITICAL"
+                }
+              ],
+              "help": "日志文件等级，留空跟随全局 level。"
+            },
+            {
+              "key": "level_style",
+              "type": "enum",
+              "label": "等级列样式",
+              "options": [
+                {
+                  "value": "lite",
+                  "label": "lite（仅颜色）"
+                },
+                {
+                  "value": "compact",
+                  "label": "compact（单字母）"
+                },
+                {
+                  "value": "full",
+                  "label": "full（全称）"
+                }
+              ],
+              "help": "控制台等级列：lite 只体现在时间戳颜色上，compact 显示单字母，full 显示全称。"
+            },
+            {
+              "key": "color_scope",
+              "type": "enum",
+              "label": "着色范围",
+              "options": [
+                {
+                  "value": "none",
+                  "label": "none（不着色）"
+                },
+                {
+                  "value": "title",
+                  "label": "title（仅头部）"
+                },
+                {
+                  "value": "full",
+                  "label": "full（全文）"
+                }
+              ],
+              "help": "着色范围：none 不着色，title 只染时间戳与模块名，full 连正文一起染。"
+            },
+            {
+              "key": "date_format",
+              "type": "string",
+              "label": "时间戳格式",
+              "help": "控制台时间戳格式，strftime 语法。"
+            },
+            {
+              "key": "to_file",
+              "type": "boolean",
+              "label": "写入日志文件",
+              "help": "是否把日志写进数据目录 logs/app_*.log.jsonl；关闭后只剩控制台和 WebUI 推流。"
+            },
+            {
+              "key": "file_max_bytes",
+              "type": "integer",
+              "label": "单文件上限（字节）",
+              "min": 65536,
+              "help": "单个日志文件上限，超过就换新文件。"
+            },
+            {
+              "key": "max_files",
+              "type": "integer",
+              "label": "最大文件数",
+              "min": 1,
+              "max": 1000,
+              "help": "最多保留几个日志文件，超出的从最旧的删起。"
+            },
+            {
+              "key": "cleanup_days",
+              "type": "integer",
+              "label": "日志保留天数",
+              "min": 0,
+              "max": 3650,
+              "help": "超过这些天的日志文件直接清掉；0 表示只按数量。"
+            },
+            {
+              "key": "library_levels",
+              "type": "string_map",
+              "label": "库日志等级",
+              "help": "按库名压噪音，每行一条 library=LEVEL；没列出的库跟随全局 level。"
+            },
+            {
+              "key": "suppress_libraries",
+              "type": "string_list",
+              "label": "完全屏蔽的库",
+              "help": "完全不要的库，每行一个，一行都不输出。"
+            },
+            {
+              "key": "request_snapshots",
+              "type": "boolean",
+              "label": "保存模型请求快照",
+              "help": "模型调用失败时，把实际发出的请求体存进 logs/llm_request/（密钥已隐去）。"
+            },
+            {
+              "key": "max_snapshot_files",
+              "type": "integer",
+              "label": "快照文件上限",
+              "min": 1,
+              "max": 1000,
+              "help": "最多保留几份请求快照。"
+            },
+            {
+              "key": "event_retention_count",
+              "type": "integer",
+              "label": "事件保留条数",
+              "min": 1,
+              "help": "管线事件最多保留多少条。"
+            },
+            {
+              "key": "event_retention_hours",
+              "type": "integer",
+              "label": "事件保留小时数",
+              "min": 0,
+              "help": "管线事件最多保留多少小时。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "advanced",
+          "label": "高级",
+          "description": "全局代理等高级运行参数。",
+          "fields": [
+            {
+              "key": "https_proxy",
+              "type": "string",
+              "label": "HTTP(S) 代理",
+              "help": "全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "napcat.toml",
+      "label": "QQ 适配器",
+      "description": "NapCat 协议端连接、owner 身份与私聊/群聊访问名单。",
+      "sections": [
+        {
+          "kind": "object",
+          "key": "napcat",
+          "label": "协议端连接",
+          "description": "NapCat 正向 WebSocket 服务端连接参数。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用 QQ 适配器",
+              "help": "安全起点：停用时不会连接协议端；启用前先在 NapCat WebUI 创建正向 WebSocket 服务端连接。"
+            },
+            {
+              "key": "self_qq",
+              "type": "string",
+              "label": "机器人 QQ 号",
+              "help": "月璃登录的机器人 QQ 号，必须与 owner.qq 不同；启用时必填。"
+            },
+            {
+              "key": "host",
+              "type": "string",
+              "label": "协议端地址",
+              "required": true,
+              "help": "NapCat WebSocket 服务端主机名或 IP 地址，通常为 127.0.0.1。"
+            },
+            {
+              "key": "port",
+              "type": "integer",
+              "label": "协议端端口",
+              "min": 1,
+              "max": 65535,
+              "help": "正向 WebSocket 端口；启用前请改成 NapCat WebUI 中实际监听的端口。"
+            },
+            {
+              "key": "token",
+              "type": "password",
+              "label": "访问令牌",
+              "help": "协议端没有启用访问令牌时留空；启用后必须与协议端保持一致。"
+            },
+            {
+              "key": "reconnect_interval_sec",
+              "type": "number",
+              "label": "重连间隔（秒）",
+              "min": 0.1,
+              "step": 0.5,
+              "help": "协议端断线后的基础重连间隔。"
+            },
+            {
+              "key": "action_timeout_sec",
+              "type": "number",
+              "label": "Action 超时（秒）",
+              "min": 0.1,
+              "step": 0.5,
+              "help": "等待协议端 action 响应的超时时间。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "owner",
+          "label": "Owner 身份",
+          "description": "用户本人的 QQ 号。",
+          "fields": [
+            {
+              "key": "qq",
+              "type": "string",
+              "label": "你的 QQ 号",
+              "help": "启用 QQ 适配器前填写用户本人的数字 QQ 号；owner 在私聊名单中自动放行。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "private",
+          "label": "私聊访问",
+          "description": "私聊白名单/黑名单策略。",
+          "fields": [
+            {
+              "key": "mode",
+              "type": "enum",
+              "label": "私聊模式",
+              "options": [
+                {
+                  "value": "whitelist",
+                  "label": "白名单（只回名单内）"
+                },
+                {
+                  "value": "blacklist",
+                  "label": "黑名单（名单外都回）"
+                }
+              ],
+              "help": "默认白名单：配错时是朋友没收到回复，而不是任何人都能消耗模型额度。"
+            },
+            {
+              "key": "list",
+              "type": "string_list",
+              "label": "私聊 QQ 名单",
+              "help": "每行一个数字 QQ 号；owner.qq 无论哪种模式都自动放行，不必重复写。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "group",
+          "label": "群聊访问",
+          "description": "群聊固定白名单。",
+          "fields": [
+            {
+              "key": "mode",
+              "type": "enum",
+              "label": "群聊模式",
+              "options": [
+                {
+                  "value": "whitelist",
+                  "label": "白名单（固定）"
+                }
+              ],
+              "help": "群聊固定使用白名单；用户本人在场也不会豁免名单外群。"
+            },
+            {
+              "key": "list",
+              "type": "string_list",
+              "label": "群号白名单",
+              "help": "每行一个数字群号；仅允许明确用于真机验收的测试群。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "providers.toml",
+      "label": "模型厂商",
+      "description": "API 厂商与连接策略；密钥只保存到本机，WebUI 读取时不会回传明文。",
+      "sections": [
+        {
+          "kind": "table_list",
+          "key": "api_providers",
+          "label": "API 厂商",
+          "description": "每个 [[api_providers]] 是一条可复用连接；模型通过 api_provider 引用它。",
+          "fields": [
+            {
+              "key": "name",
+              "type": "string",
+              "label": "厂商名称",
+              "required": true,
+              "help": "模型配置引用的唯一名称；不能与其他厂商重复。"
+            },
+            {
+              "key": "kind",
+              "type": "string",
+              "label": "厂商预设",
+              "help": "预设标识，如 deepseek、openai、ark；base_url 为空时按预设取官方地址。"
+            },
+            {
+              "key": "base_url",
+              "type": "string",
+              "label": "Base URL",
+              "help": "API 端点基础 URL，通常以 /v1 结尾；留空使用预设官方地址。"
+            },
+            {
+              "key": "api_key",
+              "type": "password",
+              "label": "API Key",
+              "help": "身份验证密钥；编辑时留空表示保持已保存的密钥不变。"
+            },
+            {
+              "key": "auth_type",
+              "type": "enum",
+              "label": "鉴权方式",
+              "options": [
+                {
+                  "value": "bearer",
+                  "label": "Bearer"
+                },
+                {
+                  "value": "header",
+                  "label": "自定义请求头"
+                },
+                {
+                  "value": "query",
+                  "label": "Query 参数"
+                },
+                {
+                  "value": "none",
+                  "label": "无鉴权"
+                }
+              ],
+              "help": "Bearer 使用 Authorization 头；header/query 需要填写 auth_name。"
+            },
+            {
+              "key": "auth_name",
+              "type": "string",
+              "label": "鉴权字段名",
+              "help": "header/query 鉴权使用的字段名；Bearer/none 时必须留空。"
+            },
+            {
+              "key": "client_type",
+              "type": "enum",
+              "label": "客户端类型",
+              "options": [
+                {
+                  "value": "openai",
+                  "label": "OpenAI 兼容"
+                },
+                {
+                  "value": "volcengine",
+                  "label": "豆包语音（仅 TTS）"
+                }
+              ],
+              "help": "OpenAI 兼容支持对话、视觉、向量和 TTS；volcengine 只允许绑定 TTS 任务。"
+            },
+            {
+              "key": "app_id",
+              "type": "string",
+              "label": "App ID",
+              "help": "豆包语音的服务接口认证信息；仅 client_type=volcengine 时生效。"
+            },
+            {
+              "key": "model_list_endpoint",
+              "type": "string",
+              "label": "模型列表端点",
+              "help": "用于 WebUI 连通性测试与模型拉取的路径；OpenAI 兼容默认 /models。"
+            },
+            {
+              "key": "default_headers",
+              "type": "string_map",
+              "label": "默认请求头",
+              "help": "中转头等需要额外 HTTP 头的厂商在这里写键值，每行 Header=Value；认证头仍由 auth_type/auth_name 负责。"
+            },
+            {
+              "key": "default_query",
+              "type": "string_map",
+              "label": "默认 Query 参数",
+              "help": "中转头等需要固定查询参数的厂商在这里写键值，每行 key=value。"
+            },
+            {
+              "key": "timeout_ms",
+              "type": "integer",
+              "label": "超时（毫秒）",
+              "min": 1000,
+              "max": 3600000,
+              "help": "单次 HTTP 连接与流式读取超时；首字阶段的内部重试仍受任务级首字超时整体截断。"
+            },
+            {
+              "key": "max_retries",
+              "type": "integer",
+              "label": "重试次数",
+              "min": 0,
+              "max": 10,
+              "help": "同一连接内尚未输出内容时的重试次数；需要跑满重试应调大任务级首字超时。"
+            },
+            {
+              "key": "retry_interval_ms",
+              "type": "integer",
+              "label": "重试间隔（毫秒）",
+              "min": 0,
+              "max": 60000,
+              "help": "两次重试之间的等待时间。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "models.toml",
+      "label": "模型与任务",
+      "description": "模型定义、八类任务候选与按任务拆分的生成参数。",
+      "sections": [
+        {
+          "kind": "map",
+          "key": "model_tasks",
+          "label": "任务模型路由",
+          "description": "每个任务按顺序排候选：第一位是主力，后续是故障切换备用。",
+          "entries": [
+            {
+              "key": "chat",
+              "label": "日常对话",
+              "description": "回复用户普通消息的对话模型；至少要有一个。"
+            },
+            {
+              "key": "proactive",
+              "label": "主动搭话",
+              "description": "主动搭话消息的模型；留空继承对话候选。"
+            },
+            {
+              "key": "summary",
+              "label": "对话摘要",
+              "description": "压缩长对话为角色记忆的模型；留空继承对话候选。"
+            },
+            {
+              "key": "schedule",
+              "label": "日程安排",
+              "description": "生成角色每日日程的模型；留空继承对话候选。"
+            },
+            {
+              "key": "vision",
+              "label": "屏幕视觉",
+              "description": "识别屏幕画面的多模态模型；留空不可用。"
+            },
+            {
+              "key": "expression",
+              "label": "表达选择",
+              "description": "为当前语境挑选表达习惯的模型；留空继承对话候选。"
+            },
+            {
+              "key": "tts",
+              "label": "语音合成",
+              "description": "语音合成模型；协议由所属服务商决定。"
+            },
+            {
+              "key": "embedding",
+              "label": "向量嵌入",
+              "description": "长期记忆向量化与召回模型；备用模型维度必须一致。"
+            }
+          ],
+          "fields": [
+            {
+              "key": "model_list",
+              "type": "string_list",
+              "label": "候选模型",
+              "help": "每行一个 models.toml 中的模型名称；顺序即优先级。"
+            },
+            {
+              "key": "selection_strategy",
+              "type": "enum",
+              "label": "挑选顺序",
+              "options": [
+                {
+                  "value": "sequential",
+                  "label": "按顺序（sequential）"
+                },
+                {
+                  "value": "random",
+                  "label": "随机（random）"
+                }
+              ],
+              "help": "sequential 永远优先第一条；random 每次随机起点，把流量摊到多家。"
+            },
+            {
+              "key": "first_token_timeout_ms",
+              "type": "integer",
+              "label": "首字超时（毫秒）",
+              "min": 1000,
+              "help": "候选切换窗口；窗口耗尽会直接切换下一个候选模型。"
+            },
+            {
+              "key": "slow_threshold_ms",
+              "type": "integer",
+              "label": "慢响应阈值（毫秒）",
+              "min": 0,
+              "help": "只用于慢响应记账；必须小于首字超时，0 表示关闭。"
+            }
+          ]
+        },
+        {
+          "kind": "map",
+          "key": "generation",
+          "label": "任务生成参数",
+          "description": "每类任务独立设置随机度和输出预算。",
+          "entries": [
+            {
+              "key": "chat",
+              "label": "聊天回复",
+              "description": "普通聊天的采样参数。"
+            },
+            {
+              "key": "proactive",
+              "label": "主动搭话",
+              "description": "主动搭话消息的采样参数。"
+            },
+            {
+              "key": "summary",
+              "label": "长期记忆摘要",
+              "description": "摘要任务的采样参数。"
+            },
+            {
+              "key": "schedule",
+              "label": "每日日程",
+              "description": "日程 JSON 生成的采样参数。"
+            },
+            {
+              "key": "expression",
+              "label": "表达方式挑选",
+              "description": "表达习惯选择的采样参数。"
+            },
+            {
+              "key": "vision",
+              "label": "视觉描述",
+              "description": "屏幕画面描述的采样参数。"
+            }
+          ],
+          "fields": [
+            {
+              "key": "temperature",
+              "type": "number",
+              "label": "temperature",
+              "min": 0,
+              "max": 2,
+              "step": 0.05,
+              "help": "采样温度；低温度更确定，高温度更有创造性。"
+            },
+            {
+              "key": "max_tokens",
+              "type": "integer",
+              "label": "max_tokens",
+              "min": 0,
+              "max": 1000000,
+              "help": "最大输出 token 数；0 表示不额外限制，沿用厂商上限。"
+            },
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用主动搭话",
+              "only_for_entries": [
+                "proactive"
+              ],
+              "help": "关闭后 Electron 不安装全局键鼠钩子，也不会主动发起互动。"
+            }
+          ]
+        },
+        {
+          "kind": "table_list",
+          "key": "models",
+          "label": "模型目录",
+          "description": "每个 [[models]] 定义一个可被任务引用的模型条目。",
+          "fields": [
+            {
+              "key": "name",
+              "type": "string",
+              "label": "模型名称",
+              "required": true,
+              "help": "任务候选引用的唯一名称；不能与其他模型重复。"
+            },
+            {
+              "key": "model_identifier",
+              "type": "string",
+              "label": "模型 ID",
+              "help": "厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。"
+            },
+            {
+              "key": "api_provider",
+              "type": "string",
+              "label": "所属厂商",
+              "help": "必须引用 providers.toml 中存在的厂商名称。"
+            },
+            {
+              "key": "extra_body",
+              "type": "json",
+              "label": "extra_body（JSON）",
+              "help": "需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {\"thinking\":{\"type\":\"disabled\"}}。"
+            },
+            {
+              "key": "reasoning_parse_mode",
+              "type": "enum",
+              "label": "推理内容解析",
+              "options": [
+                {
+                  "value": "field",
+                  "label": "接口字段（field）"
+                },
+                {
+                  "value": "tag",
+                  "label": "think 标签（tag）"
+                },
+                {
+                  "value": "none",
+                  "label": "不解析（none）"
+                }
+              ],
+              "help": "选择如何解析模型返回的思考内容。"
+            },
+            {
+              "key": "visual",
+              "type": "boolean",
+              "label": "视觉模型",
+              "help": "标记该模型可用于 vision / 图片描述任务。"
+            },
+            {
+              "key": "temperature",
+              "type": "number",
+              "label": "模型级温度",
+              "nullable": true,
+              "min": 0,
+              "max": 2,
+              "step": 0.05,
+              "help": "留空继承任务 generation 配置；填写后覆盖对应任务的温度。"
+            },
+            {
+              "key": "max_tokens",
+              "type": "integer",
+              "label": "模型级最大 token",
+              "nullable": true,
+              "min": 1,
+              "help": "留空继承任务 generation 配置；填写后覆盖对应任务的最大输出。"
+            },
+            {
+              "key": "price_in",
+              "type": "number",
+              "label": "输入价格（¥/M token）",
+              "min": 0,
+              "step": 0.1,
+              "help": "可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。"
+            },
+            {
+              "key": "price_out",
+              "type": "number",
+              "label": "输出价格（¥/M token）",
+              "min": 0,
+              "step": 0.1,
+              "help": "可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。"
+            },
+            {
+              "key": "embedding_dim",
+              "type": "integer",
+              "label": "Embedding 维度",
+              "min": 0,
+              "help": "仅嵌入模型需要填写；备用向量模型必须与主力输出同样的维度。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

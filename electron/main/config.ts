@@ -1982,26 +1982,58 @@ export function ensureNapcatConfig(directory: string): string {
 }
 
 /**
- * 从旧版 `.env` 文件提取可迁移的模型连接字段。
+ * 从旧版 `.env` 文件提取可迁移的模型连接字段，并把已废弃的 `LLM_THINKING`
+ * 自动转换为模型条目 `extra_body` 中的厂商参数。
  *
  * @param envPath `.env` 文件路径。
  * @returns 当文件不存在或不包含模型连接字段时返回 `null`；否则返回可合并到配置表的部分配置。
- * @throws Error 当文件无法解析或包含已移除的 `LLM_THINKING` 字段时抛出。
- * @remarks 方法只读取并转换已存在的字段，不写回 `.env`，也不要求迁移结果已经完整可启动。
+ * @throws Error 当文件无法解析或预填数据结构无法构建时抛出。
+ * @remarks 方法只读取并转换已存在的字段，不写回 `.env`，也不要求迁移结果已经完整可启动；
+ *   思考开关按旧版运行链的实际生效范围转换，未生效的字段不会写入 `extra_body`。
  */
 export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> | null {
-  if (!existsSync(envPath)) return null
+  if (!existsSync(envPath)) {
+    console.log(`[config] 未发现旧版 .env（${envPath}），跳过迁移`)
+    return null
+  }
   try {
     const parsed = parseDotenv(readFileSync(envPath))
-    if (!parsed.LLM_API_KEY && !parsed.LLM_MODEL) return null
-    if (parsed.LLM_THINKING) {
-      throw new Error('LLM_THINKING 已经取消，请迁移到模型条目的 extra_body')
+    if (!parsed.LLM_API_KEY && !parsed.LLM_MODEL) {
+      console.log(`[config] 旧版 .env（${envPath}）不含模型连接字段，无需迁移`)
+      return null
     }
+    const baseUrl = parsed.LLM_BASE_URL || ''
+    // 旧 `.env` 经常只填 base_url 而不填 provider；从已知域名反推 kind，避免
+    // 把 DeepSeek 等连接误归入默认的 ark 预设。
+    const kind = (parsed.LLM_PROVIDER || '').trim().toLowerCase()
+      || inferLegacyProviderKind(baseUrl)
+      || DEFAULT_PROVIDER.kind
+    const extraBody = legacyThinkingExtraBody(kind, parsed.LLM_THINKING)
+    console.log('[config] 开始迁移旧版 .env：')
+    console.log(
+      `  新增/更新服务商「${DEFAULT_PROVIDER.name}」：kind=${kind}，`
+      + `base_url=${baseUrl || '（留空使用预设地址）'}，timeout_ms=${Number(parsed.LLM_TIMEOUT_MS) || DEFAULT_PROVIDER.timeout_ms}`,
+    )
+    if (parsed.LLM_MODEL) {
+      console.log(`  新增/更新模型「chat」：model_identifier=${parsed.LLM_MODEL}，api_provider=${DEFAULT_PROVIDER.name}`)
+      if (Object.keys(extraBody).length) {
+        console.log(
+          `  旧字段 LLM_THINKING=${parsed.LLM_THINKING} 已转换为模型「chat」的 `
+          + `extra_body=${JSON.stringify(extraBody)}`,
+        )
+      } else if (parsed.LLM_THINKING) {
+        console.log(`  移除旧字段 LLM_THINKING=${parsed.LLM_THINKING}（kind=${kind} 不使用该参数）`)
+      }
+      console.log('  新增/更新 chat 任务候选：model_list = ["chat"]')
+    } else {
+      console.log('  未创建模型：旧 .env 的 LLM_MODEL 为空')
+    }
+    console.log('[config] 旧版 .env 迁移完毕')
     return {
       api_providers: [{
         ...DEFAULT_PROVIDER,
-        kind: parsed.LLM_PROVIDER || DEFAULT_PROVIDER.kind,
-        base_url: parsed.LLM_BASE_URL || '',
+        kind,
+        base_url: baseUrl,
         api_key: parsed.LLM_API_KEY || '',
         timeout_ms: Number(parsed.LLM_TIMEOUT_MS) || DEFAULT_PROVIDER.timeout_ms,
       }],
@@ -2010,7 +2042,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         name: 'chat',
         model_identifier: parsed.LLM_MODEL,
         api_provider: DEFAULT_PROVIDER.name,
-        extra_body: {},
+        extra_body: extraBody,
         reasoning_parse_mode: 'field',
         embedding_dim: 0,
       }] : [],
@@ -2026,4 +2058,97 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
   } catch (error) {
     throw new Error(`${envPath} 迁移失败：${error instanceof Error ? error.message : String(error)}`)
   }
+}
+
+/**
+ * 把旧 `.env` 的预填结果合并进已有配置，只补充缺失字段，不覆盖用户已有内容。
+ *
+ * @param base 当前磁盘上的完整配置。
+ * @param prefill `tryPrefillFromLegacyEnv` 返回的迁移预填值。
+ * @returns 合并后的新配置对象。
+ */
+export function mergeLegacyEnvPrefill(
+  base: YueliConfig,
+  prefill: Partial<YueliConfig>,
+): YueliConfig {
+  const merged = structuredClone(base)
+  const prefillProvider = prefill.api_providers?.[0]
+  if (prefillProvider) {
+    const existing = merged.api_providers.find((provider) => provider.name === prefillProvider.name)
+    if (existing) {
+      if (!existing.kind.trim()) existing.kind = prefillProvider.kind
+      if (!existing.base_url.trim()) existing.base_url = prefillProvider.base_url
+      if (!existing.api_key.trim()) existing.api_key = prefillProvider.api_key
+      if (!existing.timeout_ms) existing.timeout_ms = prefillProvider.timeout_ms
+    } else {
+      merged.api_providers.push(structuredClone(prefillProvider))
+    }
+  }
+  const prefillModel = prefill.models?.[0]
+  if (prefillModel) {
+    const existing = merged.models.find((model) => model.name === prefillModel.name)
+    if (existing) {
+      if (!existing.model_identifier.trim()) existing.model_identifier = prefillModel.model_identifier
+      if (!existing.api_provider.trim()) existing.api_provider = prefillModel.api_provider
+      // 用户已有 extra_body 的键优先；旧 .env 只补充尚不存在的思考参数。
+      existing.extra_body = { ...prefillModel.extra_body, ...existing.extra_body }
+    } else {
+      merged.models.push(structuredClone(prefillModel))
+    }
+  }
+  const prefillChat = prefill.model_tasks?.chat
+  if (prefillChat) {
+    const currentChat = merged.model_tasks.chat
+    merged.model_tasks.chat = {
+      ...currentChat,
+      model_list: currentChat.model_list.length
+        ? currentChat.model_list
+        : prefillChat.model_list,
+      selection_strategy: currentChat.model_list.length
+        ? currentChat.selection_strategy
+        : prefillChat.selection_strategy,
+    }
+  }
+  return merged
+}
+
+/**
+ * 从旧 `.env` 的 base_url 反推服务商预设。
+ *
+ * @param baseUrl 旧 `.env` 中填写的模型接口基地址。
+ * @returns 识别到的 kind 名称；无法识别时返回空字符串，由调用方决定默认值。
+ */
+function inferLegacyProviderKind(baseUrl: string): string {
+  const normalized = baseUrl.trim().toLowerCase()
+  if (normalized.includes('api.deepseek.com')) return 'deepseek'
+  if (normalized.includes('ark.cn-beijing.volces.com')) return 'ark'
+  if (normalized.includes('dashscope.aliyuncs.com')) return 'dashscope'
+  if (normalized.includes('api.moonshot.cn')) return 'moonshot'
+  if (normalized.includes('open.bigmodel.cn')) return 'zhipu'
+  if (normalized.includes('api.openai.com')) return 'openai'
+  if (normalized.includes('ollama')) return 'ollama'
+  return ''
+}
+
+/**
+ * 把旧 `.env` 的 `LLM_THINKING` 转换为模型条目 `extra_body`。
+ *
+ * @param kind 服务商预设名称。
+ * @param thinking 旧版 `disabled`、`enabled` 或 `auto` 值；可为空。
+ * @returns 可直接合并进请求体的厂商参数对象；无需要迁移的思考参数时返回空对象。
+ */
+function legacyThinkingExtraBody(kind: string, thinking: string | undefined): Record<string, unknown> {
+  const mode = (thinking || '').trim().toLowerCase()
+  if (!mode) return {}
+  // 这些厂商使用统一的 thinking 对象，auto 也按厂商可接受值原样保留。
+  if (['ark', 'deepseek', 'moonshot', 'zhipu'].includes(kind)) {
+    const type = mode === 'enabled' || mode === 'auto' ? mode : 'disabled'
+    return { thinking: { type } }
+  }
+  // 百炼/DashScope 使用布尔开关；auto 与 enabled 统一按开启迁移。
+  if (kind === 'dashscope') {
+    return { enable_thinking: mode !== 'disabled' }
+  }
+  // 其余预设的旧运行链从未发送 thinking 字段，迁移时保持原请求体不变。
+  return {}
 }

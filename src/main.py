@@ -304,6 +304,7 @@ def main() -> None:
     from src.core.api.ws import push
     from src.core.services.chat import ChatService
 
+    app_state.config_dir = Path(args.config_path)
     app_state.registry = StreamRegistry(db)
     app_state.group_chat_config = cfg.group_chat
     broker = PlatformBroker()
@@ -382,6 +383,7 @@ def main() -> None:
         cfg=cfg,
         broker=broker,
         expression_provider=routers.expression if routers.expression.ready else None,
+        image_describer=image_describer,
     )
     app_state.chat.set_action_policy(
         'group',

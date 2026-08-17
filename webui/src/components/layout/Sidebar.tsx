@@ -7,11 +7,13 @@
  */
 import {
   Activity,
+  Cpu,
   FileText,
   LayoutGrid,
   List,
   LogOut,
   MessageSquare,
+  Settings,
   Terminal,
   Users,
 } from 'lucide-react'
@@ -123,7 +125,9 @@ export function Sidebar() {
   const { dark, toggle } = useTheme()
   const location = useLocation()
   const onPersons = location.pathname.startsWith('/persons')
-  const onHome = !onPersons
+  const onModels = location.pathname.startsWith('/models')
+  const onSettings = location.pathname.startsWith('/settings')
+  const onHome = !onPersons && !onModels && !onSettings
 
   return (
     <aside className="hidden w-(--sidebar-width) flex-none flex-col border-r border-sidebar-border bg-sidebar lg:flex">
@@ -131,7 +135,9 @@ export function Sidebar() {
       <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-3">
         <SectionTitle>概览</SectionTitle>
         <NavLink to="/" active={onHome} icon={<MessageSquare />} label="会话观察" />
+        <NavLink to="/models" active={location.pathname.startsWith('/models')} icon={<Cpu />} label="模型与厂商" />
         <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
+        <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
         {onHome ? (
           <div className="mt-1 border-t border-sidebar-border/60 pt-1">
             <SectionTitle>会话分区</SectionTitle>
@@ -166,6 +172,8 @@ export function MobileTopbar() {
   const { dark, toggle } = useTheme()
   const location = useLocation()
   const onPersons = location.pathname.startsWith('/persons')
+  const onModels = location.pathname.startsWith('/models')
+  const onSettings = location.pathname.startsWith('/settings')
 
   return (
     <div className="flex flex-none items-center gap-2 border-b border-sidebar-border bg-sidebar px-3 py-2 lg:hidden">
@@ -176,8 +184,10 @@ export function MobileTopbar() {
         Y
       </span>
       <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        <NavLink to="/" active={!onPersons} icon={<Activity />} label="会话观察" />
+        <NavLink to="/" active={!onPersons && !onModels && !onSettings} icon={<Activity />} label="会话观察" />
+        <NavLink to="/models" active={onModels} icon={<Cpu />} label="模型与厂商" />
         <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
+        <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
       </nav>
       <ThemeSwitch dark={dark} onToggle={toggle} className="scale-[0.85]" />
       <button

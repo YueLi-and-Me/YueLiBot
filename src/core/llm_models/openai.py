@@ -84,6 +84,31 @@ def _classify_code(code: str) -> str:
     return 'unknown'
 
 
+def _extract_status_error(payload: Any) -> tuple[str, str]:
+    """从兼容接口错误响应中提取错误码与消息。
+
+    OpenAI 风格使用 ``{"error": {"code" | "type", "message"}}``；SiliconFlow
+    等网关使用顶层 ``{"code", "message"}``。两种形态都必须进入日志，否则调用方
+    只能看到笼统的 HTTP 400，无法定位真实拒绝原因。
+
+    :param payload: 已解析的 JSON 响应；非映射时返回空元组。
+    :return: ``(code, message)``；缺失字段以空字符串占位。
+    副作用：只读取输入映射，不修改数据。
+    """
+    if not isinstance(payload, dict):
+        return '', ''
+    error = payload.get('error')
+    if isinstance(error, dict):
+        code = error.get('code') or error.get('type') or ''
+        message = error.get('message') or ''
+        return str(code), str(message)
+    code = payload.get('code') or payload.get('type') or ''
+    message = payload.get('message') or payload.get('msg') or ''
+    if code or message:
+        return str(code), str(message)
+    return '', ''
+
+
 class _ReasoningTagParser:
     """增量拆分 `<think>` 标签中的推理文本和正文。
 
@@ -175,6 +200,7 @@ class OpenAiChatProvider:
                  headers: dict | None = None, extra_body: dict | None = None,
                  auth_type: Literal['bearer', 'header', 'query', 'none'] = 'bearer',
                  auth_name: str = '',
+                 query: dict | None = None,
                  reasoning_parse_mode: ReasoningParseMode = 'field',
                  timeout_ms: int = 120_000, max_retries: int = 2,
                  retry_interval_ms: int = 800) -> None:
@@ -187,6 +213,7 @@ class OpenAiChatProvider:
         :param extra_body: 每次请求附加的 JSON 字段，默认值为 `None`。
         :param auth_type: `bearer`、`header`、`query` 或 `none`，默认值为 `bearer`。
         :param auth_name: header/query 鉴权使用的字段名，默认值为空字符串。
+        :param query: 每次请求固定附加的查询参数，默认值为空。
         :param reasoning_parse_mode: 推理字段解析模式，默认值为 `field`。
         :param timeout_ms: 单次 HTTP 超时毫秒数，默认值为 120000。
         :param max_retries: 尚未产出内容时的内部重试次数，默认值为 2。
@@ -203,6 +230,7 @@ class OpenAiChatProvider:
         self._auth_type = auth_type
         self._auth_name = auth_name.strip()
         self._headers = headers or {}
+        self._query = query or {}
         self._extra_body = extra_body or {}
         self._reasoning_parse_mode = reasoning_parse_mode
         self._timeout = timeout_ms / 1000
@@ -367,8 +395,11 @@ class OpenAiChatProvider:
 
         # 记录脱敏请求后再建立连接，保证失败快照包含实际发送的任务参数。
         url = f'{self.base_url}/chat/completions'
+        query_params = dict(self._query)
         if self._auth_type == 'query':
-            url = f'{url}?{urlencode({self._auth_name: self.api_key})}'
+            query_params[self._auth_name] = self.api_key
+        if query_params:
+            url = f'{url}?{urlencode(query_params)}'
         record_provider_request(
             url,
             headers,
@@ -393,10 +424,8 @@ class OpenAiChatProvider:
                         code = ''
                         msg = ''
                         try:
-                            j = json.loads(body_text)
-                            error = j.get('error', {})
-                            code = error.get('code', '') or error.get('type', '')
-                            msg = error.get('message', '')
+                            payload = json.loads(body_text)
+                            code, msg = _extract_status_error(payload)
                         except Exception:
                             pass
                         code_kind = _classify_code(code) if code else 'unknown'
@@ -405,7 +434,16 @@ class OpenAiChatProvider:
                             if code_kind == 'unknown'
                             else code_kind
                         )
-                        suffix = f'：{msg}' if msg else ''
+                        # 错误正文进入 message 供路由日志直接展示；原始响应仍保留在
+                        # LlmError.detail 中，避免日志脱敏后丢失诊断信息。
+                        if code and msg:
+                            suffix = f'：{code} {msg}'
+                        elif msg:
+                            suffix = f'：{msg}'
+                        elif code:
+                            suffix = f'：code={code}'
+                        else:
+                            suffix = ''
                         raise LlmError(kind, f'模型接口返回 HTTP {resp.status_code}{suffix}', body_text[:400])
 
                     async for line in resp.aiter_lines():

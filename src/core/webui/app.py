@@ -32,6 +32,16 @@ def mount_webui(app: FastAPI) -> None:
     if _WEBUI_DIST.is_dir():
         index_path = _WEBUI_DIST / 'index.html'
 
+        @app.get('/models', include_in_schema=False)
+        async def models_page() -> FileResponse:
+            """返回模型与厂商工作台共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
+        @app.get('/settings', include_in_schema=False)
+        async def settings_page() -> FileResponse:
+            """返回月璃设置页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
         @app.get('/persons', include_in_schema=False)
         async def person_list_page() -> FileResponse:
             """返回人物列表页共用的 SPA 入口文件。
@@ -41,7 +51,7 @@ def mount_webui(app: FastAPI) -> None:
             :raises OSError: WebUI 构建文件不存在或无法读取时由文件响应层抛出。
             """
 
-            return FileResponse(index_path)
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
         @app.get('/persons/{person_id}', include_in_schema=False)
         async def person_detail_page(person_id: int) -> FileResponse:
@@ -53,7 +63,7 @@ def mount_webui(app: FastAPI) -> None:
             """
 
             # person_id 由前端再向只读 API 查询；路由只负责交付同一份 SPA 入口。
-            return FileResponse(index_path)
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
         app.mount('/', StaticFiles(directory=_WEBUI_DIST, html=True), name='webui')
         return

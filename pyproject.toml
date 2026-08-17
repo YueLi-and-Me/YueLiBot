@@ -38,6 +38,9 @@ dev = [
 where = ["."]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+"src.core.config" = ["settings_schema.json"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 # tests/ 是 TypeScript 侧的测试目录，Python 用例统一放 pytests/，两侧互不干扰

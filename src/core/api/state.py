@@ -34,6 +34,7 @@ class _AppState:
         self.foreground_callback: Callable[[dict], None] | None = None
         self.broker: Any = None         # PlatformBroker（非桌面唯一出站接缝）
         self.register_platform_stream: Callable[[StreamRef], None] | None = None
+        self.config_dir: Any = None               # 运行时配置目录，模型工作台读写 TOML 用
 
 
 app_state = _AppState()

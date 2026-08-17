@@ -11,9 +11,8 @@ import asyncio
 import json
 
 from src.core.agent.expression import ExpressionSample
+from src.core.agent.sub_agent import SubAgentCall, run_sub_agent
 from src.core.llm_models.protocol import LlmProvider
-from src.core.llm_models.snapshot import bind_render_params
-from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
 _SELECTION_KEY = 'selected'
@@ -176,31 +175,20 @@ class ExpressionSelector:
                 'limit': str(limit),
             },
         }
-        raw = ''
-        reasoning_length = 0
-        messages = [{'role': 'system', 'content': prompt}]
-        trace.emit(
-            'llm_request',
-            messages=messages,
-            temperature=self._temperature,
-            maxTokens=self._max_tokens,
-            renderParams=render_params,
-            **prompt_metadata('expression.select', ('expression.select',)),
-        )
-        bind_render_params(render_params)
-        async for chunk in self._provider.stream(
-            messages=messages,
+        # 只发系统提示词会被部分服务商拒绝；统一执行器会补齐最小 user 消息。
+        result = await run_sub_agent(SubAgentCall(
+            task='expression',
+            provider=self._provider,
+            messages=[{'role': 'system', 'content': prompt}],
             temperature=self._temperature,
             max_tokens=self._max_tokens,
             response_format={'type': 'json_object'},
             signal=signal,
-        ):
-            text = chunk.get('text')
-            if text:
-                raw += text
-            reasoning = chunk.get('reasoning')
-            if isinstance(reasoning, str):
-                reasoning_length += len(reasoning)
+            render_params=render_params,
+            trace_extra=prompt_metadata('expression.select', ('expression.select',)),
+        ))
+        raw = result.text
+        reasoning_length = result.reasoning_chars
         try:
             # 解析失败附带正文和推理长度，便于区分协议错误与模型输出过长。
             return parse_selection(raw, self._candidates, limit)

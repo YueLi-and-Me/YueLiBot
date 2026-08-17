@@ -50,16 +50,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false
-    apiFetch<{ authenticated: boolean }>('/auth/session')
-      .then((state) => {
+    const autoLogin = async () => {
+      try {
+        const state = await apiFetch<{ authenticated: boolean }>('/auth/session')
         if (!cancelled) setAuthenticated(state.authenticated)
-      })
-      .catch(() => {
+        if (state.authenticated) return
+      } catch {
         if (!cancelled) setLoginMessage('连接不到后端，请确认服务已启动。')
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false)
-      })
+        return
+      }
+      try {
+        await apiMutate('/auth/auto', 'POST')
+        if (!cancelled) setAuthenticated(true)
+      } catch {
+        if (!cancelled) setLoginMessage('自动登录不可用，请输入后端 token。')
+      }
+    }
+    void autoLogin().finally(() => {
+      if (!cancelled) setChecking(false)
+    })
     return () => {
       cancelled = true
     }

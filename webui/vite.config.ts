@@ -52,6 +52,7 @@ export default defineConfig({
       '/stages': 'http://127.0.0.1:7999',
       '/events': 'http://127.0.0.1:7999',
       '/prompts': 'http://127.0.0.1:7999',
+      '/models': 'http://127.0.0.1:7999',
       '/replay': 'http://127.0.0.1:7999',
       '/ws': {
         target: 'ws://127.0.0.1:7999',

@@ -491,6 +491,12 @@ class ApiProviderConfig(BaseModel):
     client_type: Literal['openai', 'volcengine'] = 'openai'
     # 豆包语音要 App ID + Access Token 两个凭证，api_key 放 Access Token
     app_id: str = ''
+    # 模型列表端点，用于 WebUI 连通性测试与模型拉取；OpenAI 兼容默认 /models
+    model_list_endpoint: str = '/models'
+    # 中转头等需要额外 HTTP 头的厂商在这里写键值；认证头仍由 auth_* 负责
+    default_headers: Dict[str, str] = Field(default_factory=dict)
+    # 中转头等需要固定查询参数的厂商在这里写键值
+    default_query: Dict[str, str] = Field(default_factory=dict)
     # 单次 HTTP 连接与流式读取超时；首字阶段的内部重试仍受任务级首字超时整体截断。
     timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
     # 同一连接内的重试次数；需要让重试跑满时，应调大任务级首字超时。
@@ -535,6 +541,14 @@ class ModelDefinitionConfig(BaseModel):
     api_provider: str
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
+    # WebUI 模型能力标记：视觉模型才应进入 vision / 图片描述任务
+    visual: bool = False
+    # 可选模型级温度与最大输出覆盖；留空时使用任务 generation 配置
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示
+    price_in: float = Field(default=0.0, ge=0.0)
+    price_out: float = Field(default=0.0, ge=0.0)
     embedding_dim: int = 0
 
     @model_validator(mode='before')
@@ -636,6 +650,11 @@ class ModelCandidate(BaseModel):
     identifier: str = ''
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
+    visual: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = None
+    default_headers: Dict[str, Any] = Field(default_factory=dict)
+    default_query: Dict[str, Any] = Field(default_factory=dict)
     client_type: Literal['openai', 'volcengine'] = 'openai'
     app_id: str = ''
     embedding_dim: int = 0

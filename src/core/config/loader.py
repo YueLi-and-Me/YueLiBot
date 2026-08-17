@@ -64,16 +64,21 @@ def _providers_by_name(catalog: ProviderCatalog) -> Dict[str, ApiProviderConfig]
 
     :param catalog: 已完成 Pydantic 校验的厂商目录。
     :return: 厂商名称到配置对象的字典。
-    :raises ValueError: 厂商名称为空或重复。
+    :raises ValueError: 厂商名称为空或重复，并指出在 providers.toml 中的条目位置。
     副作用：不修改目录及其中的配置对象。
     """
     providers: Dict[str, ApiProviderConfig] = {}
-    for provider in catalog.api_providers:
+    positions: Dict[str, int] = {}
+    for index, provider in enumerate(catalog.api_providers, start=1):
         if not provider.name:
-            raise ValueError('providers.toml 中 api_providers.name 不能为空')
+            raise ValueError(f'providers.toml 中第 {index} 个 [api_providers] 的 name 不能为空')
         if provider.name in providers:
-            raise ValueError(f'providers.toml 中 API 厂商名称重复：{provider.name}')
+            raise ValueError(
+                f'providers.toml 中 API 厂商名称重复：{provider.name}'
+                f'（第 {positions[provider.name]} 个与第 {index} 个 [api_providers]）'
+            )
         providers[provider.name] = provider
+        positions[provider.name] = index
     return providers
 
 
@@ -82,16 +87,21 @@ def _models_by_name(catalog: ModelCatalog) -> Dict[str, ModelDefinitionConfig]:
 
     :param catalog: 已完成 Pydantic 校验的模型目录。
     :return: 模型名称到模型定义的字典。
-    :raises ValueError: 模型名称为空或重复。
+    :raises ValueError: 模型名称为空或重复，并指出在 models.toml 中的条目位置。
     副作用：不修改模型目录。
     """
     models: Dict[str, ModelDefinitionConfig] = {}
-    for model in catalog.models:
+    positions: Dict[str, int] = {}
+    for index, model in enumerate(catalog.models, start=1):
         if not model.name:
-            raise ValueError('models.toml 中 models.name 不能为空')
+            raise ValueError(f'models.toml 中第 {index} 个 [models] 的 name 不能为空')
         if model.name in models:
-            raise ValueError(f'models.toml 中模型名称重复：{model.name}')
+            raise ValueError(
+                f'models.toml 中模型名称重复：{model.name}'
+                f'（第 {positions[model.name]} 个与第 {index} 个 [models]）'
+            )
         models[model.name] = model
+        positions[model.name] = index
     return models
 
 
@@ -184,6 +194,11 @@ def _build_routing(
             identifier=model.model_identifier.strip(),
             extra_body=model.extra_body,
             reasoning_parse_mode=model.reasoning_parse_mode,
+            visual=model.visual,
+            temperature=model.temperature,
+            max_tokens=model.max_tokens,
+            default_headers=provider.default_headers,
+            default_query=provider.default_query,
             client_type=provider.client_type,
             app_id=provider.app_id,
             embedding_dim=model.embedding_dim,
@@ -252,9 +267,12 @@ def _load_split_config(directory: Path) -> Config:
         'embedding': routing.embedding,
     }
     # 已启用功能必须至少绑定一个候选模型；否则配置表面有效，但运行时无法执行该功能。
-    for enabled, task in ((features_tts.enabled, 'tts'),
-                          (features_vision.enabled, 'vision'),
-                          (features_vector.enabled, 'embedding')):
+    for enabled, task in (
+        (features_tts.enabled, 'tts'),
+        (features_vision.enabled, 'vision'),
+        (features_vision.chat_image_enabled, 'vision'),
+        (features_vector.enabled, 'embedding'),
+    ):
         if enabled and not feature_routes[task].ready:
             raise ValueError(
                 f'features.toml 里启用了该功能，但 models.toml 的 '

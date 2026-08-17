@@ -11,9 +11,11 @@ import { BrowserRouter, Route, Routes } from 'react-router'
 import { AppShell } from '@/components/layout/AppShell'
 import { Loading } from '@/components/ui'
 import { LoginScreen } from '@/features/auth/LoginScreen'
+import { ModelConfigPage } from '@/features/models/ModelConfigPage'
 import { ObservePage } from '@/features/observe/ObservePage'
 import { PersonDetailPage } from '@/features/persons/PersonDetailPage'
 import { PersonsPage } from '@/features/persons/PersonsPage'
+import { SettingsConfigPage } from '@/features/settings/SettingsConfigPage'
 import { AuthProvider, useAuth } from '@/hooks/use-auth'
 
 /**
@@ -39,6 +41,8 @@ function AuthGate() {
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<ObservePage />} />
+        <Route path="models" element={<ModelConfigPage />} />
+        <Route path="settings" element={<SettingsConfigPage />} />
         <Route path="persons" element={<PersonsPage />} />
         <Route path="persons/:personId" element={<PersonDetailPage />} />
         <Route path="*" element={<ObservePage />} />
