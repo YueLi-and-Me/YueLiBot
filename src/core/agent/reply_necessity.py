@@ -5,11 +5,15 @@
 
 - ``frequency``：按 ``talk_value`` 把低频发言预算折算成候选消息阈值，
   攒够消息才允许一次无信号 DELIBERATE；
-- ``reply_necessity``：为当前批次计算 0~100 的回复必要性评分，达到阈值
-  才允许无信号 DELIBERATE。
+- ``reply_necessity``：内容驱动地为当前批次计算 0~100 的回复必要性评分，
+  达到阈值才允许无信号 DELIBERATE；积压消息只作为辅助压力项。
 
 两种模式都只决定「是否值得进入意识」，不决定「回不回」；进入
 DELIBERATE 后仍由 Conversation Agent 自主选择 reply / silent / react。
+
+``reply_necessity`` 只被群聊 ``attention_filtered`` 路径调用，因此本模块
+不再保留 @、点名、私聊相关性等在该调用点永远为 False 的分支；评分由
+内容信号、短反应惩罚与积压压力组成。
 """
 
 from __future__ import annotations
@@ -22,14 +26,20 @@ import re
 
 # 频率阈值默认取倒数，例如 talk_value=0.6 时每 2 条消息唤醒一次。
 DEFAULT_FREQUENCY_TALK_VALUE = 0.6
-# 回复必要性默认触发线；@ / 点名在相关性上直接越过该线。
+# 回复必要性默认触发线；内容驱动下一条「问题 + 请求 + 较长文本」正好达线。
 DEFAULT_REPLY_NECESSITY_THRESHOLD = 80
 
 QUESTION_TERMS = ("怎么", "如何", "为什么", "有没有")
 STRONG_REQUEST_TERMS = ("帮我", "帮忙", "能不能", "可以吗", "要不要")
-WEAK_REQUEST_TERMS = ("需要", "求", "看看", "试试")
-OPINION_TERMS = ("你觉得", "你认为", "怎么看", "有什么建议")
 SHORT_REACTIONS = frozenset({"哈哈", "哈哈哈", "草", "笑死", "好", "嗯", "啊", "哦", "6", "666", "？", "?"})
+
+# 内容信号权重按默认阈值 80 标定：问题 30 + 请求 30 + 两档长度共 20，
+# 使一条真正值得回复且写清来意的无点名群消息无需积压即可达线。
+QUESTION_SCORE = 30
+STRONG_REQUEST_SCORE = 30
+LONG_TEXT_SCORE = 10
+LONGER_TEXT_SCORE = 10
+SHORT_REACTION_PENALTY = 25
 
 
 @dataclass(frozen=True)
@@ -63,34 +73,19 @@ def _is_question(text: str) -> bool:
     return bool(re.search(r"[？?](?:$|[。！!~～…])", text) and len(text) <= 120)
 
 
-def _request_reason(text: str, *, direct_context: bool) -> str:
-    """返回命中的请求类原因；弱请求只在直接上下文生效。"""
+def _request_reason(text: str) -> str:
+    """返回命中的请求类原因。
+
+    群聊无直接上下文时，只有明确请人帮忙的措辞才计为请求；「可以吗 /
+    要不要」等更偏商量语气，不在无信号群消息里单独计分。
+    """
     hits = [term for term in STRONG_REQUEST_TERMS if term in text]
-    if "能不能" in hits and not direct_context and not text.startswith("能不能"):
+    if "能不能" in hits and not text.startswith("能不能"):
         hits.remove("能不能")
-    if not direct_context:
-        for term in ("可以吗", "要不要"):
-            if term in hits:
-                hits.remove(term)
-    if hits:
-        return "/".join(hits)
-    if direct_context:
-        weak_hits = [term for term in WEAK_REQUEST_TERMS if term in text]
-        if weak_hits:
-            return "/".join(weak_hits)
-    return ""
-
-
-def _opinion_reason(text: str, *, direct_context: bool) -> str:
-    """返回命中的意见征询原因；群聊无直接上下文不视为征询。"""
-    if not direct_context:
-        return ""
-    hits = [term for term in OPINION_TERMS if term in text]
-    if hits:
-        return "/".join(hits)
-    if re.search(r"(?:你).{0,6}怎么看|怎么看.{0,6}(?:你)", text):
-        return "怎么看"
-    return ""
+    for term in ("可以吗", "要不要"):
+        if term in hits:
+            hits.remove(term)
+    return "/".join(hits)
 
 
 def _short_reaction(texts: Sequence[str]) -> bool:
@@ -103,21 +98,15 @@ def _short_reaction(texts: Sequence[str]) -> bool:
     return all(text in SHORT_REACTIONS for text in normalized)
 
 
-def _presence_penalty(recent_self_replies: int, recent_window_messages: int) -> int:
-    """按最近窗口内 Bot 发言占比计算存在感惩罚。"""
-    if recent_self_replies <= 0 or recent_window_messages <= 0:
-        return 0
-    ratio = min(1.0, recent_self_replies / recent_window_messages)
-    if ratio <= 0.25:
-        return 0
-    progress = min(1.0, (ratio - 0.25) / (0.60 - 0.25))
-    return int(round(25 * progress))
+def _pressure_score(pending_count: int, backlog_scale: int) -> int:
+    """按待处理候选数计算压力分，分母使用消息条数尺度。
 
-
-def _pressure_score(pending_count: int, trigger_threshold: int) -> int:
-    """按待处理候选数计算压力分；超过阈值后使用对数增长封顶。"""
-    normalized_threshold = max(1, trigger_threshold)
-    ratio = max(0.0, pending_count / normalized_threshold)
+    ``backlog_scale`` 不是 0~100 的评分阈值，而是「多少条未处理消息算一份
+    完整压力」的条数；调用方使用 frequency 预算折算出的消息阈值，避免评分
+    阈值与消息条数量纲耦合。
+    """
+    normalized_scale = max(1, backlog_scale)
+    ratio = max(0.0, pending_count / normalized_scale)
     if ratio <= 1.0:
         return min(50, int(round(50 * ratio * ratio)))
     overflow_factor = min(1.0, log1p(ratio - 1.0) / log1p(4.0))
@@ -127,78 +116,49 @@ def _pressure_score(pending_count: int, trigger_threshold: int) -> int:
 def score_reply_necessity(
     texts: Sequence[str],
     *,
-    has_at: bool,
-    has_mention: bool,
-    is_group_chat: bool,
-    recent_self_replies: int,
-    recent_window_messages: int,
     pending_count: int,
-    trigger_threshold: int,
+    backlog_scale: int,
 ) -> ReplyNecessityScore:
     """计算 0~100 的回复必要性评分。
 
+    该函数只服务群聊 ``attention_filtered`` 路径：@、点名或最近 Bot 发言
+    已在入口门控直接进入 DELIBERATE，不会到达这里；因此评分只由内容信号、
+    短反应惩罚与积压压力组成。
+
     :param texts: 本批清洗后的候选文本。
-    :param has_at: 是否包含真实 @。
-    :param has_mention: 是否包含配置名称/别名。
-    :param is_group_chat: 是否为群聊；私聊/桌面有直接对话相关性。
-    :param recent_self_replies: 最近窗口内 Bot 回复数。
-    :param recent_window_messages: 最近窗口内总消息数。
-    :param pending_count: 尚未触发 Agent 的候选累计值，用于压力分。
-    :param trigger_threshold: 触发阈值，同时用于压力归一化。
+    :param pending_count: 尚未触发 Agent 的候选累计条数，用于压力分。
+    :param backlog_scale: 压力归一化的消息条数尺度；达到该条数时压力分记 50。
     :return: 包含最终得分与中文评分明细的不可变结果。
     """
-    if has_at:
-        relevance_score = 100
-        relevance_reason = "@"
-    elif has_mention:
-        relevance_score = 80
-        relevance_reason = "提及"
-    elif not is_group_chat:
-        relevance_score = 40
-        relevance_reason = "私聊"
-    else:
-        relevance_score = 0
-        relevance_reason = "普通"
-
-    direct_context = relevance_score > 0
     cleaned = [" ".join((text or "").split()).strip() for text in texts]
     combined = "\n".join(text for text in cleaned if text)
 
     content_score = 0
     content_reasons: list[str] = []
     if any(_is_question(text) for text in cleaned):
-        content_score += 15
+        content_score += QUESTION_SCORE
         content_reasons.append("问题")
-    request_reason = _request_reason(combined, direct_context=direct_context)
+    request_reason = _request_reason(combined)
     if request_reason:
-        content_score += 20
+        content_score += STRONG_REQUEST_SCORE
         content_reasons.append(f"请求:{request_reason}")
-    opinion_reason = _opinion_reason(combined, direct_context=direct_context)
-    if opinion_reason:
-        content_score += 20
-        content_reasons.append(f"征询:{opinion_reason}")
     if len(combined) >= 40:
-        content_score += 5
+        content_score += LONG_TEXT_SCORE
         content_reasons.append("长文本")
     if len(combined) >= 120:
-        content_score += 10
+        content_score += LONGER_TEXT_SCORE
         content_reasons.append("较长文本")
     if _short_reaction(cleaned):
-        content_score -= 25
+        content_score -= SHORT_REACTION_PENALTY
         content_reasons.append("短反应")
 
-    pressure_score = _pressure_score(pending_count, trigger_threshold)
-    presence_penalty = _presence_penalty(recent_self_replies, recent_window_messages)
-    raw_score = relevance_score + content_score + pressure_score - presence_penalty
+    pressure_score = _pressure_score(pending_count, backlog_scale)
+    raw_score = content_score + pressure_score
     final_score = max(0, min(100, raw_score))
 
     parts = [f"最终={final_score}", f"原始={raw_score}"]
-    if relevance_score:
-        parts.append(f"强相关={relevance_score}({relevance_reason})")
     if content_score:
         parts.append(f"内容={content_score}({','.join(content_reasons)})")
     if pressure_score:
         parts.append(f"压力={pressure_score}")
-    if presence_penalty:
-        parts.append(f"存在感=-{presence_penalty}")
     return ReplyNecessityScore(score=final_score, detail=" ".join(parts))

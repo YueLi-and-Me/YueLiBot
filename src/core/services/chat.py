@@ -7,15 +7,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Mapping
 
 import asyncio
 import inspect
+import json
 import random
 import sqlite3
 
+from .chat_image import ChatImageDescriber, merge_image_descriptions
 from .trace_console import mark_turn_start, render_action_decision, render_observation, render_turn, render_turn_error
 from .vector import VectorService
 
@@ -88,6 +90,11 @@ logger = get_logger(__name__)
 
 CHAT_POLL_INTERVAL_S = 0.1
 
+# 群历史首次回填时用于播种游标的历史条数与时间容差。
+_BACKFILL_SEED_EVENT_LIMIT = 500
+_BACKFILL_SEED_MESSAGE_LIMIT = 80
+_BACKFILL_SEED_TIME_MATCH_MS = 10 * 60_000
+
 # 旧测试和诊断脚本仍会读取这个换算值；唯一默认来源是配置模型。
 SESSION_GAP_MS = ConversationConfig().session_gap_minutes * 60_000
 
@@ -120,6 +127,8 @@ class _BufferedMessage:
     bot_name: str | None
     message_id: int
     previous_message_at: int | None
+    # 后台图片描述任务；结果为补齐描述后的完整正文，回合构建前必须等待。
+    image_description_task: asyncio.Task[str] | None = None
 
 
 @dataclass
@@ -199,6 +208,7 @@ class ChatService:
         vector: VectorService | None = None,
         broker: PlatformBroker | None = None,
         expression_provider: LlmProvider | None = None,
+        image_describer: ChatImageDescriber | None = None,
         action_policy: ActionPolicy | None = None,
         action_policies: Mapping[str, ActionPolicy] | None = None,
     ) -> None:
@@ -214,6 +224,7 @@ class ChatService:
         :param vector: 可选向量服务；省略时创建禁用实例。
         :param broker: 可选的非桌面平台出站路由器。
         :param expression_provider: 可选的表达样本选择模型。
+        :param image_describer: 可选的聊天图片描述服务；为 ``None`` 时图片保持占位符。
         :param action_policy: 可选的回合内动作策略；省略时始终回复。
         :param action_policies: 按 stream kind 装配的动作策略；未配置类型使用默认策略。
 
@@ -229,6 +240,7 @@ class ChatService:
         self._push_event = push_event
         self._speak_audio = speak_audio
         self._broker = broker
+        self._image_describer = image_describer
         self._default_action_policy = action_policy or TurnPlanner(AlwaysReplyPolicy())
         self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
@@ -517,7 +529,8 @@ class ChatService:
         :return: ``None``；入缓冲时尚未创建回合。
 
         副作用：
-            按到达顺序将非空消息追加到对应 stream 缓冲区，不打断在飞回合。
+            按到达顺序将非空消息追加到对应 stream 缓冲区，不打断在飞回合；
+            带图片来源时会创建后台描述任务，描述成功后再回写已落库正文。
 
         :raises ValueError: 入站上下文或平台归属不满足下游约束时由依赖服务抛出。
         :raises Exception: 任务内部异常会记录并推送 ``chat.error``，不会由返回的 task
@@ -536,6 +549,17 @@ class ChatService:
             trimmed,
             accepted_at,
         )
+        image_task: asyncio.Task[str] | None = None
+        if inbound.image_sources:
+            # 先以 [图片] 占位符确认接收并返回；描述成功后后台回写同一行正文。
+            # 回合启动时再等待该任务，避免图片下载/VLM 拖住 HTTP 入站响应。
+            image_task = asyncio.create_task(self._describe_image_message(
+                stream_id,
+                message_id,
+                trimmed,
+                inbound.image_sources,
+            ))
+            self._track_background_task(image_task)
         self._buffers.setdefault(stream_id, []).append(_BufferedMessage(
             text=trimmed,
             context=inbound.context,
@@ -544,8 +568,83 @@ class ChatService:
             bot_name=inbound.bot_name,
             message_id=message_id,
             previous_message_at=previous_message_at,
+            image_description_task=image_task,
         ))
         self._wake.set()
+
+    def _track_background_task(self, task: asyncio.Task[str]) -> None:
+        """登记后台任务并静默消化无人等待时的异常。
+
+        :param task: 已创建的后台图片描述任务。
+        :return: 无返回值。
+        副作用：任务完成时读取一次异常，避免事件循环记录
+            ``Task exception was never retrieved``；回合随后等待该任务时仍会
+            重新抛出同一异常并进入正常错误处理。
+        """
+        def _consume_exception(done: asyncio.Task[str]) -> None:
+            if done.cancelled():
+                return
+            try:
+                done.exception()
+            except Exception:
+                pass
+
+        task.add_done_callback(_consume_exception)
+
+    async def _describe_image_message(
+        self,
+        stream_id: int,
+        message_id: int,
+        text: str,
+        sources: tuple[str, ...],
+    ) -> str:
+        """在后台下载并描述一条入站消息的普通图片，补齐落库正文。
+
+        :param stream_id: 消息所属 stream ID。
+        :param message_id: 已写入 ``messages`` 表的占位符消息主键。
+        :param text: 当前含 ``[图片]`` 占位符的消息正文。
+        :param sources: 与正文普通图片顺序一致的来源引用。
+        :return: 补齐描述后的正文；全部失败时返回原占位符正文。
+        :raises sqlite3.Error: 描述成功后回写消息失败时抛出。
+        副作用：描述可用时用合并后的正文更新对应消息行；不触发回合。
+        """
+        if not sources or self._image_describer is None:
+            return text
+        descriptions = await self._image_describer.describe_sources(sources)
+        enriched = merge_image_descriptions(text, descriptions)
+        if enriched != text:
+            self.memory.update_message_content(stream_id, message_id, enriched)
+        return enriched
+
+    async def _materialize_batch_images(
+        self,
+        batch: list[_BufferedMessage],
+    ) -> list[_BufferedMessage]:
+        """等待批次内所有后台图片描述完成，并生成使用补齐正文的批次副本。
+
+        :param batch: 已入缓冲、可能携带后台描述任务的原始消息批次。
+        :return: 每条 ``text`` 均为描述补齐后正文的新批次；无图片的消息原样保留。
+        :raises Exception: 任一后台任务异常时重新抛出，由回合错误处理记录。
+        副作用：只读取任务结果，不回写数据库；数据库回写由后台任务完成。
+        """
+        pending = [
+            message.image_description_task
+            for message in batch
+            if message.image_description_task is not None
+        ]
+        if pending:
+            await asyncio.gather(*pending)
+        return [
+            replace(
+                message,
+                text=(
+                    message.image_description_task.result()
+                    if message.image_description_task is not None
+                    else message.text
+                ),
+            )
+            for message in batch
+        ]
 
     async def _start_turn(
         self,
@@ -588,7 +687,12 @@ class ChatService:
             bot_name=self._bot_display_name,
         )
         for message in batch:
-            trace.emit('user_input', turnId=turn, text=message.text)
+            trace.emit(
+                'user_input',
+                turnId=turn,
+                text=message.text,
+                externalMessageId=message.external_message_id or '',
+            )
         if context.stream.platform == 'desktop':
             await self._emit(stream_id, 'chat.start', {
                 'turnId': turn,
@@ -619,17 +723,26 @@ class ChatService:
 
             assistant_raw = ''
             reply_persisted = False
+            # 默认使用占位符正文；图片任务完成前的异常处理仍需可读的批次文本。
+            trimmed = '\n'.join(message.text for message in batch)
             try:
                 now = current_time()
                 asleep = self._sleep_state().asleep if self._sleep_state else False
                 self.settle_elapsed(context, now, asleep)
                 self.memory.sweep(now)
 
+                # 图片描述在后台已尽力提前完成；这里等待结果后再做门控与上下文构建。
+                # 等待只阻塞当前 stream 的回合任务，不阻塞其它 stream 的消息消费。
+                # 结果写入新变量；闭包内重新绑定 batch 会使其成为局部变量，
+                # 赋值前的首次读取会因此抛出 UnboundLocalError。
+                materialized_batch = await self._materialize_batch_images(batch)
+                trimmed = '\n'.join(message.text for message in materialized_batch)
+
                 # 用户消息已在确认接收时落库，使用批次首条入队前的历史位置计算会话间隔。
                 self._refresh_session(
                     context,
                     now,
-                    last_message_at=batch[0].previous_message_at,
+                    last_message_at=materialized_batch[0].previous_message_at,
                     read_history=False,
                 )
                 if cancel_event.is_set():
@@ -650,14 +763,14 @@ class ChatService:
                     trimmed,
                     now,
                     inbound.bot_name,
-                    user_message_id_watermark=batch[-1].message_id,
+                    user_message_id_watermark=materialized_batch[-1].message_id,
                 )
                 render_params: dict[str, dict[str, str]] = {}
                 batch_gate = self._batch_gate(
                     context,
                     trimmed,
                     inbound.mentioned_me,
-                    candidate_count=len(batch),
+                    candidate_count=len(materialized_batch),
                 )
                 if batch_gate.result.reason_codes[0] in (
                     'frequency_wait',
@@ -665,14 +778,14 @@ class ChatService:
                 ):
                     # 扩展触发模式放行的无信号群消息未达到候选条件，由这里
                     # 补记 gate_dropped 并结束回合，不再走旧管线。
-                    await self._handle_live_drop(context, batch, turn, batch_gate)
+                    await self._handle_live_drop(context, materialized_batch, turn, batch_gate)
                     return
                 scope = self._agent_scope(context, batch_gate.result.disposition)
                 if scope == 'shadow':
                     # shadow 只记录 Agent 决策，之后仍走旧管线，可见行为不变。
                     await self._run_shadow_decision(
                         context,
-                        batch,
+                        materialized_batch,
                         prepared_context,
                         turn,
                         cancel_event,
@@ -684,11 +797,11 @@ class ChatService:
                         return
                 elif scope == 'live':
                     if batch_gate.result.disposition == 'drop':
-                        await self._handle_live_drop(context, batch, turn, batch_gate)
+                        await self._handle_live_drop(context, materialized_batch, turn, batch_gate)
                         return
                     await self._run_conversation_turn(
                         context=context,
-                        batch=batch,
+                        batch=materialized_batch,
                         trimmed=trimmed,
                         turn=turn,
                         cancel_event=cancel_event,
@@ -730,8 +843,13 @@ class ChatService:
                         turn_id=turn,
                     )
                     if context.stream.kind == 'group':
-                        for message in batch:
-                            self._emit_group_observation(message, action.reason, message.text)
+                        for message in materialized_batch:
+                            self._emit_group_observation(
+                                message,
+                                action.reason,
+                                message.text,
+                                message.external_message_id,
+                            )
                     if context.stream.platform == 'desktop':
                         await self._emit(stream_id, 'chat.silent', {
                             'turnId': turn,
@@ -974,14 +1092,239 @@ class ChatService:
             text,
             current_time(),
         )
-        self._emit_group_observation(inbound, reason, text)
+        self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
         return message_id
+
+    async def describe_inbound_images(
+        self,
+        attachments: list[dict[str, Any]],
+    ) -> list[str | None]:
+        """描述旧协议已下载的 Base64 图片附件，失败项保持 ``None``。
+
+        :param attachments: 旧适配器提交的图片附件列表；每项包含 Base64 ``data``。
+        :return: 与输入等长的描述列表；未配置图片服务时全为 ``None``。
+        副作用：只供旧 ``imageSegments`` 协议同步路径使用；新来源引用路径由
+            :meth:`_describe_image_message` 在后台执行。
+        """
+        if self._image_describer is None:
+            return [None for _ in attachments]
+        return await self._image_describer.describe_attachments(attachments)
+
+    def _external_group_message_seen(self, stream_id: int, external_id: str) -> bool:
+        """判断某条群消息是否已经作为入站或观察事件进入过主体。"""
+        row = self._db.execute(
+            """SELECT 1 FROM pipeline_events
+               WHERE stream_id = ?
+                 AND kind IN ('user_input', 'observation')
+                 AND json_extract(payload, '$.externalMessageId') = ?
+               LIMIT 1""",
+            (stream_id, external_id),
+        ).fetchone()
+        return row is not None
+
+    def _known_group_external_ids(self, stream_id: int) -> set[str]:
+        """读取指定群最近入站/观察事件中已登记的外部消息 ID。
+
+        :param stream_id: 目标群 stream ID。
+        :return: 非空 ``externalMessageId`` 集合；旧事件缺失该字段时不会报错。
+        副作用：只读 pipeline_events。
+        """
+        rows = self._db.execute(
+            """SELECT payload FROM pipeline_events
+               WHERE stream_id = ?
+                 AND kind IN ('user_input', 'observation')
+               ORDER BY seq DESC LIMIT ?""",
+            (stream_id, _BACKFILL_SEED_EVENT_LIMIT),
+        ).fetchall()
+        known: set[str] = set()
+        for (payload,) in rows:
+            try:
+                data = json.loads(payload)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(data, dict):
+                external_id = str(data.get('externalMessageId') or '').strip()
+                if external_id:
+                    known.add(external_id)
+        return known
+
+    def _seed_group_backfill_cursor(
+        self,
+        stream_id: int,
+        messages: list[dict[str, Any]],
+    ) -> tuple[int, set[str]]:
+        """首次回填前用已有数据播种去重游标，减少历史消息重复落库。
+
+        优先使用 pipeline_events 中仍可追溯的外部消息 ID；旧事件没有该字段时，
+        再用 ``messages`` 表最近用户消息的正文与时间窗匹配历史条目。两类数据
+        都无法确认边界时返回 ``0``，此时仍按原逻辑逐条查重。
+
+        :param stream_id: 目标群 stream ID。
+        :param messages: 按时间升序排列的待回填消息。
+        :return: ``(可安全跳过的最大 seq, 已知外部消息 ID 集合)``。
+        副作用：只读数据库，不写入游标。
+        """
+        known_ids = self._known_group_external_ids(stream_id)
+        seeded = 0
+        for raw in messages:
+            external_id = str(raw.get('externalMessageId') or '').strip()
+            if external_id not in known_ids:
+                continue
+            try:
+                message_seq = int(raw.get('messageSeq') or 0)
+            except (TypeError, ValueError):
+                message_seq = 0
+            seeded = max(seeded, message_seq)
+
+        if not seeded:
+            seeded = self._seed_backfill_cursor_from_messages(stream_id, messages)
+        return seeded, known_ids
+
+    def _seed_backfill_cursor_from_messages(
+        self,
+        stream_id: int,
+        messages: list[dict[str, Any]],
+    ) -> int:
+        """用最近已落库用户消息的正文时间窗估计历史回填边界。
+
+        这是上线前旧事件缺少 ``externalMessageId`` 时的一次性兼容路径；正文与
+        平台时间需落在 10 分钟窗口内才算命中，宁可少播种也不能跳过停机期间的
+        新消息。
+        """
+        rows = self._db.execute(
+            """SELECT content, created_at FROM messages
+               WHERE stream_id = ? AND role = 'user'
+               ORDER BY id DESC LIMIT ?""",
+            (stream_id, _BACKFILL_SEED_MESSAGE_LIMIT),
+        ).fetchall()
+        if not rows:
+            return 0
+        recent = [(str(row[0]), int(row[1])) for row in rows]
+        seeded = 0
+        for raw in messages:
+            text = str(raw.get('text') or '').strip()
+            if not text:
+                continue
+            try:
+                message_seq = int(raw.get('messageSeq') or 0)
+                created_at = int(raw.get('createdAt') or 0)
+            except (TypeError, ValueError):
+                continue
+            if not message_seq or created_at <= 0:
+                continue
+            for content, saved_at in recent:
+                if content != text:
+                    continue
+                if abs(saved_at - created_at) <= _BACKFILL_SEED_TIME_MATCH_MS:
+                    seeded = max(seeded, message_seq)
+                    break
+        return seeded
+
+    def record_group_backfill(
+        self,
+        context: ConversationContext,
+        messages: list[dict[str, Any]],
+    ) -> int:
+        """把停机期间错过的群历史落为观察消息，不触发模型回复。
+
+        :param context: 目标群聊归属上下文。
+        :param messages: 按时间升序排列的历史消息；每项包含发送者、正文、消息 ID、seq 和时间。
+        :return: 本次实际新写入的消息条数。
+        :raises sqlite3.Error: 消息或游标写入失败。
+
+        副作用：
+            写入用户历史、登记 ``backfill`` 观察事件，并持久化该群的去重游标。
+        """
+        if context.stream.kind != 'group':
+            raise ValueError('record_group_backfill 只接受群聊消息')
+        stream_id = context.stream.id
+        key = f'group_backfill_cursor_{stream_id}'
+        cursor = self.memory.read_json(key, {'last_seq': 0, 'recent_ids': []})
+        if not isinstance(cursor, dict):
+            cursor = {'last_seq': 0, 'recent_ids': []}
+        recent_ids = [
+            str(item) for item in cursor.get('recent_ids', [])
+            if isinstance(item, (str, int))
+        ]
+        recent = set(recent_ids)
+        last_seq = int(cursor.get('last_seq') or 0)
+        if not last_seq and messages:
+            seeded_seq, known_ids = self._seed_group_backfill_cursor(stream_id, messages)
+            recent.update(known_ids)
+            if seeded_seq:
+                last_seq = seeded_seq
+                logger.info(
+                    'QQ 群历史回填游标已从已有数据播种',
+                    streamId=stream_id,
+                    lastSeq=last_seq,
+                )
+        written = 0
+
+        for raw in messages:
+            external_id = str(raw.get('externalMessageId') or '').strip()
+            if not external_id or external_id in recent:
+                continue
+            try:
+                message_seq = int(raw.get('messageSeq') or 0)
+            except (TypeError, ValueError):
+                message_seq = 0
+            if message_seq and message_seq <= last_seq:
+                continue
+            if self._external_group_message_seen(stream_id, external_id):
+                continue
+            text = str(raw.get('text') or '').strip()
+            if not text:
+                continue
+            created_at = int(raw.get('createdAt') or 0)
+            if created_at <= 0:
+                created_at = current_time()
+            sender_context = self._registry.resolve_inbound(
+                platform=context.stream.platform,
+                stream_kind='group',
+                stream_external_id=context.stream.external_id,
+                sender_external_id=str(raw.get('senderExternalId') or ''),
+                sender_nickname=str(raw.get('senderNickname') or ''),
+                sender_group_card=str(raw.get('senderGroupCard') or ''),
+                first_seen_at=created_at,
+            )
+            self.memory.append_message(
+                stream_id,
+                sender_context.person.id,
+                'user',
+                text,
+                created_at,
+            )
+            sender = self._sender_metadata(sender_context)
+            trace.emit(
+                'observation',
+                streamId=stream_id,
+                personId=sender_context.person.id,
+                text=text,
+                reason='backfill',
+                externalMessageId=external_id,
+                **sender,
+            )
+            recent.add(external_id)
+            if message_seq > last_seq:
+                last_seq = message_seq
+            written += 1
+
+        if written:
+            self.memory.write_json(
+                key,
+                {
+                    'last_seq': last_seq,
+                    'recent_ids': list(recent)[-200:],
+                },
+            )
+        return written
 
     def _emit_group_observation(
         self,
         inbound: InboundMessage,
         reason: str,
         text: str,
+        external_message_id: str | None = None,
     ) -> None:
         """登记已保存群聊消息的观察事件并渲染控制台输出。
 
@@ -1006,6 +1349,7 @@ class ChatService:
             personId=context.person.id,
             text=text,
             reason=reason,
+            externalMessageId=external_message_id or '',
             **sender,
         )
         render_observation(sender['senderLabel'], text, reason)
@@ -1891,23 +2235,19 @@ class ChatService:
             and result.disposition == 'drop'
             and result.reason_codes == ('attention_filtered',)
         )
-        if plain_group_drop and self.extended_trigger_enabled(context):
-            if self._trigger_mode != 'signal':
-                result = self._extended_group_gate(
-                    context,
-                    batch_text,
-                    mentioned_me,
-                    name_mentioned,
-                    reply_count,
-                    candidate_count,
-                )
+        if plain_group_drop:
+            if self.extended_trigger_enabled(context) and self._trigger_mode != 'signal':
+                result = self._extended_group_gate(context, batch_text, candidate_count)
             else:
-                # signal 口径不使用累计器；清掉历史残留，避免切回扩展模式时
-                # 旧计数造成立即触发。
+                # 扩展模式未接管时不留历史残留，避免切回扩展模式后旧计数
+                # 造成立即触发。
                 self._extended_pending.pop(context.stream.id, None)
-        elif context.stream.kind == 'group':
-            # 任一常规注意力信号命中都表示该 stream 已获得一次候选机会，
-            # 扩展模式的待处理累计一并清零，避免与下一次频率预算叠加。
+        elif (
+            context.stream.kind == 'group'
+            and result.disposition in ('deliberate', 'force')
+        ):
+            # 只有真正获得候选机会的批次才清零扩展累计；asleep、rate_limited
+            # 等硬边界 DROP 不消费候选机会，保留之前的累计。
             self._extended_pending.pop(context.stream.id, None)
         return _BatchGate(
             result=result,
@@ -1921,22 +2261,16 @@ class ChatService:
         self,
         context: ConversationContext,
         batch_text: str,
-        mentioned_me: bool,
-        name_mentioned: bool,
-        reply_count: int,
         candidate_count: int,
     ) -> GateResult:
         """按配置的扩展口径决定无信号群消息是否进入 DELIBERATE。
 
-        frequency 使用发言频率预算累计候选数；reply_necessity 使用确定性
-        评分，并把累计候选数作为压力项。两种模式都保留休眠、频率硬上限等
-        上游边界，且都只产生确定性候选，不替 Agent 决定回复与否。
+        frequency 使用发言频率预算累计候选数；reply_necessity 以内容信号
+        为主，并把累计候选数作为辅助压力项。两种模式都保留休眠、频率硬上限
+        等上游边界，且都只产生确定性候选，不替 Agent 决定回复与否。
 
         :param context: 当前会话上下文。
         :param batch_text: 本批合并正文。
-        :param mentioned_me: 本批是否包含协议 @。
-        :param name_mentioned: 本批是否包含 Bot 名称/别名。
-        :param reply_count: 最近窗口内 Bot 回复数。
         :param candidate_count: 本批候选消息数。
         :return: 扩展门控产生的 drop 或 deliberate 结果。
         """
@@ -1951,20 +2285,13 @@ class ChatService:
             return GateResult('drop', ('frequency_wait',))
         if self._trigger_mode == 'reply_necessity':
             threshold = max(1, self._reply_necessity_threshold)
-            window_ms = self._cfg.group_chat.reply_window_minutes * 60_000
-            recent_window_messages = self.memory.message_count_since(
-                stream_id,
-                current_time() - window_ms,
-            )
+            # 压力分母必须是消息条数尺度；复用 frequency 预算折算阈值，
+            # 不再把 0~100 的评分阈值当成条数使用。
+            backlog_scale = frequency_trigger_threshold(self._frequency_talk_value)
             score = score_reply_necessity(
                 [batch_text],
-                has_at=mentioned_me,
-                has_mention=name_mentioned,
-                is_group_chat=True,
-                recent_self_replies=reply_count,
-                recent_window_messages=recent_window_messages,
                 pending_count=pending,
-                trigger_threshold=threshold,
+                backlog_scale=backlog_scale,
             )
             if score.score >= threshold:
                 self._extended_pending.pop(stream_id, None)
@@ -2161,14 +2488,15 @@ class ChatService:
             examples.extend([
                 {
                     'role': 'user',
-                    'content': '[输出格式示例] 群友发来一条与你有关的消息。',
+                    'content': '[输出格式示例] 群里有人问你忙不忙，要不要现在一起上号。',
                 },
                 {
                     'role': 'assistant',
                     'content': (
                         f'<decision action="reply" targets="{targets[0]}" '
                         'reasons="direct_question" length="brief"/>'
-                        '<say emotion="normal">在的，你说。</say>'
+                        '<say emotion="normal">不忙，刚刷完视频。</say>'
+                        '<say emotion="smile">上号叫我，我这就来。</say>'
                     ),
                 },
             ])
@@ -2176,7 +2504,7 @@ class ChatService:
             examples.extend([
                 {
                     'role': 'user',
-                    'content': '[输出格式示例] 群友在聊与你无关的事情。',
+                    'content': '[输出格式示例] 群里在聊一个你不认识的人。',
                 },
                 {
                     'role': 'assistant',
@@ -2409,7 +2737,12 @@ class ChatService:
         self._mark_stage(context, GATED, f'未回复：{reason}', turn_id=turn)
         if context.stream.kind == 'group':
             for message in batch:
-                self._emit_group_observation(message, reason, message.text)
+                self._emit_group_observation(
+                    message,
+                    reason,
+                    message.text,
+                    message.external_message_id,
+                )
         frame = self._agent_frame(
             context, batch, turn, 'drop',
         )

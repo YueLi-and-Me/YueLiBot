@@ -84,6 +84,7 @@ class InboundMessage:
     mentioned_me: bool = False
     external_message_id: str | None = None
     bot_name: str | None = None
+    image_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

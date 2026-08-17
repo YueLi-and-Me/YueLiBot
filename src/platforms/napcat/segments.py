@@ -85,6 +85,27 @@ def segment_to_text(
     return placeholders.get(segment_type, f'[非文本消息：{segment_type}]')
 
 
+def image_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
+    """提取普通图片段的下载来源，顺序与正文中的 ``[图片]`` 占位符一致。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 普通图片的 ``data.url`` 或 ``data.file`` 字符串；缺失来源的图片
+        用空字符串占位，保证后续描述与占位符顺序对齐。表情包不进入返回值。
+    :raises ValueError: ``segments`` 不是列表，或图片段结构不合法。
+    """
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    sources: list[str] = []
+    for segment in segments:
+        if segment.get('type') != 'image':
+            continue
+        if is_emoji_image(segment):
+            continue
+        data = _segment_data(segment)
+        sources.append(_string_value(data.get('url')) or _string_value(data.get('file')))
+    return tuple(sources)
+
+
 def message_to_text(
     segments: Sequence[Segment],
     mention_names: Mapping[str, str] | None = None,

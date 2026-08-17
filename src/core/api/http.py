@@ -10,6 +10,9 @@ from __future__ import annotations
 from ipaddress import ip_address
 from typing import List, Literal
 
+import asyncio
+import os
+
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -42,6 +45,7 @@ from src.core.prompts.registry import (
     prompt_history,
     update_prompt,
 )
+from src.core.services.chat_image import merge_image_descriptions
 from src.core.services.replay import replay_event, replay_task_for_seq
 
 logger = get_logger(__name__)
@@ -63,6 +67,15 @@ class PlatformInboundBody(BaseModel):
     text: str
     mentioned_me: bool = Field(alias='mentionedMe')
     external_message_id: str = Field(alias='externalMessageId')
+    image_sources: List[str] = Field(default_factory=list, alias='imageSources')
+    # 旧协议字段：已下载的 Base64 附件；新适配器只应提交 imageSources。
+    images: List[InboundImageBody] = Field(default_factory=list, alias='imageSegments')
+
+    @field_validator('image_sources')
+    @classmethod
+    def _normalize_image_sources(cls, values: List[str]) -> List[str]:
+        """规范图片来源字符串，空项保留以对齐正文占位符。"""
+        return [str(value).strip() for value in values]
 
     @field_validator(
         'platform',
@@ -113,6 +126,23 @@ class PlatformInboundBody(BaseModel):
         if not normalized:
             raise ValueError('botName 不能为空字符串')
         return normalized
+
+
+class InboundImageBody(BaseModel):
+    """平台适配器随入站消息提交的普通图片附件。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    sha256: str = ''
+    data: str = ''
+    mime: str = 'image/jpeg'
+
+    @field_validator('mime')
+    @classmethod
+    def _normalize_mime(cls, value: str) -> str:
+        """规范化图片 MIME 类型。"""
+        value = value.strip()
+        return value or 'image/jpeg'
 
 
 class PlatformIdentityLinkBody(BaseModel):
@@ -238,6 +268,31 @@ async def health() -> dict:
     return {"ok": True}
 
 
+@router.post('/auth/auto', dependencies=[Depends(_require_loopback)])
+async def web_auto_login(response: Response) -> dict:
+    """本机浏览器免手输 token：回环地址直接创建登录会话。"""
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=create_session(),
+        httponly=True,
+        samesite='strict',
+        path='/',
+    )
+    response.headers['Cache-Control'] = 'no-store'
+    return {'ok': True}
+
+
+@router.post('/system/restart', dependencies=[Depends(_auth), Depends(_require_loopback)])
+async def system_restart() -> dict:
+    """重启当前 Python 后端进程；Electron supervisor 会重新拉起。"""
+    async def _exit_soon() -> None:
+        await asyncio.sleep(0.4)
+        os._exit(0)
+
+    asyncio.create_task(_exit_soon())
+    return {'ok': True}
+
+
 @router.post('/auth/login')
 async def web_login(body: WebLoginBody, response: Response) -> dict:
     """校验浏览器提交的 token，并写入 HttpOnly 会话 Cookie。
@@ -355,7 +410,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
 
     副作用：
         可能创建或更新人物、身份和 stream，写入接收/门控观测事件，记录被拒消息，
-        或启动一轮聊天生成。
+        或启动一轮聊天生成；接受的消息如带 ``imageSources``，只先以 ``[图片]``
+        占位符落库并创建后台描述任务，不在此请求内下载图片。
     """
     # 服务未完成装配时返回 503，避免把平台消息误判为已处理。
     if app_state.chat is None or app_state.registry is None:
@@ -479,12 +535,24 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             'reason': reason,
         })
 
+    image_sources = tuple(body.image_sources)
+    legacy_attachments = [image.model_dump() for image in body.images]
+    if legacy_attachments and not image_sources:
+        # 兼容旧协议：已带 Base64 的入站消息只能同步描述，新适配器不再走此分支。
+        descriptions = await app_state.chat.describe_inbound_images(legacy_attachments)
+        outbound_text = merge_image_descriptions(body.text, descriptions)
+    else:
+        # 新协议：先以 [图片] 占位符接收落库并返回，下载和 VLM 描述
+        # 由聊天服务的后台任务完成，不阻塞 NapCat 的串行入站循环。
+        outbound_text = body.text
+
     await app_state.chat.send(InboundMessage(
-        text=body.text,
+        text=outbound_text,
         context=context,
         mentioned_me=body.mentioned_me,
         external_message_id=body.external_message_id,
         bot_name=body.bot_name,
+        image_sources=image_sources if not legacy_attachments else (),
     ))
     return JSONResponse({
         'streamId': context.stream.id,
@@ -495,6 +563,59 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             else gate_result.reason_codes[0]
         ),
     })
+
+
+class GroupBackfillMessageBody(BaseModel):
+    """一条只观察不回复的群历史消息。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    external_message_id: str = Field(alias='externalMessageId')
+    message_seq: int = Field(default=0, alias='messageSeq')
+    created_at: int = Field(default=0, alias='createdAt')
+    sender_external_id: str = Field(alias='senderExternalId')
+    sender_nickname: str = Field(alias='senderNickname')
+    sender_group_card: str = Field(default='', alias='senderGroupCard')
+    text: str
+    mentioned_me: bool = Field(default=False, alias='mentionedMe')
+
+
+class GroupBackfillBody(BaseModel):
+    """NapCat 启动/重连后提交的群历史回填批次。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: str
+    stream_external_id: str = Field(alias='streamExternalId')
+    messages: List[GroupBackfillMessageBody]
+
+
+@router.post('/platform/group/backfill', dependencies=[Depends(_auth)])
+async def platform_group_backfill(body: GroupBackfillBody) -> JSONResponse:
+    """接收停机期间错过的群历史，只写观察上下文不触发回复。
+
+    :param body: 已通过 Pydantic 校验的群 ID 与历史消息列表。
+    :return: 实际写入条数的 JSON 响应；服务未初始化时返回 503。
+    """
+    if app_state.chat is None or app_state.registry is None:
+        return JSONResponse({'detail': '对话服务未初始化'}, status_code=503)
+    if not body.messages:
+        return JSONResponse({'written': 0})
+    first = body.messages[0]
+    context = app_state.registry.resolve_inbound(
+        platform=body.platform,
+        stream_kind='group',
+        stream_external_id=body.stream_external_id,
+        sender_external_id=first.sender_external_id,
+        sender_nickname=first.sender_nickname,
+        sender_group_card=first.sender_group_card,
+        first_seen_at=first.created_at or current_time(),
+    )
+    written = app_state.chat.record_group_backfill(
+        context,
+        [message.model_dump(by_alias=True) for message in body.messages],
+    )
+    return JSONResponse({'written': written})
 
 
 @router.post('/platform/identity/link', dependencies=[Depends(_auth)])

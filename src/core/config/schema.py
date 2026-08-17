@@ -96,8 +96,10 @@ class ConversationAgentConfig(BaseModel):
     trigger_mode 决定无点名/无 @ 的普通群消息何时进入 DELIBERATE：
     ``signal`` 沿用原口径，无信号直接 DROP；``frequency`` 按发言频率预算
     攒够候选消息后给一次 DELIBERATE；``reply_necessity`` 按回复必要性
-    评分是否达到阈值决定。两种扩展模式都不会让纯沉默自动触发，也不会
-    绕过休眠、频率硬上限等确定性边界。
+    评分是否达到阈值决定，内容信号为主、积压压力为辅。
+    ``frequency_talk_value`` 同时为 reply_necessity 提供压力归一化的
+    消息条数尺度。两种扩展模式都不会让纯沉默自动触发，也不会绕过休眠、
+    频率硬上限等确定性边界。
     """
 
     mode: Literal['off', 'shadow', 'selected_streams', 'enabled'] = 'off'
@@ -361,7 +363,8 @@ class TtsConfig(BaseModel):
 class VisionConfig(BaseModel):
     """定义视觉功能开关和截图范围。
 
-    :ivar enabled: 是否允许调用视觉模型。
+    :ivar enabled: 是否允许桌面屏幕视觉调用。
+    :ivar chat_image_enabled: 是否允许 QQ 聊天图片视觉描述。
     :ivar fullscreen_silent: 疑似全屏时是否静默，默认值为 `True`。
     :ivar capture_mode: 截取前台窗口或整个主屏，默认值为 `window`。
     """
@@ -369,6 +372,8 @@ class VisionConfig(BaseModel):
     # 视觉请求可能包含屏幕中的敏感信息；服务不落盘并将图片缩放到 768px 宽，
     # 但远程 base_url 仍会接收图像内容。使用本地推理地址时，图像不会离开本机。
     enabled: bool = False
+    # 聊天图片是否调用视觉模型描述；与桌面屏幕视觉独立开关。
+    chat_image_enabled: bool = False
     # 疑似全屏时保持静默，避免直播或录屏场景输出桌宠声音。
     fullscreen_silent: bool = True
     # 截图范围：window 仅捕获前台窗口（默认）；screen 捕获整个主屏，包含当时可见的

@@ -126,7 +126,8 @@ class BackendClient:
         :raises ValueError: 主体响应顶层不是 JSON 对象。
 
         副作用：
-            向主体服务提交一条入站消息并等待响应；不修改 ``event``。
+            向主体服务提交一条入站消息并等待响应；普通图片只发送
+            ``imageSources`` 来源引用，不在适配器下载或编码图片字节。
         """
         client = self._http
         if client is None:
@@ -144,6 +145,7 @@ class BackendClient:
                 'text': event.text,
                 'mentionedMe': event.mentioned_me,
                 'externalMessageId': event.external_message_id,
+                'imageSources': list(event.image_sources),
             },
         )
         response.raise_for_status()
@@ -151,6 +153,35 @@ class BackendClient:
         if not isinstance(payload, dict):
             raise ValueError('主体 /platform/inbound 响应必须是 JSON 对象')
         return payload
+
+    async def submit_group_backfill(
+        self,
+        group_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> None:
+        """把停机期间错过的群历史提交给主体只观察落库。
+
+        :param group_id: 目标群外部 ID。
+        :param messages: 按时间升序排列的历史消息字典列表。
+        :raises BackendDisconnected: HTTP 客户端尚未建立连接。
+        :raises httpx.HTTPError: 请求失败或主体返回非成功 HTTP 状态码。
+        副作用：向主体回填接口发送一次 POST 请求。
+        """
+        client = self._http
+        if client is None:
+            raise BackendDisconnected('主体 HTTP 尚未连接')
+        response = await client.post(
+            '/platform/group/backfill',
+            json={
+                'platform': 'qq',
+                'streamExternalId': group_id,
+                'messages': messages,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError('主体 /platform/group/backfill 响应必须是 JSON 对象')
 
     async def link_owner_identity(self, owner_qq: str) -> None:
         """在启动消息消费者前，将配置中的 owner QQ 号绑定到主体 owner 身份。

@@ -199,6 +199,23 @@ class MemoryStore:
         self._db.commit()
         return cur.lastrowid or 0
 
+    def update_message_content(self, stream_id: int, id: int, content: str) -> int:
+        """用后台补齐后的正文替换一条已落库消息的内容。
+
+        :param stream_id: 消息所属 stream ID。
+        :param id: 消息主键。
+        :param content: 替换后的非空消息正文。
+        :return: 受影响的行数，正常情况下为 ``1``。
+        :raises sqlite3.Error: 更新或提交失败。
+        副作用：只更新匹配 stream 和主键的消息内容并提交事务。
+        """
+        cur = self._db.execute(
+            'UPDATE messages SET content = ? WHERE id = ? AND stream_id = ?',
+            (content, id, stream_id),
+        )
+        self._db.commit()
+        return cur.rowcount
+
     def delete_message(self, stream_id: int, id: int) -> None:
         """删除指定 stream 中的一条消息。
 

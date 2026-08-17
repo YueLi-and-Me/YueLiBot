@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Dict, List, Mapping
+from urllib.parse import urlsplit
 import asyncio
 
 import httpx
@@ -14,7 +18,8 @@ from src.core.common.logger import get_logger
 
 from .backend import BackendClient
 from .config import NapcatDocument
-from .events import classify_event, parse_inbound_event
+from .events import QqInboundEvent, classify_event, parse_inbound_event
+from .segments import is_emoji_image
 from .transport import (
     ActionError,
     NapcatTransport,
@@ -81,6 +86,8 @@ class NapcatRunner:
                 _check_self_qq_matches(self._config.napcat.self_qq, self_id)
                 await self._backend.connect()
                 await self._backend.link_owner_identity(self._config.owner.qq)
+                # 只回填观察上下文，不触发回复；失败不阻断连接建立。
+                await self._backfill_recent_group_history(self_id, self_name)
                 self._connected_once = True
                 logger.info(
                     'QQ 适配器已连接',
@@ -153,6 +160,126 @@ class NapcatRunner:
             task.result()
         raise RuntimeError('QQ 适配器连接任务提前结束')
 
+    async def _backfill_recent_group_history(self, self_id: str, self_name: str) -> None:
+        """拉取白名单群的最近历史，只观察落库不触发回复。"""
+        for group_id in self._config.group.list:
+            try:
+                response = await self._transport.call_action(
+                    'get_group_msg_history',
+                    {'group_id': int(group_id), 'count': 20, 'reverse_order': True},
+                )
+                messages = _parse_group_history(
+                    response, group_id, self_id, self_name, self._config.owner.qq,
+                    self._config.private, self._config.group,
+                )
+                if not messages:
+                    continue
+                await self._backend.submit_group_backfill(group_id, messages)
+                logger.info(
+                    'QQ 群历史回填完成',
+                    groupId=group_id,
+                    count=len(messages),
+                )
+            except Exception as exc:
+                logger.warning(
+                    'QQ 群历史回填失败，继续服务当前连接',
+                    groupId=group_id,
+                    error=str(exc),
+                )
+
+    async def _resolve_inbound_image_sources(
+        self,
+        payload: Mapping[str, Any],
+        event: QqInboundEvent,
+    ) -> QqInboundEvent:
+        """把 gchat.qpic.cn 图片来源优先解析为 NapCat 本地文件引用。
+
+        QQ CDN 对机器人进程的裸下载请求会返回 ``invalid fileid`` / ``download url
+        has expired``；NapCat 的 ``get_image`` 动作能直接返回同一张图在 QQ 数据目录
+        中的本地绝对路径，读取本地文件不受防盗链和链接时效影响。该步骤只解析路径，
+        不在适配器侧读取图片字节，继续由主体后台下载与识别。
+
+        :param payload: OneBot 原始消息事件，用于按段提取 ``data.file``。
+        :param event: 已解析的入站事件；图片来源顺序与正文占位符一致。
+        :return: 可能替换了 ``image_sources`` 的新事件；解析失败或非 QQ CDN 来源保持原值。
+        副作用：仅对 QQ CDN 来源发起 ``get_image`` 动作，不读取或下载图片内容。
+        """
+        if not event.image_sources:
+            return event
+        raw_segments = payload.get('message')
+        if not isinstance(raw_segments, list):
+            return event
+
+        # 只取普通图片段，跳过表情包，保持与 image_source_urls 相同的对齐规则。
+        file_names: List[str] = []
+        for segment in raw_segments:
+            if not isinstance(segment, Mapping) or segment.get('type') != 'image':
+                continue
+            data = segment.get('data')
+            if not isinstance(data, Mapping):
+                continue
+            if is_emoji_image(segment):
+                continue
+            file_names.append(str(data.get('file') or '').strip())
+        if len(file_names) != len(event.image_sources):
+            return event
+
+        resolved = await asyncio.gather(*[
+            self._resolve_image_source(source, file_name)
+            for source, file_name in zip(event.image_sources, file_names)
+        ])
+        return replace(event, image_sources=tuple(resolved))
+
+    async def _resolve_image_source(self, source: str, file_name: str) -> str:
+        """把单张 QQ CDN 图片来源解析为本地 ``file://`` 引用。
+
+        :param source: 入站事件中的图片来源 URL 或本地引用。
+        :param file_name: 图片消息段的 ``data.file`` 文件名。
+        :return: 解析成功时为 NapCat 返回绝对路径的 ``file://`` URI；非 QQ CDN、
+            缺少文件名或解析失败时返回原始 ``source``。
+        副作用：仅对 ``*.qpic.cn`` 来源调用 ``get_image`` 动作。
+        """
+        if not file_name or not source.startswith(('http://', 'https://')):
+            return source
+        host = (urlsplit(source).hostname or '').lower()
+        if host != 'qpic.cn' and not host.endswith('.qpic.cn'):
+            return source
+
+        try:
+            response = await self._transport.call_action(
+                'get_image',
+                {'file': file_name},
+            )
+        except Exception as exc:
+            # 路径解析只是来源优化；失败时保留远程 URL，让主体按原 HTTP 来源处理，
+            # 避免单张图片的协议端查询错误阻断整条消息入站。
+            logger.warning(
+                'QQ 图片本地路径解析失败，保留远程来源',
+                file=file_name,
+                error=str(exc),
+            )
+            return source
+
+        data = response.get('data')
+        if not isinstance(data, Mapping):
+            return source
+        local_path = str(data.get('file') or '').strip()
+        if not local_path:
+            return source
+        path = Path(local_path)
+        if not path.is_absolute():
+            return source
+        try:
+            return path.as_uri()
+        except ValueError as exc:
+            logger.warning(
+                'QQ 图片本地路径无法转换为 file URI，保留远程来源',
+                file=file_name,
+                path=local_path,
+                error=str(exc),
+            )
+            return source
+
     async def _consume_protocol_events(self, self_id: str, self_name: str) -> None:
         """消费协议端事件并提交通过访问策略的入站消息。
 
@@ -213,6 +340,9 @@ class NapcatRunner:
             if not event.text.strip():
                 logger.info('忽略空 QQ 消息', messageId=event.external_message_id)
                 continue
+            # QQ CDN 来源先由协议端解析成本地路径；仍然只提交来源引用，
+            # 实际读取与 VLM 描述由主体后台完成，避免逐张下载阻塞串行入站循环。
+            event = await self._resolve_inbound_image_sources(payload, event)
             try:
                 await self._backend.submit_inbound(event)
             except httpx.ReadTimeout as exc:
@@ -269,6 +399,77 @@ class NapcatRunner:
                     targetId=outbound.stream_external_id,
                     error=str(exc),
                 )
+
+
+def _parse_group_history(
+    response: Dict[str, Any],
+    group_id: str,
+    self_id: str,
+    self_name: str,
+    owner_qq: str,
+    private_access: Any,
+    group_access: Any,
+) -> List[Dict[str, Any]]:
+    """把 ``get_group_msg_history`` 响应转换为可回填的观察消息列表。"""
+    data = response.get('data')
+    if isinstance(data, dict):
+        messages = data.get('messages', [])
+    elif isinstance(data, list):
+        messages = data
+    else:
+        return []
+    if not isinstance(messages, list):
+        return []
+
+    backfill: List[Dict[str, Any]] = []
+    for entry in messages:
+        if not isinstance(entry, dict):
+            continue
+        raw = dict(entry)
+        raw['post_type'] = 'message'
+        raw['message_type'] = 'group'
+        raw['group_id'] = group_id
+        raw['self_id'] = self_id
+        raw['message_id'] = entry.get('message_id') or entry.get('messageId') or ''
+        raw['message'] = entry.get('message') or []
+        raw['sender'] = entry.get('sender') or {'user_id': entry.get('user_id')}
+        try:
+            event = parse_inbound_event(
+                raw,
+                self_id,
+                self_name,
+                owner_qq,
+                private_access,
+                group_access,
+            )
+        except ValueError:
+            continue
+        if event is None or not event.text.strip():
+            continue
+        timestamp = entry.get('time') or entry.get('timestamp') or 0
+        try:
+            timestamp_ms = int(timestamp)
+        except (TypeError, ValueError):
+            timestamp_ms = 0
+        if timestamp_ms < 10_000_000_000:
+            timestamp_ms *= 1000
+        try:
+            message_seq = int(entry.get('message_seq') or entry.get('messageSeq') or 0)
+        except (TypeError, ValueError):
+            message_seq = 0
+        backfill.append({
+            'externalMessageId': event.external_message_id,
+            'messageSeq': message_seq,
+            'createdAt': timestamp_ms,
+            'senderExternalId': event.sender_external_id,
+            'senderNickname': event.sender_nickname,
+            'senderGroupCard': event.sender_group_card,
+            'text': event.text,
+            'mentionedMe': event.mentioned_me,
+        })
+    # 历史接口通常按新到旧返回，落库前按 seq 升序恢复时间顺序。
+    backfill.sort(key=lambda item: (item['messageSeq'], item['createdAt']))
+    return backfill
 
 
 class SelfQqMismatch(RuntimeError):

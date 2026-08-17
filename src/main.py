@@ -26,6 +26,7 @@ from src.core.config.loader import load_config
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
+from src.core.services.chat_image import ChatImageDescriber
 from src.core.prompts.registry import prompt_metadata
 
 
@@ -349,10 +350,12 @@ def main() -> None:
                        error="model_tasks.chat.model_list 是空的，Bot 这轮无法回复")
 
     vision_provider = None
-    if cfg.vision.enabled:
+    vision_task_enabled = cfg.vision.enabled or cfg.vision.chat_image_enabled
+    if vision_task_enabled:
         vision_provider = routers.vision
         logger.info("vision_model_ready", model=vision_provider.model,
                     candidates=len(vision_provider.candidates))
+    image_describer = ChatImageDescriber(cfg, vision_provider)
 
     async def _push_event(
         channel: str,

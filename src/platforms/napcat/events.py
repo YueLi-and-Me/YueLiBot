@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from .config import GroupAccessConfig, PrivateAccessConfig
-from .segments import mentions_user, message_to_text
+from .segments import image_source_urls, mentions_user, message_to_text
 
 
 EventKind = Literal[
@@ -38,6 +38,9 @@ class QqInboundEvent:
     text: str
     mentioned_me: bool
     external_message_id: str
+    # 普通图片下载来源；顺序与 text 中的 [图片] 占位符一致。
+    # 适配器只传来源引用，下载与 VLM 描述由主体后台执行，避免阻塞串行入站循环。
+    image_sources: tuple[str, ...] = ()
 
 
 def is_action_response(payload: Mapping[str, Any]) -> bool:
@@ -184,6 +187,7 @@ def parse_inbound_event(
         text=message_to_text(raw_segments, {self_id: self_name}),
         mentioned_me=mentions_user(raw_segments, self_id),
         external_message_id=message_id,
+        image_sources=image_source_urls(raw_segments),
     )
 
 
