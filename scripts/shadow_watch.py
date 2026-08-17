@@ -5,13 +5,17 @@ shadow 阶段的行动决策落在 ``data/memory.db`` 的 ``pipeline_events`` �
 脚本周期查询新增事件，在终端打印紧凑事件行，并把滚动统计写入 Markdown
 报告，便于无人值守时事后回看。
 
+滚动报告默认把数据库中已有的全部历史事件计入统计，游标只决定后续新事件
+从哪个序号开始逐条打印。观察当前版本时建议固定 ``--hash``，避免旧
+promptHash 样本混入解析失败率与非法动作率。
+
 用法示例：
 
-    python scripts/shadow_watch.py                  # 从当前最新序号开始持续观察
-    python scripts/shadow_watch.py --once           # 只统计现有事件并退出
-    python scripts/shadow_watch.py --full           # 从 seq=0 重放全部历史事件
+    python scripts/shadow_watch.py                  # 全量累计统计，并从当前最新序号继续观察
+    python scripts/shadow_watch.py --once           # 只统计现有全部事件并退出
+    python scripts/shadow_watch.py --full           # 从 seq=0 重放并逐条打印全部历史事件
     python scripts/shadow_watch.py --interval 5     # 每 5 秒检查一次
-    python scripts/shadow_watch.py --hash f18ffc34 # 只统计指定提示词版本
+    python scripts/shadow_watch.py --hash f18ffc34  # 只统计指定提示词版本，观察当前版本建议必填
 
 指标口径与 shadow 验收文档一致：解析失败率、非法动作率、目标合法率、
 reply/silent 分布、危险沉默、natural_reply_window 过度触发、旧管线分歧
@@ -225,28 +229,64 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f'file:{path.as_posix()}?mode=ro', uri=True, timeout=5)
 
 
-def _query_legacy_action(conn: sqlite3.Connection, stream_id: int, turn_id: int | None) -> str:
-    """读取同一 stream/turn 的旧管线 turn_action 决策。"""
-    if turn_id is None:
-        return ''
-    row = conn.execute(
-        '''SELECT json_extract(payload, '$.action') FROM pipeline_events
-           WHERE kind = 'turn_action' AND stream_id = ? AND turn_id = ?
-           ORDER BY seq DESC LIMIT 1''',
-        (stream_id, turn_id),
-    ).fetchone()
-    return str(row[0]) if row and row[0] is not None else ''
+def _query_message_texts(
+    conn: sqlite3.Connection,
+    pairs: set[tuple[int, int]],
+) -> Dict[tuple[int, int], str]:
+    """按 (stream_id, message_id) 批量读取消息正文。
+
+    逐行调用会退化成 2×N 次点查询；这里按 SQLite 参数上限分块，每块一次
+    查询取回全部相关正文。
+    """
+    if not pairs:
+        return {}
+    ordered = sorted(pairs)
+    result: Dict[tuple[int, int], str] = {}
+    for start in range(0, len(ordered), 200):
+        chunk = ordered[start:start + 200]
+        placeholders = ','.join('(?,?)' for _ in chunk)
+        params = [value for pair in chunk for value in pair]
+        rows = conn.execute(
+            f'''SELECT stream_id, id, content FROM messages
+                WHERE (stream_id, id) IN ({placeholders})''',
+            params,
+        ).fetchall()
+        for row in rows:
+            if row['content'] is not None:
+                result[(int(row['stream_id']), int(row['id']))] = str(row['content'])
+    return result
 
 
-def _query_message_text(conn: sqlite3.Connection, stream_id: int, message_id: int) -> str:
-    """按 watermark 读取消息正文，便于报告识别具体样本。"""
-    if not message_id:
-        return ''
-    row = conn.execute(
-        'SELECT content FROM messages WHERE stream_id = ? AND id = ?',
-        (stream_id, message_id),
-    ).fetchone()
-    return str(row[0]) if row and row[0] is not None else ''
+def _query_legacy_actions(
+    conn: sqlite3.Connection,
+    pairs: set[tuple[int, int]],
+) -> Dict[tuple[int, int], str]:
+    """按 (stream_id, turn_id) 批量读取旧管线 turn_action 决策。
+
+    同一 stream/turn 存在多条事件时保留 seq 最大的一条，与原先逐行
+    ``ORDER BY seq DESC LIMIT 1`` 语义一致。
+    """
+    if not pairs:
+        return {}
+    ordered = sorted(pairs)
+    result: Dict[tuple[int, int], str] = {}
+    for start in range(0, len(ordered), 200):
+        chunk = ordered[start:start + 200]
+        placeholders = ','.join('(?,?)' for _ in chunk)
+        params = [value for pair in chunk for value in pair]
+        rows = conn.execute(
+            f'''SELECT stream_id, turn_id, seq,
+                       json_extract(payload, '$.action') AS action
+                FROM pipeline_events
+                WHERE kind = 'turn_action'
+                  AND (stream_id, turn_id) IN ({placeholders})
+                ORDER BY seq DESC''',
+            params,
+        ).fetchall()
+        for row in rows:
+            key = (int(row['stream_id']), int(row['turn_id']))
+            result.setdefault(key, str(row['action']) if row['action'] is not None else '')
+    return result
 
 
 def _load_samples(
@@ -275,6 +315,8 @@ def _load_samples(
     sql += ' ORDER BY seq'
     rows = conn.execute(sql, params).fetchall()
     samples: List[ShadowSample] = []
+    message_pairs: set[tuple[int, int]] = set()
+    legacy_pairs: set[tuple[int, int]] = set()
     for row in rows:
         try:
             payload = json.loads(row['payload'])
@@ -287,9 +329,18 @@ def _load_samples(
             turn_id=int(row['turn_id']) if row['turn_id'] is not None else None,
             payload=payload,
         )
-        sample.text = _query_message_text(conn, sample.stream_id, sample.watermark)
-        sample.legacy_action = _query_legacy_action(conn, sample.stream_id, sample.turn_id)
         samples.append(sample)
+        if sample.watermark:
+            message_pairs.add((sample.stream_id, sample.watermark))
+        if sample.turn_id is not None:
+            legacy_pairs.add((sample.stream_id, sample.turn_id))
+
+    message_texts = _query_message_texts(conn, message_pairs)
+    legacy_actions = _query_legacy_actions(conn, legacy_pairs)
+    for sample in samples:
+        sample.text = message_texts.get((sample.stream_id, sample.watermark), '')
+        if sample.turn_id is not None:
+            sample.legacy_action = legacy_actions.get((sample.stream_id, sample.turn_id), '')
     return samples
 
 
@@ -463,14 +514,14 @@ def _parse_args() -> Namespace:
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT, help='Markdown 报告输出路径')
     parser.add_argument('--cursor', type=Path, default=DEFAULT_CURSOR, help='游标文件路径')
     parser.add_argument('--interval', type=float, default=15.0, help='轮询间隔秒数')
-    parser.add_argument('--hash', default='', help='只统计该 promptHash，留空表示全部')
+    parser.add_argument('--hash', default='', help='只统计该 promptHash；留空表示全部历史（旧版本会混入失败率）')
     parser.add_argument(
         '--model-task',
         default=DEFAULT_MODEL_TASK,
         help='观察的 version.modelTask；selected_streams/enabled 填 chat.conversation',
     )
     parser.add_argument('--once', action='store_true', help='只统计一次并退出')
-    parser.add_argument('--full', action='store_true', help='从 seq=0 重放全部历史事件')
+    parser.add_argument('--full', action='store_true', help='从 seq=0 重放并逐条打印全部历史事件')
     return parser.parse_args()
 
 
@@ -491,9 +542,10 @@ def _run_once(args: Namespace) -> int:
         print(f'[shadow] 读取失败：{exc}', file=sys.stderr)
         return 1
     report = ShadowReport(samples)
+    rendered = _render_report(report)
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(_render_report(report), encoding='utf-8')
-    print(_render_report(report))
+    args.report.write_text(rendered, encoding='utf-8')
+    print(rendered)
     print(f'报告已写入：{args.report}')
     return 0
 
@@ -518,7 +570,7 @@ def _run_watch(args: Namespace) -> int:
     args.report.write_text(_render_report(report), encoding='utf-8')
     _write_cursor(args.cursor, cursor)
     _print_summary(report)
-    print(f'[shadow] 从 seq>{cursor} 开始观察，每 {args.interval:g}s 检查一次；')
+    print(f'[shadow] 报告按全量历史累计；从 seq>{cursor} 开始打印新事件，每 {args.interval:g}s 检查一次；')
     print(f'[shadow] 报告滚动写入：{args.report}，Ctrl+C 退出。')
 
     try:
