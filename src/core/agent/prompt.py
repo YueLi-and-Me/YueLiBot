@@ -121,7 +121,7 @@ def _identity_context(
 
     :param personality: 已配置的人格描述文本。
     :param birthday: ISO ``YYYY-MM-DD`` 格式的生日文本；空字符串表示未配置。
-    :param now: 用于计算年龄和生日提示的当前本地时间。
+    :param now: 用于写入生日日期、计算年龄和判断生日当天的当前本地时间。
     :param aliases: 可供识别的其他称呼；``None`` 表示未配置。
     :param platform_name: 平台侧显示的 Bot 名称；为空时不加入别名。
     :param name: 配置中的主名称，用于去除重复别名。
@@ -139,7 +139,13 @@ def _identity_context(
         age = now.year - parsed_birthday.year - (
             (now.month, now.day) < (parsed_birthday.month, parsed_birthday.day)
         )
-        lines.extend(['', f'你今年 {age} 岁。'])
+        # 只写年龄不足以回答“生日是哪天”：模型会自行编造月份和日期。
+        # 必须把完整日期写入身份块，让生日成为模型可直接读取的稳定事实。
+        lines.extend([
+            '',
+            f'你的生日是 {parsed_birthday.year}年{parsed_birthday.month}月{parsed_birthday.day}日。',
+            f'你今年 {age} 岁。',
+        ])
 
     self_names = [value for value in [*(aliases or []), platform_name] if value and value != name]
     if self_names:
@@ -397,14 +403,20 @@ def render_action_protocol(
         if quote_supported
         else '本平台不支持引用，不要写 quote 属性'
     )
-    # 示例里的目标 ID 也必须是运行时真实可选 ID，避免模型照抄示例中的越界数字。
-    example_target_id = str(ids[0]) if ids else '0'
+    # 可选消息为空时不渲染 reply 示例，避免模型照抄 targets="0" 这种
+    # 必然非法的目标；silent 示例不需要目标，因此仍保留。
+    reply_example = (
+        '\n# 格式一：reply（回复）\n'
+        f'<decision action="reply" targets="{str(ids[0])}" '
+        'reasons="direct_question" length="brief"/>\n'
+        '<say emotion="normal">嗯嗯，我看到了。</say>'
+        '<say emotion="smile">你继续说。</say>\n'
+    ) if ids else ''
     return get_prompt('chat.action.protocol').render(
         available_actions=actions_text,
         selectable_messages=selectable_text,
         quote_rule=quote_rule,
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
-        example_target_id=example_target_id,
+        reply_example=reply_example,
     )
-

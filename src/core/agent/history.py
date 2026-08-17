@@ -72,10 +72,12 @@ def strip_say_tags(raw: str) -> str:
     因此 Agent 上下文单独调用本函数做纯文本化。
 
     :param raw: 已去除副作用标签的助手回复文本。
-    :return: 仅含台词内容的纯文本。
+    :return: 仅含台词内容的纯文本；相邻 ``<say>`` 段之间以换行分隔，
+        避免多条气泡的台词被拼成一句连读。
     :raises TypeError: ``raw`` 不是字符串时由正则操作触发。
     """
-    return _SAY_TAGS.sub('', raw or '').strip()
+    parts = [part.strip() for part in _SAY_TAGS.split(raw or '') if part.strip()]
+    return '\n'.join(parts)
 
 
 def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:

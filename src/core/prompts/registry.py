@@ -61,6 +61,7 @@ TEMPLATE_IDS = (
     'vision.glance',
     # 追加在末尾：既有验收断言 TEMPLATE_IDS[3:5] 固定为篇幅变体。
     'chat.action.protocol',
+    'image.description',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures'}),
@@ -114,8 +115,9 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'quote_rule',
         'emotions',
         'gestures',
-        'example_target_id',
+        'reply_example',
     }),
+    'image.description': frozenset(),
 }
 
 _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')
