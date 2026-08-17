@@ -271,6 +271,24 @@ class MemoryStore:
         ).fetchone()
         return row[0] if row and row[0] is not None else None
 
+    def last_assistant_reply_at(self, stream_id: int) -> int | None:
+        """返回指定 stream 最近一条助手回复的落库时间。
+
+        natural_reply_window 必须按 Bot 实际发言时间收窄，不能复用十分钟
+        回复计数；调用方用该时间戳与当前时刻的差值判断自然跟进窗口。
+
+        :param stream_id: 目标 stream ID。
+        :return: 最近助手消息的最大 ``created_at``；没有助手消息时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表。
+        """
+        row = self._db.execute(
+            '''SELECT MAX(created_at) FROM messages
+               WHERE stream_id = ? AND role = 'assistant' ''',
+            (stream_id,),
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
     def interaction_density(self, stream_id: int, now: int | None = None) -> str:
         """根据最近三天消息数量生成自然语言互动密度描述。
 

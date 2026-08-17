@@ -59,6 +59,11 @@ DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
     'reply_necessity',         # 回复必要性评分达到阈值
 })
 
+# Bot 上一条回复后的自然跟进窗口。只在这一短时限内允许把普通群消息抬入
+# DELIBERATE；超过后必须重新出现真信号或攒够扩展触发预算，避免一次发言
+# 让后续十分钟的群噪声全部进入意识。
+NATURAL_REPLY_WINDOW_MS = 90_000
+
 _DISPOSITION_CODE_SETS: dict[GateDisposition, frozenset[str]] = {
     'drop': DROP_GATE_CODES,
     'force': FORCE_GATE_CODES,
@@ -88,13 +93,17 @@ class GateRequest:
     is_clear_question: bool = False
     recognizable_target: bool = False
     candidate_message_ids: tuple[int, ...] = ()
+    # 距 Bot 上一条回复的毫秒数；由调用方从持久化消息时间戳计算。None 表示尚无回复。
+    last_bot_reply_elapsed_ms: int | None = None
 
     def __post_init__(self) -> None:
-        """拒绝负计数与零窗口上限，防止频率比较被错误输入翻转。"""
+        """拒绝负计数、零窗口上限与负回复间隔，防止频率比较被错误输入翻转。"""
         if self.replies_in_window < 0:
             raise ValueError('窗口内回复数不能为负')
         if self.max_replies_in_window < 1:
             raise ValueError('窗口回复上限必须大于 0')
+        if self.last_bot_reply_elapsed_ms is not None and self.last_bot_reply_elapsed_ms < 0:
+            raise ValueError('距上一条 Bot 回复的毫秒数不能为负')
 
 
 @dataclass(frozen=True)
@@ -185,8 +194,12 @@ def decide_disposition(request: GateRequest) -> GateResult:
         codes.append('ongoing_topic')
     if request.is_clear_question:
         codes.append('clear_question')
-    # Bot 最近在窗口内说过话，自然回应窗口仍然敞开。
-    if request.replies_in_window > 0:
+    # 自然回应窗口只由「距上一条回复的时间」决定，与十分钟频率计数解耦；
+    # 否则一次发言会让后续十分钟的每条普通群消息都获得该信号。
+    if (
+        request.last_bot_reply_elapsed_ms is not None
+        and request.last_bot_reply_elapsed_ms <= NATURAL_REPLY_WINDOW_MS
+    ):
         codes.append('natural_reply_window')
     if request.recognizable_target:
         codes.append('recognizable_target')

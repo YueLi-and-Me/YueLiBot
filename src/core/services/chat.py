@@ -185,6 +185,7 @@ class _BatchGate:
     name_mentioned: bool
     reply_count: int
     mentioned_me: bool
+    last_bot_reply_elapsed_ms: int | None = None
 
 
 class ChatService:
@@ -2211,11 +2212,16 @@ class ChatService:
         """
         asleep = self._sleep_state().asleep if self._sleep_state else False
         reply_count = 0
+        last_bot_reply_elapsed_ms: int | None = None
         if context.stream.kind == 'group':
+            now = current_time()
             reply_count = self.memory.assistant_reply_count_since(
                 context.stream.id,
-                current_time() - self._cfg.group_chat.reply_window_minutes * 60_000,
+                now - self._cfg.group_chat.reply_window_minutes * 60_000,
             )
+            last_bot_reply_at = self.memory.last_assistant_reply_at(context.stream.id)
+            if last_bot_reply_at is not None:
+                last_bot_reply_elapsed_ms = now - last_bot_reply_at
         name_mentioned = (
             mentions_bot_name(batch_text, self._bot_names)
             if context.stream.kind == 'group'
@@ -2229,6 +2235,7 @@ class ChatService:
             at_mention_must_reply=self._at_mention_must_reply,
             replies_in_window=reply_count,
             max_replies_in_window=self._cfg.group_chat.max_replies_in_window,
+            last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
         ))
         plain_group_drop = (
             context.stream.kind == 'group'
@@ -2255,6 +2262,7 @@ class ChatService:
             name_mentioned=name_mentioned,
             reply_count=reply_count,
             mentioned_me=mentioned_me,
+            last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
         )
 
     def _extended_group_gate(
@@ -2313,7 +2321,7 @@ class ChatService:
         return (
             batch_gate.mentioned_me
             or batch_gate.name_mentioned
-            or batch_gate.reply_count > 0
+            or 'natural_reply_window' in batch_gate.result.reason_codes
         )
 
     def extended_trigger_enabled(self, context: ConversationContext) -> bool:
@@ -2454,9 +2462,17 @@ class ChatService:
         if not user_indexes:
             return messages
         last_user_index = user_indexes[-1]
-        # 上一回合的 assistant 回复可能晚于当前用户消息落库；Agent 模式必须截断
-        # 这些尾部 assistant，否则模型会看到自己的旧回复排在待回复消息之后。
-        history = history[:last_user_index + 1]
+        # 上一回合的 assistant 回复可能晚于当前用户消息落库：当前消息在模型
+        # 生成期间到达时，落库顺序是 [上一用户, 当前用户, 上一回复]。同 stream
+        # 的占用保证尾部 assistant 只可能属于上一回合，必须移到当前用户之前，
+        # 而不是截断；否则 Agent 看不见自己刚说过的话，会重复回复。
+        trailing_assistants = history[last_user_index + 1:]
+        history = [
+            *history[:last_user_index],
+            *trailing_assistants,
+            history[last_user_index],
+        ]
+        last_user_index = len(history) - 1
         history[last_user_index] = {
             **history[last_user_index],
             'content': (

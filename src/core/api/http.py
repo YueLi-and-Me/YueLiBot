@@ -439,12 +439,16 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     )
     group_chat = app_state.group_chat_config
     reply_count = 0
+    last_bot_reply_elapsed_ms: int | None = None
     if context.stream.kind == 'group':
         # 频率窗口只统计当前 group stream 的助手消息，不跨群或跨平台共享配额。
         reply_count = app_state.chat.memory.assistant_reply_count_since(
             context.stream.id,
             now - group_chat.reply_window_minutes * 60_000,
         )
+        last_bot_reply_at = app_state.chat.memory.last_assistant_reply_at(context.stream.id)
+        if last_bot_reply_at is not None:
+            last_bot_reply_elapsed_ms = now - last_bot_reply_at
     # 文本称呼只读取 bot.toml；协议登录昵称仅用于上下文展示，不能旁路配置触发回合。
     bot_names = app_state.chat.bot_names()
     asleep = app_state.chat.current_sleep().asleep
@@ -462,6 +466,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         at_mention_must_reply=app_state.chat.at_mention_must_reply,
         replies_in_window=reply_count,
         max_replies_in_window=group_chat.max_replies_in_window,
+        last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
     ))
     plain_group_deferred = (
         context.stream.kind == 'group'
@@ -487,6 +492,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         nameMentioned=name_mentioned,
         repliesInWindow=reply_count,
         maxRepliesInWindow=group_chat.max_replies_in_window,
+        naturalReplyElapsedMs=last_bot_reply_elapsed_ms,
         **gate_result.as_trace(),
     )
     if gate_result.disposition == 'drop' and not plain_group_deferred:
