@@ -12,18 +12,35 @@ import type { FormEvent } from 'react'
 import { Button, Card, CardBody, Chip, Empty, Field, Input, SectionHeading, Select, Toggle, cn } from '@/components/ui'
 import { useAuth } from '@/hooks/use-auth'
 import { apiMutate, UnauthorizedError } from '@/lib/api'
-import { dateTime, fixed, formatMessages, optionalText, record, text, traceDetail, traceSenderLabel } from '@/lib/format'
+import {
+  dateTime,
+  displayValue,
+  fixed,
+  formatMessages,
+  optionalText,
+  record,
+  text,
+  traceDetailItems,
+  traceKindLabel,
+  traceKindQueryValue,
+  traceSenderLabel,
+} from '@/lib/format'
 import type { TraceEntry } from '../../../../electron/shared/ipc.ts'
 
-/** kind 过滤下拉框的选项：值与带中文注释的标签。 */
+/** 事件类型过滤选项：协议值保持稳定，界面仅显示中文名。 */
 const KIND_OPTIONS = [
-  { value: 'all', label: '全部' },
-  { value: 'observation', label: 'observation（没回的群消息）' },
-  { value: 'reply_gate', label: 'reply_gate（回不回的判定）' },
-  { value: 'expression_select', label: 'expression_select' },
-  { value: 'interest', label: 'interest' },
-  { value: 'proactive_intent', label: 'proactive_intent' },
-  { value: 'vision_glance', label: 'vision_glance' },
+  { value: 'all', label: '全部事件' },
+  { value: 'user_input', label: '收到用户消息' },
+  { value: 'observation', label: '旁听消息' },
+  { value: 'reply_gate', label: '回复门控判定' },
+  { value: 'action_decision', label: '行动决策' },
+  { value: 'llm_request', label: '请求模型' },
+  { value: 'llm_final', label: '模型输出完成' },
+  { value: 'llm_error', label: '模型调用失败' },
+  { value: 'expression_select', label: '表达方式选择' },
+  { value: 'interest', label: '兴趣度更新' },
+  { value: 'proactive_intent', label: '主动意图评估' },
+  { value: 'vision_glance', label: '视觉扫视' },
 ] as const
 
 /** 单次检索请求的事件条数上限。 */
@@ -116,6 +133,19 @@ function ReplayControl({ seq }: { seq: number }) {
   )
 }
 
+/** 把事件剩余字段渲染成独立中文信息块，避免 JSON 串堆在同一行。 */
+function TraceDetails({ entry }: { entry: TraceEntry }) {
+  const items = traceDetailItems(entry)
+  if (!items.length) return null
+  return (
+    <div className="flex min-w-0 flex-wrap gap-1.5">
+      {items.map((item) => (
+        <Chip key={item.rawKey} label={item.label} value={item.value} />
+      ))}
+    </div>
+  )
+}
+
 /**
  * 渲染单个对话轮次卡片。
  *
@@ -144,7 +174,7 @@ function TurnCard({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <strong className="text-[13px] font-semibold">
-          Turn #{turnId} · {origin?.platform ?? '未知来源'} · stream {origin?.streamId ?? '—'} · person {origin?.personId ?? '—'}
+          第 {turnId} 轮 · 来源：{displayValue(origin?.platform ?? '未知')} · 会话 #{origin?.streamId ?? '—'} · 人物 #{origin?.personId ?? '—'}
         </strong>
         <Button variant="ghost" size="sm" onClick={() => onShowTurn(turnId)}>
           查看该轮全部事件
@@ -164,7 +194,7 @@ function TurnCard({
             <div key={key} className="flex flex-col gap-2">
               <details className="group">
                 <summary className="cursor-pointer text-xs font-medium text-primary select-none">
-                  发送的 Prompt
+                  展开发送给模型的提示词
                 </summary>
                 <pre className="mt-1.5 max-h-72 overflow-auto rounded-lg bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
                   {formatMessages(entry.messages)}
@@ -184,25 +214,32 @@ function TurnCard({
         if (entry.kind === 'memory_fact') {
           return (
             <div key={key} className="flex flex-wrap gap-1.5">
-              <Chip label="记忆" value={`[${text(entry.memoryKind)}] ${text(entry.content)}`} />
+              <Chip label="记忆" value={`[${displayValue(entry.memoryKind)}] ${text(entry.content)}`} />
             </div>
           )
         }
         if (entry.kind === 'mood_delta') {
           return (
             <div key={key} className="flex flex-wrap gap-1.5">
-              <Chip label="心情" value={`favor=${fixed(entry.favor)} energy=${fixed(entry.energy)}`} />
+              <Chip label="心情" value={`好感 ${fixed(entry.favor)} · 精力 ${fixed(entry.energy)}`} />
             </div>
           )
         }
         if (entry.kind === 'llm_error') {
           return (
             <div key={key} className="flex flex-wrap gap-1.5">
-              <Chip label="错误" value={`${text(entry.errorKind)} · ${text(entry.message)}`} />
+              <Chip label="错误" value={`${displayValue(entry.errorKind)} · ${text(entry.message)}`} />
             </div>
           )
         }
-        return null
+        return (
+          <div key={key} className="flex flex-col gap-1.5 rounded-md border border-border/70 bg-card/70 px-2.5 py-2">
+            <strong className="text-xs font-semibold text-accent-foreground" title={entry.kind}>
+              {traceKindLabel(entry.kind)}
+            </strong>
+            <TraceDetails entry={entry} />
+          </div>
+        )
       })}
     </article>
   )
@@ -265,8 +302,8 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
     const params = new URLSearchParams({ limit: String(SEARCH_LIMIT) })
     if (currentStreamOnly && streamId) params.set('streamId', streamId)
     if (turnIdInput) params.set('turnId', turnIdInput)
-    for (const kind of kindsInput.split(',').map((value) => value.trim()).filter(Boolean)) {
-      params.append('kind', kind)
+    for (const kind of kindsInput.split(/[,，]/).map((value) => value.trim()).filter(Boolean)) {
+      params.append('kind', traceKindQueryValue(kind))
     }
     const since = localDateTimeMs(sinceInput)
     const until = localDateTimeMs(untilInput)
@@ -314,7 +351,7 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
         tint="cyan"
         actions={
           <>
-            <Field label="kind 过滤" htmlFor="trace-filter" className="w-56">
+            <Field label="事件类型" htmlFor="trace-filter" className="w-56">
               <Select id="trace-filter" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
                 {KIND_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -350,7 +387,7 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
               id="event-kinds"
               className="font-mono"
               type="text"
-              placeholder="llm_request, llm_final"
+              placeholder="请求模型、模型输出完成"
               value={kindsInput}
               onChange={(event) => setKindsInput(event.target.value)}
             />
@@ -400,17 +437,24 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
           {backgroundEntries.length ? (
             <div className="flex max-h-[26rem] flex-col gap-1 overflow-y-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs">
               {backgroundEntries.map((entry, index) => (
-                <div key={`${entry.seq ?? `live-${entry.at}-${index}`}`} className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-                  <span className="flex-none text-muted-foreground tabular-nums">{dateTime(entry.at)}</span>
-                  <strong className="flex-none font-semibold text-accent-foreground">{entry.kind}</strong>
+                <div
+                  key={`${entry.seq ?? `live-${entry.at}-${index}`}`}
+                  className="flex flex-col gap-1.5 rounded-md border border-border/70 bg-card/70 px-2.5 py-2"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+                    <span className="flex-none text-muted-foreground tabular-nums">{dateTime(entry.at)}</span>
+                    <strong className="flex-none font-semibold text-accent-foreground" title={entry.kind}>
+                      {traceKindLabel(entry.kind)}
+                    </strong>
+                  </div>
                   {/* 观察事件直接展示原消息和后端门控原因，避免把「未回复」误判为链路故障。 */}
                   {entry.kind === 'observation' ? (
-                    <>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
                       <span className="min-w-0 break-all">{traceSenderLabel(entry)}：{text(entry.text)}</span>
-                      <span className="text-muted-foreground">未回复：{text(entry.reason)}</span>
-                    </>
+                      <span className="text-warning">未回复：{displayValue(entry.reason)}</span>
+                    </div>
                   ) : (
-                    <span className="min-w-0 break-all text-muted-foreground">{traceDetail(entry)}</span>
+                    <TraceDetails entry={entry} />
                   )}
                 </div>
               ))}

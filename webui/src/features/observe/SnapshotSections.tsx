@@ -17,7 +17,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 
 import { Card, CardBody, Chip, Metric, Progress, SectionHeading, cn } from '@/components/ui'
-import { dateTime, durationCn, fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
+import { dateTime, displayValue, durationCn, fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
 import type { ObservabilityPayload } from '../../../../electron/shared/ipc.ts'
 
 /** 网格跨度：常规分区。 */
@@ -73,7 +73,7 @@ function MetricList({ children }: { children: ReactNode }) {
 function SelfStateSection({ payload }: { payload: ObservabilityPayload }) {
   const energy = payload.selfState.energy
   return (
-    <SectionCard title="自身状态" subtitle="selfState" icon={<Heart />} tint="violet">
+    <SectionCard title="自身状态" subtitle="当前精力" icon={<Heart />} tint="violet">
       <div className="flex flex-col gap-2">
         <MetricList>
           <Metric label="精力" value={fixed(energy, 1)} />
@@ -104,7 +104,7 @@ function SleepSection({ payload }: { payload: ObservabilityPayload }) {
     ? '—'
     : remaining > 0 ? `预计还有 ${durationCn(remaining)}` : `已过 ${durationCn(-remaining)}`
   return (
-    <SectionCard title="睡眠状态" subtitle="sleep" icon={<BedDouble />} tint="blue">
+    <SectionCard title="睡眠状态" subtitle="生理时钟" icon={<BedDouble />} tint="blue">
       <div className="flex flex-col gap-2">
         {probability !== null ? <Progress value={probability} max={1} label="睡意概率" /> : null}
         <MetricList>
@@ -135,7 +135,7 @@ function ScheduleSection({ payload }: { payload: ObservabilityPayload }) {
   return (
     <SectionCard
       title="今天的日程"
-      subtitle={schedule?.date ?? 'schedule'}
+      subtitle={schedule?.date ?? '今日安排'}
       icon={<CalendarClock />}
       tint="cyan"
       wide
@@ -187,7 +187,7 @@ function BudgetSection({ payload }: { payload: ObservabilityPayload }) {
   const remaining = numeric(impulse.remaining) ?? 0
   const total = used + remaining
   return (
-    <SectionCard title="打扰预算" subtitle="impulse" icon={<BatteryCharging />} tint="teal">
+    <SectionCard title="打扰预算" subtitle="今日主动额度" icon={<BatteryCharging />} tint="teal">
       <div className="flex flex-col gap-2">
         <Progress value={used} max={Math.max(1, total)} label="今日主动开口预算" />
         <MetricList>
@@ -215,7 +215,7 @@ function SensingSection({ payload }: { payload: ObservabilityPayload }) {
   const spoke = numeric(vision.spoke) ?? 0
   const byReason = record(vision.byReason)
   return (
-    <SectionCard title="感知与视觉" subtitle="visionStats" icon={<ScanEye />} tint="cyan">
+    <SectionCard title="感知与视觉" subtitle="最近视觉统计" icon={<ScanEye />} tint="cyan">
       <div className="flex flex-col gap-2">
         {/* 看过/开口占比进度条：只有发生过视觉事件时才渲染，避免空进度条。 */}
         {looks > 0 ? (
@@ -227,14 +227,14 @@ function SensingSection({ payload }: { payload: ObservabilityPayload }) {
           </>
         ) : null}
         <MetricList>
-          <Metric label="当前活动" value={text(sensing.activity)} />
+          <Metric label="当前活动" value={displayValue(sensing.activity)} />
           <Metric label="活动描述" value={text(sensing.description)} />
           <Metric label="持续时间" value={`${fixed(sensing.minutes)} 分钟`} />
-          <Metric label="静默场景" value={text(sensing.silent)} />
+          <Metric label="静默场景" value={displayValue(sensing.silent)} />
           <Metric label="视觉启用" value={text(vision.enabled)} />
           <Metric label="看过 / 开口" value={`${fixed(vision.looks)} / ${fixed(vision.spoke)}`} />
           {Object.entries(byReason).map(([reason, count]) => (
-            <Metric key={reason} label={`视觉原因 · ${reason}`} value={fixed(count)} />
+            <Metric key={reason} label={`视觉原因 · ${displayValue(reason)}`} value={fixed(count)} />
           ))}
         </MetricList>
       </div>
@@ -251,7 +251,7 @@ function SensingSection({ payload }: { payload: ObservabilityPayload }) {
 function ConversationSection({ payload }: { payload: ObservabilityPayload }) {
   const participants = payload.conversation.participants
   return (
-    <SectionCard title="会话状态" subtitle="conversation" icon={<MessageSquare />} tint="blue" wide>
+    <SectionCard title="会话状态" subtitle="当前工作记忆" icon={<MessageSquare />} tint="blue" wide>
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap gap-1.5">
           <Chip label="工作消息" value={`${payload.conversation.workingMessages} 条`} />
@@ -290,7 +290,7 @@ function VoiceSection({ payload }: { payload: ObservabilityPayload }) {
   const cacheMisses = numeric(voice.cacheMisses) ?? 0
   const cacheTotal = cacheHits + cacheMisses
   return (
-    <SectionCard title="语音与缓存" subtitle="voice" icon={<Mic />} tint="teal">
+    <SectionCard title="语音与缓存" subtitle="语音服务状态" icon={<Mic />} tint="teal">
       <div className="flex flex-col gap-2">
         {/* 命中率进度条补足卡片视觉密度，同时给出比计数更直观的比率。 */}
         {cacheTotal > 0 ? (

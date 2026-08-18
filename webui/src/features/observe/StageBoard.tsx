@@ -53,7 +53,7 @@ export function StageBoard({ stages }: { stages: StageEntry[] }) {
               {elapsedLabel(entry.stageElapsedMs)}
             </span>
             {entry.turnId !== null ? (
-              <span className="font-mono text-xs text-muted-foreground tabular-nums">Turn #{entry.turnId}</span>
+              <span className="font-mono text-xs text-muted-foreground tabular-nums">第 {entry.turnId} 轮</span>
             ) : null}
           </div>
         ))}

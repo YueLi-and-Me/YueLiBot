@@ -51,7 +51,7 @@ export function ObservePage() {
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
         eyebrow="YUELI / WEBUI"
-        title="Bot 观察面板"
+        title="机器人观察面板"
         subtitle="按会话流读取的只读运行快照"
         actions={
           <>

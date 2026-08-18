@@ -7,6 +7,207 @@
  */
 import type { ObservabilityStream, TraceEntry } from '../../../electron/shared/ipc.ts'
 
+/** 事件协议名与观察面板中文名称；协议值保留英文，仅展示时查表。 */
+const TRACE_KIND_LABELS: Record<string, string> = {
+  action_decision: '行动决策',
+  emoji_selected: '选择表情包',
+  expression_select: '表达方式选择',
+  foreground: '前台活动变化',
+  image_description: '图片理解',
+  interest: '兴趣度更新',
+  llm_chunk: '模型流式片段',
+  llm_error: '模型调用失败',
+  llm_final: '模型输出完成',
+  llm_request: '请求模型',
+  memory_fact: '写入记忆',
+  mood_delta: '心情变化',
+  observation: '旁听消息',
+  outbound_delivered: '回复投递完成',
+  outbound_dropped: '出站消息已丢弃',
+  proactive_decision: '主动发言决策',
+  proactive_intent: '主动意图评估',
+  promise_rejected_for_person: '约定人物归属不匹配',
+  promise_stashed: '约定已登记',
+  reply_gate: '回复门控判定',
+  sleep_transition: '睡眠状态变化',
+  stage: '处理阶段变化',
+  turn_action: '轮次动作规划',
+  turn_competition: '轮次竞争处理',
+  user_input: '收到用户消息',
+  vision_glance: '视觉扫视',
+}
+
+/** 追踪载荷字段与中文标签；未知扩展字段仍原样显示。 */
+const TRACE_FIELD_LABELS: Record<string, string> = {
+  accepted: '已接收',
+  action: '动作',
+  activeSource: '生效来源',
+  activity: '活动类型',
+  ageMs: '数据年龄',
+  agentScope: '决策模式',
+  allow: '允许执行',
+  app: '应用',
+  asleep: '已入睡',
+  availableActions: '可用动作',
+  blockedSource: '被拦来源',
+  botName: '机器人',
+  botNames: '机器人名称',
+  bytes: '字节数',
+  candidateCount: '候选数量',
+  channel: '通道',
+  content: '内容',
+  count: '数量',
+  decisionSource: '决策来源',
+  decision: '最终决策',
+  detail: '说明',
+  disposition: '门控结果',
+  drowsy: '正在犯困',
+  elapsedMs: '耗时',
+  energy: '精力变化',
+  error: '错误',
+  errorKind: '错误类型',
+  errorType: '错误类型',
+  enabled: '已启用',
+  eventStatus: '事件状态',
+  externalMessageId: '外部消息编号',
+  favor: '好感变化',
+  gateDisposition: '门控结果',
+  gateReasonCodes: '门控理由',
+  gate: '门控信息',
+  habits: '表达习惯数量',
+  hash: '内容指纹',
+  interest: '兴趣度',
+  intensity: '活动强度',
+  intentType: '意图类型',
+  inputs: '输入条件',
+  latencyMs: '模型耗时',
+  length: '回复篇幅',
+  memoryKind: '记忆类型',
+  maxRepliesInWindow: '窗口回复上限',
+  maxTokens: '最大令牌数',
+  message: '错误信息',
+  messages: '提示词消息',
+  messageWatermark: '消息水位',
+  mentionedMe: '提到机器人',
+  modelName: '模型',
+  modelTask: '模型任务',
+  nameMentioned: '叫到机器人名字',
+  naturalReplyElapsedMs: '自然接话间隔',
+  personId: '人物编号',
+  personKind: '人物类型',
+  platform: '平台',
+  probability: '概率',
+  process: '进程',
+  promptHash: '提示词指纹',
+  promptId: '提示词模板',
+  providerName: '模型服务',
+  quoteMessageId: '引用消息',
+  reason: '原因',
+  reasonCodes: '决策理由',
+  reasoning: '模型思考',
+  renderParams: '渲染参数',
+  reply: '回复内容',
+  result: '结果',
+  repliesInWindow: '窗口内回复数',
+  scene: '场景变化',
+  seconds: '秒数',
+  senderDisplayName: '发送者显示名',
+  senderExternalId: '发送者账号',
+  senderGroupCard: '发送者群名片',
+  senderLabel: '发送者',
+  senderNickname: '发送者昵称',
+  silent: '静默场景',
+  snapshotPath: '快照路径',
+  source: '来源',
+  snapshotId: '快照编号',
+  stage: '处理阶段',
+  stageLabel: '处理阶段',
+  streamId: '会话编号',
+  streamName: '会话',
+  subject: '约定内容',
+  targetMessageIds: '目标消息',
+  temperature: '生成温度',
+  text: '正文',
+  version: '版本信息',
+  waitedSeconds: '等待秒数',
+  windowChanged: '窗口已切换',
+  emojiEmotions: '表情情绪',
+  expressionIntent: '表达意图',
+}
+
+/** 常见协议枚举的中文值；只转换完全匹配项，不改写用户正文。 */
+const DISPLAY_VALUE_LABELS: Record<string, string> = {
+  assistant: '机器人',
+  attention_filtered: '未进入注意范围',
+  away: '暂时离开',
+  backfill: '历史补全',
+  bot_sleeping: '机器人正在睡觉',
+  brief: '简短',
+  browsing: '浏览网页',
+  busy: '忙碌',
+  cached: '使用缓存',
+  chat: '聊天',
+  coding: '编写代码',
+  committed: '已决定执行',
+  contact: '联系人',
+  delivery_failed: '投递失败',
+  desktop: '桌面',
+  direct: '私聊',
+  direct_question: '明确提问',
+  directly_addressed: '直接叫到机器人',
+  disabled: '未启用',
+  drop: '拦截',
+  emotional_support: '需要情绪支持',
+  empty: '无结果',
+  expire: '到期清理',
+  failed: '失败',
+  files: '浏览文件',
+  flush: '批量写入',
+  gate_dropped: '门控拦截',
+  gaming: '玩游戏',
+  group: '群聊',
+  idle: '空闲',
+  illegal_action: '动作不合法',
+  light: '轻度活动',
+  long: '详细',
+  model: '模型判定',
+  music: '听音乐',
+  natural_reply_window: '处于自然接话窗口',
+  no_new_value: '没有新的回复价值',
+  none: '无',
+  ok: '成功',
+  others_conversation: '他人之间的对话',
+  owner: '主人',
+  other: '其他活动',
+  parse_error: '解析失败',
+  provider_error: '模型服务错误',
+  rate_limited: '触发频率限制',
+  react: '发表情回应',
+  reading: '阅读',
+  reply: '回复',
+  shadow: '影子观察',
+  silent: '保持沉默',
+  silent_by_choice: '主动选择沉默',
+  skipped: '已跳过',
+  stash: '暂存',
+  system: '系统',
+  timeout: '超时',
+  topic_closed: '话题已经结束',
+  topic_continuation: '延续当前话题',
+  unknown: '未知错误',
+  user: '用户',
+  video: '观看视频',
+  work: '处理工作',
+  would_interrupt: '回复会打断交流',
+}
+
+/** 面板可直接渲染的一项中文追踪详情。 */
+export interface TraceDetailItem {
+  label: string
+  value: string
+  rawKey: string
+}
+
 /**
  * 将未知快照字段收窄为非数组对象。
  *
@@ -163,6 +364,47 @@ export function streamLabel(stream: ObservabilityStream): string {
 }
 
 /**
+ * 将事件协议名转换成中文显示名。
+ *
+ * @param kind 稳定的后端事件类型。
+ * @returns 已登记类型的中文名；未知类型保留原值，便于发现新协议。
+ */
+export function traceKindLabel(kind: string): string {
+  return TRACE_KIND_LABELS[kind] ?? kind
+}
+
+/**
+ * 将用户输入的中文事件名或协议名转换为后端检索值。
+ *
+ * @param value 单个事件类型筛选词。
+ * @returns 对应的稳定协议名；未知值原样返回。
+ */
+export function traceKindQueryValue(value: string): string {
+  const matched = Object.entries(TRACE_KIND_LABELS).find(([, label]) => label === value)
+  return matched?.[0] ?? value
+}
+
+/**
+ * 将快照或追踪字段值转换为简体中文显示文本。
+ *
+ * @param value 任意 JSON 值。
+ * @returns 布尔值、枚举、数组和对象的紧凑中文文本。
+ */
+export function displayValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '—'
+  if (typeof value === 'string') return DISPLAY_VALUE_LABELS[value] ?? value
+  if (Array.isArray(value)) {
+    return value.length ? value.map(displayValue).join('、') : '无'
+  }
+  const values = record(value)
+  return Object.entries(values)
+    .map(([key, item]) => `${TRACE_FIELD_LABELS[key] ?? key}：${displayValue(item)}`)
+    .join('，') || '无'
+}
+
+/**
  * 将追踪事件中的消息数组格式化为按角色分段的纯文本。
  *
  * @param messages LLM 消息数组或未知值。
@@ -174,17 +416,43 @@ export function formatMessages(messages: unknown): string {
     const entry = record(item)
     const content = entry.content
     const contentText = typeof content === 'string' ? content : JSON.stringify(content)
-    return `[${text(entry.role)}]\n${contentText}`
+    return `【${displayValue(entry.role)}】\n${contentText}`
   }).join('\n\n')
 }
 
 /**
- * 删除追踪事件的索引字段并序列化剩余详情。
+ * 删除追踪事件的索引字段并生成中文详情项。
  *
  * @param entry 单条追踪事件。
- * @returns 不包含序号、时间、类型和轮次的 JSON 文本。
+ * @returns 不包含序号、时间、类型和轮次的中文标签/值数组。
+ * @remarks 原始发送者字段在已有 senderLabel 时折叠，阶段 ID 在已有中文阶段名时
+ * 折叠；消息数组只显示条数，完整提示词由专用展开区呈现。
  */
-export function traceDetail(entry: TraceEntry): string {
-  const { seq: _seq, at: _at, kind: _kind, turnId: _turnId, ...detail } = entry
-  return JSON.stringify(detail)
+export function traceDetailItems(entry: TraceEntry): TraceDetailItem[] {
+  const excluded = new Set(['seq', 'at', 'kind', 'turnId'])
+  if (optionalText(entry.senderLabel)) {
+    excluded.add('senderDisplayName')
+    excluded.add('senderExternalId')
+    excluded.add('senderGroupCard')
+    excluded.add('senderNickname')
+  }
+  if (optionalText(entry.stageLabel)) excluded.add('stage')
+
+  return Object.entries(entry)
+    .filter(([key, value]) => !excluded.has(key) && value !== null && value !== undefined && value !== '')
+    .flatMap(([key, value]) => {
+      const label = TRACE_FIELD_LABELS[key] ?? key
+      if (key === 'messages' && Array.isArray(value)) {
+        return [{ rawKey: key, label, value: `${value.length} 条（可在对话轮次中展开）` }]
+      }
+      const nested = record(value)
+      if (Object.keys(nested).length) {
+        return Object.entries(nested).map(([nestedKey, nestedValue]) => ({
+          rawKey: `${key}.${nestedKey}`,
+          label: `${label} · ${TRACE_FIELD_LABELS[nestedKey] ?? nestedKey}`,
+          value: displayValue(nestedValue),
+        }))
+      }
+      return [{ rawKey: key, label, value: displayValue(value) }]
+    })
 }

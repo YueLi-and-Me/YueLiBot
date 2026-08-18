@@ -8,7 +8,7 @@ import { Eye, MoonStar, Users, Zap } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { cn } from '@/components/ui'
-import { fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
+import { displayValue, fixed, numeric, qqSenderLabel, record } from '@/lib/format'
 import type { ObservabilityPayload } from '../../../../electron/shared/ipc.ts'
 
 /** 单张状态卡的数据结构。 */
@@ -57,7 +57,7 @@ function buildItems(payload: ObservabilityPayload): StatusItem[] {
     {
       label: '视觉响应',
       value: `${fixed(vision.looks)} 看 / ${fixed(vision.spoke)} 说`,
-      detail: `视觉${vision.enabled === true ? '已开启' : '未开启'} · 静默 ${text(record(payload.sensing).silent)}`,
+      detail: `视觉${vision.enabled === true ? '已开启' : '未开启'} · 静默 ${displayValue(record(payload.sensing).silent)}`,
       icon: <Eye />,
       tintClass: 'bg-tint-teal/10 text-tint-teal',
     },

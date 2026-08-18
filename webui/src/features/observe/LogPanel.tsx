@@ -36,10 +36,13 @@ export function LogPanel({ enabled }: { enabled: boolean }) {
         tint="teal"
         actions={
           status === '已连接' ? (
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="live-dot" aria-hidden="true" />
-              已连接
-            </span>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="font-mono tabular-nums">当前 {lines.length} 条</span>
+              <span className="flex items-center gap-1.5">
+                <span className="live-dot" aria-hidden="true" />
+                已连接
+              </span>
+            </div>
           ) : undefined
         }
       />
@@ -47,10 +50,13 @@ export function LogPanel({ enabled }: { enabled: boolean }) {
         <div
           ref={scrollRef}
           aria-live="polite"
-          className="flex h-96 flex-col gap-0.5 overflow-y-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs leading-relaxed text-terminal-foreground"
+          className="flex h-96 flex-col gap-1 overflow-y-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs leading-6 text-terminal-foreground"
         >
           {lines.map((segments, rowIndex) => (
-            <div key={rowIndex} className="break-all whitespace-pre-wrap">
+            <div
+              key={rowIndex}
+              className="rounded px-2 py-0.5 whitespace-pre-wrap [overflow-wrap:anywhere] even:bg-white/[0.035] hover:bg-white/[0.07]"
+            >
               {segments.map((segment, segmentIndex) => (
                 <span
                   key={segmentIndex}
