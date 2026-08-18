@@ -80,6 +80,8 @@ def _classify_code(code: str) -> str:
     if re.search(r'SensitiveContent|Sensitive|Risk|Policy|content_filter', code, re.I): return 'blocked'
     if re.search(r'Quota|RateLimit|TPM|RPM|Throttl|insufficient', code, re.I): return 'quota'
     if re.search(r'Auth|ApiKey|Credential|Permission|invalid_api_key', code, re.I): return 'auth'
+    if code.casefold() == 'get_channel_failed':
+        return 'model'
     if re.search(r'Model|Endpoint|model_not_found', code, re.I): return 'model'
     return 'unknown'
 

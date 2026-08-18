@@ -91,6 +91,10 @@ logger = get_logger(__name__)
 
 CHAT_POLL_INTERVAL_S = 0.1
 
+# 部分 Gemini 兼容网关会把 system 单独提取；保留一条固定的非 system 指令，
+# 既满足其 contents 非空约束，也不把触发情境伪装成用户提出的新问题。
+PROACTIVE_TRIGGER_MESSAGE = '请按上面的要求开始。'
+
 # 上一轮生成期间插队到达的普通群消息，在上一回复落库后先沉降这段时间；
 # 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
 GROUP_CROSSED_MESSAGE_SETTLE_MS = 8_000
@@ -1660,8 +1664,10 @@ class ChatService:
         system = build_proactive_prompt(base_prompt, situation, render_params)
         raw = ''
         try:
-            # 主动模型只接收一个 system 消息，避免将触发情境误当作用户新问题。
-            messages = [{'role': 'system', 'content': system}]
+            messages = [
+                {'role': 'system', 'content': system},
+                {'role': 'user', 'content': PROACTIVE_TRIGGER_MESSAGE},
+            ]
             trace.emit(
                 'llm_request',
                 messages=messages,
