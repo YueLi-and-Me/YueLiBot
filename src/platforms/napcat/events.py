@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from .config import GroupAccessConfig, PrivateAccessConfig
-from .segments import image_source_urls, mentions_user, message_to_text
+from .segments import (
+    emoji_source_urls,
+    emoji_sub_types,
+    image_source_urls,
+    mentions_user,
+    message_to_text,
+)
 
 
 EventKind = Literal[
@@ -41,6 +47,10 @@ class QqInboundEvent:
     # 普通图片下载来源；顺序与 text 中的 [图片] 占位符一致。
     # 适配器只传来源引用，下载与 VLM 描述由主体后台执行，避免阻塞串行入站循环。
     image_sources: tuple[str, ...] = ()
+    # 表情包来源单独对齐 [表情包] 占位符，主体使用情绪标签提示词识别。
+    emoji_sources: tuple[str, ...] = ()
+    # 与 emoji_sources 逐项对齐；主体登记后会在再次发送时还原给 OneBot。
+    emoji_sub_types: tuple[int, ...] = ()
 
 
 def is_action_response(payload: Mapping[str, Any]) -> bool:
@@ -188,6 +198,8 @@ def parse_inbound_event(
         mentioned_me=mentions_user(raw_segments, self_id),
         external_message_id=message_id,
         image_sources=image_source_urls(raw_segments),
+        emoji_sources=emoji_source_urls(raw_segments),
+        emoji_sub_types=emoji_sub_types(raw_segments),
     )
 
 

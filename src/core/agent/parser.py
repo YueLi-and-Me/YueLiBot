@@ -98,6 +98,14 @@ class PromiseEvent:
 
 
 @dataclass
+class EmojiEvent:
+    """表示模型想用一张表情包表达目标情绪。"""
+
+    type: str = 'emoji'
+    emotion: str = ''
+
+
+@dataclass
 class DecisionEvent:
     """表示模型声明的行动决策头，必须先于任何正文出现。
 
@@ -127,13 +135,14 @@ ParseEvent = Union[
     MemoryEvent,
     MoodEvent,
     PromiseEvent,
+    EmojiEvent,
     DecisionEvent,
 ]
 
 # ─────────────────────────────────────────────────────────────────────
 # 内部会处理的标签名。其余一律当普通文本。
 # ─────────────────────────────────────────────────────────────────────
-_KNOWN = frozenset(['say', 'memory', 'mood', 'promise', 'decision'])
+_KNOWN = frozenset(['say', 'memory', 'mood', 'promise', 'emoji', 'decision'])
 
 _State = Literal['outside', 'say', 'memory', 'skip']
 
@@ -191,7 +200,7 @@ def _could_be_known_tag(partial: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────
 
 class ResponseParser:
-    """增量解析 `<say>`、`<memory>`、`<mood>`、`<promise>` 和 `<decision>` 标签。
+    """增量解析发言、表情包、状态副作用和行动决策标签。
 
     实例维护跨网络分片的文本缓冲区和当前标签状态；调用方应持续调用
     :meth:`push`，在流结束时调用 :meth:`flush` 释放残留文本并补齐说话结束事件。
@@ -379,6 +388,15 @@ class ResponseParser:
             what = attrs.get('what', '').strip()
             if at is not None and what:
                 out.append(PromiseEvent(at=at, what=what))
+            return
+
+        if name == 'emoji':
+            # 表情包是即时的可见产物意图，不进入文本状态机；缺少目标情绪时忽略。
+            if closing:
+                return
+            emotion = attrs.get('emotion', '').strip()
+            if emotion:
+                out.append(EmojiEvent(emotion=emotion))
             return
 
         if name == 'decision':

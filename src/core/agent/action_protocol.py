@@ -111,12 +111,14 @@ class PlatformCapabilities:
 
     模型只能在这些真实能力内选择：平台不支持引用时决策不能携带
     ``quote_message_id``；平台未验证 reaction 执行能力时 ``react`` 不进入
-    动作集，且可用反应标识封闭给出，模型不能自由生成资源 ID。
+    动作集，且可用反应标识封闭给出；``emoji`` 表示当前平台、表情包库和
+    频率窗口共同允许产生表情包可见产物。
     """
 
     quote: bool = False
     react: bool = False
     available_reactions: tuple[str, ...] = ()
+    emoji: bool = False
 
     def __post_init__(self) -> None:
         """拒绝空反应标识，防止资源 ID 空洞进入动作集。"""
@@ -170,15 +172,20 @@ class ReplyPayload:
     text: str
     length: ReplyLength
     expression_intent: str | None = None
+    emoji_emotions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """拒绝空正文、未知篇幅与空表达意图。"""
-        if not self.text.strip():
-            raise ValueError('回复正文不能为空')
+        """拒绝无可见产物、未知篇幅、空表达意图和多表情包。"""
+        if not self.text.strip() and not self.emoji_emotions:
+            raise ValueError('回复必须包含正文或表情包')
         if self.length not in ('brief', 'long'):
             raise ValueError(f'未知回复篇幅：{self.length}')
         if self.expression_intent is not None and not self.expression_intent.strip():
             raise ValueError('表达意图不能为空字符串')
+        if any(not emotion.strip() for emotion in self.emoji_emotions):
+            raise ValueError('表情包目标情绪不能为空字符串')
+        if len(self.emoji_emotions) > 1:
+            raise ValueError('一轮回复最多发送一张表情包')
 
 
 def _validate_frame_choice(
@@ -341,7 +348,11 @@ class DecisionHead:
             frame,
         )
 
-    def to_decision(self, body_text: str) -> ConversationDecision:
+    def to_decision(
+        self,
+        body_text: str,
+        emoji_emotions: tuple[str, ...] = (),
+    ) -> ConversationDecision:
         """结合流式正文组装完整决策。
 
         :param body_text: reply 动作的完整可见正文；silent 与 react 忽略该
@@ -350,8 +361,8 @@ class DecisionHead:
         :raises IllegalActionError: silent/react 传入正文或组装结果结构非法。
         """
         if self.action == 'silent':
-            if body_text.strip():
-                raise IllegalActionError('silent 动作头之后不能有正文')
+            if body_text.strip() or emoji_emotions:
+                raise IllegalActionError('silent 动作头之后不能有正文或表情包')
             return ConversationDecision(
                 action='silent',
                 target_message_ids=(),
@@ -360,8 +371,8 @@ class DecisionHead:
                 reply=None,
             )
         if self.action == 'react':
-            if body_text.strip():
-                raise IllegalActionError('react 动作头之后不能有正文')
+            if body_text.strip() or emoji_emotions:
+                raise IllegalActionError('react 动作头之后不能有正文或表情包')
             return ConversationDecision(
                 action='react',
                 target_message_ids=self.target_message_ids,
@@ -369,14 +380,18 @@ class DecisionHead:
                 reason_codes=self.reason_codes,
                 reply=None,
             )
-        if not body_text.strip():
-            raise IllegalActionError('reply 动作头之后没有正文')
+        if not body_text.strip() and not emoji_emotions:
+            raise IllegalActionError('reply 动作头之后没有可见正文或表情包')
         return ConversationDecision(
             action='reply',
             target_message_ids=self.target_message_ids,
             quote_message_id=self.quote_message_id,
             reason_codes=self.reason_codes,
-            reply=ReplyPayload(text=body_text.strip(), length=self.length or 'brief'),
+            reply=ReplyPayload(
+                text=body_text.strip(),
+                length=self.length or 'brief',
+                emoji_emotions=emoji_emotions,
+            ),
         )
 
 
@@ -492,6 +507,11 @@ class ActionDecisionEvent:
                     {
                         'text': self.decision.reply.text,
                         'length': self.decision.reply.length,
+                        **(
+                            {'emojiEmotions': list(self.decision.reply.emoji_emotions)}
+                            if self.decision.reply.emoji_emotions
+                            else {}
+                        ),
                         **(
                             {'expressionIntent': self.decision.reply.expression_intent}
                             if self.decision.reply.expression_intent is not None

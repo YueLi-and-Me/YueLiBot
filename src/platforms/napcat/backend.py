@@ -32,12 +32,14 @@ class BackendDisconnected(ConnectionError):
 
 @dataclass(frozen=True)
 class BackendOutbound:
-    """主体发给 QQ 适配器的一条整轮私聊或群聊回复。"""
+    """主体发给 QQ 适配器的一条文本和/或表情包回复。"""
 
     stream_id: int
     stream_kind: Literal['direct', 'group']
     stream_external_id: str
     segments: List[str]
+    emoji_refs: tuple[str, ...] = ()
+    emoji_sub_types: tuple[int, ...] = ()
 
 
 class BackendClient:
@@ -146,6 +148,8 @@ class BackendClient:
                 'mentionedMe': event.mentioned_me,
                 'externalMessageId': event.external_message_id,
                 'imageSources': list(event.image_sources),
+                'emojiSources': list(event.emoji_sources),
+                'emojiSubTypes': list(event.emoji_sub_types),
             },
         )
         response.raise_for_status()
@@ -276,7 +280,7 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     """校验并转换主体 `qq.send` 报文。
 
     :param payload: 已解析的主体出站报文，必须包含正整数 `stream_id` 和对象型
-        `payload`，其内部必须包含合法流类型、流 ID 与非空字符串数组 `segments`。
+        `payload`，其内部必须包含合法流类型、流 ID，以及至少一种文本或表情包产物。
     :return: 去除段首尾空白后的 :class:`BackendOutbound`。
     :raises ValueError: 缺少字段、字段类型错误、流类型不支持或段内容为空。
     副作用：不执行 I/O，也不修改传入映射。
@@ -299,9 +303,33 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     segments = [item.strip() for item in raw_segments]
     if not all(segments):
         raise ValueError('主体 qq.send 的 segments 不能包含空字符串')
+    raw_emoji_refs = body.get('emojiRefs', [])
+    if not isinstance(raw_emoji_refs, list) or not all(
+        isinstance(item, str) for item in raw_emoji_refs
+    ):
+        raise ValueError('主体 qq.send 的 emojiRefs 必须是字符串数组')
+    emoji_refs = tuple(item.strip() for item in raw_emoji_refs)
+    if not all(emoji_refs):
+        raise ValueError('主体 qq.send 的 emojiRefs 不能包含空字符串')
+    raw_emoji_sub_types = body.get('emojiSubTypes', [])
+    if not isinstance(raw_emoji_sub_types, list) or not all(
+        isinstance(item, int)
+        and not isinstance(item, bool)
+        and item >= 0
+        and item not in {0, 4, 9}
+        for item in raw_emoji_sub_types
+    ):
+        raise ValueError('主体 qq.send 的 emojiSubTypes 必须是表情包子类型整数数组')
+    emoji_sub_types = tuple(raw_emoji_sub_types)
+    if len(emoji_refs) != len(emoji_sub_types):
+        raise ValueError('主体 qq.send 的 emojiRefs 与 emojiSubTypes 数量必须一致')
+    if not segments and not emoji_refs:
+        raise ValueError('主体 qq.send 必须包含文本或表情包')
     return BackendOutbound(
         stream_id=stream_id,
         stream_kind=stream_kind,
         stream_external_id=stream_external_id.strip(),
         segments=segments,
+        emoji_refs=emoji_refs,
+        emoji_sub_types=emoji_sub_types,
     )

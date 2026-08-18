@@ -19,7 +19,7 @@ from src.core.common.logger import get_logger
 from .backend import BackendClient
 from .config import NapcatDocument
 from .events import QqInboundEvent, classify_event, parse_inbound_event
-from .segments import is_emoji_image
+from .segments import is_emoji_image, outbound_message_batches
 from .transport import (
     ActionError,
     NapcatTransport,
@@ -201,34 +201,45 @@ class NapcatRunner:
 
         :param payload: OneBot 原始消息事件，用于按段提取 ``data.file``。
         :param event: 已解析的入站事件；图片来源顺序与正文占位符一致。
-        :return: 可能替换了 ``image_sources`` 的新事件；解析失败或非 QQ CDN 来源保持原值。
+        :return: 可能替换普通图片和表情包来源的新事件；解析失败时保持原值。
         副作用：仅对 QQ CDN 来源发起 ``get_image`` 动作，不读取或下载图片内容。
         """
-        if not event.image_sources:
+        if not event.image_sources and not event.emoji_sources:
             return event
         raw_segments = payload.get('message')
         if not isinstance(raw_segments, list):
             return event
 
-        # 只取普通图片段，跳过表情包，保持与 image_source_urls 相同的对齐规则。
-        file_names: List[str] = []
+        # 普通图片和表情包分别保持与各自来源数组相同的协议顺序。
+        image_file_names: List[str] = []
+        emoji_file_names: List[str] = []
         for segment in raw_segments:
             if not isinstance(segment, Mapping) or segment.get('type') != 'image':
                 continue
             data = segment.get('data')
             if not isinstance(data, Mapping):
                 continue
-            if is_emoji_image(segment):
-                continue
-            file_names.append(str(data.get('file') or '').strip())
-        if len(file_names) != len(event.image_sources):
+            target = emoji_file_names if is_emoji_image(segment) else image_file_names
+            target.append(str(data.get('file') or '').strip())
+        if (
+            len(image_file_names) != len(event.image_sources)
+            or len(emoji_file_names) != len(event.emoji_sources)
+        ):
             return event
 
-        resolved = await asyncio.gather(*[
+        resolved_images = await asyncio.gather(*[
             self._resolve_image_source(source, file_name)
-            for source, file_name in zip(event.image_sources, file_names)
+            for source, file_name in zip(event.image_sources, image_file_names)
         ])
-        return replace(event, image_sources=tuple(resolved))
+        resolved_emojis = await asyncio.gather(*[
+            self._resolve_image_source(source, file_name)
+            for source, file_name in zip(event.emoji_sources, emoji_file_names)
+        ])
+        return replace(
+            event,
+            image_sources=tuple(resolved_images),
+            emoji_sources=tuple(resolved_emojis),
+        )
 
     async def _resolve_image_source(self, source: str, file_name: str) -> str:
         """把单张 QQ CDN 图片来源解析为本地 ``file://`` 引用。
@@ -383,14 +394,22 @@ class NapcatRunner:
             else:
                 raise ValueError(f'QQ 出站 streamKind 不受支持：{outbound.stream_kind}')
             try:
-                # 单条发送错误只影响当前消息；连接和后续出站流继续保持可用。
-                await self._transport.call_action(
-                    action,
-                    {
-                        target_field: _qq_number(outbound.stream_external_id, target_label),
-                        'message': ''.join(outbound.segments),
-                    },
+                # 文字与表情包分别调用 action，让 QQ 生成独立消息气泡；先完整组装
+                # 所有批次，避免元数据错误发生在文字已经发送之后。
+                message_batches = outbound_message_batches(
+                    outbound.segments,
+                    outbound.emoji_refs,
+                    outbound.emoji_sub_types,
                 )
+                target = _qq_number(outbound.stream_external_id, target_label)
+                for message_segments in message_batches:
+                    await self._transport.call_action(
+                        action,
+                        {
+                            target_field: target,
+                            'message': message_segments,
+                        },
+                    )
             except (ActionError, asyncio.TimeoutError) as exc:
                 logger.error(
                     'QQ 消息发送失败',

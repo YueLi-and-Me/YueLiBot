@@ -28,7 +28,7 @@ def is_emoji_image(segment: Segment) -> bool:
     if segment.get('type') != 'image':
         return False
     data = _segment_data(segment)
-    subtype = data.get('sub_type')
+    subtype = _image_sub_type(data.get('sub_type'))
     return subtype is not None and subtype not in _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI
 
 
@@ -106,6 +106,46 @@ def image_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
     return tuple(sources)
 
 
+def emoji_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
+    """提取表情包图片来源，顺序与正文 ``[表情包]`` 占位符一致。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 表情包的 ``data.url`` 或 ``data.file``；缺失来源时保留空字符串。
+    :raises ValueError: 消息段列表或图片段结构不合法。
+    """
+
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    sources: list[str] = []
+    for segment in segments:
+        if segment.get('type') != 'image' or not is_emoji_image(segment):
+            continue
+        data = _segment_data(segment)
+        sources.append(_string_value(data.get('url')) or _string_value(data.get('file')))
+    return tuple(sources)
+
+
+def emoji_sub_types(segments: Sequence[Segment]) -> tuple[int, ...]:
+    """提取表情包子类型，顺序与表情包来源和正文占位符一致。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 每个表情包图片段规范化后的整数 ``data.sub_type``。
+    :raises ValueError: 消息段列表、图片段结构或 ``sub_type`` 不合法。
+    """
+
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    sub_types: list[int] = []
+    for segment in segments:
+        if segment.get('type') != 'image' or not is_emoji_image(segment):
+            continue
+        sub_type = _image_sub_type(_segment_data(segment).get('sub_type'))
+        if sub_type is None:
+            raise ValueError('表情包图片段缺少 data.sub_type')
+        sub_types.append(sub_type)
+    return tuple(sub_types)
+
+
 def message_to_text(
     segments: Sequence[Segment],
     mention_names: Mapping[str, str] | None = None,
@@ -158,25 +198,98 @@ def base64_image_segment(content: str) -> Dict[str, Any]:
     return _image_segment(content, 'base64')
 
 
-def file_image_segment(path: str) -> Dict[str, Any]:
+def file_image_segment(path: str, sub_type: int | None = None) -> Dict[str, Any]:
     """构造使用 ``file://`` 来源协议的 OneBot 本地文件图片段。
 
     :param path: 本地图片路径，可带或不带 ``file://`` 前缀；不能为空。
 
-    :return: 包含 ``type=image`` 和规范化 ``data.file`` 的新字典。
+    :param sub_type: 可选 OneBot 图片子类型；表情包发送时必须显式提供。
+
+    :return: 包含 ``type=image``、规范化 ``data.file`` 和可选 ``data.sub_type``
+        的新字典。
 
     :raises ValueError: 路径为空，或错误使用 ``base64://`` 前缀。
     """
-    return _image_segment(path, 'file')
+    return _image_segment(path, 'file', sub_type=sub_type)
 
 
-def _image_segment(source: str, source_kind: ImageSourceKind) -> Dict[str, Any]:
+def outbound_message_segments(
+    text_segments: Sequence[str],
+    emoji_refs: Sequence[str],
+    emoji_sub_types: Sequence[int],
+) -> list[Dict[str, Any]]:
+    """按“文本在前、表情包在后”组装 OneBot 数组消息段。
+
+    :param text_segments: 已按 ``<say>`` 切分的文本，协议端保持既有拼接语义。
+    :param emoji_refs: 已通过启动哈希校验的本地 ``file://`` 图片引用。
+    :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
+    :return: 可直接传给 ``send_private_msg`` 或 ``send_group_msg`` 的消息段数组。
+    :raises ValueError: 文本和表情包同时为空、引用与子类型数量不一致，或字段不合法。
+    """
+
+    text = ''.join(text_segments)
+    if not text and not emoji_refs:
+        raise ValueError('QQ 出站消息必须包含文本或表情包')
+    if len(emoji_refs) != len(emoji_sub_types):
+        raise ValueError('QQ 出站表情包引用与 sub_type 数量必须一致')
+    normalized_sub_types = tuple(_required_emoji_sub_type(value) for value in emoji_sub_types)
+    return [
+        *(
+            [{'type': 'text', 'data': {'text': text}}]
+            if text
+            else []
+        ),
+        *[
+            file_image_segment(reference, sub_type)
+            for reference, sub_type in zip(
+                emoji_refs,
+                normalized_sub_types,
+                strict=True,
+            )
+        ],
+    ]
+
+
+def outbound_message_batches(
+    text_segments: Sequence[str],
+    emoji_refs: Sequence[str],
+    emoji_sub_types: Sequence[int],
+) -> list[list[Dict[str, Any]]]:
+    """把文字和每张表情包拆成独立的 OneBot 消息段数组。
+
+    先完整校验全部字段，再返回“合并后的文字一条、每张表情包各一条”的发送批次，
+    避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为文字和
+    表情包分别创建消息气泡，便于确认贴纸渲染效果。
+
+    :param text_segments: 已按 ``<say>`` 切分的文本。
+    :param emoji_refs: 已通过启动哈希校验的本地图片引用。
+    :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
+    :return: 按文字、表情包原始顺序排列的非空消息段数组。
+    :raises ValueError: 消息为空、字段数量不一致或图片字段不合法。
+    """
+
+    segments = outbound_message_segments(
+        text_segments,
+        emoji_refs,
+        emoji_sub_types,
+    )
+    return [[segment] for segment in segments]
+
+
+def _image_segment(
+    source: str,
+    source_kind: ImageSourceKind,
+    *,
+    sub_type: int | None = None,
+) -> Dict[str, Any]:
     """构造带来源协议前缀的 OneBot 图片段。
 
     :param source: 图片内容或本地路径；可带也可不带对应的 `base64://` 或 `file://` 前缀。
     :param source_kind: 来源类型，只能为 `base64` 或 `file`。
-    :return: 形如 `{'type': 'image', 'data': {'file': '...'}}` 的新字典。
-    :raises ValueError: 来源为空，或错误地使用了另一种来源前缀。
+    :param sub_type: 可选的 OneBot 图片子类型。
+    :return: 形如 `{'type': 'image', 'data': {'file': '...'}}` 的新字典；提供子类型时
+        同时包含 ``data.sub_type``。
+    :raises ValueError: 来源为空、错误地使用另一种来源前缀，或子类型不合法。
     副作用：不读取文件、不编码内容，也不修改输入字符串。
     """
     value = _required_value(source, '图片来源不能为空')
@@ -187,7 +300,38 @@ def _image_segment(source: str, source_kind: ImageSourceKind) -> Dict[str, Any]:
         raise ValueError(f'{source_kind} 图片不能使用 {other_prefix} 前缀')
     if not value.startswith(expected_prefix):
         value = expected_prefix + value
-    return {'type': 'image', 'data': {'file': value}}
+    data: Dict[str, Any] = {'file': value}
+    normalized_sub_type = _image_sub_type(sub_type)
+    if normalized_sub_type is not None:
+        data['sub_type'] = normalized_sub_type
+    return {'type': 'image', 'data': data}
+
+
+def _required_emoji_sub_type(value: Any) -> int:
+    """规范化出站表情包子类型，并拒绝普通图片子类型。"""
+
+    sub_type = _image_sub_type(value)
+    if sub_type is None or sub_type in _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI:
+        raise ValueError(f'表情包 sub_type 不合法：{value!r}')
+    return sub_type
+
+
+def _image_sub_type(value: Any) -> int | None:
+    """把 OneBot 图片子类型规范化为非负整数；缺失时返回 ``None``。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError('图片段 data.sub_type 必须是非负整数')
+    if isinstance(value, int):
+        sub_type = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        sub_type = int(value.strip())
+    else:
+        raise ValueError('图片段 data.sub_type 必须是非负整数')
+    if sub_type < 0:
+        raise ValueError('图片段 data.sub_type 必须是非负整数')
+    return sub_type
 
 
 def _segment_type(segment: Segment) -> str:

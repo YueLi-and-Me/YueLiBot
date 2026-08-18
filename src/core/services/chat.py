@@ -9,15 +9,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from html import escape
 from typing import Any, Callable, Dict, Iterable, List, Mapping
 
 import asyncio
 import inspect
 import json
 import random
+import re
 import sqlite3
 
-from .chat_image import ChatImageDescriber, merge_image_descriptions
+from .chat_image import (
+    ChatImageDescriber,
+    merge_emoji_descriptions,
+    merge_image_descriptions,
+)
+from .emoji import EmojiLibrary
 from .trace_console import mark_turn_start, render_action_decision, render_observation, render_turn, render_turn_error
 from .vector import VectorService
 
@@ -42,7 +49,8 @@ from src.core.agent.expression import ExpressionSample, render_expression_habits
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history, strip_say_tags
 from src.core.agent.parser import (
-    MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent, SayEvent, TextEvent,
+    EmojiEvent, MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent,
+    SayEvent, TextEvent,
 )
 from src.core.agent.prompt import (
     build_proactive_prompt,
@@ -94,6 +102,9 @@ CHAT_POLL_INTERVAL_S = 0.1
 # 部分 Gemini 兼容网关会把 system 单独提取；保留一条固定的非 system 指令，
 # 既满足其 contents 非空约束，也不把触发情境伪装成用户提出的新问题。
 PROACTIVE_TRIGGER_MESSAGE = '请按上面的要求开始。'
+
+# 对齐群聊既有回复窗口，在同一窗口内最多发送一张表情包。
+EMOJI_MAX_PER_REPLY_WINDOW = 1
 
 # 上一轮生成期间插队到达的普通群消息，在上一回复落库后先沉降这段时间；
 # 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
@@ -167,6 +178,8 @@ class _TurnSink:
     segments: list[str] = field(default_factory=list)
     segment: list[str] | None = None
     interrupted: bool = False
+    # 已按模型目标情绪选中的可发送引用；只有真实命中才进入出站和历史。
+    emoji_items: list[tuple[str, str, int]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -221,6 +234,7 @@ class ChatService:
         broker: PlatformBroker | None = None,
         expression_provider: LlmProvider | None = None,
         image_describer: ChatImageDescriber | None = None,
+        emoji_library: EmojiLibrary | None = None,
         action_policy: ActionPolicy | None = None,
         action_policies: Mapping[str, ActionPolicy] | None = None,
     ) -> None:
@@ -253,6 +267,7 @@ class ChatService:
         self._speak_audio = speak_audio
         self._broker = broker
         self._image_describer = image_describer
+        self._emoji_library = emoji_library
         self._default_action_policy = action_policy or TurnPlanner(AlwaysReplyPolicy())
         self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
@@ -599,14 +614,16 @@ class ChatService:
             accepted_at,
         )
         image_task: asyncio.Task[str] | None = None
-        if inbound.image_sources:
-            # 先以 [图片] 占位符确认接收并返回；描述成功后后台回写同一行正文。
+        if inbound.image_sources or inbound.emoji_sources:
+            # 先以稳定占位符确认接收并返回；描述成功后后台回写同一行正文。
             # 回合启动时再等待该任务，避免图片下载/VLM 拖住 HTTP 入站响应。
             image_task = asyncio.create_task(self._describe_image_message(
                 stream_id,
                 message_id,
                 trimmed,
                 inbound.image_sources,
+                inbound.emoji_sources,
+                inbound.emoji_sub_types,
             ))
             self._track_background_task(image_task)
         self._buffers.setdefault(stream_id, []).append(_BufferedMessage(
@@ -647,21 +664,52 @@ class ChatService:
         message_id: int,
         text: str,
         sources: tuple[str, ...],
+        emoji_sources: tuple[str, ...],
+        emoji_sub_types: tuple[int, ...],
     ) -> str:
-        """在后台下载并描述一条入站消息的普通图片，补齐落库正文。
+        """在后台描述普通图片和表情包，并补齐落库正文及表情包库。
 
         :param stream_id: 消息所属 stream ID。
         :param message_id: 已写入 ``messages`` 表的占位符消息主键。
         :param text: 当前含 ``[图片]`` 占位符的消息正文。
         :param sources: 与正文普通图片顺序一致的来源引用。
+        :param emoji_sources: 与正文表情包顺序一致的来源引用。
+        :param emoji_sub_types: 与表情包来源逐项对齐的 OneBot 图片子类型。
         :return: 补齐描述后的正文；全部失败时返回原占位符正文。
         :raises sqlite3.Error: 描述成功后回写消息失败时抛出。
         副作用：描述可用时用合并后的正文更新对应消息行；不触发回合。
         """
-        if not sources or self._image_describer is None:
+        if (not sources and not emoji_sources) or self._image_describer is None:
             return text
-        descriptions = await self._image_describer.describe_sources(sources)
+        image_task = (
+            asyncio.create_task(self._image_describer.describe_sources(sources))
+            if sources
+            else None
+        )
+        emoji_task = (
+            asyncio.create_task(self._image_describer.describe_emoji_sources(emoji_sources))
+            if emoji_sources
+            else None
+        )
+        descriptions = await image_task if image_task is not None else []
+        emoji_descriptions = await emoji_task if emoji_task is not None else []
         enriched = merge_image_descriptions(text, descriptions)
+        enriched = merge_emoji_descriptions(enriched, emoji_descriptions)
+        if self._emoji_library is not None:
+            for description, sub_type in zip(
+                emoji_descriptions,
+                emoji_sub_types,
+                strict=True,
+            ):
+                if description is None:
+                    continue
+                await self._emoji_library.register(
+                    description.image_bytes,
+                    description.emotion_tags,
+                    description.media_type,
+                    description.content_hash,
+                    sub_type,
+                )
         if enriched != text:
             self.memory.update_message_content(stream_id, message_id, enriched)
         return enriched
@@ -961,7 +1009,7 @@ class ChatService:
                     await self._consume_events(parser.flush(), sink)
 
                 # 先保存已产生的助手正文，再判断是否中断，确保历史与已经展示的内容一致。
-                self._persist_reply(context, assistant_raw)
+                self._persist_reply(context, assistant_raw, sink.emoji_items)
                 reply_persisted = True
                 if sink.interrupted:
                     return
@@ -994,6 +1042,7 @@ class ChatService:
                         context,
                         turn,
                         sink.segments,
+                        sink.emoji_items,
                     )
                 self._mark_stage(
                     context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn,
@@ -1004,11 +1053,11 @@ class ChatService:
                 if exc.kind == 'aborted':
                     # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
                     if not reply_persisted:
-                        self._persist_reply(context, assistant_raw)
+                        self._persist_reply(context, assistant_raw, sink.emoji_items)
                     return
                 if not reply_persisted:
                     # 已确认接收的用户消息属于历史；失败时只保存已经产生的助手正文。
-                    self._persist_reply(context, assistant_raw)
+                    self._persist_reply(context, assistant_raw, sink.emoji_items)
                 hint = _HINTS.get(exc.kind, '')
                 snapshot = dump_llm_request('chat', exc.kind, str(exc), {
                     'turnId': turn,
@@ -1029,7 +1078,7 @@ class ChatService:
             except Exception as exc:
                 if not reply_persisted:
                     # 准备或投递失败不能删除已确认接收的用户消息。
-                    self._persist_reply(context, assistant_raw)
+                    self._persist_reply(context, assistant_raw, sink.emoji_items)
                 snapshot = dump_llm_request('chat', type(exc).__name__, str(exc), {
                     'turnId': turn,
                     'stage': trace.current_stage_id(),
@@ -1145,6 +1194,16 @@ class ChatService:
             text,
             current_time(),
         )
+        if inbound.image_sources or inbound.emoji_sources:
+            task = asyncio.create_task(self._describe_image_message(
+                context.stream.id,
+                message_id,
+                text,
+                inbound.image_sources,
+                inbound.emoji_sources,
+                inbound.emoji_sub_types,
+            ))
+            self._track_background_task(task)
         self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
         return message_id
 
@@ -1500,7 +1559,12 @@ class ChatService:
         """
         return random.Random(self._session(stream_id).seed)
 
-    def _persist_reply(self, context: ConversationContext, assistant_raw: str) -> None:
+    def _persist_reply(
+        self,
+        context: ConversationContext,
+        assistant_raw: str,
+        emoji_items: list[tuple[str, str, int]] | None = None,
+    ) -> None:
         """将已生成的助手正文写入历史，并补齐流式中断留下的未闭合 ``<say>``。
 
         :param context: 当前会话上下文。
@@ -1512,6 +1576,9 @@ class ChatService:
             可能向 L1 messages 表追加助手消息并提交事务；空正文不写入。
         """
         text = close_dangling_say(assistant_raw)
+        # 模型声明只是意图；历史只记录实际命中并准备发送的表情包，频控据此统计。
+        text = re.sub(r'</?emoji\b[^>]*>', '', text, flags=re.IGNORECASE).strip()
+        text += _emoji_history_markup(emoji_items or [])
         if text:
             self.memory.append_message(
                 context.stream.id,
@@ -2236,6 +2303,7 @@ class ChatService:
             platform_name=prepared.platform_bot_name,
             render_params=render_params,
             protocol_text=protocol_text,
+            emoji_enabled=self._emoji_available(prepared.context),
             **self._prompt_config_kwargs(prepared.context.relationship_signals_enabled),
         )
         # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
@@ -2482,8 +2550,10 @@ class ChatService:
         turn: int,
         disposition: GateDisposition,
     ) -> DecisionFrame:
-        """按本批消息快照构造回合固定帧；平台能力当前为空。"""
-        capabilities = PlatformCapabilities()
+        """按本批消息快照构造回合固定帧，并冻结平台可见产物能力。"""
+        capabilities = PlatformCapabilities(
+            emoji=self._emoji_available(context),
+        )
         return DecisionFrame(
             turn_id=turn,
             snapshot_id=f'turn-{turn}',
@@ -2497,6 +2567,21 @@ class ChatService:
                 capabilities,
             ),
             capabilities=capabilities,
+        )
+
+    def _emoji_available(self, context: ConversationContext) -> bool:
+        """判断当前 QQ stream 是否仍有表情包库和窗口发送额度。"""
+
+        if (
+            context.stream.platform != 'qq'
+            or self._emoji_library is None
+            or not self._emoji_library.has_sendable()
+        ):
+            return False
+        since = current_time() - self._cfg.group_chat.reply_window_minutes * 60_000
+        return (
+            self.memory.emoji_reply_count_since(context.stream.id, since)
+            < EMOJI_MAX_PER_REPLY_WINDOW
         )
 
     def _agent_gate_inputs(
@@ -2530,6 +2615,7 @@ class ChatService:
             sorted(frame.available_actions),
             frame.selectable_message_ids,
             quote_supported=frame.capabilities.quote,
+            emoji_enabled=frame.capabilities.emoji,
         )
 
     def _render_agent_messages(
@@ -2793,12 +2879,17 @@ class ChatService:
             return
         assert outcome.decision is not None and outcome.decision.reply is not None
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
-        self.memory.append_message(
-            context.stream.id,
-            None,
-            'assistant',
-            ''.join(f'<say>{segment}</say>' for segment in sink.segments),
+        visible_markup = (
+            ''.join(f'<say>{segment}</say>' for segment in sink.segments)
+            + _emoji_history_markup(sink.emoji_items)
         )
+        if visible_markup:
+            self.memory.append_message(
+                context.stream.id,
+                None,
+                'assistant',
+                visible_markup,
+            )
         render_turn(
             turn,
             sender['senderLabel'],
@@ -2822,7 +2913,12 @@ class ChatService:
             await self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'})
         else:
             try:
-                await self._dispatch_outbound(context, turn, sink.segments)
+                await self._dispatch_outbound(
+                    context,
+                    turn,
+                    sink.segments,
+                    sink.emoji_items,
+                )
             except Exception as exc:
                 # 投递失败与决策分离：追加一条 delivery_failed 行动事件再上抛。
                 delivery_event = ActionDecisionEvent(
@@ -2946,6 +3042,25 @@ class ChatService:
             if sink.cancel_event.is_set():
                 sink.interrupted = True
                 return
+            if (
+                isinstance(event, EmojiEvent)
+                and not sink.emoji_items
+                and self._emoji_available(context)
+                and self._emoji_library is not None
+            ):
+                selection = await self._emoji_library.select(event.emotion)
+                if selection is not None:
+                    sink.emoji_items.append((
+                        event.emotion,
+                        selection.send_ref,
+                        selection.sub_type,
+                    ))
+                    trace.emit(
+                        'emoji_selected',
+                        turnId=sink.turn,
+                        streamId=context.stream.id,
+                        emotion=event.emotion,
+                    )
             self._handle_side_effects(
                 context, event, sink.now, sink.turn, sink.side_effects, sink.source_text,
             )
@@ -3123,12 +3238,14 @@ class ChatService:
         context: ConversationContext,
         turn: int,
         segments: list[str],
+        emoji_items: list[tuple[str, str, int]],
     ) -> None:
         """将非桌面整轮回复交给平台 broker。
 
         :param context: 目标会话上下文。
         :param turn: 对话回合 ID。
         :param segments: 已按 ``<say>`` 边界切分的正文列表。
+        :param emoji_items: 已按目标情绪命中的可发送表情包引用。
 
         副作用：
             可能调用平台驱动并写入投递观察事件；空列表只记录警告并返回。
@@ -3142,13 +3259,15 @@ class ChatService:
             raise RuntimeError('desktop stream 不能经由非桌面 broker 投递')
         if self._broker is None:
             raise RuntimeError('非桌面 stream 未配置 PlatformBroker')
-        if not segments:
+        if not segments and not emoji_items:
             logger.warning('outbound_reply_empty', streamId=context.stream.id, turnId=turn)
             return
-        # Broker 负责平台驱动选择和失败归一化，服务层只提交已切分的整轮正文。
+        # Broker 负责平台驱动选择和失败归一化；图片引用由 QQ 驱动透传给适配器。
         receipt = await self._broker.dispatch(OutboundMessage(
             stream=context.stream,
             segments=segments,
+            emoji_refs=tuple(reference for _emotion, reference, _sub_type in emoji_items),
+            emoji_sub_types=tuple(sub_type for _emotion, _reference, sub_type in emoji_items),
         ))
         trace.emit(
             'outbound_delivered',
@@ -3264,6 +3383,15 @@ def _collect_outbound_segment(
                 segments.append(text)
         return None
     return current
+
+
+def _emoji_history_markup(items: list[tuple[str, str, int]]) -> str:
+    """把实际命中的目标情绪序列化为可统计的助手历史标签。"""
+
+    return ''.join(
+        f'<emoji emotion="{escape(emotion, quote=True)}"/>'
+        for emotion, _reference, _sub_type in items
+    )
 
 
 def _plan_to_dict(plan: DayPlan | None) -> dict | None:

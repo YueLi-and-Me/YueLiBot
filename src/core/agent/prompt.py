@@ -247,6 +247,7 @@ def build_system_prompt(
     platform_name: Optional[str] = None,
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     protocol_text: Optional[str] = None,
+    emoji_enabled: bool = False,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
 
@@ -308,6 +309,7 @@ def build_system_prompt(
     component_values[CHAT_PROTOCOL_TEMPLATE_ID] = {
         'emotions': ' / '.join(EXPRESSION_IDS),
         'gestures': ' / '.join(GESTURE_IDS),
+        'emoji_rule': _emoji_protocol_rule(emoji_enabled),
     }
     if reply_length is not None:
         try:
@@ -380,6 +382,7 @@ def render_action_protocol(
     available_actions: Iterable[str],
     selectable_message_ids: Iterable[int],
     quote_supported: bool,
+    emoji_enabled: bool = False,
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -419,4 +422,17 @@ def render_action_protocol(
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
         reply_example=reply_example,
+        emoji_rule=_emoji_protocol_rule(emoji_enabled),
+    )
+
+
+def _emoji_protocol_rule(enabled: bool) -> str:
+    """渲染当前平台和频率窗口对应的表情包可见产物规则。"""
+
+    if not enabled:
+        return '本轮不支持发送表情包，不要写 <emoji> 标签。'
+    return (
+        '需要用表情包表达情绪时，可以在 <say> 之后追加且最多追加一个 '
+        '<emoji emotion="目标情绪"/>。通常不要写；emotion 写你想表达的简短情绪。'
+        '允许不写 <say>、只写一个 <emoji>，但不要同时省略两者。'
     )

@@ -67,15 +67,15 @@ class QqWebSocketDriver(PlatformDriver):
         if message.stream.kind not in {'direct', 'group'}:
             raise DeliveryError(f'QQ driver 不支持 {message.stream.kind} stream')
         # 一轮回复封装为一个 qq.send 事件，保持分句顺序并避免客户端重复拼接。
-        delivered = await self._push(
-            message.stream.id,
-            'qq.send',
-            {
-                'streamKind': message.stream.kind,
-                'streamExternalId': message.stream.external_id,
-                'segments': list(message.segments),
-            },
-        )
+        payload: dict[str, Any] = {
+            'streamKind': message.stream.kind,
+            'streamExternalId': message.stream.external_id,
+            'segments': list(message.segments),
+        }
+        if message.emoji_refs:
+            payload['emojiRefs'] = list(message.emoji_refs)
+            payload['emojiSubTypes'] = list(message.emoji_sub_types)
+        delivered = await self._push(message.stream.id, 'qq.send', payload)
         if delivered == 0:
             # 没有订阅者时不能返回成功回执，否则上层会误以为消息已经送达。
             raise DeliveryError(

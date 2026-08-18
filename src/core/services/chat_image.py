@@ -8,12 +8,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
 import asyncio
 import base64
 import hashlib
+import re
 
 import httpx
 
@@ -34,6 +36,7 @@ IMAGE_DOWNLOAD_TIMEOUT_S = 10.0
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # 占位符保持稳定：描述成功时替换 [图片]，失败时原样保留。
 IMAGE_PLACEHOLDER = '[图片]'
+EMOJI_PLACEHOLDER = '[表情包]'
 # QQ 图片 CDN 的防盗链要求：缺少 Referer 时返回 400「download url has expired」，
 # 实际链接并未过期；必须带上浏览器 UA 与同域 Referer 才能下载。
 _BROWSER_USER_AGENT = (
@@ -58,6 +61,16 @@ class ImageDescriptionProvider(Protocol):
         """按增量块产生视觉模型响应。"""
 
         ...
+
+
+@dataclass(frozen=True)
+class DescribedEmoji:
+    """一张已成功读取并获得情绪标签的表情包。"""
+
+    content_hash: str
+    emotion_tags: str
+    image_bytes: bytes
+    media_type: str
 
 
 def merge_image_descriptions(
@@ -86,6 +99,29 @@ def merge_image_descriptions(
     return merged
 
 
+def merge_emoji_descriptions(
+    text: str,
+    descriptions: Sequence[DescribedEmoji | None],
+) -> str:
+    """按消息段顺序把表情包情绪标签合并回正文占位符。
+
+    失败项保留 ``[表情包]``，绝不根据上下文猜测未识别图片表达的情绪。
+    """
+
+    merged = text
+    position = 0
+    for description in descriptions:
+        index = merged.find(EMOJI_PLACEHOLDER, position)
+        if index < 0:
+            break
+        replacement = EMOJI_PLACEHOLDER
+        if description is not None:
+            replacement = f'[表情包：{description.emotion_tags}]'
+        merged = merged[:index] + replacement + merged[index + len(EMOJI_PLACEHOLDER):]
+        position = index + len(replacement)
+    return merged
+
+
 class ChatImageDescriber:
     """按来源下载并描述聊天图片，在进程内按内容哈希缓存结果。"""
 
@@ -102,8 +138,8 @@ class ChatImageDescriber:
         """
         self._cfg = cfg
         self._provider = provider
-        self._cache: dict[str, str] = {}
-        self._pending: dict[str, asyncio.Task[str | None]] = {}
+        self._cache: dict[tuple[str, str], str] = {}
+        self._pending: dict[tuple[str, str], asyncio.Task[str | None]] = {}
         self._protocol_error: str | None = None
 
     async def describe(
@@ -129,20 +165,48 @@ class ChatImageDescriber:
             )
             return None
         digest = image_hash or hashlib.sha256(image_bytes).hexdigest()
-        cached = self._cache.get(digest)
+        return await self._describe_with_prompt(
+            image_bytes,
+            media_type,
+            digest,
+            'image.description',
+        )
+
+    async def _describe_with_prompt(
+        self,
+        image_bytes: bytes,
+        media_type: str,
+        digest: str,
+        prompt_id: str,
+    ) -> str | None:
+        """按提示词类型复用同一内容的描述缓存和并发任务。"""
+
+        cache_key = (prompt_id, digest)
+        cached = self._cache.get(cache_key)
         if cached is not None:
-            trace.emit('image_description', result='cached', hash=digest)
+            trace.emit('image_description', result='cached', hash=digest, promptId=prompt_id)
             return cached
-        pending = self._pending.get(digest)
+        pending = self._pending.get(cache_key)
         if pending is not None:
             return await pending
 
-        task = asyncio.create_task(self._describe_uncached(digest, image_bytes, media_type))
-        self._pending[digest] = task
-        task.add_done_callback(lambda finished, key=digest: self._finalize_pending(key, finished))
+        task = asyncio.create_task(self._describe_uncached(
+            digest,
+            image_bytes,
+            media_type,
+            prompt_id,
+        ))
+        self._pending[cache_key] = task
+        task.add_done_callback(
+            lambda finished, key=cache_key: self._finalize_pending(key, finished)
+        )
         return await task
 
-    def _finalize_pending(self, key: str, task: asyncio.Task[str | None]) -> None:
+    def _finalize_pending(
+        self,
+        key: tuple[str, str],
+        task: asyncio.Task[str | None],
+    ) -> None:
         """消化完成的图片描述任务并读取异常。"""
         self._pending.pop(key, None)
         if task.cancelled():
@@ -223,11 +287,70 @@ class ChatImageDescriber:
                 *(_describe_one(source, http) for source in sources)
             ))
 
+    async def describe_emoji_sources(
+        self,
+        sources: Sequence[str],
+    ) -> list[DescribedEmoji | None]:
+        """并发读取表情包，并只生成最多五个情绪或语气标签。
+
+        :param sources: 与正文 ``[表情包]`` 顺序一致的图片来源。
+        :return: 成功项包含内容哈希、规范标签和原始字节；任一步骤失败为 ``None``。
+        副作用：下载来源并调用视觉模型；不写入表情包库。
+        """
+
+        if not sources or not self._cfg.vision.chat_image_enabled or self._provider is None:
+            return [None for _ in sources]
+        if self._protocol_error:
+            return [None for _ in sources]
+
+        async def _describe_one(
+            source: str,
+            http: httpx.AsyncClient,
+        ) -> DescribedEmoji | None:
+            if not source:
+                return None
+            try:
+                image_bytes = await _read_image_source(source, http)
+                if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
+                    if image_bytes:
+                        logger.warning(
+                            'chat_emoji_too_large',
+                            bytes=len(image_bytes),
+                            limit=MAX_IMAGE_BYTES,
+                        )
+                    return None
+                digest = hashlib.sha256(image_bytes).hexdigest()
+                media_type = _guess_media_type(image_bytes)
+                raw_tags = await self._describe_with_prompt(
+                    image_bytes,
+                    media_type,
+                    digest,
+                    'emoji.description',
+                )
+                tags = _normalize_emotion_tags(raw_tags)
+                if tags is None:
+                    return None
+                return DescribedEmoji(
+                    content_hash=digest,
+                    emotion_tags=tags,
+                    image_bytes=image_bytes,
+                    media_type=media_type,
+                )
+            except Exception as exc:
+                logger.warning('chat_emoji_source_failed', error=str(exc))
+                return None
+
+        async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as http:
+            return list(await asyncio.gather(
+                *(_describe_one(source, http) for source in sources)
+            ))
+
     async def _describe_uncached(
         self,
         digest: str,
         image_bytes: bytes,
         media_type: str,
+        prompt_id: str,
     ) -> str | None:
         """执行一次未命中缓存的实际图片识别。"""
         if self._provider is None:
@@ -237,7 +360,7 @@ class ChatImageDescriber:
             return None
         try:
             description = await asyncio.wait_for(
-                self._call_model(image_bytes, media_type),
+                self._call_model(image_bytes, media_type, prompt_id),
                 timeout=IMAGE_DESCRIPTION_DEADLINE_S,
             )
         except asyncio.TimeoutError:
@@ -249,18 +372,34 @@ class ChatImageDescriber:
             trace.emit('image_description', result='timeout', hash=digest)
             return None
         if description:
-            self._cache[digest] = description
-            logger.info('chat_image_description', chars=len(description), hash=digest)
-            trace.emit('image_description', result='ok', hash=digest, text=description)
+            self._cache[(prompt_id, digest)] = description
+            logger.info(
+                'chat_image_description',
+                chars=len(description),
+                hash=digest,
+                promptId=prompt_id,
+            )
+            trace.emit(
+                'image_description',
+                result='ok',
+                hash=digest,
+                text=description,
+                promptId=prompt_id,
+            )
             return description
         trace.emit('image_description', result='empty', hash=digest)
         return None
 
-    async def _call_model(self, image_bytes: bytes, media_type: str) -> str | None:
+    async def _call_model(
+        self,
+        image_bytes: bytes,
+        media_type: str,
+        prompt_id: str,
+    ) -> str | None:
         """构造多模态请求并消费视觉模型流式响应。"""
         try:
             encoded = base64.b64encode(image_bytes).decode('ascii')
-            prompt = get_prompt('image.description').render()
+            prompt = get_prompt(prompt_id).render()
             content = [
                 {'type': 'text', 'text': prompt},
                 {
@@ -281,7 +420,7 @@ class ChatImageDescriber:
                 temperature=generation.temperature,
                 maxTokens=generation.token_limit,
                 renderParams={},
-                **prompt_metadata('image.description', ('image.description',)),
+                **prompt_metadata(prompt_id, (prompt_id,)),
             )
             bind_render_params({})
             raw = ''
@@ -385,3 +524,26 @@ def _guess_media_type(image_bytes: bytes) -> str:
     if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
         return 'image/webp'
     return 'image/jpeg'
+
+
+def _normalize_emotion_tags(raw: str | None) -> str | None:
+    """把视觉模型输出收窄为最多五个短情绪标签。"""
+
+    if raw is None:
+        return None
+    normalized = raw.strip()
+    if any(
+        marker in normalized
+        for marker in ('无法判断', '内容不清晰', '看不清', '不确定')
+    ):
+        return None
+    parts = re.split(r'[,，、;；\n]+', normalized)
+    tags: list[str] = []
+    for part in parts:
+        tag = part.strip().strip('[]【】。.！!？?：:')
+        if not tag or len(tag) > 16 or tag in tags:
+            continue
+        tags.append(tag)
+        if len(tags) == 5:
+            break
+    return ','.join(tags) if tags else None

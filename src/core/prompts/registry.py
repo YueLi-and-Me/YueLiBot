@@ -62,9 +62,10 @@ TEMPLATE_IDS = (
     # 追加在末尾：既有验收断言 TEMPLATE_IDS[3:5] 固定为篇幅变体。
     'chat.action.protocol',
     'image.description',
+    'emoji.description',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
-    'chat.protocol': frozenset({'emotions', 'gestures'}),
+    'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
     'chat.discipline': frozenset(),
     'chat.boundaries': frozenset(),
     'chat.length.brief': frozenset(),
@@ -116,8 +117,10 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'emotions',
         'gestures',
         'reply_example',
+        'emoji_rule',
     }),
     'image.description': frozenset(),
+    'emoji.description': frozenset(),
 }
 
 _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')

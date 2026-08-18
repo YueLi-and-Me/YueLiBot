@@ -85,14 +85,30 @@ class InboundMessage:
     external_message_id: str | None = None
     bot_name: str | None = None
     image_sources: tuple[str, ...] = ()
+    emoji_sources: tuple[str, ...] = ()
+    emoji_sub_types: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        """校验表情包来源与协议子类型逐项对齐。"""
+
+        if len(self.emoji_sources) != len(self.emoji_sub_types):
+            raise ValueError('入站表情包来源与 sub_type 数量必须一致')
 
 
 @dataclass(frozen=True)
 class OutboundMessage:
-    """待投递的非桌面回复，并保留按 ``<say>`` 切分的原始分句。"""
+    """待投递的非桌面回复，包含文本分句和可选表情包图片引用。"""
 
     stream: StreamRef
     segments: List[str]
+    emoji_refs: tuple[str, ...] = ()
+    emoji_sub_types: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        """校验表情包引用与协议子类型逐项对齐。"""
+
+        if len(self.emoji_refs) != len(self.emoji_sub_types):
+            raise ValueError('出站表情包引用与 sub_type 数量必须一致')
 
 
 @dataclass(frozen=True)

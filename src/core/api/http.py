@@ -15,7 +15,7 @@ import os
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .auth import (
     SESSION_COOKIE_NAME,
@@ -68,14 +68,36 @@ class PlatformInboundBody(BaseModel):
     mentioned_me: bool = Field(alias='mentionedMe')
     external_message_id: str = Field(alias='externalMessageId')
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
+    emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
+    emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
     # 旧协议字段：已下载的 Base64 附件；新适配器只应提交 imageSources。
     images: List[InboundImageBody] = Field(default_factory=list, alias='imageSegments')
 
-    @field_validator('image_sources')
+    @field_validator('image_sources', 'emoji_sources')
     @classmethod
     def _normalize_image_sources(cls, values: List[str]) -> List[str]:
         """规范图片来源字符串，空项保留以对齐正文占位符。"""
         return [str(value).strip() for value in values]
+
+    @field_validator('emoji_sub_types')
+    @classmethod
+    def _validate_emoji_sub_types(cls, values: List[int]) -> List[int]:
+        """拒绝普通图片子类型，保证后续登记内容都可作为表情包发送。"""
+
+        if any(
+            isinstance(value, bool) or value < 0 or value in {0, 4, 9}
+            for value in values
+        ):
+            raise ValueError('emojiSubTypes 必须只包含表情包子类型整数')
+        return values
+
+    @model_validator(mode='after')
+    def _validate_emoji_metadata_alignment(self) -> 'PlatformInboundBody':
+        """保证每个表情包来源都携带同位置的 ``sub_type``。"""
+
+        if len(self.emoji_sources) != len(self.emoji_sub_types):
+            raise ValueError('emojiSources 与 emojiSubTypes 数量必须一致')
+        return self
 
     @field_validator(
         'platform',
@@ -509,6 +531,9 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 mentioned_me=body.mentioned_me,
                 external_message_id=body.external_message_id,
                 bot_name=body.bot_name,
+                image_sources=tuple(body.image_sources),
+                emoji_sources=tuple(body.emoji_sources),
+                emoji_sub_types=tuple(body.emoji_sub_types),
             ),
             reason,
         )
@@ -542,6 +567,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         })
 
     image_sources = tuple(body.image_sources)
+    emoji_sources = tuple(body.emoji_sources)
+    emoji_sub_types = tuple(body.emoji_sub_types)
     legacy_attachments = [image.model_dump() for image in body.images]
     if legacy_attachments and not image_sources:
         # 兼容旧协议：已带 Base64 的入站消息只能同步描述，新适配器不再走此分支。
@@ -559,6 +586,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         external_message_id=body.external_message_id,
         bot_name=body.bot_name,
         image_sources=image_sources if not legacy_attachments else (),
+        emoji_sources=emoji_sources,
+        emoji_sub_types=emoji_sub_types,
     ))
     return JSONResponse({
         'streamId': context.stream.id,

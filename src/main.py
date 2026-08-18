@@ -27,6 +27,7 @@ from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
 from src.core.services.chat_image import ChatImageDescriber
+from src.core.services.emoji import EmojiLibrary
 from src.core.prompts.registry import prompt_metadata
 
 
@@ -339,6 +340,16 @@ def main() -> None:
     routers = create_routers(cfg)
     app_state.routers = routers
 
+    # 表情包语义检索与事实召回复用同一个 embedding 客户端；表情包本身即使
+    # 未配置 embedding 也可按标签包含匹配，不影响收侧识别和登记。
+    embed_client = None
+    if routers.embedding.ready:
+        try:
+            from src.core.memory.embed import build_client
+            embed_client = build_client(routers.embedding)
+        except Exception as exc:
+            logger.warning('embedding_client_init_failed', error=str(exc))
+
     chat_provider = routers.chat if routers.chat.ready else None
     proactive_provider = routers.proactive if routers.proactive.ready else None
     summary_provider = routers.summary if routers.summary.ready else None
@@ -357,6 +368,9 @@ def main() -> None:
         logger.info("vision_model_ready", model=vision_provider.model,
                     candidates=len(vision_provider.candidates))
     image_describer = ChatImageDescriber(cfg, vision_provider)
+    emoji_library = EmojiLibrary(db, data_dir / 'emojis', embed_client)
+    verified_emoji_count = emoji_library.verify_integrity()
+    logger.info('emoji_library_ready', count=verified_emoji_count)
 
     async def _push_event(
         channel: str,
@@ -384,6 +398,7 @@ def main() -> None:
         broker=broker,
         expression_provider=routers.expression if routers.expression.ready else None,
         image_describer=image_describer,
+        emoji_library=emoji_library,
     )
     app_state.chat.set_action_policy(
         'group',
@@ -399,9 +414,9 @@ def main() -> None:
     # 向量服务依赖 ChatService 已创建的 MemoryStore，因此必须在聊天服务之后装配。
     if cfg.vector.enabled:
         try:
-            from src.core.memory.embed import build_client
             from src.core.services.vector import VectorService
-            embed_client = build_client(routers.embedding)
+            if embed_client is None:
+                raise ValueError('model_tasks.embedding.model_list 是空的，无法启用向量召回')
             app_state.chat._vector = VectorService(app_state.chat.memory, embed_client)
             logger.info("vector_recall_enabled", model=routers.embedding.model,
                         candidates=len(routers.embedding.candidates))
@@ -471,6 +486,30 @@ def main() -> None:
     )
     app_state.awareness = awareness
     app_state.foreground_callback = awareness.on_foreground
+
+    async def _auto_register_emojis() -> None:
+        """在聊天服务启动前用视觉模型登记表情包目录中的新增图片。"""
+
+        summary = await emoji_library.auto_register_directory(image_describer)
+        verified_count = emoji_library.verify_integrity()
+        logger.info(
+            'emoji_directory_scanned',
+            discovered=summary.discovered,
+            added=summary.added,
+            skipped=summary.skipped,
+            failed=summary.failed,
+            verified=verified_count,
+            directory=str(data_dir / 'emojis'),
+        )
+
+    async def _stop_emoji_auto_register() -> None:
+        """投放目录扫描不持有后台资源，关闭阶段无需处理。"""
+
+    lifecycle.register(
+        'emoji_auto_register',
+        _auto_register_emojis,
+        _stop_emoji_auto_register,
+    )
     lifecycle.register('chat', app_state.chat.startup, app_state.chat.shutdown)
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 

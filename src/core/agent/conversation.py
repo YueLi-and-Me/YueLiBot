@@ -37,7 +37,7 @@ from .action_protocol import (
     IllegalActionError,
     ReplyLength,
 )
-from .parser import DecisionEvent, ParseEvent, ResponseParser, TextEvent
+from .parser import DecisionEvent, EmojiEvent, ParseEvent, ResponseParser, TextEvent
 
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
@@ -182,6 +182,7 @@ class ConversationAgent:
         head: DecisionHead | None = None
         body_events: list[ParseEvent] = []
         body_parts: list[str] = []
+        emoji_emotions: list[str] = []
         decision: ConversationDecision | None = None
         status: EventStatus = "committed"
         detail = ""
@@ -255,6 +256,8 @@ class ConversationAgent:
                     await release([event])
                     if isinstance(event, TextEvent):
                         body_parts.append(event.value)
+                    elif isinstance(event, EmojiEvent):
+                        emoji_emotions.append(event.emotion)
             if head is None:
                 status = 'parse_error'
                 detail = '模型输出中没有动作头'
@@ -266,7 +269,9 @@ class ConversationAgent:
                 await release([event])
                 if isinstance(event, TextEvent):
                     body_parts.append(event.value)
-            decision = head.to_decision(''.join(body_parts))
+                elif isinstance(event, EmojiEvent):
+                    emoji_emotions.append(event.emotion)
+            decision = head.to_decision(''.join(body_parts), tuple(emoji_emotions))
         except LlmError as exc:
             if exc.kind == 'aborted':
                 # 用户主动中断不属于八种行动事件状态，原样上抛由调用方处理。
@@ -304,4 +309,3 @@ class ConversationAgent:
         )
         head.validate(frame)
         return head
-

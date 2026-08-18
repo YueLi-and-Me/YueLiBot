@@ -140,6 +140,18 @@ CREATE TABLE IF NOT EXISTS pending_utterances (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_utterances(delivered_at, deliver_after);
 
+-- ---------------------------------------------------------------- 表情包库
+-- 文件保存在运行数据目录并以内容哈希命名；启动时按 send_ref 重算哈希。
+CREATE TABLE IF NOT EXISTS emoji (
+  hash          TEXT PRIMARY KEY,
+  send_ref      TEXT    NOT NULL,
+  emotion_tags  TEXT    NOT NULL,
+  emotion_vec   BLOB,
+  sub_type      INTEGER NOT NULL DEFAULT 1,
+  seen_count    INTEGER NOT NULL DEFAULT 1,
+  first_seen_at INTEGER NOT NULL
+);
+
 -- ---------------------------------------------------------------- 人格状态
 -- 好感度按人保存；person_id=1 是 owner，其他 person 在首次交互时懒创建。
 CREATE TABLE IF NOT EXISTS persona_bond (

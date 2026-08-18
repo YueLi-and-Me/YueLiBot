@@ -349,6 +349,21 @@ class MemoryStore:
         ).fetchone()
         return row[0] if row else 0
 
+    def emoji_reply_count_since(self, stream_id: int, since: int) -> int:
+        """统计窗口内实际选中表情包的助手消息数量。
+
+        只有服务层确认命中可发送引用后，才会把 ``<emoji>`` 写入助手历史，
+        因此该查询可直接复用现有消息窗口而不建立另一套频率状态。
+        """
+
+        row = self._db.execute(
+            '''SELECT COUNT(*) FROM messages
+               WHERE stream_id = ? AND role = 'assistant' AND created_at >= ?
+                 AND instr(content, '<emoji ') > 0''',
+            (stream_id, since),
+        ).fetchone()
+        return row[0] if row else 0
+
     def message_count_since(self, stream_id: int, since: int) -> int:
         """统计指定时间窗口内已落库的全部消息数量。
 
