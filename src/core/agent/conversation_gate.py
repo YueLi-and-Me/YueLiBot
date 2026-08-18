@@ -194,11 +194,14 @@ def decide_disposition(request: GateRequest) -> GateResult:
         codes.append('ongoing_topic')
     if request.is_clear_question:
         codes.append('clear_question')
-    # 自然回应窗口只由「距上一条回复的时间」决定，与十分钟频率计数解耦；
-    # 否则一次发言会让后续十分钟的每条普通群消息都获得该信号。
+    # 自然回应窗口同时要求「时间够近」与「十分钟窗口内这是第一条回复」。
+    # 计数为 1 表示刚完成窗口内第一次发言，允许一次自然跟进；自然跟进若也
+    # 回复，计数变为 2，窗口即关闭。否则每次回复都会刷新时间戳，窗口会
+    # 在活跃群聊里无限自我续期，直到撞上频率硬上限。
     if (
         request.last_bot_reply_elapsed_ms is not None
         and request.last_bot_reply_elapsed_ms <= NATURAL_REPLY_WINDOW_MS
+        and request.replies_in_window == 1
     ):
         codes.append('natural_reply_window')
     if request.recognizable_target:

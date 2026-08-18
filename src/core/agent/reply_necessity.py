@@ -29,6 +29,13 @@ DEFAULT_FREQUENCY_TALK_VALUE = 0.6
 # 回复必要性默认触发线；内容驱动下一条「问题 + 请求 + 较长文本」正好达线。
 DEFAULT_REPLY_NECESSITY_THRESHOLD = 80
 
+# 存在感惩罚的统计窗口与曲线参数：最近 5 分钟里 Bot 发言占比越高，
+# 普通群消息的回复必要性越低，形成撞线之前的平滑自我收敛。
+PRESENCE_WINDOW_MS = 5 * 60_000
+PRESENCE_FREE_RATIO = 0.25
+PRESENCE_FULL_RATIO = 0.60
+PRESENCE_PENALTY_MAX = 25
+
 QUESTION_TERMS = ("怎么", "如何", "为什么", "有没有")
 STRONG_REQUEST_TERMS = ("帮我", "帮忙", "能不能", "可以吗", "要不要")
 SHORT_REACTIONS = frozenset({"哈哈", "哈哈哈", "草", "笑死", "好", "嗯", "啊", "哦", "6", "666", "？", "?"})
@@ -113,22 +120,56 @@ def _pressure_score(pending_count: int, backlog_scale: int) -> int:
     return min(100, 50 + int(round(50 * overflow_factor)))
 
 
+def _presence_penalty(recent_self_replies: int, recent_window_messages: int) -> int:
+    """按最近窗口内的发言占比计算存在感惩罚。
+
+    Bot 自己发言占比不超过免罚线时不罚；超过后线性罚到上限，让「说得
+    太多」连续压低后续普通群消息的触发分，而不是只在硬上限处突然闭嘴。
+
+    :param recent_self_replies: 最近窗口内助手回复数。
+    :param recent_window_messages: 最近窗口内全部消息数。
+    :return: 0 到 ``PRESENCE_PENALTY_MAX`` 之间的惩罚分。
+    :raises ValueError: 输入计数为负。
+    """
+    if recent_self_replies < 0:
+        raise ValueError('最近助手回复数不能为负')
+    if recent_window_messages < 0:
+        raise ValueError('最近消息总数不能为负')
+    if recent_self_replies <= 0 or recent_window_messages <= 0:
+        return 0
+    self_ratio = min(1.0, recent_self_replies / recent_window_messages)
+    if self_ratio <= PRESENCE_FREE_RATIO:
+        return 0
+    progress = min(
+        1.0,
+        (self_ratio - PRESENCE_FREE_RATIO)
+        / (PRESENCE_FULL_RATIO - PRESENCE_FREE_RATIO),
+    )
+    return int(round(PRESENCE_PENALTY_MAX * progress))
+
+
 def score_reply_necessity(
     texts: Sequence[str],
     *,
     pending_count: int,
     backlog_scale: int,
+    recent_self_replies: int = 0,
+    recent_window_messages: int = 0,
 ) -> ReplyNecessityScore:
     """计算 0~100 的回复必要性评分。
 
     该函数只服务群聊 ``attention_filtered`` 路径：@、点名或最近 Bot 发言
-    已在入口门控直接进入 DELIBERATE，不会到达这里；因此评分只由内容信号、
-    短反应惩罚与积压压力组成。
+    已在入口门控直接进入 DELIBERATE，不会到达这里；因此评分由内容信号、
+    短反应惩罚、积压压力与存在感惩罚组成。存在感惩罚按最近窗口内 Bot
+    发言占比线性递增，让连续发言在触达硬上限之前就逐渐降低触发概率。
 
     :param texts: 本批清洗后的候选文本。
     :param pending_count: 尚未触发 Agent 的候选累计条数，用于压力分。
     :param backlog_scale: 压力归一化的消息条数尺度；达到该条数时压力分记 50。
+    :param recent_self_replies: 存在感窗口内助手回复数，默认 0。
+    :param recent_window_messages: 存在感窗口内全部消息数，默认 0。
     :return: 包含最终得分与中文评分明细的不可变结果。
+    :raises ValueError: 任一存在感输入为负时抛出。
     """
     cleaned = [" ".join((text or "").split()).strip() for text in texts]
     combined = "\n".join(text for text in cleaned if text)
@@ -153,7 +194,8 @@ def score_reply_necessity(
         content_reasons.append("短反应")
 
     pressure_score = _pressure_score(pending_count, backlog_scale)
-    raw_score = content_score + pressure_score
+    presence_penalty = _presence_penalty(recent_self_replies, recent_window_messages)
+    raw_score = content_score + pressure_score - presence_penalty
     final_score = max(0, min(100, raw_score))
 
     parts = [f"最终={final_score}", f"原始={raw_score}"]
@@ -161,4 +203,9 @@ def score_reply_necessity(
         parts.append(f"内容={content_score}({','.join(content_reasons)})")
     if pressure_score:
         parts.append(f"压力={pressure_score}")
+    if presence_penalty:
+        parts.append(
+            f"存在感=-{presence_penalty}"
+            f"(5分钟={recent_self_replies}/{recent_window_messages})"
+        )
     return ReplyNecessityScore(score=final_score, detail=" ".join(parts))

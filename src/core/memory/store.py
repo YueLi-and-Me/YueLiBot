@@ -36,12 +36,14 @@ class StoredMessage:
     :ivar content: 消息正文。
     :ivar created_at: 创建时间的 Unix 毫秒时间戳。
     :ivar sender_person_id: 发送者人物 ID；助手消息可为 `None`。
+    :ivar message_id: 消息表主键，用于按批次重建交错落库后的逻辑顺序。
     """
 
     role: str   # 'user' | 'assistant'
     content: str
     created_at: int
     sender_person_id: int | None
+    message_id: int
 
 
 @dataclass
@@ -245,19 +247,27 @@ class MemoryStore:
         """
         if user_message_id_watermark is None:
             rows = self._db.execute(
-                '''SELECT role, content, created_at, sender_person_id FROM messages
+                '''SELECT id, role, content, created_at, sender_person_id FROM messages
                    WHERE stream_id = ? AND episode_id IS NULL ORDER BY id DESC LIMIT ?''',
                 (stream_id, limit),
             ).fetchall()
         else:
             rows = self._db.execute(
-                '''SELECT role, content, created_at, sender_person_id FROM messages
+                '''SELECT id, role, content, created_at, sender_person_id FROM messages
                    WHERE stream_id = ? AND episode_id IS NULL
                    AND NOT (role = 'user' AND id > ?) ORDER BY id DESC LIMIT ?''',
                 (stream_id, user_message_id_watermark, limit),
             ).fetchall()
-        return [StoredMessage(role=r[0], content=r[1], created_at=r[2], sender_person_id=r[3])
-                for r in reversed(rows)]
+        return [
+            StoredMessage(
+                role=r[1],
+                content=r[2],
+                created_at=r[3],
+                sender_person_id=r[4],
+                message_id=r[0],
+            )
+            for r in reversed(rows)
+        ]
 
     def last_message_at(self, stream_id: int) -> int | None:
         """返回指定 stream 最近一条消息的时间戳。

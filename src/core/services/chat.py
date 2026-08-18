@@ -51,6 +51,7 @@ from src.core.agent.prompt import (
     render_action_protocol,
 )
 from src.core.agent.reply_necessity import (
+    PRESENCE_WINDOW_MS,
     frequency_trigger_threshold,
     score_reply_necessity,
 )
@@ -62,7 +63,7 @@ from src.core.config.schema import Config, ConversationConfig
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_request
-from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, RecalledFact
+from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, RecalledFact, StoredMessage
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
@@ -89,6 +90,10 @@ from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState
 logger = get_logger(__name__)
 
 CHAT_POLL_INTERVAL_S = 0.1
+
+# 上一轮生成期间插队到达的普通群消息，在上一回复落库后先沉降这段时间；
+# 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
+GROUP_CROSSED_MESSAGE_SETTLE_MS = 8_000
 
 # 群历史首次回填时用于播种游标的历史条数与时间容差。
 _BACKFILL_SEED_EVENT_LIMIT = 500
@@ -127,6 +132,8 @@ class _BufferedMessage:
     bot_name: str | None
     message_id: int
     previous_message_at: int | None
+    # 消息进入缓冲区的毫秒时间戳；用于识别「上一轮生成期间插队到达」的批次。
+    accepted_at: int
     # 后台图片描述任务；结果为补齐描述后的完整正文，回合构建前必须等待。
     image_description_task: asyncio.Task[str] | None = None
 
@@ -492,14 +499,47 @@ class ChatService:
             except asyncio.TimeoutError:
                 pass
 
+    def _group_batch_in_crossed_settle(
+        self,
+        batch: list[_BufferedMessage],
+        now: int,
+    ) -> bool:
+        """判断上一轮生成期间插队到达的普通群批次是否仍在沉降期。
+
+        只有消息入缓冲时间早于上一条 Bot 回复落库时间的批次才需要沉降：
+        这些消息在上一轮回复前已经到达，若上一轮刚结束就立刻开下一轮，
+        会形成背靠背连回。@ 与名字命中属于明确注意力信号，不等待。
+
+        :param batch: 同一 stream 的连续同一发送者批次。
+        :param now: 当前毫秒时间戳。
+        :return: 批次应继续在缓冲中等待时返回 True。
+        """
+        context = batch[0].context
+        if context.stream.kind != 'group':
+            return False
+        # 沉降只作用于扩展触发口径管理的普通群候选；旧管线与未选中 stream
+        # 保持既有逐批调度语义，避免离线与 shadow 观察行为被时间窗口改变。
+        if not self.extended_trigger_enabled(context):
+            return False
+        if any(message.mentioned_me for message in batch):
+            return False
+        if any(mentions_bot_name(message.text, self._bot_names) for message in batch):
+            return False
+        last_reply_at = self.memory.last_assistant_reply_at(context.stream.id)
+        if last_reply_at is None:
+            return False
+        crossed = any(message.accepted_at < last_reply_at for message in batch)
+        if not crossed:
+            return False
+        return now - last_reply_at < GROUP_CROSSED_MESSAGE_SETTLE_MS
+
     async def _tick(self) -> None:
         """为每个空闲且有缓冲消息的 stream 启动一轮同发送者回复。"""
+        now = current_time()
         for stream_id in tuple(self._buffers):
             buffered = self._buffers.get(stream_id)
             if not buffered:
                 self._buffers.pop(stream_id, None)
-                continue
-            if not self.claim_stream(stream_id, 'reply'):
                 continue
             # 群聊中不同人物的关系与事实彼此独立，只消费连续同一人物的前缀。
             person_id = buffered[0].context.person.id
@@ -512,6 +552,10 @@ class ChatService:
                 len(buffered),
             )
             batch = buffered[:boundary]
+            if self._group_batch_in_crossed_settle(batch, now):
+                continue
+            if not self.claim_stream(stream_id, 'reply'):
+                continue
             del buffered[:boundary]
             if not buffered:
                 self._buffers.pop(stream_id, None)
@@ -569,6 +613,7 @@ class ChatService:
             bot_name=inbound.bot_name,
             message_id=message_id,
             previous_message_at=previous_message_at,
+            accepted_at=accepted_at,
             image_description_task=image_task,
         ))
         self._wake.set()
@@ -765,6 +810,9 @@ class ChatService:
                     now,
                     inbound.bot_name,
                     user_message_id_watermark=materialized_batch[-1].message_id,
+                    batch_message_ids=tuple(
+                        message.message_id for message in materialized_batch
+                    ),
                 )
                 render_params: dict[str, dict[str, str]] = {}
                 batch_gate = self._batch_gate(
@@ -2017,6 +2065,42 @@ class ChatService:
                    snapshotPath=str(snapshot) if snapshot else None)
         return []
 
+    @staticmethod
+    def _order_working_memory_for_batch(
+        messages: list[StoredMessage],
+        batch_message_ids: tuple[int, ...] | None,
+    ) -> list[StoredMessage]:
+        """按本批消息边界重建交错落库后的历史顺序。
+
+        上一轮生成期间到达的当前批消息会先于上一回复写入 messages 表，
+        原始顺序形如 ``[上一用户, 当前批用户..., 上一 assistant]``。按当前
+        批第一条用户消息把尾部 assistant 插回它前面，得到回合视角的正确
+        顺序：``[上一用户, 上一 assistant, 当前批用户...]``。
+
+        :param messages: 记忆服务返回的按落库顺序排列的消息。
+        :param batch_message_ids: 本批用户消息主键；非 Agent 路径可传 ``None``。
+        :return: 需要重排时返回新列表，否则返回原列表。
+        """
+        if not batch_message_ids:
+            return messages
+        batch_ids = set(batch_message_ids)
+        last_user_index = max(
+            index for index, message in enumerate(messages)
+            if message.role == 'user'
+        )
+        trailing = messages[last_user_index + 1:]
+        if not trailing:
+            return messages
+        first_batch_index = next(
+            index for index, message in enumerate(messages)
+            if message.role == 'user' and message.message_id in batch_ids
+        )
+        return [
+            *messages[:first_batch_index],
+            *trailing,
+            *messages[first_batch_index:last_user_index + 1],
+        ]
+
     def _prepare_turn_context(
         self,
         context: ConversationContext,
@@ -2024,6 +2108,7 @@ class ChatService:
         now: int,
         platform_bot_name: str | None = None,
         user_message_id_watermark: int | None = None,
+        batch_message_ids: tuple[int, ...] | None = None,
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -2032,6 +2117,8 @@ class ChatService:
         :param now: 当前毫秒时间戳。
         :param platform_bot_name: 当前平台登录昵称；仅用于当前入站消息的称呼匹配。
         :param user_message_id_watermark: 可选的本批末条用户消息 ID；用于隔离后来落库的用户消息。
+        :param batch_message_ids: 可选的本批用户消息主键；用于把上一回合回复
+            插回当前批之前的正确历史位置。
         :return: 可供动作决策读取、并可在确认回复后继续增强的上下文。
 
         副作用：
@@ -2078,6 +2165,7 @@ class ChatService:
             self._working_memory_messages,
             user_message_id_watermark,
         )
+        wm = self._order_working_memory_for_batch(wm, batch_message_ids)
         raw_history = self._history_for_context(context, wm)
         # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。
         activity = None
@@ -2296,10 +2384,19 @@ class ChatService:
             # 压力分母必须是消息条数尺度；复用 frequency 预算折算阈值，
             # 不再把 0~100 的评分阈值当成条数使用。
             backlog_scale = frequency_trigger_threshold(self._frequency_talk_value)
+            presence_since = current_time() - PRESENCE_WINDOW_MS
             score = score_reply_necessity(
                 [batch_text],
                 pending_count=pending,
                 backlog_scale=backlog_scale,
+                recent_self_replies=self.memory.assistant_reply_count_since(
+                    stream_id,
+                    presence_since,
+                ),
+                recent_window_messages=self.memory.message_count_since(
+                    stream_id,
+                    presence_since,
+                ),
             )
             if score.score >= threshold:
                 self._extended_pending.pop(stream_id, None)
