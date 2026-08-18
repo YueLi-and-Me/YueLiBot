@@ -25,7 +25,7 @@ from .auth import ws_auth
 
 from src.core.common.logger import get_logger
 from src.core.observe import events as trace
-from src.core.observe.events import broadcaster
+from src.core.observe.events import LIVE_ONLY_KINDS, broadcaster
 from src.core.observe.store import since as events_since
 from src.core.webui.logs import webui_logs
 
@@ -257,7 +257,14 @@ async def webui_events_endpoint(websocket: WebSocket) -> None:
 
     await websocket.accept()
     # 必须先订阅实时广播，再读取历史账本；随后按 seq 去重，避免建立窗口丢事件。
-    subscriber = broadcaster.subscribe()
+    #
+    # 【关键】事件账本只承载持久化事件，订阅时排除 LIVE_ONLY_KINDS：
+    # - 现象: llm_chunk 在模型流式生成时按 token 触发，全部转发给浏览器会让观察面板
+    #   每个分片都重渲染整棵事件树，打开面板即把单核 CPU 打满。
+    # - 原因: 这些事件不落账、seq 为 None，既无法参与历史回放与按 seq 去重，又会灌满
+    #   本订阅者的有界队列触发 1013 溢出关闭与重连抖动。
+    # - 后果: 若恢复转发高频实时事件，观察面板会重新出现打开即满载 CPU 的问题。
+    subscriber = broadcaster.subscribe(exclude_kinds=LIVE_ONLY_KINDS)
     try:
         page = events_since(since, 1_000)
         replay_frame: Dict[str, Any] = {'events': page.events}

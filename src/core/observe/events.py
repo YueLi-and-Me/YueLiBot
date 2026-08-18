@@ -35,11 +35,14 @@ class EventSubscriber:
     :ivar loop: 订阅者所属的 asyncio 事件循环。
     :ivar queue: 接收事件字典的有界队列。
     :ivar overflowed: 队列溢出时被置位的事件标志。
+    :ivar exclude_kinds: 该订阅者不接收的事件类型集合；命中的事件在入队前直接丢弃，
+        既不占用队列容量也不会触发溢出。默认空集表示接收全部事件。
     """
 
     loop: asyncio.AbstractEventLoop
     queue: asyncio.Queue[Dict[str, Any]]
     overflowed: asyncio.Event
+    exclude_kinds: frozenset[str] = frozenset()
 
 
 class EventBroadcaster:
@@ -61,9 +64,12 @@ class EventBroadcaster:
         self._subscribers: Set[EventSubscriber] = set()
         self._lock = threading.Lock()
 
-    def subscribe(self) -> EventSubscriber:
+    def subscribe(self, *, exclude_kinds: frozenset[str] = frozenset()) -> EventSubscriber:
         """为当前运行事件循环创建并登记一个订阅者。
 
+        :param exclude_kinds: 该订阅者不接收的事件类型集合；命中的事件在入队前丢弃，
+            用于让持久化事件账本这类订阅者屏蔽 ``llm_chunk`` 等高频实时事件。默认空集
+            表示接收全部广播事件。
         :return: 新的订阅者对象。
         :raises RuntimeError: 当前线程没有运行中的 asyncio 事件循环。
         副作用：修改订阅者集合。
@@ -72,6 +78,7 @@ class EventBroadcaster:
             loop=asyncio.get_running_loop(),
             queue=asyncio.Queue(maxsize=self._queue_size),
             overflowed=asyncio.Event(),
+            exclude_kinds=exclude_kinds,
         )
         with self._lock:
             self._subscribers.add(subscriber)
@@ -106,6 +113,10 @@ class EventBroadcaster:
         :param entry: 待投递事件。
         副作用：可能设置 `overflowed` 或向有界队列写入事件。
         """
+        # 屏蔽的事件类型在容量判断之前丢弃：高频 llm_chunk 若先入队，会在模型流式
+        # 生成期间灌满有界队列并触发溢出关闭；提前丢弃可避免这类订阅者被无关事件淹没。
+        if entry.get('kind') in subscriber.exclude_kinds:
+            return
         if subscriber.overflowed.is_set():
             return
         if subscriber.queue.full():
