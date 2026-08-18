@@ -1,7 +1,7 @@
 """维护控制台日志的模块颜色、中文别名和 ANSI 转义序列。
 
-颜色表只登记当前代码实际使用的 logger，别名用于控制台和日志文件中的简体中文
-展示；日志渲染器将模块名映射为颜色与别名，并根据配置决定是否输出 ANSI 控制码。
+颜色表登记当前代码实际使用的 logger，别名用于控制台和 WebUI 的简体中文展示；
+日志渲染器将模块名映射为高对比颜色与别名，并把事件、字段名和字段值分层着色。
 颜色值使用 ``(前景色, 是否加粗)`` 二元组，不保留未使用的背景色字段。
 """
 
@@ -16,51 +16,56 @@ import sys
 RESET_COLOR = "\033[0m"
 
 # 模块名（已去掉 src. 前缀）→ (十六进制前景色, 是否粗体)。
-# 分组着色：同一子系统使用相近色相，主程序使用高亮加粗，追踪模块使用低亮度颜色。
+# 分组着色：同一子系统使用相近色相，但相邻高频模块保持足够的明度或色相差。
+# 所有颜色都按深色终端选取，避免低亮灰色正文在 PowerShell 和 WebUI 中糊成一片。
 MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     # 核心
     "main": ("#ffffff", True),
     "selftest": ("#ffff00", False),
     # 接口层
-    "api.http": ("#5f87ff", False),
-    "api.model_config": ("#5f87ff", False),
-    "api.ws": ("#00d7ff", False),
+    "api.http": ("#5fafff", False),
+    "api.model_config": ("#87afff", False),
+    "api.ws": ("#00d7ff", True),
     # QQ 适配器
-    "platforms.napcat.backend": ("#d787ff", False),
-    "platforms.napcat.runner": ("#ff5f87", False),
-    "platforms.napcat.transport": ("#afafff", False),
+    "platforms.napcat.backend": ("#d787ff", True),
+    "platforms.napcat.runner": ("#ff5f87", True),
+    "platforms.napcat.transport": ("#afafff", True),
     # 归属解析
-    "platform_io.registry": ("#5fd7af", False),
+    "platform_io.registry": ("#5fffd7", False),
     # 基础设施
-    "common.logger": ("#808080", False),
-    "config.loader": ("#5f5faf", False),
-    "prompts.registry": ("#875fff", False),
-    "config.model_webui": ("#5f5faf", False),
-    "config.settings_webui": ("#5f5faf", False),
-    "common.db.migrations.bootstrap": ("#875f00", False),
-    "common.db.migrations.manager": ("#d78700", False),
-    "common.db.migrations.v3_to_v4": ("#af8700", False),
-    "common.db.migrations.v4_to_v5": ("#af8700", False),
-    "common.db.migrations.v5_to_v6": ("#af8700", False),
-    "common.db.migrations.v6_to_v7": ("#af8700", False),
-    "common.db.migrations.v7_to_v8": ("#af8700", False),
-    "common.db.migrations.v8_to_v9": ("#af8700", False),
+    "common.logger": ("#ffd75f", True),
+    "common.logger_colors": ("#ffaf5f", False),
+    "config.loader": ("#8787ff", False),
+    "prompts.registry": ("#af87ff", True),
+    "config.model_webui": ("#87afff", False),
+    "config.settings_webui": ("#af87ff", False),
+    "common.db.migrations.bootstrap": ("#d7af5f", False),
+    "common.db.migrations.manager": ("#ffaf00", True),
+    "common.db.migrations.v3_to_v4": ("#ffd75f", False),
+    "common.db.migrations.v4_to_v5": ("#ffd75f", False),
+    "common.db.migrations.v5_to_v6": ("#ffd75f", False),
+    "common.db.migrations.v6_to_v7": ("#ffd75f", False),
+    "common.db.migrations.v7_to_v8": ("#ffd75f", False),
+    "common.db.migrations.v8_to_v9": ("#ffd75f", False),
+    "common.db.migrations.v9_to_v10": ("#ffd75f", False),
+    "common.db.migrations.v10_to_v11": ("#ffd75f", False),
     # 模型
-    "llm_models.router": ("#008080", False),
-    "llm_models.openai": ("#00afaf", False),
-    "memory.embed": ("#5f87d7", False),
-    "services.vector": ("#af87ff", False),
+    "llm_models.router": ("#00ffff", True),
+    "llm_models.openai": ("#00d7d7", False),
+    "memory.embed": ("#5fafff", False),
+    "services.vector": ("#af87ff", True),
     # 业务
-    "services.chat": ("#5fff00", False),
-    "services.chat_image": ("#5fafff", False),
-    "schedule.plan": ("#87d7af", False),
-    "services.proactive": ("#ff8700", False),
-    "desktop.vision": ("#5fafff", False),
-    "desktop.sensor": ("#5fafd7", False),
-    "services.tts": ("#ffaf00", False),
-    "services.lifecycle": ("#af00ff", False),
-    "observe.events": ("#6c6c6c", False),
-    "services.trace_console": ("#6c6c6c", False),
+    "services.chat": ("#5fff5f", True),
+    "services.chat_image": ("#5fafff", True),
+    "services.emoji": ("#ffd75f", True),
+    "schedule.plan": ("#87ffaf", False),
+    "services.proactive": ("#ff8700", True),
+    "desktop.vision": ("#5fd7ff", True),
+    "desktop.sensor": ("#5fffd7", False),
+    "services.tts": ("#ffaf00", True),
+    "services.lifecycle": ("#d75fff", True),
+    "observe.events": ("#ff5fd7", True),
+    "services.trace_console": ("#ff87d7", True),
 }
 
 # 模块名 → 控制台上显示的中文别名；控制台输出统一使用简体中文。
@@ -75,6 +80,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "platforms.napcat.transport": "QQ传输",
     "platform_io.registry": "归属登记",
     "common.logger": "日志",
+    "common.logger_colors": "日志配色",
     "config.loader": "配置加载",
     "prompts.registry": "提示词",
     "config.model_webui": "模型配置读写",
@@ -87,12 +93,15 @@ MODULE_ALIASES: Dict[str, str] = {
     "common.db.migrations.v6_to_v7": "迁移v6→v7",
     "common.db.migrations.v7_to_v8": "迁移v7→v8",
     "common.db.migrations.v8_to_v9": "迁移v8→v9",
+    "common.db.migrations.v9_to_v10": "迁移v9→v10",
+    "common.db.migrations.v10_to_v11": "迁移v10→v11",
     "llm_models.router": "模型路由",
     "llm_models.openai": "模型连接",
     "memory.embed": "记忆嵌入",
     "services.vector": "向量召回",
     "services.chat": "对话",
     "services.chat_image": "聊天图片",
+    "services.emoji": "表情包",
     "schedule.plan": "日程",
     "services.proactive": "感知",
     "desktop.vision": "视觉",
@@ -232,6 +241,13 @@ CONVERTED_MODULE_COLORS: Dict[str, str] = {
     name: hex_to_ansi(hex_color, bold) for name, (hex_color, bold) in MODULE_COLORS.items()
 }
 
+# 正文不再跟随模块色整段染色。固定的高对比层级色让事件、字段名、字段值和分隔符
+# 在高频日志中保持稳定位置感，模块色只负责标识来源。
+EVENT_COLOR = hex_to_ansi("#ffffff", True)
+FIELD_LABEL_COLOR = hex_to_ansi("#5fd7ff", True)
+FIELD_VALUE_COLOR = hex_to_ansi("#d7e4f5")
+SEPARATOR_COLOR = hex_to_ansi("#5f87af")
+
 
 def module_color(logger_name: str) -> str:
     """返回 logger 模块对应的 ANSI 前景色。
@@ -305,9 +321,13 @@ def enable_windows_ansi() -> None:
 
 
 __all__ = [
+    "EVENT_COLOR",
+    "FIELD_LABEL_COLOR",
+    "FIELD_VALUE_COLOR",
     "MODULE_ALIASES",
     "MODULE_COLORS",
     "RESET_COLOR",
+    "SEPARATOR_COLOR",
     "enable_windows_ansi",
     "is_color_enabled",
     "level_color",

@@ -14,6 +14,7 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 
+from src.core.common.log_display import event_label, value_label
 from src.core.common.logger import get_logger, is_color_enabled
 
 logger = get_logger(__name__)
@@ -71,7 +72,7 @@ def _prompt_preview(messages: list[dict]) -> str:
     preview = system[:_PROMPT_PREVIEW_CHARS]
     if len(system) > _PROMPT_PREVIEW_CHARS:
         preview += '…'
-    return f'{preview}\n（共 {len(messages)} 条消息，完整内容见观察面板）'
+    return f'{preview}\n共 {len(messages)} 条消息，完整内容见观察面板'
 
 
 def _reply_text(segments: list[str]) -> str:
@@ -98,11 +99,16 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
     lines = []
     for effect in side_effects:
         if effect.get('kind') == 'memory_fact':
-            lines.append(f"  · 记忆: [{effect.get('memoryKind', '')}] {effect.get('content', '')}")
+            lines.append(
+                f"记忆：[{value_label(str(effect.get('memoryKind', '')))}] "
+                f"{effect.get('content', '')}"
+            )
         elif effect.get('kind') == 'mood_delta':
-            lines.append(f"  · 心情: favor={effect.get('favor')} energy={effect.get('energy')}")
+            lines.append(
+                f"心情：好感 {effect.get('favor')}，精力 {effect.get('energy')}"
+            )
         elif effect.get('kind') == 'promise_stashed':
-            lines.append(f"  · 约定: {effect.get('subject', '')} → {effect.get('at')}")
+            lines.append(f"约定：{effect.get('subject', '')} → {effect.get('at')}")
     return lines
 
 
@@ -135,27 +141,33 @@ def render_turn(
         # 仅组装有限预览、结构化副作用和解析后的可见正文，完整提示词与原始响应
         # 仍由观察事件存储保留。
         parts: list[Any] = [
-            Text(f'{sender_label}: {user_text}', style='bold'),
-            Text(_prompt_preview(messages), style='dim'),
+            Text.assemble(
+                Text('收到消息  ', style='bold cyan'),
+                Text(f'{sender_label}：{user_text}', style='bold white'),
+            ),
+            Text.assemble(
+                Text('模型上下文  ', style='bold magenta'),
+                Text(_prompt_preview(messages), style='bright_blue'),
+            ),
         ]
         reply = _reply_text(reply_segments)
         if reply:
             parts.append(
-                Text(f'{bot_name}: ', style='bold green')
-                + Text(reply, style='green'),
+                Text('机器人回复  ', style='bold green')
+                + Text(f'{bot_name}：{reply}', style='bright_green'),
             )
         else:
             parts.append(Text(
-                f'{bot_name}: （本轮没有可见回复，仅处理内部事件）',
-                style='dim italic',
+                f'机器人回复  {bot_name}：本轮没有可见回复，仅处理内部事件',
+                style='italic yellow',
             ))
         # 副作用逐行追加，便于在交互终端中区分记忆写入、情绪变化和约定登记。
         for line in _side_effect_lines(side_effects):
-            parts.append(Text(line, style='yellow'))
+            parts.append(Text('内部变化  ', style='bold yellow') + Text(line, style='bright_yellow'))
         console.print(Panel(
             Group(*parts),
-            title=f'Turn #{turn}', subtitle=_elapsed_ms(turn),
-            border_style='cyan',
+            title=f'第 {turn} 轮对话', subtitle=f'耗时 {_elapsed_ms(turn)}',
+            border_style='bright_cyan',
         ))
     except Exception as exc:
         logger.debug('render_turn_failed', error=str(exc))
@@ -175,10 +187,10 @@ def render_observation(sender_label: str, user_text: str, reason: str) -> None:
         return
     try:
         console.print(
-            Text('· ', style='dim')
-            + Text(f'{sender_label}: ', style='dim')
-            + Text(user_text, style='dim white')
-            + Text(f'  （未回复：{reason}）', style='dim italic'),
+            Text('旁听  ', style='bold magenta')
+            + Text(f'{sender_label}：', style='bold cyan')
+            + Text(user_text, style='white')
+            + Text(f'  未回复：{value_label(reason)}', style='yellow'),
         )
     except Exception as exc:
         logger.debug('render_observation_failed', error=str(exc))
@@ -212,22 +224,23 @@ def render_action_decision(
     if not _is_tty:
         return
     try:
+        scope_label = '影子观察' if agent_scope == 'shadow' else value_label(agent_scope)
         parts: list[Any] = [
-            Text('· ', style='dim'),
-            Text(f'Agent[{agent_scope}] turn#{turn}', style='bold cyan'),
+            Text('行动决策  ', style='bold magenta'),
+            Text(f'{scope_label} · 第 {turn} 轮', style='bold cyan'),
         ]
         if action:
-            summary = f' → {action}'
+            summary = f'  动作：{value_label(action)}'
             if reason_codes:
-                summary += f" reasons={','.join(reason_codes)}"
+                summary += f"  理由：{'、'.join(value_label(code) for code in reason_codes)}"
             if target_message_ids:
-                summary += f" target={','.join(str(target) for target in target_message_ids)}"
+                summary += f"  目标消息：{'、'.join(str(target) for target in target_message_ids)}"
             style = 'green' if action == 'reply' else 'yellow'
             parts.append(Text(summary, style=style))
         else:
-            summary = f' → {event_status}'
+            summary = f'  状态：{value_label(event_status)}'
             if detail:
-                summary += f'  ({detail})'
+                summary += f'  说明：{detail}'
             parts.append(Text(summary, style='bold red'))
         console.print(Text.assemble(*parts))
     except Exception as exc:
@@ -257,13 +270,13 @@ def render_turn_error(
         return
     try:
         parts = [
-            Text(f'{sender_label}: {user_text}', style='bold'),
-            Text(f'[{kind}] {message}', style='bold red'),
+            Text(f'收到消息  {sender_label}：{user_text}', style='bold white'),
+            Text(f'错误类型  {event_label(kind)}\n错误信息  {message}', style='bold red'),
         ]
         console.print(Panel(
             Group(*parts),
-            title=f'Turn #{turn} · 失败', subtitle=_elapsed_ms(turn),
-            border_style='red',
+            title=f'第 {turn} 轮对话 · 失败', subtitle=f'耗时 {_elapsed_ms(turn)}',
+            border_style='bright_red',
         ))
     except Exception as exc:
         logger.debug('render_turn_error_failed', error=str(exc))

@@ -4,8 +4,9 @@ structlog 日志封装。
 所有模块通过 get_logger(__name__) 拿到绑定了模块名的 logger，
 不直接调 print() / logging.warning()。
 
-控制台排版：时间戳按级别着色、模块名换成带色的中文别名、级别本身不占一列。
-色表与别名在 logger_colors.py。
+控制台排版：时间戳、中文模块名、中文事件和结构化字段分层着色，字段之间使用
+固定分隔符留出呼吸感。色表与别名在 logger_colors.py，协议中文映射在
+log_display.py；JSONL 文件继续保留英文机器标识。
 """
 
 from __future__ import annotations
@@ -13,14 +14,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, MutableMapping, TYPE_CHECKING
 
-import json
 import logging
 
 import structlog
 
 from .log_sink import JsonlFileSink, render_json_line
+from .log_display import display_value, event_label, field_label
 from .logger_colors import (
+    EVENT_COLOR,
+    FIELD_LABEL_COLOR,
+    FIELD_VALUE_COLOR,
     RESET_COLOR,
+    SEPARATOR_COLOR,
     enable_windows_ansi,
     is_color_enabled,
     level_color,
@@ -48,6 +53,14 @@ _LEVELS: Dict[str, int] = {
 # 这几个键在渲染时已经被单独消费掉了，不再重复进 key=value 那一段。
 _CONSUMED_KEYS = frozenset({"timestamp", "level", "logger", "logger_name", "event", "exception"})
 
+_LEVEL_LABELS: Dict[str, str] = {
+    "debug": "调试",
+    "info": "信息",
+    "warning": "警告",
+    "error": "错误",
+    "critical": "严重",
+}
+
 
 class ModuleColoredConsoleRenderer:
     """
@@ -55,9 +68,9 @@ class ModuleColoredConsoleRenderer:
 
     一行的构成：
 
-        {时间戳，按级别着色} {[中文别名]，按模块着色} {event 与 k=v，按模块着色}
+        {时间戳} {[中文模块]} {中文事件} │ {中文字段：值} │ {中文字段：值}
 
-    级别不单独占用列宽，仅通过时间戳颜色表达；释放的列宽用于显示正文内容。
+    模块色只标识来源，正文使用固定高对比色；避免低亮模块把整段正文染成灰色。
     """
 
     def __init__(
@@ -83,7 +96,7 @@ class ModuleColoredConsoleRenderer:
         :param logger: structlog logger 实例；当前实现不读取其属性。
         :param method_name: 调用的日志方法名，例如 `info` 或 `error`。
         :param event_dict: 已由前置处理器补充字段的可变事件字典。
-        :return: 带时间、模块别名、事件正文和结构化字段的文本；异常字段单独换行。
+        :return: 带时间、模块别名、中文事件和分段字段的文本；异常字段单独换行。
         副作用：只读取事件字典，不修改它。
         :performance: 对事件字段执行一次线性遍历和必要的 JSON 序列化。
         """
@@ -101,28 +114,45 @@ class ModuleColoredConsoleRenderer:
             parts.append(f"{tint}{timestamp}{RESET_COLOR}" if tint else timestamp)
 
         if self._level_style != 'lite':
-            tag = level[:1].upper() if self._level_style == 'compact' else level.upper()
+            label = _LEVEL_LABELS.get(level.lower(), level.upper())
+            tag = label[:1] if self._level_style == 'compact' else label
             tint = level_color(level) if self._colors else ""
-            parts.append(f"{tint}{tag}{RESET_COLOR}" if tint else tag)
+            decorated = f"[{tag}]"
+            parts.append(f"{tint}{decorated}{RESET_COLOR}" if tint else decorated)
 
         if name:
             alias = module_alias(name)
             parts.append(f"{color}[{alias}]{RESET_COLOR}" if color else f"[{alias}]")
 
-        # title 只染时间戳和模块名，正文保持终端默认色
-        body_color = color if self._color_scope == 'full' else ""
-        body = _stringify(event_dict.get("event", ""))
+        # 机器事件名只在展示层翻译；文件 sink 在本处理器之前已接收原始事件字典。
+        body = event_label(_stringify(event_dict.get("event", "")))
+        body_color = EVENT_COLOR if self._colors and self._color_scope == 'full' else ""
         parts.append(f"{body_color}{body}{RESET_COLOR}" if body_color else body)
 
-        # 结构化字段：logger.info("db_ready", path=...) 里的那些 kwargs
-        extras = [
-            f"{key}={_stringify(value)}"
-            for key, value in event_dict.items()
-            if key not in _CONSUMED_KEYS
-        ]
+        # 字段名与值分别着色，并用竖线隔开。比连续的 key=value 更容易扫读，也能在
+        # WebUI 自动换行时保留清晰边界。
+        extras: list[str] = []
+        for key, value in event_dict.items():
+            if key in _CONSUMED_KEYS:
+                continue
+            label = field_label(key)
+            value_text = (
+                event_label(_stringify(value))
+                if key == "kind"
+                else _stringify(value)
+            )
+            if self._colors and self._color_scope == 'full':
+                extras.append(
+                    f"{FIELD_LABEL_COLOR}{label}{RESET_COLOR}："
+                    f"{FIELD_VALUE_COLOR}{value_text}{RESET_COLOR}"
+                )
+            else:
+                extras.append(f"{label}：{value_text}")
         if extras:
-            joined = " ".join(extras)
-            parts.append(f"{body_color}{joined}{RESET_COLOR}" if body_color else joined)
+            separator = " │ "
+            if self._colors and self._color_scope == 'full':
+                separator = f" {SEPARATOR_COLOR}│{RESET_COLOR} "
+            parts.append(separator.join(extras))
 
         rendered = " ".join(parts)
         # StackInfoRenderer / format_exc_info 之后异常文本仍在 event_dict 里，
@@ -230,20 +260,16 @@ def _flatten(text: str) -> str:
 def _stringify(value: Any) -> str:
     """将日志字段转换为适合控制台展示的字符串。
 
-    字典和列表使用 ``ensure_ascii=False`` 的 JSON 编码，以保留人格、日程和记忆
-    文本中的中文字符。
+    字典、列表、布尔值和常见协议枚举经展示层转换为紧凑中文文本；普通字符串
+    原样保留。
 
     :param value: 任意日志字段值。
 
-    :return: 字符串与 JSON 输出统一经过 :func:`_flatten` 压平为单行；其他值返回 ``str(value)``。
+    :return: 展示文本统一经过 :func:`_flatten` 压平为单行。
 
     :raises TypeError: 字典或列表包含无法 JSON 序列化的值时抛出。
     """
-    if isinstance(value, str):
-        return _flatten(value)
-    if isinstance(value, (dict, list)):
-        return _flatten(json.dumps(value, ensure_ascii=False))
-    return str(value)
+    return _flatten(display_value(value))
 
 
 # 管线 trace 事件的控制台出口。``src.core.observe.events`` 在 main 启动早期被
@@ -272,15 +298,17 @@ def _summarize_trace_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
     """
     summary: Dict[str, Any] = {}
     for key, value in fields.items():
+        # 空字段和重复的机器阶段 ID 不进入控制台；完整事件仍保留在账本中。
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if key == "stage" and fields.get("stageLabel"):
+            continue
         if key == 'messages':
-            messages = value or []
+            messages = value
             total_chars = sum(len(str(message.get('content', ''))) for message in messages)
             summary[key] = f'{len(messages)} 条消息、共 {total_chars} 字（完整提示词见观察面板）'
         elif key == 'renderParams':
-            params = value or {}
-            if params:
-                summary[key] = '、'.join(params)
-            # 空参数表直接略去，避免在行尾留下 ``renderParams=`` 空值。
+            summary[key] = '、'.join(value)
         elif key == 'text':
             summary[key] = f'{len(str(value or ""))} 字（完整响应见观察面板）'
         else:
