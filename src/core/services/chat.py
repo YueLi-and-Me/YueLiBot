@@ -63,12 +63,12 @@ from src.core.agent.reply_necessity import (
     frequency_trigger_threshold,
     score_reply_necessity,
 )
-from src.core.agent.segmentation import split_into_bubbles
+from src.core.agent.segmentation import split_into_bubbles, typing_delay_seconds
 from src.core.agent.summarize import summarize
 from src.core.awareness.sleep import SleepState
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
-from src.core.config.schema import Config, ConversationConfig
+from src.core.config.schema import Config, ConversationConfig, TypingConfig
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_request
@@ -111,13 +111,6 @@ EMOJI_MAX_PER_REPLY_WINDOW = 1
 # 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
 GROUP_CROSSED_MESSAGE_SETTLE_MS = 8_000
 
-# 她发言后对方至少静默这么久，看到对方开始打字才值得催一句，单位为毫秒。
-# 正常一来一回的对话里看到对方打字就开口是监控而不是聊天，阈值负责让这件事
-# 保持稀有，因此不再叠加额外的频率窗口。
-PEER_SILENCE_BEFORE_NUDGE_MS = 5 * 60_000
-
-# 同一段静默期内最多催几次。催第三次就从「等急了」变成「缠人」。
-MAX_TYPING_NUDGES_PER_SILENCE = 2
 
 # 群历史首次回填时用于播种游标的历史条数与时间容差。
 _BACKFILL_SEED_EVENT_LIMIT = 500
@@ -1647,20 +1640,23 @@ class ChatService:
         # 群聊不推送输入状态；即使将来推送，群里盯着某人打字也不合适。
         if context.stream.kind != 'direct':
             return False
+        nudge = self._cfg.typing.nudge
+        if not nudge.enabled or nudge.max_per_silence <= 0:
+            return False
         if self._sleep_state is not None and self._sleep_state().asleep:
             return False
         last_reply_at = self.memory.last_assistant_reply_at(stream_id)
         if last_reply_at is None:
             return False
         now = current_time()
-        if now - last_reply_at < PEER_SILENCE_BEFORE_NUDGE_MS:
+        if now - last_reply_at < nudge.peer_silence_minutes * 60_000:
             return False
         # 她上次发言之后对方已经回过话，就不算晾着，这条通知只是正常对话的一部分。
         last_peer_at = self.memory.last_user_message_at(stream_id)
         if last_peer_at is not None and last_peer_at > last_reply_at:
             return False
         nudges = self._typing_nudges.get(stream_id, 0)
-        if nudges >= MAX_TYPING_NUDGES_PER_SILENCE:
+        if nudges >= nudge.max_per_silence:
             return False
         situation = self._typing_situation(now - last_reply_at, nudges)
         lines = await self.compose_proactive(context, situation)
@@ -3207,7 +3203,9 @@ class ChatService:
             if context.stream.platform == 'desktop':
                 self._track_speech(context, event, sink.turn)
                 await self._emit_parse_event(context, sink.turn, event)
-            sink.segment = _collect_outbound_segment(event, sink.segments, sink.segment)
+            sink.segment = _collect_outbound_segment(
+                event, sink.segments, sink.segment, self._cfg.typing,
+            )
 
     def _handle_side_effects(
         self, context: ConversationContext, event: ParseEvent, now: int, turn: int,
@@ -3408,6 +3406,7 @@ class ChatService:
             segments=segments,
             emoji_refs=tuple(reference for _emotion, reference, _sub_type in emoji_items),
             emoji_sub_types=tuple(sub_type for _emotion, _reference, sub_type in emoji_items),
+            batch_delays_ms=self._batch_delays_ms(segments, len(emoji_items)),
         ))
         trace.emit(
             'outbound_delivered',
@@ -3415,6 +3414,30 @@ class ChatService:
             streamId=receipt.stream_id,
             turnId=turn,
         )
+
+    def _batch_delays_ms(self, segments: list[str], emoji_count: int) -> tuple[int, ...]:
+        """按人格配置算出每个发送批次发出前的停顿。
+
+        节奏在主体侧算好随出站载荷下发，适配器只负责照做：打字速度是角色行为
+        参数，不该散落到各平台适配器里各算一套。
+
+        :param segments: 已按打字习惯切分的气泡文本。
+        :param emoji_count: 排在文字之后的表情包张数。
+        :return: 与「每条文字一批、每张表情包一批」逐项对齐的毫秒停顿；首项恒为
+            0，因为模型生成本身已经占用了十几秒，她在对方视角里早就在打字了。
+        """
+        typing = self._cfg.typing
+        text_delays = [
+            0 if index == 0 else int(typing_delay_seconds(segment, typing) * 1000)
+            for index, segment in enumerate(segments)
+        ]
+        # 表情包不逐字打，用固定的挑图时间；整轮只有表情包时同样不等第一条。
+        emoji_delay = int(typing.emoji_pick_seconds * 1000) if typing.delay_enabled else 0
+        emoji_delays = [emoji_delay] * emoji_count
+        delays = text_delays + emoji_delays
+        if delays:
+            delays[0] = 0
+        return tuple(delays)
 
     async def _maybe_summarize(self, stream_id: int) -> None:
         """在待摘要消息达到阈值时异步生成并保存 episode。
@@ -3497,12 +3520,14 @@ def _collect_outbound_segment(
     event: ParseEvent,
     segments: list[str],
     current: list[str] | None,
+    typing: TypingConfig,
 ) -> list[str] | None:
     """按解析器识别的 ``say`` 边界收集外部平台正文。
 
     :param event: 当前解析事件。
     :param segments: 已完成的分句列表，会被原地追加。
     :param current: 当前尚未结束的分句片段列表。
+    :param typing: 打字节奏配置，决定一条台词切成几条气泡。
 
     :return: 更新后的当前分句片段；收到 ``SayEndEvent`` 后返回 ``None``。
 
@@ -3521,7 +3546,7 @@ def _collect_outbound_segment(
         if current is not None:
             # 在这里切分而不是在投递侧：平台出站、助手历史和控制台渲染共用这份
             # segments，切分前置才能保证三者看到的气泡完全一致。
-            segments.extend(split_into_bubbles(''.join(current)))
+            segments.extend(split_into_bubbles(''.join(current), typing))
         return None
     return current
 

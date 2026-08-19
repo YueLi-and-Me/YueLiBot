@@ -109,6 +109,48 @@ class ConversationAgentConfig(BaseModel):
     reply_necessity_threshold: int = Field(default=80, ge=0, le=100)
 
 
+class TypingNudgeConfig(BaseModel):
+    """久等之后看见对方打字时的催促发言开关与阈值。
+
+    只在私聊生效：协议端只为私聊推送输入状态，群里盯着某个人的输入框也不合适。
+    触发条件是「她说完话后对方长时间没回，直到现在才开始打字」，这一条件本身
+    已经足够稀有，因此不再叠加额外的频率窗口。
+    """
+
+    # 是否允许据输入状态催促；关闭后输入状态通知只被记录后丢弃。
+    enabled: bool = True
+    # 她上次发言后对方至少静默这么久才考虑催，单位为分钟。取值需大于 0。
+    peer_silence_minutes: float = Field(default=5.0, gt=0.0)
+    # 同一段静默里最多催几次；催得再多就从「等急了」变成缠人。0 等同于关闭。
+    max_per_silence: int = Field(default=2, ge=0)
+
+
+class TypingConfig(BaseModel):
+    """她把一段话打出来的节奏：分几条气泡、每条之间隔多久。
+
+    模型按语义写 ``<say>``，一个 ``<say>`` 常常仍是完整的一长句；这里的参数决定
+    它再被切成几条、以及每条发出前停顿多久，使多条消息呈现真人的打字节奏而不是
+    脚本连发。切分与停顿共用同一套假设，因此收在同一段配置里。
+    """
+
+    # 单条气泡的目标字数：先按标点切成最小片段，再贪心合并到接近该长度为止。
+    bubble_target_chars: int = Field(default=18, gt=0)
+    # 一条台词最多切成几条气泡；话越长每条也越长，条数不随长度无限增长。
+    max_bubbles_per_say: int = Field(default=3, ge=1)
+    # 是否模拟打字停顿；关闭后多条气泡会连续发出，等同于所有延迟为 0。
+    delay_enabled: bool = True
+    # 中文按整字输入的秒数；拉丁字母与数字连打明显更快，因此分开计价。
+    chinese_char_seconds: float = Field(default=0.28, ge=0.0)
+    latin_char_seconds: float = Field(default=0.12, ge=0.0)
+    # 打完到按下回车之间的固定停顿，单位为秒。
+    send_gap_seconds: float = Field(default=0.4, ge=0.0)
+    # 单条气泡的等待上限，单位为秒；长气泡按字数线性算会让对方干等。
+    max_delay_seconds: float = Field(default=8.0, ge=0.0)
+    # 挑一张表情包所需的时间，单位为秒；表情包不逐字打，不走字数公式。
+    emoji_pick_seconds: float = Field(default=1.5, ge=0.0)
+    nudge: TypingNudgeConfig = Field(default_factory=TypingNudgeConfig)
+
+
 class ScheduleConfig(BaseModel):
     """日程形状与作息开关；这些是用户选择，不由解析器写死。"""
 
@@ -726,6 +768,7 @@ class BotDocument(BaseModel):
     personality: PersonalityConfig
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
+    typing: TypingConfig = Field(default_factory=TypingConfig)
 
     @model_validator(mode='before')
     @classmethod
@@ -790,6 +833,7 @@ class Config(BaseModel):
     ))
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
+    typing: TypingConfig = Field(default_factory=TypingConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     # 八类任务的候选模型与轮询策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)

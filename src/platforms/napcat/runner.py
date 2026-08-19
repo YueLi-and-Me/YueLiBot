@@ -14,10 +14,9 @@ import asyncio
 
 import httpx
 
-from src.core.agent.segmentation import EMOJI_PICK_SECONDS, typing_delay_seconds
 from src.core.common.logger import get_logger
 
-from .backend import BackendClient
+from .backend import BackendClient, BackendOutbound
 from .config import NapcatDocument
 from .events import QqInboundEvent, classify_event, parse_inbound_event
 from .segments import is_emoji_image, outbound_message_batches
@@ -412,16 +411,16 @@ class NapcatRunner:
                     outbound.emoji_sub_types,
                 )
                 target = _qq_number(outbound.stream_external_id, target_label)
+                delays = _batch_delays_seconds(outbound)
                 for index, message_segments in enumerate(message_batches):
-                    # 第一条立刻发：模型生成已经占了十几秒，她在对方视角里早就
-                    # 在打字了。之后每条按自身长度等待，让多条气泡呈现真人的
-                    # 打字节奏而不是脚本连发。
+                    # 打字节奏由主体按人格配置算好，适配器只负责照做；首项恒为 0，
+                    # 因为模型生成本身已经占了十几秒，她在对方视角里早就在打字了。
                     #
                     # 等待发生在出站消费循环内，会顺带推迟其它 stream 的这一轮
                     # 投递。选择阻塞而不是并发发送，是为了保住同一 stream 内的
                     # 气泡顺序；单轮总延迟在十秒量级，对聊天节奏可以接受。
-                    if index:
-                        await asyncio.sleep(_batch_typing_delay(message_segments))
+                    if index < len(delays) and delays[index] > 0:
+                        await asyncio.sleep(delays[index])
                     await self._transport.call_action(
                         action,
                         {
@@ -453,18 +452,18 @@ def _required_text(value: Any, message: str) -> str:
     return text
 
 
-def _batch_typing_delay(message_segments: List[Dict[str, Any]]) -> float:
-    """按一个发送批次的内容估算发出前的停顿。
+def _batch_delays_seconds(outbound: BackendOutbound) -> List[float]:
+    """把主体下发的逐条停顿对齐到实际的发送批次顺序。
 
-    :param message_segments: 单条 QQ 消息的 OneBot 消息段数组。
-    :return: 建议等待秒数；文字批次按字数计价，表情包批次用固定的挑图时间。
+    主体按「文字在前、表情包在后」的批次顺序下发停顿；未下发时按 0 处理，
+    保证适配器在协议缺省下仍能发出全部消息。
+
+    :param outbound: 主体下发的一条出站消息。
+    :return: 与发送批次等长的等待秒数列表；主体未下发停顿时全为 0。
     """
-    text = ''.join(
-        segment['data']['text']
-        for segment in message_segments
-        if segment.get('type') == 'text'
-    )
-    return typing_delay_seconds(text) if text else EMOJI_PICK_SECONDS
+    delays = [value / 1000 for value in outbound.batch_delays_ms]
+    total = len(outbound.segments) + len(outbound.emoji_refs)
+    return delays + [0.0] * (total - len(delays))
 
 
 def _parse_group_history(

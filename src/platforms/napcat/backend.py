@@ -40,6 +40,8 @@ class BackendOutbound:
     segments: List[str]
     emoji_refs: tuple[str, ...] = ()
     emoji_sub_types: tuple[int, ...] = ()
+    # 主体算好的逐批停顿，与「文字在前、表情包在后」的发送批次对齐；缺省表示不等待。
+    batch_delays_ms: tuple[int, ...] = ()
 
 
 class BackendClient:
@@ -348,6 +350,15 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     emoji_sub_types = tuple(raw_emoji_sub_types)
     if len(emoji_refs) != len(emoji_sub_types):
         raise ValueError('主体 qq.send 的 emojiRefs 与 emojiSubTypes 数量必须一致')
+    raw_delays = body.get('batchDelaysMs', [])
+    if not isinstance(raw_delays, list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) and item >= 0
+        for item in raw_delays
+    ):
+        raise ValueError('主体 qq.send 的 batchDelaysMs 必须是非负整数数组')
+    batch_delays_ms = tuple(raw_delays)
+    if batch_delays_ms and len(batch_delays_ms) != len(segments) + len(emoji_refs):
+        raise ValueError('主体 qq.send 的 batchDelaysMs 与发送批次数量必须一致')
     if not segments and not emoji_refs:
         raise ValueError('主体 qq.send 必须包含文本或表情包')
     return BackendOutbound(
@@ -357,4 +368,5 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         segments=segments,
         emoji_refs=emoji_refs,
         emoji_sub_types=emoji_sub_types,
+        batch_delays_ms=batch_delays_ms,
     )
