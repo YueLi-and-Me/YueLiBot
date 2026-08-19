@@ -18,8 +18,9 @@ import logging
 
 import structlog
 
+from .console_layout import display_width, render_box
 from .log_sink import JsonlFileSink, render_json_line
-from .log_display import display_value, event_label, field_label
+from .log_display import display_value, event_label, field_label, value_label
 from .logger_colors import (
     EVENT_COLOR,
     FIELD_LABEL_COLOR,
@@ -272,66 +273,181 @@ def _stringify(value: Any) -> str:
     return _flatten(display_value(value))
 
 
-# 管线 trace 事件的控制台出口。``src.core.observe.events`` 在 main 启动早期被
-# 导入，模块级 ``logger`` 先于 ``initialize_logging`` 创建，会冻结到 structlog
-# 默认渲染器——既无颜色又把整段提示词原样塞一行。trace 行改走这个自有出口，
-# 复用项目统一的彩色渲染器，并把重型字段压缩成摘要，与 structlog 是否初始化解耦。
-_TRACE_CONSOLE_RENDERER = ModuleColoredConsoleRenderer(
-    colors=is_color_enabled(),
-    level_style='lite',
-    color_scope='full',
-)
+# 管线 trace 事件的控制台出口。``src.core.observe.events`` 在 main 启动早期被导入，
+# 这里不依赖其模块级 logger，直接生成面板文本；事件账本仍保存完整字段。
 _trace_date_format = '%m-%d %H:%M:%S'
 # LIVE_ONLY 事件高频且本身就是给观察面板的实时流，控制台逐条打印会淹没其它日志。
 _trace_console_silent_kinds = frozenset({'llm_chunk', 'foreground'})
 
+# 来源元数据在同一轮的每条事件里都会重复出现；完整来源仍写入事件账本，控制台只
+# 在需要时把发送者放进面板标题。这样日志不会被账号、群名片和昵称字段横向撑开。
+_TRACE_ORIGIN_FIELDS = frozenset({
+    'platform',
+    'personId',
+    'personKind',
+    'senderExternalId',
+    'senderNickname',
+    'senderGroupCard',
+    'senderDisplayName',
+    'senderLabel',
+    'botName',
+})
+
+# 高频事件按诊断重点保留字段；未知事件则保留全部非来源字段，避免新增事件完全失去
+# 控制台可见性。
+_TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
+    'stage': ('stageLabel', 'streamName', 'detail', 'turnId'),
+    'user_input': ('turnId', 'text', 'externalMessageId'),
+    'reply_gate': (
+        'turnId', 'streamKind', 'text', 'accepted', 'disposition', 'reason',
+        'reasonCodes', 'gateReasonCodes', 'asleep', 'mentionedMe', 'nameMentioned',
+        'repliesInWindow', 'maxRepliesInWindow', 'naturalReplyElapsedMs',
+    ),
+    'llm_request': (
+        'turnId', 'messages', 'temperature', 'maxTokens', 'promptId', 'promptHash',
+        'renderParams', 'modelTask', 'task',
+    ),
+    'llm_final': ('turnId', 'text'),
+    'llm_error': ('turnId', 'errorKind', 'message'),
+    'image_description': ('result', 'hash', 'text', 'promptId', 'error'),
+    'action_decision': (
+        'turnId', 'eventStatus', 'detail', 'gate', 'decision', 'version',
+        'snapshotId', 'messageWatermark',
+    ),
+    'sleep_transition': ('asleep', 'drowsy', 'probability'),
+    'interest': ('interest', 'factors'),
+    'memory_fact': ('turnId', 'memoryKind', 'content'),
+    'mood_delta': ('turnId', 'favor', 'energy'),
+    'promise_stashed': ('turnId', 'subject', 'at'),
+}
+
+_TRACE_HASH_FIELDS = frozenset({'hash', 'promptHash', 'contentHash', 'fingerprint'})
+_TRACE_PANEL_WIDTH = 112
+_TRACE_ROW_WIDTH = _TRACE_PANEL_WIDTH - 8
+
+
+def _compact_nested_trace_value(key: str, value: Any) -> Any:
+    """压缩行动审计中的嵌套结构，保留控制台需要的决策结论。"""
+
+    if not isinstance(value, dict):
+        return value
+    if key == 'gate':
+        disposition = value_label(str(value.get('disposition', '')))
+        reasons = display_value(value.get('reasonCodes', []))
+        return f'{disposition} · 理由：{reasons}'
+    if key == 'decision':
+        action = value_label(str(value.get('action', '')))
+        length = (
+            value.get('reply', {}).get('length')
+            if isinstance(value.get('reply'), dict)
+            else None
+        )
+        target_ids = display_value(value.get('targetMessageIds', []))
+        parts = [action]
+        if length:
+            parts.append(f'篇幅：{value_label(str(length))}')
+        if target_ids != '无':
+            parts.append(f'目标：{target_ids}')
+        return ' · '.join(parts)
+    if key == 'version':
+        task = value.get('modelTask') or '—'
+        model = value.get('model') or '—'
+        latency = value.get('latencyMs')
+        suffix = f' · 耗时：{latency} ms' if latency else ''
+        return f'{task} · {model}{suffix}'
+    return value
+
+
+def _trace_value_text(kind: str, key: str, value: Any) -> Any:
+    """生成单条追踪字段的紧凑展示值，不改变账本中的原始字段。"""
+
+    if key == 'messages':
+        messages = value
+        total_chars = sum(len(str(message.get('content', ''))) for message in messages)
+        return f'{len(messages)} 条消息、共 {total_chars} 字（完整提示词见观察面板）'
+    if key == 'renderParams':
+        return '、'.join(value)
+    if key == 'text':
+        suffix = '完整消息' if kind in {'user_input', 'reply_gate', 'observation'} else '完整响应'
+        return f'{len(str(value or ""))} 字（{suffix}见观察面板）'
+    if key in _TRACE_HASH_FIELDS:
+        text = str(value)
+        return f'{text[:12]}…' if len(text) > 16 else text
+    return _compact_nested_trace_value(key, value)
+
 
 def _summarize_trace_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
-    """把重型 trace 字段压缩成控制台摘要，避免整段提示词或原始响应占满一行。
+    """把 trace 字段压缩成控制台摘要，避免重复元数据占满多行。
 
-    :param fields: 已去掉保留字段的事件字段。
+    :param fields: 已去掉时间和序号字段、仍保留 ``kind`` 的事件字段。
 
-    :return: ``messages``/``renderParams``/``text`` 替换为计数或键名摘要后的副本；
-        其余字段原样保留，换行由渲染器统一压平。
+    :return: 按事件类型保留关键字段，并把提示词、正文、哈希和行动嵌套结构替换为
+        紧凑摘要；完整字段仍保留在事件账本中。
 
     副作用：不修改传入字典。
     """
+    kind = str(fields.get('kind', ''))
+    visible = _TRACE_VISIBLE_FIELDS.get(kind)
+    keys = list(visible or ())
+    keys.extend(key for key in fields if key not in keys)
     summary: Dict[str, Any] = {}
-    for key, value in fields.items():
+    for key in keys:
+        if key not in fields:
+            continue
+        value = fields[key]
         # 空字段和重复的机器阶段 ID 不进入控制台；完整事件仍保留在账本中。
         if value is None or value == "" or value == [] or value == {}:
             continue
+        if key == 'kind':
+            continue
         if key == "stage" and fields.get("stageLabel"):
             continue
-        if key == 'messages':
-            messages = value
-            total_chars = sum(len(str(message.get('content', ''))) for message in messages)
-            summary[key] = f'{len(messages)} 条消息、共 {total_chars} 字（完整提示词见观察面板）'
-        elif key == 'renderParams':
-            summary[key] = '、'.join(value)
-        elif key == 'text':
-            summary[key] = f'{len(str(value or ""))} 字（完整响应见观察面板）'
-        else:
-            summary[key] = value
+        if key in _TRACE_ORIGIN_FIELDS and (visible is None or key not in visible):
+            continue
+        if visible is not None and key not in visible and key not in {'stageLabel', 'streamName'}:
+            continue
+        summary[key] = _trace_value_text(kind, key, value)
     return summary
 
 
-def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
-    """把一条管线 trace 事件直接渲染成彩色紧凑单行并打到控制台与 WebUI 日志面板。
+def _pack_trace_rows(summary: Dict[str, Any]) -> list[str]:
+    """把追踪字段按可读宽度合并成两列或多列面板行。"""
 
-    该出口绕开 ``src.core.observe.events`` 模块级 logger（被冻结在 structlog 默认
-    配置），保证无论 ``initialize_logging`` 是否已运行、trace 都按项目统一配色
-    输出。事件账本与观察面板订阅者由调用方另行处理，本函数只负责控制台与日志面板
-    这两条展示支路。
+    rows: list[str] = []
+    current = ''
+    for key, value in summary.items():
+        item = f'{field_label(key)}：{_stringify(value)}'
+        if current and display_width(current) + 4 + display_width(item) <= _TRACE_ROW_WIDTH:
+            current += f'  │  {item}'
+            continue
+        if current:
+            rows.append(current)
+        current = item
+    if current:
+        rows.append(current)
+    return rows or ['—']
+
+
+def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
+    """把一条管线 trace 事件渲染成紧凑信息框并打到控制台与 WebUI 日志面板。
+
+    该出口绕开 ``src.core.observe.events`` 模块级 logger，保证 trace 不会因为导入
+    时机落回旧式 structlog 行。事件账本与观察面板订阅者由调用方另行处理，本函数
+    只负责控制台与日志面板这两条展示支路。
 
     :param entry: ``emit`` 已组装完的事件字典，包含 ``at``、``kind`` 等保留字段。
 
     副作用：
-        向标准输出写一行（颜色能力随终端而定），并把同一行字符串发布到
+        向标准输出写一个多行信息框，并把同一段文本发布到
         ``webui_logs``；``llm_chunk``、``foreground`` 等高频实时事件被静音，
         只广播不进控制台。
     """
     if entry.get('kind') in _trace_console_silent_kinds:
+        return
+    # 带 turnId 的管线事件已由 trace_console 的轮末合成面板整体呈现，这里不再逐条打纯文本框，
+    # 避免同一轮既出嵌套大面板又出一串小框。事件账本仍保留完整事件，观察面板订阅不受影响；
+    # 无 turnId 的管线事件（如部分主动感知事件）仍按原样出框，保留其控制台可见性。
+    if entry.get('turnId') is not None:
         return
     from datetime import datetime
     timestamp = datetime.fromtimestamp((entry.get('at') or 0) / 1000).strftime(_trace_date_format)
@@ -339,14 +455,18 @@ def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
         key: value for key, value in entry.items()
         if key not in {'at', 'seq'}
     }
-    event_dict: MutableMapping[str, Any] = {
-        'timestamp': timestamp,
-        'level': 'debug',
-        'logger': 'src.core.observe.events',
-        'event': 'trace',
-        **_summarize_trace_fields(fields),
-    }
-    line = _TRACE_CONSOLE_RENDERER(None, 'debug', event_dict)
+    summary = _summarize_trace_fields(fields)
+    kind = str(fields.get('kind', ''))
+    event_name = (
+        str(fields.get('stageLabel') or '')
+        if kind == 'stage'
+        else event_label(kind)
+    )
+    title = f'{timestamp} · 运行追踪 · {event_name}'
+    sender = str(fields.get('senderDisplayName') or '').strip()
+    if sender:
+        title += f' · {sender}'
+    line = render_box(title, _pack_trace_rows(summary), width=_TRACE_PANEL_WIDTH)
     print(line)
     webui_logs.publish(line)
 
@@ -508,14 +628,39 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
 
 
 
-def get_logger(name: str):
-    """返回绑定当前模块名的 structlog logger。
+class _DynamicLogger:
+    """在每次写日志时解析 structlog 配置的轻量代理。
 
-    使用 ``bind(logger=...)`` 而不是依赖 stdlib logger 的 ``name`` 属性，确保与
-    当前 PrintLoggerFactory 兼容。
+    YueLiBot 的业务模块在 ``main`` 初始化配置前就会被 Python 导入。若直接返回
+    ``structlog.get_logger().bind(...)``，该代理会在第一次绑定时冻结默认渲染器，
+    导致启动后同时出现旧式 structlog 行和新的中文行。这里只保存模块名，真正的
+    BoundLogger 延迟到调用 ``info``/``warning`` 等方法时取得，因此重载配置后所有
+    模块仍共用同一套控制台、文件和 WebUI 处理器。
+    """
+
+    __slots__ = ('_name',)
+
+    def __init__(self, name: str) -> None:
+        """保存模块名，不触发 structlog 解析。"""
+
+        self._name = name
+
+    def __getattr__(self, method_name: str) -> Any:
+        """把 structlog 的日志方法动态转发到当前配置。
+
+        ``getattr`` 只用于适配 structlog 的动态日志 API；业务代码仍通过明确的
+        ``logger.info``、``logger.warning`` 等属性调用，不依赖字符串兜底。
+        """
+
+        bound = structlog.get_logger().bind(logger=self._name)
+        return getattr(bound, method_name)
+
+
+def get_logger(name: str) -> _DynamicLogger:
+    """返回不会冻结初始化时渲染器的模块日志代理。
 
     :param name: 要写入结构化日志的模块名。
-
-    :return: 绑定了 ``logger=name`` 字段的 structlog logger。
+    :return: 延迟绑定模块名的日志代理。
     """
-    return structlog.get_logger().bind(logger=name)
+
+    return _DynamicLogger(name)

@@ -21,6 +21,7 @@ import uvicorn
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.api.auth import token_manager
 from src.core.common.backend_runtime import create_backend_runtime, runtime_file_path
+from src.core.common.console_layout import print_box
 from src.core.common.logger import get_logger, initialize_logging
 from src.core.config.loader import load_config
 from src.core.llm_models.protocol import LlmProvider
@@ -168,14 +169,15 @@ def _announce_ready() -> None:
 
 
 def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
-    """向人输出 WebUI 地址与本次进程的登录 token。
+    """在启动早期用醒目的信息框输出 WebUI 地址与登录 token。
 
     :param port: 后端实际监听端口。
     :param token: 当前进程认证 token；每次启动重新生成。
     :param runtime_path: 运行时凭据文件路径，供用户事后再取一次 token。
 
     副作用：
-        向标准输出写入三行明文，其中包含 token。
+        向标准输出写入包含 token 的启动信息框；应用不会主动把它写入 JSONL 或 WebUI
+        日志流，但外部启动器仍可能记录标准输出。
 
     这里刻意用 ``print`` 而不是 logger，两个原因缺一不可：
 
@@ -185,48 +187,69 @@ def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
        那道限制，而日志文件长期留存、又经常被整份复制去排障。
     2. **stdout 在两种启动方式下都看得见。** supervisor 只吞掉 ``YUELI_`` 前缀的协议行
        （`supervisor.ts` 的 `_onLine`），其余 stdout 原样转发到 Electron 控制台。
-       反过来，这三行**不能**加 ``YUELI_`` 前缀，否则会被当成协议行吃掉。
+       反过来，这个信息框**不能**加 ``YUELI_`` 前缀，否则会被当成协议行吃掉。
 
     token 不拼进 URL：URL 会进浏览器历史和 referrer，而 token 是当前进程的主凭据。
     """
 
-    print(f"WebUI 观察面板：http://127.0.0.1:{port}", flush=True)
-    print(f"登录 token：{token}", flush=True)
-    print(f"token 每次启动重新生成，也可从 {runtime_path} 读取", flush=True)
+    print_box(
+        'YueLiBot · WebUI 入口',
+        [
+            f'WebUI 观察面板：http://127.0.0.1:{port}',
+            f'登录 token：{token}',
+            f'token 每次启动重新生成，也可从 {runtime_path} 读取',
+            '状态：后端正在初始化，完成后会显示“WebUI 已就绪”',
+        ],
+        # 路径和 64 位 token 都需要保持在单行，启动时才能直接复制。
+        width=112,
+    )
+
+
+def _announce_webui_ready(port: int, token: str) -> None:
+    """在监听真正建立后再次给出短的 WebUI 就绪确认。"""
+
+    print_box(
+        'WebUI 已就绪',
+        [
+            f'地址：http://127.0.0.1:{port}',
+            f'登录 token：{token}',
+            '现在可以在浏览器中打开上面的地址',
+        ],
+        # 64 位 token 不能在确认框里折行，否则用户复制时容易漏字符。
+        width=88,
+    )
 
 
 class _ReadyAnnouncingServer(uvicorn.Server):
-    """在端口真正开始监听之后才打印就绪公告与 WebUI 入口。"""
+    """在端口真正开始监听之后才打印就绪公告与 WebUI 状态框。"""
 
-    def __init__(self, config: uvicorn.Config, port: int, token: str, runtime_path: Path) -> None:
-        """记录公告所需的运行时坐标。
+    def __init__(self, config: uvicorn.Config, port: int, token: str) -> None:
+        """记录就绪公告所需的监听端口和认证 token。
 
         :param config: Uvicorn 配置。
         :param port: 后端实际监听端口。
         :param token: 当前进程认证 token。
-        :param runtime_path: 运行时凭据文件路径。
         """
 
         super().__init__(config)
         self._entry_port = port
         self._entry_token = token
-        self._entry_runtime_path = runtime_path
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        """完成 Uvicorn 启动后再输出就绪标记与 WebUI 入口。
+        """完成 Uvicorn 启动后再输出就绪标记与 WebUI 状态框。
 
         :param sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入。
 
         副作用：
-            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1`` 与 WebUI 入口三行。
+            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1`` 与 WebUI 就绪框。
 
-        入口公告放在监听真正建立之后：端口在 ``main()`` 里早就绑好了，但那时 Uvicorn
-        还没接管，先打地址会让人点进一个尚未响应的连接。
+        启动早期已经输出带“正在初始化”状态的入口框；这里仅在监听真正建立后补上
+        “WebUI 已就绪”确认，避免用户误把预告地址当成已经可访问的服务。
         """
 
         await super().startup(sockets=sockets)
         _announce_ready()
-        _announce_webui_entry(self._entry_port, self._entry_token, self._entry_runtime_path)
+        _announce_webui_ready(self._entry_port, self._entry_token)
 
 
 def main() -> None:
@@ -277,6 +300,13 @@ def main() -> None:
     token_manager.configure(backend_runtime.token)
     _announce_port(port)
     _announce_token(backend_runtime.token)
+    # 端口已经被当前进程占住，先把入口放在启动日志顶部；真正监听后还会再打印一次
+    # “WebUI 已就绪”框，避免用户把初始化中的地址误认为服务已经可访问。
+    _announce_webui_entry(
+        port,
+        backend_runtime.token,
+        runtime_file_path(data_dir),
+    )
 
     from src.core.llm_models.snapshot import configure as configure_snapshots
     configure_snapshots(
@@ -521,7 +551,6 @@ def main() -> None:
         config,
         port=port,
         token=backend_runtime.token,
-        runtime_path=runtime_file_path(data_dir),
     ).run(sockets=[sock])
 
 

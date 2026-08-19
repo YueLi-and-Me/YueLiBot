@@ -1033,6 +1033,7 @@ class ChatService:
                     sink.segments,
                     sink.side_effects,
                     self._bot_display_name,
+                    model_name=getattr(self._chat_provider, 'model', ''),
                 )
                 try:
                     self.persona.apply_turn(
@@ -1076,7 +1077,10 @@ class ChatService:
                 })
                 trace.emit('llm_error', turnId=turn, errorKind=exc.kind, message=str(exc),
                            snapshotPath=str(snapshot) if snapshot else None)
-                render_turn_error(turn, sender['senderLabel'], trimmed, exc.kind, str(exc))
+                render_turn_error(
+                    turn, sender['senderLabel'], trimmed, exc.kind, str(exc),
+                    model_name=getattr(self._chat_provider, 'model', ''),
+                )
                 self._mark_stage(context, FAILED, f'{exc.kind}：{exc}', turn_id=turn)
                 if context.stream.platform == 'desktop':
                     await self._emit(stream_id, 'chat.error', {
@@ -1103,7 +1107,10 @@ class ChatService:
                 )
                 trace.emit('llm_error', turnId=turn, errorKind='unknown', message=str(exc),
                            snapshotPath=str(snapshot) if snapshot else None)
-                render_turn_error(turn, sender['senderLabel'], trimmed, 'unknown', str(exc))
+                render_turn_error(
+                    turn, sender['senderLabel'], trimmed, 'unknown', str(exc),
+                    model_name=getattr(self._chat_provider, 'model', ''),
+                )
                 self._mark_stage(context, FAILED, str(exc), turn_id=turn)
                 await self._emit(
                     stream_id,
@@ -2986,6 +2993,7 @@ class ChatService:
             render_turn_error(
                 turn, sender['senderLabel'], trimmed,
                 outcome.event_status, outcome.action_event.detail,
+                model_name=getattr(self._chat_provider, 'model', ''),
             )
             self._mark_stage(
                 context, FAILED,
@@ -3021,6 +3029,7 @@ class ChatService:
             sink.segments,
             sink.side_effects,
             self._bot_display_name,
+            model_name=getattr(self._chat_provider, 'model', ''),
         )
         try:
             self.persona.apply_turn(

@@ -23,6 +23,48 @@ interface BackendConnection {
   token: string
 }
 
+function terminalDisplayWidth(text: string): number {
+  let width = 0
+  for (const character of text) {
+    const codePoint = character.codePointAt(0) ?? 0
+    const isWide =
+      (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    width += isWide ? 2 : 1
+  }
+  return width
+}
+
+function padDisplayWidth(text: string, width: number): string {
+  return text + ' '.repeat(Math.max(width - terminalDisplayWidth(text), 0))
+}
+
+/**
+ * 把已存在后端的连接坐标渲染成启动时可快速扫读的信息框。
+ *
+ * 本地新后端会由 Python 侧输出同样的入口框；这里覆盖“接管已运行后端”路径，
+ * 避免 Electron 重启时只剩一行端口提示而找不到 token。
+ */
+function renderBackendEntryBox(connection: BackendConnection, title: string): string {
+  const rows = [
+    `WebUI 观察面板：http://127.0.0.1:${connection.port}`,
+    `登录 token：${connection.token}`,
+    title,
+  ]
+  const contentWidth = Math.max(76, ...rows.map(terminalDisplayWidth), terminalDisplayWidth(title))
+  const panelWidth = contentWidth + 4
+  const topPrefix = `╭─ YueLiBot · WebUI 入口 `
+  const top = `${topPrefix}${'─'.repeat(Math.max(panelWidth - terminalDisplayWidth(topPrefix) - 1, 0))}╮`
+  const body = rows.map((row) => `│ ${padDisplayWidth(row, contentWidth)} │`)
+  const bottom = `╰${'─'.repeat(panelWidth - 2)}╯`
+  return [top, ...body, bottom].join('\n')
+}
+
 export interface SupervisorEvents {
   ready: [port: number, token: string]
   exit: [code: number | null]
@@ -237,6 +279,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.attachedBackend = connection
     this.restarts = 0
     console.log(`[supervisor] 已连接独立 Python 后端，端口 ${connection.port}`)
+    console.log(renderBackendEntryBox(connection, '状态：已连接正在运行的后端'))
     this._spawnAdapter()
     this.emit('ready', connection.port, connection.token)
     this._startAttachedMonitor()

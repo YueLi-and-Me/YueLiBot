@@ -1,31 +1,73 @@
-"""在支持颜色的交互式终端中渲染对话摘要和观察结果。
+"""把每轮对话合成一个嵌套彩色面板，并同步呈现到终端、Electron 控制台与 WebUI 日志面板。
 
-完整提示词与模型响应由观察事件存储负责记录，本模块只显示有限长度的提示词
-预览、响应摘要、侧 effect 和耗时。检测到非交互输出时所有渲染函数保持无操作，
-避免把调试面板混入服务日志；终端判断复用 ``common.logger_colors`` 的统一规则。
+完整提示词与模型原始响应仍由观察事件账本记录，本模块只负责面向人的摘要展示：轮次头、
+「模型请求」「模型返回」「内部变化」子面板与底部耗时页脚。渲染出的 rich 面板被捕获为带
+ANSI 的字符串后一次写两处——``stdout``（本机终端与 Electron 控制台）和 ``webui_logs``
+（WebUI 日志面板），因此三端呈现一致。终端能力判断复用 ``common.logger_colors``：非彩色/
+非交互场景（如重定向到文件或测试）所有渲染函数保持无操作，避免把调试面板混入服务日志。
 """
 
 from __future__ import annotations
 
 from typing import Any
+import sys
 import time
 
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
 from src.core.common.log_display import event_label, value_label
-from src.core.common.logger import get_logger, is_color_enabled
+from src.core.common.logger import get_logger
+from src.core.common.logger_colors import is_color_enabled
+from src.core.webui.logs import webui_logs
 
 logger = get_logger(__name__)
 
-_PROMPT_PREVIEW_CHARS = 400
+# 面板固定外框宽度。固定值让终端、Electron 控制台与 WebUI 面板三端换行完全一致，
+# 也避免 rich 因 stdout 是管道而回退到窄默认宽度导致排版跳动；取 100 落在既有纯文本
+# 框宽度区间内（启动公告 76+、管线追踪框 48–118）。
+_PANEL_WIDTH = 100
 
-_is_tty = is_color_enabled()
-# force_terminal 确保 rich 不因 stdout 是管道而再次禁用颜色；legacy_windows=False
-# 让 Windows 管道输出使用 ANSI 序列，由上层终端负责解释。
-console = Console(force_terminal=_is_tty or None, legacy_windows=False if _is_tty else None)
+# 是否渲染面板。import 期一次性判断：Electron 启动 Python 时注入 YUELI_FORCE_COLOR=1，
+# 故管道转发场景同样为真；重定向到文件或 pytest 下为假，渲染函数直接跳过。
+_render_enabled = is_color_enabled()
+
+# 捕获用 Console：force_terminal 让 rich 即便面对管道/捕获缓冲也输出 ANSI；truecolor 保证
+# 24 位色；固定 width 产出确定性排版。它只用于 capture()，不直接持有 stdout。
+#
+# safe_box=False 关闭 rich 面向旧版 Windows 终端的 ASCII 盒线替换：
+# - 现象：默认 safe_box 会把圆角盒线 ╭╮╰╯ 换成 +-|，与既有 render_box 风格不一致。
+# - 原因：rich 按平台探测是否替换，与真实 stdout 编码无关；捕获场景也会命中替换。
+# - 后果：本机终端、Electron 控制台、WebUI 面板均支持 UTF-8 盒线（Electron 侧注入
+#   PYTHONIOENCODING=utf-8），关闭替换才能得到与截图一致的圆角嵌套盒线。
+_capture_console = Console(
+    force_terminal=True,
+    color_system="truecolor",
+    width=_PANEL_WIDTH,
+    legacy_windows=False,
+    safe_box=False,
+)
+
 _starts: dict[int, float] = {}
+
+
+def _emit_console_block(renderable: RenderableType) -> None:
+    """把一个 rich 可渲染对象一次写到 stdout 与 WebUI 日志面板。
+
+    :param renderable: 已组装好的面板或文本。
+
+    副作用：
+        向标准输出写入带 ANSI 的多行文本，并把同一段文本发布到 ``webui_logs``。
+        用 capture() 而非直接 print，确保两处拿到的是同一份确定性 ANSI 输出。
+    """
+
+    with _capture_console.capture() as capture:
+        _capture_console.print(renderable)
+    text = capture.get()
+    # stdout 保留结尾换行让相邻面板留白；WebUI 面板按整段发布，去掉尾换行避免多出空行。
+    print(text, end="", flush=True)
+    webui_logs.publish(text.rstrip("\n"))
 
 
 def mark_turn_start(turn: int) -> None:
@@ -33,10 +75,10 @@ def mark_turn_start(turn: int) -> None:
 
     :param turn: 对话回合 ID。
 
-        非交互终端不会写入计时表，因为后续渲染也不会发生。
+    副作用：非渲染场景不写入计时表，因为后续渲染也不会发生。
     """
 
-    if not _is_tty:
+    if not _render_enabled:
         return
     _starts[turn] = time.monotonic()
 
@@ -48,31 +90,13 @@ def _elapsed_ms(turn: int) -> str:
 
     :return: 以毫秒表示的耗时文本；没有开始记录时返回 ``—``。
 
-    副作用：
-        消费并删除该回合的开始时间记录。
+    副作用：消费并删除该回合的开始时间记录。
     """
 
     started = _starts.pop(turn, None)
     if started is None:
         return '—'
     return f'{(time.monotonic() - started) * 1000:.0f} ms'
-
-
-def _prompt_preview(messages: list[dict]) -> str:
-    """提取系统提示词的有限长度预览。
-
-    :param messages: 对话消息字典列表。
-
-    :return: 最多 400 字符的系统消息预览及消息总数说明。
-    """
-
-    system = next((m.get('content') for m in messages if m.get('role') == 'system'), '')
-    if not isinstance(system, str):
-        system = str(system)
-    preview = system[:_PROMPT_PREVIEW_CHARS]
-    if len(system) > _PROMPT_PREVIEW_CHARS:
-        preview += '…'
-    return f'{preview}\n共 {len(messages)} 条消息，完整内容见观察面板'
 
 
 def _reply_text(segments: list[str]) -> str:
@@ -112,6 +136,26 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
     return lines
 
 
+def _request_panel(messages: list[dict], model_name: str, *, border_style: str = 'green') -> Panel:
+    """构建「模型请求」子面板：只列模型名与上下文规模，完整提示词指向观察面板。
+
+    :param messages: 发送给模型的消息列表，仅用于统计条数。
+    :param model_name: 请求所用模型名；为空时省略该行。
+    :param border_style: 子面板边框色，默认 ``green``；失败轮次传红色系。
+
+    :return: 组装好的「模型请求」面板。
+    """
+
+    lines: list[str] = []
+    normalized_model = model_name.strip()
+    if normalized_model:
+        lines.append(f'请求模型：{normalized_model}')
+    # 失败轮次不带消息列表，只展示模型名，避免出现误导性的「上下文消息：0 条」。
+    if messages:
+        lines.append(f'上下文消息：{len(messages)} 条（完整提示词见观察面板）')
+    return Panel(Text('\n'.join(lines)), title='模型请求', border_style=border_style, padding=(0, 1))
+
+
 def render_turn(
     turn: int,
     sender_label: str,
@@ -120,54 +164,64 @@ def render_turn(
     reply_segments: list[str],
     side_effects: list[dict],
     bot_name: str,
+    *,
+    model_name: str = '',
 ) -> None:
-    """渲染一轮对话的摘要面板。
+    """把一轮对话合成一个嵌套面板并三端呈现。
 
     :param turn: 对话回合 ID。
     :param sender_label: 发送者展示名。
     :param user_text: 用户原始文本。
-    :param messages: 发送给模型的消息列表，仅展示系统消息预览。
-    :param reply_segments: 解析器按 ``<say>`` 边界切分出的出站分句；模型原始
-        输出（含协议标签）由事件账本保留，控制台只展示剥掉标签后的可见正文。
+    :param messages: 发送给模型的消息列表，仅展示条数。
+    :param reply_segments: 解析器按 ``<say>`` 边界切分出的出站分句；模型原始输出（含协议
+        标签）由事件账本保留，控制台只展示剥掉标签后的可见正文。
     :param side_effects: 本轮解析出的副作用列表。
     :param bot_name: 主体展示名。
+    :param model_name: 本轮请求所用模型名；为空时「模型请求」面板省略该行。
 
     副作用：
-        在交互终端写入 rich 面板；面板渲染异常只记录调试日志，不影响聊天主流程。
+        向三端写入嵌套面板；面板渲染异常只记录调试日志，不影响聊天主流程。
     """
-    if not _is_tty:
+    if not _render_enabled:
         return
     try:
-        # 仅组装有限预览、结构化副作用和解析后的可见正文，完整提示词与原始响应
-        # 仍由观察事件存储保留。
-        parts: list[Any] = [
+        children: list[Any] = [
             Text.assemble(
                 Text('收到消息  ', style='bold cyan'),
                 Text(f'{sender_label}：{user_text}', style='bold white'),
             ),
-            Text.assemble(
-                Text('模型上下文  ', style='bold magenta'),
-                Text(_prompt_preview(messages), style='bright_blue'),
-            ),
+            _request_panel(messages, model_name),
         ]
         reply = _reply_text(reply_segments)
         if reply:
-            parts.append(
-                Text('机器人回复  ', style='bold green')
-                + Text(f'{bot_name}：{reply}', style='bright_green'),
+            children.append(
+                Panel(
+                    Text(f'{bot_name}：{reply}', style='bright_green'),
+                    title='模型返回', border_style='green', padding=(0, 1),
+                )
             )
         else:
-            parts.append(Text(
-                f'机器人回复  {bot_name}：本轮没有可见回复，仅处理内部事件',
-                style='italic yellow',
-            ))
-        # 副作用逐行追加，便于在交互终端中区分记忆写入、情绪变化和约定登记。
-        for line in _side_effect_lines(side_effects):
-            parts.append(Text('内部变化  ', style='bold yellow') + Text(line, style='bright_yellow'))
-        console.print(Panel(
-            Group(*parts),
-            title=f'第 {turn} 轮对话', subtitle=f'耗时 {_elapsed_ms(turn)}',
+            children.append(
+                Panel(
+                    Text(f'{bot_name}：本轮没有可见回复，仅处理内部事件', style='italic yellow'),
+                    title='模型返回', border_style='green', padding=(0, 1),
+                )
+            )
+        # 副作用仅在存在时才单独出面板，避免每轮都挂一个空的「内部变化」框。
+        effect_lines = _side_effect_lines(side_effects)
+        if effect_lines:
+            children.append(
+                Panel(
+                    Text('\n'.join(effect_lines), style='bright_yellow'),
+                    title='内部变化', border_style='yellow', padding=(0, 1),
+                )
+            )
+        _emit_console_block(Panel(
+            Group(*children),
+            title=f'第 {turn} 轮 · {sender_label}',
+            subtitle=f'耗时 {_elapsed_ms(turn)}',
             border_style='bright_cyan',
+            padding=(0, 1),
         ))
     except Exception as exc:
         logger.debug('render_turn_failed', error=str(exc))
@@ -181,12 +235,12 @@ def render_observation(sender_label: str, user_text: str, reason: str) -> None:
     :param reason: 未回复的机器可读或可读原因。
 
     副作用：
-        在交互终端写入观察行；渲染异常只记录调试日志。
+        向三端写入观察行；渲染异常只记录调试日志。
     """
-    if not _is_tty:
+    if not _render_enabled:
         return
     try:
-        console.print(
+        _emit_console_block(
             Text('旁听  ', style='bold magenta')
             + Text(f'{sender_label}：', style='bold cyan')
             + Text(user_text, style='white')
@@ -207,7 +261,7 @@ def render_action_decision(
 ) -> None:
     """以单行渲染 Conversation Agent 的行动决策摘要。
 
-    该入口只做观察展示，不触碰事件账本与业务行为；非交互终端自动跳过，
+    该入口只做观察展示，不触碰事件账本与业务行为；非渲染场景自动跳过，
     避免把决策行混入服务日志。
 
     :param turn: 对话回合 ID。
@@ -219,9 +273,9 @@ def render_action_decision(
     :param target_message_ids: 已提交决策的目标消息 ID。
 
     副作用：
-        在交互终端写入一行决策摘要；渲染异常只记录调试日志。
+        向三端写入一行决策摘要；渲染异常只记录调试日志。
     """
-    if not _is_tty:
+    if not _render_enabled:
         return
     try:
         scope_label = '影子观察' if agent_scope == 'shadow' else value_label(agent_scope)
@@ -242,7 +296,7 @@ def render_action_decision(
             if detail:
                 summary += f'  说明：{detail}'
             parts.append(Text(summary, style='bold red'))
-        console.print(Text.assemble(*parts))
+        _emit_console_block(Text.assemble(*parts))
     except Exception as exc:
         logger.debug('render_action_decision_failed', error=str(exc))
 
@@ -253,30 +307,43 @@ def render_turn_error(
     user_text: str,
     kind: str,
     message: str,
+    *,
+    model_name: str = '',
 ) -> None:
-    """渲染对话回合失败面板。
+    """把一轮失败对话合成红色面板并三端呈现。
 
     :param turn: 对话回合 ID。
     :param sender_label: 发送者展示名。
     :param user_text: 用户原始文本。
     :param kind: 错误类别。
     :param message: 错误消息。
+    :param model_name: 本轮请求所用模型名；为空时省略「模型请求」面板。
 
     副作用：
-        在交互终端写入错误面板；渲染异常只记录调试日志。
+        向三端写入错误面板；渲染异常只记录调试日志。
     """
 
-    if not _is_tty:
+    if not _render_enabled:
         return
     try:
-        parts = [
-            Text(f'收到消息  {sender_label}：{user_text}', style='bold white'),
-            Text(f'错误类型  {event_label(kind)}\n错误信息  {message}', style='bold red'),
+        children: list[Any] = [
+            Text.assemble(
+                Text('收到消息  ', style='bold cyan'),
+                Text(f'{sender_label}：{user_text}', style='bold white'),
+            ),
         ]
-        console.print(Panel(
-            Group(*parts),
-            title=f'第 {turn} 轮对话 · 失败', subtitle=f'耗时 {_elapsed_ms(turn)}',
+        if model_name.strip():
+            children.append(_request_panel([], model_name, border_style='red'))
+        children.append(Panel(
+            Text(f'错误类型：{event_label(kind)}\n错误信息：{message}', style='bold red'),
+            title='错误', border_style='red', padding=(0, 1),
+        ))
+        _emit_console_block(Panel(
+            Group(*children),
+            title=f'第 {turn} 轮 · {sender_label} · 失败',
+            subtitle=f'耗时 {_elapsed_ms(turn)}',
             border_style='bright_red',
+            padding=(0, 1),
         ))
     except Exception as exc:
         logger.debug('render_turn_error_failed', error=str(exc))
