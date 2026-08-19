@@ -48,6 +48,11 @@ __pycache__/
 /CLAUDE.md
 /Agent.md
 
+# 外部文档抓取脚本。产物只落在同样不入库的 /docs/reference/，脚本本身也只在
+# 开发机上跑；同测试与文档守卫，防的是一次 `git add .` 把它们带进版本库。
+/scripts/fetch_docs.py
+/scripts/fetch_reference_docs.mjs
+
 # IDE
 .idea/
 .vscode/
