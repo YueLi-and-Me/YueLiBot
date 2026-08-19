@@ -435,15 +435,21 @@ def render_action_protocol(
         if quote_supported
         else '本平台不支持引用，不要写 quote 属性'
     )
-    # 可选消息为空时不渲染 reply 示例，避免模型照抄 targets="0" 这种
-    # 必然非法的目标；silent 示例不需要目标，因此仍保留。
+    actions = frozenset(available_actions)
+    # 示例按动作空间逐条开关：示例是模型最容易照抄的部分，展示一个本回合非法的
+    # 动作等于主动制造 illegal_action。私聊与桌面不允许 silent，那里必须看不到
+    # silent 示例；可选消息为空时同理不能给出 targets="0" 这种必然非法的目标。
     reply_example = (
-        '\n# 格式一：reply（回复）\n'
+        '\n# reply（回复）\n'
         f'<decision action="reply" targets="{str(ids[0])}" '
         'reasons="direct_question" length="brief"/>\n'
         '<say emotion="normal">嗯嗯，我看到了。</say>'
         '<say emotion="smile">你继续说。</say>\n'
-    ) if ids else ''
+    ) if 'reply' in actions and ids else ''
+    silent_example = (
+        '\n# silent（不回复）\n'
+        '<decision action="silent" reasons="others_conversation"/>\n'
+    ) if 'silent' in actions else ''
     return get_prompt('chat.action.protocol').render(
         available_actions=actions_text,
         selectable_messages=selectable_text,
@@ -451,6 +457,7 @@ def render_action_protocol(
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
         reply_example=reply_example,
+        silent_example=silent_example,
         emoji_rule=_emoji_protocol_rule(emoji_enabled),
     )
 

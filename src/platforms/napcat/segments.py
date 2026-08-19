@@ -218,27 +218,27 @@ def outbound_message_segments(
     emoji_refs: Sequence[str],
     emoji_sub_types: Sequence[int],
 ) -> list[Dict[str, Any]]:
-    """按“文本在前、表情包在后”组装 OneBot 数组消息段。
+    """按“文本在前、表情包在后”组装 OneBot 消息段序列。
 
-    :param text_segments: 已按 ``<say>`` 切分的文本，协议端保持既有拼接语义。
+    每条文本各自成段，不再拼接成一段：``outbound_message_batches`` 会把每个段
+    发成一条独立消息，拼接会让整轮回复挤成一个气泡。历史上这里做 ``''.join``，
+    结果是模型分好的 ``<say>`` 在最后一公里被还原成一大段，且连换行都没有。
+
+    :param text_segments: 已按打字习惯切分的气泡文本，顺序即发送顺序。
     :param emoji_refs: 已通过启动哈希校验的本地 ``file://`` 图片引用。
     :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
-    :return: 可直接传给 ``send_private_msg`` 或 ``send_group_msg`` 的消息段数组。
+    :return: 与输入顺序一致的消息段序列，文字在前、表情包在后。
     :raises ValueError: 文本和表情包同时为空、引用与子类型数量不一致，或字段不合法。
     """
 
-    text = ''.join(text_segments)
-    if not text and not emoji_refs:
+    texts = [segment for segment in text_segments if segment]
+    if not texts and not emoji_refs:
         raise ValueError('QQ 出站消息必须包含文本或表情包')
     if len(emoji_refs) != len(emoji_sub_types):
         raise ValueError('QQ 出站表情包引用与 sub_type 数量必须一致')
     normalized_sub_types = tuple(_required_emoji_sub_type(value) for value in emoji_sub_types)
     return [
-        *(
-            [{'type': 'text', 'data': {'text': text}}]
-            if text
-            else []
-        ),
+        *[{'type': 'text', 'data': {'text': text}} for text in texts],
         *[
             file_image_segment(reference, sub_type)
             for reference, sub_type in zip(
@@ -255,13 +255,13 @@ def outbound_message_batches(
     emoji_refs: Sequence[str],
     emoji_sub_types: Sequence[int],
 ) -> list[list[Dict[str, Any]]]:
-    """把文字和每张表情包拆成独立的 OneBot 消息段数组。
+    """把每条文字和每张表情包拆成独立的 OneBot 消息段数组。
 
-    先完整校验全部字段，再返回“合并后的文字一条、每张表情包各一条”的发送批次，
-    避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为文字和
-    表情包分别创建消息气泡，便于确认贴纸渲染效果。
+    先完整校验全部字段，再返回“每条文字各一条、每张表情包各一条”的发送批次，
+    避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为每条文字和
+    表情包分别创建消息气泡，这正是她的分句在聊天窗口里表现为多条消息的原因。
 
-    :param text_segments: 已按 ``<say>`` 切分的文本。
+    :param text_segments: 已按打字习惯切分的气泡文本。
     :param emoji_refs: 已通过启动哈希校验的本地图片引用。
     :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
     :return: 按文字、表情包原始顺序排列的非空消息段数组。

@@ -117,6 +117,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'emotions',
         'gestures',
         'reply_example',
+        'silent_example',
         'emoji_rule',
     }),
     'image.description': frozenset(),

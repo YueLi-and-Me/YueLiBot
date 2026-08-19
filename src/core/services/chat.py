@@ -63,6 +63,7 @@ from src.core.agent.reply_necessity import (
     frequency_trigger_threshold,
     score_reply_necessity,
 )
+from src.core.agent.segmentation import split_into_bubbles
 from src.core.agent.summarize import summarize
 from src.core.awareness.sleep import SleepState
 from src.core.common.clock import now as current_time
@@ -3427,7 +3428,8 @@ def _collect_outbound_segment(
     :return: 更新后的当前分句片段；收到 ``SayEndEvent`` 后返回 ``None``。
 
     副作用：
-        可能向 ``segments`` 原地追加一条非空分句，不重新扫描完整响应文本。
+        可能向 ``segments`` 原地追加一条或多条非空分句，不重新扫描完整响应文本。
+        一个 ``<say>`` 按打字习惯再切成气泡，因此追加条数可能多于 ``<say>`` 数。
     """
     if isinstance(event, SayEvent):
         return []
@@ -3438,9 +3440,9 @@ def _collect_outbound_segment(
         return current
     if isinstance(event, SayEndEvent):
         if current is not None:
-            text = ''.join(current).strip()
-            if text:
-                segments.append(text)
+            # 在这里切分而不是在投递侧：平台出站、助手历史和控制台渲染共用这份
+            # segments，切分前置才能保证三者看到的气泡完全一致。
+            segments.extend(split_into_bubbles(''.join(current)))
         return None
     return current
 
