@@ -145,6 +145,21 @@ def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[s
         lines.append('')
 
 
+def _section_values(document: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """按点分路径取出一个配置段的值，支持 ``[a.b]`` 形式的子表。
+
+    :param document: 已 ``model_dump`` 的配置文档。
+    :param key: schema 中声明的段键，可含点号表示嵌套。
+    :return: 该段的字段映射；路径不存在或不是映射时返回空字典。
+    """
+    current: Any = document
+    for part in key.split('.'):
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(part, {})
+    return current if isinstance(current, dict) else {}
+
+
 def _write_documented_toml(
     path: Path,
     schema: Dict[str, Any],
@@ -168,7 +183,7 @@ def _write_documented_toml(
         lines.extend(_comment_lines(f'{label}：{description}'))
         if kind == 'object':
             lines.append(f'[{key}]')
-            _write_fields(lines, fields, document.get(key, {}) if isinstance(document.get(key), dict) else {})
+            _write_fields(lines, fields, _section_values(document, key))
         elif kind == 'map':
             entries = section.get('entries', [])
             for entry in entries:

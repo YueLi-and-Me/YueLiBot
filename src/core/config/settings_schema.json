@@ -377,6 +377,88 @@
               "help": "reply_necessity 模式的评分阈值，0~100。"
             }
           ]
+        },
+        {
+          "kind": "object",
+          "key": "typing",
+          "label": "打字节奏",
+          "description": "一段话切成几条气泡、每条之间隔多久。",
+          "fields": [
+            {
+              "key": "bubble_target_chars",
+              "type": "number",
+              "label": "单条气泡目标字数",
+              "help": "先按标点切成最小片段，再合并到接近该长度为止；必须大于 0。"
+            },
+            {
+              "key": "max_bubbles_per_say",
+              "type": "number",
+              "label": "一条台词最多气泡数",
+              "help": "话越长每条也越长，条数不随长度无限增长；至少为 1。"
+            },
+            {
+              "key": "delay_enabled",
+              "type": "boolean",
+              "label": "模拟打字停顿",
+              "help": "关闭后多条气泡会连续发出。"
+            },
+            {
+              "key": "chinese_char_seconds",
+              "type": "number",
+              "label": "中文打字速度（秒/字）",
+              "help": "中文按整字输入计价。"
+            },
+            {
+              "key": "latin_char_seconds",
+              "type": "number",
+              "label": "拉丁字符速度（秒/字）",
+              "help": "字母与数字连打明显快于中文。"
+            },
+            {
+              "key": "send_gap_seconds",
+              "type": "number",
+              "label": "发送间隙（秒）",
+              "help": "打完到按下回车之间的固定停顿。"
+            },
+            {
+              "key": "max_delay_seconds",
+              "type": "number",
+              "label": "单条等待上限（秒）",
+              "help": "长内容按字数线性算会让对方干等，超过上限即截断。"
+            },
+            {
+              "key": "emoji_pick_seconds",
+              "type": "number",
+              "label": "挑表情包耗时（秒）",
+              "help": "表情包不逐字打，不走字数公式。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "typing.nudge",
+          "label": "久等后的催促",
+          "description": "她说完话后对方长时间没回，直到看见对方开始打字才催一句；只在私聊生效。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用催促",
+              "help": "关闭后输入状态通知只被记录后丢弃。"
+            },
+            {
+              "key": "peer_silence_minutes",
+              "type": "number",
+              "label": "静默阈值（分钟）",
+              "help": "她上次发言后对方至少静默这么久才考虑催；必须大于 0。"
+            },
+            {
+              "key": "max_per_silence",
+              "type": "number",
+              "label": "同一段静默最多催几次",
+              "help": "催得再多就从「等急了」变成缠人；0 等同于关闭。"
+            }
+          ]
         }
       ]
     },
