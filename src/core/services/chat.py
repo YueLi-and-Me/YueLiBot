@@ -111,6 +111,14 @@ EMOJI_MAX_PER_REPLY_WINDOW = 1
 # 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
 GROUP_CROSSED_MESSAGE_SETTLE_MS = 8_000
 
+# 她发言后对方至少静默这么久，看到对方开始打字才值得催一句，单位为毫秒。
+# 正常一来一回的对话里看到对方打字就开口是监控而不是聊天，阈值负责让这件事
+# 保持稀有，因此不再叠加额外的频率窗口。
+PEER_SILENCE_BEFORE_NUDGE_MS = 5 * 60_000
+
+# 同一段静默期内最多催几次。催第三次就从「等急了」变成「缠人」。
+MAX_TYPING_NUDGES_PER_SILENCE = 2
+
 # 群历史首次回填时用于播种游标的历史条数与时间容差。
 _BACKFILL_SEED_EVENT_LIMIT = 500
 _BACKFILL_SEED_MESSAGE_LIMIT = 80
@@ -351,6 +359,8 @@ class ChatService:
         self._sessions: dict[int, _SessionState] = {}
         self._summarizing: set[int] = set()
         self._active_turns: dict[int, int] = {}
+        # 每个 stream 在当前静默期内已经因输入状态催过几次；对方一发消息就清零。
+        self._typing_nudges: dict[int, int] = {}
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
         self._promise_handler: Callable[[int, str], None] | None = None
@@ -609,6 +619,8 @@ class ChatService:
         if not trimmed:
             return
         stream_id = inbound.context.stream.id
+        # 对方开口即视为静默期结束，下一段静默重新计催促次数。
+        self._typing_nudges.pop(stream_id, None)
         accepted_at = current_time()
         previous_message_at = self.memory.last_message_at(stream_id)
         message_id = self.memory.append_message(
@@ -1615,6 +1627,73 @@ class ChatService:
                     asyncio.create_task(result)
             except Exception as exc:
                 logger.warning('cancel_audio_failed', error=str(exc))
+
+    async def note_peer_typing(self, context: ConversationContext) -> bool:
+        """收到「对方正在输入」通知，判断是否值得据此催一句。
+
+        协议端在对方打字期间反复推送该通知，绝大多数时候她都不该有反应——正常
+        一来一回的对话里看到对方打字就开口，是监控不是聊天。只有一种情形值得
+        出声：**她说完话之后对方长时间没回，直到现在才看见对方开始打字**。这个
+        条件天然稀有，不需要额外的频率限制。
+
+        触发后只把事实交给模型，不在代码里写死语气：晾了多久、之前已经催过几次
+        都写进情境，她自己决定这次是催、是调侃还是缓和。
+
+        :param context: 已完成归属解析的会话上下文。
+        :return: 本次是否真的发了话。
+        副作用：命中条件时调用主动消息模型并投递一轮主动发言。
+        """
+        stream_id = context.stream.id
+        # 群聊不推送输入状态；即使将来推送，群里盯着某人打字也不合适。
+        if context.stream.kind != 'direct':
+            return False
+        if self._sleep_state is not None and self._sleep_state().asleep:
+            return False
+        last_reply_at = self.memory.last_assistant_reply_at(stream_id)
+        if last_reply_at is None:
+            return False
+        now = current_time()
+        if now - last_reply_at < PEER_SILENCE_BEFORE_NUDGE_MS:
+            return False
+        # 她上次发言之后对方已经回过话，就不算晾着，这条通知只是正常对话的一部分。
+        last_peer_at = self.memory.last_user_message_at(stream_id)
+        if last_peer_at is not None and last_peer_at > last_reply_at:
+            return False
+        nudges = self._typing_nudges.get(stream_id, 0)
+        if nudges >= MAX_TYPING_NUDGES_PER_SILENCE:
+            return False
+        situation = self._typing_situation(now - last_reply_at, nudges)
+        lines = await self.compose_proactive(context, situation)
+        if not lines:
+            return False
+        if self.speak(context, lines) is None:
+            return False
+        self._typing_nudges[stream_id] = nudges + 1
+        return True
+
+    @staticmethod
+    def _typing_situation(silence_ms: int, nudges: int) -> str:
+        """把等待时长与已催次数渲染成她的主观感受。
+
+        情境写成她看到的事实而不是系统报告：模型据此自行选择语气，代码不规定
+        这次该催还是该缓和。
+
+        :param silence_ms: 她上次发言至今的静默毫秒数。
+        :param nudges: 本次静默期内已经催过的次数。
+        :return: 交给主动消息模型的情境文本。
+        """
+        minutes = silence_ms // 60_000
+        lines = [
+            f'你上一句发出去已经 {minutes} 分钟了，他一直没回。',
+            '现在你看到他那边开始打字了，话还没发出来。',
+        ]
+        if nudges:
+            lines.append(f'这段时间里你已经催过 {nudges} 次。')
+        lines.append(
+            '如果想说点什么，就顺着这个情形自然地说一句，别复述你等了多久，'
+            '也别提「输入状态」这种词。'
+        )
+        return '\n'.join(lines)
 
     def speak(self, context: ConversationContext, lines: list[dict]) -> int | None:
         """投放主动生成的已结构化分句。

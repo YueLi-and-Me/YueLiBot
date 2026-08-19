@@ -27,6 +27,8 @@ EventKind = Literal[
     'private_denied',
     'group_denied',
     'message',
+    # 私聊输入状态：对方在输入框打字时协议端会持续推送，用于催促类主动发言。
+    'input_status',
     'other',
 ]
 
@@ -80,6 +82,23 @@ def is_heartbeat(payload: Mapping[str, Any]) -> bool:
     return payload.get('meta_event_type') == 'heartbeat'
 
 
+def is_input_status(payload: Mapping[str, Any]) -> bool:
+    """判断协议事件是否为私聊输入状态通知。
+
+    协议端在对方于输入框打字期间反复推送该通知，且不提供「停止输入」的对应
+    事件，因此调用方只能把它当作「此刻对方正在打字」的瞬时事实，不能当作可以
+    持续查询的状态。
+
+    :param payload: 已解析的 OneBot 事件映射。
+    :return: ``notice_type=notify`` 且 ``sub_type=input_status`` 时返回 ``True``。
+    """
+    return (
+        payload.get('post_type') == 'notice'
+        and payload.get('notice_type') == 'notify'
+        and payload.get('sub_type') == 'input_status'
+    )
+
+
 def classify_event(
     payload: Mapping[str, Any],
     self_id: str,
@@ -110,6 +129,16 @@ def classify_event(
     post_type = payload.get('post_type')
     if post_type == 'request':
         return 'request'
+    if post_type == 'notice':
+        if not is_input_status(payload):
+            return 'other'
+        # 输入状态只有私聊会推送，访问名单与私聊消息完全一致。
+        if not private_access.allows(
+            _sender_external_id(payload),
+            _required_identifier(owner_qq, 'owner_qq 不能为空'),
+        ):
+            return 'private_denied'
+        return 'input_status'
     if post_type != 'message':
         return 'other'
 

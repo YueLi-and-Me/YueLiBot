@@ -335,6 +335,15 @@ class NapcatRunner:
                     reason='群聊不在白名单中',
                 )
                 continue
+            if kind == 'input_status':
+                # 对方正在打字只是一条瞬时事实，提交失败不影响任何消息通路。
+                try:
+                    await self._backend.submit_typing(
+                        _required_text(payload.get('user_id'), 'user_id 不能为空'),
+                    )
+                except Exception as exc:
+                    logger.debug('提交 QQ 输入状态失败', error=str(exc))
+                continue
             if kind != 'message':
                 logger.debug('忽略未知 QQ 事件', postType=payload.get('post_type'))
                 continue
@@ -428,6 +437,20 @@ class NapcatRunner:
                     targetId=outbound.stream_external_id,
                     error=str(exc),
                 )
+
+
+def _required_text(value: Any, message: str) -> str:
+    """把协议字段规范化为非空字符串标识。
+
+    :param value: OneBot 事件里的数字或字符串标识。
+    :param message: 校验失败时使用的错误说明。
+    :return: 去除首尾空白后的字符串。
+    :raises ValueError: 值为空或去除空白后为空字符串。
+    """
+    text = str(value or '').strip()
+    if not text:
+        raise ValueError(message)
+    return text
 
 
 def _batch_typing_delay(message_segments: List[Dict[str, Any]]) -> float:

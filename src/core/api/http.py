@@ -625,6 +625,46 @@ class GroupBackfillBody(BaseModel):
     messages: List[GroupBackfillMessageBody]
 
 
+class PlatformTypingBody(BaseModel):
+    """平台适配器上报的一条「对方正在输入」通知。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: str
+    stream_kind: Literal['direct', 'group'] = Field(alias='streamKind')
+    stream_external_id: str = Field(alias='streamExternalId')
+    sender_external_id: str = Field(alias='senderExternalId')
+
+
+@router.post('/platform/typing', dependencies=[Depends(_auth)])
+async def platform_typing(body: PlatformTypingBody) -> JSONResponse:
+    """接收对方正在输入的通知，交由聊天服务判断是否据此开口。
+
+    协议端在对方打字期间会反复推送该通知，因此本路由必须保持廉价：只做归属
+    解析并交给聊天服务，是否开口、开口说什么全部由服务层与模型决定。
+
+    :param body: 已通过 Pydantic 校验的输入状态通知。
+    :return: JSON 响应；服务未初始化时返回 503，其余情况返回是否触发了发言。
+    :raises fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+    :raises ValueError: 注册表归属解析输入不一致时抛出。
+    副作用：可能触发一次主动消息的模型调用与平台投递。
+    """
+    if app_state.chat is None or app_state.registry is None:
+        return JSONResponse({'detail': '对话服务未初始化'}, status_code=503)
+
+    context = app_state.registry.resolve_inbound(
+        platform=body.platform,
+        stream_kind=body.stream_kind,
+        stream_external_id=body.stream_external_id,
+        sender_external_id=body.sender_external_id,
+        sender_nickname='',
+        sender_group_card='',
+        first_seen_at=current_time(),
+    )
+    spoke = await app_state.chat.note_peer_typing(context)
+    return JSONResponse({'accepted': True, 'spoke': spoke})
+
+
 @router.post('/platform/group/backfill', dependencies=[Depends(_auth)])
 async def platform_group_backfill(body: GroupBackfillBody) -> JSONResponse:
     """接收停机期间错过的群历史，只写观察上下文不触发回复。

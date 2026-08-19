@@ -299,6 +299,24 @@ class MemoryStore:
         ).fetchone()
         return row[0] if row and row[0] is not None else None
 
+    def last_user_message_at(self, stream_id: int) -> int | None:
+        """返回指定 stream 最近一条用户消息的落库时间。
+
+        与 ``last_assistant_reply_at`` 配对使用，调用方比较两者先后即可判断
+        「她说完之后对方是否回过话」，不必再拉一遍完整历史。
+
+        :param stream_id: 目标 stream ID。
+        :return: 最近用户消息的最大 ``created_at``；没有用户消息时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表。
+        """
+        row = self._db.execute(
+            '''SELECT MAX(created_at) FROM messages
+               WHERE stream_id = ? AND role = 'user' ''',
+            (stream_id,),
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
     def interaction_density(self, stream_id: int, now: int | None = None) -> str:
         """根据最近三天消息数量生成自然语言互动密度描述。
 
