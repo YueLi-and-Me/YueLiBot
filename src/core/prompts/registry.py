@@ -113,6 +113,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.action.protocol': frozenset({
         'available_actions',
         'selectable_messages',
+        'turn_scope',
         'quote_rule',
         'emotions',
         'gestures',

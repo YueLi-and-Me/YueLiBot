@@ -2742,11 +2742,17 @@ class ChatService:
         :param batch: 与 ``frame.selectable_message_ids`` 同源的批次消息。
         :return: 已注入运行时动作集与目标锚点清单的协议文本。
         """
+        context = batch[-1].context
         return render_action_protocol(
             sorted(frame.available_actions),
             self._selectable_message_previews(batch),
             quote_supported=frame.capabilities.quote,
             emoji_enabled=frame.capabilities.emoji,
+            target_person=(
+                self._registry.stream_display_name(context.person.id, context.stream.id)
+                if context.stream.kind == 'group'
+                else ''
+            ),
         )
 
     def _render_agent_messages(

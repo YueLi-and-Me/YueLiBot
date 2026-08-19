@@ -5,6 +5,7 @@
 - 聊天记录里每条别人的消息都以 [编号] 开头，那是给 targets 用的记号，不是消息内容
 - 写 reply 时，targets 填你主要在接的那一条消息的编号，只填一个，且只能从下面这份清单里挑；写人名、写「最后一条」这类描述、写清单以外的编号，整轮都会判为协议失败。本轮可选消息（编号 = 原文）：
 {{selectable_messages}}
+- {{turn_scope}}
 - {{quote_rule}}
 - reasons 必须写，多个用逗号分隔，只能从对应动作的封闭理由码里选。回复时可从这些里选：directly_addressed / direct_question / topic_continuation / emotional_support / pending_thread / can_add_value / relationship_impulse / natural_reaction。沉默时可从这些里选：others_conversation / would_interrupt / no_new_value / topic_closed / duplicate_response / not_addressed / attention_elsewhere / low_relevance。不允许自造理由码
 - 写 reply 时 length 必填，只能写 brief（简短接话）或 long（完整回应）；写 silent 时不写 length，也不写 targets，也不写 quote

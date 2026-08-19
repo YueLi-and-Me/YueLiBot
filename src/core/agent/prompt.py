@@ -406,11 +406,33 @@ def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
     return '\n'.join(lines)
 
 
+def _render_turn_scope(target_person: str) -> str:
+    """渲染「这一轮在接谁」的范围说明。
+
+    可选清单只覆盖当前人物这一批消息，是缓冲按人物切批的结果，不是模型选错了。
+    线上观测到的全部 illegal_action 都是同一种形态：模型想接的是群里另一个人刚
+    说的话，清单里没有对应编号，于是把 targets 写成人名，整轮被判协议失败、
+    表现为她突然不回话。因此这里必须说清两件事：越界不可行，以及别人的话会有
+    属于他们自己的回合，不必抢在这一轮里接。
+
+    :param target_person: 本轮批次发送者的显示名；私聊传空字符串。
+    :return: 供协议模板插入的单行说明。
+    """
+    who = f'{target_person}刚说的话' if target_person else '对方刚说的话'
+    return (
+        f'这一轮只处理{who}，清单以外的编号（包括群里别人刚发的）一律不能填。'
+        '别人的消息会各自触发属于他们的回合，不用抢在这一轮接；'
+        '要是你真正想接的是别人那句、对清单里这几条没什么可说的，就写 silent。'
+        '历史里别人的话仍然可以读，用来理解上下文，也可以在台词里顺带提一句。'
+    )
+
+
 def render_action_protocol(
     available_actions: Iterable[str],
     selectable_messages: Iterable[Tuple[int, str]],
     quote_supported: bool,
     emoji_enabled: bool = False,
+    target_person: str = '',
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -421,7 +443,10 @@ def render_action_protocol(
     :param available_actions: 运行时给出的本回合动作枚举值。
     :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
         原文用于在提示词里给编号建立锚点，模型据此才能照抄出合法 targets。
-    :param quote_supported: 平台是否支持引用；不支持时提示词明确禁止 quote。
+    :param quote_supported: 平台是否支持模型在决策里显式指定引用目标；不支持时
+        提示词明确禁止 quote。平台投递层的自动引用不受该开关控制。
+    :param target_person: 本回合批次发送者的显示名，用于说明这一轮在接谁的话；
+        私聊传空字符串。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
@@ -430,10 +455,13 @@ def render_action_protocol(
     selectable = list(selectable_messages)
     ids = [message_id for message_id, _ in selectable]
     selectable_text = _render_selectable_messages(selectable)
+    # 不写「本平台不支持引用」：QQ 群聊的回复由投递层按需要自动挂引用，
+    # 断言平台没有引用能力会让她在台词里说出与事实相反的话。这条规则只约束
+    # 动作头里能不能出现 quote 属性。
     quote_rule = (
         'quote 只能引用上面列出的可选消息之一；不引用就不写 quote 属性'
         if quote_supported
-        else '本平台不支持引用，不要写 quote 属性'
+        else '不要写 quote 属性，需要指向哪一条由 targets 决定'
     )
     actions = frozenset(available_actions)
     # 示例按动作空间逐条开关：示例是模型最容易照抄的部分，展示一个本回合非法的
@@ -453,6 +481,7 @@ def render_action_protocol(
     return get_prompt('chat.action.protocol').render(
         available_actions=actions_text,
         selectable_messages=selectable_text,
+        turn_scope=_render_turn_scope(target_person),
         quote_rule=quote_rule,
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
