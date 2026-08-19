@@ -327,10 +327,21 @@ def outbound_message_segments(
     ]
 
 
+def reply_segment(message_id: str) -> Dict[str, Any]:
+    """构造引用回复用的 OneBot ``reply`` 段。
+
+    :param message_id: 被引用消息的平台编号，不能为空。
+    :return: 形如 ``{'type': 'reply', 'data': {'id': '123'}}`` 的新字典。
+    :raises ValueError: 消息编号为空。
+    """
+    return {'type': 'reply', 'data': {'id': _required_value(message_id, '引用消息编号不能为空')}}
+
+
 def outbound_message_batches(
     text_segments: Sequence[str],
     emoji_refs: Sequence[str],
     emoji_sub_types: Sequence[int],
+    quote_message_id: str = '',
 ) -> list[list[Dict[str, Any]]]:
     """把每条文字和每张表情包拆成独立的 OneBot 消息段数组。
 
@@ -338,9 +349,13 @@ def outbound_message_batches(
     避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为每条文字和
     表情包分别创建消息气泡，这正是她的分句在聊天窗口里表现为多条消息的原因。
 
+    引用只加在第一个批次上：整轮回复在 QQ 里是连续的多条气泡，逐条都挂引用会
+    让聊天窗口被引用框刷屏，首条点明在回谁就够了。
+
     :param text_segments: 已按打字习惯切分的气泡文本。
     :param emoji_refs: 已通过启动哈希校验的本地图片引用。
     :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
+    :param quote_message_id: 第一个批次要引用的平台消息编号；空字符串表示不引用。
     :return: 按文字、表情包原始顺序排列的非空消息段数组。
     :raises ValueError: 消息为空、字段数量不一致或图片字段不合法。
     """
@@ -350,7 +365,10 @@ def outbound_message_batches(
         emoji_refs,
         emoji_sub_types,
     )
-    return [[segment] for segment in segments]
+    batches = [[segment] for segment in segments]
+    if quote_message_id and batches:
+        batches[0].insert(0, reply_segment(quote_message_id))
+    return batches
 
 
 def _image_segment(

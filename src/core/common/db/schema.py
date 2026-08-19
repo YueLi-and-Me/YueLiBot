@@ -74,11 +74,16 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at       INTEGER NOT NULL,
   episode_id       INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
   stream_id        INTEGER NOT NULL DEFAULT 1,
-  sender_person_id INTEGER
+  sender_person_id INTEGER,
+  -- 平台原生消息编号。出站引用回复必须把内部消息 ID 还原成平台编号才能发得出去，
+  -- 桌面等无编号通道保持 NULL。
+  external_message_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_pending ON messages(episode_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_stream_pending ON messages(stream_id, episode_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_stream_created ON messages(stream_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_stream_external
+  ON messages(stream_id, external_message_id);
 
 -- ---------------------------------------------------------------- L2 情节记忆
 CREATE TABLE IF NOT EXISTS episodes (

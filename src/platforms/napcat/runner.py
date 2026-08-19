@@ -611,6 +611,7 @@ class NapcatRunner:
                     outbound.segments,
                     outbound.emoji_refs,
                     outbound.emoji_sub_types,
+                    outbound.quote_external_message_id,
                 )
                 target = _qq_number(outbound.stream_external_id, target_label)
                 delays = _batch_delays_seconds(outbound)

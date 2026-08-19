@@ -622,6 +622,7 @@ class ChatService:
             'user',
             trimmed,
             accepted_at,
+            inbound.external_message_id,
         )
         image_task: asyncio.Task[str] | None = None
         if inbound.image_sources or inbound.emoji_sources:
@@ -3050,6 +3051,7 @@ class ChatService:
                     turn,
                     sink.segments,
                     sink.emoji_items,
+                    self._quote_target(context, outcome.decision.target_message_ids),
                 )
             except Exception as exc:
                 # 投递失败与决策分离：追加一条 delivery_failed 行动事件再上抛。
@@ -3380,12 +3382,41 @@ class ChatService:
             return
         await self._emit(context.stream.id, 'chat.event', ev)
 
+    def _quote_target(
+        self,
+        context: ConversationContext,
+        target_message_ids: tuple[int, ...],
+    ) -> str | None:
+        """判断这一轮回复是否需要挂引用，并给出被引用消息的平台编号。
+
+        群里消息滚动快，而她一轮生成要十几秒，回复落地时目标常常已经被后面的
+        消息冲开，旁观者看不出她在接哪一句。因此判据只有一条：目标消息之后本
+        stream 已经出现更新的消息，就挂引用。私聊只有两个人，任何时候都不会认错
+        对象，一律不引用。
+
+        引用与否不进模型的动作头：目标已经由模型选定，引用只是这个选择在平台上的
+        呈现方式，属于代码强制的可读性边界，多给模型一个字段只会多一种写错的方式。
+
+        :param context: 目标会话上下文。
+        :param target_message_ids: 决策选中的目标消息内部 ID；为空表示无目标。
+        :return: 被引用消息的平台编号；不需要或无法引用时返回 ``None``。
+        """
+        if context.stream.kind != 'group' or not target_message_ids:
+            return None
+        target_id = target_message_ids[0]
+        if not self.memory.has_user_messages_after(context.stream.id, target_id):
+            return None
+        # 平台编号缺失说明这条消息早于编号落库改动，或来自不带编号的通道，
+        # 此时只能不引用；不能拿内部 ID 冒充平台编号发出去。
+        return self.memory.external_message_id(context.stream.id, target_id)
+
     async def _dispatch_outbound(
         self,
         context: ConversationContext,
         turn: int,
         segments: list[str],
         emoji_items: list[tuple[str, str, int]],
+        quote_external_message_id: str | None = None,
     ) -> None:
         """将非桌面整轮回复交给平台 broker。
 
@@ -3393,6 +3424,8 @@ class ChatService:
         :param turn: 对话回合 ID。
         :param segments: 已按 ``<say>`` 边界切分的正文列表。
         :param emoji_items: 已按目标情绪命中的可发送表情包引用。
+        :param quote_external_message_id: 第一条气泡要引用的平台消息编号；
+            ``None`` 表示不引用。
 
         副作用：
             可能调用平台驱动并写入投递观察事件；空列表只记录警告并返回。
@@ -3416,6 +3449,7 @@ class ChatService:
             emoji_refs=tuple(reference for _emotion, reference, _sub_type in emoji_items),
             emoji_sub_types=tuple(sub_type for _emotion, _reference, sub_type in emoji_items),
             batch_delays_ms=self._batch_delays_ms(segments, len(emoji_items)),
+            quote_external_message_id=quote_external_message_id,
         ))
         trace.emit(
             'outbound_delivered',

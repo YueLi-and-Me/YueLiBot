@@ -42,6 +42,8 @@ class BackendOutbound:
     emoji_sub_types: tuple[int, ...] = ()
     # 主体算好的逐批停顿，与「文字在前、表情包在后」的发送批次对齐；缺省表示不等待。
     batch_delays_ms: tuple[int, ...] = ()
+    # 第一条气泡要引用的平台消息编号；为空表示不引用。
+    quote_external_message_id: str = ''
 
 
 class BackendClient:
@@ -361,6 +363,9 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         raise ValueError('主体 qq.send 的 batchDelaysMs 与发送批次数量必须一致')
     if not segments and not emoji_refs:
         raise ValueError('主体 qq.send 必须包含文本或表情包')
+    raw_quote = body.get('quoteExternalMessageId', '')
+    if not isinstance(raw_quote, str):
+        raise ValueError('主体 qq.send 的 quoteExternalMessageId 必须是字符串')
     return BackendOutbound(
         stream_id=stream_id,
         stream_kind=stream_kind,
@@ -369,4 +374,5 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         emoji_refs=emoji_refs,
         emoji_sub_types=emoji_sub_types,
         batch_delays_ms=batch_delays_ms,
+        quote_external_message_id=raw_quote.strip(),
     )

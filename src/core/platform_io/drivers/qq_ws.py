@@ -74,6 +74,8 @@ class QqWebSocketDriver(PlatformDriver):
         }
         if message.batch_delays_ms:
             payload['batchDelaysMs'] = list(message.batch_delays_ms)
+        if message.quote_external_message_id:
+            payload['quoteExternalMessageId'] = message.quote_external_message_id
         if message.emoji_refs:
             payload['emojiRefs'] = list(message.emoji_refs)
             payload['emojiSubTypes'] = list(message.emoji_sub_types)

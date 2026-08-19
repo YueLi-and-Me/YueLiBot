@@ -177,6 +177,7 @@ class MemoryStore:
         role: str,
         content: str,
         now: int | None = None,
+        external_message_id: str | None = None,
     ) -> int:
         """向指定 stream 的 L1 工作记忆追加一条消息。
 
@@ -185,6 +186,8 @@ class MemoryStore:
         :param role: 消息角色。
         :param content: 消息正文。
         :param now: 可选创建时间戳；省略时读取当前毫秒时钟。
+        :param external_message_id: 可选的平台原生消息编号；出站引用回复据此把
+            内部消息 ID 还原成平台编号。桌面等无编号通道传 ``None``。
         :return: 新消息的数据库 ID。
         :raises ValueError: 用户消息缺少发送者人物 ID。
         :raises sqlite3.Error: 插入或提交失败。
@@ -194,12 +197,29 @@ class MemoryStore:
             raise ValueError('user 消息必须携带 sender_person_id')
         now = now if now is not None else current_time()
         cur = self._db.execute(
-            '''INSERT INTO messages (stream_id, sender_person_id, role, content, created_at)
-               VALUES (?, ?, ?, ?, ?)''',
-            (stream_id, sender_person_id, role, content, now)
+            '''INSERT INTO messages
+                   (stream_id, sender_person_id, role, content, created_at, external_message_id)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (stream_id, sender_person_id, role, content, now, external_message_id)
         )
         self._db.commit()
         return cur.lastrowid or 0
+
+    def external_message_id(self, stream_id: int, id: int) -> str | None:
+        """读取一条消息的平台原生编号。
+
+        :param stream_id: 消息所属 stream ID，防止跨 stream 读到同号消息。
+        :param id: 消息主键。
+        :return: 平台消息编号；消息不存在、不属于该 stream 或入库时未带编号时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        """
+        row = self._db.execute(
+            'SELECT external_message_id FROM messages WHERE id = ? AND stream_id = ?',
+            (id, stream_id)
+        ).fetchone()
+        if row is None:
+            return None
+        return row['external_message_id']
 
     def update_message_content(self, stream_id: int, id: int, content: str) -> int:
         """用后台补齐后的正文替换一条已落库消息的内容。
@@ -268,6 +288,25 @@ class MemoryStore:
             )
             for r in reversed(rows)
         ]
+
+    def has_user_messages_after(self, stream_id: int, id: int) -> bool:
+        """判断指定消息之后该 stream 是否还有别人发的消息。
+
+        出站引用据此判断「这条回复落地时是否已经被别的发言冲开」：目标之后还有
+        别人说话，说明旁观者已经看不出她在回哪一条，需要挂引用点明。只看
+        ``role='user'``：她自己这一轮的回复正文在投递前就已落库，算进来会让判据
+        恒真。
+
+        :param stream_id: 目标 stream ID。
+        :param id: 作为分界的消息主键。
+        :return: 存在主键更大的同 stream 用户消息时返回 ``True``。
+        :raises sqlite3.Error: 查询失败。
+        """
+        row = self._db.execute(
+            "SELECT 1 FROM messages WHERE stream_id = ? AND id > ? AND role = 'user' LIMIT 1",
+            (stream_id, id)
+        ).fetchone()
+        return row is not None
 
     def last_message_at(self, stream_id: int) -> int | None:
         """返回指定 stream 最近一条消息的时间戳。

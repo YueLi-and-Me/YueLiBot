@@ -109,10 +109,14 @@ class IllegalActionError(ValueError):
 class PlatformCapabilities:
     """运行时按当前 stream 与平台适配器真实具备的能力。
 
-    模型只能在这些真实能力内选择：平台不支持引用时决策不能携带
+    模型只能在这些真实能力内选择：``quote`` 关闭时决策不能携带
     ``quote_message_id``；平台未验证 reaction 执行能力时 ``react`` 不进入
     动作集，且可用反应标识封闭给出；``emoji`` 表示当前平台、表情包库和
     频率窗口共同允许产生表情包可见产物。
+
+    ``quote`` 只管「模型能否自己指定引用目标」。QQ 群聊投递时按目标消息是否
+    已被后续发言冲开自动挂引用，那条路径由代码强制，不受本开关影响——目标已经
+    由模型选定，引用只是这个选择在平台上的呈现方式。
     """
 
     quote: bool = False

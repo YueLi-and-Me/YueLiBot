@@ -20,7 +20,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 11  # 当前 schema 版本，表情包保留并回传 OneBot sub_type
+CURRENT_VERSION = 12  # 当前 schema 版本，消息记录保留平台原生消息编号
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -137,6 +137,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v8_to_v9,
         v9_to_v10,
         v10_to_v11,
+        v11_to_v12,
     )
 
     registry = get_registry()
