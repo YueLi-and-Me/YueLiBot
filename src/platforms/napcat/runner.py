@@ -14,6 +14,7 @@ import asyncio
 
 import httpx
 
+from src.core.agent.segmentation import EMOJI_PICK_SECONDS, typing_delay_seconds
 from src.core.common.logger import get_logger
 
 from .backend import BackendClient
@@ -402,7 +403,16 @@ class NapcatRunner:
                     outbound.emoji_sub_types,
                 )
                 target = _qq_number(outbound.stream_external_id, target_label)
-                for message_segments in message_batches:
+                for index, message_segments in enumerate(message_batches):
+                    # 第一条立刻发：模型生成已经占了十几秒，她在对方视角里早就
+                    # 在打字了。之后每条按自身长度等待，让多条气泡呈现真人的
+                    # 打字节奏而不是脚本连发。
+                    #
+                    # 等待发生在出站消费循环内，会顺带推迟其它 stream 的这一轮
+                    # 投递。选择阻塞而不是并发发送，是为了保住同一 stream 内的
+                    # 气泡顺序；单轮总延迟在十秒量级，对聊天节奏可以接受。
+                    if index:
+                        await asyncio.sleep(_batch_typing_delay(message_segments))
                     await self._transport.call_action(
                         action,
                         {
@@ -418,6 +428,20 @@ class NapcatRunner:
                     targetId=outbound.stream_external_id,
                     error=str(exc),
                 )
+
+
+def _batch_typing_delay(message_segments: List[Dict[str, Any]]) -> float:
+    """按一个发送批次的内容估算发出前的停顿。
+
+    :param message_segments: 单条 QQ 消息的 OneBot 消息段数组。
+    :return: 建议等待秒数；文字批次按字数计价，表情包批次用固定的挑图时间。
+    """
+    text = ''.join(
+        segment['data']['text']
+        for segment in message_segments
+        if segment.get('type') == 'text'
+    )
+    return typing_delay_seconds(text) if text else EMOJI_PICK_SECONDS
 
 
 def _parse_group_history(

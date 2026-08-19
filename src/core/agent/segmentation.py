@@ -1,12 +1,13 @@
-"""把一条可见台词切成符合打字习惯的多个气泡。
+"""把一条可见台词切成气泡，并给出每条气泡发出前的打字停顿。
 
 模型按语义边界写 ``<say>``，一个 ``<say>`` 常常仍是完整的一长句；真人在聊天
-窗口里会把这样的一句拆成两三条陆续发出去。本模块只做这一步纯文本切分，不参与
-协议解析，也不决定发送节奏。
+窗口里会把这样的一句拆成两三条陆续发出去，而且每条之间隔着实打实的打字时间。
+本模块把这两件事放在一起：切分决定发几条，打字停顿决定隔多久，二者共用同一套
+「她怎么把一段话打出来」的假设。模块只做纯计算，不参与协议解析也不执行 I/O。
 
-被 ``src.core.services.chat._collect_outbound_segment`` 在收束 ``<say>`` 边界
-时调用，切分结果同时进入平台投递、助手历史和控制台渲染，三者看到的气泡完全
-一致。
+``split_into_bubbles`` 由 ``src.core.services.chat._collect_outbound_segment``
+在收束 ``<say>`` 边界时调用，切分结果同时进入平台投递、助手历史和控制台渲染；
+``typing_delay_seconds`` 由 ``src.platforms.napcat.runner`` 在逐条发送时调用。
 """
 
 from __future__ import annotations
@@ -100,3 +101,40 @@ def split_into_bubbles(text: str) -> List[str]:
         bubbles.append(current)
     trimmed = [bubble.rstrip(_TRAILING_MARKS).strip() for bubble in bubbles]
     return [bubble for bubble in trimmed if bubble]
+
+
+# 打字速度：中文按整字输入，拉丁字母与数字连打明显更快，因此分开计价。单位为
+# 秒/字符。数量级参照真人在聊天窗口里的手速，不追求精确模拟。
+CHINESE_CHAR_SECONDS = 0.28
+LATIN_CHAR_SECONDS = 0.12
+
+# 打完到按下回车之间的固定停顿，单位为秒。没有它时短气泡会显得像脚本连发。
+SEND_GAP_SECONDS = 0.4
+
+# 单条气泡的等待上限，单位为秒。长气泡按字数线性算会让对方干等，超过上限即截断；
+# 真人遇到长内容也会分批发而不是憋满一分钟。
+MAX_TYPING_SECONDS = 8.0
+
+# 挑一张表情包所需的时间，单位为秒。表情包不用逐字打，走独立常量而不是字数公式。
+EMOJI_PICK_SECONDS = 1.5
+
+
+def typing_delay_seconds(text: str) -> float:
+    """估算把一条气泡打出来所需的时间。
+
+    调用方只应对第二条及之后的气泡等待：模型生成本身已经占用了十几秒，第一条
+    发出时她在对方视角里已经"打了很久"，再等一次会变成明显的迟钝。
+
+    :param text: 即将发送的气泡正文。
+    :return: 建议的等待秒数；空文本返回 0，上限为 ``MAX_TYPING_SECONDS``。
+    """
+    if not text:
+        return 0.0
+    seconds = SEND_GAP_SECONDS
+    for char in text:
+        seconds += (
+            CHINESE_CHAR_SECONDS
+            if '一' <= char <= '鿿'
+            else LATIN_CHAR_SECONDS
+        )
+    return min(seconds, MAX_TYPING_SECONDS)
