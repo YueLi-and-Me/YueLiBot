@@ -166,6 +166,8 @@ def parse_inbound_event(
     owner_qq: str,
     private_access: PrivateAccessConfig,
     group_access: GroupAccessConfig,
+    mention_names: Mapping[str, str] | None = None,
+    quote_previews: Mapping[str, str] | None = None,
 ) -> QqInboundEvent | None:
     """解析通过访问策略的私聊或白名单群消息为统一入站事件。
 
@@ -175,6 +177,10 @@ def parse_inbound_event(
     :param owner_qq: 配置的 owner QQ 号。
     :param private_access: 私聊访问策略模型。
     :param group_access: 群聊白名单策略模型。
+    :param mention_names: 可选的 QQ 号到显示名映射；缺省时提及只渲染为裸 QQ 号，
+        模型无法判断被点名的是谁。机器人自身的映射由本函数补齐，调用方不必传入。
+    :param quote_previews: 可选的被引用消息 ID 到摘要映射；缺省时引用只渲染为
+        不含内容的占位符。
 
     :return: 规范化后的 ``QqInboundEvent``；事件不是允许处理的普通消息时返回 ``None``。
 
@@ -223,7 +229,11 @@ def parse_inbound_event(
         sender_nickname=sender_nickname,
         sender_group_card=sender_group_card,
         bot_name=_required_identifier(self_name, '机器人登录昵称不能为空'),
-        text=message_to_text(raw_segments, {self_id: self_name}),
+        text=message_to_text(
+            raw_segments,
+            {**(mention_names or {}), self_id: self_name},
+            quote_previews,
+        ),
         mentioned_me=mentions_user(raw_segments, self_id),
         external_message_id=message_id,
         image_sources=image_source_urls(raw_segments),

@@ -2,6 +2,11 @@
 
 `NapcatRunner` 负责建立两条连接、按失败类型执行重试、过滤协议事件，并把主体
 回复转换为 OneBot action；分类和字段解析委托给同目录的纯函数模块。
+
+入站正文里的两类引用关系必须在提交主体前补齐，否则模型只能看到裸 QQ 号和不含
+内容的引用占位符：被 ``@`` 的显示名经 ``get_group_member_info`` /
+``get_stranger_info`` 解析，被引用消息的原文经 ``get_msg`` 还原，两者都带进程内
+缓存，失败时退回原占位形态而不阻断消息入站。
 """
 
 from __future__ import annotations
@@ -19,7 +24,13 @@ from src.core.common.logger import get_logger
 from .backend import BackendClient, BackendOutbound
 from .config import NapcatDocument
 from .events import QqInboundEvent, classify_event, parse_inbound_event
-from .segments import is_emoji_image, outbound_message_batches
+from .segments import (
+    is_emoji_image,
+    mentioned_user_ids,
+    message_to_text,
+    outbound_message_batches,
+    quoted_message_ids,
+)
 from .transport import (
     ActionError,
     NapcatTransport,
@@ -29,6 +40,13 @@ from .transport import (
 
 
 logger = get_logger(__name__)
+
+# 引用摘要保留的正文字符数上限。摘要只用于让模型认出被引用的是哪句话，
+# 完整正文通常已经在聊天历史里，超出部分截断为省略号。
+QUOTE_PREVIEW_LIMIT = 40
+# 显示名与引用摘要缓存的条目上限，超出后按插入顺序淘汰最旧的条目。
+# 群成员和被引用消息都是有限集合，这个上限只用于防止长时间运行后无限增长。
+RESOLUTION_CACHE_LIMIT = 512
 
 
 class NapcatRunner:
@@ -63,6 +81,10 @@ class NapcatRunner:
         self._transport = transport or NapcatTransport(config.napcat)
         self._backend = backend or BackendClient(backend_port, token)
         self._connected_once = False
+        # (群号, QQ 号) -> 显示名；私聊用空群号。群名片按群独立，不能跨群复用。
+        self._display_names: Dict[tuple[str, str], str] = {}
+        # 被引用消息 ID -> 已渲染的引用摘要，避免同一条消息被反复引用时重复查询。
+        self._quote_previews: Dict[str, str] = {}
 
     async def run(self) -> None:
         """建立 QQ 协议端和主体连接，并按错误类型维持或终止运行。
@@ -186,6 +208,180 @@ class NapcatRunner:
                     groupId=group_id,
                     error=str(exc),
                 )
+
+    def _remember_display_name(self, group_id: str, user_id: str, name: str) -> None:
+        """把一个已知的 QQ 显示名写入解析缓存，并维持缓存容量上限。
+
+        :param group_id: 群号；私聊传空字符串。
+        :param user_id: QQ 号；为空时直接忽略。
+        :param name: 群名片或昵称；为空时不覆盖已有条目。
+        :return: 无返回值。
+        副作用：修改 ``self._display_names``，必要时淘汰最早写入的条目。
+        """
+        if not user_id or not name.strip():
+            return
+        self._display_names[(group_id, user_id)] = name.strip()
+        while len(self._display_names) > RESOLUTION_CACHE_LIMIT:
+            self._display_names.pop(next(iter(self._display_names)))
+
+    async def _resolve_mention_names(
+        self,
+        payload: Mapping[str, Any],
+        raw_segments: List[Any],
+        self_id: str,
+    ) -> Dict[str, str]:
+        """把消息里被 ``@`` 的 QQ 号解析为群名片或昵称。
+
+        只有裸 QQ 号时模型分不清「@1624606785」点的是谁，既无法判断这句话是不是
+        冲着自己来的，也读不懂群里的对话指向。发送者本人的名字直接取自事件字段，
+        其余被提及者按 (群号, QQ 号) 查缓存，未命中才向协议端查询一次。
+
+        :param payload: OneBot 原始消息事件，用于读取群号与发送者信息。
+        :param raw_segments: 该消息的消息段列表。
+        :param self_id: 机器人登录 QQ 号；其显示名由解析函数统一补齐，此处跳过。
+        :return: QQ 号到显示名的映射；解析失败的号码不出现在映射里，渲染时保持裸号。
+        副作用：对未缓存的提及对象调用一次协议端查询，并写入显示名缓存。
+        """
+        group_id = _optional_text(payload.get('group_id'))
+        sender = payload.get('sender')
+        if isinstance(sender, Mapping):
+            # 发送者信息随每条消息下发，顺手入缓存可以让绝大多数提及免于查询。
+            self._remember_display_name(
+                group_id,
+                _optional_text(sender.get('user_id')),
+                _optional_text(sender.get('card')) or _optional_text(sender.get('nickname')),
+            )
+
+        resolved: Dict[str, str] = {}
+        for user_id in mentioned_user_ids(raw_segments):
+            if user_id == self_id:
+                continue
+            cached = self._display_names.get((group_id, user_id))
+            if cached is None:
+                cached = await self._query_display_name(group_id, user_id)
+            if cached:
+                resolved[user_id] = cached
+        return resolved
+
+    async def _query_display_name(self, group_id: str, user_id: str) -> str:
+        """向协议端查询一个 QQ 号在当前会话中的显示名。
+
+        :param group_id: 群号；为空时按陌生人资料查询昵称。
+        :param user_id: 待查询的 QQ 号。
+        :return: 群名片或昵称；查询失败或字段为空时返回空字符串。
+        副作用：调用一次 ``get_group_member_info`` 或 ``get_stranger_info``，
+            成功时写入显示名缓存。
+        """
+        action = 'get_group_member_info' if group_id else 'get_stranger_info'
+        params: Dict[str, Any] = {'user_id': user_id}
+        if group_id:
+            params['group_id'] = group_id
+        try:
+            response = await self._transport.call_action(action, params)
+        except Exception as exc:
+            # 名字解析失败不影响消息本身入站，正文退回裸 QQ 号即可；
+            # 抛出会让整条消息连同正文一起丢失，代价远大于少一个名字。
+            logger.warning(
+                'QQ 提及显示名解析失败，保留裸号码',
+                groupId=group_id,
+                userId=user_id,
+                error=str(exc),
+            )
+            return ''
+        data = response.get('data')
+        if not isinstance(data, Mapping):
+            return ''
+        name = _optional_text(data.get('card')) or _optional_text(data.get('nickname'))
+        self._remember_display_name(group_id, user_id, name)
+        return name
+
+    async def _resolve_quote_previews(
+        self,
+        raw_segments: List[Any],
+        self_id: str,
+        self_name: str,
+    ) -> Dict[str, str]:
+        """把消息里的引用段还原为「回复 某人：原文」摘要。
+
+        OneBot 的 ``reply`` 段只带被引用消息的 ID，正文完全不在事件里。缺少这段
+        还原时，模型面对「[引用消息] ？」这类消息只能凭当前这条硬猜，回复经常
+        答非所问；引用同时又是触发必回的强信号，所以这类盲回占比很高。
+
+        :param raw_segments: 该消息的消息段列表。
+        :param self_id: 机器人登录 QQ 号，用于识别引用的是她自己的消息。
+        :param self_name: 机器人显示名，用于渲染引用自身消息的摘要。
+        :return: 被引用消息 ID 到摘要文本的映射；还原失败的 ID 不出现在映射里。
+        副作用：对未缓存的被引用消息调用一次 ``get_msg``，并写入摘要缓存。
+        """
+        previews: Dict[str, str] = {}
+        for quoted_id in quoted_message_ids(raw_segments):
+            cached = self._quote_previews.get(quoted_id)
+            if cached is None:
+                cached = await self._query_quote_preview(quoted_id, self_id, self_name)
+            if cached:
+                previews[quoted_id] = cached
+        return previews
+
+    async def _query_quote_preview(
+        self,
+        quoted_id: str,
+        self_id: str,
+        self_name: str,
+    ) -> str:
+        """向协议端取回被引用消息并渲染为单行摘要。
+
+        :param quoted_id: 被引用消息的平台 ID。
+        :param self_id: 机器人登录 QQ 号。
+        :param self_name: 机器人显示名。
+        :return: 形如 ``回复 某人：原文`` 的摘要；查询失败或正文为空时返回空字符串。
+        副作用：调用一次 ``get_msg``，成功时写入摘要缓存。
+        """
+        try:
+            response = await self._transport.call_action('get_msg', {'message_id': quoted_id})
+        except Exception as exc:
+            # 被引用消息可能已被撤回或超出协议端保留窗口；正文退回占位符，
+            # 消息本身照常入站。
+            logger.warning(
+                'QQ 引用消息还原失败，保留占位符',
+                messageId=quoted_id,
+                error=str(exc),
+            )
+            return ''
+        data = response.get('data')
+        if not isinstance(data, Mapping):
+            return ''
+
+        sender = data.get('sender')
+        sender_id = ''
+        sender_name = ''
+        if isinstance(sender, Mapping):
+            sender_id = _optional_text(sender.get('user_id'))
+            sender_name = (
+                _optional_text(sender.get('card'))
+                or _optional_text(sender.get('nickname'))
+            )
+        if sender_id == self_id:
+            sender_name = self_name
+        if not sender_name:
+            sender_name = sender_id or '某人'
+
+        segments = data.get('message')
+        if isinstance(segments, list):
+            body = message_to_text(segments, {self_id: self_name})
+        else:
+            # 部分协议端按 CQ 码字符串返回历史消息，此时只有 raw_message 可用。
+            body = _optional_text(data.get('raw_message'))
+        body = ' '.join(body.split())
+        if not body:
+            return ''
+        if len(body) > QUOTE_PREVIEW_LIMIT:
+            body = f'{body[:QUOTE_PREVIEW_LIMIT]}…'
+
+        preview = f'回复 {sender_name}：{body}'
+        self._quote_previews[quoted_id] = preview
+        while len(self._quote_previews) > RESOLUTION_CACHE_LIMIT:
+            self._quote_previews.pop(next(iter(self._quote_previews)))
+        return preview
 
     async def _resolve_inbound_image_sources(
         self,
@@ -347,6 +543,10 @@ class NapcatRunner:
                 logger.debug('忽略未知 QQ 事件', postType=payload.get('post_type'))
                 continue
 
+            # 提及显示名与引用摘要都要在渲染正文之前备好，否则模型只能看到裸
+            # QQ 号和不含内容的引用占位符。两者都只在解析失败时退回原占位形态。
+            raw_segments = payload.get('message')
+            raw_segments = raw_segments if isinstance(raw_segments, list) else []
             event = parse_inbound_event(
                 payload,
                 self_id,
@@ -354,6 +554,8 @@ class NapcatRunner:
                 self._config.owner.qq,
                 self._config.private,
                 self._config.group,
+                await self._resolve_mention_names(payload, raw_segments, self_id),
+                await self._resolve_quote_previews(raw_segments, self_id, self_name),
             )
             if event is None:
                 continue
@@ -452,6 +654,15 @@ def _required_text(value: Any, message: str) -> str:
     return text
 
 
+def _optional_text(value: Any) -> str:
+    """把可能缺失的协议字段规范化为字符串，缺失时返回空字符串。
+
+    :param value: OneBot 事件或 action 响应里的数字、字符串或 ``None``。
+    :return: 去除首尾空白后的字符串；值为空时返回空字符串。
+    """
+    return str(value or '').strip()
+
+
 def _batch_delays_seconds(outbound: BackendOutbound) -> List[float]:
     """把主体下发的逐条停顿对齐到实际的发送批次顺序。
 
@@ -475,7 +686,12 @@ def _parse_group_history(
     private_access: Any,
     group_access: Any,
 ) -> List[Dict[str, Any]]:
-    """把 ``get_group_msg_history`` 响应转换为可回填的观察消息列表。"""
+    """把 ``get_group_msg_history`` 响应转换为可回填的观察消息列表。
+
+    提及的显示名直接用这批历史自带的发送者信息解析，不再逐个查协议端：回填是
+    启动期的批量动作，为每个 ``@`` 发一次查询会把启动拖成几十次串行往返。这批
+    历史里没出现过的号码保持裸号，引用同理只保留占位符。
+    """
     data = response.get('data')
     if isinstance(data, dict):
         messages = data.get('messages', [])
@@ -485,6 +701,18 @@ def _parse_group_history(
         return []
     if not isinstance(messages, list):
         return []
+
+    mention_names: Dict[str, str] = {}
+    for entry in messages:
+        if not isinstance(entry, dict):
+            continue
+        sender = entry.get('sender')
+        if not isinstance(sender, Mapping):
+            continue
+        user_id = _optional_text(sender.get('user_id'))
+        name = _optional_text(sender.get('card')) or _optional_text(sender.get('nickname'))
+        if user_id and name:
+            mention_names[user_id] = name
 
     backfill: List[Dict[str, Any]] = []
     for entry in messages:
@@ -506,6 +734,7 @@ def _parse_group_history(
                 owner_qq,
                 private_access,
                 group_access,
+                mention_names,
             )
         except ValueError:
             continue

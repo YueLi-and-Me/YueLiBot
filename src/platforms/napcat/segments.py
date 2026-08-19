@@ -1,7 +1,12 @@
 """在 OneBot v11 数组消息段与主体可理解的文本之间执行纯转换。
 
-本模块识别文本、提及、图片和其他非文本消息段，生成模型可读的占位描述，
-同时为 QQ 出站图片构造带明确来源协议前缀的消息段；函数不执行文件读取或网络 I/O。
+本模块识别文本、提及、引用、图片和其他非文本消息段，生成模型可读的占位描述，
+同时为 QQ 出站文本、图片和引用构造带明确来源协议前缀的消息段；函数不执行文件
+读取或网络 I/O。
+
+提及显示名与引用原文都不在消息段里，需由 `runner` 先向协议端解析后作为映射传入
+（``mention_names`` / ``quote_previews``）；``mentioned_user_ids`` 和
+``quoted_message_ids`` 供 `runner` 得知本条消息需要解析哪些对象。
 """
 
 from __future__ import annotations
@@ -35,11 +40,14 @@ def is_emoji_image(segment: Segment) -> bool:
 def segment_to_text(
     segment: Segment,
     mention_names: Mapping[str, str] | None = None,
+    quote_previews: Mapping[str, str] | None = None,
 ) -> str:
     """将单个 OneBot 消息段转换为模型可理解的文本或稳定占位描述。
 
     :param segment: OneBot 消息段映射，必须包含非空 ``type`` 和对象型 ``data``。
     :param mention_names: 可选 QQ 号到显示名的映射，用于渲染提及文本。
+    :param quote_previews: 可选的被引用消息 ID 到摘要文本的映射；命中时 ``reply``
+        段渲染为该摘要，未命中时退回不含内容的占位符。
 
     :return: 文本段原文、提及文本、图片或其他非文本消息的中文占位描述。
 
@@ -67,6 +75,12 @@ def segment_to_text(
         return f'@{qq}'
     if segment_type == 'image':
         return '[表情包]' if is_emoji_image(segment) else '[图片]'
+    if segment_type == 'reply':
+        # 只有占位符时模型无从判断被引用的是哪句话，只能顺着当前这条硬猜，
+        # 群里连着几个「？」的引用尤其容易答非所问；摘要由运行器查协议端补齐。
+        quoted_id = _string_value(data.get('id'))
+        preview = (quote_previews or {}).get(quoted_id, '')
+        return f'[{preview}]' if preview else '[引用消息]'
 
     # 未知段类型也保留类型名称，便于模型知道消息存在而不臆造具体内容。
     placeholders = {
@@ -74,7 +88,6 @@ def segment_to_text(
         'record': '[语音]',
         'video': '[视频]',
         'file': '[文件]',
-        'reply': '[引用消息]',
         'share': '[分享]',
         'location': '[位置]',
         'contact': '[联系人]',
@@ -149,11 +162,18 @@ def emoji_sub_types(segments: Sequence[Segment]) -> tuple[int, ...]:
 def message_to_text(
     segments: Sequence[Segment],
     mention_names: Mapping[str, str] | None = None,
+    quote_previews: Mapping[str, str] | None = None,
 ) -> str:
     """按协议顺序拼接消息段，并为非文本内容保留稳定占位描述。
 
+    QQ 客户端在引用回复时会自动在 ``reply`` 段后补一个指向被引用者的 ``at`` 段，
+    该提及在客户端界面上并不可见。引用摘要已经点名被引用者，保留这个 ``at`` 只会
+    让正文出现「[回复 甲：…]@甲 内容」这类重复称呼，因此紧跟 ``reply`` 的 ``at``
+    统一丢弃；用户手动补的 ``@`` 不会紧贴引用段，不受影响。
+
     :param segments: OneBot 消息段列表；必须为列表而不是其他序列类型。
     :param mention_names: 可选 QQ 号到显示名的映射，传递给单段转换逻辑。
+    :param quote_previews: 可选的被引用消息 ID 到摘要文本的映射，传递给单段转换逻辑。
 
     :return: 由各消息段转换结果无分隔符拼接而成的完整文本。
 
@@ -161,7 +181,64 @@ def message_to_text(
     """
     if not isinstance(segments, list):
         raise ValueError('message 必须是 array 格式的消息段列表')
-    return ''.join(segment_to_text(segment, mention_names) for segment in segments)
+    parts: list[str] = []
+    previous_type = ''
+    for segment in segments:
+        segment_type = _segment_type(segment)
+        if segment_type == 'at' and previous_type == 'reply':
+            previous_type = segment_type
+            continue
+        parts.append(segment_to_text(segment, mention_names, quote_previews))
+        previous_type = segment_type
+    return ''.join(parts)
+
+
+def mentioned_user_ids(segments: Sequence[Segment]) -> tuple[str, ...]:
+    """提取正文里真正会渲染出来的被提及 QQ 号，供运行器解析显示名。
+
+    过滤口径必须与 :func:`message_to_text` 保持一致：紧跟 ``reply`` 的 ``at`` 由
+    客户端自动补入、渲染时已被丢弃，若在此返回会让运行器为一个不会出现在正文里的
+    名字白查一次协议端。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 去重后的被提及 QQ 号，保持出现顺序；``@全体成员`` 不含具体号码，不返回。
+    :raises ValueError: ``segments`` 不是列表，或某个消息段缺少合法 ``data``。
+    """
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    user_ids: list[str] = []
+    previous_type = ''
+    for segment in segments:
+        segment_type = _segment_type(segment)
+        if segment_type != 'at' or previous_type == 'reply':
+            previous_type = segment_type
+            continue
+        previous_type = segment_type
+        qq = _string_value(_segment_data(segment).get('qq'))
+        if not qq or qq == 'all' or qq in user_ids:
+            continue
+        user_ids.append(qq)
+    return tuple(user_ids)
+
+
+def quoted_message_ids(segments: Sequence[Segment]) -> tuple[str, ...]:
+    """提取消息中被引用的消息 ID，供运行器向协议端还原原文。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 去重后的被引用消息 ID，保持出现顺序；无引用时返回空元组。
+    :raises ValueError: ``segments`` 不是列表，或某个消息段缺少合法 ``data``。
+    """
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    message_ids: list[str] = []
+    for segment in segments:
+        if segment.get('type') != 'reply':
+            continue
+        quoted_id = _string_value(_segment_data(segment).get('id'))
+        if not quoted_id or quoted_id in message_ids:
+            continue
+        message_ids.append(quoted_id)
+    return tuple(message_ids)
 
 
 def mentions_user(segments: Sequence[Segment], user_id: str) -> bool:
