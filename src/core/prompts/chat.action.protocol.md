@@ -5,7 +5,9 @@
 
 <decision> 规则：
 - action 只能写当前允许的动作之一：{{available_actions}}
-- 写 reply 时，targets 必须从本轮可选消息里挑一个或多个，用逗号分隔。本轮可选消息：{{selectable_messages}}
+- 聊天记录里每条别人的消息都以 [编号] 开头，那是给 targets 用的记号，不是消息内容
+- 写 reply 时，targets 填你主要在接的那一条消息的编号，只填一个，且只能从下面这份清单里挑；写人名、写「最后一条」这类描述、写清单以外的编号，整轮都会判为协议失败。本轮可选消息（编号 = 原文）：
+{{selectable_messages}}
 - {{quote_rule}}
 - reasons 必须写，多个用逗号分隔，只能从对应动作的封闭理由码里选。回复时可从这些里选：directly_addressed / direct_question / topic_continuation / emotional_support / pending_thread / can_add_value / relationship_impulse / natural_reaction。沉默时可从这些里选：others_conversation / would_interrupt / no_new_value / topic_closed / duplicate_response / not_addressed / attention_elsewhere / low_relevance。不允许自造理由码
 - 写 reply 时 length 必填，只能写 brief（简短接话）或 long（完整回应）；写 silent 时不写 length，也不写 targets，也不写 quote
@@ -20,6 +22,7 @@ reply 的 <say> 规则：
 - 按你平时在群里打字的方式分段：一个意思说完了就换一条；口语上会连发两三条短消息，就写两三个 <say>
 - 每条 <say> 都短而完整，不要把一大段话硬塞进一个 <say>；一条回复最多三四个 <say>，宁少勿刷屏
 - <say> 里面只放你会真的发给对方的话，不放动作旁白、分析过程或格式说明，也不要因为前面写了 <decision> 就变成客服腔或复述规则
+- 聊天记录里的 [编号] 只是记号，绝不能出现在台词里
 
 下面这些状态标签按需追加在可见产物之后，通常一个都不写：
 

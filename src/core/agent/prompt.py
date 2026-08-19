@@ -378,9 +378,37 @@ def build_proactive_prompt(
         get_prompt('chat.proactive').render(**proactive_values),
     ])
 
+# 可选消息清单里每条原文的展示上限（字符）。清单只用于让模型认出编号对应
+# 哪条消息，完整正文在历史里已经给过，这里超出上限即截断。
+SELECTABLE_PREVIEW_LIMIT = 40
+
+
+def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
+    """把本回合可选消息渲染为「编号 = 原文」的锚点清单。
+
+    Agent 上下文的历史已逐行带 ``[编号]`` 前缀，本清单在此之上再框定范围：
+    历史里编号很多，但只有当前批次内的几条可以作为 targets，越界同样按
+    illegal_action 失败。两者缺一不可——只给清单则编号在历史里无处对应，
+    只给历史则模型分不清哪几条是本回合可选的。
+
+    :param items: ``(消息 ID, 展示原文)`` 序列，顺序即消息到达顺序。
+    :return: 每行一条、带两空格缩进的清单文本；空序列返回占位说明。
+    """
+    if not items:
+        return '  （本批没有可选消息）'
+    lines: List[str] = []
+    for message_id, preview in items:
+        # 原文可能跨行（转发、多段消息），压成单行才不会撑散清单结构。
+        single_line = ' '.join(preview.split())
+        if len(single_line) > SELECTABLE_PREVIEW_LIMIT:
+            single_line = f'{single_line[:SELECTABLE_PREVIEW_LIMIT]}…'
+        lines.append(f'  {message_id} = {single_line}')
+    return '\n'.join(lines)
+
+
 def render_action_protocol(
     available_actions: Iterable[str],
-    selectable_message_ids: Iterable[int],
+    selectable_messages: Iterable[Tuple[int, str]],
     quote_supported: bool,
     emoji_enabled: bool = False,
 ) -> str:
@@ -391,16 +419,17 @@ def render_action_protocol(
     「直接输出 <say>」指令竞争。
 
     :param available_actions: 运行时给出的本回合动作枚举值。
-    :param selectable_message_ids: 本回合可选消息 ID。
+    :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
+        原文用于在提示词里给编号建立锚点，模型据此才能照抄出合法 targets。
     :param quote_supported: 平台是否支持引用；不支持时提示词明确禁止 quote。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
     """
     actions_text = ' / '.join(sorted(available_actions))
-    ids = list(selectable_message_ids)
-    selectable_text = ('、'.join(str(message_id) for message_id in ids)
-                      if ids else "（本批没有可选消息）")
+    selectable = list(selectable_messages)
+    ids = [message_id for message_id, _ in selectable]
+    selectable_text = _render_selectable_messages(selectable)
     quote_rule = (
         'quote 只能引用上面列出的可选消息之一；不引用就不写 quote 属性'
         if quote_supported

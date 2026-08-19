@@ -198,6 +198,10 @@ class _PreparedTurnContext:
     schedule: str | None
     resumption: str | None
     raw_history: list[dict[str, str]]
+    # 与 raw_history 同源、但每条用户消息带 [编号] 前缀的 Agent 专用变体。
+    # 动作头的 targets 必须落在消息编号上，编号只有在历史里逐行可见时模型
+    # 才能指认；旧管线不需要编号，因此两份历史分开保存而不是就地改写。
+    agent_history: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -2240,6 +2244,7 @@ class ChatService:
         )
         wm = self._order_working_memory_for_batch(wm, batch_message_ids)
         raw_history = self._history_for_context(context, wm)
+        agent_history = self._history_for_context(context, wm, label_message_ids=True)
         # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。
         activity = None
         if (context.stream.kind in self._perception_surfaces
@@ -2259,6 +2264,7 @@ class ChatService:
             schedule=schedule_desc,
             resumption=resumption,
             raw_history=raw_history,
+            agent_history=agent_history,
         )
 
     def _render_prepared_context(
@@ -2279,7 +2285,8 @@ class ChatService:
         :param render_params: 可选提示词渲染参数收集字典。
         :param reply_length: 当前轮规划出的回复篇幅。
         :param protocol_text: 可选的 Agent 动作协议文本；提供时整体替换
-            系统提示词中的直接发言协议，而不是追加在末尾。
+            系统提示词中的直接发言协议，而不是追加在末尾。该参数同时是
+            「本次渲染属于 Agent 路径」的唯一判据，历史变体据此选择。
         :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
         副作用：只读取配置和会话语调，不读写数据库、不调用模型。
         """
@@ -2306,8 +2313,13 @@ class ChatService:
             emoji_enabled=self._emoji_available(prepared.context),
             **self._prompt_config_kwargs(prepared.context.relationship_signals_enabled),
         )
+        # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
+        # 锚点；旧管线仍读不带编号的原始历史，可见行为完全不受影响。
+        source_history = (
+            prepared.agent_history if protocol_text is not None else prepared.raw_history
+        )
         # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
-        history = normalize_history(prepared.raw_history)
+        history = normalize_history(source_history)
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
     async def _enrich_prepared_context(
@@ -2602,18 +2614,53 @@ class ChatService:
             selectable_message_ids=frame.selectable_message_ids,
         )
 
-    def _render_agent_protocol(self, frame: DecisionFrame) -> str:
+    def _selectable_message_previews(
+        self,
+        batch: list[_BufferedMessage],
+    ) -> list[tuple[int, str]]:
+        """把本批可选消息渲染为「消息 ID + 展示原文」序列。
+
+        群聊原文按历史同一口径带上发送者显示名，使协议块里的清单与模型看到
+        的历史行逐字对应；私聊历史本就不带名字，因此只给正文。
+
+        :param batch: 本回合已完成图片描述补齐的批次消息。
+        :return: 与 ``selectable_message_ids`` 同序的 ``(消息 ID, 原文)`` 列表。
+        :raises ValueError: 群聊消息的发送者在注册表中不存在时由注册表抛出。
+        """
+        previews: list[tuple[int, str]] = []
+        for message in batch:
+            context = message.context
+            if context.stream.kind == 'group':
+                name = self._registry.stream_display_name(
+                    context.person.id,
+                    context.stream.id,
+                )
+                previews.append((message.message_id, f'{name}: {message.text}'))
+            else:
+                previews.append((message.message_id, message.text))
+        return previews
+
+    def _render_agent_protocol(
+        self,
+        frame: DecisionFrame,
+        batch: list[_BufferedMessage],
+    ) -> str:
         """渲染本回合的动作头协议文本。
 
         该文本由调用方整体替换系统提示词中的直接发言协议；shadow 与 live 共用，
         保证两条灰度路径看到的输出规则完全一致。
 
+        可选消息必须连同原文一起写进协议：消息 ID 是数据库主键，在对话历史里
+        没有任何可见锚点，只给一串孤立数字时模型会把 targets 填成「凌白最后
+        一条」这类描述，整轮按 illegal_action 失败、用户侧表现为她不回话。
+
         :param frame: 本回合固定快照，提供动作空间、可选消息与平台能力。
-        :return: 已注入运行时动作集与目标范围的协议文本。
+        :param batch: 与 ``frame.selectable_message_ids`` 同源的批次消息。
+        :return: 已注入运行时动作集与目标锚点清单的协议文本。
         """
         return render_action_protocol(
             sorted(frame.available_actions),
-            frame.selectable_message_ids,
+            self._selectable_message_previews(batch),
             quote_supported=frame.capabilities.quote,
             emoji_enabled=frame.capabilities.emoji,
         )
@@ -2738,7 +2785,7 @@ class ChatService:
             frame,
             self._render_prepared_context(
                 prepared,
-                protocol_text=self._render_agent_protocol(frame),
+                protocol_text=self._render_agent_protocol(frame, batch),
             ),
         )
         metadata = prompt_metadata(
@@ -2807,7 +2854,7 @@ class ChatService:
                 cancel_event,
                 render_params,
                 reply_length=None,
-                protocol_text=self._render_agent_protocol(frame),
+                protocol_text=self._render_agent_protocol(frame, batch),
             ),
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
@@ -3002,11 +3049,22 @@ class ChatService:
 
         return self._name_mention_probability
 
-    def _history_for_context(self, context: ConversationContext, messages: list[Any]) -> list[dict]:
+    def _history_for_context(
+        self,
+        context: ConversationContext,
+        messages: list[Any],
+        *,
+        label_message_ids: bool = False,
+    ) -> list[dict]:
         """将记忆消息转换为模型历史，并在群聊中补充发送者显示名。
 
         :param context: 当前会话上下文。
         :param messages: 记忆服务返回的消息对象列表。
+        :param label_message_ids: 是否给每条用户消息加 ``[编号] `` 前缀。仅
+            Conversation Agent 上下文需要：动作头的 targets 是消息主键，主键
+            不逐行可见时模型无法指认，会把 targets 写成人名或「最后一条」这类
+            描述，整轮按 illegal_action 失败。她自己的历史回复不加编号——本
+            回合只允许把批次内的用户消息作为目标，给助手行编号只会诱导越界。
 
         :return: 仅含 ``role`` 和 ``content`` 的模型消息列表；原始记忆对象不被修改。
 
@@ -3023,6 +3081,8 @@ class ChatService:
                     context.stream.id,
                 )
                 content = f'{name}: {content}'
+            if label_message_ids and message.role == 'user':
+                content = f'[{message.message_id}] {content}'
             history.append({'role': message.role, 'content': content})
         return history
 

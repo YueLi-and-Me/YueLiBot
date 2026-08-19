@@ -63,6 +63,11 @@ class AgentOutcome:
 def _parse_id_list(raw: str | None) -> tuple[int, ...]:
     """把逗号分隔的目标 ID 原文解析为整数元组。
 
+    提示词只要求写单个编号（多目标是历史上最主要的格式偏离来源），但解析侧
+    仍接受多个合法编号：多写一个仍在可选集内的编号是一次真实且可审计的选择，
+    把它改判为协议失败只会平白丢掉一整轮回复。格式面靠提示词收窄，不靠新增
+    拒绝规则。
+
     :param raw: 动作头 targets 属性原文；None 表示未携带。
     :return: 已去除空项的整数元组。
     :raises IllegalActionError: 存在无法解析为整数的项。
