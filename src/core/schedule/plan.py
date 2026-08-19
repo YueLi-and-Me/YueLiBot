@@ -1031,6 +1031,23 @@ def _slot_at(plan: DayPlan, now: datetime) -> DayPlanSlot:
     return current
 
 
+# 日程时段注入后必须跟上的纪律说明。
+#
+# 现象：一个时段横跨一两个小时，其间每一轮回复都带着同一句「此刻你……」，
+#   模型把它当成要汇报的内容，于是整段时间里每条回复都在播报同一件事——
+#   21:00 那档「收拾书桌、准备洗漱」曾让连续二十多条回复都以「我去洗漱了」收尾，
+#   而她始终没有真的离开，比不提日程更假。
+# 原因：时段文本写的是一串动作，注入时又只说「让它自然影响反应」，
+#   没有像时间上下文那样明确「这是背景、不是话题」。
+# 后果：删掉这句会让播报行为立刻回归；改写时必须保留「不主动播报、不重复同一件事」
+#   这两层约束，只调整措辞。
+_ACTIVITY_DISCIPLINE = (
+    '这段安排只是背景，用来决定你此刻的语气、精力和有没有空，不是拿来说的内容。'
+    '除非对方问起、或者你确实要因此中断对话，否则不要主动交代自己在干什么；'
+    '同一件事说过一次就别再提，「我去洗漱了」「我去睡了」这类告别尤其不要每轮重复。'
+)
+
+
 def describe_day_plan(plan: DayPlan, now: datetime, sleep: ScheduleSleepState) -> str:
     """将日程时段和睡眠状态渲染为对话行为提示。
 
@@ -1049,9 +1066,12 @@ def describe_day_plan(plan: DayPlan, now: datetime, sleep: ScheduleSleepState) -
     if sleep.just_woke:
         lines = ['你刚醒没多久，还在慢慢把意识拢回来；别装得已经精神十足，语气应有一点迷糊和迟缓。']
     else:
-        lines = [f'此刻{doing}。{describe_mood_behavior(slot.mood)}']
+        lines = [f'此刻{doing}。{describe_mood_behavior(slot.mood)}', _ACTIVITY_DISCIPLINE]
     if sleep.asleep:
         lines.append('你已经睡着了；如果他现在找你说话，你是被叫醒的，反应要符合刚醒时的迷糊。')
     elif sleep.drowsy:
-        lines.append(f'你开始犯困，原本想在{plan.bedtime_hint}左右休息；语气会带一点"再待十分钟就睡"的困意。')
+        lines.append(
+            f'你开始犯困，本来想在{plan.bedtime_hint}左右休息；'
+            '困意体现在回话变短、变懒、接话没那么起劲，不是反复宣告自己要去睡。'
+        )
     return '\n'.join(lines)
