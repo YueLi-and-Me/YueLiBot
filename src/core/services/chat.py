@@ -1211,6 +1211,7 @@ class ChatService:
             'user',
             text,
             current_time(),
+            inbound.external_message_id,
         )
         if inbound.image_sources or inbound.emoji_sources:
             task = asyncio.create_task(self._describe_image_message(
@@ -1423,6 +1424,7 @@ class ChatService:
                 'user',
                 text,
                 created_at,
+                external_id,
             )
             sender = self._sender_metadata(sender_context)
             trace.emit(
