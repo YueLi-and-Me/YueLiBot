@@ -434,6 +434,8 @@ def main() -> None:
         cfg=cfg,
         broker=broker,
         expression_provider=routers.expression if routers.expression.ready else None,
+        planner_provider=routers.planner if routers.planner.ready else None,
+        replyer_provider=routers.replyer if routers.replyer.ready else None,
         image_describer=image_describer,
         emoji_library=emoji_library,
     )

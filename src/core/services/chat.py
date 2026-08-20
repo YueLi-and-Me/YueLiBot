@@ -34,6 +34,7 @@ from src.core.agent.action_protocol import (
     REACTION_IDS,
     ActionDecisionEvent,
     DecisionFrame,
+    DecisionHead,
     GateDisposition,
     GateInputFacts,
     PlatformCapabilities,
@@ -66,6 +67,7 @@ from src.core.agent.prompt import (
     build_system_prompt,
     describe_resumption,
     render_action_protocol,
+    render_replyer_protocol,
 )
 from src.core.agent.reply_necessity import (
     PRESENCE_WINDOW_MS,
@@ -101,6 +103,7 @@ from src.core.platform_io.types import (
 from src.core.prompts.registry import (
     CHAT_CONVERSATION_TEMPLATE_IDS,
     CHAT_PROACTIVE_TEMPLATE_IDS,
+    CHAT_REPLYER_TEMPLATE_IDS,
     CHAT_SYSTEM_TEMPLATE_IDS,
     CHAT_SYSTEM_VARIANT_COMPONENTS,
     prompt_metadata,
@@ -304,6 +307,8 @@ class ChatService:
         vector: VectorService | None = None,
         broker: PlatformBroker | None = None,
         expression_provider: LlmProvider | None = None,
+        planner_provider: LlmProvider | None = None,
+        replyer_provider: LlmProvider | None = None,
         image_describer: ChatImageDescriber | None = None,
         emoji_library: EmojiLibrary | None = None,
         action_policy: ActionPolicy | None = None,
@@ -381,14 +386,26 @@ class ChatService:
         # 已经放弃自然跟进的群 stream。她在群聊里选择 silent 即加入，成功回复即移出；
         # 门控据此关闭自然回应窗口，让「说够了没有」由她自己的动作决定而不是回复计数。
         self._follow_up_declined: set[int] = set()
+        # 决策与表达是否分成两次模型调用。三个条件缺一不可：配置打开、两级各自
+        # 的 provider 都在。配置打开但 provider 缺位时保持单次调用，而不是让回合
+        # 在运行期才失败——那会表现为她突然不说话，现场极难定位。
+        self._split_replyer = (
+            conversation_agent_cfg.split_replyer
+            and planner_provider is not None
+            and replyer_provider is not None
+        )
+        # 拆分后决策走 planner 槽、表达走 replyer 槽；两个槽留空即继承 chat，
+        # 因此不配模型也能打开开关，只是两级用同一个模型、延迟收益为零。
+        decision_provider = planner_provider if self._split_replyer else chat_provider
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
-                chat_provider,
+                decision_provider,
                 temperature=self._chat_temperature,
                 max_tokens=self._chat_max_tokens,
+                replyer=replyer_provider if self._split_replyer else None,
             )
-            if chat_provider is not None and conversation_agent_cfg.mode != 'off'
+            if decision_provider is not None and conversation_agent_cfg.mode != 'off'
             else None
         )
         self._proactive_temperature = generation.proactive.temperature
@@ -3765,6 +3782,38 @@ class ChatService:
         bind_render_params(render_params)
         assistant_raw: list[str] = []
 
+        def replyer_messages(head: DecisionHead) -> list[dict]:
+            """按已定的动作头组装回复生成那一次调用的消息序列。
+
+            复用同一份 ``rendered`` 上下文只换协议段：两级看到的人格、事实与
+            历史必须逐字相同，否则「决策依据」和「说话依据」会各说各话。这里
+            不重新召回、不重新排序历史，只把决策结论翻译成表达要求。
+            """
+            replyer_context = self._render_prepared_context(
+                prepared,
+                render_params=render_params,
+                protocol_text=render_replyer_protocol(
+                    head.reference or '',
+                    head.length,
+                    emoji_enabled=frame.capabilities.emoji,
+                ),
+            )
+            messages = self._render_agent_messages(
+                frame,
+                replyer_context,
+                continuation_recap=continuation_recap,
+            )
+            trace.emit(
+                'llm_request',
+                turnId=turn,
+                messages=messages,
+                temperature=self._chat_temperature,
+                maxTokens=self._chat_max_tokens,
+                renderParams=render_params,
+                **prompt_metadata('chat.replyer', CHAT_REPLYER_TEMPLATE_IDS),
+            )
+            return messages
+
         async def on_events(events: Iterable[ParseEvent]) -> None:
             await self._consume_events(events, sink)
 
@@ -3811,6 +3860,7 @@ class ChatService:
             on_events=on_events,
             on_chunk=on_chunk,
             on_round=on_round,
+            replyer_messages=replyer_messages if self._split_replyer else None,
             signal=cancel_event,
         )
         raw_text = ''.join(assistant_raw)

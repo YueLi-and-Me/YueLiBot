@@ -340,6 +340,12 @@
               "help": "mode=selected_streams 时生效的 stream ID 清单，每行一个。"
             },
             {
+              "key": "split_replyer",
+              "type": "boolean",
+              "label": "决策与表达分开调用",
+              "help": "打开后发言要跑两次模型：先定动作，再写正文，首字延迟明显上升。想压延迟就在模型配置里给「行动决策」单独指一个快模型。沉默、等待、贴表情、戳一戳不受影响。"
+            },
+            {
               "key": "trigger_mode",
               "type": "enum",
               "label": "普通群消息触发口径",

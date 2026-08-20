@@ -144,6 +144,11 @@ class ConversationAgentConfig(BaseModel):
     frequency_talk_value: float = Field(default=0.6, gt=0.0, le=1.0)
     reply_necessity_threshold: int = Field(default=80, ge=0, le=100)
     max_cognitive_rounds: int = Field(default=2, ge=0, le=4)
+    # 决策与表达是否分成两次模型调用：第一次只出动作头，第二次才写正文。
+    # 代价是发言动作多一次往返（首字延迟明显上升），换来的是两级可以各配模型，
+    # 决策那一级换快模型才是压延迟的正路。silent / wait / react / poke 不受影响，
+    # 它们在决策那一次就结束。默认关闭，打开前先在 model_tasks.planner 配好快模型。
+    split_replyer: bool = False
 
 
 class TypingNudgeConfig(BaseModel):

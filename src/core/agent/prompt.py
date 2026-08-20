@@ -527,6 +527,50 @@ def render_action_protocol(
     )
 
 
+def render_replyer_protocol(
+    reference: str,
+    length: str | None,
+    emoji_enabled: bool = False,
+) -> str:
+    """渲染回复生成那一次调用的协议文本。
+
+    与动作头协议互斥：决策已经定了，这段只讲「怎么把这句话说出来」。它同样整体
+    替换系统提示词里的直接发言协议，因此回复生成模型看到的人格、历史、事实与
+    决策那一次完全相同，区别只在这一段。
+
+    :param reference: 决策层写的背景说明；为空时退回一句中性说明，不留空占位符——
+        空白背景会让模型自己去猜为什么开口，那正是拆分要避免的事。
+    :param length: 决策层选定的篇幅；``None`` 时按 brief 处理，与单次调用路径
+        ``to_decision`` 的默认口径一致。
+    :param emoji_enabled: 本回合是否允许发表情包。
+    :return: 已通过模板占位符严格校验的协议文本。
+    :raises KeyError: 模板未加载时由注册表抛出。
+    """
+    return get_prompt('chat.replyer').render(
+        reference=reference.strip() or '接着上面的对话往下说，别起新话题。',
+        length_rule=_replyer_length_rule(length),
+        emotions=' / '.join(EXPRESSION_IDS),
+        gestures=' / '.join(GESTURE_IDS),
+        emoji_rule=_emoji_protocol_rule(emoji_enabled),
+    )
+
+
+def _replyer_length_rule(length: str | None) -> str:
+    """把决策层选定的篇幅翻译成给回复生成模型的具体要求。
+
+    篇幅是决策层已经做完的判断，这里不再让模型自己选，只把结论说清楚——否则
+    两级会各判一次，短回复的口径就守不住了。
+    """
+    if length == 'long':
+        return (
+            '篇幅：这一条要把话说完整，但也只是说完整，不是写小作文，整轮不超过八九十个字。'
+        )
+    return (
+        '篇幅：说短的。按省力口语来，允许句子残缺、省略主语、只接半句，'
+        '整轮加起来二三十个字就够。'
+    )
+
+
 def _speak_protocol_rule(actions: FrozenSet[str]) -> str:
     """渲染「起一个不接任何人的话头」的说明。
 
