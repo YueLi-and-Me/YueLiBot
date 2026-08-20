@@ -46,6 +46,33 @@ class LlmError(Exception):
         self.detail = detail
 
 
+# 错误类别到「这意味着什么、通常该动哪里」的说明。
+#
+# 类别本身（auth / quota / …）是给路由层判断要不要重试用的，对人没有信息量：
+# 看到 quota 还是得去猜是余额、免费额度还是限流。这张表把类别翻成一句能直接
+# 照着做的话，日志与失败面板共用同一份措辞，避免两处各写一套说法。
+LLM_ERROR_HINTS: dict[str, str] = {
+    'auth': '鉴权没过：API Key 无效或过期，也可能是这个 Key 没有该模型的权限',
+    'quota': '额度或频率受限：余额不足、免费额度用尽，或撞上服务商限流',
+    'model': '模型不可用：模型名在该服务商不存在，或渠道没开通',
+    'network': '网络不通：连不上服务商，先看代理和 base_url',
+    'timeout': '等首字超时：服务商在窗口内一个字都没返回',
+    'blocked': '内容被拦截：服务商的安全策略拒了这次请求',
+    'aborted': '调用被主动中断',
+    'unknown': '未归类的失败，看底层错误原文',
+}
+
+
+def error_hint(kind: str) -> str:
+    """把错误类别翻成一句可照做的说明。
+
+    :param kind: ``LlmError.kind``。
+    :return: 对应说明；未知类别回退到 ``unknown`` 那条，不返回空串——失败面板上
+        留一行空白比说「未归类」更让人摸不着头脑。
+    """
+    return LLM_ERROR_HINTS.get(kind, LLM_ERROR_HINTS['unknown'])
+
+
 _PRESETS: dict[str, dict[str, Any]] = {
     'ark': {'base_url': 'https://ark.cn-beijing.volces.com/api/v3', 'default_model': None},
     'deepseek': {'base_url': 'https://api.deepseek.com/v1', 'default_model': 'deepseek-chat'},

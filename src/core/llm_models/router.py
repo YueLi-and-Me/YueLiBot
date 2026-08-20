@@ -15,7 +15,12 @@ import time
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.config.schema import ModelCandidate
-from src.core.llm_models.openai import LlmError, OpenAiChatProvider, resolve_base_url
+from src.core.llm_models.openai import (
+    LlmError,
+    OpenAiChatProvider,
+    error_hint,
+    resolve_base_url,
+)
 from src.core.llm_models.snapshot import (
     current_render_params,
     dump_exchange,
@@ -119,6 +124,7 @@ class _ExchangeRecord:
             tool_calls=list(self._tool_calls),
             record_path=str(path) if path is not None else '',
             error=f'{self._error_type}：{self._error}' if self._error_type else '',
+            error_kind=self._error_type,
         ))
 
 
@@ -481,6 +487,8 @@ class ModelRouter:
                     task=self.task,
                     failed_model=candidate.name,
                     failed_provider=candidate.provider,
+                    errorKind=exc.kind,
+                    hint=error_hint(exc.kind),
                     reason=str(exc),
                     remaining=len(order) - index - 1,
                 )
@@ -529,10 +537,14 @@ class ModelRouter:
                 return result
             except Exception as exc:
                 last_error = exc
+                # 非流式路径接的是任意异常，不只是 LlmError：豆包语音这类私有协议
+                # 直接抛 RuntimeError，取 .kind 会当场炸在错误处理里，把真正的失败
+                # 原因盖掉。
+                error_kind = exc.kind if isinstance(exc, LlmError) else type(exc).__name__
                 record_attempt(
                     model=candidate.name,
                     provider=candidate.provider,
-                    error_kind=exc.kind if isinstance(exc, LlmError) else type(exc).__name__,
+                    error_kind=error_kind,
                     message=str(exc),
                 )
                 self._health.penalize(candidate.provider)
@@ -541,6 +553,8 @@ class ModelRouter:
                     task=self.task,
                     failed_model=candidate.name,
                     failed_provider=candidate.provider,
+                    errorKind=error_kind,
+                    hint=error_hint(error_kind),
                     reason=str(exc),
                     remaining=len(order) - index - 1,
                 )

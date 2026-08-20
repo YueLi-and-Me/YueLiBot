@@ -374,16 +374,23 @@ def render_turn_error(
     if not _render_enabled:
         return
     try:
+        # 失败轮同样要取走本回合的调用：一是失败面板要显示挂在哪一级、存档在哪，
+        # 二是不取走的话这批调用会残留到下一轮面板里，显示成那一轮多调了模型。
+        stage_calls = take_calls()
         children: list[Any] = [
             Text.assemble(
                 Text('收到消息  ', style='bold cyan'),
                 Text(f'{sender_label}：{user_text}', style='bold white'),
             ),
         ]
-        if model_name.strip():
+        if stage_calls:
+            children.extend(render_stage_panel(call) for call in stage_calls)
+        elif model_name.strip():
             children.append(_request_panel([], model_name, border_style='red'))
         children.append(Panel(
-            Text(f'错误类型：{event_label(kind)}\n错误信息：{message}', style='bold red'),
+            # 失败状态是 VALUE_LABELS 里的取值而不是事件名，用 event_label 查不到，
+            # 面板上会直接露出 provider_error 这样的原文。
+            Text(f'错误类型：{value_label(kind)}\n错误信息：{message}', style='bold red'),
             title='错误', border_style='red', padding=(0, 1),
         ))
         _emit_console_block(Panel(

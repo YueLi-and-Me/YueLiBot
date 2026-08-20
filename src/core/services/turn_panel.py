@@ -22,6 +22,8 @@ from typing import Any, Dict, List
 
 import json
 
+from src.core.llm_models.openai import error_hint
+
 from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
@@ -41,6 +43,7 @@ class ModelCall:
     :ivar tool_calls: 模型选中的工具调用；非工具轮为空列表。
     :ivar record_path: 分阶段调用记录的落盘路径；未启用记录时为空串。
     :ivar error: 失败描述；成功时为空串。
+    :ivar error_kind: 失败类别，用于翻成可照做的说明；成功时为空串。
     """
 
     task: str
@@ -53,6 +56,7 @@ class ModelCall:
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     record_path: str = ''
     error: str = ''
+    error_kind: str = ''
 
 
 # 当前回合已发生的模型调用。默认 None 表示「不在回合内」——主动消息、日程生成
@@ -116,8 +120,9 @@ def render_stage_panel(call: ModelCall) -> Panel:
     tint = _TASK_TINTS.get(call.task, 'cyan')
     blocks: List[RenderableType] = [Text('\n'.join(_headline(call)), style=tint)]
 
-    if call.record_path:
-        # 路径单独一行且不截断：它是从终端跳到完整请求体的唯一入口，断了就得自己去翻目录。
+    # 路径单独一行且不截断：它是从终端跳到完整请求体的唯一入口，断了就得自己翻目录。
+    # 失败时跳过这一行——下面的失败块会连同「怎么办」一起再给一次路径，这里重复只是噪声。
+    if call.record_path and not call.error:
         blocks.append(Text(f'结构化记录：{call.record_path}', style='dim'))
 
     if call.reasoning.strip():
@@ -140,7 +145,14 @@ def render_stage_panel(call: ModelCall) -> Panel:
         ))
 
     if call.error:
-        blocks.append(Text(f'失败：{call.error}', style='bold red'))
+        # 失败这一级要把「怎么办」和「去哪看完整请求」一次说清：类别本身对人
+        # 没有信息量，而存档路径是复现这次调用的唯一入口。
+        lines = [f'失败：{call.error}']
+        if call.error_kind:
+            lines.append(error_hint(call.error_kind))
+        if call.record_path:
+            lines.append(f'完整请求已存档，把这个文件发出来即可复现：{call.record_path}')
+        blocks.append(Text('\n'.join(lines), style='bold red'))
 
     return Panel(
         Group(*blocks),
