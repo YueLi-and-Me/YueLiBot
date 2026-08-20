@@ -41,6 +41,7 @@ import time
 
 from .action_protocol import (
     COGNITIVE_ACTIONS,
+    SPEAKING_ACTIONS,
     ActionDecisionEvent,
     ConversationAction,
     ConversationDecision,
@@ -177,8 +178,15 @@ def _parse_length(raw: str | None) -> ReplyLength | None:
 class ConversationAgent:
     """唯一能产出用户可见内容的模型 Agent（项目全局不变量之一）。
 
-    同一次模型调用内先产出动作头再发声，不拆 Planner/Replyer。ReAct 回环只在
-    动作头层面展开：认知动作不产出可见内容，因此上面那条不变量不受多轮影响。
+    可见正文永远从一条已经通过校验的动作头派生，这一条不受调用次数影响：
+
+    - **未注入 replyer**：同一次模型调用内先出动作头再发声，与拆分前逐字相同。
+    - **注入 replyer**：动作头一解析完就结束决策流，正文改由第二次调用产出。
+      决策模型此后写的任何字都不解析、不流出——它的职责到动作头为止。
+
+    ReAct 回环只在动作头层面展开：认知动作不产出可见内容，因此不影响上述不变量。
+    只有 ``SPEAKING_ACTIONS`` 会触发第二次调用；silent / wait / react / poke
+    在决策那一次就结束，不额外付一次模型往返。
     """
 
     def __init__(
@@ -187,16 +195,21 @@ class ConversationAgent:
         *,
         temperature: float,
         max_tokens: int | None = None,
+        replyer: LlmProvider | None = None,
     ) -> None:
         """保存模型提供方与采样参数。
 
-        :param provider: 已配置的对话模型流式提供方。
+        :param provider: 已配置的决策模型流式提供方；未注入 ``replyer`` 时它同时
+            负责产出正文。
         :param temperature: 采样温度。
         :param max_tokens: 可选的输出 token 上限。
+        :param replyer: 可选的回复生成模型。注入后决策与表达分离：本 Agent 只从
+            决策流里取动作头，正文由它产出。省略即保持单次调用的既有行为。
         """
         self._provider = provider
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._replyer = replyer
 
     async def run(
         self,
@@ -215,6 +228,7 @@ class ConversationAgent:
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None = None,
         on_chunk: Callable[[dict[str, Any]], None] | None = None,
         on_round: Callable[[AgentOutcome], None] | None = None,
+        replyer_messages: Callable[[DecisionHead], list[dict]] | None = None,
         signal: asyncio.Event | None = None,
     ) -> AgentOutcome:
         """执行一个回合：若干认知轮之后给出终局动作，并逐轮落账。
@@ -240,6 +254,9 @@ class ConversationAgent:
             终局轮不调用（调用方本来就拿得到返回值）。它的用途是让调用方把中间
             过程展示出来——认知轮不产生任何用户可见产物，没有这个钩子就只能从
             事件账本里事后翻，终端上完全看不到她查过什么。
+        :param replyer_messages: 按动作头组装回复生成消息序列的回调。提示词、
+            人格与历史都属于调用方，Agent 不自行拼装；省略它（或未注入 replyer）
+            即退回单次调用，正文仍从决策流里取。
         :param signal: 可选的取消事件，透传给模型提供方，跨轮持续有效。
 
         :return: 携带终局决策、事件状态与完整审计事件的 AgentOutcome。
@@ -283,6 +300,7 @@ class ConversationAgent:
                 cognitive_scope=cognitive_scope,
                 on_events=on_events,
                 on_chunk=on_chunk,
+                replyer_messages=replyer_messages,
                 signal=signal,
             )
             if outcome.event_status != 'cognitive_step':
@@ -318,6 +336,7 @@ class ConversationAgent:
         cognitive_scope: CognitiveScope | None,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
         on_chunk: Callable[[dict[str, Any]], None] | None,
+        replyer_messages: Callable[[DecisionHead], list[dict]] | None,
         signal: asyncio.Event | None,
     ) -> AgentOutcome:
         """执行一次模型调用，并在选到认知动作时就地完成检索。
@@ -333,6 +352,11 @@ class ConversationAgent:
         """
         started = time.monotonic()
         parser = ResponseParser()
+        # 决策与表达分离是否在本轮生效。两个条件缺一不可：注入了回复生成模型，
+        # 且调用方给得出它的消息序列——提示词属于调用方，Agent 不自行拼装。
+        split_reply = self._replyer is not None and replyer_messages is not None
+        # 决策流里出现发言动作头后置位，据此跳出决策流并转入回复生成。
+        planned_head: DecisionHead | None = None
         head: DecisionHead | None = None
         body_events: list[ParseEvent] = []
         body_parts: list[str] = []
@@ -395,6 +419,11 @@ class ConversationAgent:
                 )
             ) as stream:
                 async for chunk in stream:
+                    # 拆分模式下动作头一到手就不再读决策流。放在循环开头判断是
+                    # 因为动作头是在内层事件循环里解析出来的，那里 break 只能跳出
+                    # 内层；靠标志位在这里再断一次，才真正停止消费决策流。
+                    if planned_head is not None:
+                        break
                     if on_chunk is not None:
                         on_chunk(chunk)
                     text = chunk.get('text')
@@ -429,6 +458,12 @@ class ConversationAgent:
                                     status = 'silent_by_choice'
                                     # 静默只有动作头：立即返回，之后任何正文都不解析不流出。
                                     return finish()
+                                if split_reply and head.action in SPEAKING_ACTIONS:
+                                    # 决策模型的职责到此为止。它此后写的正文一律
+                                    # 丢弃：两个模型各写一份正文，流出哪一份都会
+                                    # 让「谁说的话」变成运气问题。
+                                    planned_head = head
+                                    break
                                 continue
                             status = 'parse_error'
                             detail = (
@@ -443,6 +478,23 @@ class ConversationAgent:
                             body_parts.append(event.value)
                         elif isinstance(event, EmojiEvent):
                             emoji_emotions.append(event.emotion)
+            if planned_head is not None:
+                # 决策流已在 aclosing 退出时关闭，这里才发起回复生成，两条流不重叠。
+                assert replyer_messages is not None
+                body_parts.clear()
+                emoji_emotions.clear()
+                await self._stream_body(
+                    replyer_messages(planned_head),
+                    release=release,
+                    on_chunk=on_chunk,
+                    body_parts=body_parts,
+                    emoji_emotions=emoji_emotions,
+                    signal=signal,
+                )
+                decision = planned_head.to_decision(
+                    ''.join(body_parts), tuple(emoji_emotions),
+                )
+                return finish()
             if head is None:
                 status = 'parse_error'
                 detail = '模型输出中没有动作头'
@@ -473,6 +525,64 @@ class ConversationAgent:
             detail = f'{type(exc).__name__}：{exc}'
             return finish()
         return finish()
+
+    async def _stream_body(
+        self,
+        messages: list[dict],
+        *,
+        release: Callable[[list[ParseEvent]], Awaitable[None]],
+        on_chunk: Callable[[dict[str, Any]], None] | None,
+        body_parts: list[str],
+        emoji_emotions: list[str],
+        signal: asyncio.Event | None,
+    ) -> None:
+        """调用回复生成模型，把正文与副作用事件按既有口径放出。
+
+        与决策流共用 ``release``，因此分句、表情包与副作用标签的下游处理完全
+        一致——调用方感知不到正文来自哪一次模型调用。
+
+        回复生成模型**不允许再出动作头**：动作已经定了，它只负责把话说出来。
+        出现的动作头一律忽略，不覆盖已通过校验的决策。
+
+        :param messages: 调用方组装好的回复生成消息序列。
+        :param release: 事件放行回调，与决策流同一个。
+        :param on_chunk: 可选的原生分片回调，供调用方转发流式观测事件。
+        :param body_parts: 正文累积列表，就地追加。
+        :param emoji_emotions: 表情包目标情绪累积列表，就地追加。
+        :param signal: 可选取消事件。
+        :raises LlmError: 由调用处的既有分支转成失败状态；aborted 原样上抛。
+        副作用：一次模型往返，并通过 release 放出正文事件。
+        """
+        parser = ResponseParser()
+
+        async def consume(events: list[ParseEvent]) -> None:
+            for event in events:
+                if isinstance(event, DecisionEvent):
+                    continue
+                await release([event])
+                if isinstance(event, TextEvent):
+                    body_parts.append(event.value)
+                elif isinstance(event, EmojiEvent):
+                    emoji_emotions.append(event.emotion)
+
+        assert self._replyer is not None
+        async with aclosing(
+            self._replyer.stream(
+                messages=messages,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+                signal=signal,
+            )
+        ) as stream:
+            async for chunk in stream:
+                if on_chunk is not None:
+                    on_chunk(chunk)
+                text = chunk.get('text')
+                if not text:
+                    continue
+                await consume(parser.push(text))
+        # 冲刷未闭合标签，与决策流同款宽容度。
+        await consume(parser.flush())
 
     def _parse_head(self, event: DecisionEvent, frame: DecisionFrame) -> DecisionHead:
         """把解析器动作头转换为已通过帧校验的 DecisionHead。

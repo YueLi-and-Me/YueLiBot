@@ -38,6 +38,9 @@ TERMINAL_ACTIONS: frozenset[ConversationAction] = frozenset({
     'reply', 'silent', 'react', 'poke', 'wait', 'speak',
 })
 COGNITIVE_ACTIONS: frozenset[ConversationAction] = frozenset({'recall', 'inspect'})
+# 需要产出可见正文的终局动作。决策与表达拆开之后，只有这两个动作要再调一次
+# 回复生成模型；silent / wait / react / poke 在决策那一次调用就结束，不额外付费。
+SPEAKING_ACTIONS: frozenset[ConversationAction] = frozenset({'reply', 'speak'})
 ALL_ACTIONS: frozenset[ConversationAction] = TERMINAL_ACTIONS | COGNITIVE_ACTIONS
 ReplyLength = Literal['brief', 'long']
 # 三态门控的态；门控判定本身在 conversation_gate 模块实现。
