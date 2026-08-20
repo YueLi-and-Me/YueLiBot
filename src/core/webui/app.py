@@ -65,6 +65,24 @@ def mount_webui(app: FastAPI) -> None:
             # person_id 由前端再向只读 API 查询；路由只负责交付同一份 SPA 入口。
             return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
+        @app.get('/', include_in_schema=False)
+        async def index_page() -> FileResponse:
+            """返回 SPA 根入口，并禁止浏览器缓存这份 HTML。
+
+            其余 SPA 路由都已显式声明 ``no-store``，只有根路径原来落在静态挂载上，
+            由 StaticFiles 交付且不带缓存头。
+
+            - 现象：前端重新构建后，从根路径进入的浏览器仍加载旧界面，新增的配置
+              项看不到，硬刷新才出来。
+            - 原因：index.html 被浏览器缓存，其中引用的是上一次构建的带 hash 资源名，
+              于是整个旧 bundle 都命中缓存。
+            - 后果：每次前端更新都要手动清缓存，且很容易误判成「后端没生效」。
+
+            :return: ``index.html`` 文件响应；带 hash 的静态资源仍走静态挂载。
+            """
+
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
         app.mount('/', StaticFiles(directory=_WEBUI_DIST, html=True), name='webui')
         return
 
