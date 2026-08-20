@@ -16,6 +16,7 @@ import shutil
 import tempfile
 
 from .loader import CONFIG_VERSION, _load_split_config
+from .schema import GenerationConfig, ModelTaskConfig
 from .model_webui import (
     _normalize_generation,
     _normalize_models,
@@ -48,7 +49,45 @@ def load_schema() -> Dict[str, Any]:
     global _schema
     if _schema is None:
         _schema = json.loads(_SCHEMA_PATH.read_text(encoding='utf-8'))
+        _require_task_entries_match_config(_schema)
     return _schema
+
+
+def _require_task_entries_match_config(schema: Dict[str, Any]) -> None:
+    """校验 schema 里的任务条目与配置模型的字段完全一致。
+
+    设置页的写盘是 schema 驱动的：``_write_documented_toml`` 只写 ``entries``
+    里列出的键。
+
+    - 现象：新增模型槽后在设置页保存一次，那个槽在 models.toml 里的整段消失，
+      已经配好的模型候选被清空，而且不报错。
+    - 原因：schema 的 entries 是另一份硬编码任务清单，没跟上 ``ModelTaskConfig``。
+    - 后果：静默丢配置是最难察觉的一类故障——用户以为自己没保存成功，实际是被
+      清掉了。因此这里宁可在启动期直接失败，也不接受两份清单不一致。
+
+    :param schema: 已解析的 schema 字典。
+    :raises ValueError: 任务条目与配置模型字段不一致。
+    """
+    expected = {
+        'model_tasks': set(ModelTaskConfig.model_fields),
+        'generation': set(GenerationConfig.model_fields),
+    }
+    for file_item in schema.get('files', []):
+        if file_item.get('file') != 'models.toml':
+            continue
+        for section in file_item.get('sections', []):
+            wanted = expected.get(section.get('key', ''))
+            if wanted is None:
+                continue
+            declared = {entry.get('key') for entry in section.get('entries', [])}
+            if declared != wanted:
+                missing = sorted(wanted - declared)
+                extra = sorted(declared - wanted)
+                raise ValueError(
+                    f'settings_schema.json 的 {section["key"]} 条目与配置模型不一致：'
+                    f'缺少 {missing}，多出 {extra}。'
+                    '设置页按这份清单写盘，不补齐会导致保存时静默丢掉那些配置段。'
+                )
 
 
 def file_schema(filename: str) -> Dict[str, Any]:

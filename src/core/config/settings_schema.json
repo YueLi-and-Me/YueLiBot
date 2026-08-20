@@ -1164,6 +1164,21 @@
               "description": "回复用户普通消息的对话模型；至少要有一个。"
             },
             {
+              "key": "planner",
+              "label": "行动决策",
+              "description": "决定这一轮做什么动作的模型；留空继承对话候选。首字延迟主要由它决定。"
+            },
+            {
+              "key": "replyer",
+              "label": "回复生成",
+              "description": "把决策写成她实际说出口那句话的模型；留空继承对话候选。"
+            },
+            {
+              "key": "scene",
+              "label": "情景分析",
+              "description": "把一段聊天概括成「此刻是什么情况」的模型；留空继承对话候选。"
+            },
+            {
               "key": "proactive",
               "label": "主动搭话",
               "description": "主动搭话消息的模型；留空继承对话候选。"
@@ -1248,6 +1263,21 @@
               "key": "chat",
               "label": "聊天回复",
               "description": "普通聊天的采样参数。"
+            },
+            {
+              "key": "planner",
+              "label": "行动决策",
+              "description": "决策那一次调用的采样参数。"
+            },
+            {
+              "key": "replyer",
+              "label": "回复生成",
+              "description": "写正文那一次调用的采样参数。"
+            },
+            {
+              "key": "scene",
+              "label": "情景分析",
+              "description": "情景概括的采样参数。"
             },
             {
               "key": "proactive",
