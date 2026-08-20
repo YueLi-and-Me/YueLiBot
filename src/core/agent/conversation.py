@@ -326,6 +326,7 @@ class ConversationAgent:
                     outcome.decision.query,
                     outcome.observation,
                     final_round=rounds_left <= 0,
+                    flattened=self._tool_calling,
                 )
             )
 
@@ -459,6 +460,13 @@ class ConversationAgent:
                     text = chunk.get('text')
                     if not text:
                         continue
+                    if self._tool_calling:
+                        # 工具模式只有函数调用这一种动作表达。接受旧 XML 等于保留
+                        # 一条隐式 fallback：提示词看似切换成功，模型没调工具时却
+                        # 仍被当成合法决策，现场无法分辨能力缺失与正常动作。
+                        status = 'parse_error'
+                        detail = '工具调用模式收到正文，模型没有通过工具选择动作'
+                        return finish()
                     for event in parser.push(text):
                         if head is None:
                             if isinstance(event, DecisionEvent):
@@ -685,19 +693,32 @@ def _observation_messages(
     observation: str,
     *,
     final_round: bool,
+    flattened: bool = False,
 ) -> list[dict[str, str]]:
-    """把一次认知动作及其观察渲染为回灌给模型的两条消息。
+    """把一次认知动作及其观察渲染为下一轮可读的消息。
 
-    assistant 那条放回她自己的动作头，让模型在下一轮能看见「我刚才查过什么」——
-    否则同一个 query 会被反复检索，白白烧掉轮次预算。
+    XML 角色模式保留 assistant 动作头与 user 结果两条消息。工具模式已经由函数
+    调用表达动作，不应再回灌一份 XML；它把调用与结果折叠成一个 user item，
+    既保留「刚查过什么」，也不重新引入 assistant 角色与第二套协议。
 
     :param action: 已执行的认知动作名。
     :param query: 该动作的检索词。
     :param observation: 检索结果正文；无命中时也是明确的「没找到」而非空串。
     :param final_round: 下一轮是否已经没有认知机会；为真时追加收束指令。
-    :return: 追加到消息序列尾部的两条消息。
+    :param flattened: 是否使用工具模式的单 item 回灌。
+    :return: 追加到消息序列尾部的一条或两条消息。
     """
     notice = f'\n\n{_FINAL_ROUND_NOTICE}' if final_round else ''
+    if flattened:
+        return [{
+            'role': 'user',
+            'content': (
+                '[已完成的工具调用]\n'
+                f'动作：{action}\n'
+                f'查询：{query}\n\n'
+                f'[工具返回]\n{observation}{notice}'
+            ),
+        }]
     return [
         {
             'role': 'assistant',

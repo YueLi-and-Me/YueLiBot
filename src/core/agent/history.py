@@ -121,17 +121,26 @@ def normalize_history(messages: Iterable[Mapping[str, str]]) -> List[dict]:
     return cleaned
 
 
-def fit_char_budget(messages: List[dict], budget: int = DEFAULT_CHAR_BUDGET) -> List[dict]:
-    """按字符预算从最早消息开始裁剪，并重新规范化剩余历史。
+def fit_char_budget(
+    messages: List[dict],
+    budget: int = DEFAULT_CHAR_BUDGET,
+    *,
+    preserve_items: bool = False,
+) -> List[dict]:
+    """按字符预算从最早消息开始裁剪，并按消息模式收尾。
 
-    裁剪可能产生助手消息开头或连续同角色消息，因此裁剪完成后必须再次调用
-    ``normalize_history``。
+    传统角色历史在裁剪后可能以 assistant 开头，或者留下连续同角色消息，因此
+    默认再次调用 ``normalize_history``。扁平 item 流里每一项本来就都是独立的
+    ``user`` 消息；这时合并同角色会把时间、画像、历史和工具提示重新糊成一块，
+    调用方必须显式传入 ``preserve_items=True`` 保留边界。
 
     :param messages: 已解析的消息字典列表；函数不会就地删除其中元素。
     :param budget: 允许保留的总字符数，默认 ``DEFAULT_CHAR_BUDGET``；小于等于 ``0``
             时直接返回原列表对象。
+    :param preserve_items: 是否保留裁剪后的消息边界与角色，不再执行角色规范化。
 
-    :return: 在预算内且结构合法的新消息列表；输入为空时返回空列表。
+    :return: 在预算内的新消息列表；传统模式还会修复角色结构，item 模式保持
+        每个剩余项原样独立。输入为空时返回空列表。
 
     :raises KeyError: 消息缺少 ``content`` 字段时抛出。
     :raises TypeError: 内容不是支持 ``len`` 的对象或预算不可比较时抛出。
@@ -147,4 +156,4 @@ def fit_char_budget(messages: List[dict], budget: int = DEFAULT_CHAR_BUDGET) -> 
     while kept and total > budget:
         total -= len(kept[0]['content'])
         kept.pop(0)
-    return normalize_history(kept)
+    return kept if preserve_items else normalize_history(kept)
