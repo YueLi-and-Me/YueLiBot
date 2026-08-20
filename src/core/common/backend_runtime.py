@@ -85,13 +85,99 @@ def create_backend_runtime(data_dir: Path, port: int) -> BackendRuntime:
     return runtime
 
 
+def _current_user_sid() -> str:
+    """返回当前进程访问令牌所属用户的 SID 文本。
+
+    :return: 形如 ``S-1-5-21-<domain>-<rid>`` 的 SID 字符串。
+
+    :raises OSError: 打开进程令牌、查询 TokenUser 或转换 SID 文本的 Win32 调用失败。
+
+    不经 ``whoami`` 子进程取用户名：该命令在 PATH 上可能命中 MSYS/Git Bash 附带的
+    同名实现，返回不带域前缀的裸用户名。
+    - 现象：``icacls`` 把裸名解析成同名计算机账户的 SID（只有域部分、没有 RID），
+      与真实用户 SID 相差末尾的 RID。
+    - 原因：``/inheritance:r`` 先砍掉全部继承 ACE，随后完全控制被授予这个不存在的
+      主体，目录对包括当前用户在内的所有非管理员账户零权限。
+    - 后果：目录事后无法枚举、无法删除，连读取 DACL 都返回 Access denied，只能靠
+      提权 takeown 抢回所有权。测试用例每跑一次就会遗留一个这样的临时目录。
+    直接读进程令牌可彻底绕开名称解析这一层。
+    """
+    # ctypes.wintypes 在非 Windows 平台导入即失败，且 WinDLL 只在 Windows 存在；
+    # 本函数仅由 _restrict_runtime_directory 的 nt 分支调用，故在函数内导入。
+    from ctypes import wintypes
+
+    import ctypes
+
+    TOKEN_QUERY = 0x0008
+    TOKEN_USER_CLASS = 1  # TOKEN_INFORMATION_CLASS::TokenUser
+
+    advapi32 = ctypes.WinDLL('advapi32', use_last_error=True)
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+
+    # 必须显式声明签名：ctypes 默认按 c_int 处理返回值，64 位下会截断句柄与指针，
+    # 表现为随机的无效句柄错误而非直接崩溃。
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = wintypes.DWORD()
+        # 首次调用只为问出 TOKEN_USER 所需字节数，必然以 ERROR_INSUFFICIENT_BUFFER
+        # 失败，因此这里不检查返回值。
+        advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(size))
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi32.GetTokenInformation(
+            token, TOKEN_USER_CLASS, buffer, size, ctypes.byref(size)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # TOKEN_USER 的首个成员是 SID_AND_ATTRIBUTES::Sid，即缓冲区开头的一个指针。
+        sid_pointer = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        sid_text = wintypes.LPWSTR()
+        if not advapi32.ConvertSidToStringSidW(sid_pointer, ctypes.byref(sid_text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return sid_text.value
+        finally:
+            # ConvertSidToStringSidW 的输出缓冲区由 LocalAlloc 分配，须由调用方释放。
+            kernel32.LocalFree(ctypes.cast(sid_text, ctypes.c_void_p))
+    finally:
+        kernel32.CloseHandle(token)
+
+
 def _restrict_runtime_directory(runtime_dir: Path) -> None:
     """将运行时目录及其子项限制为当前操作系统用户可访问。
 
     :param runtime_dir: 已存在的运行时目录路径。
 
-    :raises OSError: Unix 权限或 Windows ACL 操作失败。
-    :raises RuntimeError: 无法获取当前 Windows 用户，或 ACL 命令返回失败。
+    :raises OSError: Unix 权限操作失败，或 Windows 查询当前用户 SID 的 Win32 调用失败。
+    :raises RuntimeError: ACL 命令返回失败。
 
     副作用：
         Unix 修改目录权限为 ``0700``；Windows 关闭继承并为当前用户授予递归完全控制。
@@ -101,25 +187,17 @@ def _restrict_runtime_directory(runtime_dir: Path) -> None:
         os.chmod(runtime_dir, 0o700)
         return
 
-    identity_result = subprocess.run(
-        ['whoami'],
-        capture_output=True,
-        check=True,
-        encoding='utf-8',
-        errors='replace',
-        text=True,
-    )
-    identity = identity_result.stdout.strip()
-    if not identity:
-        raise RuntimeError('无法确定当前 Windows 用户，不能安全写入后端 token')
+    identity = _current_user_sid()
     # 关闭继承并只授予当前用户完全控制，防止父目录权限重新暴露 token 文件。
+    # 主体以 * 前缀的 SID 给出，绕开 icacls 的名称解析：裸用户名会被解析成同名的
+    # 计算机账户，导致目录对当前用户也不可访问，详见 _current_user_sid 的说明。
     acl_result = subprocess.run(
         [
             'icacls',
             str(runtime_dir),
             '/inheritance:r',
             '/grant:r',
-            f'{identity}:(OI)(CI)F',
+            f'*{identity}:(OI)(CI)F',
             '/T',
             '/C',
         ],
