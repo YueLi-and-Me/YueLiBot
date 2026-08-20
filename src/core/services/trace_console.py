@@ -18,6 +18,12 @@ from rich.panel import Panel
 from rich.text import Text
 
 from src.core.common.log_display import event_label, value_label
+from src.core.services.turn_panel import (
+    begin_turn as begin_turn_capture,
+    render_stage_panel,
+    render_timing_footer,
+    take_calls,
+)
 from src.core.common.logger import get_logger
 from src.core.common.logger_colors import is_color_enabled
 from src.core.webui.logs import webui_logs
@@ -71,16 +77,18 @@ def _emit_console_block(renderable: RenderableType) -> None:
 
 
 def mark_turn_start(turn: int) -> None:
-    """记录对话回合开始时间。
+    """记录对话回合开始时间，并开启本回合的模型调用收集。
 
     :param turn: 对话回合 ID。
 
-    副作用：非渲染场景不写入计时表，因为后续渲染也不会发生。
+    副作用：非渲染场景不写入计时表，因为后续渲染也不会发生；渲染场景同时把
+        当前协程上下文标记为「回合内」，此后各级模型调用都会进本回合的面板。
     """
 
     if not _render_enabled:
         return
     _starts[turn] = time.monotonic()
+    begin_turn_capture()
 
 
 def _elapsed_ms(turn: int) -> str:
@@ -185,15 +193,27 @@ def render_turn(
     if not _render_enabled:
         return
     try:
+        # 各级模型调用（决策 / 回复生成 / 认知检索）逐级成面板；拿不到时说明
+        # 本轮没经过路由层收集，退回只列模型名与上下文规模的旧摘要。
+        stage_calls = take_calls()
+        stage_panels: list[Any] = (
+            [render_stage_panel(call) for call in stage_calls]
+            if stage_calls
+            else [_request_panel(messages, model_name)]
+        )
         children: list[Any] = [
             Text.assemble(
                 Text('收到消息  ', style='bold cyan'),
                 Text(f'{sender_label}：{user_text}', style='bold white'),
             ),
-            _request_panel(messages, model_name),
+            *stage_panels,
         ]
         reply = _reply_text(reply_segments)
-        if reply:
+        # 分级面板里最后一级的「输出」已经是这句话；再挂一个「模型返回」等于同一句
+        # 在同一个框里显示两遍，扫读时反而要多确认一次是不是发了两条。
+        if stage_calls:
+            pass
+        elif reply:
             children.append(
                 Panel(
                     Text(f'{bot_name}：{reply}', style='bright_green'),
@@ -216,10 +236,15 @@ def render_turn(
                     title='内部变化', border_style='yellow', padding=(0, 1),
                 )
             )
+        footer = render_timing_footer(stage_calls)
+        subtitle = (
+            f'{footer.plain} | 合计 {_elapsed_ms(turn)}'
+            if footer.plain else f'耗时 {_elapsed_ms(turn)}'
+        )
         _emit_console_block(Panel(
             Group(*children),
             title=f'第 {turn} 轮 · {sender_label}',
-            subtitle=f'耗时 {_elapsed_ms(turn)}',
+            subtitle=subtitle,
             border_style='bright_cyan',
             padding=(0, 1),
         ))

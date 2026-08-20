@@ -24,6 +24,7 @@ from src.core.llm_models.snapshot import (
     select_candidate,
 )
 from src.core.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
+from src.core.services.turn_panel import ModelCall, note_model_call
 
 logger = get_logger(__name__)
 
@@ -99,10 +100,26 @@ class _ExchangeRecord:
                 error=self._error,
             )
         except OSError as exc:
+            # 落盘失败不能连带丢掉面板：写不进磁盘时，终端上那份现场就是唯一
+            # 还能看到「这一级做了什么」的地方。
             logger.warning('prompt_record_failed', task=self.task, error=str(exc))
-            return
+            path = None
         if path is not None:
             emit('prompt_record', task=self.task, path=str(path))
+        # 同一份事实再交给回合面板。事件账本是给事后查的，面板是给当场看的；
+        # 路由层不知道自己属于哪个回合，收集靠 ContextVar 在 Task 内传递。
+        note_model_call(ModelCall(
+            task=self.task,
+            model=getattr(self, '_model', ''),
+            provider=getattr(self, '_provider', ''),
+            first_token_ms=self._first_token_ms,
+            total_ms=int((time.monotonic() - self._started) * 1_000),
+            reasoning=''.join(self._reasoning),
+            text=''.join(self._text),
+            tool_calls=list(self._tool_calls),
+            record_path=str(path) if path is not None else '',
+            error=f'{self._error_type}：{self._error}' if self._error_type else '',
+        ))
 
 
 # 刚失败过的厂商在这段时间内排到候选队尾。
