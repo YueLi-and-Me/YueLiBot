@@ -541,6 +541,11 @@ class LogConfig(BaseModel):
     # 模型调用失败时，把实际发出的请求体存进 logs/llm_request/（密钥已隐去）
     request_snapshots: bool = True
     max_snapshot_files: int = Field(default=50, ge=1, le=1000)
+    # 每次模型调用（成功也算）按任务分目录存进 logs/prompt/<任务>/，密钥已隐去。
+    # 多级 Agent 下同一回合会有多次调用，只看控制台无法还原是哪一级的问题。
+    prompt_records: bool = True
+    # 每个任务子目录保留的记录份数；按任务分别计数，高频任务不挤掉低频任务
+    max_prompt_records_per_task: int = Field(default=200, ge=1, le=5000)
     # 事件账本保留上限
     event_retention_count: int = Field(default=20_000, ge=1)
     event_retention_hours: int = Field(default=72, ge=0)

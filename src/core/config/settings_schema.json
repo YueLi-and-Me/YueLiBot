@@ -802,6 +802,20 @@
               "help": "最多保留几份请求快照。"
             },
             {
+              "key": "prompt_records",
+              "type": "boolean",
+              "label": "保存分阶段调用记录",
+              "help": "每次模型调用（成功也算）按任务分目录存进 logs/prompt/，用于回看每一级 Agent 收到什么、答了什么。"
+            },
+            {
+              "key": "max_prompt_records_per_task",
+              "type": "integer",
+              "label": "每任务记录上限",
+              "min": 1,
+              "max": 5000,
+              "help": "每个任务子目录最多保留几份调用记录，按任务分别计数。"
+            },
+            {
               "key": "event_retention_count",
               "type": "integer",
               "label": "事件保留条数",

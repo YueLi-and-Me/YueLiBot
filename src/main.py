@@ -308,10 +308,17 @@ def main() -> None:
         runtime_file_path(data_dir),
     )
 
-    from src.core.llm_models.snapshot import configure as configure_snapshots
+    from src.core.llm_models.snapshot import (
+        configure as configure_snapshots,
+        configure_exchanges,
+    )
     configure_snapshots(
         data_dir / 'logs' / 'llm_request' if cfg.log.request_snapshots else None,
         cfg.log.max_snapshot_files,
+    )
+    configure_exchanges(
+        data_dir / 'logs' / 'prompt' if cfg.log.prompt_records else None,
+        cfg.log.max_prompt_records_per_task,
     )
 
     from src.core.common.db.connection import open_db

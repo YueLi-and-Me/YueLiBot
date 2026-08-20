@@ -18,6 +18,7 @@ from src.core.config.schema import ModelCandidate
 from src.core.llm_models.openai import LlmError, OpenAiChatProvider, resolve_base_url
 from src.core.llm_models.snapshot import (
     current_render_params,
+    dump_exchange,
     record_attempt,
     record_internal_request,
     select_candidate,
@@ -27,6 +28,77 @@ from src.core.observe.events import current_stage_id, current_stream_id, current
 logger = get_logger(__name__)
 
 T = TypeVar('T')
+
+
+class _ExchangeRecord:
+    """聚合一次模型调用的产出，并在调用收尾时落一份分阶段记录。
+
+    路由层是所有模型任务的唯一必经出口，聚合放在这里意味着新增一级 Agent
+    （planner / replyer 拆分之后会有更多级）不需要各自记得补观测。
+
+    :ivar task: 模型任务名，决定记录写进哪个子目录。
+    """
+
+    def __init__(self, task: str) -> None:
+        self.task = task
+        self._started = time.monotonic()
+        self._text: list[str] = []
+        self._reasoning: list[str] = []
+        self._chunks = 0
+        self._first_token_ms: int | None = None
+        self._error_type = ''
+        self._error = ''
+
+    def select(self, model: str, provider: str) -> None:
+        """记录本次实际选中的候选；候选切换时以最后一次为准。"""
+        self._model = model
+        self._provider = provider
+
+    def first_token(self, elapsed_ms: int) -> None:
+        """记录首字耗时；候选切换后以真正产出的那一次为准。"""
+        self._first_token_ms = elapsed_ms
+
+    def observe(self, chunk: dict) -> None:
+        """累计一条流式增量的可见文本与推理文本。"""
+        self._chunks += 1
+        text = chunk.get('text')
+        if text:
+            self._text.append(text)
+        reasoning = chunk.get('reasoning')
+        if reasoning:
+            self._reasoning.append(reasoning)
+
+    def fail(self, error_type: str, message: str) -> None:
+        """记录本次调用最终失败的类型与消息。"""
+        self._error_type = error_type
+        self._error = message
+
+    def write(self) -> None:
+        """落盘本次调用记录。
+
+        观测失败不能影响对话：这里捕获写盘异常并只记一行警告。落盘属于旁路
+        设施，磁盘满或权限不足时让正在进行的回复整个失败是更坏的结果；异常
+        本身仍然完整暴露在日志里，不做静默吞掉。
+        """
+        try:
+            path = dump_exchange(
+                task=self.task,
+                model=getattr(self, '_model', ''),
+                provider=getattr(self, '_provider', ''),
+                output_text=''.join(self._text),
+                reasoning_text=''.join(self._reasoning),
+                chunk_count=self._chunks,
+                first_token_ms=self._first_token_ms,
+                total_ms=int((time.monotonic() - self._started) * 1_000),
+                error_type=self._error_type,
+                error=self._error,
+            )
+        except OSError as exc:
+            logger.warning('prompt_record_failed', task=self.task, error=str(exc))
+            return
+        if path is not None:
+            emit('prompt_record', task=self.task, path=str(path))
+
 
 # 刚失败过的厂商在这段时间内排到候选队尾。
 # 冷却期避免 sequential 策略在每轮请求中重复等待已失败的厂商；到期后自动恢复候选。
@@ -257,6 +329,45 @@ class ModelRouter:
             response_format=response_format,
             render_params=current_render_params(),
         )
+        # 分阶段调用记录的聚合状态。写在这里而不是各调用点，是因为路由层是所有
+        # 模型任务的唯一必经出口：planner、replyer、表达选择、情景分析共用它，
+        # 在这里落盘才能保证新增一级 Agent 时不必再记得补一次观测。
+        exchange = _ExchangeRecord(task=self.task)
+        try:
+            async for chunk in self._stream_candidates(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                signal=signal,
+                response_format=response_format,
+                exchange=exchange,
+            ):
+                exchange.observe(chunk)
+                yield chunk
+        except LlmError as exc:
+            exchange.fail(exc.kind, str(exc))
+            raise
+        finally:
+            exchange.write()
+
+    async def _stream_candidates(self,
+                                 *,
+                                 messages: List[dict],
+                                 temperature: float,
+                                 max_tokens: int | None,
+                                 signal: asyncio.Event | None,
+                                 response_format: Dict[str, str] | None,
+                                 exchange: '_ExchangeRecord',
+                                 ) -> AsyncIterator[dict]:
+        """按候选顺序实际发起请求，产生增量并在切换候选时更新记录状态。
+
+        与 ``stream`` 拆开只为让收尾落盘有一个唯一出口：候选循环里有多处
+        ``return`` 与 ``raise``，把 ``finally`` 放在这一层会随候选切换重复触发。
+
+        :param exchange: 本次调用的记录聚合器；候选选定时回填模型与服务商。
+        :yield: 底层 provider 返回的增量字典。
+        :raises LlmError: 与 ``stream`` 相同。
+        """
         order = self.order()
         if not order:
             raise self._no_candidate_error()
@@ -271,6 +382,7 @@ class ModelRouter:
                     provider=candidate.provider,
                     kind=candidate.kind,
                 )
+                exchange.select(candidate.name, candidate.provider)
                 options: Dict[str, Any] = {}
                 if response_format is not None:
                     options['response_format'] = response_format
@@ -307,6 +419,7 @@ class ModelRouter:
                     ) from exc
 
                 elapsed_ms = int((time.monotonic() - started) * 1_000)
+                exchange.first_token(elapsed_ms)
                 if self._slow_threshold_ms and elapsed_ms >= self._slow_threshold_ms:
                     emit(
                         'llm_slow',

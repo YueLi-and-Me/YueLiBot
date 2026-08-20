@@ -1,7 +1,16 @@
-"""记录失败模型调用的分层、脱敏 JSON 快照。
+"""记录模型调用的分层、脱敏 JSON 记录。
 
-上下文变量保存内部请求、当前候选、实际 provider 请求和候选尝试；写入快照前
-会移除常见密钥字段，并按配置的最大文件数清理旧快照。
+本模块有两条独立的落盘链路，共用同一份上下文快照与脱敏逻辑：
+
+- **失败快照**（``dump``）：只在调用失败时写 ``logs/llm_request/``，用于事后
+  排查一次具体故障，按总文件数轮转。
+- **分阶段调用记录**（``dump_exchange``）：每次模型调用结束都写
+  ``logs/prompt/<任务>/<stream>/<毫秒时间戳>.json``，成功与失败都留，用于逐
+  阶段回看「这一次到底发给模型什么、它回了什么」。按任务分目录各自轮转，
+  一个高频任务刷屏不会冲掉其他任务的记录。
+
+上下文变量保存内部请求、当前候选、实际 provider 请求和候选尝试；写入前会移除
+常见密钥字段。调用方只需在路由层收尾时调用一次 ``dump_exchange``。
 """
 
 from __future__ import annotations
@@ -30,10 +39,12 @@ _render_params: ContextVar[Dict[str, Dict[str, str]] | None] = ContextVar(
 )
 _directory: Path | None = None
 _max_files = 50
+_exchange_directory: Path | None = None
+_exchange_max_files = 200
 
 
 def configure(directory: Path | None, max_files: int = 50) -> None:
-    """配置快照目录和最大文件数，并清空当前请求上下文。
+    """配置失败快照目录和最大文件数，并清空当前请求上下文。
 
     :param directory: 快照目录；`None` 表示禁用文件写入。
     :param max_files: 最多保留的 JSON 快照数，默认值为 50。
@@ -44,6 +55,20 @@ def configure(directory: Path | None, max_files: int = 50) -> None:
     _max_files = max_files
     _current.set(None)
     _render_params.set(None)
+
+
+def configure_exchanges(directory: Path | None, max_files_per_task: int = 200) -> None:
+    """配置分阶段调用记录的根目录与每个任务的保留份数。
+
+    :param directory: 记录根目录；``None`` 表示关闭该链路，只保留失败快照。
+    :param max_files_per_task: 每个任务子目录最多保留的记录数，默认 200。
+        按任务分别计数，回复这类高频任务不会把日程、总结那类低频任务的记录挤掉。
+    副作用：只修改模块级配置，不触碰当前 ContextVar——失败快照与调用记录共用
+        同一份上下文，重置会让先配置的那条链路丢掉已记录的请求。
+    """
+    global _exchange_directory, _exchange_max_files
+    _exchange_directory = directory
+    _exchange_max_files = max_files_per_task
 
 
 def bind_render_params(render_params: Dict[str, Dict[str, str]]) -> None:
@@ -307,6 +332,125 @@ def _state() -> Dict[str, Any]:
         }
         _current.set(state)
     return state
+
+
+def dump_exchange(
+    *,
+    task: str,
+    model: str,
+    provider: str,
+    output_text: str,
+    reasoning_text: str,
+    chunk_count: int,
+    first_token_ms: int | None,
+    total_ms: int,
+    error_type: str = '',
+    error: str = '',
+) -> Path | None:
+    """把一次模型调用的请求与产出写成分阶段 JSON 记录。
+
+    与 ``dump`` 的区别是**成功也写**：分阶段记录的用途不是排查故障，而是回看
+    每一级 Agent 各自看到了什么、说了什么。planner / replyer 拆分之后同一个回合
+    会有多次模型调用，只靠控制台无法还原是哪一级出的问题。
+
+    :param task: 模型任务名，同时作为子目录名（``.`` 会被替换成 ``-``）。
+    :param model: 实际产出本次结果的模型名称。
+    :param provider: 实际使用的服务商名称。
+    :param output_text: 聚合后的可见输出文本。
+    :param reasoning_text: 聚合后的推理文本；模型未提供时为空串。
+    :param chunk_count: 本次流式响应的增量条数，用于判断是否被中途截断。
+    :param first_token_ms: 首字耗时毫秒；一个 chunk 都没拿到时为 ``None``。
+    :param total_ms: 从发起请求到本次调用收尾的总毫秒数。
+    :param error_type: 失败类型；成功时为空串。
+    :param error: 失败消息；成功时为空串。
+    :return: 新建记录路径；未启用记录目录或上下文里没有请求时返回 ``None``。
+    :raises OSError: 目录创建或文件写入失败。
+
+    副作用：创建 JSON 文件并裁剪该任务目录下超出保留份数的旧记录。
+    """
+    if _exchange_directory is None:
+        return None
+    state = _current.get()
+    if state is None:
+        return None
+    internal_request = state.get('internal_request')
+    if internal_request is None:
+        return None
+
+    payload: Dict[str, Any] = {
+        'at': datetime.now().isoformat(timespec='milliseconds'),
+        'task': task,
+        'stage': internal_request.get('stage'),
+        'streamId': internal_request.get('streamId'),
+        'turnId': internal_request.get('turnId'),
+        'model': {
+            'name': model,
+            'provider': provider,
+            # 候选切换后 candidate 记的是最后一次选中的模型，与上面两项一致；
+            # 保留完整候选字段是为了能看出 kind（厂商协议类型）。
+            'candidate': deepcopy(state.get('candidate')),
+        },
+        'timing': {
+            'firstTokenMs': first_token_ms,
+            'totalMs': total_ms,
+        },
+        'request': {
+            'messages': internal_request.get('messages'),
+            'temperature': internal_request.get('temperature'),
+            'maxTokens': internal_request.get('maxTokens'),
+            'responseFormat': internal_request.get('responseFormat'),
+            'renderParams': internal_request.get('renderParams'),
+        },
+        'response': {
+            'text': output_text,
+            'reasoning': reasoning_text,
+            'chunks': chunk_count,
+        },
+        # 候选切换过程；成功记录里非空说明这次是靠备用服务商救回来的。
+        'attempts': deepcopy(state.get('attempts') or []),
+        'providerRequest': deepcopy(state.get('provider_request')),
+        'error': {'type': error_type, 'message': error} if error_type else None,
+    }
+
+    directory = _exchange_directory / _task_directory_name(task)
+    directory.mkdir(parents=True, exist_ok=True)
+    stream_id = internal_request.get('streamId')
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    name = f'{stamp}_s{stream_id}.json' if stream_id is not None else f'{stamp}.json'
+    path = directory / name
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding='utf-8',
+    )
+    _prune_exchanges(directory)
+    return path
+
+
+def _task_directory_name(task: str) -> str:
+    """把模型任务名转成可用作目录名的形式。
+
+    任务名形如 ``chat.conversation.shadow``，点号在 Windows 上虽然合法，但会让
+    目录看起来像文件；统一换成连字符，同时挡掉路径分隔符防止越级写入。
+    """
+    safe = task.strip() or 'unknown'
+    for char in ('/', '\\', ':', '.'):
+        safe = safe.replace(char, '-')
+    return safe
+
+
+def _prune_exchanges(directory: Path) -> None:
+    """裁剪单个任务目录下超出保留份数的旧记录。
+
+    :param directory: 某个任务的记录目录。
+    副作用：删除该目录中最早的 JSON 文件。
+    :raises OSError: 删除文件失败时传播异常。
+    """
+    files = sorted(
+        directory.glob('*.json'),
+        key=lambda item: (item.stat().st_mtime, item.name),
+    )
+    while len(files) > _exchange_max_files:
+        files.pop(0).unlink(missing_ok=True)
 
 
 def _prune() -> None:

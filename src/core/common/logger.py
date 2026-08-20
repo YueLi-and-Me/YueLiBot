@@ -308,6 +308,7 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
         'renderParams', 'modelTask', 'task',
     ),
     'llm_final': ('turnId', 'text'),
+    'prompt_record': ('task', 'path'),
     'llm_error': ('turnId', 'errorKind', 'message'),
     'image_description': ('result', 'hash', 'text', 'promptId', 'error'),
     'action_decision': (

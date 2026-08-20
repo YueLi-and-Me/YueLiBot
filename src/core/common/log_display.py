@@ -76,6 +76,8 @@ EVENT_LABELS: Dict[str, str] = {
     "model_task_inherits_chat": "模型任务沿用聊天配置",
     "mood_delta": "心情变化",
     "observation": "旁听消息",
+    "prompt_record": "调用记录",
+    "prompt_record_failed": "调用记录写入失败",
     "outbound_delivered": "回复投递完成",
     "outbound_dropped": "出站消息已丢弃",
     "outbound_reply_empty": "回复内容为空",
