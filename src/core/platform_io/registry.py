@@ -297,6 +297,85 @@ class StreamRegistry:
             group_card=group_card,
         )
 
+    def resolve_existing_context(
+        self,
+        platform: str,
+        stream_kind: StreamKind,
+        stream_external_id: str,
+        sender_external_id: str,
+    ) -> ConversationContext | None:
+        """只读解析已经存在的平台会话与发送者身份。
+
+        状态通知通常只有外部标识，没有普通消息携带的昵称和群名片。此入口复用
+        已由真实消息建立的归属信息，既不拿空昵称覆盖 identity，也不为一条瞬时
+        通知创建 person 或 stream。
+
+        :param platform: 平台标识，不能为空。
+        :param stream_kind: 会话类型，只支持 ``direct`` 和 ``group``。
+        :param stream_external_id: 已存在的平台侧会话外部 ID。
+        :param sender_external_id: 已存在的平台侧发送者外部 ID。
+        :return: 完整的既有会话上下文；会话或身份尚未建立时返回 ``None``。
+        :raises ValueError: 会话类型或任一外部标识为空，或私聊会话与发送者不一致。
+        :raises sqlite3.Error: 查询会话、身份或群成员关系失败。
+
+        副作用：只读归属表，不创建记录，也不更新昵称或群名片。
+        """
+        if stream_kind not in ('direct', 'group'):
+            raise ValueError('平台状态通知仅支持 direct 或 group stream')
+        platform = _require_text(platform, 'platform')
+        stream_external_id = _require_text(stream_external_id, 'stream_external_id')
+        sender_external_id = _require_text(sender_external_id, 'sender_external_id')
+        if stream_kind == 'direct' and stream_external_id != sender_external_id:
+            raise ValueError('私聊 stream_external_id 必须与 sender_external_id 一致')
+
+        stream_row = self._db.execute(
+            '''SELECT id, platform, kind, external_id FROM streams
+               WHERE platform = ? AND kind = ? AND external_id = ?''',
+            (platform, stream_kind, stream_external_id),
+        ).fetchone()
+        if stream_row is None:
+            return None
+        identity_row = self._db.execute(
+            '''SELECT p.id, p.kind, p.first_seen_at, i.display_name
+               FROM identities AS i
+               JOIN persons AS p ON p.id = i.person_id
+               WHERE i.platform = ? AND i.external_id = ?''',
+            (platform, sender_external_id),
+        ).fetchone()
+        if identity_row is None:
+            return None
+
+        stream = StreamRef(
+            id=stream_row[0],
+            platform=stream_row[1],
+            kind=stream_row[2],
+            external_id=stream_row[3],
+        )
+        person = PersonRef(
+            id=identity_row[0],
+            kind=identity_row[1],
+            first_seen_at=identity_row[2],
+        )
+        group_card = ''
+        if stream.kind == 'group':
+            membership = self._db.execute(
+                '''SELECT group_card FROM group_memberships
+                   WHERE stream_id = ? AND person_id = ?''',
+                (stream.id, person.id),
+            ).fetchone()
+            if membership is not None:
+                group_card = membership[0]
+        return ConversationContext(
+            stream=stream,
+            person=person,
+            identity=IdentityRef(
+                platform=platform,
+                external_id=sender_external_id,
+                display_name=identity_row[3],
+            ),
+            group_card=group_card,
+        )
+
     def create_person(self, kind: PersonKind, first_seen_at: int) -> PersonRef:
         """创建一个联系人人物记录。
 

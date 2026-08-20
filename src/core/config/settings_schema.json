@@ -436,9 +436,29 @@
         },
         {
           "kind": "object",
+          "key": "typing.follow_up",
+          "label": "静默主动追问",
+          "description": "Bot 正常回复后对方一直没回，达到阈值时先做独立情景分析，再让行动核心结合历史选择 reply 或 silent；只在 Conversation Agent 已启用或被 selected_streams 选中的私聊生效。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用主动追问",
+              "help": "关闭后不创建一分钟静默决策任务，输入状态决策仍可独立工作。"
+            },
+            {
+              "key": "peer_silence_minutes",
+              "type": "number",
+              "label": "主动追问阈值（分钟）",
+              "help": "Bot 正常回复后对方持续不回复这么久，创建一次 reply / silent 决策机会；必须大于 0。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
           "key": "typing.nudge",
           "label": "久等后的催促",
-          "description": "她说完话后对方长时间没回，直到看见对方开始打字才催一句；只在私聊生效。",
+          "description": "从 Bot 正常回复起达到总静默阈值，看到对方开始打字时让行动核心决定是否再追问；只在私聊生效。",
           "fields": [
             {
               "key": "enabled",
@@ -449,14 +469,14 @@
             {
               "key": "peer_silence_minutes",
               "type": "number",
-              "label": "静默阈值（分钟）",
-              "help": "她上次发言后对方至少静默这么久才考虑催；必须大于 0。"
+              "label": "输入检测总阈值（分钟）",
+              "help": "从 Bot 正常回复起累计静默这么久才允许输入状态触发追问；中间的定时追问不重新计时。"
             },
             {
               "key": "max_per_silence",
               "type": "number",
-              "label": "同一段静默最多催几次",
-              "help": "催得再多就从「等急了」变成缠人；0 等同于关闭。"
+              "label": "同一段静默最多追问次数",
+              "help": "只统计行动核心实际选择 reply 并成功投递的次数；选择 silent 不消耗次数。默认上限为 2。"
             }
           ]
         }

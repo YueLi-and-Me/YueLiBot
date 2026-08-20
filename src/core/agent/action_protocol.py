@@ -636,8 +636,8 @@ def available_actions(
     记为 ``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径**——
     末轮的约束写在动作集里，不写在异常处理里。
 
-    :param stream_kind: 会话类型；私聊与桌面第一版不允许无解释的 silent，
-        那里的交互契约是用户直接对她说话。
+    :param stream_kind: 会话类型；用户发起的私聊与桌面交互都不允许 silent，
+        主动追问使用独立的 ``reply / silent`` 决策帧。
     :param disposition: 门控态；DROP 不进入模型，动作集为空；群聊 FORCE
         （@必回）只允许 reply 作为终局动作，但仍可先检索再回。
     :param capabilities: 运行时真实具备的平台能力；只有已验证的 reaction
@@ -669,9 +669,9 @@ def available_actions(
             actions.add('poke')
         if allow_speak:
             actions.add('speak')
-        # 等待只在群聊有意义：私聊与桌面的交互契约是用户直接对她说话，
-        # 「先不表态」在那里等同于已读不回。
-        if allow_wait:
+        # 等待只在群聊有意义；用户发起的私聊必须回复，主动追问则使用独立的
+        # reply / silent 决策帧，两条路径都不能把同一条私聊重新排队。
+        if allow_wait and stream_kind == 'group':
             actions.add('wait')
     # 认知动作与 stream 类型、门控态都无关：无论她最终要不要开口，
     # 「先想一下再决定」这件事在任何出口都成立，只受轮次预算约束。

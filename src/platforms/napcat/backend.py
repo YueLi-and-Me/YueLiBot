@@ -187,15 +187,17 @@ class BackendClient:
             raise ValueError('主体 /platform/inbound 响应必须是 JSON 对象')
         return payload
 
-    async def submit_typing(self, sender_external_id: str) -> None:
+    async def submit_typing(self, sender_external_id: str) -> bool:
         """把私聊输入状态通知提交给主体。
 
         协议端在对方打字期间会反复推送，主体自行决定是否据此开口，因此这里不做
-        节流也不关心响应内容；提交失败只由调用方记录日志，绝不能影响消息通路。
+        节流；返回的 ``spoke`` 供调用方区分「检测到但无需追问」与「已触发追问」。
 
         :param sender_external_id: 正在输入的对方 QQ 号。
+        :return: 主体是否据此触发了一次主动发言。
         :raises BackendDisconnected: HTTP 客户端尚未建立连接。
         :raises httpx.HTTPError: 请求失败或主体返回非成功 HTTP 状态码。
+        :raises ValueError: 主体响应不是包含布尔 ``spoke`` 的 JSON 对象。
         副作用：向主体输入状态接口发送一次 POST 请求。
         """
         client = self._http
@@ -211,6 +213,10 @@ class BackendClient:
             },
         )
         response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get('spoke'), bool):
+            raise ValueError('主体 /platform/typing 响应必须包含布尔 spoke')
+        return payload['spoke']
 
     async def submit_group_backfill(
         self,

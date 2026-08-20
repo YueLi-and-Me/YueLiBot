@@ -147,19 +147,32 @@ class ConversationAgentConfig(BaseModel):
 
 
 class TypingNudgeConfig(BaseModel):
-    """久等之后看见对方打字时的催促发言开关与阈值。
+    """久等之后看见对方打字时的可选跟进决策开关与阈值。
 
     只在私聊生效：协议端只为私聊推送输入状态，群里盯着某个人的输入框也不合适。
-    触发条件是「她说完话后对方长时间没回，直到现在才开始打字」，这一条件本身
-    已经足够稀有，因此不再叠加额外的频率窗口。
+    时间与输入状态只负责创建机会，Conversation Agent 仍会结合历史在 ``reply``
+    与 ``silent`` 之间选择，因此不会把所有达到阈值的会话都变成追问。
     """
 
     # 是否允许据输入状态催促；关闭后输入状态通知只被记录后丢弃。
     enabled: bool = True
     # 她上次发言后对方至少静默这么久才考虑催，单位为分钟。取值需大于 0。
-    peer_silence_minutes: float = Field(default=5.0, gt=0.0)
+    peer_silence_minutes: float = Field(default=3.0, gt=0.0)
     # 同一段静默里最多催几次；催得再多就从「等急了」变成缠人。0 等同于关闭。
     max_per_silence: int = Field(default=2, ge=0)
+
+
+class SilenceFollowUpConfig(BaseModel):
+    """私聊中对方长时间未回复时的一次定时主动决策机会。
+
+    仅 Conversation Agent 已启用或被 ``selected_streams`` 选中的私聊会创建任务；
+    到达阈值后先由情景分析 Agent 观察，再由 Conversation Agent 决定是否回复。
+    """
+
+    # 是否在 Bot 正常回复后启动一次静默决策计时；关闭后不创建后台定时任务。
+    enabled: bool = True
+    # 对方持续不回复多久后交给行动核心判断是否追问，单位为分钟。取值需大于 0。
+    peer_silence_minutes: float = Field(default=1.0, gt=0.0)
 
 
 class TypingConfig(BaseModel):
@@ -185,6 +198,7 @@ class TypingConfig(BaseModel):
     max_delay_seconds: float = Field(default=8.0, ge=0.0)
     # 挑一张表情包所需的时间，单位为秒；表情包不逐字打，不走字数公式。
     emoji_pick_seconds: float = Field(default=1.5, ge=0.0)
+    follow_up: SilenceFollowUpConfig = Field(default_factory=SilenceFollowUpConfig)
     nudge: TypingNudgeConfig = Field(default_factory=TypingNudgeConfig)
 
 
