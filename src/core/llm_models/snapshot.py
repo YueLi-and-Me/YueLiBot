@@ -334,6 +334,17 @@ def _state() -> Dict[str, Any]:
     return state
 
 
+def exchange_directory() -> Path | None:
+    """返回分阶段调用记录的根目录。
+
+    观察面板据此列出与读取记录文件；关闭记录时返回 ``None``，调用方应据此
+    回报「未启用」而不是空列表——两者对使用者的含义完全不同。
+
+    :return: 记录根目录；未启用时为 ``None``。
+    """
+    return _exchange_directory
+
+
 def dump_exchange(
     *,
     task: str,

@@ -46,6 +46,12 @@ from src.core.prompts.registry import (
     update_prompt,
 )
 from src.core.services.chat_image import merge_image_descriptions
+from src.core.services.prompt_records import (
+    RecordsDisabled,
+    list_records as list_prompt_records,
+    list_tasks as list_record_tasks,
+    read_record as read_prompt_record,
+)
 from src.core.services.replay import replay_event, replay_task_for_seq
 
 logger = get_logger(__name__)
@@ -987,6 +993,49 @@ async def replay(body: ReplayBody) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get('/prompt-records', dependencies=[Depends(_auth)])
+async def prompt_records(
+    task: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """列出分阶段调用记录的摘要，最近的在前。
+
+    记录按模型任务分目录，多级 Agent 下同一回合会产生多份；``tasks`` 一并返回
+    当前有记录的任务名，供面板做筛选而不必再发一次请求。
+
+    :param task: 只看某个任务；省略时合并全部任务按时间排序。
+    :param limit: 摘要条数上限，默认 50。
+    :return: 含 ``records``、``tasks`` 与 ``enabled`` 的字典。
+    """
+    try:
+        return {
+            'enabled': True,
+            'tasks': list_record_tasks(),
+            'records': list_prompt_records(task, limit),
+        }
+    except RecordsDisabled:
+        # 未启用与「启用但还没有记录」对使用者含义不同，用 enabled 区分开，
+        # 不要都回空列表让人对着空面板等。
+        return {'enabled': False, 'tasks': [], 'records': []}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get('/prompt-records/{task}/{name}', dependencies=[Depends(_auth)])
+async def prompt_record(task: str, name: str) -> dict:
+    """读取单份调用记录的完整内容，含全部请求消息与模型产出。"""
+    try:
+        return read_prompt_record(task, name)
+    except RecordsDisabled as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get('/streams', dependencies=[Depends(_auth)])
