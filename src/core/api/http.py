@@ -66,7 +66,12 @@ class PlatformInboundBody(BaseModel):
     bot_name: str | None = Field(default=None, alias='botName')
     text: str
     mentioned_me: bool = Field(alias='mentionedMe')
+    # 平台消息编号。**允许为空**：戳一戳这类 notice 通道在协议上就没有消息编号，
+    # 下游引用逻辑已按「不带编号的通道」处理，不会拿内部 ID 冒充平台编号发出去。
     external_message_id: str = Field(alias='externalMessageId')
+    # 本条是「有人戳了 Bot」。戳一戳没有正文也没有 @，正文里没有任何门控能识别的
+    # 信号，因此由适配器把这件事作为独立事实提交，门控据此抬入 DELIBERATE。
+    poked_me: bool = Field(default=False, alias='pokedMe')
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
@@ -105,7 +110,6 @@ class PlatformInboundBody(BaseModel):
         'sender_external_id',
         'sender_nickname',
         'text',
-        'external_message_id',
     )
     @classmethod
     def _require_text(cls, value: str) -> str:
@@ -462,6 +466,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     group_chat = app_state.group_chat_config
     reply_count = 0
     last_bot_reply_elapsed_ms: int | None = None
+    current_topic_available = False
     if context.stream.kind == 'group':
         # 频率窗口只统计当前 group stream 的助手消息，不跨群或跨平台共享配额。
         reply_count = app_state.chat.memory.assistant_reply_count_since(
@@ -471,6 +476,9 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         last_bot_reply_at = app_state.chat.memory.last_assistant_reply_at(context.stream.id)
         if last_bot_reply_at is not None:
             last_bot_reply_elapsed_ms = now - last_bot_reply_at
+            current_topic_available = app_state.chat.topic_still_hers(
+                context.stream.id, last_bot_reply_at,
+            )
     # 文本称呼只读取 bot.toml；协议登录昵称仅用于上下文展示，不能旁路配置触发回合。
     bot_names = app_state.chat.bot_names()
     asleep = app_state.chat.current_sleep().asleep
@@ -489,6 +497,11 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         replies_in_window=reply_count,
         max_replies_in_window=group_chat.max_replies_in_window,
         last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
+        current_topic_available=current_topic_available,
+        poked_me=body.poked_me,
+        # 入口与批次两个门控必须读同一份跟进事实，否则 reply_gate 审计事件报告的
+        # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
+        follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
     ))
     plain_group_deferred = (
         context.stream.kind == 'group'
@@ -652,15 +665,25 @@ async def platform_typing(body: PlatformTypingBody) -> JSONResponse:
     if app_state.chat is None or app_state.registry is None:
         return JSONResponse({'detail': '对话服务未初始化'}, status_code=503)
 
-    context = app_state.registry.resolve_inbound(
+    context = app_state.registry.resolve_existing_context(
         platform=body.platform,
         stream_kind=body.stream_kind,
         stream_external_id=body.stream_external_id,
         sender_external_id=body.sender_external_id,
-        sender_nickname='',
-        sender_group_card='',
-        first_seen_at=current_time(),
     )
+    if context is None:
+        # 输入状态没有昵称等建档信息；必须先由一条真实私聊建立归属，不能凭瞬时
+        # 通知创建空身份。正常会话里该分支只会出现在适配器先于消息恢复连接时。
+        return JSONResponse({
+            'accepted': False,
+            'spoke': False,
+            'reason': '会话或发送者身份尚未建立',
+        })
+    # 后端重启后 broker 是空的；输入状态可以在新的普通消息到达前命中一条已有
+    # 私聊。此时必须像 platform_inbound 一样恢复 stream -> QQ driver 绑定，
+    # 否则决策器即使选择 reply，也会在最终投递时因没有出站 driver 返回 500。
+    if app_state.register_platform_stream is not None:
+        app_state.register_platform_stream(context.stream)
     spoke = await app_state.chat.note_peer_typing(context)
     return JSONResponse({'accepted': True, 'spoke': spoke})
 

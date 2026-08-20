@@ -50,6 +50,7 @@ from src.core.agent.observer import SceneObserver, SceneSnapshot
 from src.core.agent.conversation_gate import (
     GateRequest,
     GateResult,
+    ONGOING_TOPIC_MESSAGE_SPAN,
     decide_disposition,
     mentions_bot_name,
 )
@@ -120,9 +121,36 @@ EMOJI_MAX_PER_REPLY_WINDOW = 1
 # 上下文更长的一段，否则它只是把对话模型已经看过的东西再读一遍。
 SCENE_WINDOW_MESSAGES = 60
 
-# 上一轮生成期间插队到达的普通群消息，在上一回复落库后先沉降这段时间；
-# 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
-GROUP_CROSSED_MESSAGE_SETTLE_MS = 8_000
+# 一个回合内最多允许的内部轮次。
+#
+# 回合是**系统驱动的循环**而不是一次性调用：产出可见产物（reply / react / poke /
+# speak）之后不结束，而是把她自己刚做的事并回上下文再问一次，直到她表示这轮做完了
+# （silent）、退回缓冲等下文（wait）、或失败。这个数只是防失控的保险——正常收束靠
+# 她自己表态，撞上限属于异常路径，会强制收尾并留下明确记录。
+MAX_TURN_ROUNDS = 10
+
+# 续跑轮插入在候选块与输出要求之间的提示模板，``recap`` 由回合循环填入她这一轮
+# 实际做过的事。两件事必须同时说清，缺任意一件续跑轮都会跑偏：
+#
+# 1. **她这一轮已经动过手了**。回合循环的收束靠她自己表态，不知道自己动过手就
+#    只会把刚说的话换个说法再说一遍——缺这条提示时同一批消息会被连续产出十次
+#    可见产物。
+# 2. **做了什么以这句为准，不依赖历史里那份副本**。
+#    - 现象：续跑轮的历史里可能一条真实消息都没有，只剩当前候选块。
+#    - 原因：``_order_working_memory_for_batch`` 会把跨轮落库的上一条回复插到
+#      当前批之前；一旦它落在历史开头（工作记忆窗口或字符预算的裁剪边界正好
+#      切在这里），``normalize_history`` 会按「system 之后必须由 user 起头」的
+#      端点要求丢掉开头的 assistant，她刚说的那句就此消失。react / poke 更是
+#      从不写助手历史。
+#    - 后果：把这句提示改回「看上面历史最后一条」，她会在看不见自己发言的情况
+#      下对同一批消息重复表态。
+_CONTINUATION_NOTICE = (
+    '[本回合续跑] {recap}。这件事不一定出现在上面的历史里，以这句为准；'
+    '上面那几条是你还没有回应过的新消息。'
+    '确实还有要补的、或者有人接上了新的话，就继续；'
+    '已经说完了就用 silent 收束这一轮，'
+    '不要把刚说过的意思换个说法再说一遍。'
+)
 
 
 # 群历史首次回填时用于播种游标的历史条数与时间容差。
@@ -179,6 +207,19 @@ class _SessionState:
 
 
 @dataclass
+class _DirectFollowUpState:
+    """一段私聊静默的正常回复锚点、定时追问结果与后台任务。"""
+
+    context: ConversationContext
+    silence_started_at: int
+    target_user_message_id: int
+    normal_reply_message_at: int
+    follow_up_message_at: int | None = None
+    typing_opportunity_considered: bool = False
+    task: asyncio.Task[None] | None = None
+
+
+@dataclass
 class _TurnSink:
     """单轮流式解析状态。"""
 
@@ -229,6 +270,17 @@ class _BatchGate:
     reply_count: int
     mentioned_me: bool
     last_bot_reply_elapsed_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class _RoundResult:
+    """回合内一轮的收束原因，以及供下一轮续跑提示引用的动作事实。"""
+
+    # acted：产出了可见产物，还该再看一眼；declined：她表示这轮做完了；
+    # paused：批次退回缓冲等下文；failed：模型或协议失败。
+    reason: str
+    # 她这一轮做了什么的第一人称陈述；只有 acted 非空，其余分支没有可见产物。
+    recap: str = ''
 
 
 class ChatService:
@@ -326,6 +378,9 @@ class ChatService:
         self._speak_enabled = cfg.group_chat.self_started_topics
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
+        # 已经放弃自然跟进的群 stream。她在群聊里选择 silent 即加入，成功回复即移出；
+        # 门控据此关闭自然回应窗口，让「说够了没有」由她自己的动作决定而不是回复计数。
+        self._follow_up_declined: set[int] = set()
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
@@ -371,9 +426,11 @@ class ChatService:
                 temperature=self._summary_temperature,
                 max_tokens=self._summary_max_tokens,
             )
-            if summary_provider is not None and self._scene_refresh_messages > 0
+            if summary_provider is not None
             else None
         )
+        # 同一个情景分析 Agent 同时服务群聊周期画像和私聊即时决策；刷新条数只控制
+        # 群聊后台调度，不决定 Agent 是否存在。它与 reply / silent 决策 Agent 分离。
         self._cognitive_executor = (
             CognitiveExecutor([
                 RecallAction(self.memory, self._registry.stream_display_name),
@@ -397,6 +454,11 @@ class ChatService:
         self._active_turns: dict[int, int] = {}
         # 每个 stream 在当前静默期内已经因输入状态催过几次；对方一发消息就清零。
         self._typing_nudges: dict[int, int] = {}
+        # 本段静默的输入状态机会是否已经交给行动核心评估。它独立于定时任务状态，
+        # 因为后端重启后可以从数据库恢复会话，却不会恢复旧 asyncio 定时任务。
+        self._typing_opportunities_considered: set[int] = set()
+        # 私聊正常回复后只安排一轮定时追问；状态同时保存输入检测使用的原始静默锚点。
+        self._direct_follow_ups: dict[int, _DirectFollowUpState] = {}
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
         self._promise_handler: Callable[[int, str], None] | None = None
@@ -545,6 +607,17 @@ class ChatService:
         """停止聊天缓冲轮询并终止仍在执行的回复。"""
         self._stop.set()
         self._wake.set()
+        follow_up_tasks = [
+            state.task
+            for state in self._direct_follow_ups.values()
+            if state.task is not None and not state.task.done()
+        ]
+        for follow_up_task in follow_up_tasks:
+            follow_up_task.cancel()
+        if follow_up_tasks:
+            await asyncio.gather(*follow_up_tasks, return_exceptions=True)
+        self._direct_follow_ups.clear()
+        self._typing_opportunities_considered.clear()
         task = self._poll_task
         self._poll_task = None
         if task is not None:
@@ -568,40 +641,6 @@ class ChatService:
                 await asyncio.wait_for(self._wake.wait(), timeout=CHAT_POLL_INTERVAL_S)
             except asyncio.TimeoutError:
                 pass
-
-    def _group_batch_in_crossed_settle(
-        self,
-        batch: list[_BufferedMessage],
-        now: int,
-    ) -> bool:
-        """判断上一轮生成期间插队到达的普通群批次是否仍在沉降期。
-
-        只有消息入缓冲时间早于上一条 Bot 回复落库时间的批次才需要沉降：
-        这些消息在上一轮回复前已经到达，若上一轮刚结束就立刻开下一轮，
-        会形成背靠背连回。@ 与名字命中属于明确注意力信号，不等待。
-
-        :param batch: 同一 stream 的连续同一发送者批次。
-        :param now: 当前毫秒时间戳。
-        :return: 批次应继续在缓冲中等待时返回 True。
-        """
-        context = batch[0].context
-        if context.stream.kind != 'group':
-            return False
-        # 沉降只作用于扩展触发口径管理的普通群候选；旧管线与未选中 stream
-        # 保持既有逐批调度语义，避免离线与 shadow 观察行为被时间窗口改变。
-        if not self.extended_trigger_enabled(context):
-            return False
-        if any(message.mentioned_me for message in batch):
-            return False
-        if any(mentions_bot_name(message.text, self._bot_names) for message in batch):
-            return False
-        last_reply_at = self.memory.last_assistant_reply_at(context.stream.id)
-        if last_reply_at is None:
-            return False
-        crossed = any(message.accepted_at < last_reply_at for message in batch)
-        if not crossed:
-            return False
-        return now - last_reply_at < GROUP_CROSSED_MESSAGE_SETTLE_MS
 
     async def _tick(self) -> None:
         """为每个空闲且有缓冲消息的 stream 启动一轮同发送者回复。"""
@@ -627,8 +666,6 @@ class ChatService:
             # 而不是卡住：任何一条新消息都会解除等待并强制她表态。
             waiting_at = self._waiting.get(stream_id)
             if waiting_at is not None and len(buffered) <= waiting_at:
-                continue
-            if self._group_batch_in_crossed_settle(batch, now):
                 continue
             if not self.claim_stream(stream_id, 'reply'):
                 continue
@@ -663,8 +700,11 @@ class ChatService:
         if not trimmed:
             return
         stream_id = inbound.context.stream.id
-        # 对方开口即视为静默期结束，下一段静默重新计催促次数。
+        # 对方开口即视为静默期结束：取消尚未发出的定时追问，并让下一段静默
+        # 重新计算主动追问和输入状态追问次数。
+        self._cancel_direct_follow_up(stream_id)
         self._typing_nudges.pop(stream_id, None)
+        self._typing_opportunities_considered.discard(stream_id)
         accepted_at = current_time()
         previous_message_at = self.memory.last_message_at(stream_id)
         message_id = self.memory.append_message(
@@ -1012,6 +1052,9 @@ class ChatService:
                         turn_id=turn,
                     )
                     if context.stream.kind == 'group':
+                        # 与 Agent 路径同一条口径：看过并决定不接就关闭自然回应窗口。
+                        # 旧管线同样受该窗口影响，只在一侧维护会让清单外的群永远敞开。
+                        self._follow_up_declined.add(context.stream.id)
                         for message in materialized_batch:
                             self._emit_group_observation(
                                 message,
@@ -1116,6 +1159,9 @@ class ChatService:
                 self._mark_stage(
                     context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn,
                 )
+                self._arm_direct_follow_up(context)
+                # 她刚开过口，对话仍在她这边：与 Agent 路径同口径重新敞开自然回应窗口。
+                self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
             except LlmError as exc:
                 if exc.kind == 'aborted':
@@ -1690,19 +1736,20 @@ class ChatService:
                 logger.warning('cancel_audio_failed', error=str(exc))
 
     async def note_peer_typing(self, context: ConversationContext) -> bool:
-        """收到「对方正在输入」通知，判断是否值得据此催一句。
+        """收到「对方正在输入」通知，让行动核心决定是否值得据此追问。
 
         协议端在对方打字期间反复推送该通知，绝大多数时候她都不该有反应——正常
         一来一回的对话里看到对方打字就开口，是监控不是聊天。只有一种情形值得
-        出声：**她说完话之后对方长时间没回，直到现在才看见对方开始打字**。这个
-        条件天然稀有，不需要额外的频率限制。
+        交给行动核心考虑：**她说完话之后对方长时间没回，直到现在才看见对方开始
+        打字**。满足时间条件只会创建一次 ``reply / silent`` 决策机会，不代表必发。
 
-        触发后只把事实交给模型，不在代码里写死语气：晾了多久、之前已经催过几次
-        都写进情境，她自己决定这次是催、是调侃还是缓和。
+        晾了多久、之前已经追问过几次会先与历史一起交给独立的情景分析 Agent；
+        Conversation Agent 再结合该画像选择动作。它选择 ``silent`` 时不产生消息，
+        也不消耗本段静默的追问次数。
 
         :param context: 已完成归属解析的会话上下文。
         :return: 本次是否真的发了话。
-        副作用：命中条件时调用主动消息模型并投递一轮主动发言。
+        副作用：命中条件时调用 Conversation Agent；仅在其选择 ``reply`` 后投递。
         """
         stream_id = context.stream.id
         # 群聊不推送输入状态；即使将来推送，群里盯着某人打字也不合适。
@@ -1711,29 +1758,443 @@ class ChatService:
         nudge = self._cfg.typing.nudge
         if not nudge.enabled or nudge.max_per_silence <= 0:
             return False
+        if self._agent_scope(context, 'deliberate') != 'live':
+            return False
         if self._sleep_state is not None and self._sleep_state().asleep:
             return False
         last_reply_at = self.memory.last_assistant_reply_at(stream_id)
         if last_reply_at is None:
             return False
         now = current_time()
-        if now - last_reply_at < nudge.peer_silence_minutes * 60_000:
+        silence_anchor = self._typing_silence_anchor(stream_id, last_reply_at)
+        if now - silence_anchor < nudge.peer_silence_minutes * 60_000:
             return False
-        # 她上次发言之后对方已经回过话，就不算晾着，这条通知只是正常对话的一部分。
+        # 正常回复之后对方已经回过话，就不算同一段静默；定时追问不改变这个锚点。
         last_peer_at = self.memory.last_user_message_at(stream_id)
-        if last_peer_at is not None and last_peer_at > last_reply_at:
+        if last_peer_at is not None and last_peer_at > silence_anchor:
             return False
         nudges = self._typing_nudges.get(stream_id, 0)
         if nudges >= nudge.max_per_silence:
             return False
-        situation = self._typing_situation(now - last_reply_at, nudges)
-        lines = await self.compose_proactive(context, situation)
+        state = self._direct_follow_ups.get(stream_id)
+        # NapCat 会在同一段输入过程中连续上报状态。三分钟阈值只允许创建一轮
+        # 决策机会；即使模型选择 silent，也不能下一条状态通知立刻重跑两级 Agent。
+        # 独立集合覆盖后端重启后没有 _DirectFollowUpState 的历史静默会话。
+        if (
+            stream_id in self._typing_opportunities_considered
+            or state is not None and state.typing_opportunity_considered
+        ):
+            return False
+        situation = self._typing_situation(now - silence_anchor, nudges)
+        target = self._follow_up_target(context, state)
+        if target is None:
+            return False
+        if not self.claim_stream(stream_id, 'proactive'):
+            return False
+        self._typing_opportunities_considered.add(stream_id)
+        if state is not None:
+            state.typing_opportunity_considered = True
+        try:
+            decision = await self._decide_direct_follow_up(context, target, situation)
+            if decision is None:
+                return False
+            turn, lines = decision
+            # 模型生成期间对方可能已经发出消息；send() 会移除同一个状态，且消息
+            # 主键检查覆盖毫秒时间戳相同的极端情况，过期追问不能压在新消息前面。
+            if state is not None and self._direct_follow_ups.get(stream_id) is not state:
+                return False
+            if self.memory.has_user_messages_after(stream_id, target.message_id):
+                return False
+            await self._speak_claimed_external(context, lines, turn=turn)
+            self._typing_nudges[stream_id] = nudges + 1
+            if state is None:
+                # 重启前遗留会话没有定时状态；成功发出这一轮后，新助手消息自然成为
+                # 下一段静默锚点，达到下一次阈值时仍允许受次数上限约束的机会。
+                self._typing_opportunities_considered.discard(stream_id)
+            return True
+        finally:
+            self.release_stream(stream_id, 'proactive')
+
+    def _typing_silence_anchor(self, stream_id: int, last_reply_at: int) -> int:
+        """返回输入状态检测使用的静默起点。
+
+        一分钟定时追问属于同一段静默，不能把三分钟输入检测推迟到第四分钟；只有
+        当前最后一条助手消息仍是本状态里的正常回复或定时追问时，才复用原始锚点。
+        其他主动消息或输入状态追问会成为新的最后回复，并自然恢复原有计时口径。
+        """
+        state = self._direct_follow_ups.get(stream_id)
+        if state is None:
+            return last_reply_at
+        if last_reply_at in (
+            state.normal_reply_message_at,
+            state.follow_up_message_at,
+        ):
+            return state.silence_started_at
+        return last_reply_at
+
+    def _cancel_direct_follow_up(self, stream_id: int) -> None:
+        """结束指定私聊的当前静默状态，并取消尚未完成的定时追问。"""
+        state = self._direct_follow_ups.pop(stream_id, None)
+        if state is None or state.task is None or state.task.done():
+            return
+        if state.task is not asyncio.current_task():
+            state.task.cancel()
+
+    def _arm_direct_follow_up(self, context: ConversationContext) -> None:
+        """在一次成功的私聊正常回复后安排唯一一轮情景决策机会。"""
+        stream_id = context.stream.id
+        self._cancel_direct_follow_up(stream_id)
+        follow_up = self._cfg.typing.follow_up
+        if (
+            context.stream.kind != 'direct'
+            or not follow_up.enabled
+            or self._agent_scope(context, 'deliberate') != 'live'
+            or self._poll_task is None
+            or self._stop.is_set()
+            or self._buffers.get(stream_id)
+        ):
+            return
+        normal_reply_message_at = self.memory.last_assistant_reply_at(stream_id)
+        if normal_reply_message_at is None:
+            return
+        target = self._follow_up_target(context)
+        if target is None:
+            return
+        state = _DirectFollowUpState(
+            context=context,
+            silence_started_at=current_time(),
+            target_user_message_id=target.message_id,
+            normal_reply_message_at=normal_reply_message_at,
+        )
+        self._direct_follow_ups[stream_id] = state
+        state.task = asyncio.create_task(
+            self._run_direct_follow_up(state),
+            name=f'direct-follow-up-{stream_id}',
+        )
+
+    async def _run_direct_follow_up(self, state: _DirectFollowUpState) -> None:
+        """等待配置阈值后创建一次追问决策机会；取消与失败都不会循环重试。"""
+        stream_id = state.context.stream.id
+        try:
+            deadline = (
+                state.silence_started_at
+                + int(self._cfg.typing.follow_up.peer_silence_minutes * 60_000)
+            )
+            await asyncio.sleep(max(0, deadline - current_time()) / 1000)
+            await self._attempt_direct_follow_up(state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                '私聊静默主动追问失败',
+                streamId=stream_id,
+                error=str(exc),
+            )
+        finally:
+            current = self._direct_follow_ups.get(stream_id)
+            if current is state and state.task is asyncio.current_task():
+                state.task = None
+
+    async def _attempt_direct_follow_up(self, state: _DirectFollowUpState) -> bool:
+        """复核静默事实，再让行动核心选择 ``reply`` 或 ``silent``。"""
+        context = state.context
+        stream_id = context.stream.id
+        if self._direct_follow_ups.get(stream_id) is not state:
+            return False
+        if state.follow_up_message_at is not None or self._buffers.get(stream_id):
+            return False
+        if self._sleep_state is not None and self._sleep_state().asleep:
+            return False
+        if self.memory.last_assistant_reply_at(stream_id) != state.normal_reply_message_at:
+            return False
+        if self.memory.has_user_messages_after(stream_id, state.target_user_message_id):
+            return False
+        target = self._follow_up_target(context, state)
+        if target is None:
+            return False
+        if not self.claim_stream(stream_id, 'proactive'):
+            return False
+        try:
+            silence_ms = current_time() - state.silence_started_at
+            decision = await self._decide_direct_follow_up(
+                context,
+                target,
+                self._scheduled_follow_up_situation(silence_ms),
+            )
+            if decision is None or self._direct_follow_ups.get(stream_id) is not state:
+                return False
+            if self.memory.has_user_messages_after(stream_id, state.target_user_message_id):
+                return False
+            turn, lines = decision
+            await self._speak_claimed_external(context, lines, turn=turn)
+            state.follow_up_message_at = self.memory.last_assistant_reply_at(stream_id)
+            self._typing_nudges[stream_id] = self._typing_nudges.get(stream_id, 0) + 1
+            logger.info(
+                '私聊静默触发主动追问',
+                streamId=stream_id,
+                silenceMinutes=round(silence_ms / 60_000, 1),
+            )
+            return True
+        finally:
+            self.release_stream(stream_id, 'proactive')
+
+    def _follow_up_target(
+        self,
+        context: ConversationContext,
+        state: _DirectFollowUpState | None = None,
+    ) -> StoredMessage | None:
+        """读取本次主动决策可回复的最近一条真实用户消息。
+
+        定时任务保存消息主键，后续输入状态必须继续指向同一段静默的原始消息；没有
+        状态时则取当前工作记忆里的最后一条用户消息。找不到目标就放弃，而不是构造
+        不可审计的虚拟消息。
+        """
+        history = self.memory.working_memory(
+            context.stream.id,
+            self._working_memory_messages,
+        )
+        target_id = state.target_user_message_id if state is not None else None
+        for message in reversed(history):
+            if message.role == 'user' and (
+                target_id is None or message.message_id == target_id
+            ):
+                return message
+        return None
+
+    async def _decide_direct_follow_up(
+        self,
+        context: ConversationContext,
+        target: StoredMessage,
+        situation: str,
+    ) -> tuple[int, list[dict]] | None:
+        """以完整会话情景运行一次仅含 ``reply / silent`` 的主动决策。
+
+        这是用户私聊已经获得正常回复之后的主动唤醒：只有主动机会允许在
+        ``reply / silent`` 间判断，且没有认知、等待或平台副作用动作。只有合法
+        ``reply`` 才返回可投递分句；选择 ``silent`` 或协议失败都不产生用户可见内容。
+        """
+        if self._conversation_agent is None or self._scene_observer is None:
+            return None
+        now = current_time()
+        self._refresh_session(context, now)
+        if self._schedule:
+            await self._schedule.ensure(now)
+        # 情景分析与行动决策是两个独立 Agent：前者只描述话题和气氛，不碰动作；
+        # 后者读取该画像后才在 reply / silent 中选择。分析失败时不绕过它硬追问。
+        scene = await self._observe_direct_scene(
+            context,
+            trigger='direct_follow_up',
+        )
+        if scene is None:
+            return None
+        turn = self._next_turn()
+        capabilities = PlatformCapabilities()
+        frame = DecisionFrame(
+            turn_id=turn,
+            snapshot_id=f'direct-follow-up-{turn}',
+            stream_kind='direct',
+            disposition='deliberate',
+            selectable_message_ids=(target.message_id,),
+            message_watermark=target.message_id,
+            available_actions=frozenset({'reply', 'silent'}),
+            capabilities=capabilities,
+        )
+        protocol = render_action_protocol(
+            sorted(frame.available_actions),
+            [(target.message_id, strip_say_tags(target.content))],
+            quote_supported=False,
+        )
+        prepared = self._prepare_turn_context(
+            context,
+            target.content,
+            now,
+            user_message_id_watermark=target.message_id,
+        )
+        rendered = self._with_direct_scene_analysis(
+            self._render_prepared_context(prepared, protocol_text=protocol),
+            scene,
+        )
+        rendered[0] = {
+            **rendered[0],
+            'content': '\n\n'.join((
+                rendered[0]['content'],
+                '# 当前主动跟进机会',
+                situation,
+                '这不是必须发言的通知。请结合上面的完整对话判断：只有话题明显未完、'
+                '对方仍需要回应或支持、先前约定需要续上，或者此刻追问在你们的关系里'
+                '确实自然时才选 reply；话题已经自然结束、只是礼貌收尾、没有新价值、'
+                '继续追问会打扰时选 silent。不要为了到点而硬找一句话。',
+            )),
+        }
+        rendered.append({
+            'role': 'user',
+            'content': (
+                '[主动决策触发，不是对方的新消息] 现在只判断要不要续接上一段对话。'
+                '必须先输出 <decision>；选择 reply 时再输出简短自然的 <say>，选择 '
+                'silent 后不要输出任何正文。'
+            ),
+        })
+        messages = self._render_agent_messages(frame, rendered)
+        gate_inputs = GateInputFacts(
+            stream_kind='direct',
+            mentioned_me=False,
+            name_mentioned=False,
+            must_reply=False,
+            asleep=False,
+            rate_limited=False,
+            recent_bot_replies=self._typing_nudges.get(context.stream.id, 0),
+            candidate_message_ids=(target.message_id,),
+            selectable_message_ids=(target.message_id,),
+            current_topic_available=True,
+        )
+        metadata = prompt_metadata('chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS)
+        trace.emit(
+            'llm_request',
+            turnId=turn,
+            messages=messages,
+            temperature=self._chat_temperature,
+            maxTokens=self._chat_max_tokens,
+            followUp=True,
+            **metadata,
+        )
+        raw_parts: list[str] = []
+
+        def on_chunk(chunk: dict[str, Any]) -> None:
+            text = chunk.get('text')
+            if text:
+                raw_parts.append(text)
+            trace.emit(
+                'llm_chunk',
+                turnId=turn,
+                text=text,
+                reasoning=chunk.get('reasoning'),
+            )
+
+        outcome = await self._conversation_agent.run(
+            frame,
+            messages,
+            gate_inputs,
+            ('direct_follow_up_opportunity',),
+            prompt_hash=metadata['promptHash'],
+            model_task='chat.conversation.follow_up',
+            provider_name=getattr(self._chat_provider, 'provider', ''),
+            model_name=getattr(self._chat_provider, 'model', ''),
+            on_chunk=on_chunk,
+        )
+        raw_text = ''.join(raw_parts)
+        trace.emit('llm_final', turnId=turn, text=raw_text)
+        if outcome.decision is not None:
+            render_action_decision(
+                turn=turn,
+                agent_scope='live',
+                event_status=outcome.event_status,
+                action=outcome.decision.action,
+                reason_codes=outcome.decision.reason_codes,
+                target_message_ids=outcome.decision.target_message_ids,
+            )
+        if outcome.event_status == 'silent_by_choice':
+            logger.info(
+                '私聊主动跟进决定沉默',
+                streamId=context.stream.id,
+                reasonCodes=list(outcome.decision.reason_codes) if outcome.decision else [],
+            )
+            return None
+        if outcome.event_status != 'committed' or outcome.decision is None:
+            logger.warning(
+                '私聊主动跟进决策失败',
+                streamId=context.stream.id,
+                status=outcome.event_status,
+                detail=outcome.action_event.detail,
+            )
+            return None
+        lines = _extract_lines(raw_text)
         if not lines:
-            return False
-        if self.speak(context, lines) is None:
-            return False
-        self._typing_nudges[stream_id] = nudges + 1
-        return True
+            logger.warning('私聊主动跟进正文为空', streamId=context.stream.id)
+            return None
+        return turn, lines
+
+    async def _observe_direct_scene(
+        self,
+        context: ConversationContext,
+        *,
+        trigger: str,
+    ) -> SceneSnapshot | None:
+        """为一次私聊动作机会运行情景分析并缓存画像。
+
+        :param context: 当前私聊上下文。
+        :param trigger: 供观察事件区分首轮输入与后续主动跟进的稳定标识。
+        :return: 合法的话题与气氛画像；分析失败时返回 ``None``，调用方必须保持沉默。
+        副作用：调用情景分析 Agent，成功后更新当前 stream 的场景画像缓存。
+        """
+        if self._scene_observer is None:
+            return None
+        messages = self.memory.working_memory(
+            context.stream.id,
+            SCENE_WINDOW_MESSAGES,
+        )
+        if not messages:
+            return None
+        lines = self._scene_observation_lines(context, messages)
+        try:
+            snapshot = await self._scene_observer.observe(
+                lines,
+                messages[-1].message_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                '私聊情景分析失败',
+                streamId=context.stream.id,
+                trigger=trigger,
+                error=str(exc),
+            )
+            return None
+        self.memory.write_json(self._scene_key(context.stream.id), snapshot.to_dict())
+        trace.emit(
+            'scene_observed',
+            turnId=None,
+            streamId=context.stream.id,
+            topic=snapshot.topic,
+            atmosphere=snapshot.atmosphere,
+            trigger=trigger,
+        )
+        return snapshot
+
+    @staticmethod
+    def _with_direct_scene_analysis(
+        messages: list[dict],
+        scene: SceneSnapshot,
+    ) -> list[dict]:
+        """把独立情景分析结果放进私聊动作决策的 system 消息。
+
+        :param messages: 首项必须是 system 的已渲染模型消息。
+        :param scene: SceneObserver 刚产出的合法场景画像。
+        :return: 仅复制并增强首项的新消息列表；调用方原列表保持不变。
+        :raises ValueError: 消息列表为空或首项不是 system 时抛出。
+        """
+        if not messages or messages[0].get('role') != 'system':
+            raise ValueError('私聊情景分析只能注入以 system 开头的模型消息')
+        system = {
+            **messages[0],
+            'content': '\n\n'.join((
+                messages[0]['content'],
+                '# 私聊情景分析结果',
+                f'当前话题：{scene.topic}',
+                f'当前气氛：{scene.atmosphere}',
+                '这是独立情景分析 Agent 对当前互动的描述，只提供决策背景。'
+                '是否回复仍由 Conversation Agent 根据动作空间自行判断。',
+            )),
+        }
+        return [system, *messages[1:]]
+
+    @staticmethod
+    def _scheduled_follow_up_situation(silence_ms: int) -> str:
+        """把达到配置阈值的未回复状态渲染为第一次主动机会。"""
+        minutes = max(1, silence_ms // 60_000)
+        return '\n'.join((
+            f'你上一句发出去已经 {minutes} 分钟了，对方一直没有回复。',
+            '这是这段静默里的第一次主动跟进机会，不代表一定要追问。',
+            '若决定开口，请顺着刚才的话自然说一句，不要报时，也不要提系统、计时器。',
+        ))
 
     @staticmethod
     def _typing_situation(silence_ms: int, nudges: int) -> str:
@@ -1753,8 +2214,9 @@ class ChatService:
         ]
         if nudges:
             lines.append(f'这段时间里你已经催过 {nudges} 次。')
+        lines.append('这是一次可选的跟进机会，不是必须开口。')
         lines.append(
-            '如果想说点什么，就顺着这个情形自然地说一句，别复述你等了多久，'
+            '若决定开口，就顺着这个情形自然地说一句，别复述你等了多久，'
             '也别提「输入状态」这种词。'
         )
         return '\n'.join(lines)
@@ -1784,14 +2246,25 @@ class ChatService:
         finally:
             self.release_stream(stream_id, 'proactive')
 
-    def speak_claimed(self, context: ConversationContext, lines: list[dict]) -> int:
-        """投放已经取得 proactive stream 占用权的结构化分句。"""
+    def speak_claimed(
+        self,
+        context: ConversationContext,
+        lines: list[dict],
+        *,
+        turn: int | None = None,
+    ) -> int:
+        """投放已经取得 proactive stream 占用权的结构化分句。
+
+        调用方已运行行动决策时可传入同一个 ``turn``，保证决策与观察事件属于同一
+        回合。非桌面平台必须改用 ``_speak_claimed_external``，避免只写历史未投递。
+        """
         if not lines:
             raise ValueError('主动分句不能为空')
         stream_id = context.stream.id
         if self._stream_claims.get(stream_id) != 'proactive':
             raise RuntimeError('主动投放前必须取得 stream 占用权')
-        turn = self._next_turn()
+        if turn is None:
+            turn = self._next_turn()
         self._active_turns[stream_id] = turn
         texts: list[str] = []
         asyncio.create_task(self._emit(stream_id, 'chat.start', {
@@ -1816,6 +2289,24 @@ class ChatService:
             ''.join(texts),
         )
         return turn
+
+    async def _speak_claimed_external(
+        self,
+        context: ConversationContext,
+        lines: list[dict],
+        *,
+        turn: int,
+    ) -> int:
+        """等待非桌面平台真实投递成功后，再记录这条主动消息。"""
+        if context.stream.platform == 'desktop':
+            raise ValueError('桌面主动消息不应走外部平台投递')
+        await self._dispatch_outbound(
+            context,
+            turn,
+            [line['text'] for line in lines],
+            [],
+        )
+        return self.speak_claimed(context, lines, turn=turn)
 
     async def compose_proactive(
         self,
@@ -2540,6 +3031,7 @@ class ChatService:
         asleep = self._sleep_state().asleep if self._sleep_state else False
         reply_count = 0
         last_bot_reply_elapsed_ms: int | None = None
+        current_topic_available = False
         if context.stream.kind == 'group':
             now = current_time()
             reply_count = self.memory.assistant_reply_count_since(
@@ -2549,6 +3041,9 @@ class ChatService:
             last_bot_reply_at = self.memory.last_assistant_reply_at(context.stream.id)
             if last_bot_reply_at is not None:
                 last_bot_reply_elapsed_ms = now - last_bot_reply_at
+                current_topic_available = self.topic_still_hers(
+                    context.stream.id, last_bot_reply_at,
+                )
         name_mentioned = (
             mentions_bot_name(batch_text, self._bot_names)
             if context.stream.kind == 'group'
@@ -2563,6 +3058,8 @@ class ChatService:
             replies_in_window=reply_count,
             max_replies_in_window=self._cfg.group_chat.max_replies_in_window,
             last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
+            current_topic_available=current_topic_available,
+            follow_up_declined=self.follow_up_declined(context.stream.id),
         ))
         plain_group_drop = (
             context.stream.kind == 'group'
@@ -2906,6 +3403,7 @@ class ChatService:
         self,
         frame: DecisionFrame,
         messages: list[dict],
+        continuation_recap: str = '',
     ) -> list[dict]:
         """把已渲染消息整理为 Conversation Agent 实际提交的上下文。
 
@@ -2916,6 +3414,8 @@ class ChatService:
 
         :param frame: 本回合固定快照，提供动作空间与可选消息。
         :param messages: ``_render_prepared_context`` 产出的系统与历史消息。
+        :param continuation_recap: 续跑轮里她上一轮做了什么；非空时按
+            ``_CONTINUATION_NOTICE`` 渲染成提示，插在候选块与输出指令之间。
         :return: 历史助手已纯文本化、带 few-shot 与末轮输出指令的新消息列表。
         """
         if len(messages) < 2:
@@ -2946,10 +3446,18 @@ class ChatService:
             history[last_user_index],
         ]
         last_user_index = len(history) - 1
+        # 续跑提示并进候选块所在的这条 user 消息，而不是再追加一条：输出要求必须
+        # 留在整个序列的最末，它是生成侧最近的约束，被别的文字挤开之后动作头就
+        # 不再是模型最先要交代的东西。
+        continuation = (
+            _CONTINUATION_NOTICE.format(recap=continuation_recap) + '\n\n'
+            if continuation_recap else ''
+        )
         history[last_user_index] = {
             **history[last_user_index],
             'content': (
                 f"{history[last_user_index]['content']}\n\n"
+                f'{continuation}'
                 '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
                 '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 '
                 '<say>、普通文字或解释。'
@@ -3077,11 +3585,148 @@ class ChatService:
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
     ) -> None:
-        """执行一次 Conversation Agent 调用并处理其结果。
+        """把一个回合作为**系统驱动的循环**跑完，而不是一次性调用。
+
+        产出可见产物不等于回合结束：她说完一句之后，真人还会再看一眼群里，确认
+        自己是不是说完了、有没有人接上。因此 reply / react / poke / speak 之后
+        重建上下文（此时历史里已经有她刚说的那句）再问一次，直到她自己表态收束。
+
+        收束由她决定，不由动作类型决定：
+        - ``declined``（silent）：她表示这轮做完了，退出循环；
+        - ``paused``（wait）：批次已退回缓冲等下文，退出循环；
+        - ``failed``：模型或协议失败，退出循环；
+        - ``acted``：产出了可见产物，重建上下文继续下一轮。
+
+        ``MAX_TURN_ROUNDS`` 只是防失控的保险。撞上限说明她连续 10 轮都没有表示
+        说完，那是异常而不是正常收束，因此留一条明确记录而不是静默结束。
+
+        续跑轮消费的是**她生成期间新到的消息**，原批次不再累加：那一批她上一轮
+        已经接过了。她上一轮做了什么由 ``_RoundResult.recap`` 显式带给下一轮，
+        不依赖历史里那份副本是否幸存，原因见 ``_CONTINUATION_NOTICE``。
+
+        :param batch: 首轮的消息批次；续跑各轮换成新到的那一批。
+        :param allow_wait: 首轮是否还能「先等等」；同一批只允许等一次，因此
+            续跑各轮一律不再给 wait。
+        副作用：每轮一次模型往返与一次可见产物投递；上下文与 sink 逐轮重建。
+        """
+        # 回合级副作用只在整个循环收束后结算一次。人格结算、摘要触发、场景观察
+        # 都是「这个回合发生过什么」的账，逐轮各记一遍会让多轮回合把人格推动几倍。
+        acted = False
+        exhausted = True
+        # 上一轮的动作事实；首轮为空，此后每轮由 _RoundResult 带过来。
+        recap = ''
+        for round_index in range(MAX_TURN_ROUNDS):
+            if cancel_event.is_set():
+                exhausted = False
+                break
+            if round_index > 0:
+                # 并入她生成期间到达的新消息。**没有新消息就不再续跑**：这一轮
+                # 唯一能变的就是「群里又说了什么」，什么都没变时再问一次模型，
+                # 产出只可能是「我说完了」，不值一次往返。
+                pending = self._buffers.get(context.stream.id)
+                if not pending:
+                    exhausted = False
+                    break
+                arrived = list(pending)
+                del pending[:]
+                self._buffers.pop(context.stream.id, None)
+                # 候选块只放新到的消息：原批次她上一轮已经接过了，累加进来会让她
+                # 对着已回复过的句子再答一次，也会把她自己那条回复挤出历史。
+                batch = await self._materialize_batch_images(arrived)
+                trimmed = '\n'.join(message.text for message in batch)
+                # 重建上下文与 sink：历史里已经多了她上一轮说的话，sink 的分句与
+                # 副作用是单轮状态，复用会把上一轮的正文再发一次。
+                now = current_time()
+                prepared = self._prepare_turn_context(
+                    context,
+                    trimmed,
+                    now,
+                    prepared.platform_bot_name,
+                    user_message_id_watermark=batch[-1].message_id,
+                    batch_message_ids=tuple(
+                        message.message_id for message in batch
+                    ),
+                )
+                sink = _TurnSink(
+                    context=context,
+                    cancel_event=cancel_event,
+                    turn=turn,
+                    now=now,
+                    source_text=trimmed,
+                )
+            result = await self._run_conversation_round(
+                context,
+                batch,
+                trimmed,
+                turn,
+                cancel_event,
+                sink,
+                prepared,
+                batch_gate,
+                sender,
+                render_params,
+                allow_wait=allow_wait and round_index == 0,
+                continuation_recap=recap,
+            )
+            acted = acted or result.reason == 'acted'
+            if result.reason != 'acted':
+                exhausted = False
+                break
+            recap = result.recap
+        if exhausted:
+            logger.warning(
+                'conversation_turn_rounds_exhausted',
+                turnId=turn,
+                streamId=context.stream.id,
+                maxRounds=MAX_TURN_ROUNDS,
+            )
+            self._mark_stage(
+                context, GATED,
+                f'连续 {MAX_TURN_ROUNDS} 轮没有收束，本回合强制结束',
+                turn_id=turn,
+            )
+        if not acted:
+            return
+        # 本回合确实产出过可见产物，才结算这一次。
+        try:
+            self.persona.apply_turn(
+                context.person.id,
+                current_time(),
+                weight=self._persona_weight(context),
+            )
+        except Exception as exc:
+            # 人格结算是附加状态，失败不能回滚已经展示并持久化的对话正文。
+            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
+        asyncio.create_task(self._maybe_summarize(context.stream.id))
+        self._schedule_scene_observation(context)
+
+    async def _run_conversation_round(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        trimmed: str,
+        turn: int,
+        cancel_event: asyncio.Event,
+        sink: _TurnSink,
+        prepared: _PreparedTurnContext,
+        batch_gate: _BatchGate,
+        sender: Dict[str, str],
+        render_params: dict[str, dict[str, str]],
+        allow_wait: bool = False,
+        continuation_recap: str = '',
+    ) -> _RoundResult:
+        """执行**一轮** Conversation Agent 调用并处理其结果。
 
         silent 只写行动决策事件，不产生任何用户可见输出；reply 复用既有 sink
         消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
         流出任何正文，按失败状态呈现。
+
+        :param continuation_recap: 上一轮她做了什么的第一人称陈述；非空即表示
+            本轮是回合内的续跑轮，据此在候选块与输出要求之间插入续跑提示。她的
+            上一句话在历史里可能已被裁掉，因此这个事实必须由调用方带进来，不能
+            让她去历史里找（详见 ``_CONTINUATION_NOTICE``）。
+        :return: 本轮的收束原因与动作事实，由 ``_run_conversation_turn`` 据此决定
+            继续还是退出循环，并把动作事实转交下一轮。
         """
         frame = self._agent_frame(
             context,
@@ -3092,15 +3737,17 @@ class ChatService:
             allow_wait=allow_wait,
         )
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
+        rendered = await self._enrich_prepared_context(
+            prepared,
+            cancel_event,
+            render_params,
+            reply_length=None,
+            protocol_text=self._render_agent_protocol(frame, batch, context),
+        )
         messages = self._render_agent_messages(
             frame,
-            await self._enrich_prepared_context(
-                prepared,
-                cancel_event,
-                render_params,
-                reply_length=None,
-                protocol_text=self._render_agent_protocol(frame, batch, context),
-            ),
+            rendered,
+            continuation_recap=continuation_recap,
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
         metadata = prompt_metadata(
@@ -3182,13 +3829,18 @@ class ChatService:
             )
         if outcome.event_status == 'silent_by_choice':
             assert outcome.decision is not None
+            if context.stream.kind == 'group':
+                # 她看过这一轮并决定不接，自然回应窗口就此关闭；后续普通群消息
+                # 重新回到攒批判断，直到真信号或她自己再次开口把窗口打开。
+                # wait 与 react 不置位：前者是「话还没说完」，后者仍是参与。
+                self._follow_up_declined.add(context.stream.id)
             # silent 只写行动决策事件：不产生助手历史、TTS、事实或观察事件。
             self._mark_stage(
                 context, GATED,
                 f'她选择沉默：{", ".join(outcome.decision.reason_codes)}',
                 turn_id=turn,
             )
-            return
+            return _RoundResult('declined')
         if outcome.event_status != 'committed':
             render_turn_error(
                 turn, sender['senderLabel'], trimmed,
@@ -3207,21 +3859,21 @@ class ChatService:
                     'message': outcome.action_event.detail,
                     'hint': '',
                 })
-            return
+            return _RoundResult('failed')
         assert outcome.decision is not None
         if outcome.decision.action == 'wait':
             self._hold_batch_for_wait(context, batch, turn, outcome)
-            return
+            return _RoundResult('paused')
         if outcome.decision.action == 'poke':
-            await self._apply_poke(
+            recap = await self._apply_poke(
                 context, batch, turn, outcome, frame, gate_inputs, batch_gate,
             )
-            return
+            return _RoundResult('acted', recap)
         if outcome.decision.action == 'react':
-            await self._apply_reaction(
+            recap = await self._apply_reaction(
                 context, turn, outcome, frame, gate_inputs, batch_gate,
             )
-            return
+            return _RoundResult('acted', recap)
         # speak 与 reply 的产物形态完全相同（正文 + 可选表情包），区别只在有没有
         # 目标消息，因此共用下面这条持久化与投递路径；_quote_target 对空目标返回
         # None，speak 自然不会挂引用。
@@ -3248,15 +3900,6 @@ class ChatService:
             self._bot_display_name,
             model_name=getattr(self._chat_provider, 'model', ''),
         )
-        try:
-            self.persona.apply_turn(
-                context.person.id,
-                current_time(),
-                weight=self._persona_weight(context),
-            )
-        except Exception as exc:
-            # 人格结算是附加状态，失败不能回滚已经展示并持久化的对话正文。
-            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
         if context.stream.platform == 'desktop':
             self._mark_stage(context, DISPATCHING, turn_id=turn)
             await self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'})
@@ -3288,8 +3931,11 @@ class ChatService:
         self._mark_stage(
             context, REPLIED, f'{len(raw_text)} 字', turn_id=turn,
         )
-        asyncio.create_task(self._maybe_summarize(context.stream.id))
-        self._schedule_scene_observation(context)
+        self._arm_direct_follow_up(context)
+        # 她刚开过口，对话仍在她这边：重新敞开自然回应窗口，让紧接着说的话
+        # 不必再经过回复必要性评分就能进入她的视野。
+        self._follow_up_declined.discard(context.stream.id)
+        return _RoundResult('acted', _spoken_recap(sink.segments, sink.emoji_items))
 
     def _hold_batch_for_wait(
         self,
@@ -3346,7 +3992,7 @@ class ChatService:
         frame: DecisionFrame,
         gate_inputs: GateInputFacts,
         batch_gate: _BatchGate,
-    ) -> None:
+    ) -> str:
         """戳一戳目标消息的发送者。
 
         目标沿用消息编号而不是新开一个「人物编号」目标空间：跨人物选目标那件事
@@ -3361,6 +4007,8 @@ class ChatService:
         :param gate_inputs: 第 1 层确定性输入事实。
         :param batch_gate: 本批门控结果。
 
+        :return: 供续跑轮引用的动作事实。戳一戳不写助手历史，这个动作在下一轮
+            的上下文里唯一的痕迹就是这句话。
         :raises RuntimeError: 目标消息不在本批内，或发送者没有该平台身份。
         :raises DeliveryError: 平台驱动不支持戳一戳或调用失败。
         副作用：调用平台驱动并写入投递观察事件；失败追加 delivery_failed 事件再上抛。
@@ -3413,15 +4061,12 @@ class ChatService:
             streamId=receipt.stream_id,
             turnId=turn,
         )
-        try:
-            self.persona.apply_turn(
-                context.person.id,
-                current_time(),
-                weight=self._persona_weight(context),
-            )
-        except Exception as exc:
-            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
         self._mark_stage(context, REPLIED, '戳了一下', turn_id=turn)
+        return '你刚戳了 {} 一下'.format(
+            self._registry.stream_display_name(
+                target.context.person.id, context.stream.id,
+            )
+        )
 
     async def _apply_reaction(
         self,
@@ -3431,7 +4076,7 @@ class ChatService:
         frame: DecisionFrame,
         gate_inputs: GateInputFacts,
         batch_gate: _BatchGate,
-    ) -> None:
+    ) -> str:
         """投递一次表情回应，并按与回复相同的口径结算人格。
 
         表情回应**不写助手历史**：她这一轮没有说任何话，往历史里塞一条伪造的
@@ -3448,6 +4093,8 @@ class ChatService:
         :param gate_inputs: 第 1 层确定性输入事实。
         :param batch_gate: 本批门控结果。
 
+        :return: 供续跑轮引用的动作事实。这一轮没有助手历史，下一轮能看见这个
+            动作的唯一途径就是这句话。
         :raises RuntimeError: 目标消息没有平台编号，或非桌面 stream 未配置 broker。
         :raises DeliveryError: 平台驱动不支持表情回应或调用失败。
 
@@ -3493,18 +4140,10 @@ class ChatService:
             streamId=receipt.stream_id,
             turnId=turn,
         )
-        try:
-            self.persona.apply_turn(
-                context.person.id,
-                current_time(),
-                weight=self._persona_weight(context),
-            )
-        except Exception as exc:
-            # 与回复路径同款：人格结算是附加状态，失败不能回滚已经发出的回应。
-            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
         self._mark_stage(
             context, REPLIED, f'贴了个「{outcome.decision.reaction}」', turn_id=turn,
         )
+        return f'你刚给消息 [{target_id}] 贴了个「{outcome.decision.reaction}」'
 
     async def _handle_live_drop(
         self,
@@ -3550,6 +4189,34 @@ class ChatService:
 
         return self._bot_names
 
+    def topic_still_hers(self, stream_id: int, last_bot_reply_at: int) -> bool:
+        """判断她上次开口之后群里聊过的话是否还没走远。
+
+        用消息距离而不是时间：群热时几秒能刷十几条、话题早换了，群温吞时三分钟
+        才两句、话题一点没变。时限口径由 natural_reply_window 单独承担，两者
+        在门控里取并集。
+
+        :param stream_id: 目标群 stream ID。
+        :param last_bot_reply_at: 她上一条回复的落库毫秒时间戳。
+        :return: 从该时刻起（含她那条）累计消息不超过 ONGOING_TOPIC_MESSAGE_SPAN
+            条时返回 True。
+        :raises sqlite3.Error: 统计消息表失败时由记忆层抛出。
+        副作用：只读 messages 表。
+        """
+        spanned = self.memory.message_count_since(stream_id, last_bot_reply_at)
+        return spanned <= ONGOING_TOPIC_MESSAGE_SPAN
+
+    def follow_up_declined(self, stream_id: int) -> bool:
+        """返回她是否已在这个群的上一次跟进机会里主动选择了沉默。
+
+        入口门控与批次门控必须读同一份事实，否则 reply_gate 审计事件会报告一个
+        与实际生效判定不同的门控态，现场排查时无法据此还原真实路径。
+
+        :param stream_id: 目标 stream ID。
+        :return: 她放弃过且此后没有再开口时返回 True。
+        """
+        return stream_id in self._follow_up_declined
+
     @property
     def at_mention_must_reply(self) -> bool:
         """返回协议 @ 是否绕过群聊回复门控。
@@ -3575,7 +4242,13 @@ class ChatService:
         *,
         label_message_ids: bool = False,
     ) -> list[dict]:
-        """将记忆消息转换为模型历史，并在群聊中补充发送者显示名。
+        """将记忆消息转换为模型历史，补充发言时刻，并在群聊中补充发送者显示名。
+
+        用户消息带 ``HH:MM`` 前缀（跨天时带 ``MM-DD HH:MM``），让「这条是刚说的
+        还是十分钟前说的」「两个人之间隔了多久」成为她能直接读到的事实，而不必由
+        门控常量代为判断。**她自己的历史回复不加时刻**：助手行是她的输出范例，行首
+        多出任何前缀都会被模仿进动作头，整轮按 illegal_action 失败；她的发言位置
+        夹在带时刻的用户行之间，据此已足以推断自己上次开口有多久。
 
         :param context: 当前会话上下文。
         :param messages: 记忆服务返回的消息对象列表。
@@ -3590,6 +4263,7 @@ class ChatService:
         :raises RuntimeError: 群聊用户消息缺少发送者人物 ID。
         """
         history: list[dict] = []
+        last_stamped_date = None
         for message in messages:
             content = message.content
             if context.stream.kind == 'group' and message.role == 'user':
@@ -3600,6 +4274,17 @@ class ChatService:
                     context.stream.id,
                 )
                 content = f'{name}: {content}'
+            if message.role == 'user':
+                spoken_at = datetime.fromtimestamp(message.created_at / 1000)
+                # 跨天才带日期：工作记忆可能横跨若干天，但同一天内逐行重复日期
+                # 只会挤占上下文；系统提示词已经给出「现在是几点」，她据此就能算出
+                # 每条消息离现在多久、彼此间隔多长。
+                if last_stamped_date == spoken_at.date():
+                    stamp = spoken_at.strftime('%H:%M')
+                else:
+                    stamp = spoken_at.strftime('%m-%d %H:%M')
+                    last_stamped_date = spoken_at.date()
+                content = f'{stamp} {content}'
             if label_message_ids and message.role == 'user':
                 content = f'[{message.message_id}] {content}'
             history.append({'role': message.role, 'content': content})
@@ -3925,13 +4610,17 @@ class ChatService:
     ) -> tuple[str, str] | None:
         """读取当前 stream 的场景画像，供系统提示词渲染。
 
-        只在群聊注入：私聊与桌面不存在「群里在聊什么」这个问题，那里她面对的
-        就是唯一的对话者。观察关闭时同样返回 None，整块省略。
+        只在群聊注入：私聊主动跟进会把刚生成的画像放进专用决策块，不复用群聊
+        标题；桌面同样不注入。观察关闭时返回 None，整块省略。
 
         :param context: 当前会话上下文。
         :return: ``(话题, 气氛)``；没有画像、观察关闭或非群聊时返回 ``None``。
         """
-        if context.stream.kind != 'group' or self._scene_observer is None:
+        if (
+            context.stream.kind != 'group'
+            or self._scene_observer is None
+            or self._scene_refresh_messages <= 0
+        ):
             return None
         snapshot = SceneSnapshot.from_dict(
             self.memory.read_json(self._scene_key(context.stream.id), None)
@@ -3953,7 +4642,11 @@ class ChatService:
         :param context: 当前会话上下文；非群聊或观察关闭时直接返回。
         副作用：可能创建一个后台任务；同一 stream 已有观察在跑时跳过。
         """
-        if context.stream.kind != 'group' or self._scene_observer is None:
+        if (
+            context.stream.kind != 'group'
+            or self._scene_observer is None
+            or self._scene_refresh_messages <= 0
+        ):
             return
         stream_id = context.stream.id
         if stream_id in self._observing:
@@ -3982,16 +4675,20 @@ class ChatService:
             messages = self.memory.working_memory(stream_id, SCENE_WINDOW_MESSAGES)
             if not messages:
                 return 'scene_observed_empty'
-            lines = [
-                item['content']
-                for item in self._history_for_context(context, messages)
-            ]
+            lines = self._scene_observation_lines(context, messages)
             snapshot = await self._scene_observer.observe(
                 lines, messages[-1].message_id,
             )
             self.memory.write_json(self._scene_key(stream_id), snapshot.to_dict())
             trace.emit(
                 'scene_observed',
+                # 必须显式置空 turnId，否则观察事件在控制台上完全消失：
+                # - 现象：观察正常产出并写入画像，终端与 WebUI 日志面板一行都看不到。
+                # - 原因：asyncio 任务继承创建时刻的 contextvar 快照，本任务因此带上了
+                #   调度它的那个回合的 turnId；控制台出口对带 turnId 的事件一律跳过，
+                #   理由是「已由轮末合成面板整体呈现」，而观察跑在面板渲染之后。
+                # - 后果：观察不属于任何回合，置空后走独立信息框，两条支路都不会漏。
+                turnId=None,
                 streamId=stream_id,
                 topic=snapshot.topic,
                 atmosphere=snapshot.atmosphere,
@@ -4002,6 +4699,30 @@ class ChatService:
             return 'scene_observation_failed'
         finally:
             self._observing.discard(stream_id)
+
+    def _scene_observation_lines(
+        self,
+        context: ConversationContext,
+        messages: list[StoredMessage],
+    ) -> list[str]:
+        """把历史渲染为情景分析 Agent 所需的「说话人：内容」行。
+
+        普通对话提示词的助手历史刻意不加名称，避免模型模仿；情景分析并不生成对话，
+        必须显式标清双方，否则私聊里会分不出哪句是 Bot 说的、哪句是对方说的。
+        """
+        lines: list[str] = []
+        for message in messages:
+            if message.role == 'assistant':
+                speaker = self._bot_display_name
+            else:
+                if message.sender_person_id is None:
+                    raise RuntimeError('情景分析的用户消息缺少发送者人物 ID')
+                speaker = self._registry.stream_display_name(
+                    message.sender_person_id,
+                    context.stream.id,
+                )
+            lines.append(f'{speaker}: {strip_say_tags(message.content)}')
+        return lines
 
     async def _maybe_summarize(self, stream_id: int) -> None:
         """在待摘要消息达到阈值时异步生成并保存 episode。
@@ -4122,6 +4843,22 @@ def _emoji_history_markup(items: list[tuple[str, str, int]]) -> str:
         f'<emoji emotion="{escape(emotion, quote=True)}"/>'
         for emotion, _reference, _sub_type in items
     )
+
+
+def _spoken_recap(segments: list[str], emoji_items: list[tuple[str, str, int]]) -> str:
+    """把一轮回复的可见产物写成她自己的第一人称陈述，供续跑轮引用。
+
+    :param segments: 本轮实际投递的分句正文。
+    :param emoji_items: 本轮实际命中的表情包条目。
+    :return: 形如「你刚说了：「……」」的陈述；只发了表情包时如实只说表情包。
+    """
+
+    spoken = ' '.join(segment.strip() for segment in segments if segment.strip())
+    if spoken and emoji_items:
+        return f'你刚说了：「{spoken}」，还发了个表情包'
+    if spoken:
+        return f'你刚说了：「{spoken}」'
+    return '你刚发了个表情包'
 
 
 def _plan_to_dict(plan: DayPlan | None) -> dict | None:

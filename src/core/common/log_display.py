@@ -382,6 +382,7 @@ VALUE_LABELS: Dict[str, str] = {
     "bot_sleeping": "机器人正在睡觉",
     "direct_question": "明确提问",
     "directly_addressed": "直接叫到机器人",
+    "direct_poke": "被戳了一下",
     "emotional_support": "需要情绪支持",
     "pending_thread": "有没接完的话头",
     "can_add_value": "能补充有价值的内容",

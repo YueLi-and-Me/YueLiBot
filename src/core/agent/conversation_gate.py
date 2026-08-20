@@ -2,8 +2,8 @@
 
 确定门控只负责硬边界与注意力过滤，不参与「愿不愿意说」的社会判断。DROP
 只处理确定、无语义争议的过滤（Bot 自己的消息、休眠、频率硬上限、无任何
-注意力信号的群聊噪声）；FORCE 保证直接对话与 @必回必须回应且不允许
-silent；DELIBERATE 把候选批次交给 Conversation Agent 自主选择。
+注意力信号的群聊噪声）；FORCE 保证用户发起的私聊、桌面交互与 @必回必须
+回应且不允许 silent；DELIBERATE 把普通群候选交给 Conversation Agent 自主选择。
 
 便宜候选信号只决定「是否进入意识」，不决定「回不回」：名字/别名、回复
 Bot、未决线索、正在进行的话题、明确问题、自然回应窗口等信号把普通群聊
@@ -38,10 +38,10 @@ DROP_GATE_CODES: frozenset[str] = frozenset({
     'message_type_disallowed',  # 配置禁止的消息类型
 })
 
-# FORCE 原因：直接对话契约或 @必回，模型没有 silent 选项。
+# FORCE 原因：用户直接发起对话或 @必回，模型没有 silent 选项。
 FORCE_GATE_CODES: frozenset[str] = frozenset({
     'at_mention_must_reply',  # 真实 @ 且 @必回开启
-    'direct_conversation',    # 私聊 / 桌面直接对话
+    'direct_conversation',    # QQ 私聊与 WebUI 桌面直接交互
     'system_confirmation',    # 明确的系统确认或用户操作结果
 })
 
@@ -49,6 +49,7 @@ FORCE_GATE_CODES: frozenset[str] = frozenset({
 DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
     'name_mention',            # 出现名字/别名但无真实 @
     'direct_mention',          # 真实 @ 但 @必回 未开启
+    'direct_poke',             # 有人戳了 Bot 自己
     'reply_to_bot',            # 回复了 Bot 的消息
     'ongoing_topic',           # Bot 正在参与的话题在继续
     'pending_thread',          # 存在当前人物的未决线索
@@ -63,6 +64,14 @@ DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
 # DELIBERATE；超过后必须重新出现真信号或攒够扩展触发预算，避免一次发言
 # 让后续十分钟的群噪声全部进入意识。
 NATURAL_REPLY_WINDOW_MS = 90_000
+
+# 「她正在参与的话题还在继续」的消息距离口径：从她上一条回复起（含那条）算，
+# 群里累计不超过这么多条消息时视为话题没有走远。
+#
+# 与 NATURAL_REPLY_WINDOW_MS 量纲不同且互不覆盖，两条都需要：
+# - 群热时几秒内就能刷过十几条，话题早换了，只有时限收得住；
+# - 群温吞时三分钟才两句，话题一点没变，只有条数接得住。
+ONGOING_TOPIC_MESSAGE_SPAN = 6
 
 _DISPOSITION_CODE_SETS: dict[GateDisposition, frozenset[str]] = {
     'drop': DROP_GATE_CODES,
@@ -87,14 +96,24 @@ class GateRequest:
     replies_in_window: int
     max_replies_in_window: int
     is_self_message: bool = False
+    # 本批是否包含「有人戳了 Bot」。它是明确指名的直接互动，但**不作 FORCE**：
+    # 戳一戳不带任何内容，强制回复会被连戳刷屏，而她的动作集里本来就有 poke，
+    # 可以戳回去。因此只抬入 DELIBERATE，接不接由她自己决定。
+    poked_me: bool = False
     reply_to_bot: bool = False
     pending_thread_available: bool = False
+    # 她正在参与的话题是否仍在继续。调用方按消息距离填充：从她上一条回复起
+    # （含那条）群里累计消息不超过 ONGOING_TOPIC_MESSAGE_SPAN 条即为真。
     current_topic_available: bool = False
     is_clear_question: bool = False
     recognizable_target: bool = False
     candidate_message_ids: tuple[int, ...] = ()
     # 距 Bot 上一条回复的毫秒数；由调用方从持久化消息时间戳计算。None 表示尚无回复。
     last_bot_reply_elapsed_ms: int | None = None
+    # 上一次自然跟进机会里她是否主动选择了沉默。由调用方按 Agent 的终局动作维护：
+    # 群聊里一旦选择 silent 即置真，一旦成功回复即置假。它是自然回应窗口的关闭条件，
+    # 表达的是「她看过这一轮并决定不接」这一事实，而非任何计数。
+    follow_up_declined: bool = False
 
     def __post_init__(self) -> None:
         """拒绝负计数、零窗口上限与负回复间隔，防止频率比较被错误输入翻转。"""
@@ -162,10 +181,12 @@ def decide_disposition(request: GateRequest) -> GateResult:
 
     优先级从高到低：
     1. Bot 自己的消息直接 DROP，永不回环；
-    2. 私聊与桌面是直接对话契约，FORCE 且不允许 silent；
+    2. 用户发起的 QQ 私聊与桌面交互是明确问答契约，FORCE 且不允许 silent；
     3. 群聊真实 @ 且 @必回开启时 FORCE（先于休眠与频率硬限）；
-    4. 休眠、频率窗口硬上限依次 DROP；
-    5. 任一便宜注意力信号命中则 DELIBERATE，全部未命中则按注意力过滤 DROP。
+    4. 休眠 DROP；
+    5. 频率窗口硬上限 DROP，但**只在没有任何直接点名信号时生效**：@、名字/别名、
+       被戳、回复她的消息都不受该上限约束；
+    6. 任一便宜注意力信号命中则 DELIBERATE，全部未命中则按注意力过滤 DROP。
 
     :param request: 已按事实填充的门控输入。
     :return: 携带门控态与原因码的 GateResult。
@@ -179,31 +200,58 @@ def decide_disposition(request: GateRequest) -> GateResult:
         return GateResult('force', ('at_mention_must_reply',))
     if request.asleep:
         return GateResult('drop', ('asleep',))
-    if request.replies_in_window >= request.max_replies_in_window:
-        return GateResult('drop', ('rate_limited',))
+    # 直接冲着她来的信号先收齐：@、名字/别名、被戳、回复她的消息。
     codes: list[str] = []
     if request.mentioned_me:
         codes.append('direct_mention')
     if request.name_mentioned:
         codes.append('name_mention')
+    if request.poked_me:
+        codes.append('direct_poke')
     if request.reply_to_bot:
         codes.append('reply_to_bot')
+    # 频率硬上限只约束「没人点名的自发参与」，不约束「有人正在叫她」。
+    #
+    # 该上限此前排在全部注意力信号之前，只有真实 @ 且 @必回开启能越过：
+    # - 现象：真机 6 小时内 49 次 rate_limited 丢弃，其中 3 条是有人直接叫她名字
+    #   （「小璃你要为我做主啊」「小璃快跑」），她因为「说太多了」完全没有反应。
+    # - 原因：上限的判据是她自己说了多少，与「这句话是不是冲着她来的」无关；
+    #   把它放在信号之前，等于让「我说够了」压过「有人在叫我」。
+    # - 后果：直接点名类信号不再被上限压掉，但仍然只抬入 DELIBERATE——她可以选
+    #   沉默；自发参与（自然窗口 / 话题延续 / 必要性评分）继续受上限约束，
+    #   刷屏边界没有放宽。
+    if not codes and request.replies_in_window >= request.max_replies_in_window:
+        return GateResult('drop', ('rate_limited',))
     if request.pending_thread_available:
         codes.append('pending_thread')
-    if request.current_topic_available:
-        codes.append('ongoing_topic')
     if request.is_clear_question:
         codes.append('clear_question')
-    # 自然回应窗口同时要求「时间够近」与「十分钟窗口内这是第一条回复」。
-    # 计数为 1 表示刚完成窗口内第一次发言，允许一次自然跟进；自然跟进若也
-    # 回复，计数变为 2，窗口即关闭。否则每次回复都会刷新时间戳，窗口会
-    # 在活跃群聊里无限自我续期，直到撞上频率硬上限。
-    if (
-        request.last_bot_reply_elapsed_ms is not None
-        and request.last_bot_reply_elapsed_ms <= NATURAL_REPLY_WINDOW_MS
-        and request.replies_in_window == 1
-    ):
-        codes.append('natural_reply_window')
+    # 她开口之后的跟进有两条口径，任一命中即抬入 DELIBERATE，并共用同一个关闭
+    # 条件：她在上一次机会里放弃过。
+    #
+    # - natural_reply_window 接的是「紧随其后的话」，按时限判定；
+    # - ongoing_topic 接的是「冷了一会儿但话题没走远的话」，按消息距离判定。
+    #   真机上「肘，我们去收拾他」距她上一条回复 3 分 11 秒（超时限）、中间只隔了
+    #   1 条消息（未超距离），正是只有后者接得住的那一类。
+    #
+    # 该窗口曾以「十分钟窗口内这是第一条回复」（replies_in_window == 1）为关闭
+    # 条件，用回复计数近似「她已经说够了」：
+    # - 现象：她刚发言后别人紧接着说的话被判为无信号群噪声。真机上出现过距上一条
+    #   回复仅 5 秒、正在对她说话的三条消息连续落到回复必要性评分并被丢弃。
+    # - 原因：计数在活跃群聊里迅速超过 1，窗口对当轮之后的全部消息永久关闭；
+    #   而计数与「这轮话是不是冲着她来的」没有任何因果关系。
+    # - 后果：改用她自己的终局动作作为关闭条件——选择 silent 表示看过并决定不接，
+    #   窗口关闭；成功回复表示对话仍在她这边，窗口重新敞开。窗口不再自我续期到
+    #   无限，是因为她每放弃一次就要重新被真信号或攒批唤醒；防刷屏的最终边界仍是
+    #   max_replies_in_window 硬上限，不由本条件承担。
+    if not request.follow_up_declined:
+        if (
+            request.last_bot_reply_elapsed_ms is not None
+            and request.last_bot_reply_elapsed_ms <= NATURAL_REPLY_WINDOW_MS
+        ):
+            codes.append('natural_reply_window')
+        if request.current_topic_available:
+            codes.append('ongoing_topic')
     if request.recognizable_target:
         codes.append('recognizable_target')
     if not codes:
