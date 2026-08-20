@@ -1,6 +1,6 @@
 """Conversation Agent 的第一期行动协议与决策校验。
 
-本模块定义「决策外壳 + reply 负载」两层协议：动作枚举、封闭 reason_codes、
+本模块定义「决策外壳 + reply 负载」两层协议：终局与认知两类动作枚举、封闭 reason_codes、
 平台能力、回合固定快照（``DecisionFrame``）与 ``ConversationDecision`` 的
 合法性校验，以及四层可审计行动事件（``ActionDecisionEvent``）。全部为纯
 确定性逻辑，不调用模型、不读写数据库；模型产出决策后必须先通过
@@ -13,7 +13,8 @@
 - ``PlatformCapabilities``：运行时按当前 stream 与平台适配器真实具备的能力；
 - ``DecisionFrame``：一次注意力候选窗口的回合固定快照；
 - ``ReplyPayload`` / ``ConversationDecision``：模型决策的数据形态与自检；
-- ``available_actions``：按 stream 与平台能力动态收窄动作空间；
+- ``available_actions``：按 stream、平台能力与**剩余认知轮次**动态收窄动作空间——
+  剩余轮次归零时认知动作直接不在动作集里，模型再选就是越界，不存在「预算耗尽降级」路径；
 - ``GateInputFacts`` / ``ActionDecisionEvent``：四层审计事件，
   ``to_dict`` 生成可供 trace 使用的可序列化字典。
 
@@ -28,15 +29,21 @@ from typing import Any, Literal
 
 from src.core.platform_io.types import StreamKind
 
-# 第一期基础动作：react 仅当平台适配器已验证真实执行能力时开放。
-ConversationAction = Literal['reply', 'silent', 'react']
+# 终局动作：产出可见产物或明确结束本回合；react 仅当平台适配器已验证真实执行能力时开放。
+# 认知动作：不产生任何可见产物，执行后把观察结果回灌给模型并再发起一轮（ReAct 回环）。
+ConversationAction = Literal['reply', 'silent', 'react', 'recall', 'inspect']
+TERMINAL_ACTIONS: frozenset[ConversationAction] = frozenset({'reply', 'silent', 'react'})
+COGNITIVE_ACTIONS: frozenset[ConversationAction] = frozenset({'recall', 'inspect'})
+ALL_ACTIONS: frozenset[ConversationAction] = TERMINAL_ACTIONS | COGNITIVE_ACTIONS
 ReplyLength = Literal['brief', 'long']
 # 三态门控的态；门控判定本身在 conversation_gate 模块实现。
 GateDisposition = Literal['drop', 'force', 'deliberate']
 # 行动事件的状态：区分「她考虑后选择行动」与各类失败，绝不允许混为一谈。
+# cognitive_step 是认知轮的终态：既不是她定了要做什么，也不是失败，而是「她去查了一下」。
 EventStatus = Literal[
     'committed',
     'silent_by_choice',
+    'cognitive_step',
     'gate_dropped',
     'timeout',
     'provider_error',
@@ -78,10 +85,17 @@ def _validate_reason_codes(
 ) -> None:
     """校验理由码的形状与动作分域，完整决策与动作头共用。
 
+    认知动作（recall/inspect）不参与本校验：理由码是给「回不回」这个决策做审计的
+    封闭枚举，而认知动作的审计信息是它的 query 本身。强行要求一个不承载信息的字段
+    只会加重生成侧格式负担、抬高 parse_error 率——动作头合规率是花了一整轮 shadow
+    才压到 0 的，不为此再赌一次。
+
     :param action: 已确认属于封闭动作集的当前动作。
     :param reason_codes: 模型声明的理由码元组。
     :raises IllegalActionError: 理由码为空、重复、未知或与动作分域矛盾。
     """
+    if action in COGNITIVE_ACTIONS:
+        return
     if not reason_codes:
         raise IllegalActionError('reason_codes 不能为空')
     if len(set(reason_codes)) != len(reason_codes):
@@ -95,6 +109,31 @@ def _validate_reason_codes(
             )
         if code not in domain:
             raise IllegalActionError(f'reason_code {code} 不能与动作 {action} 组合')
+
+
+def _validate_cognitive_shape(
+    action: ConversationAction,
+    query: str | None,
+    target_message_ids: tuple[int, ...],
+    quote_message_id: int | None,
+) -> None:
+    """校验认知动作的形状：必须有检索词，且不得携带任何投递侧字段。
+
+    认知动作只读、不产出可见产物，因此 targets / quote 这类「回给谁、引用哪条」
+    的字段对它没有意义；携带即视为模型把两类动作混淆，按协议错误处理。
+
+    :param action: 已确认属于认知动作集的当前动作。
+    :param query: 检索词原文。
+    :param target_message_ids: 目标消息 ID 元组，认知动作必须为空。
+    :param quote_message_id: 引用消息 ID，认知动作必须为 None。
+    :raises IllegalActionError: 检索词缺失或为空白，或携带了投递侧字段。
+    """
+    if query is None or not query.strip():
+        raise IllegalActionError(f'{action} 动作必须携带非空 query')
+    if target_message_ids:
+        raise IllegalActionError(f'{action} 动作不能指定目标消息')
+    if quote_message_id is not None:
+        raise IllegalActionError(f'{action} 动作不能携带引用')
 
 
 class IllegalActionError(ValueError):
@@ -164,6 +203,33 @@ class DecisionFrame:
             raise ValueError('DROP 候选不调用模型，动作集必须为空')
         if self.disposition != 'drop' and not self.available_actions:
             raise ValueError(f'{self.disposition} 候选的动作集不能为空')
+        for action in self.available_actions:
+            if action not in ALL_ACTIONS:
+                raise ValueError(f'未知动作进入动作集：{action}')
+
+    def with_available_actions(
+        self,
+        actions: frozenset[ConversationAction],
+    ) -> 'DecisionFrame':
+        """复制本帧并替换动作集，用于 ReAct 各轮按剩余预算收窄动作空间。
+
+        除动作集之外的一切（水位、可选消息、门控态、平台能力）在整个回合内保持不变，
+        因此「回合固定快照」这条性质不被多轮破坏：变的只有她这一轮还能选什么。
+
+        :param actions: 本轮允许的动作集合。
+        :return: 除动作集外与本帧完全相同的新帧。
+        :raises ValueError: 新动作集与门控态矛盾或含未知动作。
+        """
+        return DecisionFrame(
+            turn_id=self.turn_id,
+            snapshot_id=self.snapshot_id,
+            stream_kind=self.stream_kind,
+            disposition=self.disposition,
+            selectable_message_ids=self.selectable_message_ids,
+            message_watermark=self.message_watermark,
+            available_actions=actions,
+            capabilities=self.capabilities,
+        )
 
 
 @dataclass(frozen=True)
@@ -256,12 +322,25 @@ class ConversationDecision:
     quote_message_id: int | None
     reason_codes: tuple[str, ...]
     reply: ReplyPayload | None = None
+    query: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、动作与负载不匹配。"""
-        if self.action not in ('reply', 'silent', 'react'):
+        if self.action not in ALL_ACTIONS:
             raise IllegalActionError(f'未知动作：{self.action}')
         _validate_reason_codes(self.action, self.reason_codes)
+        if self.action in COGNITIVE_ACTIONS:
+            _validate_cognitive_shape(
+                self.action,
+                self.query,
+                self.target_message_ids,
+                self.quote_message_id,
+            )
+            if self.reply is not None:
+                raise IllegalActionError(f'{self.action} 动作不能携带 reply 负载')
+            return
+        if self.query is not None:
+            raise IllegalActionError(f'{self.action} 动作不能携带 query')
         if self.action == 'reply':
             if self.reply is None:
                 raise IllegalActionError('reply 动作必须携带 reply 负载')
@@ -304,7 +383,8 @@ class DecisionHead:
 
     与 ConversationDecision 的区别是 reply 的正文此刻尚未产生：reply 动作
     用 length 声明篇幅，正文随后以 <say> 流式输出；silent 只存在动作
-    头本身，其后不允许任何正文。
+    头本身，其后不允许任何正文。认知动作（recall/inspect）同样只存在动作头，
+    其后不允许任何正文——它产出的是回灌给模型的观察，不是可见产物。
     """
 
     action: ConversationAction
@@ -312,12 +392,25 @@ class DecisionHead:
     quote_message_id: int | None
     reason_codes: tuple[str, ...]
     length: ReplyLength | None = None
+    query: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、篇幅与动作不匹配。"""
-        if self.action not in ('reply', 'silent', 'react'):
+        if self.action not in ALL_ACTIONS:
             raise IllegalActionError(f'未知动作：{self.action}')
         _validate_reason_codes(self.action, self.reason_codes)
+        if self.action in COGNITIVE_ACTIONS:
+            _validate_cognitive_shape(
+                self.action,
+                self.query,
+                self.target_message_ids,
+                self.quote_message_id,
+            )
+            if self.length is not None:
+                raise IllegalActionError(f'{self.action} 动作不能声明回复篇幅')
+            return
+        if self.query is not None:
+            raise IllegalActionError(f'{self.action} 动作不能携带 query')
         if self.action == 'reply':
             if not self.target_message_ids:
                 raise IllegalActionError('reply 动作必须指定至少一条目标消息')
@@ -359,11 +452,22 @@ class DecisionHead:
     ) -> ConversationDecision:
         """结合流式正文组装完整决策。
 
-        :param body_text: reply 动作的完整可见正文；silent 与 react 忽略该
-            参数，传入非空值视为协议错误。
+        :param body_text: reply 动作的完整可见正文；silent、react 与认知动作
+            忽略该参数，传入非空值视为协议错误。
         :return: 通过结构自检的 ConversationDecision。
-        :raises IllegalActionError: silent/react 传入正文或组装结果结构非法。
+        :raises IllegalActionError: silent/react/认知动作传入正文，或组装结果结构非法。
         """
+        if self.action in COGNITIVE_ACTIONS:
+            if body_text.strip() or emoji_emotions:
+                raise IllegalActionError(f'{self.action} 动作头之后不能有正文或表情包')
+            return ConversationDecision(
+                action=self.action,
+                target_message_ids=(),
+                quote_message_id=None,
+                reason_codes=self.reason_codes,
+                reply=None,
+                query=self.query,
+            )
         if self.action == 'silent':
             if body_text.strip() or emoji_emotions:
                 raise IllegalActionError('silent 动作头之后不能有正文或表情包')
@@ -403,27 +507,40 @@ def available_actions(
     stream_kind: StreamKind,
     disposition: GateDisposition,
     capabilities: PlatformCapabilities,
+    *,
+    cognitive_rounds_left: int = 0,
 ) -> frozenset[ConversationAction]:
-    """按 stream 与平台能力动态收窄第一版动作空间。
+    """按 stream、平台能力与剩余认知轮次动态收窄动作空间。
+
+    认知动作的预算完全由本函数表达：``cognitive_rounds_left`` 归零时它们直接
+    不在返回集合里，模型再选就撞上 ``_validate_frame_choice`` 的动作空间校验，
+    记为 ``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径**——
+    末轮的约束写在动作集里，不写在异常处理里。
 
     :param stream_kind: 会话类型；私聊与桌面第一版不允许无解释的 silent，
         那里的交互契约是用户直接对她说话。
     :param disposition: 门控态；DROP 不进入模型，动作集为空；群聊 FORCE
-        （@必回）只允许 reply。
+        （@必回）只允许 reply 作为终局动作，但仍可先检索再回。
     :param capabilities: 运行时真实具备的平台能力；只有已验证的 reaction
         支持才会让 react 进入动作集。
+    :param cognitive_rounds_left: 本回合还剩几次认知动作机会；小于等于 0
+        表示只能给出终局动作。
 
-    :return: 本回合允许模型选择的动作集合。
+    :return: 本轮允许模型选择的动作集合。
     """
     if disposition == 'drop':
         return frozenset()
-    if stream_kind in ('desktop', 'direct'):
-        return frozenset({'reply'})
-    if disposition == 'force':
-        return frozenset({'reply'})
-    actions: set[ConversationAction] = {'reply', 'silent'}
-    if capabilities.react:
-        actions.add('react')
+    actions: set[ConversationAction]
+    if stream_kind in ('desktop', 'direct') or disposition == 'force':
+        actions = {'reply'}
+    else:
+        actions = {'reply', 'silent'}
+        if capabilities.react:
+            actions.add('react')
+    # 认知动作与 stream 类型、门控态都无关：无论她最终要不要开口，
+    # 「先想一下再决定」这件事在任何出口都成立，只受轮次预算约束。
+    if cognitive_rounds_left > 0:
+        actions.update(COGNITIVE_ACTIONS)
     return frozenset(actions)
 
 
@@ -471,10 +588,14 @@ class ActionDecisionEvent:
     """四层可审计行动事件：输入事实 / 门控结果 / Agent 决策 / 版本信息。
 
     ``event_status`` 必须区分：``committed``（她考虑后选择行动）、
-    ``silent_by_choice``（她考虑后选择沉默）、``gate_dropped``（代码根本没
-    让她考虑）、``timeout`` / ``provider_error`` / ``parse_error`` /
-    ``illegal_action`` / ``delivery_failed``（模型或投递故障）。模型失败与
-    自主沉默绝不能混进同一个状态。
+    ``silent_by_choice``（她考虑后选择沉默）、``cognitive_step``（她先去查了
+    一下，本回合尚未结束）、``gate_dropped``（代码根本没让她考虑）、
+    ``timeout`` / ``provider_error`` / ``parse_error`` / ``illegal_action`` /
+    ``delivery_failed``（模型或投递故障）。模型失败与自主沉默绝不能混进同一个状态。
+
+    一个回合可能落多条本事件：``snapshot_id`` 相同、``round_index`` 从 0 递增，
+    前面若干条为 ``cognitive_step``，最后一条必为终局或失败状态。观察面板据此
+    把一次思考链串起来，``latency_ms`` 逐轮记账、总时长由各轮相加得到。
     """
 
     # DROP 发生在任何回合之前，该层没有回合编号，因此允许为 None。
@@ -493,12 +614,17 @@ class ActionDecisionEvent:
     provider: str = ''
     model: str = ''
     latency_ms: int = 0
+    # ReAct 轮次序号，从 0 开始；单轮回合恒为 0，与本期之前的事件形状兼容。
+    round_index: int = 0
+    # 认知动作的观察结果摘要，已按 OBSERVATION_EVENT_MAX_CHARS 截断后写入账本。
+    observation: str = ''
 
     def to_dict(self) -> dict[str, Any]:
         """组装四层审计字典，供 ``trace.emit('action_decision', ...)`` 使用。
 
-        :return: 含 ``turnId`` / ``snapshotId`` / ``eventStatus`` 与
-            ``inputs`` / ``gate`` / ``decision`` / ``version`` 四层的字典。
+        :return: 含 ``turnId`` / ``snapshotId`` / ``roundIndex`` / ``eventStatus`` /
+            ``observation`` 与 ``inputs`` / ``gate`` / ``decision`` / ``version``
+            四层的字典。
         """
         decision = None
         if self.decision is not None:
@@ -507,6 +633,11 @@ class ActionDecisionEvent:
                 'targetMessageIds': list(self.decision.target_message_ids),
                 'quoteMessageId': self.decision.quote_message_id,
                 'reasonCodes': list(self.decision.reason_codes),
+                **(
+                    {'query': self.decision.query}
+                    if self.decision.query is not None
+                    else {}
+                ),
                 'reply': (
                     {
                         'text': self.decision.reply.text,
@@ -529,9 +660,11 @@ class ActionDecisionEvent:
         return {
             'turnId': self.turn_id,
             'snapshotId': self.snapshot_id,
+            'roundIndex': self.round_index,
             'messageWatermark': self.turn_message_watermark,
             'eventStatus': self.event_status,
             'detail': self.detail,
+            'observation': self.observation,
             'inputs': self.gate_inputs.to_dict(),
             'gate': {
                 'disposition': self.gate_disposition,

@@ -118,6 +118,7 @@ class DecisionEvent:
     :ivar quote: 引用消息 ID 原文；缺失时为 `None`。
     :ivar reasons: 逗号分隔的理由码原文；缺失时为 `None`。
     :ivar length: 回复篇幅原文；缺失时为 `None`。
+    :ivar query: 认知动作的检索词原文；终局动作不携带，缺失时为 `None`。
     """
 
     type: str = 'decision'
@@ -126,6 +127,7 @@ class DecisionEvent:
     quote: str | None = None
     reasons: str | None = None
     length: str | None = None
+    query: str | None = None
 
 
 ParseEvent = Union[
@@ -409,6 +411,7 @@ class ResponseParser:
                 quote=attrs.get('quote'),
                 reasons=attrs.get('reasons'),
                 length=attrs.get('length'),
+                query=attrs.get('query'),
             ))
             return
 

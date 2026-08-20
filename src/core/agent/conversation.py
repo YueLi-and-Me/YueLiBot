@@ -1,25 +1,37 @@
-"""Conversation Agent：一次模型调用同时完成行动决策与发声。
+"""Conversation Agent：在 ReAct 回环里完成行动决策与发声。
 
-本模块是行动核心中唯一真正调用模型的 Agent。它接收已组装的消息与回合固定
-快照，流式消费模型输出：解析器在动作头（<decision>）完整且通过回合帧校验
-之前，不向调用方放出任何正文事件；校验通过后正文与副作用事件才逐批流出。
-silent 只产出动作头并写一条行动决策事件，不产生任何用户可见内容。
+本模块是行动核心中唯一真正调用模型的 Agent。一个回合由若干轮组成：每轮流式消费
+一次模型输出，解析器在动作头（<decision>）完整且通过回合帧校验之前，不向调用方
+放出任何正文事件。
+
+- 选到**终局动作**（reply / silent / react）时回合结束：reply 的正文与副作用事件
+  逐批流出，silent 与 react 不产生任何用户可见内容。
+- 选到**认知动作**（recall / inspect）时本轮结束、回合继续：执行检索、把观察结果
+  追加进消息序列，再发起下一轮。认知轮**不放出任何事件**，用户侧完全不可见。
+
+轮次预算不靠异常兜底表达，而是靠动作空间：每轮按剩余认知轮次重算
+``available_actions``，归零时认知动作直接不在集合里，模型再选就撞上既有的动作空间
+校验，记为 ``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径。**
 
 失败语义（event_status 与自主沉默绝不允许混淆）：
 - 正文先于动作头 / 缺失动作头 → parse_error；
 - 动作头违反协议或回合帧（非法枚举、自由理由码、目标越界、引用能力缺失、
-  FORCE 禁默、动作头之后没有正文）→ illegal_action；
+  FORCE 禁默、认知动作缺 query、动作头之后没有正文）→ illegal_action；
 - LlmError(kind=timeout) → timeout，其余 LlmError 与未知异常 → provider_error；
 - LlmError(kind=aborted) 原样上抛且不写行动决策事件：用户主动中断不属于
-  八种行动事件状态，由调用方沿用既有中断语义处理。
+  八种行动事件状态，由调用方沿用既有中断语义处理；
+- 认知动作**执行**本身失败（数据库错误等）原样上抛，不转成模型失败状态：
+  那是本机故障不是模型协议问题，混进 provider_error 只会让真正的 bug 被当成
+  服务商抖动忽略掉。
 
-依赖：action_protocol（协议与校验）、parser（流式解析）、llm_models 协议
-与 LlmError、observe.events（行动决策事件落账）；被 src.core.services.chat
-在 DELIBERATE / FORCE 候选上调用。
+依赖：action_protocol（协议与校验）、cognition（认知动作执行）、parser（流式解析）、
+llm_models 协议与 LlmError、observe.events（行动决策事件落账）；被
+src.core.services.chat 在 DELIBERATE / FORCE 候选上调用。
 """
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, cast
 
@@ -27,6 +39,7 @@ import asyncio
 import time
 
 from .action_protocol import (
+    COGNITIVE_ACTIONS,
     ActionDecisionEvent,
     ConversationAction,
     ConversationDecision,
@@ -36,6 +49,13 @@ from .action_protocol import (
     GateInputFacts,
     IllegalActionError,
     ReplyLength,
+    available_actions,
+)
+from .cognition import (
+    OBSERVATION_EVENT_MAX_CHARS,
+    CognitiveExecutor,
+    CognitiveRequest,
+    CognitiveScope,
 )
 from .parser import DecisionEvent, EmojiEvent, ParseEvent, ResponseParser, TextEvent
 
@@ -44,13 +64,42 @@ from src.core.llm_models.protocol import LlmProvider
 from src.core.observe import events as trace
 
 
+# 每一轮都追加在末条消息之后的输出起点指令。系统提示词末尾的协议离生成位置较远，
+# 紧贴生成位置再说一次可显著压低模型退回「先 <say>」旧习惯的概率；这与
+# ChatService 给首轮末条用户消息追加的指令是同一条约束，只是作用在后续轮次。
+_OUTPUT_REQUIREMENT = (
+    '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
+    '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 <say>、普通文字或解释。'
+)
+# 认知轮次用尽时追加的收束指令。它只是把动作空间里已经成立的事实说给模型听，
+# 真正的约束在 available_actions；两处口径必须一致，改一处要同步改另一处。
+_FINAL_ROUND_NOTICE = (
+    '你已经用完这一轮可以查东西的次数，接下来必须直接给出最终动作，不能再检索。'
+)
+
+
+def _truncate(text: str, limit: int) -> str:
+    """按字符上限截断事件账本里的观察摘要。
+
+    :param text: 观察正文。
+    :param limit: 字符上限。
+    :return: 未超限时原样返回，超限时返回截断后加省略号的文本。
+    """
+    if len(text) <= limit:
+        return text
+    return f'{text[:limit]}…'
+
+
 @dataclass(frozen=True)
 class AgentOutcome:
     """一次 Conversation Agent 调用的完整结果。
 
-    decision 仅当状态为 committed / silent_by_choice 时非空；失败状态
-    （timeout / provider_error / parse_error / illegal_action）下为 None，
+    decision 仅当状态为 committed / silent_by_choice / cognitive_step 时非空；
+    失败状态（timeout / provider_error / parse_error / illegal_action）下为 None，
     原因见 action_event.detail。
+
+    :ivar observation: 认知轮的观察正文；非认知轮为空串。
+    :ivar cognitive_rounds_used: 本回合实际用掉的认知轮次数，供调用方记账与观察。
     """
 
     decision: ConversationDecision | None
@@ -58,6 +107,8 @@ class AgentOutcome:
     action_event: ActionDecisionEvent
     body_text: str = ""
     body_events: tuple[ParseEvent, ...] = ()
+    observation: str = ""
+    cognitive_rounds_used: int = 0
 
 
 def _parse_id_list(raw: str | None) -> tuple[int, ...]:
@@ -126,8 +177,8 @@ def _parse_length(raw: str | None) -> ReplyLength | None:
 class ConversationAgent:
     """唯一能产出用户可见内容的模型 Agent（项目全局不变量之一）。
 
-    同一次模型调用内先产出动作头再发声，不拆 Planner/Replyer，不引入多轮
-    ReAct。silent 不触发任何正文副作用，只写一条结构化行动决策事件。
+    同一次模型调用内先产出动作头再发声，不拆 Planner/Replyer。ReAct 回环只在
+    动作头层面展开：认知动作不产出可见内容，因此上面那条不变量不受多轮影响。
     """
 
     def __init__(
@@ -158,29 +209,118 @@ class ConversationAgent:
         model_task: str = "chat.conversation",
         provider_name: str = "",
         model_name: str = "",
+        cognitive_executor: CognitiveExecutor | None = None,
+        cognitive_scope: CognitiveScope | None = None,
+        cognitive_rounds: int = 0,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None = None,
         on_chunk: Callable[[dict[str, Any]], None] | None = None,
         signal: asyncio.Event | None = None,
     ) -> AgentOutcome:
-        """执行一次行动决策与发声，并落账四层行动决策事件。
+        """执行一个回合：若干认知轮之后给出终局动作，并逐轮落账。
 
-        :param frame: 本回合固定快照；动作头必须在其边界内合法。
-        :param messages: 已组装、可直接提交模型的角色/内容消息列表。
+        :param frame: 本回合固定快照；每轮只有动作集按剩余预算变化，其余字段
+            （水位、可选消息、门控态、平台能力）在整个回合内不变。
+        :param messages: 已组装、可直接提交模型的角色/内容消息列表；认知轮的
+            观察追加在其副本尾部，调用方传入的列表不被修改。
         :param gate_inputs: 第 1 层确定性输入事实。
         :param gate_reason_codes: 第 2 层门控原因码。
         :param prompt_hash: 第 4 层提示词指纹；由调用方按模板组合计算。
         :param model_task: 第 4 层模型任务标识。
         :param provider_name: 第 4 层提供方标识。
         :param model_name: 第 4 层模型标识。
+        :param cognitive_executor: 认知动作执行器；省略时退化为单轮，行为与
+            引入 ReAct 之前逐字相同。
+        :param cognitive_scope: 认知检索的会话与人物范围；省略时同样退化为单轮。
+        :param cognitive_rounds: 本回合最多允许几次认知动作；0 表示关闭 ReAct。
         :param on_events: 动作头校验通过后逐批接收正文与副作用事件的回调；
-            省略时事件聚合到返回结果中，适合测试与重放。
+            省略时事件聚合到返回结果中，适合测试与重放。**认知轮不会调用它。**
         :param on_chunk: 可选的原生分片回调，供调用方转发流式观测事件。
-        :param signal: 可选的取消事件，透传给模型提供方。
+        :param signal: 可选的取消事件，透传给模型提供方，跨轮持续有效。
 
-        :return: 携带决策、事件状态与完整审计事件的 AgentOutcome。
+        :return: 携带终局决策、事件状态与完整审计事件的 AgentOutcome。
         :raises LlmError: kind 为 aborted 时原样上抛，表示用户主动中断。
+        :raises Exception: 认知动作执行失败（如数据库错误）原样上抛；那是本机
+            故障，不转成模型失败状态。
 
-        副作用：写入一条 action_decision 观察事件；模型调用与事件数量线性相关。
+        副作用：每轮写入一条 action_decision 观察事件；模型调用次数等于实际轮数。
+        """
+        react_enabled = (
+            cognitive_executor is not None
+            and cognitive_scope is not None
+            and cognitive_rounds > 0
+        )
+        rounds_left = cognitive_rounds if react_enabled else 0
+        working_messages = list(messages)
+        round_index = 0
+        while True:
+            round_frame = frame.with_available_actions(
+                available_actions(
+                    frame.stream_kind,
+                    frame.disposition,
+                    frame.capabilities,
+                    cognitive_rounds_left=rounds_left,
+                )
+            )
+            outcome = await self._run_round(
+                round_frame,
+                working_messages,
+                gate_inputs,
+                gate_reason_codes,
+                round_index=round_index,
+                cognitive_rounds_used=round_index,
+                prompt_hash=prompt_hash,
+                model_task=model_task,
+                provider_name=provider_name,
+                model_name=model_name,
+                cognitive_executor=cognitive_executor,
+                cognitive_scope=cognitive_scope,
+                on_events=on_events,
+                on_chunk=on_chunk,
+                signal=signal,
+            )
+            if outcome.event_status != 'cognitive_step':
+                return outcome
+            assert outcome.decision is not None and outcome.decision.query is not None
+            rounds_left -= 1
+            round_index += 1
+            working_messages.extend(
+                _observation_messages(
+                    outcome.decision.action,
+                    outcome.decision.query,
+                    outcome.observation,
+                    final_round=rounds_left <= 0,
+                )
+            )
+
+    async def _run_round(
+        self,
+        frame: DecisionFrame,
+        messages: list[dict],
+        gate_inputs: GateInputFacts,
+        gate_reason_codes: tuple[str, ...],
+        *,
+        round_index: int,
+        cognitive_rounds_used: int,
+        prompt_hash: str,
+        model_task: str,
+        provider_name: str,
+        model_name: str,
+        cognitive_executor: CognitiveExecutor | None,
+        cognitive_scope: CognitiveScope | None,
+        on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
+        on_chunk: Callable[[dict[str, Any]], None] | None,
+        signal: asyncio.Event | None,
+    ) -> AgentOutcome:
+        """执行一次模型调用，并在选到认知动作时就地完成检索。
+
+        检索放在本轮之内而不是交回 run()，是为了让事件的 ``latency_ms`` 覆盖
+        「模型想 + 实际查」的完整耗时，也让观察摘要能与它所属的那一轮写进同一条事件。
+
+        :param frame: 已按本轮剩余预算收窄动作集的回合帧。
+        :param messages: 本轮实际提交模型的消息序列。
+        :param round_index: 轮次序号，从 0 开始。
+        :param cognitive_rounds_used: 进入本轮之前已用掉的认知轮次数。
+        :return: 本轮结果；认知动作返回 ``cognitive_step`` 并带上观察正文。
         """
         started = time.monotonic()
         parser = ResponseParser()
@@ -191,6 +331,7 @@ class ConversationAgent:
         decision: ConversationDecision | None = None
         status: EventStatus = "committed"
         detail = ""
+        observation = ""
 
         async def release(events: list[ParseEvent]) -> None:
             """放出已通过动作头校验的事件；无回调时仅聚合到结果。"""
@@ -200,7 +341,7 @@ class ConversationAgent:
                 body_events.extend(events)
 
         def finish() -> AgentOutcome:
-            """组装审计事件、写入观察账本并返回最终结果。"""
+            """组装审计事件、写入观察账本并返回本轮结果。"""
             latency_ms = int((time.monotonic() - started) * 1000)
             action_event = ActionDecisionEvent(
                 turn_id=frame.turn_id,
@@ -218,6 +359,8 @@ class ConversationAgent:
                 provider=provider_name,
                 model=model_name,
                 latency_ms=latency_ms,
+                round_index=round_index,
+                observation=_truncate(observation, OBSERVATION_EVENT_MAX_CHARS),
             )
             trace.emit('action_decision', **action_event.to_dict())
             return AgentOutcome(
@@ -226,43 +369,71 @@ class ConversationAgent:
                 action_event=action_event,
                 body_text=''.join(body_parts),
                 body_events=tuple(body_events),
+                observation=observation,
+                cognitive_rounds_used=cognitive_rounds_used,
             )
 
         try:
-            async for chunk in self._provider.stream(
-                messages=messages,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-                signal=signal,
-            ):
-                if on_chunk is not None:
-                    on_chunk(chunk)
-                text = chunk.get('text')
-                if not text:
-                    continue
-                for event in parser.push(text):
-                    if head is None:
-                        if isinstance(event, DecisionEvent):
-                            head = self._parse_head(event, frame)
-                            if head.action == 'silent':
-                                decision = head.to_decision('')
-                                status = 'silent_by_choice'
-                                # 静默只有动作头：立即返回，之后任何正文都不解析不流出。
-                                return finish()
-                            continue
-                        status = 'parse_error'
-                        detail = (
-                            f'动作头之前出现了 {type(event).__name__}，正文被整体丢弃'
-                        )
-                        return finish()
-                    if isinstance(event, DecisionEvent):
-                        # 首个动作头之后重复出现视为模型噪声，忽略且不放出。
+            # aclosing 保证提前 return（silent / 认知动作都会提前结束本轮）时
+            # 生成器立即收到 GeneratorExit，httpx 的流式连接随即释放；靠 GC 回收
+            # 会把连接按不确定的时机挂着，而认知动作让提前结束从罕见变成常态。
+            async with aclosing(
+                self._provider.stream(
+                    messages=messages,
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                    signal=signal,
+                )
+            ) as stream:
+                async for chunk in stream:
+                    if on_chunk is not None:
+                        on_chunk(chunk)
+                    text = chunk.get('text')
+                    if not text:
                         continue
-                    await release([event])
-                    if isinstance(event, TextEvent):
-                        body_parts.append(event.value)
-                    elif isinstance(event, EmojiEvent):
-                        emoji_emotions.append(event.emotion)
+                    for event in parser.push(text):
+                        if head is None:
+                            if isinstance(event, DecisionEvent):
+                                head = self._parse_head(event, frame)
+                                if head.action in COGNITIVE_ACTIONS:
+                                    decision = head.to_decision('')
+                                    status = 'cognitive_step'
+                                    assert cognitive_executor is not None
+                                    assert cognitive_scope is not None
+                                    assert decision.query is not None
+                                    result = await cognitive_executor.execute(
+                                        CognitiveRequest(
+                                            action=decision.action,
+                                            query=decision.query,
+                                            stream_id=cognitive_scope.stream_id,
+                                            stream_kind=frame.stream_kind,
+                                            person_ids=cognitive_scope.person_ids,
+                                            message_watermark=frame.message_watermark,
+                                        )
+                                    )
+                                    observation = result.text
+                                    # 认知动作头即终止本轮解析：其后若还有正文，
+                                    # 与 silent 同款处理——不解析、不流出、不计入。
+                                    return finish()
+                                if head.action == 'silent':
+                                    decision = head.to_decision('')
+                                    status = 'silent_by_choice'
+                                    # 静默只有动作头：立即返回，之后任何正文都不解析不流出。
+                                    return finish()
+                                continue
+                            status = 'parse_error'
+                            detail = (
+                                f'动作头之前出现了 {type(event).__name__}，正文被整体丢弃'
+                            )
+                            return finish()
+                        if isinstance(event, DecisionEvent):
+                            # 首个动作头之后重复出现视为模型噪声，忽略且不放出。
+                            continue
+                        await release([event])
+                        if isinstance(event, TextEvent):
+                            body_parts.append(event.value)
+                        elif isinstance(event, EmojiEvent):
+                            emoji_emotions.append(event.emotion)
             if head is None:
                 status = 'parse_error'
                 detail = '模型输出中没有动作头'
@@ -297,6 +468,10 @@ class ConversationAgent:
     def _parse_head(self, event: DecisionEvent, frame: DecisionFrame) -> DecisionHead:
         """把解析器动作头转换为已通过帧校验的 DecisionHead。
 
+        认知动作不要求 reasons：理由码是给「回不回」做审计的封闭枚举，认知动作的
+        审计信息是它的 query。因此这里先看动作类别再决定要不要强制解析 reasons，
+        否则模型只写 ``<decision action="recall" query="…"/>`` 会被误判为协议失败。
+
         :param event: 解析器产出的动作头原始属性。
         :param frame: 本回合固定快照。
         :return: 已完成结构与帧校验的 DecisionHead。
@@ -304,13 +479,48 @@ class ConversationAgent:
         """
         if event.action is None:
             raise IllegalActionError('动作头缺少 action 属性')
-        action = cast(ConversationAction, event.action)
+        action = cast(ConversationAction, event.action.strip())
+        reason_codes = (
+            () if action in COGNITIVE_ACTIONS else _parse_code_list(event.reasons)
+        )
         head = DecisionHead(
             action=action,
             target_message_ids=_parse_id_list(event.targets),
             quote_message_id=_parse_optional_id(event.quote),
-            reason_codes=_parse_code_list(event.reasons),
+            reason_codes=reason_codes,
             length=_parse_length(event.length),
+            query=event.query,
         )
         head.validate(frame)
         return head
+
+
+def _observation_messages(
+    action: ConversationAction,
+    query: str,
+    observation: str,
+    *,
+    final_round: bool,
+) -> list[dict[str, str]]:
+    """把一次认知动作及其观察渲染为回灌给模型的两条消息。
+
+    assistant 那条放回她自己的动作头，让模型在下一轮能看见「我刚才查过什么」——
+    否则同一个 query 会被反复检索，白白烧掉轮次预算。
+
+    :param action: 已执行的认知动作名。
+    :param query: 该动作的检索词。
+    :param observation: 检索结果正文；无命中时也是明确的「没找到」而非空串。
+    :param final_round: 下一轮是否已经没有认知机会；为真时追加收束指令。
+    :return: 追加到消息序列尾部的两条消息。
+    """
+    notice = f'\n\n{_FINAL_ROUND_NOTICE}' if final_round else ''
+    return [
+        {
+            'role': 'assistant',
+            'content': f'<decision action="{action}" query="{query}"/>',
+        },
+        {
+            'role': 'user',
+            'content': f'[检索结果] {observation}{notice}\n\n{_OUTPUT_REQUIREMENT}',
+        },
+    ]

@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
+from .action_protocol import COGNITIVE_ACTIONS
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.core.common.clock import now as current_time
@@ -433,6 +434,7 @@ def render_action_protocol(
     quote_supported: bool,
     emoji_enabled: bool = False,
     target_person: str = '',
+    cognitive_rounds: int = 0,
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -447,6 +449,9 @@ def render_action_protocol(
         提示词明确禁止 quote。平台投递层的自动引用不受该开关控制。
     :param target_person: 本回合批次发送者的显示名，用于说明这一轮在接谁的话；
         私聊传空字符串。
+    :param cognitive_rounds: 本回合的认知轮次预算；写进提示词让模型一开始就知道
+        自己最多能查几次。**这只是把动作空间里已经成立的事实说给它听**，真正的
+        约束在 available_actions，两处口径必须一致。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
@@ -488,7 +493,62 @@ def render_action_protocol(
         reply_example=reply_example,
         silent_example=silent_example,
         emoji_rule=_emoji_protocol_rule(emoji_enabled),
+        cognition_rule=_cognition_protocol_rule(actions, ids, cognitive_rounds),
     )
+
+
+def _cognition_protocol_rule(
+    actions: FrozenSet[str],
+    selectable_ids: Sequence[int],
+    cognitive_rounds: int,
+) -> str:
+    """渲染本轮认知动作（recall / inspect）的可用性与用法说明。
+
+    认知动作只在本回合还剩检索次数时进入动作空间，因此本段按实际动作集渲染：
+    **动作集里没有的东西绝不能出现在提示词里**，展示一个本轮非法的动作等同于
+    主动制造 illegal_action，这条纪律与 reply/silent 示例的开关是同一条。
+
+    措辞刻意强调「绝大多数时候不用」：每一次检索都是一次完整的模型往返，直接
+    加在首字延迟上。检索该由「确实想不起来」触发，不该由「多查一次更保险」触发。
+
+    :param actions: 本轮实际可用的动作集合。
+    :param selectable_ids: 本轮可选消息 ID；用于给示例挑一个合法的后续目标。
+    :param cognitive_rounds: 本回合的检索次数上限，写进说明避免她在最后一轮
+        还想再查（那一轮认知动作已不在动作空间里，会被判为协议失败）。
+    :return: 认知动作说明文本；本轮不含认知动作时返回空字符串。
+    """
+    available = sorted(actions & COGNITIVE_ACTIONS)
+    if not available:
+        return ''
+    lines = ['', '想不起来的时候，可以先查一下再决定这一轮做什么：']
+    if 'recall' in available:
+        lines.append(
+            '- <decision action="recall" query="想查的东西"/>：'
+            '翻你自己的长期记忆，包括你记得的关于在场这些人的事，以及你们一起经历过的事'
+        )
+    if 'inspect' in available:
+        lines.append(
+            '- <decision action="inspect" query="想查的东西"/>：'
+            '翻这个会话里更早的聊天记录，也就是上面聊天记录之前发生的事'
+        )
+    lines.extend([
+        '- query 必填，写你想查什么，用几个关键词就行；'
+        '这两个动作都不写 targets、reasons、length、quote',
+        '- 查完会把结果告诉你，你再决定这一轮回不回、回什么；动作标签之后不要写任何正文',
+        f'- 这一回合你最多只能查 {cognitive_rounds} 次，查完必须给出最终动作',
+        '- 绝大多数时候都不需要查，直接给出最终动作。'
+        '只有当对方提到的事你确实记不清、或者话头明显指向你看不到的更早内容时才查',
+    ])
+    if selectable_ids:
+        lines.extend([
+            '',
+            '# 先查再回的例子',
+            f'<decision action="{available[0]}" query="上次说的那个演出"/>',
+            '（收到检索结果之后，下一轮再写 '
+            f'<decision action="reply" targets="{selectable_ids[0]}" '
+            'reasons="pending_thread" length="brief"/> 和台词）',
+        ])
+    return '\n'.join(lines) + '\n'
 
 
 def _emoji_protocol_rule(enabled: bool) -> str:

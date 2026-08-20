@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import json
 import sqlite3
@@ -19,13 +19,20 @@ from .decay import (
     reinforce, relevance_from_bm25, retention, retention_weight, score,
 )
 from .similarity import exact_key, is_same_fact
-from .tokenize import index_tokens, match_query
+from .tokenize import index_tokens, match_query, words
 
 from src.core.common.clock import now as current_time
 from src.core.common.db.schema import DDL, SCHEMA_VERSION, SEED
 
 
 _PENDING_PROMISES_KEY = 'pending_promises'
+
+# 历史消息检索的查询词上限。LIKE 条件按 OR 拼接，词数越多预筛越接近全表扫描，
+# 而排在后面的低频词对命中排序几乎没有贡献。
+_MESSAGE_QUERY_TERMS = 6
+# 历史消息检索的预筛行数硬上界。没有 FTS 索引，靠这个上界把最坏情况钉死；
+# 超出上界时优先保留时间靠后的消息，与「最近提过的那次」这一检索意图一致。
+_MESSAGE_SCAN_LIMIT = 200
 
 
 @dataclass
@@ -77,6 +84,17 @@ class RecalledFact:
     lexical_relevance: float = field(default=0.0, repr=False, compare=False)
     embedding: bytes | None = field(default=None, repr=False, compare=False)
     half_life_hours: float = field(default=0.0, repr=False, compare=False)
+
+
+@dataclass
+class ScopedFact(RecalledFact):
+    """表示跨人物召回时附带归属人物的事实。
+
+    :ivar person_id: 事实所属人物 ID；跨人物召回必须带上它，否则渲染观察时
+        无法说明「这是关于谁的」，多人群聊里等同于把事实说成无主信息。
+    """
+
+    person_id: int = 0
 
 
 @dataclass
@@ -758,6 +776,158 @@ class MemoryStore:
         if selected and reinforce_matches:
             self._db.commit()
         return result
+
+    def recall_facts_in_scope(
+        self,
+        person_ids: Sequence[int],
+        query: str,
+        limit: int = 6,
+        now: int | None = None,
+    ) -> list[ScopedFact]:
+        """在若干人物范围内一次性召回事实，供认知动作按会话在场者检索。
+
+        与 :meth:`recall_facts` 的两点差别都是有意的：
+
+        1. **一次查询覆盖多人**。群聊里在场者可能有十几个，逐人调用会把一次
+           检索放大成十几次 FTS 查询。
+        2. **不回补强度**。决策期的主动检索若参与遗忘曲线，她「想了一下」这个
+           动作本身就会改写记忆权重，同一条事实被反复 recall 就再也不会衰减。
+           写回只应发生在真实使用（回复里确实用上了）时，不在检索时。
+
+        :param person_ids: 检索范围内的人物 ID 序列；为空时直接返回空列表。
+        :param query: 待检索的自然语言文本。
+        :param limit: 最多返回的事实数量，默认 ``6``。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+
+        :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
+
+        :raises sqlite3.Error: FTS 查询失败。
+
+        副作用：只读 facts_fts 与 facts 表，不写任何列、不提交事务。
+
+        性能：单次 FTS 查询，最多读取 ``limit * 3`` 个候选。
+        """
+        scope = tuple(dict.fromkeys(person_ids))
+        if not scope:
+            return []
+        match = match_query(query)
+        if not match:
+            return []
+        now = now if now is not None else current_time()
+        placeholders = ','.join('?' for _ in scope)
+        rows = self._db.execute(
+            f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
+                       f.half_life_hours, f.person_id, bm25(facts_fts) AS bm
+                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
+                WHERE facts_fts MATCH ? AND f.person_id IN ({placeholders})
+                ORDER BY bm ASC LIMIT ?''',
+            (match, *scope, limit * 3),
+        ).fetchall()
+        scored: list[ScopedFact] = []
+        for r in rows:
+            ret = retention(r[3], r[4], r[5], now)
+            relevance = relevance_from_bm25(r[7])
+            scored.append(ScopedFact(
+                id=r[0],
+                kind=r[1],
+                content=r[2],
+                retention=ret,
+                score=relevance * retention_weight(ret),
+                lexical_relevance=relevance,
+                half_life_hours=r[5],
+                person_id=r[6],
+            ))
+        scored.sort(key=lambda fact: fact.score, reverse=True)
+        return scored[:limit]
+
+    def recent_speakers(
+        self,
+        stream_id: int,
+        before_id: int,
+        scan_limit: int = 200,
+    ) -> list[int]:
+        """列出该 stream 最近开口过的人物 ID，供认知检索确定「在场者」范围。
+
+        群聊里她可能被问到第三个人的事，把事实检索范围收窄成「本批发言者」会让
+        recall 在最需要的场景下空手而归；反过来放开到全库又跨越了会话隐私边界。
+        取「本 stream 最近若干条消息的发言者」是两者之间唯一有事实依据的口径。
+
+        :param stream_id: 目标 stream ID。
+        :param before_id: 只统计该消息 ID 及之前的消息，与回合水位对齐。
+        :param scan_limit: 回溯的消息条数上界，默认 ``200``。
+        :return: 按最近发言优先排列、去重后的人物 ID 列表。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表。
+        """
+        rows = self._db.execute(
+            '''SELECT sender_person_id FROM (
+                   SELECT sender_person_id, id FROM messages
+                   WHERE stream_id = ? AND id <= ? AND sender_person_id IS NOT NULL
+                   ORDER BY id DESC LIMIT ?
+               )''',
+            (stream_id, before_id, scan_limit),
+        ).fetchall()
+        return list(dict.fromkeys(int(row[0]) for row in rows))
+
+    def search_messages(
+        self,
+        stream_id: int,
+        query: str,
+        before_id: int,
+        limit: int = 6,
+    ) -> list[StoredMessage]:
+        """在指定 stream 的历史消息里按词命中检索，供认知动作翻更早的聊天。
+
+        **不建 FTS 索引是有意的**：messages 没有 FTS 表，新建一张要连带触发器与
+        迁移，而 facts_fts 的 rowid 对齐已经踩过一次雷（迁移必须显式搬 id）。
+        这里改用「分词 → LIKE 预筛 → Python 侧按命中词数打分」，预筛有硬上界
+        ``_MESSAGE_SCAN_LIMIT``，代价可控且行为可单测。命中词数相同时按时间靠后优先，
+        因为「最近提过的那次」几乎总是她要找的那次。
+
+        :param stream_id: 目标 stream ID。
+        :param query: 待检索的自然语言文本。
+        :param before_id: 只检索该消息 ID 之前（不含）的历史；调用方传回合水位，
+            使检索结果不会包含本批尚未处理的消息。
+        :param limit: 最多返回的消息数，默认 ``6``。
+
+        :return: 按时间正序排列的消息列表；无有效查询词或无命中时为空列表。
+
+        :raises sqlite3.Error: 查询失败。
+
+        副作用：只读 messages 表。
+
+        性能：一次 LIKE 预筛最多返回 ``_MESSAGE_SCAN_LIMIT`` 行，打分在内存完成。
+        """
+        # 只取前若干个查询词：LIKE 条件是 OR 拼接，词越多预筛越接近全表扫描，
+        # 而超出部分对命中排序的贡献迅速趋近于零。
+        terms = list(dict.fromkeys(words(query)))[:_MESSAGE_QUERY_TERMS]
+        if not terms:
+            return []
+        conditions = ' OR '.join('content LIKE ?' for _ in terms)
+        patterns = [f'%{term}%' for term in terms]
+        rows = self._db.execute(
+            f'''SELECT id, role, content, created_at, sender_person_id FROM messages
+                WHERE stream_id = ? AND id < ? AND ({conditions})
+                ORDER BY id DESC LIMIT ?''',
+            (stream_id, before_id, *patterns, _MESSAGE_SCAN_LIMIT),
+        ).fetchall()
+        scored: list[tuple[int, int, StoredMessage]] = []
+        for r in rows:
+            lowered = r[2].lower()
+            hits = sum(1 for term in terms if term in lowered)
+            if hits == 0:
+                continue
+            scored.append((hits, r[0], StoredMessage(
+                role=r[1],
+                content=r[2],
+                created_at=r[3],
+                sender_person_id=r[4],
+                message_id=r[0],
+            )))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        selected = [message for _, _, message in scored[:limit]]
+        selected.sort(key=lambda message: message.message_id)
+        return selected
 
     def rank_recalled_facts(
         self,

@@ -120,6 +120,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'reply_example',
         'silent_example',
         'emoji_rule',
+        'cognition_rule',
     }),
     'image.description': frozenset(),
     'emoji.description': frozenset(),

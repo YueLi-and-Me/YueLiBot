@@ -38,6 +38,12 @@ from src.core.agent.action_protocol import (
     PlatformCapabilities,
     available_actions,
 )
+from src.core.agent.cognition import (
+    CognitiveExecutor,
+    CognitiveScope,
+    InspectAction,
+    RecallAction,
+)
 from src.core.agent.conversation import ConversationAgent
 from src.core.agent.conversation_gate import (
     GateRequest,
@@ -302,6 +308,7 @@ class ChatService:
         self._trigger_mode = conversation_agent_cfg.trigger_mode
         self._frequency_talk_value = conversation_agent_cfg.frequency_talk_value
         self._reply_necessity_threshold = conversation_agent_cfg.reply_necessity_threshold
+        self._cognitive_rounds = conversation_agent_cfg.max_cognitive_rounds
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
@@ -339,6 +346,16 @@ class ChatService:
         )
         self.memory = MemoryStore(db)
         self._registry = StreamRegistry(db)
+        # 认知动作只在 ReAct 开启时构造：轮次预算为 0 时执行器永远不会被调用，
+        # 持有它只会让「关闭即回退到单轮」这条性质多一处需要复核的地方。
+        self._cognitive_executor = (
+            CognitiveExecutor([
+                RecallAction(self.memory, self._registry.stream_display_name),
+                InspectAction(self.memory, self._registry.stream_display_name),
+            ])
+            if self._cognitive_rounds > 0
+            else None
+        )
         self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
         self.persona.snapshot_daily(self._desktop_context.person.id)
@@ -2647,8 +2664,15 @@ class ChatService:
         batch: list[_BufferedMessage],
         turn: int,
         disposition: GateDisposition,
+        *,
+        cognitive_rounds: int = 0,
     ) -> DecisionFrame:
-        """按本批消息快照构造回合固定帧，并冻结平台可见产物能力。"""
+        """按本批消息快照构造回合固定帧，并冻结平台可见产物能力。
+
+        :param cognitive_rounds: 本回合的认知轮次预算；只影响首轮动作集，
+            后续各轮由 ConversationAgent 按剩余预算重算。shadow 通道传 0：
+            它的用途是观察决策口径，不该为此额外付若干次模型往返。
+        """
         capabilities = PlatformCapabilities(
             emoji=self._emoji_available(context),
         )
@@ -2663,8 +2687,26 @@ class ChatService:
                 context.stream.kind,
                 disposition,
                 capabilities,
+                cognitive_rounds_left=cognitive_rounds,
             ),
             capabilities=capabilities,
+        )
+
+    def _cognitive_scope(self, frame: DecisionFrame, stream_id: int) -> CognitiveScope:
+        """按本回合水位冻结认知检索的会话与人物范围。
+
+        范围在回合开始时定死：水位之后新到的发言者不进入检索范围，使她这一回合
+        「能想起谁的事」不随批次外消息漂移。
+
+        :param frame: 本回合固定快照。
+        :param stream_id: 当前会话 ID。
+        :return: 供本回合全部认知动作共用的检索范围。
+        """
+        return CognitiveScope(
+            stream_id=stream_id,
+            person_ids=tuple(
+                self.memory.recent_speakers(stream_id, frame.message_watermark)
+            ),
         )
 
     def _emoji_available(self, context: ConversationContext) -> bool:
@@ -2755,6 +2797,7 @@ class ChatService:
                 if context.stream.kind == 'group'
                 else ''
             ),
+            cognitive_rounds=self._cognitive_rounds,
         )
 
     def _render_agent_messages(
@@ -2937,7 +2980,13 @@ class ChatService:
         消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
         流出任何正文，按失败状态呈现。
         """
-        frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
+        frame = self._agent_frame(
+            context,
+            batch,
+            turn,
+            batch_gate.result.disposition,
+            cognitive_rounds=self._cognitive_rounds,
+        )
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
         messages = self._render_agent_messages(
             frame,
@@ -2983,6 +3032,15 @@ class ChatService:
             model_task='chat.conversation',
             provider_name=getattr(self._chat_provider, 'provider', ''),
             model_name=getattr(self._chat_provider, 'model', ''),
+            cognitive_executor=self._cognitive_executor,
+            # 关闭 ReAct 时连范围都不算：那是一次真实的数据库查询，
+            # 为一个永远不会被消费的字段付账没有意义。
+            cognitive_scope=(
+                self._cognitive_scope(frame, context.stream.id)
+                if self._cognitive_executor is not None
+                else None
+            ),
+            cognitive_rounds=self._cognitive_rounds,
             on_events=on_events,
             on_chunk=on_chunk,
             signal=cancel_event,

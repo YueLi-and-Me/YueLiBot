@@ -100,6 +100,11 @@ class ConversationAgentConfig(BaseModel):
     ``frequency_talk_value`` 同时为 reply_necessity 提供压力归一化的
     消息条数尺度。两种扩展模式都不会让纯沉默自动触发，也不会绕过休眠、
     频率硬上限等确定性边界。
+
+    ``max_cognitive_rounds`` 控制 ReAct 回环：一个回合内她最多可以先做几次
+    认知动作（recall / inspect）再给出终局动作。**每一次都是一次完整的模型
+    往返，直接加在首字延迟上**，因此上界很小；置 0 即关闭回环、退回单轮，
+    与引入 ReAct 之前的行为逐字相同，是零风险回退开关。
     """
 
     mode: Literal['off', 'shadow', 'selected_streams', 'enabled'] = 'off'
@@ -107,6 +112,7 @@ class ConversationAgentConfig(BaseModel):
     trigger_mode: Literal['signal', 'frequency', 'reply_necessity'] = 'signal'
     frequency_talk_value: float = Field(default=0.6, gt=0.0, le=1.0)
     reply_necessity_threshold: int = Field(default=80, ge=0, le=100)
+    max_cognitive_rounds: int = Field(default=2, ge=0, le=4)
 
 
 class TypingNudgeConfig(BaseModel):
