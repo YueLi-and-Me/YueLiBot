@@ -294,6 +294,7 @@ class ModelRouter:
                      max_tokens: int | None = None,
                      signal: asyncio.Event | None = None,
                      response_format: Dict[str, str] | None = None,
+                     tools: List[dict] | None = None,
                      ) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到一个候选产生首个输出增量。
 
@@ -305,6 +306,7 @@ class ModelRouter:
         :param max_tokens: 可选最大输出 token 数。
         :param signal: 可选取消事件，传递给底层 provider。
         :param response_format: 可选响应格式配置。
+        :param tools: 可选的工具声明列表，透传给候选 provider。
 
         :yield: 底层 provider 返回的增量字典，顺序与实际模型流一致。
 
@@ -340,6 +342,7 @@ class ModelRouter:
                 max_tokens=max_tokens,
                 signal=signal,
                 response_format=response_format,
+                tools=tools,
                 exchange=exchange,
             ):
                 exchange.observe(chunk)
@@ -357,6 +360,7 @@ class ModelRouter:
                                  max_tokens: int | None,
                                  signal: asyncio.Event | None,
                                  response_format: Dict[str, str] | None,
+                                 tools: List[dict] | None,
                                  exchange: '_ExchangeRecord',
                                  ) -> AsyncIterator[dict]:
         """按候选顺序实际发起请求，产生增量并在切换候选时更新记录状态。
@@ -386,6 +390,8 @@ class ModelRouter:
                 options: Dict[str, Any] = {}
                 if response_format is not None:
                     options['response_format'] = response_format
+                if tools:
+                    options['tools'] = tools
                 effective_temperature = (
                     candidate.temperature
                     if candidate.temperature is not None

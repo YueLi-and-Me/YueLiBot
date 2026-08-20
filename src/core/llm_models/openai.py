@@ -243,6 +243,7 @@ class OpenAiChatProvider:
                      max_tokens: int | None = None,
                      signal: asyncio.Event | None = None,
                      response_format: dict[str, str] | None = None,
+                     tools: list[dict] | None = None,
                      ) -> AsyncIterator[dict]:
         """发起流式请求，并仅在尚未输出内容时重试可恢复错误。
 
@@ -254,6 +255,9 @@ class OpenAiChatProvider:
         :param max_tokens: 可选最大输出 token 数。
         :param signal: 可选取消事件；重试间隔期间触发时转换为 ``aborted`` 错误。
         :param response_format: 可选结构化响应格式；当前支持 JSON object 格式。
+        :param tools: 可选的 OpenAI 工具声明列表。提供后模型可以返回工具调用，
+            拼装完成的调用作为单个 ``{'tool_calls': [...]}`` 增量在流末尾产出，
+            调用方不必自己处理分片。
 
         :yield: 解析后的增量字典，顺序与服务端流式响应一致。
 
@@ -268,7 +272,9 @@ class OpenAiChatProvider:
             try:
                 # 结构化输出和普通文本共用 HTTP/SSE 解析，仅在请求体中切换 response_format。
                 if response_format is None:
-                    chunks = self._stream_once(messages, temperature, max_tokens, signal)
+                    chunks = self._stream_once(
+                        messages, temperature, max_tokens, signal, tools,
+                    )
                 else:
                     chunks = self._stream_once_structured(
                         messages,
@@ -276,6 +282,7 @@ class OpenAiChatProvider:
                         max_tokens,
                         signal,
                         response_format,
+                        tools,
                     )
                 async for chunk in chunks:
                     yielded_content = True
@@ -303,6 +310,7 @@ class OpenAiChatProvider:
         temperature: float,
         max_tokens: int | None,
         signal: asyncio.Event | None,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
         """以普通文本模式执行一次 HTTP 流式请求。
 
@@ -320,6 +328,7 @@ class OpenAiChatProvider:
             max_tokens,
             signal,
             None,
+            tools,
         ):
             yield chunk
 
@@ -330,6 +339,7 @@ class OpenAiChatProvider:
         max_tokens: int | None,
         signal: asyncio.Event | None,
         response_format: dict[str, str],
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
         """以 JSON object 响应格式执行一次 HTTP 流式请求。
 
@@ -351,6 +361,7 @@ class OpenAiChatProvider:
             max_tokens,
             signal,
             response_format,
+            tools,
         ):
             yield chunk
 
@@ -361,6 +372,7 @@ class OpenAiChatProvider:
         max_tokens: int | None,
         signal: asyncio.Event | None,
         response_format: dict[str, str] | None,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[dict]:
         """组装鉴权请求并解析兼容接口的 SSE 流。
 
@@ -394,6 +406,8 @@ class OpenAiChatProvider:
             body['max_tokens'] = max_tokens
         if response_format is not None:
             body['response_format'] = response_format
+        if tools:
+            body['tools'] = tools
 
         # 记录脱敏请求后再建立连接，保证失败快照包含实际发送的任务参数。
         url = f'{self.base_url}/chat/completions'
@@ -415,6 +429,8 @@ class OpenAiChatProvider:
             if self._reasoning_parse_mode == 'tag'
             else None
         )
+        # 只在声明了工具时累积；没有工具的调用路径连一个空对象都不该多建。
+        tool_calls = _ToolCallAccumulator() if tools else None
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
@@ -457,20 +473,85 @@ class OpenAiChatProvider:
                             if tag_parser is not None:
                                 for parsed in tag_parser.flush():
                                     yield parsed
+                            # 工具调用在流末尾一次性产出：它是一个完整决策，
+                            # 分片放给上层只会让每个调用方各拼一遍状态机。
+                            if tool_calls is not None:
+                                drained = tool_calls.drain()
+                                if drained:
+                                    yield {'tool_calls': drained}
                             return
                         if chunk:
+                            if tool_calls is not None and chunk.get('tool_call_deltas'):
+                                tool_calls.push(chunk['tool_call_deltas'])
                             if tag_parser is None:
-                                yield chunk
-                            else:
+                                # 纯工具调用分片不带 text，透传空增量会被上层
+                                # 当成一次无内容输出，这里直接跳过。
+                                if chunk.get('text') is not None or chunk.get('reasoning') is not None:
+                                    yield {
+                                        key: value for key, value in chunk.items()
+                                        if key != 'tool_call_deltas'
+                                    }
+                            elif chunk.get('text') is not None:
                                 for parsed in tag_parser.push(chunk['text']):
                                     yield parsed
                     if tag_parser is not None:
                         for parsed in tag_parser.flush():
                             yield parsed
+                    if tool_calls is not None:
+                        drained = tool_calls.drain()
+                        if drained:
+                            yield {'tool_calls': drained}
             except httpx.TimeoutException:
                 raise LlmError('network', f'请求超时（{self._timeout}s）')
             except httpx.RequestError as exc:
                 raise LlmError('network', f'连不上 {self.base_url}', str(exc))
+
+
+class _ToolCallAccumulator:
+    """把分片下发的 tool_calls 按 index 拼成完整调用。
+
+    OpenAI 兼容接口的工具调用是流式拼出来的：``function.name`` 通常只在该 index
+    的首片出现，``arguments`` 则逐片追加成一段 JSON 文本。上层要的是「模型决定
+    调哪个工具、参数是什么」这一个完整事实，因此拼接放在 provider 内部，别让每
+    个调用方各写一遍状态机。
+    """
+
+    def __init__(self) -> None:
+        self._calls: dict[int, dict[str, str]] = {}
+
+    def push(self, deltas: list[dict]) -> None:
+        """累积一批工具调用分片。
+
+        :param deltas: SSE delta 里的 ``tool_calls`` 数组。
+        """
+        for delta in deltas:
+            if not isinstance(delta, dict):
+                continue
+            index = delta.get('index', 0)
+            if not isinstance(index, int):
+                continue
+            call = self._calls.setdefault(index, {'id': '', 'name': '', 'arguments': ''})
+            call_id = delta.get('id')
+            if call_id:
+                call['id'] = str(call_id)
+            function = delta.get('function') or {}
+            name = function.get('name')
+            if name:
+                call['name'] = str(name)
+            arguments = function.get('arguments')
+            if arguments:
+                call['arguments'] += str(arguments)
+
+    def drain(self) -> list[dict[str, str]]:
+        """取出已拼完的工具调用，按 index 升序。
+
+        :return: 每项含 ``id`` / ``name`` / ``arguments``（未解析的 JSON 文本）；
+            没有工具调用时为空列表。调用后内部状态清空，避免重试路径重复产出。
+        """
+        ordered = [self._calls[index] for index in sorted(self._calls)]
+        self._calls.clear()
+        # 没有名字的分片是协议噪声，留着只会让下游拿到一个调不动的工具。
+        return [call for call in ordered if call['name']]
 
 
 def _parse_sse_line(
@@ -510,7 +591,10 @@ def _parse_sse_line(
         reasoning = delta.get('reasoning_content')
         if reasoning is None:
             reasoning = delta.get('reasoning')
-    if text is None and reasoning is None:
+    # 工具调用按 index 分片下发：name 通常只在首片出现，arguments 逐片拼接。
+    # 这里只做原样透传，拼接交给 _stream_http，解析器保持无状态。
+    tool_deltas = delta.get('tool_calls')
+    if text is None and reasoning is None and not tool_deltas:
         return None
     # 只输出实际存在的增量字段，避免下游将空字段当作有效正文。
     result: dict[str, Any] = {}
@@ -518,6 +602,8 @@ def _parse_sse_line(
         result['text'] = text
     if reasoning is not None:
         result['reasoning'] = reasoning
+    if tool_deltas:
+        result['tool_call_deltas'] = tool_deltas
     return result
 
 
