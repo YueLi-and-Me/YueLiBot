@@ -602,6 +602,7 @@ class ModelRouters:
         self.expression = self._build('expression', routing.expression)
         self.planner = self._build('planner', routing.planner)
         self.replyer = self._build('replyer', routing.replyer)
+        self.scene = self._build('scene', routing.scene)
         self.tts = self._build('tts', routing.tts)
         self.embedding = self._build('embedding', routing.embedding)
         self._routers: Dict[str, ModelRouter] = {
@@ -613,6 +614,7 @@ class ModelRouters:
             'expression': self.expression,
             'planner': self.planner,
             'replyer': self.replyer,
+            'scene': self.scene,
             'tts': self.tts,
             'embedding': self.embedding,
         }

@@ -51,12 +51,13 @@ import {
 } from '@/hooks/use-model-config'
 
 const TASK_NAMES = [
-  'chat', 'planner', 'replyer', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding',
+  'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'vision',
+  'expression', 'tts', 'embedding',
 ] as const
 // 生成参数（温度、token 上限）覆盖后端 GenerationConfig 里的每一档任务。
 // tts 与 embedding 不在其中：语音合成与向量化没有温度和输出上限可言。
 const GENERATION_TASKS = [
-  'chat', 'planner', 'replyer', 'proactive', 'summary', 'schedule', 'expression', 'vision',
+  'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'expression', 'vision',
 ] as const
 
 /** 任务字段的中文名称，仅用于功能分配页展示；TOML 配置键名保持英文不变。 */
@@ -64,6 +65,7 @@ const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
   chat: '日常对话',
   planner: '行动决策',
   replyer: '回复生成',
+  scene: '情景分析',
   proactive: '主动搭话',
   summary: '对话摘要',
   schedule: '日程安排',
@@ -78,6 +80,7 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   chat: '回复用户普通消息的对话模型',
   planner: '决定这一轮做什么动作的模型；留空继承日常对话。首字延迟主要由它决定',
   replyer: '把决策写成她实际说出口那句话的模型；留空继承日常对话',
+  scene: '把一段聊天概括成「此刻是什么情况」的模型；群聊画像与私聊追问判断都用它',
   proactive: '判断并生成主动搭话消息的模型',
   summary: '把长对话压缩为角色记忆的摘要模型',
   schedule: '生成角色每日日程计划的模型',

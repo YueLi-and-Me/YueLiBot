@@ -184,6 +184,7 @@ _TASK_LABELS: Dict[str, str] = {
     'planner': '决策',
     'replyer': '回复生成',
     'expression': '表达选择',
+    'scene': '情景分析',
     'vision': '视觉',
 }
 
@@ -193,6 +194,7 @@ _TASK_TINTS: Dict[str, str] = {
     'planner': 'cyan',
     'replyer': 'green',
     'expression': 'magenta',
+    'scene': 'blue',
     'vision': 'blue',
 }
 

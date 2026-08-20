@@ -439,6 +439,11 @@ class GenerationConfig(BaseModel):
     # 决策不产出正文，温度对「像不像人」没有贡献，想让动作选择更稳可以单独调低。
     planner: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
     replyer: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
+    # 情景分析要的是稳定概括而不是发挥，默认沿用摘要那一档的低温度——这也正是
+    # 它此前借用摘要配置时的实际取值，单开槽不改变任何现有行为。
+    scene: GenerationTaskConfig = Field(
+        default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=0)
+    )
     proactive: ProactiveGenerationTaskConfig = Field(
         default_factory=lambda: ProactiveGenerationTaskConfig(temperature=0.9, max_tokens=200)
     )
@@ -751,6 +756,9 @@ class ModelTaskConfig(BaseModel):
     # 首字延迟主要由 planner 这一档决定，想压延迟就在这里单独指一个快模型。
     planner: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     replyer: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    # 情景分析：把一段历史概括成「此刻是什么情况」。它原来借用摘要那一档，
+    # 但这件事已经从群聊后台画像扩展到私聊即时决策，在关键路径上，值得单开。
+    scene: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
@@ -829,6 +837,7 @@ class RoutingConfig(BaseModel):
     expression: TaskRouting = Field(default_factory=lambda: TaskRouting(task='expression'))
     planner: TaskRouting = Field(default_factory=lambda: TaskRouting(task='planner'))
     replyer: TaskRouting = Field(default_factory=lambda: TaskRouting(task='replyer'))
+    scene: TaskRouting = Field(default_factory=lambda: TaskRouting(task='scene'))
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
 

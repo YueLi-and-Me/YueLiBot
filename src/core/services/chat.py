@@ -319,6 +319,7 @@ class ChatService:
         expression_provider: LlmProvider | None = None,
         planner_provider: LlmProvider | None = None,
         replyer_provider: LlmProvider | None = None,
+        scene_provider: LlmProvider | None = None,
         image_describer: ChatImageDescriber | None = None,
         emoji_library: EmojiLibrary | None = None,
         action_policy: ActionPolicy | None = None,
@@ -464,15 +465,18 @@ class ChatService:
         self._registry = StreamRegistry(db)
         # 认知动作只在 ReAct 开启时构造：轮次预算为 0 时执行器永远不会被调用，
         # 持有它只会让「关闭即回退到单轮」这条性质多一处需要复核的地方。
-        # 观察是「把一段历史概括成一句话」，与摘要同类，复用摘要任务的路由；
-        # 为它单开第八个模型任务只会多一段用户必须填的配置。
+        # 情景分析有自己的模型槽。它最初借用摘要那一档（同为「把一段历史概括成
+        # 一句话」），但这件事已经从群聊后台画像扩展到私聊即时决策，落在关键路径
+        # 上——借用意味着调摘要会意外改掉它。槽留空即继承 chat，默认参数沿用摘要
+        # 那一档的低温度，因此单开不改变任何现有行为。
+        observer_provider = scene_provider if scene_provider is not None else summary_provider
         self._scene_observer = (
             SceneObserver(
-                summary_provider,
-                temperature=self._summary_temperature,
-                max_tokens=self._summary_max_tokens,
+                observer_provider,
+                temperature=generation.scene.temperature,
+                max_tokens=generation.scene.token_limit,
             )
-            if summary_provider is not None
+            if observer_provider is not None
             else None
         )
         # 同一个情景分析 Agent 同时服务群聊周期画像和私聊即时决策；刷新条数只控制
