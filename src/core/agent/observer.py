@@ -1,4 +1,4 @@
-"""观察 Agent：把一段群聊消息流提炼成结构化的场景画像。
+"""情景分析 Agent：把一段对话消息流提炼成结构化的场景画像。
 
 她现在每一轮都在裸读消息流，靠对话模型在生成的同时顺便理解「这个群此刻是什么
 情况」。那件事既贵（每轮重做一遍）又不连贯（上一轮的理解不会留下来）。本模块把它
@@ -7,12 +7,12 @@
 
 两个字段，不多不少：
 
-- ``topic``：现在在聊什么，一句话；
+- ``topic``：当前对话在聊什么，一句话；
 - ``atmosphere``：气氛，**封闭枚举**。
 
 气氛用枚举而不是自由文本，是因为它会直接进她的系统提示词——自由文本会把观察模型
 的语气带进人格层，而人格只该由 ``bot.toml`` 和她自己的轴决定。话题必须是自由文本
-（群里聊什么无法枚举），因此对它只做长度收窄。
+（对话内容无法枚举），因此对它只做长度收窄。
 
 **观察不是决策。** 本模块产出的东西只作为提示词里的一个背景块，不进
 ``GateInputFacts``（那里只放确定性事实）、不影响动作空间、不参与任何硬边界。
@@ -46,7 +46,7 @@ _MAX_OUTPUT_CHARS = 512
 class SceneSnapshot:
     """一次场景观察的结果。
 
-    :ivar topic: 群里此刻在聊什么，一句话。
+    :ivar topic: 当前对话在聊什么，一句话。
     :ivar atmosphere: 气氛，取自 ``ATMOSPHERES`` 封闭枚举。
     :ivar observed_message_id: 观察覆盖到的最后一条消息 ID；用于判断画像有多旧。
     """
@@ -104,7 +104,7 @@ class SceneSnapshot:
 def build_observe_prompt(lines: Sequence[str]) -> str:
     """组装场景观察提示词。
 
-    :param lines: 已渲染为「说话人：正文」的群聊历史，按时间正序。
+    :param lines: 已渲染为「说话人：正文」的对话历史，按时间正序。
     :return: 含历史、字段约束与封闭气氛枚举的完整提示词。
     :raises KeyError: 模板未注册。
     """
@@ -146,7 +146,7 @@ def parse_scene(raw: str, observed_message_id: int) -> SceneSnapshot:
 
 
 class SceneObserver:
-    """调用一次模型，把群聊历史提炼成场景画像。"""
+    """调用一次模型，把群聊或私聊历史提炼成场景画像。"""
 
     def __init__(
         self,
@@ -170,7 +170,7 @@ class SceneObserver:
         lines: Sequence[str],
         observed_message_id: int,
     ) -> SceneSnapshot:
-        """读一段群聊历史并产出场景画像。
+        """读一段带说话人标签的对话历史并产出场景画像。
 
         :param lines: 已渲染为「说话人：正文」的历史，按时间正序；不能为空。
         :param observed_message_id: 本次观察覆盖到的最后一条消息 ID。
