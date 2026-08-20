@@ -376,6 +376,11 @@ class ChatService:
         self._episode_context_limit = conversation.episode_context_limit
         self._chat_temperature = generation.chat.temperature
         self._chat_max_tokens = generation.chat.token_limit
+        # 决策与表达各自一档采样参数。拆分关闭时决策那一档不参与，走的仍是 chat。
+        self._planner_temperature = generation.planner.temperature
+        self._planner_max_tokens = generation.planner.token_limit
+        self._replyer_temperature = generation.replyer.temperature
+        self._replyer_max_tokens = generation.replyer.token_limit
         conversation_agent_cfg = cfg.conversation_agent
         self._conversation_mode = conversation_agent_cfg.mode
         self._conversation_selected_streams = frozenset(conversation_agent_cfg.selected_streams)
@@ -414,9 +419,19 @@ class ChatService:
         self._conversation_agent = (
             ConversationAgent(
                 decision_provider,
-                temperature=self._chat_temperature,
-                max_tokens=self._chat_max_tokens,
+                # 拆分后决策走 planner 那一档；未拆分时这一级同时负责正文，
+                # 参数必须留在 chat 上，否则改 planner 会意外改掉旧路径的语气。
+                temperature=(
+                    self._planner_temperature
+                    if self._split_replyer else self._chat_temperature
+                ),
+                max_tokens=(
+                    self._planner_max_tokens
+                    if self._split_replyer else self._chat_max_tokens
+                ),
                 replyer=replyer_provider if self._split_replyer else None,
+                replyer_temperature=self._replyer_temperature,
+                replyer_max_tokens=self._replyer_max_tokens,
                 tool_calling=self._tool_calling,
             )
             if decision_provider is not None and conversation_agent_cfg.mode != 'off'
@@ -2122,8 +2137,8 @@ class ChatService:
             'llm_request',
             turnId=turn,
             messages=messages,
-            temperature=self._chat_temperature,
-            maxTokens=self._chat_max_tokens,
+            temperature=self._planner_temperature if self._split_replyer else self._chat_temperature,
+            maxTokens=self._planner_max_tokens if self._split_replyer else self._chat_max_tokens,
             followUp=True,
             renderParams=render_params,
             **metadata,
@@ -2167,8 +2182,8 @@ class ChatService:
                 'llm_request',
                 turnId=turn,
                 messages=replyer_items,
-                temperature=self._chat_temperature,
-                maxTokens=self._chat_max_tokens,
+                temperature=self._replyer_temperature,
+                maxTokens=self._replyer_max_tokens,
                 followUp=True,
                 renderParams=render_params,
                 **prompt_metadata('chat.replyer', CHAT_TOOL_REPLYER_TEMPLATE_IDS),
@@ -3742,8 +3757,8 @@ class ChatService:
             'llm_request',
             turnId=turn,
             messages=messages,
-            temperature=self._chat_temperature,
-            maxTokens=self._chat_max_tokens,
+            temperature=self._planner_temperature if self._split_replyer else self._chat_temperature,
+            maxTokens=self._planner_max_tokens if self._split_replyer else self._chat_max_tokens,
             renderParams=render_params,
             **metadata,
         )
@@ -3771,8 +3786,8 @@ class ChatService:
                 'llm_request',
                 turnId=turn,
                 messages=replyer_items,
-                temperature=self._chat_temperature,
-                maxTokens=self._chat_max_tokens,
+                temperature=self._replyer_temperature,
+                maxTokens=self._replyer_max_tokens,
                 renderParams=render_params,
                 shadow=True,
                 **prompt_metadata('chat.replyer', CHAT_TOOL_REPLYER_TEMPLATE_IDS),
@@ -4009,8 +4024,8 @@ class ChatService:
             'llm_request',
             turnId=turn,
             messages=messages,
-            temperature=self._chat_temperature,
-            maxTokens=self._chat_max_tokens,
+            temperature=self._planner_temperature if self._split_replyer else self._chat_temperature,
+            maxTokens=self._planner_max_tokens if self._split_replyer else self._chat_max_tokens,
             renderParams=render_params,
             **metadata,
         )
@@ -4051,8 +4066,8 @@ class ChatService:
                 'llm_request',
                 turnId=turn,
                 messages=messages,
-                temperature=self._chat_temperature,
-                maxTokens=self._chat_max_tokens,
+                temperature=self._replyer_temperature,
+                maxTokens=self._replyer_max_tokens,
                 renderParams=render_params,
                 **prompt_metadata(
                     'chat.replyer',

@@ -197,6 +197,8 @@ class ConversationAgent:
         temperature: float,
         max_tokens: int | None = None,
         replyer: LlmProvider | None = None,
+        replyer_temperature: float | None = None,
+        replyer_max_tokens: int | None = None,
         tool_calling: bool = False,
     ) -> None:
         """保存模型提供方与采样参数。
@@ -207,6 +209,9 @@ class ConversationAgent:
         :param max_tokens: 可选的输出 token 上限。
         :param replyer: 可选的回复生成模型。注入后决策与表达分离：本 Agent 只从
             决策流里取动作头，正文由它产出。省略即保持单次调用的既有行为。
+        :param replyer_temperature: 回复生成的采样温度；省略时沿用决策那一档。
+            两级分开是因为它们要的东西相反——决策要判断稳定，表达要自然。
+        :param replyer_max_tokens: 回复生成的输出上限；省略时沿用决策那一档。
         :param tool_calling: 决策层是否改用工具调用表达动作。为真时动作空间以
             函数签名下发、决策以 ``tool_calls`` 回来，不再解析 XML 动作头。
             它**必须与 ``replyer`` 一起启用**：工具调用只产出决策，没有正文来源。
@@ -218,6 +223,12 @@ class ConversationAgent:
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._replyer = replyer
+        self._replyer_temperature = (
+            temperature if replyer_temperature is None else replyer_temperature
+        )
+        self._replyer_max_tokens = (
+            max_tokens if replyer_max_tokens is None else replyer_max_tokens
+        )
         self._tool_calling = tool_calling
 
     async def run(
@@ -636,8 +647,8 @@ class ConversationAgent:
         async with aclosing(
             self._replyer.stream(
                 messages=messages,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
+                temperature=self._replyer_temperature,
+                max_tokens=self._replyer_max_tokens,
                 signal=signal,
             )
         ) as stream:

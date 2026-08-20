@@ -427,9 +427,18 @@ class ProactiveGenerationTaskConfig(GenerationTaskConfig):
 
 
 class GenerationConfig(BaseModel):
-    """按任务拆分参数，避免改视觉模型时意外改变普通聊天。"""
+    """按任务拆分参数，避免改视觉模型时意外改变普通聊天。
+
+    这里的任务集合与 ``ModelTaskConfig`` 里需要采样参数的那些一一对应；tts 与
+    embedding 不在其中，它们没有温度与输出上限可言。WebUI 的任务清单从本类的
+    字段派生，新增一档参数只改这里即可。
+    """
 
     chat: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
+    # 决策层与表达层各自一档。默认与 chat 一致，因此拆分本身不改变任何现有行为；
+    # 决策不产出正文，温度对「像不像人」没有贡献，想让动作选择更稳可以单独调低。
+    planner: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
+    replyer: GenerationTaskConfig = Field(default_factory=GenerationTaskConfig)
     proactive: ProactiveGenerationTaskConfig = Field(
         default_factory=lambda: ProactiveGenerationTaskConfig(temperature=0.9, max_tokens=200)
     )
