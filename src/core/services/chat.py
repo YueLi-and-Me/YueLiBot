@@ -57,12 +57,19 @@ from src.core.agent.conversation_gate import (
 )
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.core.agent.expression_select import ExpressionSelector
-from src.core.agent.history import close_dangling_say, fit_char_budget, normalize_history, strip_say_tags
+from src.core.agent.history import (
+    close_dangling_say,
+    fit_char_budget,
+    normalize_history,
+    strip_say_tags,
+    strip_side_effect_tags,
+)
 from src.core.agent.parser import (
     EmojiEvent, MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent,
     SayEvent, TextEvent,
 )
 from src.core.agent.prompt import (
+    build_itemized_system_prompt,
     build_proactive_prompt,
     build_system_prompt,
     describe_resumption,
@@ -107,6 +114,8 @@ from src.core.prompts.registry import (
     CHAT_REPLYER_TEMPLATE_IDS,
     CHAT_SYSTEM_TEMPLATE_IDS,
     CHAT_SYSTEM_VARIANT_COMPONENTS,
+    CHAT_TOOL_REPLYER_TEMPLATE_IDS,
+    CHAT_TOOL_TEMPLATE_IDS,
     prompt_metadata,
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
@@ -2021,10 +2030,19 @@ class ChatService:
             available_actions=frozenset({'reply', 'silent'}),
             capabilities=capabilities,
         )
-        protocol = render_action_protocol(
-            sorted(frame.available_actions),
-            [(target.message_id, strip_say_tags(target.content))],
-            quote_supported=False,
+        selectable_messages = [(target.message_id, strip_say_tags(target.content))]
+        protocol = (
+            render_tool_protocol(
+                selectable_messages,
+                quote_supported=False,
+                available_actions=frame.available_actions,
+            )
+            if self._tool_calling
+            else render_action_protocol(
+                sorted(frame.available_actions),
+                selectable_messages,
+                quote_supported=False,
+            )
         )
         prepared = self._prepare_turn_context(
             context,
@@ -2032,31 +2050,58 @@ class ChatService:
             now,
             user_message_id_watermark=target.message_id,
         )
-        rendered = self._with_direct_scene_analysis(
-            self._render_prepared_context(prepared, protocol_text=protocol),
-            scene,
-        )
-        rendered[0] = {
-            **rendered[0],
-            'content': '\n\n'.join((
-                rendered[0]['content'],
-                '# 当前主动跟进机会',
-                situation,
-                '这不是必须发言的通知。请结合上面的完整对话判断：只有话题明显未完、'
-                '对方仍需要回应或支持、先前约定需要续上，或者此刻追问在你们的关系里'
-                '确实自然时才选 reply；话题已经自然结束、只是礼貌收尾、没有新价值、'
-                '继续追问会打扰时选 silent。不要为了到点而硬找一句话。',
-            )),
-        }
+        render_params: dict[str, dict[str, str]] = {}
+        follow_up_context = '\n'.join((
+            '# 当前主动跟进机会',
+            situation,
+            '这不是必须发言的通知。请结合上面的完整对话判断：只有话题明显未完、'
+            '对方仍需要回应或支持、先前约定需要续上，或者此刻追问在你们的关系里'
+            '确实自然时才选 reply；话题已经自然结束、只是礼貌收尾、没有新价值、'
+            '继续追问会打扰时选 silent。不要为了到点而硬找一句话。',
+        ))
+
+        def add_follow_up_context(rendered: list[dict]) -> list[dict]:
+            """把本次主动机会按当前消息模式放入同一份上下文。"""
+            with_scene = self._with_direct_scene_analysis(
+                rendered,
+                scene,
+                itemized=self._tool_calling,
+            )
+            if self._tool_calling:
+                return [
+                    *with_scene,
+                    {'role': 'user', 'content': follow_up_context},
+                ]
+            return [{
+                **with_scene[0],
+                'content': '\n\n'.join((
+                    with_scene[0]['content'],
+                    follow_up_context,
+                )),
+            }, *with_scene[1:]]
+
+        rendered = add_follow_up_context(self._render_prepared_context(
+            prepared,
+            protocol_text=protocol,
+            render_params=render_params,
+            decision_only=self._tool_calling,
+        ))
         rendered.append({
             'role': 'user',
             'content': (
+                '[主动决策触发，不是对方的新消息] 现在只判断要不要续接上一段对话。'
+                '请调用一个动作工具表达决定，除此之外不要输出正文或解释。'
+                if self._tool_calling else
                 '[主动决策触发，不是对方的新消息] 现在只判断要不要续接上一段对话。'
                 '必须先输出 <decision>；选择 reply 时再输出简短自然的 <say>，选择 '
                 'silent 后不要输出任何正文。'
             ),
         })
-        messages = self._render_agent_messages(frame, rendered)
+        messages = self._render_agent_messages(
+            frame,
+            rendered,
+            protocol_text=protocol,
+        )
         gate_inputs = GateInputFacts(
             stream_kind='direct',
             mentioned_me=False,
@@ -2069,7 +2114,10 @@ class ChatService:
             selectable_message_ids=(target.message_id,),
             current_topic_available=True,
         )
-        metadata = prompt_metadata('chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS)
+        metadata = prompt_metadata(
+            'chat.conversation',
+            CHAT_TOOL_TEMPLATE_IDS if self._tool_calling else CHAT_CONVERSATION_TEMPLATE_IDS,
+        )
         trace.emit(
             'llm_request',
             turnId=turn,
@@ -2077,8 +2125,10 @@ class ChatService:
             temperature=self._chat_temperature,
             maxTokens=self._chat_max_tokens,
             followUp=True,
+            renderParams=render_params,
             **metadata,
         )
+        bind_render_params(render_params)
         raw_parts: list[str] = []
 
         def on_chunk(chunk: dict[str, Any]) -> None:
@@ -2092,6 +2142,40 @@ class ChatService:
                 reasoning=chunk.get('reasoning'),
             )
 
+        async def replyer_messages(head: DecisionHead) -> list[dict]:
+            """为工具决策选中的主动回复组装表达层 item 流。"""
+            replyer_protocol = render_replyer_protocol(
+                head.reference or '',
+                head.length,
+                emoji_enabled=False,
+            )
+            replyer_context = add_follow_up_context(
+                await self._enrich_prepared_context(
+                    prepared,
+                    None,
+                    render_params,
+                    reply_length=head.length,
+                    protocol_text=replyer_protocol,
+                )
+            )
+            replyer_items = self._render_agent_messages(
+                frame,
+                replyer_context,
+                protocol_text=replyer_protocol,
+            )
+            trace.emit(
+                'llm_request',
+                turnId=turn,
+                messages=replyer_items,
+                temperature=self._chat_temperature,
+                maxTokens=self._chat_max_tokens,
+                followUp=True,
+                renderParams=render_params,
+                **prompt_metadata('chat.replyer', CHAT_TOOL_REPLYER_TEMPLATE_IDS),
+            )
+            bind_render_params(render_params)
+            return replyer_items
+
         outcome = await self._conversation_agent.run(
             frame,
             messages,
@@ -2102,6 +2186,7 @@ class ChatService:
             provider_name=getattr(self._chat_provider, 'provider', ''),
             model_name=getattr(self._chat_provider, 'model', ''),
             on_chunk=on_chunk,
+            replyer_messages=replyer_messages if self._tool_calling else None,
         )
         raw_text = ''.join(raw_parts)
         trace.emit('llm_final', turnId=turn, text=raw_text)
@@ -2185,25 +2270,36 @@ class ChatService:
     def _with_direct_scene_analysis(
         messages: list[dict],
         scene: SceneSnapshot,
+        *,
+        itemized: bool = False,
     ) -> list[dict]:
-        """把独立情景分析结果放进私聊动作决策的 system 消息。
+        """把独立情景分析结果放进私聊动作决策上下文。
 
         :param messages: 首项必须是 system 的已渲染模型消息。
         :param scene: SceneObserver 刚产出的合法场景画像。
-        :return: 仅复制并增强首项的新消息列表；调用方原列表保持不变。
+        :param itemized: 是否把画像追加为独立 user item；传统角色模式仍并入 system。
+        :return: 已加入画像的新消息列表；调用方原列表保持不变。
         :raises ValueError: 消息列表为空或首项不是 system 时抛出。
         """
         if not messages or messages[0].get('role') != 'system':
             raise ValueError('私聊情景分析只能注入以 system 开头的模型消息')
+        scene_context = '\n'.join((
+            '# 私聊情景分析结果',
+            f'当前话题：{scene.topic}',
+            f'当前气氛：{scene.atmosphere}',
+            '这是独立情景分析 Agent 对当前互动的描述，只提供决策背景。'
+            '是否回复仍由 Conversation Agent 根据动作空间自行判断。',
+        ))
+        if itemized:
+            return [
+                *messages,
+                {'role': 'user', 'content': scene_context},
+            ]
         system = {
             **messages[0],
             'content': '\n\n'.join((
                 messages[0]['content'],
-                '# 私聊情景分析结果',
-                f'当前话题：{scene.topic}',
-                f'当前气氛：{scene.atmosphere}',
-                '这是独立情景分析 Agent 对当前互动的描述，只提供决策背景。'
-                '是否回复仍由 Conversation Agent 根据动作空间自行判断。',
+                scene_context,
             )),
         }
         return [system, *messages[1:]]
@@ -2907,9 +3003,18 @@ class ChatService:
             self._working_memory_messages,
             user_message_id_watermark,
         )
-        wm = self._order_working_memory_for_batch(wm, batch_message_ids)
-        raw_history = self._history_for_context(context, wm)
-        agent_history = self._history_for_context(context, wm, label_message_ids=True)
+        # raw_history 还服务于旧管线和表达选择器，继续保留角色交替所需的逻辑
+        # 顺序；工具 Agent 单独读取原始落库顺序的拍平变体。这样 shadow 开工具
+        # 时也不会悄悄改变随后那次旧管线调用的可见行为。
+        ordered_wm = self._order_working_memory_for_batch(wm, batch_message_ids)
+        raw_history = self._history_for_context(context, ordered_wm)
+        agent_wm = wm if self._tool_calling else ordered_wm
+        agent_history = self._history_for_context(
+            context,
+            agent_wm,
+            label_message_ids=True,
+            flatten=self._tool_calling,
+        )
         # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。
         activity = None
         if (context.stream.kind in self._perception_surfaces
@@ -2950,12 +3055,13 @@ class ChatService:
         :param expression_habits: 可选表达习惯提示词块。
         :param render_params: 可选提示词渲染参数收集字典。
         :param reply_length: 当前轮规划出的回复篇幅。
-        :param protocol_text: 可选的 Agent 动作协议文本；提供时整体替换
-            系统提示词中的直接发言协议，而不是追加在末尾。该参数同时是
-            「本次渲染属于 Agent 路径」的唯一判据，历史变体据此选择。
+        :param protocol_text: 可选的 Agent 协议文本。传统角色模式把它整体替换进
+            system；工具模式据此选择 item 流，协议本身由 ``_render_agent_messages``
+            放在末尾。它同时是「本次渲染属于 Agent 路径」的唯一判据。
         :param decision_only: 本次渲染只用于产出动作决策；透传给系统提示词，
             省略回复风格、语调与表达样本三块。
-        :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
+        :return: 首项为 system 消息；传统模式后接裁剪历史，工具模式后接独立的
+            运行时上下文 item 与裁剪历史。
         副作用：只读取配置和会话语调，不读写数据库、不调用模型。
         """
         selected_facts = (
@@ -2963,25 +3069,46 @@ class ChatService:
             if facts is None
             else facts
         )
+        prompt_kwargs = self._prompt_config_kwargs(
+            prepared.context.relationship_signals_enabled,
+        )
+        shared_context = {
+            'now': datetime.fromtimestamp(prepared.now / 1000),
+            'persona': prepared.persona,
+            'acquaintance': prepared.acquaintance,
+            'facts': [fact.content for fact in selected_facts],
+            'episodes': prepared.episodes,
+            'activity': prepared.activity,
+            'schedule': prepared.schedule,
+            'expression_habits': expression_habits,
+            'reply_length': reply_length,
+            'tone': self._session(prepared.context.stream.id).tone,
+            'resumption': prepared.resumption,
+            'platform_name': prepared.platform_bot_name,
+            'scene': self._scene_for_prompt(prepared.context),
+            'render_params': render_params,
+            'decision_only': decision_only,
+            **prompt_kwargs,
+        }
+        if self._tool_calling and protocol_text is not None:
+            # 工具模式的运行时背景不再塞进一个大 system：时间、画像、记忆等
+            # 各自保留 item 边界，历史也不做角色合并。协议由
+            # _render_agent_messages 放在整个序列末尾，确保它始终是最近的约束。
+            system, context_items = build_itemized_system_prompt(**shared_context)
+            history = fit_char_budget(
+                prepared.agent_history,
+                preserve_items=True,
+            )
+            return [
+                {'role': 'system', 'content': system},
+                *({'role': 'user', 'content': item} for item in context_items),
+                *history,
+            ]
+
         system = build_system_prompt(
-            now=datetime.fromtimestamp(prepared.now / 1000),
-            persona=prepared.persona,
-            acquaintance=prepared.acquaintance,
-            facts=[fact.content for fact in selected_facts],
-            episodes=prepared.episodes,
-            activity=prepared.activity,
-            schedule=prepared.schedule,
-            expression_habits=expression_habits,
-            reply_length=reply_length,
-            tone=self._session(prepared.context.stream.id).tone,
-            resumption=prepared.resumption,
-            platform_name=prepared.platform_bot_name,
-            render_params=render_params,
             protocol_text=protocol_text,
             emoji_enabled=self._emoji_available(prepared.context),
-            scene=self._scene_for_prompt(prepared.context),
-            decision_only=decision_only,
-            **self._prompt_config_kwargs(prepared.context.relationship_signals_enabled),
+            **shared_context,
         )
         # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
         # 锚点；旧管线仍读不带编号的原始历史，可见行为完全不受影响。
@@ -3441,20 +3568,49 @@ class ChatService:
         frame: DecisionFrame,
         messages: list[dict],
         continuation_recap: str = '',
+        protocol_text: str | None = None,
     ) -> list[dict]:
         """把已渲染消息整理为 Conversation Agent 实际提交的上下文。
 
-        与旧管线不同，Agent 的助手历史必须去掉 ``<say>`` 外壳，否则模型会
-        继续模仿历史里「回复以 <say> 开头」的旧格式；随后在真实用户消息前
-        插入 reply/silent 两条完整 few-shot，并在末条用户消息上追加输出
-        起点指令，使动作头先于正文成为生成侧最近的约束。
+        XML 模式下，助手历史去掉 ``<say>`` 外壳，再在真实用户消息前插入
+        reply/silent few-shot，并把输出要求并进末条用户消息。工具模式下不再做
+        任何角色重排或合并：system 之后的时间、画像、历史与续跑提示全部保持
+        独立 user item，工具/回复协议作为最后一项。
 
         :param frame: 本回合固定快照，提供动作空间与可选消息。
         :param messages: ``_render_prepared_context`` 产出的系统与历史消息。
         :param continuation_recap: 续跑轮里她上一轮做了什么；非空时按
             ``_CONTINUATION_NOTICE`` 渲染成提示，插在候选块与输出指令之间。
-        :return: 历史助手已纯文本化、带 few-shot 与末轮输出指令的新消息列表。
+        :param protocol_text: 工具模式必需的末轮协议；XML 模式已在 system 内，
+            因此忽略该参数。
+        :return: 按当前协议模式整理完成的新消息列表。
+        :raises ValueError: 工具模式缺少协议，或上游仍传入 assistant 历史。
         """
+        if self._tool_calling:
+            if not protocol_text or not protocol_text.strip():
+                raise ValueError('工具调用的 item 流缺少末轮协议')
+            if not messages or messages[0].get('role') != 'system':
+                raise ValueError('工具调用的 item 流必须以 system 开头')
+            invalid_roles = [
+                item.get('role') for item in messages[1:]
+                if item.get('role') != 'user'
+            ]
+            if invalid_roles:
+                raise ValueError(
+                    f'工具调用的 item 流只能包含 user 上下文，收到：{invalid_roles}'
+                )
+            flattened = [dict(item) for item in messages]
+            if continuation_recap:
+                flattened.append({
+                    'role': 'user',
+                    'content': _CONTINUATION_NOTICE.format(recap=continuation_recap),
+                })
+            flattened.append({
+                'role': 'user',
+                'content': protocol_text.rstrip(),
+            })
+            return flattened
+
         if len(messages) < 2:
             return messages
         history: list[dict] = []
@@ -3490,10 +3646,7 @@ class ChatService:
             _CONTINUATION_NOTICE.format(recap=continuation_recap) + '\n\n'
             if continuation_recap else ''
         )
-        # 工具调用模式下动作由函数签名表达：XML 的输出要求与 few-shot 一并去掉。
-        # 两套输出协议同时在场时模型会在「写标签」和「调工具」之间摇摆，表现为
-        # 一部分轮次退回纯文本输出、根本拿不到 tool_calls。
-        output_rule = '' if self._tool_calling else (
+        output_rule = (
             '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
             '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 '
             '<say>、普通文字或解释。'
@@ -3506,11 +3659,10 @@ class ChatService:
                 f'{output_rule}'
             ).rstrip() if (continuation or output_rule) else history[last_user_index]['content'],
         }
-        examples = [] if self._tool_calling else self._agent_output_examples(frame)
         return [
             messages[0],
             *history[:last_user_index],
-            *examples,
+            *self._agent_output_examples(frame),
             *history[last_user_index:],
         ]
 
@@ -3570,15 +3722,21 @@ class ChatService:
         """
         frame = self._agent_frame(context, batch, turn, batch_gate.result.disposition)
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
+        protocol_text = self._render_agent_protocol(frame, batch, context)
+        render_params: dict[str, dict[str, str]] = {}
         messages = self._render_agent_messages(
             frame,
             self._render_prepared_context(
                 prepared,
-                protocol_text=self._render_agent_protocol(frame, batch, context),
+                render_params=render_params,
+                protocol_text=protocol_text,
+                decision_only=self._tool_calling,
             ),
+            protocol_text=protocol_text,
         )
         metadata = prompt_metadata(
-            'chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS,
+            'chat.conversation',
+            CHAT_TOOL_TEMPLATE_IDS if self._tool_calling else CHAT_CONVERSATION_TEMPLATE_IDS,
         )
         trace.emit(
             'llm_request',
@@ -3586,8 +3744,42 @@ class ChatService:
             messages=messages,
             temperature=self._chat_temperature,
             maxTokens=self._chat_max_tokens,
+            renderParams=render_params,
             **metadata,
         )
+        bind_render_params(render_params)
+
+        async def replyer_messages(head: DecisionHead) -> list[dict]:
+            """为工具模式的影子发言生成随后会被完整丢弃的合法正文。"""
+            replyer_protocol = render_replyer_protocol(
+                head.reference or '',
+                head.length,
+                emoji_enabled=frame.capabilities.emoji,
+            )
+            replyer_context = self._render_prepared_context(
+                prepared,
+                render_params=render_params,
+                reply_length=head.length,
+                protocol_text=replyer_protocol,
+            )
+            replyer_items = self._render_agent_messages(
+                frame,
+                replyer_context,
+                protocol_text=replyer_protocol,
+            )
+            trace.emit(
+                'llm_request',
+                turnId=turn,
+                messages=replyer_items,
+                temperature=self._chat_temperature,
+                maxTokens=self._chat_max_tokens,
+                renderParams=render_params,
+                shadow=True,
+                **prompt_metadata('chat.replyer', CHAT_TOOL_REPLYER_TEMPLATE_IDS),
+            )
+            bind_render_params(render_params)
+            return replyer_items
+
         try:
             outcome = await self._conversation_agent.run(
                 frame,
@@ -3597,6 +3789,7 @@ class ChatService:
                 prompt_hash=metadata['promptHash'],
                 model_task='chat.conversation.shadow',
                 signal=cancel_event,
+                replyer_messages=replyer_messages if self._tool_calling else None,
             )
         except Exception as exc:
             # shadow 只是观察通道，失败记录日志即可，绝不能影响旧管线行为。
@@ -3805,10 +3998,12 @@ class ChatService:
             frame,
             rendered,
             continuation_recap=continuation_recap,
+            protocol_text=protocol_text,
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
         metadata = prompt_metadata(
-            'chat.conversation', CHAT_CONVERSATION_TEMPLATE_IDS,
+            'chat.conversation',
+            CHAT_TOOL_TEMPLATE_IDS if self._tool_calling else CHAT_CONVERSATION_TEMPLATE_IDS,
         )
         trace.emit(
             'llm_request',
@@ -3834,21 +4029,23 @@ class ChatService:
             :return: 回复生成那一次调用的完整消息序列。
             副作用：一次向量检索与一次表达选择模型调用。
             """
+            replyer_protocol = render_replyer_protocol(
+                head.reference or '',
+                head.length,
+                emoji_enabled=frame.capabilities.emoji,
+            )
             replyer_context = await self._enrich_prepared_context(
                 prepared,
                 cancel_event,
                 render_params,
                 reply_length=head.length,
-                protocol_text=render_replyer_protocol(
-                    head.reference or '',
-                    head.length,
-                    emoji_enabled=frame.capabilities.emoji,
-                ),
+                protocol_text=replyer_protocol,
             )
             messages = self._render_agent_messages(
                 frame,
                 replyer_context,
                 continuation_recap=continuation_recap,
+                protocol_text=replyer_protocol,
             )
             trace.emit(
                 'llm_request',
@@ -3857,8 +4054,13 @@ class ChatService:
                 temperature=self._chat_temperature,
                 maxTokens=self._chat_max_tokens,
                 renderParams=render_params,
-                **prompt_metadata('chat.replyer', CHAT_REPLYER_TEMPLATE_IDS),
+                **prompt_metadata(
+                    'chat.replyer',
+                    CHAT_TOOL_REPLYER_TEMPLATE_IDS
+                    if self._tool_calling else CHAT_REPLYER_TEMPLATE_IDS,
+                ),
             )
+            bind_render_params(render_params)
             return messages
 
         async def on_events(events: Iterable[ParseEvent]) -> None:
@@ -4338,14 +4540,15 @@ class ChatService:
         messages: list[Any],
         *,
         label_message_ids: bool = False,
+        flatten: bool = False,
     ) -> list[dict]:
         """将记忆消息转换为模型历史，补充发言时刻，并在群聊中补充发送者显示名。
 
         用户消息带 ``HH:MM`` 前缀（跨天时带 ``MM-DD HH:MM``），让「这条是刚说的
         还是十分钟前说的」「两个人之间隔了多久」成为她能直接读到的事实，而不必由
-        门控常量代为判断。**她自己的历史回复不加时刻**：助手行是她的输出范例，行首
-        多出任何前缀都会被模仿进动作头，整轮按 illegal_action 失败；她的发言位置
-        夹在带时刻的用户行之间，据此已足以推断自己上次开口有多久。
+        门控常量代为判断。传统角色模式下她自己的历史回复不加时刻：assistant 行
+        仍是输出范例，行首前缀可能被模仿进动作头。扁平模式没有这种格式示范职责，
+        因而每一方都带时间与说话人，落库顺序就是可直接阅读的事件顺序。
 
         :param context: 当前会话上下文。
         :param messages: 记忆服务返回的消息对象列表。
@@ -4354,6 +4557,13 @@ class ChatService:
             不逐行可见时模型无法指认，会把 targets 写成人名或「最后一条」这类
             描述，整轮按 illegal_action 失败。她自己的历史回复不加编号——本
             回合只允许把批次内的用户消息作为目标，给助手行编号只会诱导越界。
+        :param flatten: 把她自己的发言也渲染成 ``user`` 角色，用显示名区分
+            说话人，并在转角色前清掉历史协议与副作用标签。工具调用模式专用：
+            那里动作由函数签名承载，助手行不再承担
+            「这是你的输出格式」的示范作用，而拍平能一次性拆掉一整条脆弱链路
+            ——角色必须交替这条端点要求，逼出了「把跨轮落库的回复重排到批次
+            之前」，重排又可能把它顶到开头被 ``normalize_history`` 丢掉。拍平
+            之后不存在开头 assistant，也就没有那个丢法。
 
         :return: 仅含 ``role`` 和 ``content`` 的模型消息列表；原始记忆对象不被修改。
 
@@ -4363,6 +4573,17 @@ class ChatService:
         last_stamped_date = None
         for message in messages:
             content = message.content
+            role = message.role
+            if flatten and message.role == 'assistant':
+                # 转成 user 之前先按 assistant 语义清理；一旦改完角色，
+                # normalize_history 就不会再替它剥副作用标签与 <say> 外壳。
+                content = strip_say_tags(
+                    close_dangling_say(strip_side_effect_tags(content)),
+                )
+                if not content:
+                    continue
+                content = f'{self._bot_display_name}: {content}'
+                role = 'user'
             if context.stream.kind == 'group' and message.role == 'user':
                 if message.sender_person_id is None:
                     raise RuntimeError('群聊 user 历史缺少 sender_person_id')
@@ -4371,7 +4592,7 @@ class ChatService:
                     context.stream.id,
                 )
                 content = f'{name}: {content}'
-            if message.role == 'user':
+            if message.role == 'user' or (flatten and message.role == 'assistant'):
                 spoken_at = datetime.fromtimestamp(message.created_at / 1000)
                 # 跨天才带日期：工作记忆可能横跨若干天，但同一天内逐行重复日期
                 # 只会挤占上下文；系统提示词已经给出「现在是几点」，她据此就能算出
@@ -4384,7 +4605,7 @@ class ChatService:
                 content = f'{stamp} {content}'
             if label_message_ids and message.role == 'user':
                 content = f'[{message.message_id}] {content}'
-            history.append({'role': message.role, 'content': content})
+            history.append({'role': role, 'content': content})
         return history
 
     async def _consume_events(self, events: Iterable[ParseEvent], sink: _TurnSink) -> None:
