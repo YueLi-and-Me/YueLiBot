@@ -2,7 +2,8 @@
  * 会话观察页：按会话流聚合展示后端只读运行快照与实时通道。
  *
  * 页面自上而下为页头工具区（会话流选择、手动刷新、自动刷新开关、读取时刻）、
- * 关键状态条、阶段看板、七个快照分区、事件账本、提示词工作台与实时日志。
+ * 关键状态条、阶段看板、七个快照分区、事件账本、分阶段调用记录、提示词工作台
+ * 与实时日志。
  * 数据全部来自 hooks/use-observability、use-traces、use-prompts、use-logs；
  * 本组件只负责会话流选中态、自动刷新开关与各分区的编排，不直接发起请求。
  */
@@ -15,6 +16,7 @@ import { useSnapshot, useStages, useStreams } from '@/hooks/use-observability'
 import { useTraces } from '@/hooks/use-traces'
 import { streamLabel } from '@/lib/format'
 import { LogPanel } from './LogPanel'
+import { PromptRecordPanel } from './PromptRecordPanel'
 import { PromptWorkbench } from './PromptWorkbench'
 import { SnapshotSections } from './SnapshotSections'
 import { StageBoard } from './StageBoard'
@@ -96,6 +98,8 @@ export function ObservePage() {
         search={traces.search}
         streamId={streamId}
       />
+
+      <PromptRecordPanel enabled />
 
       <PromptWorkbench enabled />
 
