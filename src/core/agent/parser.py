@@ -120,6 +120,8 @@ class DecisionEvent:
     :ivar length: 回复篇幅原文；缺失时为 `None`。
     :ivar query: 认知动作的检索词原文；终局动作不携带，缺失时为 `None`。
     :ivar reaction: react 动作的表情回应标识原文；其他动作不携带，缺失时为 `None`。
+    :ivar reference: 决策交给回复生成的背景说明原文；只有终局发言动作携带，
+        缺失时为 `None`。
     """
 
     type: str = 'decision'
@@ -130,6 +132,7 @@ class DecisionEvent:
     length: str | None = None
     query: str | None = None
     reaction: str | None = None
+    reference: str | None = None
 
 
 ParseEvent = Union[
@@ -415,6 +418,7 @@ class ResponseParser:
                 length=attrs.get('length'),
                 query=attrs.get('query'),
                 reaction=attrs.get('reaction'),
+                reference=attrs.get('reference'),
             ))
             return
 

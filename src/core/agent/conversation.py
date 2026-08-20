@@ -500,6 +500,11 @@ class ConversationAgent:
             length=_parse_length(event.length),
             query=event.query,
             reaction=event.reaction.strip() if event.reaction is not None else None,
+            reference=(
+                event.reference.strip()
+                if event.reference is not None and event.reference.strip()
+                else None
+            ),
         )
         head.validate(frame)
         return head

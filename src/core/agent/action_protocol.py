@@ -481,6 +481,10 @@ class DecisionHead:
     length: ReplyLength | None = None
     query: str | None = None
     reaction: str | None = None
+    # 决策层写给回复生成层的背景说明：为什么要开口、往哪个方向说、当前有哪些
+    # 前因。封闭理由码只够做审计，喂不饱一个独立的回复生成模型，因此额外留这
+    # 一条自由文本通道。它不是正文，也不允许当正文用。
+    reference: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、篇幅与动作不匹配。"""
