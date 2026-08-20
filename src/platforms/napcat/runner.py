@@ -23,7 +23,12 @@ from src.core.common.logger import get_logger
 
 from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReaction
 from .config import NapcatDocument
-from .events import QqInboundEvent, classify_event, parse_inbound_event
+from .events import (
+    QqInboundEvent,
+    build_poke_inbound_event,
+    classify_event,
+    parse_inbound_event,
+)
 from .segments import (
     is_emoji_image,
     mentioned_user_ids,
@@ -296,6 +301,41 @@ class NapcatRunner:
         self._remember_display_name(group_id, user_id, name)
         return name
 
+    async def _query_member_identity(
+        self,
+        group_id: str,
+        user_id: str,
+    ) -> tuple[str, str]:
+        """查询一个 QQ 号的账号昵称与本群名片，两者分开返回。
+
+        与 ``_query_display_name`` 的区别是不做「名片优先、否则昵称」的合并：
+        入站事件要把昵称与名片分别提交给主体，而主体把空名片视为「清除名片」，
+        合并后再拆会把没有名片的人写成「名片等于昵称」，或把有名片的人抹空。
+
+        :param group_id: 群号；为空时按陌生人资料查询，名片一律返回空串。
+        :param user_id: 待查询的 QQ 号。
+        :return: ``(昵称, 群名片)``；查询失败时两项均为空串。
+        副作用：调用一次 ``get_group_member_info`` 或 ``get_stranger_info``。
+        """
+        action = 'get_group_member_info' if group_id else 'get_stranger_info'
+        params: Dict[str, Any] = {'user_id': user_id}
+        if group_id:
+            params['group_id'] = group_id
+        try:
+            response = await self._transport.call_action(action, params)
+        except Exception as exc:
+            logger.warning(
+                'QQ 成员信息查询失败',
+                groupId=group_id,
+                userId=user_id,
+                error=str(exc),
+            )
+            return '', ''
+        data = response.get('data')
+        if not isinstance(data, Mapping):
+            return '', ''
+        return _optional_text(data.get('nickname')), _optional_text(data.get('card'))
+
     async def _resolve_quote_previews(
         self,
         raw_segments: List[Any],
@@ -534,14 +574,76 @@ class NapcatRunner:
             if kind == 'input_status':
                 # 对方正在打字只是一条瞬时事实，提交失败不影响任何消息通路。
                 try:
-                    await self._backend.submit_typing(
+                    spoke = await self._backend.submit_typing(
                         _required_text(payload.get('user_id'), 'user_id 不能为空'),
                     )
+                    if spoke:
+                        logger.info(
+                            'QQ 输入状态触发私聊追问',
+                            userId=payload.get('user_id'),
+                        )
+                    else:
+                        logger.debug(
+                            '已检测 QQ 私聊输入状态，本次无需追问',
+                            userId=payload.get('user_id'),
+                        )
                 except Exception as exc:
-                    logger.debug('提交 QQ 输入状态失败', error=str(exc))
+                    # 该支路不阻断普通消息，但不能静默吞掉故障，否则现场只会表现为
+                    # 「输入状态完全没生效」，无法判断断在协议端还是主体条件判断。
+                    logger.warning(
+                        '提交 QQ 输入状态失败',
+                        userId=payload.get('user_id'),
+                        error=str(exc),
+                    )
+                continue
+            if kind == 'poke':
+                # 通知不带昵称与群名片，必须先查一次成员信息再提交：主体的
+                # set_group_card 把空串视为「清除名片」，用空值提交会把发起者
+                # 已存的群名片抹掉。查不到就只记日志不提交——宁可这一戳不进意识，
+                # 也不能拿空名字污染人物档案。
+                poke_group_id = _optional_text(payload.get('group_id'))
+                poke_user_id = _optional_text(payload.get('user_id'))
+                nickname, group_card = await self._query_member_identity(
+                    poke_group_id, poke_user_id,
+                )
+                if not nickname:
+                    logger.warning(
+                        'QQ 戳一戳无法解析发起者，已跳过',
+                        groupId=poke_group_id,
+                        senderId=poke_user_id,
+                    )
+                    continue
+                poke_event = build_poke_inbound_event(
+                    payload, self_name, nickname, group_card,
+                )
+                logger.info(
+                    '收到 QQ 戳一戳',
+                    groupId=poke_group_id,
+                    senderId=poke_user_id,
+                    senderName=group_card or nickname,
+                    text=poke_event.text,
+                )
+                try:
+                    await self._backend.submit_inbound(poke_event)
+                except (httpx.HTTPError, ValueError) as exc:
+                    # 与普通消息同口径：单条提交失败只丢这一条，不拆连接。
+                    logger.error(
+                        'QQ 戳一戳提交失败',
+                        streamExternalId=poke_event.stream_external_id,
+                        error=str(exc),
+                    )
                 continue
             if kind != 'message':
-                logger.debug('忽略未知 QQ 事件', postType=payload.get('post_type'))
+                # 未处理事件此前记在 debug，而文件与控制台都不落 debug，
+                # 现场表现为「协议推了但一行痕迹都没有」，无法判断事件到没到适配器。
+                logger.info(
+                    '忽略未处理的 QQ 事件',
+                    postType=payload.get('post_type'),
+                    noticeType=payload.get('notice_type'),
+                    subType=payload.get('sub_type'),
+                    groupId=payload.get('group_id'),
+                    senderId=payload.get('user_id'),
+                )
                 continue
 
             # 提及显示名与引用摘要都要在渲染正文之前备好，否则模型只能看到裸

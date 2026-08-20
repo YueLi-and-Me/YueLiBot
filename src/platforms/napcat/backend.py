@@ -179,6 +179,7 @@ class BackendClient:
                 'imageSources': list(event.image_sources),
                 'emojiSources': list(event.emoji_sources),
                 'emojiSubTypes': list(event.emoji_sub_types),
+                'pokedMe': event.poked_me,
             },
         )
         response.raise_for_status()

@@ -29,6 +29,9 @@ EventKind = Literal[
     'message',
     # 私聊输入状态：对方在输入框打字时协议端会持续推送，用于催促类主动发言。
     'input_status',
+    # 有人戳了 Bot 自己。协议按 notice/notify/poke 推送，只有 target_id 指向
+    # 登录账号时才归入本类；戳别人与 Bot 戳出去的回显都不算。
+    'poke',
     'other',
 ]
 
@@ -53,6 +56,76 @@ class QqInboundEvent:
     emoji_sources: tuple[str, ...] = ()
     # 与 emoji_sources 逐项对齐；主体登记后会在再次发送时还原给 OneBot。
     emoji_sub_types: tuple[int, ...] = ()
+    # 本条是「有人戳了 Bot」而不是普通消息。戳一戳没有正文也没有 @，正文里
+    # 没有任何可供门控识别的信号，因此把这件事作为独立事实提交给主体门控。
+    poked_me: bool = False
+
+
+def build_poke_inbound_event(
+    payload: Mapping[str, Any],
+    bot_name: str,
+    sender_nickname: str,
+    sender_group_card: str,
+) -> QqInboundEvent:
+    """把一条戳 Bot 的通知转换为可提交的入站事件。
+
+    戳一戳在协议上是 notice 而不是 message：**没有正文，也没有平台消息编号**。
+    因此正文由适配器合成，``external_message_id`` 留空——主体侧「不带编号的通道」
+    是已支持的形态，引用逻辑会据此拒绝把它当作引用目标。
+
+    昵称与群名片必须由调用方先查询后传入，不能留空：主体的 ``set_group_card``
+    把空串视为「清除名片」，用空值提交会把发起者已存的群名片抹掉。
+
+    :param payload: 已确认为戳 Bot 的 OneBot 通知映射。
+    :param bot_name: 机器人显示名，用于渲染正文里的被戳对象。
+    :param sender_nickname: 发起者账号昵称，不能为空。
+    :param sender_group_card: 发起者在本群的名片；私聊为空字符串。
+    :return: 可直接提交给主体入站接口的事件。
+    :raises ValueError: 发起者 QQ 号缺失，或昵称为空。
+    """
+    sender_id = _sender_external_id(payload)
+    if not sender_nickname.strip():
+        raise ValueError('戳一戳发起者昵称不能为空，需先查询成员信息')
+    group_id = payload.get('group_id')
+    if group_id is not None:
+        stream_kind: Literal['direct', 'group'] = 'group'
+        stream_external_id = _required_identifier(group_id, 'group_id 不能为空')
+    else:
+        stream_kind = 'direct'
+        stream_external_id = sender_id
+    return QqInboundEvent(
+        stream_kind=stream_kind,
+        stream_external_id=stream_external_id,
+        sender_external_id=sender_id,
+        sender_nickname=sender_nickname,
+        sender_group_card=sender_group_card,
+        bot_name=bot_name,
+        # raw_info 是协议端可选携带的展示片段（"戳了戳" / 自定义后缀）；缺失时
+        # 退回统一措辞，正文始终写明动作对象，避免她读成「谁戳了谁」。
+        text=f'[{_poke_action_text(payload)}{bot_name}]',
+        mentioned_me=False,
+        external_message_id='',
+        poked_me=True,
+    )
+
+
+def _poke_action_text(payload: Mapping[str, Any]) -> str:
+    """从戳一戳通知里取出动作措辞，缺失时退回默认说法。
+
+    :param payload: OneBot 通知映射。
+    :return: 形如 ``戳了戳`` 的动作短语，始终非空。
+    """
+    raw_info = payload.get('raw_info')
+    if isinstance(raw_info, list):
+        for segment in raw_info:
+            if not isinstance(segment, Mapping):
+                continue
+            # 展示片段按 nudge 动作分段，取第一段非空文案即为动作措辞。
+            if segment.get('type') == 'nor':
+                text = _string_value(segment.get('txt'))
+                if text:
+                    return text
+    return '戳了戳'
 
 
 def is_action_response(payload: Mapping[str, Any]) -> bool:
@@ -99,6 +172,31 @@ def is_input_status(payload: Mapping[str, Any]) -> bool:
     )
 
 
+def is_poke_at_self(payload: Mapping[str, Any], self_id: str) -> bool:
+    """判断协议事件是否为「有人戳了 Bot 自己」的通知。
+
+    协议把戳一戳放在 ``notice/notify/poke`` 下，用 ``user_id`` 表示发起者、
+    ``target_id`` 表示被戳者。群聊与私聊共用同一组字段，群聊额外带 ``group_id``。
+    只有 ``target_id`` 指向登录账号才算数：群里两个人互戳同样会推送到这里，
+    Bot 自己戳出去的回显也会带上自己的 ``user_id``。
+
+    :param payload: 已解析的 OneBot 事件映射。
+    :param self_id: 机器人登录 QQ 号，不能为空。
+    :return: 事件是戳一戳且被戳者是 Bot 自己时返回 ``True``。
+    :raises ValueError: ``self_id`` 为空。
+    """
+    if (
+        payload.get('post_type') != 'notice'
+        or payload.get('notice_type') != 'notify'
+        or payload.get('sub_type') != 'poke'
+    ):
+        return False
+    target_id = _string_value(payload.get('target_id'))
+    return bool(target_id) and target_id == _required_identifier(
+        self_id, 'self_id 不能为空',
+    )
+
+
 def classify_event(
     payload: Mapping[str, Any],
     self_id: str,
@@ -114,8 +212,8 @@ def classify_event(
     :param private_access: 私聊访问策略模型。
     :param group_access: 群聊白名单策略模型。
 
-    :return: 事件种类标识，包括 action 响应、心跳、请求、自身消息、拒绝消息、普通消息
-        和其他未处理类型。
+    :return: 事件种类标识，包括 action 响应、心跳、请求、自身消息、拒绝消息、普通消息、
+        私聊输入状态、戳 Bot 的戳一戳和其他未处理类型。
 
     :raises ValueError: 消息事件缺少必要的身份字段或字段无法规范化。
 
@@ -130,6 +228,21 @@ def classify_event(
     if post_type == 'request':
         return 'request'
     if post_type == 'notice':
+        if is_poke_at_self(payload, self_id):
+            # 戳一戳同样受访问名单约束：名单外的群不该因为一次戳就绕过准入。
+            group_id = payload.get('group_id')
+            if group_id is not None:
+                if not group_access.allows(
+                    _required_identifier(group_id, 'group_id 不能为空'),
+                ):
+                    return 'group_denied'
+                return 'poke'
+            if not private_access.allows(
+                _sender_external_id(payload),
+                _required_identifier(owner_qq, 'owner_qq 不能为空'),
+            ):
+                return 'private_denied'
+            return 'poke'
         if not is_input_status(payload):
             return 'other'
         # 输入状态只有私聊会推送，访问名单与私聊消息完全一致。
