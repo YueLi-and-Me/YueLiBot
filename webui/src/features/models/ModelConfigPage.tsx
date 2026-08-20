@@ -53,8 +53,11 @@ import {
 const TASK_NAMES = [
   'chat', 'planner', 'replyer', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding',
 ] as const
+// 生成参数（温度、token 上限）只覆盖后端 GenerationConfig 真实存在的任务。
+// 决策与回复生成两级目前共用对话那一档参数，界面上不给它们单独的输入框——
+// 显示了也存不进去。
 const GENERATION_TASKS = [
-  'chat', 'planner', 'replyer', 'proactive', 'summary', 'schedule', 'expression', 'vision',
+  'chat', 'proactive', 'summary', 'schedule', 'expression', 'vision',
 ] as const
 
 /** 任务字段的中文名称，仅用于功能分配页展示；TOML 配置键名保持英文不变。 */

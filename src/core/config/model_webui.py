@@ -17,7 +17,13 @@ import tempfile
 import httpx
 
 from .loader import CONFIG_VERSION, _load_split_config
-from .schema import FeatureDocument, ModelCatalog, ProviderCatalog
+from .schema import (
+    FeatureDocument,
+    GenerationConfig,
+    ModelCatalog,
+    ModelTaskConfig,
+    ProviderCatalog,
+)
 from .toml_io import read_versioned_toml
 from src.core.common.logger import get_logger
 
@@ -33,11 +39,15 @@ _MODEL_FIELDS = (
     'reasoning_parse_mode', 'visual', 'temperature', 'max_tokens',
     'price_in', 'price_out', 'embedding_dim',
 )
-TASK_NAMES = (
-    'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
-    'tts', 'embedding',
-)
-GENERATION_TASKS = ('chat', 'proactive', 'summary', 'schedule', 'expression', 'vision')
+# 任务清单从配置模型派生，不在这里再抄一份。
+#
+# - 现象：新增 planner / replyer 两个模型槽后，WebUI 能选到它们，保存却不生效。
+# - 原因：本模块原来硬编码了一份任务名，`_normalize_tasks` 只认这份清单，
+#   槽名不在其中的表单项会被静默丢弃，落盘的 models.toml 里根本没有那两段。
+# - 后果：任何新增模型槽都必须同时改这里，漏改的表现是「界面上能配、重启后没变化」，
+#   而且不报错。改成从 schema 派生之后，加槽只需要动 schema 一处。
+TASK_NAMES = tuple(ModelTaskConfig.model_fields)
+GENERATION_TASKS = tuple(GenerationConfig.model_fields)
 
 
 def snapshot(directory: Path) -> Dict[str, Any]:
