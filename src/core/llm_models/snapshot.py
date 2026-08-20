@@ -352,6 +352,7 @@ def dump_exchange(
     provider: str,
     output_text: str,
     reasoning_text: str,
+    tool_calls: list[dict] | None,
     chunk_count: int,
     first_token_ms: int | None,
     total_ms: int,
@@ -369,6 +370,8 @@ def dump_exchange(
     :param provider: 实际使用的服务商名称。
     :param output_text: 聚合后的可见输出文本。
     :param reasoning_text: 聚合后的推理文本；模型未提供时为空串。
+    :param tool_calls: 模型选中的工具调用；工具模式下这就是这一级唯一的产出，
+        不记等于整份记录看不出它决定了什么。非工具调用时为 ``None``。
     :param chunk_count: 本次流式响应的增量条数，用于判断是否被中途截断。
     :param first_token_ms: 首字耗时毫秒；一个 chunk 都没拿到时为 ``None``。
     :param total_ms: 从发起请求到本次调用收尾的总毫秒数。
@@ -415,6 +418,7 @@ def dump_exchange(
         'response': {
             'text': output_text,
             'reasoning': reasoning_text,
+            'toolCalls': deepcopy(tool_calls) if tool_calls else None,
             'chunks': chunk_count,
         },
         # 候选切换过程；成功记录里非空说明这次是靠备用服务商救回来的。

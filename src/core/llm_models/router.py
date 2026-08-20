@@ -44,6 +44,7 @@ class _ExchangeRecord:
         self._started = time.monotonic()
         self._text: list[str] = []
         self._reasoning: list[str] = []
+        self._tool_calls: list[dict] = []
         self._chunks = 0
         self._first_token_ms: int | None = None
         self._error_type = ''
@@ -67,6 +68,9 @@ class _ExchangeRecord:
         reasoning = chunk.get('reasoning')
         if reasoning:
             self._reasoning.append(reasoning)
+        tool_calls = chunk.get('tool_calls')
+        if tool_calls:
+            self._tool_calls.extend(tool_calls)
 
     def fail(self, error_type: str, message: str) -> None:
         """记录本次调用最终失败的类型与消息。"""
@@ -87,6 +91,7 @@ class _ExchangeRecord:
                 provider=getattr(self, '_provider', ''),
                 output_text=''.join(self._text),
                 reasoning_text=''.join(self._reasoning),
+                tool_calls=self._tool_calls or None,
                 chunk_count=self._chunks,
                 first_token_ms=self._first_token_ms,
                 total_ms=int((time.monotonic() - self._started) * 1_000),
