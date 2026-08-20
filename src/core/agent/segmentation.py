@@ -21,9 +21,33 @@ from src.core.config.schema import TypingConfig
 # 断句标点。命中后连同其后连续的同类标点一起归入前一片段，避免「？！」被拆散。
 _BREAK_MARKS = frozenset('，,、；;。！!？?…～~\n')
 
-# 气泡结尾不该留下的延续性标点：真人不会用逗号收尾一条消息。终止性标点
-# （。？！等）属于语气，保留原样，由人格提示词决定要不要写。
+# 气泡结尾不该留下的延续性标点：真人不会用逗号收尾一条消息。
 _TRAILING_MARKS = '，,、；; \t'
+
+# 中文聊天里几乎没人用句号收尾——它在 IM 语境下读起来是「冷淡、有距离」，
+# 而模型写散文的默认习惯让每条消息都带上，于是那份冷淡变成了她的固定语气。
+#
+# 只删句号，不动 ？！…～：那几个在聊天里完全正常，属于真语气。
+# 只删**行尾**的，不动句中的：一条气泡里出现「今天没事。你呢？」并不刺眼，
+# 刺眼的是每条消息都以句号收尾。
+# 也只删**单个**：「。。。」是「无语」的常用写法，删成「。。」反而更怪。
+#
+# 代价说明：她因此失去「用一个句号表示斩钉截铁」这个手段。这个交换划算——
+# 偶尔失去一次刻意的冷淡，换掉每条都冷淡。ASCII 句点整个不碰，
+# 「等等...」的省略号语气与 v4.0 这类内容都不受影响。
+_SENTENCE_PERIOD = '。'
+
+
+def _drop_trailing_period(bubble: str) -> str:
+    """删掉气泡末尾**单个**中文句号。
+
+    :param bubble: 已去除延续性标点与首尾空白的气泡正文。
+    :return: 末尾恰好一个句号时去掉它，其余情况原样返回。
+    """
+    if bubble.endswith(_SENTENCE_PERIOD * 2) or not bubble.endswith(_SENTENCE_PERIOD):
+        return bubble
+    return bubble[:-1]
+
 
 # 中日韩统一表意文字区间，用于区分中文与拉丁字符的输入速度。
 _CJK_FIRST = '一'
@@ -81,6 +105,8 @@ def split_into_bubbles(text: str, typing: TypingConfig) -> List[str]:
     切法是确定性的，不掺随机：句子内容本身每轮都在变，气泡边界不需要再叠一层
     随机才显得自然，而确定性让同一条台词的切法可复现、可断言。
 
+    每条气泡末尾的延续性标点与单个中文句号都会被去掉，理由见两处常量的注释。
+
     :param text: 单条 ``<say>`` 的完整正文；调用方应已去除首尾空白。
     :param typing: 打字节奏配置，提供目标字数与条数上限。
     :return: 至少一条的气泡列表；输入为空白时返回空列表。
@@ -103,7 +129,10 @@ def split_into_bubbles(text: str, typing: TypingConfig) -> List[str]:
             current += fragment
     if current:
         bubbles.append(current)
-    trimmed = [bubble.rstrip(_TRAILING_MARKS).strip() for bubble in bubbles]
+    trimmed = [
+        _drop_trailing_period(bubble.rstrip(_TRAILING_MARKS).strip())
+        for bubble in bubbles
+    ]
     return [bubble for bubble in trimmed if bubble]
 
 
