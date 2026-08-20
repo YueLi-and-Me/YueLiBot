@@ -155,8 +155,8 @@ class ConversationAgentConfig(BaseModel):
     # 决策层是否改用工具调用表达动作，而不是 XML 动作头。动作枚举、目标取值与
     # 理由码分域改由函数签名承载，模型侧的格式自由度更小、illegal_action 更少；
     # 代价是候选模型必须支持 function calling。依赖 split_replyer：工具调用只
-    # 产出决策，正文必须由回复生成那一级写。默认关闭。
-    tool_calling: bool = False
+    # 产出决策，正文必须由回复生成那一级写。默认开启。
+    tool_calling: bool = True
 
 
 class TypingNudgeConfig(BaseModel):
