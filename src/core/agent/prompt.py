@@ -386,6 +386,161 @@ def build_system_prompt(
     return prompt
 
 
+def build_itemized_system_prompt(
+    name: str,
+    birthday: str,
+    personality: str,
+    reply_style: str,
+    now: Optional[datetime] = None,
+    persona: Optional[str] = None,
+    acquaintance: Optional[str] = None,
+    facts: Optional[List[str]] = None,
+    episodes: Optional[List[str]] = None,
+    activity: Optional[str] = None,
+    schedule: Optional[str] = None,
+    user_nickname: Optional[str] = None,
+    relationship: Optional[str] = None,
+    expression_habits: Optional[str] = None,
+    reply_length: Optional[str] = None,
+    tone: Optional[str] = None,
+    resumption: Optional[str] = None,
+    aliases: Optional[List[str]] = None,
+    platform_name: Optional[str] = None,
+    scene: Optional[Tuple[str, str]] = None,
+    render_params: Optional[Dict[str, Dict[str, str]]] = None,
+    decision_only: bool = False,
+) -> Tuple[str, List[str]]:
+    """把稳定系统规则与运行时上下文拆成可独立裁剪、观测的 item。
+
+    工具调用模式不再依赖 assistant/user 角色交替：稳定身份、事实纪律与边界留在
+    system，当前时间、人物画像、重逢背景、活动、场景和记忆分别渲染成独立文本项。
+    动作或回复协议由调用方放在消息流末尾，避免它重新被嵌回 system。
+
+    :param name: Bot 的主名称。
+    :param birthday: ISO ``YYYY-MM-DD`` 格式生日；空字符串表示未配置。
+    :param personality: 配置中的稳定人格与身份描述。
+    :param reply_style: 回复风格约束；决策层会按 ``decision_only`` 省略。
+    :param now: 当前本地时间；省略时读取统一时钟。
+    :param persona: 当前人物关系与精力画像。
+    :param acquaintance: 可选相识时长描述。
+    :param facts: 可选长期事实记忆。
+    :param episodes: 可选近期聊天回想。
+    :param activity: 可选前台活动背景。
+    :param schedule: 可选当日日程，随时间项一起渲染。
+    :param user_nickname: 对方偏好的称呼。
+    :param relationship: 对方在 Bot 视角下的关系描述。
+    :param expression_habits: 当前轮表达习惯样本。
+    :param reply_length: 当前轮篇幅枚举；为空时不注入篇幅组件。
+    :param tone: 当前轮临时语调。
+    :param resumption: 久别后的恢复提示。
+    :param aliases: 可选 Bot 别名。
+    :param platform_name: 平台侧 Bot 显示名。
+    :param scene: 可选群聊场景画像。
+    :param render_params: 可选的提示词渲染参数收集字典。
+    :param decision_only: 是否只做动作决策；为真时省略表达层内容。
+
+    :return: ``(稳定 system 文本, 按语义拆分的运行时上下文文本列表)``。
+
+    :raises ValueError: 生日或回复篇幅无效，或模板渲染参数不匹配。
+    :raises KeyError: 必需提示词模板未加载。
+
+    副作用：
+        ``now`` 省略时读取一次统一时钟；可选地更新 ``render_params``，不修改其
+        既有无关条目。
+    """
+    if now is None:
+        now = datetime.fromtimestamp(current_time() / 1000)
+
+    identity, parsed_birthday = _identity_context(
+        personality,
+        birthday,
+        now,
+        aliases,
+        platform_name,
+        name,
+    )
+    birthday_note = ''
+    if (
+        parsed_birthday is not None
+        and (parsed_birthday.month, parsed_birthday.day) == (now.month, now.day)
+    ):
+        birthday_note = '今天是你的生日。'
+
+    length = ''
+    length_template_id: str | None = None
+    if reply_length is not None:
+        try:
+            length_template_id = REPLY_LENGTH_TEMPLATE_IDS[reply_length]
+        except KeyError as exc:
+            raise ValueError(f'未知回复篇幅：{reply_length}') from exc
+        length = get_prompt(length_template_id).render().rstrip()
+
+    # 表达层整节在这里组装，而不是在模板里写死标题：decision_only 会把这一节的
+    # 内容全部抽走，标题留在模板里就会渲染出一个空的「# 说话的味道」——决策层每
+    # 一轮都白读一个空小节，还容易让它以为自己漏看了什么。
+    sections: List[str] = []
+    if not decision_only:
+        voice = (
+            f'{reply_style}'
+            f'{_prefixed_block(tone)}'
+            f'{_expression_habits_block(expression_habits)}'
+        ).strip()
+        if voice:
+            sections.append('# 说话的味道' + '\n' + voice)
+    # 篇幅块自带标题，与表达层同级，单独成节而不是并进上面那段。
+    if length:
+        sections.append(length)
+    voice_block = ('\n' * 2 + ('\n' * 2).join(sections)) if sections else ''
+
+    system_values = {
+        'name': name,
+        'identity': identity,
+        'relationship': _relationship_block(acquaintance, user_nickname, relationship),
+        # 表达层三块与篇幅已经组装成整节；决策层不写正文，那一节整个不渲染。
+        'voice': voice_block,
+        'discipline': get_prompt('chat.discipline').render().rstrip(),
+        'boundaries': get_prompt('chat.boundaries').render().rstrip(),
+    }
+    system = get_prompt('chat.item.system').render(**system_values)
+
+    time_context = _time_context(now, schedule)
+    if birthday_note:
+        time_context = f'{time_context}\n{birthday_note}'
+    context_values = [
+        ('当前时间', time_context),
+        ('人物画像', persona or ''),
+        ('重逢背景', resumption or ''),
+        ('当前活动', _activity_block(activity).strip()),
+        ('会话场景', _scene_block(scene).strip()),
+        ('长期记忆', _memory_block(
+            '你早就知道的事',
+            facts,
+            '把这些当成相处已久留下的常识。用得上时自然接住，用不上就放着；不要逐条复述给对方听。',
+        ).strip()),
+        ('近期回想', _memory_block(
+            '最近留下的聊天回想',
+            episodes,
+            '回想只用来理解没说完的话和关系变化，不要为了证明记得而主动翻旧账。',
+        ).strip()),
+    ]
+    item_template = get_prompt('chat.context.item')
+    items = [
+        item_template.render(kind=kind, content=content.strip()).rstrip()
+        for kind, content in context_values
+        if content.strip()
+    ]
+
+    if render_params is not None:
+        render_params.update({
+            'chat.discipline': {},
+            'chat.boundaries': {},
+            'chat.item.system': system_values,
+        })
+        if length_template_id is not None:
+            render_params[length_template_id] = {}
+    return system, items
+
+
 def build_proactive_prompt(
     base_prompt: str,
     situation: str,
