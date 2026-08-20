@@ -271,6 +271,7 @@ def build_system_prompt(
     protocol_text: Optional[str] = None,
     emoji_enabled: bool = False,
     scene: Optional[Tuple[str, str]] = None,
+    decision_only: bool = False,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
 
@@ -296,6 +297,10 @@ def build_system_prompt(
     :param protocol_text: 可选的整体输出协议文本；提供时直接替换 ``chat.protocol``
         在「输出格式」块中的位置，用于 Agent 模式把「先 <decision> 再 <say>」
         变成唯一主指令，而不是追加成与既有直接发言指令竞争的第二套规则。
+    :param decision_only: 只产出动作决策、不写正文时置真。此时省略回复风格、
+        临时语调与表达样本三块——它们全都只影响「话怎么说」，决策层用不上，
+        留着既占上下文也会诱导它顺手把台词写了。身份、人格、关系与记忆照常
+        注入：判断「她这种人会不会这么做」依赖的正是那些。
 
     :return: 可直接提交给模型服务的完整系统提示词。
 
@@ -360,10 +365,13 @@ def build_system_prompt(
             episodes,
             '回想只用来理解没说完的话和关系变化，不要为了证明记得而主动翻旧账。',
         ),
-        'reply_style': reply_style,
-        'tone': _prefixed_block(tone),
+        # 决策层不写正文，表达层三块一并省略，见 decision_only 参数说明。
+        'reply_style': '' if decision_only else reply_style,
+        'tone': '' if decision_only else _prefixed_block(tone),
         # 表达样本放在靠近输出的位置：越贴近生成，模型越容易真正照着语感说话。
-        'expression_habits': _expression_habits_block(expression_habits),
+        'expression_habits': (
+            '' if decision_only else _expression_habits_block(expression_habits)
+        ),
     }
     prompt, system_values = render_chat_system(system_values, component_values)
     if protocol_text is not None:

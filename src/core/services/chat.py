@@ -2936,6 +2936,7 @@ class ChatService:
         render_params: dict[str, dict[str, str]] | None = None,
         reply_length: str | None = None,
         protocol_text: str | None = None,
+        decision_only: bool = False,
     ) -> list[dict]:
         """将同一份已组装上下文渲染为模型消息。
 
@@ -2947,6 +2948,8 @@ class ChatService:
         :param protocol_text: 可选的 Agent 动作协议文本；提供时整体替换
             系统提示词中的直接发言协议，而不是追加在末尾。该参数同时是
             「本次渲染属于 Agent 路径」的唯一判据，历史变体据此选择。
+        :param decision_only: 本次渲染只用于产出动作决策；透传给系统提示词，
+            省略回复风格、语调与表达样本三块。
         :return: 首项为 system 消息、后续为裁剪后历史消息的列表。
         副作用：只读取配置和会话语调，不读写数据库、不调用模型。
         """
@@ -2972,6 +2975,7 @@ class ChatService:
             protocol_text=protocol_text,
             emoji_enabled=self._emoji_available(prepared.context),
             scene=self._scene_for_prompt(prepared.context),
+            decision_only=decision_only,
             **self._prompt_config_kwargs(prepared.context.relationship_signals_enabled),
         )
         # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
@@ -3754,13 +3758,26 @@ class ChatService:
             allow_wait=allow_wait,
         )
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
-        rendered = await self._enrich_prepared_context(
-            prepared,
-            cancel_event,
-            render_params,
-            reply_length=None,
-            protocol_text=self._render_agent_protocol(frame, batch, context),
-        )
+        protocol_text = self._render_agent_protocol(frame, batch, context)
+        if self._split_replyer:
+            # 拆分后决策这一次不做表达增强：向量排序与表达样本挑选都只影响
+            # 「话怎么说」，而这一次调用不写正文。挪到回复生成那一侧还顺带
+            # 省掉一整类浪费——她选择 silent 时，表达选择那次模型调用根本
+            # 不会发生，而合并调用时那笔钱是无论如何都要先付的。
+            rendered = self._render_prepared_context(
+                prepared,
+                render_params=render_params,
+                protocol_text=protocol_text,
+                decision_only=True,
+            )
+        else:
+            rendered = await self._enrich_prepared_context(
+                prepared,
+                cancel_event,
+                render_params,
+                reply_length=None,
+                protocol_text=protocol_text,
+            )
         messages = self._render_agent_messages(
             frame,
             rendered,
@@ -3782,16 +3799,23 @@ class ChatService:
         bind_render_params(render_params)
         assistant_raw: list[str] = []
 
-        def replyer_messages(head: DecisionHead) -> list[dict]:
+        async def replyer_messages(head: DecisionHead) -> list[dict]:
             """按已定的动作头组装回复生成那一次调用的消息序列。
 
-            复用同一份 ``rendered`` 上下文只换协议段：两级看到的人格、事实与
-            历史必须逐字相同，否则「决策依据」和「说话依据」会各说各话。这里
-            不重新召回、不重新排序历史，只把决策结论翻译成表达要求。
+            人格分两层：决策那一次只拿身份、关系与记忆，这一次才补上表达层
+            （向量排序后的事实、表达样本、语调）。两级共用同一份 ``prepared``，
+            因此历史、事实候选与场景完全同源，不会出现「决策依据」和「说话依据」
+            各说各话；差别只在表达增强与协议段。
+
+            :param head: 已通过校验的动作头，提供背景说明与篇幅。
+            :return: 回复生成那一次调用的完整消息序列。
+            副作用：一次向量检索与一次表达选择模型调用。
             """
-            replyer_context = self._render_prepared_context(
+            replyer_context = await self._enrich_prepared_context(
                 prepared,
-                render_params=render_params,
+                cancel_event,
+                render_params,
+                reply_length=head.length,
                 protocol_text=render_replyer_protocol(
                     head.reference or '',
                     head.length,

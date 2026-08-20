@@ -228,7 +228,7 @@ class ConversationAgent:
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None = None,
         on_chunk: Callable[[dict[str, Any]], None] | None = None,
         on_round: Callable[[AgentOutcome], None] | None = None,
-        replyer_messages: Callable[[DecisionHead], list[dict]] | None = None,
+        replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None = None,
         signal: asyncio.Event | None = None,
     ) -> AgentOutcome:
         """执行一个回合：若干认知轮之后给出终局动作，并逐轮落账。
@@ -254,9 +254,10 @@ class ConversationAgent:
             终局轮不调用（调用方本来就拿得到返回值）。它的用途是让调用方把中间
             过程展示出来——认知轮不产生任何用户可见产物，没有这个钩子就只能从
             事件账本里事后翻，终端上完全看不到她查过什么。
-        :param replyer_messages: 按动作头组装回复生成消息序列的回调。提示词、
-            人格与历史都属于调用方，Agent 不自行拼装；省略它（或未注入 replyer）
-            即退回单次调用，正文仍从决策流里取。
+        :param replyer_messages: 按动作头组装回复生成消息序列的异步回调。提示词、
+            人格与历史都属于调用方，Agent 不自行拼装；组装本身可能包含向量检索与
+            表达选择这类模型往返，因此是异步的。省略它（或未注入 replyer）即退回
+            单次调用，正文仍从决策流里取。
         :param signal: 可选的取消事件，透传给模型提供方，跨轮持续有效。
 
         :return: 携带终局决策、事件状态与完整审计事件的 AgentOutcome。
@@ -336,7 +337,7 @@ class ConversationAgent:
         cognitive_scope: CognitiveScope | None,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
         on_chunk: Callable[[dict[str, Any]], None] | None,
-        replyer_messages: Callable[[DecisionHead], list[dict]] | None,
+        replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None,
         signal: asyncio.Event | None,
     ) -> AgentOutcome:
         """执行一次模型调用，并在选到认知动作时就地完成检索。
@@ -484,7 +485,7 @@ class ConversationAgent:
                 body_parts.clear()
                 emoji_emotions.clear()
                 await self._stream_body(
-                    replyer_messages(planned_head),
+                    await replyer_messages(planned_head),
                     release=release,
                     on_chunk=on_chunk,
                     body_parts=body_parts,
