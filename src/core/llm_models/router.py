@@ -541,10 +541,10 @@ class ModelRouter:
 
 
 class ModelRouters:
-    """为八类模型任务构造路由器，并共享一份厂商健康状态。"""
+    """为各类模型任务构造路由器，并共享一份厂商健康状态。"""
 
     def __init__(self, config: Any) -> None:
-        """从完整配置构造 chat、主动、摘要、日程、视觉、表达、TTS 和 embedding 路由。
+        """按任务构造全部模型路由，决策与表达各占一个独立槽。
 
         :param config: 含 `routing` 属性的配置对象。
         副作用：创建八个 `ModelRouter` 和一个共享 `ProviderHealth`，不发起模型请求。
@@ -558,6 +558,8 @@ class ModelRouters:
         self.schedule = self._build('schedule', routing.schedule)
         self.vision = self._build('vision', routing.vision)
         self.expression = self._build('expression', routing.expression)
+        self.planner = self._build('planner', routing.planner)
+        self.replyer = self._build('replyer', routing.replyer)
         self.tts = self._build('tts', routing.tts)
         self.embedding = self._build('embedding', routing.embedding)
         self._routers: Dict[str, ModelRouter] = {
@@ -567,6 +569,8 @@ class ModelRouters:
             'schedule': self.schedule,
             'vision': self.vision,
             'expression': self.expression,
+            'planner': self.planner,
+            'replyer': self.replyer,
             'tts': self.tts,
             'embedding': self.embedding,
         }

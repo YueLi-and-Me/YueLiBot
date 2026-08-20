@@ -35,7 +35,9 @@ logger = get_logger(__name__)
 
 CONFIG_VERSION = '1.1.0'
 _VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
-CHAT_INHERITING_TASKS = ('proactive', 'summary', 'schedule', 'expression')
+CHAT_INHERITING_TASKS = (
+    'proactive', 'summary', 'schedule', 'expression', 'planner', 'replyer',
+)
 
 
 def _model_task_config(
@@ -50,6 +52,8 @@ def _model_task_config(
         'schedule': catalog.model_tasks.schedule,
         'vision': catalog.model_tasks.vision,
         'expression': catalog.model_tasks.expression,
+        'planner': catalog.model_tasks.planner,
+        'replyer': catalog.model_tasks.replyer,
         'tts': catalog.model_tasks.tts,
         'embedding': catalog.model_tasks.embedding,
     }
@@ -252,6 +256,8 @@ def _load_split_config(directory: Path) -> Config:
         summary=_build_routing('summary', models_document, models, providers, chat_routing),
         schedule=_build_routing('schedule', models_document, models, providers, chat_routing),
         expression=_build_routing('expression', models_document, models, providers, chat_routing),
+        planner=_build_routing('planner', models_document, models, providers, chat_routing),
+        replyer=_build_routing('replyer', models_document, models, providers, chat_routing),
         vision=_build_routing('vision', models_document, models, providers, None),
         tts=_build_routing('tts', models_document, models, providers, None),
         embedding=_build_routing('embedding', models_document, models, providers, None),

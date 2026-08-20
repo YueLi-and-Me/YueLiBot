@@ -725,6 +725,10 @@ class ModelTaskConfig(BaseModel):
     schedule: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     vision: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     expression: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    # 决策与表达各自独立的槽。留空即继承 chat，因此拆分本身不要求先配模型；
+    # 首字延迟主要由 planner 这一档决定，想压延迟就在这里单独指一个快模型。
+    planner: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    replyer: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
@@ -793,7 +797,7 @@ class TaskRouting(BaseModel):
 
 
 class RoutingConfig(BaseModel):
-    """八类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
+    """各类任务各自的候选序列。业务侧只跟这里打交道，不再关心厂商怎么配。"""
 
     chat: TaskRouting = Field(default_factory=lambda: TaskRouting(task='chat'))
     proactive: TaskRouting = Field(default_factory=lambda: TaskRouting(task='proactive'))
@@ -801,6 +805,8 @@ class RoutingConfig(BaseModel):
     schedule: TaskRouting = Field(default_factory=lambda: TaskRouting(task='schedule'))
     vision: TaskRouting = Field(default_factory=lambda: TaskRouting(task='vision'))
     expression: TaskRouting = Field(default_factory=lambda: TaskRouting(task='expression'))
+    planner: TaskRouting = Field(default_factory=lambda: TaskRouting(task='planner'))
+    replyer: TaskRouting = Field(default_factory=lambda: TaskRouting(task='replyer'))
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
 

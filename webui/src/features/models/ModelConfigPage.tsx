@@ -50,12 +50,18 @@ import {
   type TaskConfig,
 } from '@/hooks/use-model-config'
 
-const TASK_NAMES = ['chat', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding'] as const
-const GENERATION_TASKS = ['chat', 'proactive', 'summary', 'schedule', 'expression', 'vision'] as const
+const TASK_NAMES = [
+  'chat', 'planner', 'replyer', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding',
+] as const
+const GENERATION_TASKS = [
+  'chat', 'planner', 'replyer', 'proactive', 'summary', 'schedule', 'expression', 'vision',
+] as const
 
 /** 任务字段的中文名称，仅用于功能分配页展示；TOML 配置键名保持英文不变。 */
 const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
   chat: '日常对话',
+  planner: '行动决策',
+  replyer: '回复生成',
   proactive: '主动搭话',
   summary: '对话摘要',
   schedule: '日程安排',
@@ -68,6 +74,8 @@ const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
 /** 任务字段的业务用途说明，挂在任务按钮的悬停提示上。 */
 const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   chat: '回复用户普通消息的对话模型',
+  planner: '决定这一轮做什么动作的模型；留空继承日常对话。首字延迟主要由它决定',
+  replyer: '把决策写成她实际说出口那句话的模型；留空继承日常对话',
   proactive: '判断并生成主动搭话消息的模型',
   summary: '把长对话压缩为角色记忆的摘要模型',
   schedule: '生成角色每日日程计划的模型',
