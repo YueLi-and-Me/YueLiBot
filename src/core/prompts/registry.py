@@ -51,6 +51,14 @@ CHAT_CONVERSATION_TEMPLATE_IDS = (
 # 决策与表达分离时回复生成那一次调用的模板组合：同一份人格与历史，协议换成
 # 「动作已定，只把话说出来」。指纹与决策那一次分开算，两级各自的提示词变更
 # 才能在观察面板上区分开。
+# 工具调用模式下决策那一次的模板组合：动作空间由工具声明承载，提示词只留
+# 目标锚点与选择口径，不再复述 XML 输出格式。
+CHAT_TOOL_TEMPLATE_IDS = (
+    'chat.discipline',
+    'chat.boundaries',
+    'chat.system',
+    'chat.tool.protocol',
+)
 CHAT_REPLYER_TEMPLATE_IDS = (
     'chat.discipline',
     'chat.boundaries',
@@ -74,6 +82,7 @@ TEMPLATE_IDS = (
     'emoji.description',
     'scene.observe',
     'chat.replyer',
+    'chat.tool.protocol',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
@@ -123,6 +132,12 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'expression.select': frozenset({'history', 'user_text', 'options', 'limit'}),
     'vision.glance': frozenset({'app_hint'}),
     'scene.observe': frozenset({'history', 'atmospheres', 'topic_limit'}),
+    'chat.tool.protocol': frozenset({
+        'turn_scope',
+        'selectable_messages',
+        'quote_rule',
+        'cognition_rule',
+    }),
     'chat.replyer': frozenset({
         'reference',
         'length_rule',

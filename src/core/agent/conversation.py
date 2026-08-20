@@ -52,6 +52,7 @@ from .action_protocol import (
     IllegalActionError,
     ReplyLength,
 )
+from .tool_schema import build_tool_definitions, decision_head_from_tool_call
 from .cognition import (
     OBSERVATION_EVENT_MAX_CHARS,
     CognitiveExecutor,
@@ -196,6 +197,7 @@ class ConversationAgent:
         temperature: float,
         max_tokens: int | None = None,
         replyer: LlmProvider | None = None,
+        tool_calling: bool = False,
     ) -> None:
         """保存模型提供方与采样参数。
 
@@ -205,11 +207,18 @@ class ConversationAgent:
         :param max_tokens: 可选的输出 token 上限。
         :param replyer: 可选的回复生成模型。注入后决策与表达分离：本 Agent 只从
             决策流里取动作头，正文由它产出。省略即保持单次调用的既有行为。
+        :param tool_calling: 决策层是否改用工具调用表达动作。为真时动作空间以
+            函数签名下发、决策以 ``tool_calls`` 回来，不再解析 XML 动作头。
+            它**必须与 ``replyer`` 一起启用**：工具调用只产出决策，没有正文来源。
+        :raises ValueError: 启用工具调用却没有注入回复生成模型。
         """
+        if tool_calling and replyer is None:
+            raise ValueError('工具调用模式必须同时注入 replyer，否则没有正文来源')
         self._provider = provider
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._replyer = replyer
+        self._tool_calling = tool_calling
 
     async def run(
         self,
@@ -411,12 +420,16 @@ class ConversationAgent:
             # aclosing 保证提前 return（silent / 认知动作都会提前结束本轮）时
             # 生成器立即收到 GeneratorExit，httpx 的流式连接随即释放；靠 GC 回收
             # 会把连接按不确定的时机挂着，而认知动作让提前结束从罕见变成常态。
+            # 工具声明按本轮动作集生成：动作空间已经被剩余预算收窄过，
+            # 声明一个本回合非法的工具等于主动制造 illegal_action。
+            tools = build_tool_definitions(frame) if self._tool_calling else None
             async with aclosing(
                 self._provider.stream(
                     messages=messages,
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     signal=signal,
+                    **({'tools': tools} if tools else {}),
                 )
             ) as stream:
                 async for chunk in stream:
@@ -427,6 +440,22 @@ class ConversationAgent:
                         break
                     if on_chunk is not None:
                         on_chunk(chunk)
+                    tool_calls = chunk.get('tool_calls')
+                    if tool_calls and head is None:
+                        # 工具调用在流末尾一次性到达，且本身就是终局决策：
+                        # 只认第一个，多选属于模型噪声，与重复动作头同款处理。
+                        call = tool_calls[0]
+                        head = decision_head_from_tool_call(
+                            call['name'], call['arguments'], frame,
+                        )
+                        settled = await self._settle_head(
+                            head, frame, cognitive_executor, cognitive_scope,
+                        )
+                        if settled is not None:
+                            status, decision, observation = settled
+                            return finish()
+                        planned_head = head
+                        break
                     text = chunk.get('text')
                     if not text:
                         continue
@@ -434,30 +463,13 @@ class ConversationAgent:
                         if head is None:
                             if isinstance(event, DecisionEvent):
                                 head = self._parse_head(event, frame)
-                                if head.action in COGNITIVE_ACTIONS:
-                                    decision = head.to_decision('')
-                                    status = 'cognitive_step'
-                                    assert cognitive_executor is not None
-                                    assert cognitive_scope is not None
-                                    assert decision.query is not None
-                                    result = await cognitive_executor.execute(
-                                        CognitiveRequest(
-                                            action=decision.action,
-                                            query=decision.query,
-                                            stream_id=cognitive_scope.stream_id,
-                                            stream_kind=frame.stream_kind,
-                                            person_ids=cognitive_scope.person_ids,
-                                            message_watermark=frame.message_watermark,
-                                        )
-                                    )
-                                    observation = result.text
-                                    # 认知动作头即终止本轮解析：其后若还有正文，
-                                    # 与 silent 同款处理——不解析、不流出、不计入。
-                                    return finish()
-                                if head.action == 'silent':
-                                    decision = head.to_decision('')
-                                    status = 'silent_by_choice'
-                                    # 静默只有动作头：立即返回，之后任何正文都不解析不流出。
+                                settled = await self._settle_head(
+                                    head, frame, cognitive_executor, cognitive_scope,
+                                )
+                                if settled is not None:
+                                    # 认知动作与静默都只有动作头：立即返回，其后
+                                    # 若还有正文一律不解析、不流出、不计入。
+                                    status, decision, observation = settled
                                     return finish()
                                 if split_reply and head.action in SPEAKING_ACTIONS:
                                     # 决策模型的职责到此为止。它此后写的正文一律
@@ -498,7 +510,11 @@ class ConversationAgent:
                 return finish()
             if head is None:
                 status = 'parse_error'
-                detail = '模型输出中没有动作头'
+                detail = (
+                    '模型没有选择任何动作'
+                    if self._tool_calling
+                    else '模型输出中没有动作头'
+                )
                 return finish()
             # 冲刷未闭合标签，与既有流式管线保持一致的宽容度。
             for event in parser.flush():
@@ -526,6 +542,48 @@ class ConversationAgent:
             detail = f'{type(exc).__name__}：{exc}'
             return finish()
         return finish()
+
+    async def _settle_head(
+        self,
+        head: DecisionHead,
+        frame: DecisionFrame,
+        cognitive_executor: CognitiveExecutor | None,
+        cognitive_scope: CognitiveScope | None,
+    ) -> tuple[EventStatus, ConversationDecision, str] | None:
+        """结算不产出正文的那两类动作头。
+
+        认知动作就地完成检索、静默直接定案；两者都在动作头处终止本轮，其后
+        不可能再有可见产物。抽出来是因为 XML 动作头与工具调用是同一套语义的
+        两种表达，判据只能有一份。
+
+        :param head: 已通过帧校验的动作头。
+        :param frame: 本回合固定快照。
+        :param cognitive_executor: 认知动作执行器；选到认知动作时必须存在。
+        :param cognitive_scope: 认知检索范围；选到认知动作时必须存在。
+        :return: ``(状态, 决策, 观察正文)``；发言类动作返回 ``None``，表示调用方
+            还要继续取正文。
+        :raises Exception: 认知动作执行失败原样上抛——那是本机故障，不转成模型
+            失败状态。
+        """
+        if head.action in COGNITIVE_ACTIONS:
+            decision = head.to_decision('')
+            assert cognitive_executor is not None
+            assert cognitive_scope is not None
+            assert decision.query is not None
+            result = await cognitive_executor.execute(
+                CognitiveRequest(
+                    action=decision.action,
+                    query=decision.query,
+                    stream_id=cognitive_scope.stream_id,
+                    stream_kind=frame.stream_kind,
+                    person_ids=cognitive_scope.person_ids,
+                    message_watermark=frame.message_watermark,
+                )
+            )
+            return 'cognitive_step', decision, result.text
+        if head.action == 'silent':
+            return 'silent_by_choice', head.to_decision(''), ''
+        return None
 
     async def _stream_body(
         self,

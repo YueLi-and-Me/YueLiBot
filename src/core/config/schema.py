@@ -152,6 +152,11 @@ class ConversationAgentConfig(BaseModel):
     # 表达选择挪到了回复生成那一侧，她选择 silent 时那次模型调用根本不会发生。
     # silent / wait / react / poke 都在决策那一次就结束，不付第二次往返。
     split_replyer: bool = True
+    # 决策层是否改用工具调用表达动作，而不是 XML 动作头。动作枚举、目标取值与
+    # 理由码分域改由函数签名承载，模型侧的格式自由度更小、illegal_action 更少；
+    # 代价是候选模型必须支持 function calling。依赖 split_replyer：工具调用只
+    # 产出决策，正文必须由回复生成那一级写。默认关闭。
+    tool_calling: bool = False
 
 
 class TypingNudgeConfig(BaseModel):

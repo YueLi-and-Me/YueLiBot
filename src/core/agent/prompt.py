@@ -535,6 +535,46 @@ def render_action_protocol(
     )
 
 
+def render_tool_protocol(
+    selectable_messages: Iterable[Tuple[int, str]],
+    quote_supported: bool,
+    target_person: str = '',
+    cognitive_rounds: int = 0,
+    available_actions: Iterable[str] = (),
+) -> str:
+    """渲染工具调用模式下决策那一次的协议文本。
+
+    与 XML 动作头协议互斥：动作枚举、参数取值、理由码分域全部由工具声明承载，
+    这里只留提示词才说得清的三件事——目标编号与原文的对应、引用能不能写、
+    以及选长选短的口径。把这些也塞进工具描述会让每个工具的 description
+    重复一大段，反而稀释掉动作本身的说明。
+
+    :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
+        工具声明里 targets 是一串裸数字，没有这份对照模型认不出指的是哪句话。
+    :param quote_supported: 平台是否支持模型显式指定引用目标。
+    :param target_person: 本回合批次发送者的显示名；私聊传空字符串。
+    :param cognitive_rounds: 本回合的认知轮次预算，用于渲染检索说明。
+    :param available_actions: 本轮动作集，决定要不要渲染检索说明。
+    :return: 已通过模板占位符严格校验的协议文本。
+    :raises KeyError: 模板未加载时由注册表抛出。
+    """
+    selectable = list(selectable_messages)
+    ids = [message_id for message_id, _ in selectable]
+    quote_rule = (
+        '需要点明在回哪一条时可以填 quote，取值同样只能来自上面的可选消息。'
+        if quote_supported
+        else '不要填 quote，需要指向哪一条由 targets 决定。'
+    )
+    return get_prompt('chat.tool.protocol').render(
+        turn_scope=_render_turn_scope(target_person),
+        selectable_messages=_render_selectable_messages(selectable),
+        quote_rule=quote_rule,
+        cognition_rule=_cognition_protocol_rule(
+            frozenset(available_actions), ids, cognitive_rounds, tool_mode=True,
+        ),
+    )
+
+
 def render_replyer_protocol(
     reference: str,
     length: str | None,
@@ -712,6 +752,7 @@ def _cognition_protocol_rule(
     actions: FrozenSet[str],
     selectable_ids: Sequence[int],
     cognitive_rounds: int,
+    tool_mode: bool = False,
 ) -> str:
     """渲染本轮认知动作（recall / inspect）的可用性与用法说明。
 
@@ -736,6 +777,22 @@ def _cognition_protocol_rule(
         '上面的聊天记录只是你们此刻的互动，你和这些人之间还有更多过去的事没有摆在眼前。'
         '想不起来的时候，可以先查一下再决定这一轮做什么：',
     ]
+    if tool_mode:
+        # 工具模式下检索动作的调用形状由函数签名承载，这里只讲什么时候用它。
+        # 再写一遍 XML 语法会让模型以为还有第二套输出格式。
+        if 'recall' in available:
+            lines.append(
+                '- 翻你自己的长期记忆，包括你记得的关于在场这些人的事，'
+                '以及你们一起经历过的事'
+            )
+        if 'inspect' in available:
+            lines.append('- 翻这个会话里更早的聊天记录，也就是上面聊天记录之前发生的事')
+        lines.extend([
+            f'- 这一回合你最多只能查 {cognitive_rounds} 次，查完必须给出最终动作',
+            '- 绝大多数时候都不需要查，直接给出最终动作。'
+            '只有当对方提到的事你确实记不清、或者话头明显指向你看不到的更早内容时才查',
+        ])
+        return '\n'.join(lines) + '\n'
     if 'recall' in available:
         lines.append(
             '- <decision action="recall" query="想查的东西"/>：'

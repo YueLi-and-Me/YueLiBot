@@ -68,6 +68,7 @@ from src.core.agent.prompt import (
     describe_resumption,
     render_action_protocol,
     render_replyer_protocol,
+    render_tool_protocol,
 )
 from src.core.agent.reply_necessity import (
     PRESENCE_WINDOW_MS,
@@ -394,6 +395,9 @@ class ChatService:
             and planner_provider is not None
             and replyer_provider is not None
         )
+        # 工具调用只产出决策，正文必须由回复生成那一级写，因此它依赖拆分。
+        # 配置单开工具调用而没开拆分时按关闭处理，不在运行期才失败。
+        self._tool_calling = conversation_agent_cfg.tool_calling and self._split_replyer
         # 拆分后决策走 planner 槽、表达走 replyer 槽；两个槽留空即继承 chat，
         # 因此不配模型也能打开开关，只是两级用同一个模型、延迟收益为零。
         decision_provider = planner_provider if self._split_replyer else chat_provider
@@ -404,6 +408,7 @@ class ChatService:
                 temperature=self._chat_temperature,
                 max_tokens=self._chat_max_tokens,
                 replyer=replyer_provider if self._split_replyer else None,
+                tool_calling=self._tool_calling,
             )
             if decision_provider is not None and conversation_agent_cfg.mode != 'off'
             else None
@@ -3406,16 +3411,27 @@ class ChatService:
         :param context: 当前会话上下文；自主回合没有批次可反查，必须显式给出。
         :return: 已注入运行时动作集与目标锚点清单的协议文本。
         """
+        target_person = (
+            self._registry.stream_display_name(context.person.id, context.stream.id)
+            if context.stream.kind == 'group' and batch
+            else ''
+        )
+        if self._tool_calling:
+            # 工具调用模式下动作空间由函数签名承载，提示词只留目标锚点与选择
+            # 口径；两套输出协议同时出现会让模型在写 XML 与调工具之间摇摆。
+            return render_tool_protocol(
+                self._selectable_message_previews(batch),
+                quote_supported=frame.capabilities.quote,
+                target_person=target_person,
+                cognitive_rounds=self._cognitive_rounds,
+                available_actions=frame.available_actions,
+            )
         return render_action_protocol(
             sorted(frame.available_actions),
             self._selectable_message_previews(batch),
             quote_supported=frame.capabilities.quote,
             emoji_enabled=frame.capabilities.emoji,
-            target_person=(
-                self._registry.stream_display_name(context.person.id, context.stream.id)
-                if context.stream.kind == 'group' and batch
-                else ''
-            ),
+            target_person=target_person,
             cognitive_rounds=self._cognitive_rounds,
             available_reactions=frame.capabilities.available_reactions,
         )
@@ -3474,20 +3490,27 @@ class ChatService:
             _CONTINUATION_NOTICE.format(recap=continuation_recap) + '\n\n'
             if continuation_recap else ''
         )
+        # 工具调用模式下动作由函数签名表达：XML 的输出要求与 few-shot 一并去掉。
+        # 两套输出协议同时在场时模型会在「写标签」和「调工具」之间摇摆，表现为
+        # 一部分轮次退回纯文本输出、根本拿不到 tool_calls。
+        output_rule = '' if self._tool_calling else (
+            '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
+            '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 '
+            '<say>、普通文字或解释。'
+        )
         history[last_user_index] = {
             **history[last_user_index],
             'content': (
                 f"{history[last_user_index]['content']}\n\n"
                 f'{continuation}'
-                '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
-                '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 '
-                '<say>、普通文字或解释。'
-            ),
+                f'{output_rule}'
+            ).rstrip() if (continuation or output_rule) else history[last_user_index]['content'],
         }
+        examples = [] if self._tool_calling else self._agent_output_examples(frame)
         return [
             messages[0],
             *history[:last_user_index],
-            *self._agent_output_examples(frame),
+            *examples,
             *history[last_user_index:],
         ]
 
