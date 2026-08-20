@@ -63,6 +63,7 @@ TEMPLATE_IDS = (
     'chat.action.protocol',
     'image.description',
     'emoji.description',
+    'scene.observe',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
@@ -79,6 +80,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'resumption',
         'persona',
         'activity',
+        'scene',
         'facts',
         'episodes',
         'reply_style',
@@ -110,6 +112,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     }),
     'expression.select': frozenset({'history', 'user_text', 'options', 'limit'}),
     'vision.glance': frozenset({'app_hint'}),
+    'scene.observe': frozenset({'history', 'atmospheres', 'topic_limit'}),
     'chat.action.protocol': frozenset({
         'available_actions',
         'selectable_messages',
@@ -121,6 +124,10 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'silent_example',
         'emoji_rule',
         'cognition_rule',
+        'react_rule',
+        'poke_rule',
+        'wait_rule',
+        'speak_rule',
     }),
     'image.description': frozenset(),
     'emoji.description': frozenset(),

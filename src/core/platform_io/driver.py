@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from src.core.platform_io.types import DeliveryReceipt, OutboundMessage
+from src.core.platform_io.types import (
+    DeliveryReceipt,
+    OutboundMessage,
+    OutboundPoke,
+    OutboundReaction,
+)
 
 
 class DeliveryError(RuntimeError):
@@ -49,3 +54,38 @@ class PlatformDriver(ABC):
 
         :raises DeliveryError: 平台拒绝消息、连接不可用或投递未完成时抛出。
         """
+
+    async def react(self, reaction: OutboundReaction) -> DeliveryReceipt:
+        """给一条已有消息贴上表情回应。
+
+        默认实现直接拒绝：表情回应是可选平台能力，多数通道没有对应协议动作。
+        **这不是兜底**——核心只在 ``PlatformCapabilities.react`` 为真时才会走到
+        这里，而那个开关本身是按平台算出来的；真的走到这里说明能力判定与驱动
+        实现已经不一致，必须当场报错而不是静默吞掉一次她做出的动作。
+
+        :param reaction: 目标会话、被回应消息的平台编号与语义反应标识。
+
+        :return: 记录平台与 stream 的投递回执；表情回应不产生新消息编号。
+
+        :raises DeliveryError: 平台不支持表情回应，或调用被平台拒绝。
+        """
+        raise DeliveryError(
+            f'{self.platform} driver 不支持表情回应，但核心把它当成了可用能力'
+        )
+
+    async def poke(self, poke: OutboundPoke) -> DeliveryReceipt:
+        """戳一戳目标会话里的某个人。
+
+        与 :meth:`react` 同款：默认实现直接拒绝，因为核心只在
+        ``PlatformCapabilities.poke`` 为真时才会走到这里，真的走到了说明能力
+        判定与驱动实现已经不一致，必须当场报错而不是静默吞掉一次她做出的动作。
+
+        :param poke: 目标会话与被戳者的平台标识。
+
+        :return: 记录平台与 stream 的投递回执；戳一戳不产生消息编号。
+
+        :raises DeliveryError: 平台不支持戳一戳，或调用被平台拒绝。
+        """
+        raise DeliveryError(
+            f'{self.platform} driver 不支持戳一戳，但核心把它当成了可用能力'
+        )

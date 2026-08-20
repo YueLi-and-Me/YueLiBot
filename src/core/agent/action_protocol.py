@@ -31,8 +31,12 @@ from src.core.platform_io.types import StreamKind
 
 # 终局动作：产出可见产物或明确结束本回合；react 仅当平台适配器已验证真实执行能力时开放。
 # 认知动作：不产生任何可见产物，执行后把观察结果回灌给模型并再发起一轮（ReAct 回环）。
-ConversationAction = Literal['reply', 'silent', 'react', 'recall', 'inspect']
-TERMINAL_ACTIONS: frozenset[ConversationAction] = frozenset({'reply', 'silent', 'react'})
+ConversationAction = Literal[
+    'reply', 'silent', 'react', 'poke', 'wait', 'speak', 'recall', 'inspect',
+]
+TERMINAL_ACTIONS: frozenset[ConversationAction] = frozenset({
+    'reply', 'silent', 'react', 'poke', 'wait', 'speak',
+})
 COGNITIVE_ACTIONS: frozenset[ConversationAction] = frozenset({'recall', 'inspect'})
 ALL_ACTIONS: frozenset[ConversationAction] = TERMINAL_ACTIONS | COGNITIVE_ACTIONS
 ReplyLength = Literal['brief', 'long']
@@ -76,7 +80,47 @@ SILENT_REASON_CODES: frozenset[str] = frozenset({
     'low_relevance',
 })
 
-ALL_REASON_CODES: frozenset[str] = REPLY_REASON_CODES | SILENT_REASON_CODES
+# 等待理由：封闭枚举。它与沉默分域是有意的——「我决定不接这茬」和「话还没说完，
+# 我先不表态」是两件不同的事，混进同一个域会让账本再也分不出她是放弃了还是在等。
+WAIT_REASON_CODES: frozenset[str] = frozenset({
+    'unfinished_thought',
+    'thread_developing',
+})
+
+# 主动开口的理由：封闭枚举。与回复分域，因为「有人跟我说话所以我接」和
+# 「没人跟我说话但我想说」是两种完全不同的动机，混域会让账本分不出她是被
+# 叫起来的还是自己起的念头。
+SPEAK_REASON_CODES: frozenset[str] = frozenset({
+    'noticed_activity',
+    'remembered_something',
+    'long_silence',
+    'promise_due',
+})
+
+ALL_REASON_CODES: frozenset[str] = (
+    REPLY_REASON_CODES
+    | SILENT_REASON_CODES
+    | WAIT_REASON_CODES
+    | SPEAK_REASON_CODES
+)
+
+# 表情回应的语义词表：模型只写这些名字，平台侧的具体表情编号由适配器映射。
+# 语义名而非平台编号进协议，是因为「贴哪个表情」是角色行为，「它在 QQ 上是几号」
+# 是平台细节；把编号写进提示词等于让人格层去背协议表，换个平台就得重写人格。
+#
+# 【关键】名字必须逐字照抄平台自己的表情名，不许自己起近义词。
+#
+# - 现象：第一版凭印象写了「惊讶」「无语」两个名字，实测「惊讶」被配到 26 号
+#   （那是「惊恐」），而「无语」在 QQ 的表情表里**根本不存在**。
+# - 原因：语义名与平台编号是两张表，名字一旦自创就失去可逐条比对的基准，
+#   错配只能靠人眼在群里发现。
+# - 后果：贴错表情不报错，只会显示成另一个表情，是最难被发现的那类错。
+#   照抄平台名之后，映射表可以直接对着平台的表情表逐条核。
+#
+# 只给六个，不给全表：真人在群里常用的反应就那么几个，给两百个只会让她挑得
+# 又慢又乱。这六个覆盖六种不同的社交意图（认可 / 觉得好笑 / 服了 / 喜欢 /
+# 没想到 / 围观），要加就明确加，别为了「更全」而全。
+REACTION_IDS: tuple[str, ...] = ('赞', '笑哭', '无奈', '爱心', '惊讶', '吃瓜')
 
 
 def _validate_reason_codes(
@@ -100,8 +144,16 @@ def _validate_reason_codes(
         raise IllegalActionError('reason_codes 不能为空')
     if len(set(reason_codes)) != len(reason_codes):
         raise IllegalActionError('reason_codes 不允许重复')
-    # react 不单独说话，其理由与回复同域；沉默理由不能与回复动作混用。
-    domain = REPLY_REASON_CODES if action != 'silent' else SILENT_REASON_CODES
+    # react 与 poke 不单独说话，但都是「做出了回应」，其理由与回复同域；
+    # 沉默与等待各有自己的域，三者不允许互串。
+    if action == 'silent':
+        domain = SILENT_REASON_CODES
+    elif action == 'wait':
+        domain = WAIT_REASON_CODES
+    elif action == 'speak':
+        domain = SPEAK_REASON_CODES
+    else:
+        domain = REPLY_REASON_CODES
     for code in reason_codes:
         if code not in ALL_REASON_CODES:
             raise IllegalActionError(
@@ -162,6 +214,7 @@ class PlatformCapabilities:
     react: bool = False
     available_reactions: tuple[str, ...] = ()
     emoji: bool = False
+    poke: bool = False
 
     def __post_init__(self) -> None:
         """拒绝空反应标识，防止资源 ID 空洞进入动作集。"""
@@ -262,6 +315,7 @@ def _validate_frame_choice(
     action: ConversationAction,
     target_message_ids: tuple[int, ...],
     quote_message_id: int | None,
+    reaction: str | None,
     frame: DecisionFrame,
 ) -> None:
     """校验动作、目标与引用在回合帧内的合法性，完整决策与动作头共用。
@@ -272,9 +326,10 @@ def _validate_frame_choice(
     :param action: 当前动作。
     :param target_message_ids: 目标消息 ID 元组。
     :param quote_message_id: 可选的引用消息 ID。
+    :param reaction: react 动作选中的表情回应标识；其他动作为 None。
     :param frame: 本回合固定快照。
     :raises IllegalActionError: DROP 帧带决策、动作超出动作空间、FORCE 场景
-        silent、目标或引用越界、引用能力缺失。
+        silent、目标或引用越界、引用能力缺失、反应标识不在平台可用集内。
     """
     if frame.disposition == 'drop':
         raise IllegalActionError('DROP 候选不调用模型，不存在合法决策')
@@ -295,6 +350,11 @@ def _validate_frame_choice(
             raise IllegalActionError(
                 f'目标消息 {target} 晚于回合消息水位 {frame.message_watermark}'
             )
+    if reaction is not None and reaction not in frame.capabilities.available_reactions:
+        raise IllegalActionError(
+            f'表情回应 {reaction} 不在本平台可用反应'
+            f' {list(frame.capabilities.available_reactions)} 内'
+        )
     if quote_message_id is not None:
         if not frame.capabilities.quote:
             raise IllegalActionError('平台不支持引用时不能携带 quote_message_id')
@@ -323,6 +383,7 @@ class ConversationDecision:
     reason_codes: tuple[str, ...]
     reply: ReplyPayload | None = None
     query: str | None = None
+    reaction: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、动作与负载不匹配。"""
@@ -353,6 +414,27 @@ class ConversationDecision:
                 raise IllegalActionError('silent 动作不能指定目标消息')
             if self.quote_message_id is not None:
                 raise IllegalActionError('silent 动作不能携带引用')
+        if self.action == 'speak':
+            if self.reply is None:
+                raise IllegalActionError('speak 动作必须携带正文负载')
+            if self.target_message_ids:
+                raise IllegalActionError('speak 动作不能指定目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('speak 动作不能携带引用')
+        if self.action == 'wait':
+            if self.reply is not None:
+                raise IllegalActionError('wait 动作不能携带 reply 负载')
+            if self.target_message_ids:
+                raise IllegalActionError('wait 动作不能指定目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('wait 动作不能携带引用')
+        if self.action == 'poke':
+            if self.reply is not None:
+                raise IllegalActionError('poke 动作不能携带 reply 负载')
+            if len(self.target_message_ids) != 1:
+                raise IllegalActionError('poke 动作必须且只能指定一条目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('poke 动作不能携带引用')
         if self.action == 'react':
             if self.reply is not None:
                 raise IllegalActionError('react 动作不能携带 reply 负载')
@@ -360,6 +442,10 @@ class ConversationDecision:
                 raise IllegalActionError('react 动作必须且只能指定一条目标消息')
             if self.quote_message_id is not None:
                 raise IllegalActionError('react 动作不能携带引用')
+            if self.reaction is None or not self.reaction.strip():
+                raise IllegalActionError('react 动作必须声明非空 reaction')
+        elif self.reaction is not None:
+            raise IllegalActionError(f'{self.action} 动作不能携带 reaction')
 
     def validate(self, frame: DecisionFrame) -> None:
         """按回合帧校验决策的硬边界，违反时抛出协议错误。
@@ -373,6 +459,7 @@ class ConversationDecision:
             self.action,
             self.target_message_ids,
             self.quote_message_id,
+            self.reaction,
             frame,
         )
 
@@ -393,6 +480,7 @@ class DecisionHead:
     reason_codes: tuple[str, ...]
     length: ReplyLength | None = None
     query: str | None = None
+    reaction: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、篇幅与动作不匹配。"""
@@ -423,6 +511,29 @@ class DecisionHead:
                 raise IllegalActionError('silent 动作不能携带引用')
             if self.length is not None:
                 raise IllegalActionError('silent 动作不能声明回复篇幅')
+        if self.action == 'speak':
+            # 自主开口没有可回的消息，因此没有目标、没有引用；篇幅也不给：
+            # 主动搭话本来就该短，多一个字段只多一种写错的方式。
+            if self.target_message_ids:
+                raise IllegalActionError('speak 动作不能指定目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('speak 动作不能携带引用')
+            if self.length is not None:
+                raise IllegalActionError('speak 动作不能声明回复篇幅')
+        if self.action == 'wait':
+            if self.target_message_ids:
+                raise IllegalActionError('wait 动作不能指定目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('wait 动作不能携带引用')
+            if self.length is not None:
+                raise IllegalActionError('wait 动作不能声明回复篇幅')
+        if self.action == 'poke':
+            if len(self.target_message_ids) != 1:
+                raise IllegalActionError('poke 动作必须且只能指定一条目标消息')
+            if self.quote_message_id is not None:
+                raise IllegalActionError('poke 动作不能携带引用')
+            if self.length is not None:
+                raise IllegalActionError('poke 动作不能声明回复篇幅')
         if self.action == 'react':
             if len(self.target_message_ids) != 1:
                 raise IllegalActionError('react 动作必须且只能指定一条目标消息')
@@ -430,6 +541,10 @@ class DecisionHead:
                 raise IllegalActionError('react 动作不能携带引用')
             if self.length is not None:
                 raise IllegalActionError('react 动作不能声明回复篇幅')
+            if self.reaction is None or not self.reaction.strip():
+                raise IllegalActionError('react 动作必须声明非空 reaction')
+        elif self.reaction is not None:
+            raise IllegalActionError(f'{self.action} 动作不能携带 reaction')
 
     def validate(self, frame: DecisionFrame) -> None:
         """按回合帧校验动作头，违反时抛出协议错误。
@@ -442,6 +557,7 @@ class DecisionHead:
             self.action,
             self.target_message_ids,
             self.quote_message_id,
+            self.reaction,
             frame,
         )
 
@@ -478,20 +594,21 @@ class DecisionHead:
                 reason_codes=self.reason_codes,
                 reply=None,
             )
-        if self.action == 'react':
+        if self.action in ('react', 'poke', 'wait'):
             if body_text.strip() or emoji_emotions:
-                raise IllegalActionError('react 动作头之后不能有正文或表情包')
+                raise IllegalActionError(f'{self.action} 动作头之后不能有正文或表情包')
             return ConversationDecision(
-                action='react',
+                action=self.action,
                 target_message_ids=self.target_message_ids,
                 quote_message_id=None,
                 reason_codes=self.reason_codes,
                 reply=None,
+                reaction=self.reaction,
             )
         if not body_text.strip() and not emoji_emotions:
-            raise IllegalActionError('reply 动作头之后没有可见正文或表情包')
+            raise IllegalActionError(f'{self.action} 动作头之后没有可见正文或表情包')
         return ConversationDecision(
-            action='reply',
+            action=self.action,
             target_message_ids=self.target_message_ids,
             quote_message_id=self.quote_message_id,
             reason_codes=self.reason_codes,
@@ -509,6 +626,8 @@ def available_actions(
     capabilities: PlatformCapabilities,
     *,
     cognitive_rounds_left: int = 0,
+    allow_wait: bool = False,
+    allow_speak: bool = False,
 ) -> frozenset[ConversationAction]:
     """按 stream、平台能力与剩余认知轮次动态收窄动作空间。
 
@@ -525,6 +644,15 @@ def available_actions(
         支持才会让 react 进入动作集。
     :param cognitive_rounds_left: 本回合还剩几次认知动作机会；小于等于 0
         表示只能给出终局动作。
+    :param allow_speak: 是否允许她起一个**不接任何人**的话头。它与 reply 的区别
+        只在有没有目标：reply 是接某条消息，speak 是她自己想说点什么。
+        **不需要独立的触发机制**——扩展触发口径（frequency / reply_necessity）
+        本来就会在「群里热闹但没人理她」时给出候选，speak 只是让那个候选里多一个
+        选项，而不是再造一条并行的唤起路径。
+    :param allow_wait: 本批是否还可以「先等等」。同一批消息只允许等一次——
+        第二次进来时 wait 直接不在动作集里，模型再选就是越界。**约束写在动作
+        空间而不是循环计数器里**，与认知轮次预算同一种表达方式，因此不需要
+        「连续等待上限」这类会与其它数互相牵制的常量。
 
     :return: 本轮允许模型选择的动作集合。
     """
@@ -537,6 +665,14 @@ def available_actions(
         actions = {'reply', 'silent'}
         if capabilities.react:
             actions.add('react')
+        if capabilities.poke:
+            actions.add('poke')
+        if allow_speak:
+            actions.add('speak')
+        # 等待只在群聊有意义：私聊与桌面的交互契约是用户直接对她说话，
+        # 「先不表态」在那里等同于已读不回。
+        if allow_wait:
+            actions.add('wait')
     # 认知动作与 stream 类型、门控态都无关：无论她最终要不要开口，
     # 「先想一下再决定」这件事在任何出口都成立，只受轮次预算约束。
     if cognitive_rounds_left > 0:
@@ -636,6 +772,11 @@ class ActionDecisionEvent:
                 **(
                     {'query': self.decision.query}
                     if self.decision.query is not None
+                    else {}
+                ),
+                **(
+                    {'reaction': self.decision.reaction}
+                    if self.decision.reaction is not None
                     else {}
                 ),
                 'reply': (

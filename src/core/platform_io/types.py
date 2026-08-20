@@ -126,6 +126,52 @@ class OutboundMessage:
 
 
 @dataclass(frozen=True)
+class OutboundReaction:
+    """待投递的一次表情回应：给某条已有消息贴一个表情，不产生新消息。
+
+    与 :class:`OutboundMessage` 分开而不是塞进它的可选字段，是因为两者在平台上是
+    完全不同的动作（发消息 vs 给消息贴表情），共用一个类型会让「segments 为空但
+    reaction 非空」这种半合法状态成为常态，校验只能靠约定。
+
+    :ivar stream: 目标会话；表情回应目前只在群聊有意义。
+    :ivar target_external_message_id: 被回应消息的平台编号。内部消息 ID 发不出去，
+        必须已经回填过平台编号；没有编号的历史消息不可被回应。
+    :ivar reaction: 语义反应标识，取自协议的封闭词表；平台编号由适配器映射。
+    """
+
+    stream: StreamRef
+    target_external_message_id: str
+    reaction: str
+
+    def __post_init__(self) -> None:
+        """拒绝空目标编号与空反应标识，避免空洞进入平台调用。"""
+        if not self.target_external_message_id.strip():
+            raise ValueError('表情回应必须指定被回应消息的平台编号')
+        if not self.reaction.strip():
+            raise ValueError('表情回应标识不能为空')
+
+
+@dataclass(frozen=True)
+class OutboundPoke:
+    """待投递的一次戳一戳：戳某个人，不产生消息也不贴在某条消息上。
+
+    与 :class:`OutboundReaction` 分开的理由同样是「平台上是两个不同动作」：
+    表情回应贴在**消息**上，戳一戳作用在**人**上，目标空间根本不同。
+
+    :ivar stream: 目标会话；戳一戳目前只在群聊开放。
+    :ivar target_external_id: 被戳者在该平台的外部标识（QQ 号）。
+    """
+
+    stream: StreamRef
+    target_external_id: str
+
+    def __post_init__(self) -> None:
+        """拒绝空目标标识，避免空洞进入平台调用。"""
+        if not self.target_external_id.strip():
+            raise ValueError('戳一戳必须指定被戳者的平台标识')
+
+
+@dataclass(frozen=True)
 class DeliveryReceipt:
     """一次平台投递的可追踪结果。
 

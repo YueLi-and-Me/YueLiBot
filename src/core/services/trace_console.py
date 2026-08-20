@@ -250,6 +250,18 @@ def render_observation(sender_label: str, user_text: str, reason: str) -> None:
         logger.debug('render_observation_failed', error=str(exc))
 
 
+# 控制台里观察结果只展示开头：完整正文在事件账本里，终端要的是一眼可读。
+_OBSERVATION_CONSOLE_CHARS = 60
+
+
+def _clip_observation(text: str) -> str:
+    """把观察结果压成单行并截断到控制台可读长度。"""
+    single_line = ' '.join(text.split())
+    if len(single_line) <= _OBSERVATION_CONSOLE_CHARS:
+        return single_line
+    return f'{single_line[:_OBSERVATION_CONSOLE_CHARS]}…'
+
+
 def render_action_decision(
     turn: int,
     agent_scope: str,
@@ -258,6 +270,8 @@ def render_action_decision(
     action: str = "",
     reason_codes: tuple[str, ...] | list[str] = (),
     target_message_ids: tuple[int, ...] | list[int] = (),
+    query: str = "",
+    observation: str = "",
 ) -> None:
     """以单行渲染 Conversation Agent 的行动决策摘要。
 
@@ -267,6 +281,8 @@ def render_action_decision(
     :param turn: 对话回合 ID。
     :param agent_scope: Agent 灰度路径标识，例如 shadow。
     :param event_status: action_decision 的事件状态。
+    :param query: 认知动作的检索词；终局动作为空。
+    :param observation: 认知动作的观察结果摘要；终局动作为空。
     :param detail: 失败状态的人类可读原因；成功状态通常为空。
     :param action: 已提交决策的动作名；失败状态为空。
     :param reason_codes: 已提交决策的理由码。
@@ -285,11 +301,18 @@ def render_action_decision(
         ]
         if action:
             summary = f'  动作：{value_label(action)}'
+            if query:
+                summary += f'  查：{query}'
             if reason_codes:
                 summary += f"  理由：{'、'.join(value_label(code) for code in reason_codes)}"
             if target_message_ids:
                 summary += f"  目标消息：{'、'.join(str(target) for target in target_message_ids)}"
-            style = 'green' if action == 'reply' else 'yellow'
+            if observation:
+                # 观察正文可能很长，控制台只给一眼能看完的开头。
+                summary += f'  结果：{_clip_observation(observation)}'
+            # 会产出可见内容的动作用绿色，其余（沉默、等待、认知轮）用黄色，
+            # 一眼就能在滚动的日志里分出「她说话了」和「她没说话」。
+            style = 'green' if action in ('reply', 'speak') else 'yellow'
             parts.append(Text(summary, style=style))
         else:
             summary = f'  状态：{value_label(event_status)}'

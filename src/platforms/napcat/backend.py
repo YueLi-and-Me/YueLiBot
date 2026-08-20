@@ -46,6 +46,31 @@ class BackendOutbound:
     quote_external_message_id: str = ''
 
 
+@dataclass(frozen=True)
+class BackendReaction:
+    """主体发给 QQ 适配器的一次表情回应。
+
+    与 :class:`BackendOutbound` 是两种东西：那个是发消息，这个是给已有消息贴表情，
+    协议端对应的是完全不同的 action。共用一个类型只会让适配器靠字段有无猜意图。
+    """
+
+    stream_id: int
+    stream_kind: Literal['direct', 'group']
+    stream_external_id: str
+    target_external_message_id: str
+    reaction: str
+
+
+@dataclass(frozen=True)
+class BackendPoke:
+    """主体发给 QQ 适配器的一次戳一戳。"""
+
+    stream_id: int
+    stream_kind: Literal['direct', 'group']
+    stream_external_id: str
+    target_external_id: str
+
+
 class BackendClient:
     """向主体提交入站消息，并顺序读取 `qq.send` 出站消息。
 
@@ -247,10 +272,10 @@ class BackendClient:
         if not isinstance(payload, dict) or payload.get('ok') is not True:
             raise ValueError('主体 owner identity 绑定未确认成功')
 
-    async def next_outbound(self) -> BackendOutbound:
-        """从主体出站 WebSocket 读取下一条 QQ 通道消息。
+    async def next_outbound(self) -> BackendOutbound | BackendReaction | BackendPoke:
+        """从主体出站 WebSocket 读取下一条 QQ 通道消息或表情回应。
 
-        :return: 下一条通过协议校验的 ``BackendOutbound`` 消息。
+        :return: 下一条通过协议校验的 ``BackendOutbound`` 或 ``BackendReaction``。
 
         :raises BackendDisconnected: WebSocket 尚未连接、连接关闭或读取过程中断开。
         :raises ValueError: 收到的报文不是合法 JSON 对象或不符合 ``qq.send`` 协议。
@@ -270,15 +295,22 @@ class BackendClient:
             if raw is None:
                 raise BackendDisconnected('主体出站 WebSocket 已关闭')
             payload = _decode_payload(raw)
-            if payload.get('channel') != 'qq.send':
-                logger.debug('忽略主体出站通道', channel=payload.get('channel'))
-                continue
-            return _parse_outbound(payload)
+            channel = payload.get('channel')
+            if channel == 'qq.send':
+                return _parse_outbound(payload)
+            if channel == 'qq.react':
+                return _parse_reaction(payload)
+            if channel == 'qq.poke':
+                return _parse_poke(payload)
+            logger.debug('忽略主体出站通道', channel=channel)
 
-    async def iter_outbound(self) -> AsyncIterator[BackendOutbound]:
-        """持续按主体 WebSocket 到达顺序产生适配器出站消息。
+    async def iter_outbound(
+        self,
+    ) -> AsyncIterator[BackendOutbound | BackendReaction | BackendPoke]:
+        """持续按主体 WebSocket 到达顺序产生适配器出站消息与表情回应。
 
-        :return: 每次迭代返回一条已校验的 :class:`BackendOutbound`。
+        :return: 每次迭代返回一条已校验的 :class:`BackendOutbound` 或
+            :class:`BackendReaction`。
         :raises BackendDisconnected: 尚未连接或主体连接中途断开。
         :raises ValueError: 主体报文不是符合协议的 JSON 对象。
         副作用：持续消费 WebSocket；生成器取消时由底层异步迭代器结束。
@@ -375,4 +407,72 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         emoji_sub_types=emoji_sub_types,
         batch_delays_ms=batch_delays_ms,
         quote_external_message_id=raw_quote.strip(),
+    )
+
+
+def _parse_poke(payload: Mapping[str, Any]) -> BackendPoke:
+    """校验并转换主体 `qq.poke` 报文。
+
+    :param payload: 已解析的主体戳一戳报文。
+    :return: 去除首尾空白后的 :class:`BackendPoke`。
+    :raises ValueError: 缺少字段、字段类型错误或流类型不受支持。
+    副作用：不执行 I/O，也不修改传入映射。
+    """
+    stream_id = payload.get('stream_id')
+    if not isinstance(stream_id, int) or isinstance(stream_id, bool) or stream_id <= 0:
+        raise ValueError('主体 qq.poke 缺少合法 stream_id')
+    body = payload.get('payload')
+    if not isinstance(body, Mapping):
+        raise ValueError('主体 qq.poke 缺少对象类型的 payload')
+    stream_kind = body.get('streamKind')
+    if stream_kind not in {'direct', 'group'}:
+        raise ValueError(f'主体 qq.poke 的 streamKind 不受支持：{stream_kind}')
+    stream_external_id = body.get('streamExternalId')
+    if not isinstance(stream_external_id, str) or not stream_external_id.strip():
+        raise ValueError('主体 qq.poke 缺少非空 streamExternalId')
+    target = body.get('targetExternalId')
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError('主体 qq.poke 缺少非空 targetExternalId')
+    return BackendPoke(
+        stream_id=stream_id,
+        stream_kind=stream_kind,
+        stream_external_id=stream_external_id.strip(),
+        target_external_id=target.strip(),
+    )
+
+
+def _parse_reaction(payload: Mapping[str, Any]) -> BackendReaction:
+    """校验并转换主体 `qq.react` 报文。
+
+    :param payload: 已解析的主体表情回应报文，必须包含正整数 `stream_id` 和
+        对象型 `payload`，其内部必须给出流类型、流 ID、被回应消息平台编号与
+        语义反应标识。
+    :return: 去除首尾空白后的 :class:`BackendReaction`。
+    :raises ValueError: 缺少字段、字段类型错误或流类型不受支持。
+    副作用：不执行 I/O，也不修改传入映射。
+    """
+    stream_id = payload.get('stream_id')
+    if not isinstance(stream_id, int) or isinstance(stream_id, bool) or stream_id <= 0:
+        raise ValueError('主体 qq.react 缺少合法 stream_id')
+    body = payload.get('payload')
+    if not isinstance(body, Mapping):
+        raise ValueError('主体 qq.react 缺少对象类型的 payload')
+    stream_kind = body.get('streamKind')
+    if stream_kind not in {'direct', 'group'}:
+        raise ValueError(f'主体 qq.react 的 streamKind 不受支持：{stream_kind}')
+    stream_external_id = body.get('streamExternalId')
+    if not isinstance(stream_external_id, str) or not stream_external_id.strip():
+        raise ValueError('主体 qq.react 缺少非空 streamExternalId')
+    target = body.get('targetExternalMessageId')
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError('主体 qq.react 缺少非空 targetExternalMessageId')
+    reaction = body.get('reaction')
+    if not isinstance(reaction, str) or not reaction.strip():
+        raise ValueError('主体 qq.react 缺少非空 reaction')
+    return BackendReaction(
+        stream_id=stream_id,
+        stream_kind=stream_kind,
+        stream_external_id=stream_external_id.strip(),
+        target_external_message_id=target.strip(),
+        reaction=reaction.strip(),
     )

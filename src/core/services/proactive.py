@@ -544,8 +544,13 @@ class AwarenessService:
 
         minutes = self._sensor.minutes(now) if self._sensor else 0
         if intent.intent_type == IntentType.Plan and self._schedule:
+            # Plan 意图本身就是「时段换了，因此想说点什么」，具体活动是这条主动消息
+            # 仅有的由头，必须显式带上；对话回合的默认不注入不适用于这里。
             base = describe_day_plan(
-                self._schedule.get(now), datetime.fromtimestamp(now / 1000), self.chat.current_sleep(),
+                self._schedule.get(now),
+                datetime.fromtimestamp(now / 1000),
+                self.chat.current_sleep(),
+                include_activity=True,
             )
         elif intent.intent_type == IntentType.Promise:
             base = (

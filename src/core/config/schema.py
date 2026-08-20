@@ -84,6 +84,37 @@ class GroupChatConfig(BaseModel):
     persona_weight: float = Field(default=0.05, ge=0.0, le=1.0)
     reply_window_minutes: int = Field(default=10, ge=1)
     max_replies_in_window: int = Field(default=3, ge=0)
+    # 是否允许她给别人的消息贴 QQ 表情回应（react 动作）。
+    #
+    # 默认开启：语义反应名到 QQ 表情编号的映射（napcat/segments.py 的
+    # REACTION_EMOJI_IDS）左列逐字取自 QQ 自己的表情名，已按协议端表情编号表逐条
+    # 核对，「名字对了编号错了」这类不报错的错已经排除。剩余未知只有「某个编号是否
+    # 被 set_msg_emoji_like 接受」，而那条路失败是响亮的（协议端报错并落日志）。
+    #
+    # 不额外给表情回应设频率预算：她要能贴表情，先得拿到这一轮候选机会，而那已经
+    # 受门控与 max_replies_in_window 约束；再加一个互相牵制的窗口常量只会让行为
+    # 更难推理。
+    reactions_enabled: bool = True
+    # 是否允许她戳一戳群里的某个人（poke 动作）。
+    #
+    # 与表情回应分开且**默认关闭**：贴表情是安静的，戳一戳会给对方推送提醒，
+    # 扰动量级完全不同。合成一个开关就没法只开安静的那个。
+    pokes_enabled: bool = False
+    # 是否允许她起一个**不接任何人**的话头（speak 动作）。
+    #
+    # 它与 reply 的区别只在有没有目标：reply 是接某条消息，speak 是她自己想说点
+    # 什么。**不需要独立的触发机制**——扩展触发口径（frequency / reply_necessity）
+    # 本来就会在「群里热闹但没人理她」时给出候选，speak 只是让那个候选里多一个
+    # 选项，因此它天然受同一条频率闸门约束，不会另外增加她开口的次数。
+    self_started_topics: bool = True
+    # 群里每积累这么多条新消息，就在后台重算一次场景画像（在聊什么、什么气氛）。
+    #
+    # 观察跑在对话之外，不占她开口前的等待；这个数只决定画像有多新。给 0 关闭观察，
+    # 系统提示词里就没有场景块，行为与引入观察 Agent 之前一致。
+    #
+    # 不再给它配第二个「最小间隔」常量：条数本身已经是节流器——消息来得慢就自然
+    # 算得少，来得快才算得勤，这正是我们想要的。
+    scene_refresh_messages: int = Field(default=15, ge=0)
 
 
 class ConversationAgentConfig(BaseModel):

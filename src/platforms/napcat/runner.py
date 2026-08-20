@@ -21,7 +21,7 @@ import httpx
 
 from src.core.common.logger import get_logger
 
-from .backend import BackendClient, BackendOutbound
+from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReaction
 from .config import NapcatDocument
 from .events import QqInboundEvent, classify_event, parse_inbound_event
 from .segments import (
@@ -30,6 +30,7 @@ from .segments import (
     message_to_text,
     outbound_message_batches,
     quoted_message_ids,
+    reaction_emoji_id,
 )
 from .transport import (
     ActionError,
@@ -593,6 +594,12 @@ class NapcatRunner:
         副作用：持续读取主体 WebSocket，并向协议端发送 action；单条发送失败只记录日志。
         """
         async for outbound in self._backend.iter_outbound():
+            if isinstance(outbound, BackendReaction):
+                await self._apply_reaction(outbound)
+                continue
+            if isinstance(outbound, BackendPoke):
+                await self._apply_poke(outbound)
+                continue
             # 先映射协议 action 和目标字段，再统一校验外部 QQ 标识。
             if outbound.stream_kind == 'direct':
                 action = 'send_private_msg'
@@ -639,6 +646,75 @@ class NapcatRunner:
                     targetId=outbound.stream_external_id,
                     error=str(exc),
                 )
+
+    async def _apply_poke(self, poke: BackendPoke) -> None:
+        """在群里戳一戳指定成员。
+
+        :param poke: 主体下发的戳一戳，含群号与被戳者 QQ 号。
+        :return: ``None``。
+        副作用：向协议端发送一次 action；发送失败只记录日志，不影响后续出站。
+        """
+        try:
+            group_id = _qq_number(poke.stream_external_id, '戳一戳群')
+            user_id = _qq_number(poke.target_external_id, '戳一戳目标')
+        except ValueError as exc:
+            logger.error(
+                'QQ 戳一戳参数非法',
+                streamId=poke.stream_id,
+                targetId=poke.target_external_id,
+                error=str(exc),
+            )
+            return
+        try:
+            await self._transport.call_action(
+                'group_poke', {'group_id': group_id, 'user_id': user_id},
+            )
+        except (ActionError, asyncio.TimeoutError) as exc:
+            logger.error(
+                'QQ 戳一戳失败',
+                streamId=poke.stream_id,
+                targetId=poke.target_external_id,
+                error=str(exc),
+            )
+
+    async def _apply_reaction(self, reaction: BackendReaction) -> None:
+        """给一条已有消息贴上表情回应。
+
+        表情回应不产生新消息，因此不参与打字节奏，也不需要引用或分批：它就是
+        一次 `set_msg_emoji_like` 调用。
+
+        :param reaction: 主体下发的表情回应，含被回应消息的平台编号与语义标识。
+        :return: ``None``。
+        :raises ValueError: 语义标识不在映射表内，或消息编号不是合法数字。
+        副作用：向协议端发送一次 action；发送失败只记录日志，不影响后续出站。
+        """
+        try:
+            emoji_id = reaction_emoji_id(reaction.reaction)
+            message_id = _qq_number(reaction.target_external_message_id, '表情回应目标消息')
+        except ValueError as exc:
+            # 映射缺失或编号非法属于协议不同步，必须留下明确记录而不是静默跳过。
+            logger.error(
+                'QQ 表情回应参数非法',
+                streamId=reaction.stream_id,
+                reaction=reaction.reaction,
+                targetMessageId=reaction.target_external_message_id,
+                error=str(exc),
+            )
+            return
+        try:
+            await self._transport.call_action(
+                'set_msg_emoji_like',
+                {'message_id': message_id, 'emoji_id': emoji_id},
+            )
+        except (ActionError, asyncio.TimeoutError) as exc:
+            logger.error(
+                'QQ 表情回应失败',
+                streamId=reaction.stream_id,
+                streamKind=reaction.stream_kind,
+                targetId=reaction.stream_external_id,
+                targetMessageId=reaction.target_external_message_id,
+                error=str(exc),
+            )
 
 
 def _required_text(value: Any, message: str) -> str:

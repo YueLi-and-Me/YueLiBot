@@ -196,6 +196,27 @@ def _activity_block(activity: Optional[str]) -> str:
     ]))
 
 
+def _scene_block(scene: Optional[Tuple[str, str]]) -> str:
+    """把场景画像包装成不要求主动提及的群聊背景块。
+
+    与 ``_activity_block`` 同一条纪律：这是她顺眼得到的背景，不是要她复述的简报。
+    观察 Agent 只在群聊跑，因此私聊与桌面传 ``None``、整块省略。
+
+    :param scene: ``(话题, 气氛)`` 二元组；``None`` 表示还没有观察结果。
+    :return: 带段落前缀的提示词块，无场景时返回空字符串。
+    """
+    if scene is None:
+        return ''
+    topic, atmosphere = scene
+    return _prefixed_block('\n'.join([
+        '# 群里现在的情况',
+        f'大家在聊：{topic}',
+        f'气氛：{atmosphere}',
+        '这是你扫一眼群里得到的印象，用来判断这一轮该不该接、用什么调子接。'
+        '不要复述它，也不要因为气氛就硬凑一句话。',
+    ]))
+
+
 def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> str:
     """把一组记忆条目渲染为带标题和使用规则的列表块。
 
@@ -249,6 +270,7 @@ def build_system_prompt(
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     protocol_text: Optional[str] = None,
     emoji_enabled: bool = False,
+    scene: Optional[Tuple[str, str]] = None,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
 
@@ -327,6 +349,7 @@ def build_system_prompt(
         'resumption': _prefixed_block(resumption),
         'persona': _prefixed_block(persona),
         'activity': _activity_block(activity),
+        'scene': _scene_block(scene),
         'facts': _memory_block(
             '你早就知道的事',
             facts,
@@ -435,6 +458,7 @@ def render_action_protocol(
     emoji_enabled: bool = False,
     target_person: str = '',
     cognitive_rounds: int = 0,
+    available_reactions: Sequence[str] = (),
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -452,6 +476,8 @@ def render_action_protocol(
     :param cognitive_rounds: 本回合的认知轮次预算；写进提示词让模型一开始就知道
         自己最多能查几次。**这只是把动作空间里已经成立的事实说给它听**，真正的
         约束在 available_actions，两处口径必须一致。
+    :param available_reactions: 本平台真实可用的表情回应标识；react 不在动作集时
+        传空序列，此时该段完全不渲染。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
@@ -494,7 +520,140 @@ def render_action_protocol(
         silent_example=silent_example,
         emoji_rule=_emoji_protocol_rule(emoji_enabled),
         cognition_rule=_cognition_protocol_rule(actions, ids, cognitive_rounds),
+        react_rule=_react_protocol_rule(actions, ids, available_reactions),
+        poke_rule=_poke_protocol_rule(actions, ids),
+        wait_rule=_wait_protocol_rule(actions),
+        speak_rule=_speak_protocol_rule(actions),
     )
+
+
+def _speak_protocol_rule(actions: FrozenSet[str]) -> str:
+    """渲染「起一个不接任何人的话头」的说明。
+
+    speak 与 reply 的区别只在有没有目标：reply 是接某条消息，speak 是她自己想说
+    点什么。它**不需要独立的触发路径**——扩展触发口径本来就会在「群里热闹但没人
+    理她」时给出候选，speak 只是让那个候选里多一个选项。
+
+    措辞的重点不是教她怎么写，而是压住「既然轮到我了就得说点什么」这种冲动：
+    参考实现那边主动发言效果不好，根因大概率不在触发机制而在内容——没料硬开口，
+    产出就是「大家在聊什么呀」这类。所以这里反复强调没东西可加就别说。
+
+    :param actions: 本轮实际可用的动作集合。
+    :return: 主动开口说明文本；speak 不可用时返回空字符串。
+    """
+    if 'speak' not in actions:
+        return ''
+    return '\n'.join([
+        '',
+        '如果群里这些话你一条都不想接，但确实有别的想说，可以起一个新话头——'
+        '不接任何人，就是你自己想说：',
+        '<decision action="speak" reasons="理由码"/>',
+        '<say emotion="表情">你想说的话</say>',
+        '- reasons 只能写：noticed_activity（看到他们在聊的事想接一句）/ '
+        'remembered_something（想起一件和现在有关的事）/ '
+        'long_silence（太久没说话了）/ promise_due（之前答应过的事到点了）',
+        '- 不写 targets、length、quote——没有哪条消息是你在回的',
+        '- 主动开口要短，一句就够',
+        '- **绝大多数时候都该选 silent。** 没什么非说不可的就别说：'
+        '硬凑一句、复述他们刚说过的话、或者「大家在聊什么呀」这种没内容的搭话，'
+        '比不说话难受得多',
+        '- 只有确实有东西可加（你知道点他们不知道的、想起相关的事、'
+        '或者话头明显能接）时才开口',
+    ]) + '\n'
+
+
+def _wait_protocol_rule(actions: FrozenSet[str]) -> str:
+    """渲染「先等等」动作的说明。
+
+    与 silent 的分界必须写清楚，否则模型会把两者当同义词：silent 是放弃这一茬，
+    wait 是话没说完先不表态、这些消息之后还会再看一遍。
+
+    :param actions: 本轮实际可用的动作集合。
+    :return: 等待说明文本；wait 不可用时返回空字符串。
+    """
+    if 'wait' not in actions:
+        return ''
+    return '\n'.join([
+        '',
+        '如果对方的话明显还没说完（打了半句、正在往下讲、这事还在展开），'
+        '你可以先不表态：',
+        '<decision action="wait" reasons="理由码"/>',
+        '- reasons 只能写：unfinished_thought（话没说完）/ thread_developing（这事还在往下走）',
+        '- 不写 targets、length、quote，之后不要有任何正文',
+        '- 这和 silent 不是一回事：silent 是「这茬我不接了」，'
+        'wait 是「我在等下文」，这些消息之后你还会再看到一次',
+        '- 只能等一次。等过之后再看到这些消息时就必须表态，那时没有这个选项了',
+    ]) + '\n'
+
+
+def _poke_protocol_rule(
+    actions: FrozenSet[str],
+    selectable_ids: Sequence[int],
+) -> str:
+    """渲染戳一戳动作的说明。
+
+    :param actions: 本轮实际可用的动作集合。
+    :param selectable_ids: 本轮可选消息 ID，用于给示例挑一个合法目标。
+    :return: 戳一戳说明文本；poke 不可用时返回空字符串。
+    """
+    if 'poke' not in actions:
+        return ''
+    lines = [
+        '',
+        '你还可以戳一戳某个人（QQ 的戳一戳，不发消息）：',
+        '<decision action="poke" targets="消息编号" reasons="理由码"/>',
+        '- targets 只填一条，写你想戳的那个人发的消息；不写 length、不写 quote、之后不要有正文',
+        '- 它会给对方推一条提醒，比贴表情吵得多。'
+        '只在你确实想叫某个人一下的时候用，别拿它当口头禅',
+    ]
+    if selectable_ids:
+        lines.extend([
+            '',
+            '# 戳一戳的例子',
+            f'<decision action="poke" targets="{selectable_ids[0]}" '
+            'reasons="relationship_impulse"/>',
+        ])
+    return '\n'.join(lines) + '\n'
+
+
+def _react_protocol_rule(
+    actions: FrozenSet[str],
+    selectable_ids: Sequence[int],
+    available_reactions: Sequence[str],
+) -> str:
+    """渲染表情回应（react）的可用性与用法说明。
+
+    与 reply / silent / 认知动作示例同一条纪律：动作集里没有 react 时整段不渲染。
+    展示一个本回合非法的动作等同于主动制造 illegal_action。
+
+    可用反应逐个列出而不是让模型自由描述情绪：贴哪个表情最终要落到平台的封闭
+    编号上，让它写自由文本只会把映射失败推迟到投递时才发现。
+
+    :param actions: 本轮实际可用的动作集合。
+    :param selectable_ids: 本轮可选消息 ID，用于给示例挑一个合法目标。
+    :param available_reactions: 本平台真实可用的反应标识。
+    :return: 表情回应说明文本；react 不可用时返回空字符串。
+    """
+    if 'react' not in actions or not available_reactions:
+        return ''
+    lines = [
+        '',
+        '除了说话和沉默，你还可以只给某条消息贴一个表情回应——'
+        '就是群里那种「在别人消息上点一个表情」，不发新消息：',
+        f'<decision action="react" targets="消息编号" reaction="表情" reasons="理由码"/>',
+        f'- reaction 只能写：{" / ".join(available_reactions)}',
+        '- targets 只填一条，写你在回应哪条消息；不写 length、不写 quote、之后不要有任何正文',
+        '- 想接话就正常 reply，别用表情回应糊弄；'
+        '它适合「看到了、有点反应、但没什么要补充的」那种时候',
+    ]
+    if selectable_ids:
+        lines.extend([
+            '',
+            '# 表情回应的例子',
+            f'<decision action="react" targets="{selectable_ids[0]}" '
+            f'reaction="{available_reactions[0]}" reasons="natural_reaction"/>',
+        ])
+    return '\n'.join(lines) + '\n'
 
 
 def _cognition_protocol_rule(
@@ -520,7 +679,11 @@ def _cognition_protocol_rule(
     available = sorted(actions & COGNITIVE_ACTIONS)
     if not available:
         return ''
-    lines = ['', '想不起来的时候，可以先查一下再决定这一轮做什么：']
+    lines = [
+        '',
+        '上面的聊天记录只是你们此刻的互动，你和这些人之间还有更多过去的事没有摆在眼前。'
+        '想不起来的时候，可以先查一下再决定这一轮做什么：',
+    ]
     if 'recall' in available:
         lines.append(
             '- <decision action="recall" query="想查的东西"/>：'

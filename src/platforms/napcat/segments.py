@@ -13,11 +13,50 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Mapping, Sequence
 
+from .qq_faces import face_id_by_name, face_name
+
+from src.core.agent.action_protocol import REACTION_IDS
+
 
 Segment = Mapping[str, Any]
 ImageSourceKind = Literal['base64', 'file']
 
 _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI = frozenset({0, 4, 9})
+
+# 语义反应标识到 QQ 表情编号的映射，**由平台表情表按名反查派生**，不再手写。
+#
+# 派生而不是手写，是因为手写过一次就错过一次：第一版凭印象写的六个里，「惊讶」
+# 被配成 26（那其实是「惊恐」），「无语」这个名字在平台表里压根不存在。根因是
+# 语义名与平台编号本来是两张表，名字一旦自创就失去了可比对的基准，而贴错表情
+# 不报错、只会显示成另一个表情，是最难发现的那类错。
+#
+# 现在协议词表里的名字必须逐字是平台表里的表情名，否则**导入期就炸**——
+# 「名字对但编号错」在结构上不再可能发生。
+#
+# 仍未验证的一点：QQ 客户端允许作为**表情回应**的编号是全部表情的一个子集，
+# 这几个是否都被 set_msg_emoji_like 接受没有实测过。但那条路失败是**响亮的**
+# ——协议端返回错误 → ActionError → 日志明确记一条。
+REACTION_EMOJI_IDS: Dict[str, str] = {
+    name: face_id_by_name(name) for name in REACTION_IDS
+}
+
+
+def reaction_emoji_id(reaction: str) -> str:
+    """把语义反应标识映射为 QQ 协议的表情编号。
+
+    :param reaction: 主体下发的语义反应标识。
+    :return: 对应的 QQ 表情编号字符串。
+    :raises ValueError: 标识不在协议词表内。**不做兜底**：主体只会下发协议封闭
+        词表里的值，出现未知值说明核心词表与本模块已经不同步，静默换一个表情
+        会让这种不同步永远不被发现。
+    """
+    try:
+        return REACTION_EMOJI_IDS[reaction]
+    except KeyError as exc:
+        raise ValueError(
+            f'未知表情回应标识：{reaction}；'
+            f'可用：{sorted(REACTION_EMOJI_IDS)}'
+        ) from exc
 
 
 def is_emoji_image(segment: Segment) -> bool:
@@ -75,6 +114,12 @@ def segment_to_text(
         return f'@{qq}'
     if segment_type == 'image':
         return '[表情包]' if is_emoji_image(segment) else '[图片]'
+    if segment_type == 'face':
+        # 只渲染成无差别的 [表情] 时，她分不出别人发的是「赞」还是「裂开」，
+        # 而这两者对该不该接话、用什么调子的影响完全不同。
+        # 未知编号（QQ 新加的表情）保留无名占位：那是真的不知道，不能编一个名字。
+        name = face_name(_string_value(data.get('id')))
+        return f'[表情：{name}]' if name else '[表情]'
     if segment_type == 'reply':
         # 只有占位符时模型无从判断被引用的是哪句话，只能顺着当前这条硬猜，
         # 群里连着几个「？」的引用尤其容易答非所问；摘要由运行器查协议端补齐。

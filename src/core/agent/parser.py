@@ -119,6 +119,7 @@ class DecisionEvent:
     :ivar reasons: 逗号分隔的理由码原文；缺失时为 `None`。
     :ivar length: 回复篇幅原文；缺失时为 `None`。
     :ivar query: 认知动作的检索词原文；终局动作不携带，缺失时为 `None`。
+    :ivar reaction: react 动作的表情回应标识原文；其他动作不携带，缺失时为 `None`。
     """
 
     type: str = 'decision'
@@ -128,6 +129,7 @@ class DecisionEvent:
     reasons: str | None = None
     length: str | None = None
     query: str | None = None
+    reaction: str | None = None
 
 
 ParseEvent = Union[
@@ -412,6 +414,7 @@ class ResponseParser:
                 reasons=attrs.get('reasons'),
                 length=attrs.get('length'),
                 query=attrs.get('query'),
+                reaction=attrs.get('reaction'),
             ))
             return
 

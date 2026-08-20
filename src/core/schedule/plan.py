@@ -691,16 +691,23 @@ class DayPlanService:
         except Exception:
             logger.exception('日程后台生成任务异常', date=date)
 
-    def describe(self, now: int, sleep: ScheduleSleepState) -> str:
+    def describe(self, now: int, sleep: ScheduleSleepState, *, include_activity: bool = False) -> str:
         """生成当前日程和睡眠状态的中文提示文本。
 
         :param now: 当前毫秒时间戳。
         :param sleep: 当前睡眠状态。
+        :param include_activity: 是否连当前时段的具体活动一并渲染；默认只给情绪与
+            作息影响，详见 :func:`describe_day_plan`。
 
         :return: 可注入对话提示词的行为描述。
         """
 
-        return describe_day_plan(self.get(now), datetime.fromtimestamp(now / 1000), sleep)
+        return describe_day_plan(
+            self.get(now),
+            datetime.fromtimestamp(now / 1000),
+            sleep,
+            include_activity=include_activity,
+        )
 
     def generation_issue(self, now: int) -> DayPlanGenerationIssue | None:
         """读取指定日期最近一次生成失败记录。
@@ -1031,42 +1038,68 @@ def _slot_at(plan: DayPlan, now: datetime) -> DayPlanSlot:
     return current
 
 
-# 日程时段注入后必须跟上的纪律说明。
+# 活动问句匹配。只认「问你在干什么/忙不忙」这一类，不含作息问句：
+# 睡着、犯困、刚醒是状态，本来就无条件注入，不需要问才给。
 #
-# 现象：一个时段横跨一两个小时，其间每一轮回复都带着同一句「此刻你……」，
-#   模型把它当成要汇报的内容，于是整段时间里每条回复都在播报同一件事——
-#   21:00 那档「收拾书桌、准备洗漱」曾让连续二十多条回复都以「我去洗漱了」收尾，
-#   而她始终没有真的离开，比不提日程更假。
-# 原因：时段文本写的是一串动作，注入时又只说「让它自然影响反应」，
-#   没有像时间上下文那样明确「这是背景、不是话题」。
-# 后果：删掉这句会让播报行为立刻回归；改写时必须保留「不主动播报、不重复同一件事」
-#   这两层约束，只调整措辞。
-_ACTIVITY_DISCIPLINE = (
-    '这段安排只是背景，用来决定你此刻的语气、精力和有没有空，不是拿来说的内容。'
-    '除非对方问起、或者你确实要因此中断对话，否则不要主动交代自己在干什么；'
-    '同一件事说过一次就别再提，「我去洗漱了」「我去睡了」这类告别尤其不要每轮重复。'
-)
+# 容忍误命中（「你干嘛这么凶」同样会命中）：命中只是把当前活动作为备答材料递进去，
+# 注入文案写成条件句，不构成「本轮必须交代自己在干什么」的指令。
+_ACTIVITY_QUESTION = re.compile(r'干嘛|干什么|干啥|做什么|做啥|忙什么|忙啥|忙不忙|在忙|在干')
 
 
-def describe_day_plan(plan: DayPlan, now: datetime, sleep: ScheduleSleepState) -> str:
+def asks_about_activity(text: str) -> bool:
+    """判断本回合来消息里有没有在问她此刻在做什么。
+
+    :param text: 本回合合并后的用户原文。
+
+    :return: 命中活动问句时返回 ``True``，用于决定是否注入当前时段的具体活动。
+    """
+
+    return bool(_ACTIVITY_QUESTION.search(text))
+
+
+def describe_day_plan(
+    plan: DayPlan,
+    now: datetime,
+    sleep: ScheduleSleepState,
+    *,
+    include_activity: bool = False,
+) -> str:
     """将日程时段和睡眠状态渲染为对话行为提示。
+
+    默认只渲染时段的影响（情绪、精力、作息），不渲染时段写的具体活动。
+
+    - 现象：活动一旦以「此刻你在收拾书桌、准备洗漱」的形式逐轮注入，模型就把它
+      当成本轮要交代的内容；一个时段横跨一两个小时，于是连续二十多条回复都以
+      「我去洗漱了」收尾，而她始终没有真的离开，比不提日程更假。
+    - 原因：喂进去的是一串可叙述的动作，再靠「这只是背景、别主动说」压制，等于让
+      模型在两条互相矛盾的指令之间取舍，产出必然摇摆。
+    - 后果：约束层压不住这件事，此前加过的纪律说明并未止住播报；要改的是喂什么，
+      而不是喂完再限制。把活动改回默认注入，播报行为会立刻回归。
 
     :param plan: 当前自然日的日程。
     :param now: 当前本地日期时间。
     :param sleep: 睡眠、困倦和刚醒状态。
+    :param include_activity: 是否连具体活动一并渲染。仅在对方开口问起
+        （见 :func:`asks_about_activity`），或主动搭话本就以日程为由头时为 ``True``。
 
-    :return: 描述当前活动、情绪及作息行为的中文文本。
+    :return: 描述当前情绪、作息行为，以及按需附带具体活动的中文文本。
     """
 
     if sleep.asleep:
         slot = DayPlanSlot(from_time='00:00', doing='在睡觉', mood='被叫醒时会有些迷迷糊糊')
     else:
         slot = _slot_at(plan, now)
-    doing = slot.doing if slot.doing.startswith('你') else f'你{slot.doing}'
     if sleep.just_woke:
         lines = ['你刚醒没多久，还在慢慢把意识拢回来；别装得已经精神十足，语气应有一点迷糊和迟缓。']
     else:
-        lines = [f'此刻{doing}。{describe_mood_behavior(slot.mood)}', _ACTIVITY_DISCIPLINE]
+        lines = [describe_mood_behavior(slot.mood)]
+        if include_activity:
+            doing = slot.doing if slot.doing.startswith('你') else f'你{slot.doing}'
+            # 写成条件句：既覆盖误命中的场合，也挡住「顺势宣告下一步」这类越界发挥。
+            lines.append(
+                f'如果他是在问你在干什么：此刻{doing}。照实答一句就够，'
+                '不用展开讲，也不要顺势宣告你接下来要去做什么。'
+            )
     if sleep.asleep:
         lines.append('你已经睡着了；如果他现在找你说话，你是被叫醒的，反应要符合刚醒时的迷糊。')
     elif sleep.drowsy:

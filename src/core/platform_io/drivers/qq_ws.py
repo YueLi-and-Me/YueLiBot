@@ -9,7 +9,12 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from src.core.platform_io.driver import DeliveryError, PlatformDriver
-from src.core.platform_io.types import DeliveryReceipt, OutboundMessage
+from src.core.platform_io.types import (
+    DeliveryReceipt,
+    OutboundMessage,
+    OutboundPoke,
+    OutboundReaction,
+)
 
 
 class QqWebSocketDriver(PlatformDriver):
@@ -88,5 +93,68 @@ class QqWebSocketDriver(PlatformDriver):
         return DeliveryReceipt(
             platform=self.platform,
             stream_id=message.stream.id,
+            external_message_ids=[],
+        )
+
+    async def react(self, reaction: OutboundReaction) -> DeliveryReceipt:
+        """把一次表情回应作为独立事件发送到适配器。
+
+        走独立的 ``qq.react`` 通道而不是复用 ``qq.send``：协议端那边是另一个
+        action（贴表情不发消息），共用通道会让适配器必须靠字段有无来猜自己该做
+        什么，而那正是消息与回应被混淆的开始。
+
+        :param reaction: 目标必须是 QQ stream；被回应消息的平台编号由核心解析。
+
+        :return: 记录 QQ 平台和 stream ID 的投递回执；表情回应不产生新消息编号。
+
+        :raises DeliveryError: 目标平台不匹配，或没有适配器订阅者。
+
+        副作用：调用一次注入的 ``push`` 回调。
+        """
+        if reaction.stream.platform != self.platform:
+            raise DeliveryError(
+                f'QQ driver 收到非 QQ stream：{reaction.stream.platform}'
+            )
+        delivered = await self._push(reaction.stream.id, 'qq.react', {
+            'streamKind': reaction.stream.kind,
+            'streamExternalId': reaction.stream.external_id,
+            'targetExternalMessageId': reaction.target_external_message_id,
+            'reaction': reaction.reaction,
+        })
+        if delivered == 0:
+            raise DeliveryError(
+                f'QQ stream {reaction.stream.id} 没有适配器 WebSocket 订阅者'
+            )
+        return DeliveryReceipt(
+            platform=self.platform,
+            stream_id=reaction.stream.id,
+            external_message_ids=[],
+        )
+
+    async def poke(self, poke: OutboundPoke) -> DeliveryReceipt:
+        """把一次戳一戳作为独立事件发送到适配器。
+
+        :param poke: 目标必须是 QQ stream；被戳者的 QQ 号由核心解析。
+
+        :return: 记录 QQ 平台和 stream ID 的投递回执。
+
+        :raises DeliveryError: 目标平台不匹配，或没有适配器订阅者。
+
+        副作用：调用一次注入的 ``push`` 回调。
+        """
+        if poke.stream.platform != self.platform:
+            raise DeliveryError(f'QQ driver 收到非 QQ stream：{poke.stream.platform}')
+        delivered = await self._push(poke.stream.id, 'qq.poke', {
+            'streamKind': poke.stream.kind,
+            'streamExternalId': poke.stream.external_id,
+            'targetExternalId': poke.target_external_id,
+        })
+        if delivered == 0:
+            raise DeliveryError(
+                f'QQ stream {poke.stream.id} 没有适配器 WebSocket 订阅者'
+            )
+        return DeliveryReceipt(
+            platform=self.platform,
+            stream_id=poke.stream.id,
             external_message_ids=[],
         )

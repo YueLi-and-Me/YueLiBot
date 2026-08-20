@@ -840,6 +840,23 @@ class MemoryStore:
         scored.sort(key=lambda fact: fact.score, reverse=True)
         return scored[:limit]
 
+    def message_count_after(self, stream_id: int, since_id: int) -> int:
+        """统计某条消息之后该 stream 又落库了多少条消息。
+
+        场景观察据此节流：条数本身就是节流器，消息来得慢自然算得少。
+
+        :param stream_id: 目标 stream ID。
+        :param since_id: 起点消息 ID（不含）；``0`` 表示统计全部。
+        :return: 该消息之后的消息条数。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表。
+        """
+        row = self._db.execute(
+            'SELECT COUNT(*) FROM messages WHERE stream_id = ? AND id > ?',
+            (stream_id, since_id),
+        ).fetchone()
+        return int(row[0])
+
     def recent_speakers(
         self,
         stream_id: int,

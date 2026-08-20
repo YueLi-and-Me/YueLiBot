@@ -10,7 +10,12 @@ from __future__ import annotations
 from typing import Dict
 
 from src.core.platform_io.driver import DeliveryError, PlatformDriver
-from src.core.platform_io.types import DeliveryReceipt, OutboundMessage
+from src.core.platform_io.types import (
+    DeliveryReceipt,
+    OutboundMessage,
+    OutboundPoke,
+    OutboundReaction,
+)
 
 
 class PlatformBroker:
@@ -61,3 +66,33 @@ class PlatformBroker:
         if driver is None:
             raise DeliveryError(f'stream {message.stream.id} 没有已注册的出站 driver')
         return await driver.send(message)
+
+    async def dispatch_reaction(self, reaction: OutboundReaction) -> DeliveryReceipt:
+        """把一次表情回应单播到其所属会话的驱动。
+
+        :param reaction: 已确定目标消息平台编号与语义反应标识的表情回应。
+
+        :return: 目标驱动返回的投递回执。
+
+        :raises DeliveryError: 目标 stream 尚未注册出站驱动，驱动不支持表情
+            回应，或平台报告失败。
+        """
+        driver = self._drivers.get(reaction.stream.id)
+        if driver is None:
+            raise DeliveryError(f'stream {reaction.stream.id} 没有已注册的出站 driver')
+        return await driver.react(reaction)
+
+    async def dispatch_poke(self, poke: OutboundPoke) -> DeliveryReceipt:
+        """把一次戳一戳单播到其所属会话的驱动。
+
+        :param poke: 已确定被戳者平台标识的戳一戳。
+
+        :return: 目标驱动返回的投递回执。
+
+        :raises DeliveryError: 目标 stream 尚未注册出站驱动，驱动不支持戳一戳，
+            或平台报告失败。
+        """
+        driver = self._drivers.get(poke.stream.id)
+        if driver is None:
+            raise DeliveryError(f'stream {poke.stream.id} 没有已注册的出站 driver')
+        return await driver.poke(poke)

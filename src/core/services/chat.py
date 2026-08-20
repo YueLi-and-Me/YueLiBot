@@ -31,6 +31,7 @@ from .vector import VectorService
 from src.core.agent.character import pick_tone
 from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy, TurnPlanner
 from src.core.agent.action_protocol import (
+    REACTION_IDS,
     ActionDecisionEvent,
     DecisionFrame,
     GateDisposition,
@@ -44,7 +45,8 @@ from src.core.agent.cognition import (
     InspectAction,
     RecallAction,
 )
-from src.core.agent.conversation import ConversationAgent
+from src.core.agent.conversation import AgentOutcome, ConversationAgent
+from src.core.agent.observer import SceneObserver, SceneSnapshot
 from src.core.agent.conversation_gate import (
     GateRequest,
     GateResult,
@@ -90,6 +92,8 @@ from src.core.platform_io.types import (
     IdentityRef,
     InboundMessage,
     OutboundMessage,
+    OutboundPoke,
+    OutboundReaction,
     PersonRef,
     StreamRef,
 )
@@ -100,7 +104,7 @@ from src.core.prompts.registry import (
     CHAT_SYSTEM_VARIANT_COMPONENTS,
     prompt_metadata,
 )
-from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState
+from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
 
 logger = get_logger(__name__)
 
@@ -112,6 +116,9 @@ PROACTIVE_TRIGGER_MESSAGE = '请按上面的要求开始。'
 
 # 对齐群聊既有回复窗口，在同一窗口内最多发送一张表情包。
 EMOJI_MAX_PER_REPLY_WINDOW = 1
+# 场景观察读取的历史条数。刻意宽于工作记忆窗口：观察的价值就在于看到比单轮
+# 上下文更长的一段，否则它只是把对话模型已经看过的东西再读一遍。
+SCENE_WINDOW_MESSAGES = 60
 
 # 上一轮生成期间插队到达的普通群消息，在上一回复落库后先沉降这段时间；
 # 避免上一轮刚结束就立刻开启下一轮。@ 与名字命中不等待。
@@ -309,6 +316,14 @@ class ChatService:
         self._frequency_talk_value = conversation_agent_cfg.frequency_talk_value
         self._reply_necessity_threshold = conversation_agent_cfg.reply_necessity_threshold
         self._cognitive_rounds = conversation_agent_cfg.max_cognitive_rounds
+        self._scene_refresh_messages = cfg.group_chat.scene_refresh_messages
+        # 同一 stream 同时只跑一个观察任务；观察比对话慢得多，重入只会互相盖写。
+        self._observing: set[int] = set()
+        # stream_id -> 进入等待时的缓冲长度。她选择「先等等」之后，本批消息被放回
+        # 缓冲；在缓冲长度没有变化（也就是没有任何新消息进来）之前不再重开回合，
+        # 否则轮询周期一到就会把同一批重新问一遍模型。
+        self._waiting: dict[int, int] = {}
+        self._speak_enabled = cfg.group_chat.self_started_topics
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
@@ -348,6 +363,17 @@ class ChatService:
         self._registry = StreamRegistry(db)
         # 认知动作只在 ReAct 开启时构造：轮次预算为 0 时执行器永远不会被调用，
         # 持有它只会让「关闭即回退到单轮」这条性质多一处需要复核的地方。
+        # 观察是「把一段历史概括成一句话」，与摘要同类，复用摘要任务的路由；
+        # 为它单开第八个模型任务只会多一段用户必须填的配置。
+        self._scene_observer = (
+            SceneObserver(
+                summary_provider,
+                temperature=self._summary_temperature,
+                max_tokens=self._summary_max_tokens,
+            )
+            if summary_provider is not None and self._scene_refresh_messages > 0
+            else None
+        )
         self._cognitive_executor = (
             CognitiveExecutor([
                 RecallAction(self.memory, self._registry.stream_display_name),
@@ -596,6 +622,12 @@ class ChatService:
                 len(buffered),
             )
             batch = buffered[:boundary]
+            # 等待中的 stream 只被新消息唤醒：她要等的就是「对方把话说完」，
+            # 没有下文就一直等着——这与真人「等着等着就算了」是同一个行为，
+            # 而不是卡住：任何一条新消息都会解除等待并强制她表态。
+            waiting_at = self._waiting.get(stream_id)
+            if waiting_at is not None and len(buffered) <= waiting_at:
+                continue
             if self._group_batch_in_crossed_settle(batch, now):
                 continue
             if not self.claim_stream(stream_id, 'reply'):
@@ -603,8 +635,10 @@ class ChatService:
             del buffered[:boundary]
             if not buffered:
                 self._buffers.pop(stream_id, None)
+            # 已经等过一次的批次这一轮必须表态；标记在取走批次时消费掉。
+            waited_once = self._waiting.pop(stream_id, None) is not None
             try:
-                await self._start_turn(batch)
+                await self._start_turn(batch, allow_wait=not waited_once)
             except Exception:
                 self._buffers.setdefault(stream_id, [])[:0] = batch
                 self.release_stream(stream_id, 'reply')
@@ -775,8 +809,13 @@ class ChatService:
     async def _start_turn(
         self,
         batch: list[_BufferedMessage],
+        *,
+        allow_wait: bool = False,
     ) -> int:
-        """取一个已持久化的非空消息批次创建并启动回复回合。"""
+        """取一个已持久化的非空消息批次创建并启动回复回合。
+
+        :param allow_wait: 本批是否还能选择「先等等」；已经等过一次时传 False。
+        """
         if not batch:
             raise ValueError('回复批次不能为空')
         last_message = batch[-1]
@@ -939,6 +978,7 @@ class ChatService:
                         batch_gate=batch_gate,
                         sender=sender,
                         render_params=render_params,
+                        allow_wait=allow_wait,
                     )
                     return
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
@@ -1077,7 +1117,6 @@ class ChatService:
                     context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn,
                 )
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
-
             except LlmError as exc:
                 if exc.kind == 'aborted':
                     # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
@@ -1241,6 +1280,8 @@ class ChatService:
             ))
             self._track_background_task(task)
         self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
+        # 只观察不回复的群消息同样推进场景：她对群里的理解不该只在自己开口时才更新。
+        self._schedule_scene_observation(context)
         return message_id
 
     async def describe_inbound_images(
@@ -2338,7 +2379,15 @@ class ChatService:
             if context.relationship_signals_enabled
             else ''
         )
-        schedule_desc = (self._schedule.describe(now, self.current_sleep()) if self._schedule else None)
+        # 时段里的具体活动只在他这轮真的问起时才注入，否则日程只以情绪和作息影响本轮语气。
+        schedule_desc = (
+            self._schedule.describe(
+                now,
+                self.current_sleep(),
+                include_activity=asks_about_activity(query),
+            )
+            if self._schedule else None
+        )
         resumption = self._take_resumption(context.stream.id)
         wm = self.memory.working_memory(
             context.stream.id,
@@ -2414,6 +2463,7 @@ class ChatService:
             render_params=render_params,
             protocol_text=protocol_text,
             emoji_enabled=self._emoji_available(prepared.context),
+            scene=self._scene_for_prompt(prepared.context),
             **self._prompt_config_kwargs(prepared.context.relationship_signals_enabled),
         )
         # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
@@ -2666,15 +2716,25 @@ class ChatService:
         disposition: GateDisposition,
         *,
         cognitive_rounds: int = 0,
+        allow_wait: bool = False,
     ) -> DecisionFrame:
         """按本批消息快照构造回合固定帧，并冻结平台可见产物能力。
 
         :param cognitive_rounds: 本回合的认知轮次预算；只影响首轮动作集，
             后续各轮由 ConversationAgent 按剩余预算重算。shadow 通道传 0：
             它的用途是观察决策口径，不该为此额外付若干次模型往返。
+        :param allow_wait: 本批是否还能「先等等」；已经等过一次的批次传 False，
+            此时 wait 不在动作集里，她必须表态。
+
+        speak（起一个不接任何人的话头）按配置开关进入动作集：它不需要独立触发，
+        只是在已有候选里多一个选项，因此与 reply 共用同一条频率闸门。
         """
+        react_enabled = self._react_available(context)
         capabilities = PlatformCapabilities(
             emoji=self._emoji_available(context),
+            react=react_enabled,
+            available_reactions=REACTION_IDS if react_enabled else (),
+            poke=self._poke_available(context),
         )
         return DecisionFrame(
             turn_id=turn,
@@ -2688,6 +2748,8 @@ class ChatService:
                 disposition,
                 capabilities,
                 cognitive_rounds_left=cognitive_rounds,
+                allow_wait=allow_wait,
+                allow_speak=self._speak_enabled,
             ),
             capabilities=capabilities,
         )
@@ -2722,6 +2784,43 @@ class ChatService:
         return (
             self.memory.emoji_reply_count_since(context.stream.id, since)
             < EMOJI_MAX_PER_REPLY_WINDOW
+        )
+
+    def _react_available(self, context: ConversationContext) -> bool:
+        """判断当前 stream 能否执行 QQ 表情回应。
+
+        三个条件缺一不可：平台是 QQ（只有它有这个协议动作）、会话是群聊（私聊
+        两个人贴表情没有「让别人看见我在回应谁」的意义）、以及配置显式开启。
+
+        默认关闭是有意的：语义反应名到 QQ 表情编号的映射没有逐个真机核对过，
+        贴错表情不会报错、只会显示成另一个表情，属于「不报错的错」。
+
+        **不设独立频率预算**：她要贴表情，先得拿到这一轮候选机会，那已经受门控
+        与 ``max_replies_in_window`` 约束；再加一个窗口常量只会多一组互相牵制的
+        数字，而贴表情本身比发言轻得多。
+
+        :param context: 当前会话上下文。
+        :return: 允许 react 进入动作集时返回 ``True``。
+        """
+        return (
+            context.stream.platform == 'qq'
+            and context.stream.kind == 'group'
+            and self._cfg.group_chat.reactions_enabled
+        )
+
+    def _poke_available(self, context: ConversationContext) -> bool:
+        """判断当前 stream 能否戳一戳。
+
+        条件与表情回应同构（QQ + 群聊 + 配置开关），但**默认关闭**：贴表情是
+        安静的，戳一戳会给对方推送提醒，扰动量级完全不同，该由使用者主动打开。
+
+        :param context: 当前会话上下文。
+        :return: 允许 poke 进入动作集时返回 ``True``。
+        """
+        return (
+            context.stream.platform == 'qq'
+            and context.stream.kind == 'group'
+            and self._cfg.group_chat.pokes_enabled
         )
 
     def _agent_gate_inputs(
@@ -2772,6 +2871,7 @@ class ChatService:
         self,
         frame: DecisionFrame,
         batch: list[_BufferedMessage],
+        context: ConversationContext,
     ) -> str:
         """渲染本回合的动作头协议文本。
 
@@ -2783,10 +2883,11 @@ class ChatService:
         一条」这类描述，整轮按 illegal_action 失败、用户侧表现为她不回话。
 
         :param frame: 本回合固定快照，提供动作空间、可选消息与平台能力。
-        :param batch: 与 ``frame.selectable_message_ids`` 同源的批次消息。
+        :param batch: 与 ``frame.selectable_message_ids`` 同源的批次消息；
+            自主回合没有待接消息，传空列表。
+        :param context: 当前会话上下文；自主回合没有批次可反查，必须显式给出。
         :return: 已注入运行时动作集与目标锚点清单的协议文本。
         """
-        context = batch[-1].context
         return render_action_protocol(
             sorted(frame.available_actions),
             self._selectable_message_previews(batch),
@@ -2794,10 +2895,11 @@ class ChatService:
             emoji_enabled=frame.capabilities.emoji,
             target_person=(
                 self._registry.stream_display_name(context.person.id, context.stream.id)
-                if context.stream.kind == 'group'
+                if context.stream.kind == 'group' and batch
                 else ''
             ),
             cognitive_rounds=self._cognitive_rounds,
+            available_reactions=frame.capabilities.available_reactions,
         )
 
     def _render_agent_messages(
@@ -2920,7 +3022,7 @@ class ChatService:
             frame,
             self._render_prepared_context(
                 prepared,
-                protocol_text=self._render_agent_protocol(frame, batch),
+                protocol_text=self._render_agent_protocol(frame, batch, context),
             ),
         )
         metadata = prompt_metadata(
@@ -2973,6 +3075,7 @@ class ChatService:
         batch_gate: _BatchGate,
         sender: Dict[str, str],
         render_params: dict[str, dict[str, str]],
+        allow_wait: bool = False,
     ) -> None:
         """执行一次 Conversation Agent 调用并处理其结果。
 
@@ -2986,6 +3089,7 @@ class ChatService:
             turn,
             batch_gate.result.disposition,
             cognitive_rounds=self._cognitive_rounds,
+            allow_wait=allow_wait,
         )
         gate_inputs = self._agent_gate_inputs(frame, batch_gate)
         messages = self._render_agent_messages(
@@ -2995,7 +3099,7 @@ class ChatService:
                 cancel_event,
                 render_params,
                 reply_length=None,
-                protocol_text=self._render_agent_protocol(frame, batch),
+                protocol_text=self._render_agent_protocol(frame, batch, context),
             ),
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
@@ -3023,6 +3127,22 @@ class ChatService:
                 assistant_raw.append(text)
             trace.emit('llm_chunk', turnId=turn, text=text, reasoning=chunk.get('reasoning'))
 
+        def on_round(round_outcome: AgentOutcome) -> None:
+            """把认知轮显示到控制台。
+
+            认知轮不产生任何用户可见产物，不渲染的话终端上只会看到「她沉默了
+            十几秒然后说了句话」，中间查了什么完全不可见。
+            """
+            assert round_outcome.decision is not None
+            render_action_decision(
+                turn=turn,
+                agent_scope='live',
+                event_status=round_outcome.event_status,
+                action=round_outcome.decision.action,
+                query=round_outcome.decision.query or '',
+                observation=round_outcome.observation,
+            )
+
         outcome = await self._conversation_agent.run(
             frame,
             messages,
@@ -3043,10 +3163,23 @@ class ChatService:
             cognitive_rounds=self._cognitive_rounds,
             on_events=on_events,
             on_chunk=on_chunk,
+            on_round=on_round,
             signal=cancel_event,
         )
         raw_text = ''.join(assistant_raw)
         trace.emit('llm_final', turnId=turn, text=raw_text)
+        # 终局动作一律先在控制台留一行「她决定做什么、为什么」。此前只有 reply 会
+        # 通过 render_turn 露面，silent / wait / react / poke 全是空白——终端上看不出
+        # 她到底是在思考、在等、还是根本没被叫醒。
+        if outcome.decision is not None:
+            render_action_decision(
+                turn=turn,
+                agent_scope='live',
+                event_status=outcome.event_status,
+                action=outcome.decision.action,
+                reason_codes=outcome.decision.reason_codes,
+                target_message_ids=outcome.decision.target_message_ids,
+            )
         if outcome.event_status == 'silent_by_choice':
             assert outcome.decision is not None
             # silent 只写行动决策事件：不产生助手历史、TTS、事实或观察事件。
@@ -3075,7 +3208,24 @@ class ChatService:
                     'hint': '',
                 })
             return
-        assert outcome.decision is not None and outcome.decision.reply is not None
+        assert outcome.decision is not None
+        if outcome.decision.action == 'wait':
+            self._hold_batch_for_wait(context, batch, turn, outcome)
+            return
+        if outcome.decision.action == 'poke':
+            await self._apply_poke(
+                context, batch, turn, outcome, frame, gate_inputs, batch_gate,
+            )
+            return
+        if outcome.decision.action == 'react':
+            await self._apply_reaction(
+                context, turn, outcome, frame, gate_inputs, batch_gate,
+            )
+            return
+        # speak 与 reply 的产物形态完全相同（正文 + 可选表情包），区别只在有没有
+        # 目标消息，因此共用下面这条持久化与投递路径；_quote_target 对空目标返回
+        # None，speak 自然不会挂引用。
+        assert outcome.decision.reply is not None
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
         visible_markup = (
             ''.join(f'<say>{segment}</say>' for segment in sink.segments)
@@ -3139,6 +3289,222 @@ class ChatService:
             context, REPLIED, f'{len(raw_text)} 字', turn_id=turn,
         )
         asyncio.create_task(self._maybe_summarize(context.stream.id))
+        self._schedule_scene_observation(context)
+
+    def _hold_batch_for_wait(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        turn: int,
+        outcome: AgentOutcome,
+    ) -> None:
+        """把本批消息放回缓冲，等对方把话说完再决定。
+
+        wait 与 silent 的区别是**这批消息算不算处理过**：silent 是「我决定不接
+        这茬」，批次就此消费；wait 是「话还没说完，我先不表态」，批次退回缓冲，
+        下次与新到的消息合并成更大的一批重新判断，她那时能同时接住前因后果。
+
+        三件事必须一起做，少一件都会让等待失效：
+
+        1. **批次放回缓冲头部**——放头部而不是尾部，因为后到的消息本来就更晚，
+           这样合并后仍是时间正序（与 `_tick` 异常回滚路径同一个写法）。
+        2. **累计器加回去**——扩展触发口径在拿到候选时清零了累计，不加回去的话
+           这批退回后再也攒不够条数，她将永远不再看到它们。
+        3. **标记等待**——`_tick` 据此在没有新消息之前不再重开回合，否则轮询
+           周期一到就会把同一批重新问一遍模型。
+
+        没有新消息就一直等下去，这是有意的：她在等一句没有来的话，那就一直没有
+        回应，和真人「等着等着就算了」是同一个行为。任何一条新消息都会解除等待，
+        并且那一轮 wait 已不在动作集里，她必须表态。
+
+        :param context: 当前会话上下文。
+        :param batch: 本轮取走但决定不消费的消息批次。
+        :param turn: 对话回合 ID。
+        :param outcome: 已确认 action 为 wait 的 Agent 结果。
+        副作用：修改消息缓冲、扩展累计器与等待标记；不产生任何用户可见输出。
+        """
+        assert outcome.decision is not None
+        stream_id = context.stream.id
+        buffered = self._buffers.setdefault(stream_id, [])
+        buffered[:0] = batch
+        self._extended_pending[stream_id] = (
+            self._extended_pending.get(stream_id, 0) + len(batch)
+        )
+        self._waiting[stream_id] = len(buffered)
+        self._mark_stage(
+            context, GATED,
+            f'她先等等：{", ".join(outcome.decision.reason_codes)}',
+            turn_id=turn,
+        )
+
+    async def _apply_poke(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        turn: int,
+        outcome: AgentOutcome,
+        frame: DecisionFrame,
+        gate_inputs: GateInputFacts,
+        batch_gate: _BatchGate,
+    ) -> None:
+        """戳一戳目标消息的发送者。
+
+        目标沿用消息编号而不是新开一个「人物编号」目标空间：跨人物选目标那件事
+        还没有解决（人物归属要连带重绑关系与事实），再引入一套目标空间只会让
+        同一个未解问题多一个入口。发送者由消息反查。
+
+        :param context: 当前会话上下文。
+        :param batch: 本回合批次，用于把目标消息反查回发送者。
+        :param turn: 对话回合 ID。
+        :param outcome: 已确认 action 为 poke 的 Agent 结果。
+        :param frame: 本回合固定快照，用于组装投递失败事件。
+        :param gate_inputs: 第 1 层确定性输入事实。
+        :param batch_gate: 本批门控结果。
+
+        :raises RuntimeError: 目标消息不在本批内，或发送者没有该平台身份。
+        :raises DeliveryError: 平台驱动不支持戳一戳或调用失败。
+        副作用：调用平台驱动并写入投递观察事件；失败追加 delivery_failed 事件再上抛。
+        """
+        assert outcome.decision is not None
+        self._mark_stage(context, DISPATCHING, turn_id=turn)
+        try:
+            if self._broker is None:
+                raise RuntimeError('非桌面 stream 未配置 PlatformBroker')
+            target_id = outcome.decision.target_message_ids[0]
+            target = next(
+                (item for item in batch if item.message_id == target_id), None,
+            )
+            if target is None:
+                raise RuntimeError(f'戳一戳目标消息 {target_id} 不在本回合批次内')
+            external_id = next(
+                (
+                    identity.external_id
+                    for identity in self._registry.list_identities(target.context.person.id)
+                    if identity.platform == context.stream.platform
+                ),
+                '',
+            )
+            if not external_id:
+                raise RuntimeError(
+                    f'人物 {target.context.person.id} 没有 {context.stream.platform} 身份，无法戳'
+                )
+            receipt = await self._broker.dispatch_poke(OutboundPoke(
+                stream=context.stream,
+                target_external_id=external_id,
+            ))
+        except Exception as exc:
+            delivery_event = ActionDecisionEvent(
+                turn_id=turn,
+                snapshot_id=frame.snapshot_id,
+                turn_message_watermark=frame.message_watermark,
+                gate_inputs=gate_inputs,
+                gate_disposition=frame.disposition,
+                gate_reason_codes=batch_gate.result.reason_codes,
+                available_actions=tuple(sorted(frame.available_actions)),
+                decision=None,
+                event_status='delivery_failed',
+                detail=str(exc),
+            )
+            trace.emit('action_decision', **delivery_event.to_dict())
+            raise
+        trace.emit(
+            'outbound_delivered',
+            platform=receipt.platform,
+            streamId=receipt.stream_id,
+            turnId=turn,
+        )
+        try:
+            self.persona.apply_turn(
+                context.person.id,
+                current_time(),
+                weight=self._persona_weight(context),
+            )
+        except Exception as exc:
+            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
+        self._mark_stage(context, REPLIED, '戳了一下', turn_id=turn)
+
+    async def _apply_reaction(
+        self,
+        context: ConversationContext,
+        turn: int,
+        outcome: AgentOutcome,
+        frame: DecisionFrame,
+        gate_inputs: GateInputFacts,
+        batch_gate: _BatchGate,
+    ) -> None:
+        """投递一次表情回应，并按与回复相同的口径结算人格。
+
+        表情回应**不写助手历史**：她这一轮没有说任何话，往历史里塞一条伪造的
+        「消息」会污染后续提示词，让她以为自己讲过什么。这一轮的记录是
+        ``action_decision`` 事件本身。
+
+        人格结算沿用回复那一套权重，不为 react 单独发明一个更轻的系数：她确实
+        参与了这一轮，而一轮只允许一个动作，再加一个互相牵制的常量换不来什么。
+
+        :param context: 当前会话上下文。
+        :param turn: 对话回合 ID。
+        :param outcome: 已确认 action 为 react 的 Agent 结果。
+        :param frame: 本回合固定快照，用于组装投递失败事件。
+        :param gate_inputs: 第 1 层确定性输入事实。
+        :param batch_gate: 本批门控结果。
+
+        :raises RuntimeError: 目标消息没有平台编号，或非桌面 stream 未配置 broker。
+        :raises DeliveryError: 平台驱动不支持表情回应或调用失败。
+
+        副作用：调用平台驱动、写入投递观察事件并结算人格；失败时追加一条
+            delivery_failed 行动事件再上抛。
+        """
+        assert outcome.decision is not None and outcome.decision.reaction is not None
+        self._mark_stage(context, DISPATCHING, turn_id=turn)
+        try:
+            if self._broker is None:
+                raise RuntimeError('非桌面 stream 未配置 PlatformBroker')
+            target_id = outcome.decision.target_message_ids[0]
+            external_id = self.memory.external_message_id(context.stream.id, target_id)
+            if not external_id:
+                # 内部 ID 发不出去。历史消息没有回填平台编号时无法回应，如实失败，
+                # 不退化成「改成发条消息」——那是替她改主意。
+                raise RuntimeError(
+                    f'消息 {target_id} 没有平台编号，无法贴表情回应'
+                )
+            receipt = await self._broker.dispatch_reaction(OutboundReaction(
+                stream=context.stream,
+                target_external_message_id=external_id,
+                reaction=outcome.decision.reaction,
+            ))
+        except Exception as exc:
+            delivery_event = ActionDecisionEvent(
+                turn_id=turn,
+                snapshot_id=frame.snapshot_id,
+                turn_message_watermark=frame.message_watermark,
+                gate_inputs=gate_inputs,
+                gate_disposition=frame.disposition,
+                gate_reason_codes=batch_gate.result.reason_codes,
+                available_actions=tuple(sorted(frame.available_actions)),
+                decision=None,
+                event_status='delivery_failed',
+                detail=str(exc),
+            )
+            trace.emit('action_decision', **delivery_event.to_dict())
+            raise
+        trace.emit(
+            'outbound_delivered',
+            platform=receipt.platform,
+            streamId=receipt.stream_id,
+            turnId=turn,
+        )
+        try:
+            self.persona.apply_turn(
+                context.person.id,
+                current_time(),
+                weight=self._persona_weight(context),
+            )
+        except Exception as exc:
+            # 与回复路径同款：人格结算是附加状态，失败不能回滚已经发出的回应。
+            logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
+        self._mark_stage(
+            context, REPLIED, f'贴了个「{outcome.decision.reaction}」', turn_id=turn,
+        )
 
     async def _handle_live_drop(
         self,
@@ -3547,6 +3913,95 @@ class ChatService:
         if delays:
             delays[0] = 0
         return tuple(delays)
+
+    @staticmethod
+    def _scene_key(stream_id: int) -> str:
+        """返回场景画像在 meta 表里的键名。"""
+        return f'scene:{stream_id}'
+
+    def _scene_for_prompt(
+        self,
+        context: ConversationContext,
+    ) -> tuple[str, str] | None:
+        """读取当前 stream 的场景画像，供系统提示词渲染。
+
+        只在群聊注入：私聊与桌面不存在「群里在聊什么」这个问题，那里她面对的
+        就是唯一的对话者。观察关闭时同样返回 None，整块省略。
+
+        :param context: 当前会话上下文。
+        :return: ``(话题, 气氛)``；没有画像、观察关闭或非群聊时返回 ``None``。
+        """
+        if context.stream.kind != 'group' or self._scene_observer is None:
+            return None
+        snapshot = SceneSnapshot.from_dict(
+            self.memory.read_json(self._scene_key(context.stream.id), None)
+        )
+        if snapshot is None:
+            return None
+        return snapshot.topic, snapshot.atmosphere
+
+    def _schedule_scene_observation(self, context: ConversationContext) -> None:
+        """按新增消息条数决定要不要在后台重算场景画像。
+
+        观察**不进对话的等待路径**：它是独立的后台任务，算完写进 meta 表，供之后
+        若干轮直接读。这样她的首字延迟一点不受影响，代价只是画像会稍微旧一点。
+
+        节流只靠「自上次观察以来新增了多少条」一个数：消息来得慢就自然算得少，
+        来得快才算得勤。**不再叠一个最小时间间隔**——两个互相牵制的节流常量正是
+        本项目吃过亏的形态。
+
+        :param context: 当前会话上下文；非群聊或观察关闭时直接返回。
+        副作用：可能创建一个后台任务；同一 stream 已有观察在跑时跳过。
+        """
+        if context.stream.kind != 'group' or self._scene_observer is None:
+            return
+        stream_id = context.stream.id
+        if stream_id in self._observing:
+            return
+        snapshot = SceneSnapshot.from_dict(
+            self.memory.read_json(self._scene_key(stream_id), None)
+        )
+        since = snapshot.observed_message_id if snapshot is not None else 0
+        if self.memory.message_count_after(stream_id, since) < self._scene_refresh_messages:
+            return
+        self._observing.add(stream_id)
+        self._track_background_task(
+            asyncio.create_task(self._run_scene_observation(context))
+        )
+
+    async def _run_scene_observation(self, context: ConversationContext) -> str:
+        """在后台读一段群聊历史并写入新的场景画像。
+
+        :param context: 目标群聊上下文。
+        :return: 便于后台任务追踪的说明字符串。
+        副作用：一次模型调用与一次 meta 表写入；无论成败都释放并发标记。
+            观察失败**只记日志、保留旧画像**——它是附加背景，绝不能影响对话。
+        """
+        stream_id = context.stream.id
+        try:
+            messages = self.memory.working_memory(stream_id, SCENE_WINDOW_MESSAGES)
+            if not messages:
+                return 'scene_observed_empty'
+            lines = [
+                item['content']
+                for item in self._history_for_context(context, messages)
+            ]
+            snapshot = await self._scene_observer.observe(
+                lines, messages[-1].message_id,
+            )
+            self.memory.write_json(self._scene_key(stream_id), snapshot.to_dict())
+            trace.emit(
+                'scene_observed',
+                streamId=stream_id,
+                topic=snapshot.topic,
+                atmosphere=snapshot.atmosphere,
+            )
+            return 'scene_observed'
+        except Exception as exc:
+            logger.warning('scene_observation_failed', streamId=stream_id, error=str(exc))
+            return 'scene_observation_failed'
+        finally:
+            self._observing.discard(stream_id)
 
     async def _maybe_summarize(self, stream_id: int) -> None:
         """在待摘要消息达到阈值时异步生成并保存 episode。

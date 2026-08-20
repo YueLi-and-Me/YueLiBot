@@ -9,9 +9,10 @@
 - 选到**认知动作**（recall / inspect）时本轮结束、回合继续：执行检索、把观察结果
   追加进消息序列，再发起下一轮。认知轮**不放出任何事件**，用户侧完全不可见。
 
-轮次预算不靠异常兜底表达，而是靠动作空间：每轮按剩余认知轮次重算
-``available_actions``，归零时认知动作直接不在集合里，模型再选就撞上既有的动作空间
-校验，记为 ``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径。**
+轮次预算不靠异常兜底表达，而是靠动作空间：调用方给出的动作集是权威的，本模块只在
+预算耗尽时从中**减去**认知动作，模型再选就撞上既有的动作空间校验，记为
+``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径**，也不在这里重算
+动作空间——那份判据只有 ``action_protocol.available_actions`` 一处。
 
 失败语义（event_status 与自主沉默绝不允许混淆）：
 - 正文先于动作头 / 缺失动作头 → parse_error；
@@ -49,7 +50,6 @@ from .action_protocol import (
     GateInputFacts,
     IllegalActionError,
     ReplyLength,
-    available_actions,
 )
 from .cognition import (
     OBSERVATION_EVENT_MAX_CHARS,
@@ -214,6 +214,7 @@ class ConversationAgent:
         cognitive_rounds: int = 0,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None = None,
         on_chunk: Callable[[dict[str, Any]], None] | None = None,
+        on_round: Callable[[AgentOutcome], None] | None = None,
         signal: asyncio.Event | None = None,
     ) -> AgentOutcome:
         """执行一个回合：若干认知轮之后给出终局动作，并逐轮落账。
@@ -235,6 +236,10 @@ class ConversationAgent:
         :param on_events: 动作头校验通过后逐批接收正文与副作用事件的回调；
             省略时事件聚合到返回结果中，适合测试与重放。**认知轮不会调用它。**
         :param on_chunk: 可选的原生分片回调，供调用方转发流式观测事件。
+        :param on_round: 可选的逐轮回调，每个**认知轮**结束后以该轮结果调用一次；
+            终局轮不调用（调用方本来就拿得到返回值）。它的用途是让调用方把中间
+            过程展示出来——认知轮不产生任何用户可见产物，没有这个钩子就只能从
+            事件账本里事后翻，终端上完全看不到她查过什么。
         :param signal: 可选的取消事件，透传给模型提供方，跨轮持续有效。
 
         :return: 携带终局决策、事件状态与完整审计事件的 AgentOutcome。
@@ -253,12 +258,14 @@ class ConversationAgent:
         working_messages = list(messages)
         round_index = 0
         while True:
-            round_frame = frame.with_available_actions(
-                available_actions(
-                    frame.stream_kind,
-                    frame.disposition,
-                    frame.capabilities,
-                    cognitive_rounds_left=rounds_left,
+            # 调用方给的动作集是权威的：它已经按 stream、门控态、平台能力与初始
+            # 预算算过一次。Agent 唯一多知道的事情是「还剩几轮」，因此这里只做减法，
+            # 绝不重算——重算等于把动作空间判据抄第二份，两份迟早会不一致。
+            round_frame = (
+                frame
+                if rounds_left > 0
+                else frame.with_available_actions(
+                    frame.available_actions - COGNITIVE_ACTIONS
                 )
             )
             outcome = await self._run_round(
@@ -281,6 +288,8 @@ class ConversationAgent:
             if outcome.event_status != 'cognitive_step':
                 return outcome
             assert outcome.decision is not None and outcome.decision.query is not None
+            if on_round is not None:
+                on_round(outcome)
             rounds_left -= 1
             round_index += 1
             working_messages.extend(
@@ -490,6 +499,7 @@ class ConversationAgent:
             reason_codes=reason_codes,
             length=_parse_length(event.length),
             query=event.query,
+            reaction=event.reaction.strip() if event.reaction is not None else None,
         )
         head.validate(frame)
         return head
