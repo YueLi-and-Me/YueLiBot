@@ -466,7 +466,10 @@ class ConversationAgent:
                         if settled is not None:
                             status, decision, observation = settled
                             return finish()
-                        planned_head = head
+                        if head.action in SPEAKING_ACTIONS:
+                            # 工具调用只携带动作头；只有真正需要正文的动作才交给
+                            # replyer。react / poke / wait 已经是完整终局动作。
+                            planned_head = head
                         break
                     text = chunk.get('text')
                     if not text:
