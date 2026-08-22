@@ -1,9 +1,8 @@
 /**
  * 模型与厂商工作台页面。
  *
- * 参考 MaiBot 模型管理的双区布局：左侧厂商列表负责过滤，右侧表格维护模型；
- * 「功能分配」页给每个任务按优先级指定候选模型。配置写入 providers.toml /
- * models.toml，保存后重启后端生效。
+ * 左侧厂商列表负责过滤，右侧表格维护模型；「功能分配」页给每个任务按优先级
+ * 指定候选模型。配置写入 providers.toml / models.toml，保存后重启后端生效。
  */
 import {
   Check,
@@ -174,6 +173,19 @@ function emptyModel(): ModelConfig {
     price_out: 0,
     embedding_dim: 0,
   }
+}
+
+/** 返回模型思考参数的显式状态；未配置时沿用服务商默认行为。 */
+function modelThinkingState(model: ModelConfig): 'default' | 'enabled' | 'disabled' {
+  const value = model.extra_body.enable_thinking
+  if (value === true) return 'enabled'
+  if (value === false) return 'disabled'
+  return 'default'
+}
+
+/** 更新思考开关，同时保留用户填写的其它 extra_body 厂商参数。 */
+function withModelThinking(model: ModelConfig, enabled: boolean): ModelConfig['extra_body'] {
+  return { ...model.extra_body, enable_thinking: enabled }
 }
 
 /** 渲染模型设置与功能分配两个标签页。 */
@@ -740,6 +752,7 @@ export function ModelConfigPage() {
                         <th className="px-3 py-2.5 font-medium">模型标识符</th>
                         <th className="px-3 py-2.5 font-medium">提供商</th>
                         <th className="px-3 py-2.5 font-medium">视觉</th>
+                        <th className="px-3 py-2.5 font-medium">思考</th>
                         <th className="px-3 py-2.5 font-medium">温度</th>
                         <th className="px-3 py-2.5 font-medium">输入价格</th>
                         <th className="px-3 py-2.5 font-medium">输出价格</th>
@@ -749,7 +762,7 @@ export function ModelConfigPage() {
                     <tbody>
                       {visibleModels.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                          <td colSpan={10} className="px-4 py-10 text-center text-sm text-muted-foreground">
                             {draft.models.length === 0
                               ? '暂无模型配置，点击「添加模型」或先「拉取模型」'
                               : '当前筛选条件下没有模型'}
@@ -765,6 +778,8 @@ export function ModelConfigPage() {
                         const usage = usedTasks(model.name)
                         const usageLabel = usage.map((task) => `${taskLabel(task)}（${task}）`)
                         const invalid = !model.name.trim() || !model.api_provider.trim()
+                        const thinkingState = modelThinkingState(model)
+                        const thinkingEnabled = thinkingState !== 'disabled'
                         return (
                           <tr
                             key={`${model.name || 'unnamed'}-${actualIndex}-${index}`}
@@ -790,6 +805,15 @@ export function ModelConfigPage() {
                                 title={model.visual ? '已启用视觉' : '未启用视觉'}
                                 aria-label={model.visual ? '已启用视觉' : '未启用视觉'}
                               />
+                            </td>
+                            <td className="px-3 py-2.5 text-center">
+                              {thinkingState === 'default' ? (
+                                <span className="text-xs text-muted-foreground">默认</span>
+                              ) : (
+                                <span className={thinkingEnabled ? 'text-xs text-primary' : 'text-xs text-muted-foreground'}>
+                                  {thinkingEnabled ? '开启' : '关闭'}
+                                </span>
+                              )}
                             </td>
                             <td className="px-3 py-2.5 text-center">
                               {model.temperature !== null ? model.temperature : <span className="text-muted-foreground">-</span>}
@@ -1152,7 +1176,7 @@ function ProviderDialog({
 }
 
 
-/** 模型编辑弹窗：按 MaiBot 模型对话框的字段顺序与校验逻辑移植。 */
+/** 模型编辑弹窗：集中维护模型标识、能力、生成参数与厂商请求参数。 */
 function ModelDialog({
   model,
   index,
@@ -1195,6 +1219,8 @@ function ModelDialog({
   const visibleRemoteModels = remoteModels.filter((item) =>
     `${item.id} ${item.name}`.toLowerCase().includes(identifierSearch.trim().toLowerCase()),
   )
+  const thinkingState = modelThinkingState(form)
+  const thinkingEnabled = thinkingState !== 'disabled'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="添加模型">
@@ -1288,7 +1314,18 @@ function ModelDialog({
               {errors.model_identifier ? <p role="alert" className="text-xs text-destructive">{errors.model_identifier}</p> : null}
             </Field>
 
-            <Toggle checked={form.visual} onChange={(checked) => updateForm({ visual: checked })} label="启用视觉" />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="视觉能力" help="开启后，这个模型可以被分配给图片理解和屏幕视觉任务。">
+                <Toggle checked={form.visual} onChange={(checked) => updateForm({ visual: checked })} label={form.visual ? '已开启视觉' : '未开启视觉'} />
+              </Field>
+              <Field label="思考模式" help="控制请求体中的 enable_thinking；未显式设置时沿用模型默认行为。">
+                <Toggle
+                  checked={thinkingEnabled}
+                  onChange={(checked) => updateForm({ extra_body: withModelThinking(form, checked) })}
+                  label={thinkingState === 'default' ? '模型默认（点击关闭）' : thinkingEnabled ? '开启思考' : '关闭思考'}
+                />
+              </Field>
+            </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="输入价格 (¥/M token)" htmlFor="model-price-in">
@@ -1317,11 +1354,11 @@ function ModelDialog({
                   <Field label="模型级最大 token" help="留空表示继承任务配置。">
                     <Input type="number" min={1} value={form.max_tokens ?? ''} onChange={(event) => updateForm({ max_tokens: event.target.value === '' ? null : Number(event.target.value) })} placeholder="继承任务配置" />
                   </Field>
-                  <Field label="思考解析" help="选择如何解析模型返回的思考内容。">
+                  <Field label="思考内容解析" help="这里只决定怎样读取模型已经返回的思考内容，不会开启或关闭模型思考。">
                     <Select value={form.reasoning_parse_mode} onChange={(event) => updateForm({ reasoning_parse_mode: event.target.value as ModelConfig['reasoning_parse_mode'] })}>
-                      <option value="field">解析思考字段（开启）</option>
-                      <option value="tag">解析 think 标签（开启）</option>
-                      <option value="none">不解析思考（关闭）</option>
+                      <option value="field">解析思考字段（field）</option>
+                      <option value="tag">解析 think 标签（tag）</option>
+                      <option value="none">不解析思考内容（none）</option>
                     </Select>
                   </Field>
                   <Field label="Embedding 维度" help="仅嵌入模型需要填写。">

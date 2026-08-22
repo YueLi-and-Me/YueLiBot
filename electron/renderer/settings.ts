@@ -146,6 +146,26 @@ function selectField(
 }
 
 /**
+ * 创建动态配置使用的复选开关。
+ *
+ * @param label 开关右侧的中文说明。
+ * @param checked 初始开关状态。
+ * @param onChange 状态变化回调。
+ * @returns 已绑定变化事件的标签与复选框组合。
+ */
+function checkboxField(
+  label: string,
+  checked: boolean,
+  onChange: (checked: boolean) => void,
+): HTMLElement {
+  const input = el('input')
+  input.type = 'checkbox'
+  input.checked = checked
+  input.addEventListener('change', () => onChange(input.checked))
+  return el('label', 'field checkbox-field', input, el('span', '', label))
+}
+
+/**
  * 创建不提交表单的图标按钮。
  *
  * @param label 按钮显示文本或符号。
@@ -334,6 +354,13 @@ function renderModel(cfg: YueliConfig, model: ModelDefinitionConfig, index: numb
     '所属服务商', model.api_provider,
     cfg.api_providers.map((provider) => [provider.name, provider.name || '（未命名）']),
     (value) => { model.api_provider = value },
+  ))
+  card.append(checkboxField(
+    '启用思考（未显式配置时沿用模型默认行为）',
+    model.extra_body.enable_thinking !== false,
+    (checked) => {
+      model.extra_body = { ...model.extra_body, enable_thinking: checked }
+    },
   ))
 
   const advanced = el('details', 'advanced-fields')
