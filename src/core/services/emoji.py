@@ -335,14 +335,23 @@ class EmojiLibrary:
             return None
 
         query_vec = await self._embed_tags(query)
-        if query_vec is not None and self._embed_client is not None:
-            expected_bytes = self._embed_client.dim * 4
+        if query_vec is not None:
+            # 【关键】维度必须从查询向量的实际字节数推导，不能读配置的
+            # embedding_dim（float32 每分量 4 字节，与事实召回 store 侧同口径）。
+            #
+            # 原因：
+            # 1. 配置未填 embedding_dim 时该值为 0，按配置推导会把库内全部向量
+            #    当作维度不符跳过，语义排序永远为空，检索静默退化为字面子串匹配，
+            #    现场表现为模型写了 <emoji> 却几乎发不出、且无任何报错。
+            # 2. 库内残留其它维度的历史向量时，按查询长度逐条过滤只会跳过不匹配
+            #    的记录，不会拖垮整批候选。
+            dim = len(query_vec) // 4
             ranked: list[tuple[float, EmojiSelection]] = []
             for send_ref, _tags, vector, sub_type in rows:
-                if not isinstance(vector, bytes) or len(vector) != expected_bytes:
+                if not isinstance(vector, bytes) or len(vector) != len(query_vec):
                     continue
                 ranked.append((
-                    _cosine_similarity(query_vec, vector, self._embed_client.dim),
+                    _cosine_similarity(query_vec, vector, dim),
                     EmojiSelection(
                         send_ref=str(send_ref),
                         sub_type=_validate_emoji_sub_type(sub_type),
