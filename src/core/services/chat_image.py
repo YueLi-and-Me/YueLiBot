@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Protocol, Sequence
@@ -424,13 +425,15 @@ class ChatImageDescriber:
             )
             bind_render_params({})
             raw = ''
-            async for chunk in self._provider.stream(
+            stream = self._provider.stream(
                 messages=[{'role': 'user', 'content': content}],
                 temperature=generation.temperature,
                 max_tokens=generation.token_limit,
-            ):
-                if chunk.get('text'):
-                    raw += chunk['text']
+            )
+            async with aclosing(stream) as model_stream:
+                async for chunk in model_stream:
+                    if chunk.get('text'):
+                        raw += chunk['text']
             description = raw.strip()
             if description:
                 return description

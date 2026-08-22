@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Sequence, TypeVar
 import asyncio
 import random
@@ -377,7 +378,7 @@ class ModelRouter:
         # 在这里落盘才能保证新增一级 Agent 时不必再记得补一次观测。
         exchange = _ExchangeRecord(task=self.task)
         try:
-            async for chunk in self._stream_candidates(
+            candidates = self._stream_candidates(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -385,9 +386,13 @@ class ModelRouter:
                 response_format=response_format,
                 tools=tools,
                 exchange=exchange,
-            ):
-                exchange.observe(chunk)
-                yield chunk
+            )
+            # 上层会在动作头完整、图片截止或用户中断时提前关闭路由流；这里必须
+            # 同步把关闭信号传给候选循环，不能等异步生成器被 GC 回收。
+            async with aclosing(candidates) as candidate_stream:
+                async for chunk in candidate_stream:
+                    exchange.observe(chunk)
+                    yield chunk
         except LlmError as exc:
             exchange.fail(exc.kind, str(exc))
             raise
@@ -450,38 +455,41 @@ class ModelRouter:
                     signal,
                     **options,
                 )
-                iterator = chunks.__aiter__()
-                started = time.monotonic()
-                try:
-                    # 任务级首字窗口包含下层内部重试，窗口耗尽会在重试跑满前切换候选。
-                    async with asyncio.timeout(self._first_token_timeout_ms / 1_000):
-                        first_chunk = await anext(iterator)
-                except StopAsyncIteration:
+                # 候选切换、首字超时和上层提前结束都会离开本块；aclosing 保证
+                # 当前 provider 的 HTTP 流在继续尝试或返回前已经释放。
+                async with aclosing(chunks) as candidate_stream:
+                    iterator = candidate_stream.__aiter__()
+                    started = time.monotonic()
+                    try:
+                        # 任务级首字窗口包含下层内部重试，窗口耗尽会在重试跑满前切换候选。
+                        async with asyncio.timeout(self._first_token_timeout_ms / 1_000):
+                            first_chunk = await anext(iterator)
+                    except StopAsyncIteration:
+                        self._health.recover(candidate.provider)
+                        return
+                    except TimeoutError as exc:
+                        raise LlmError(
+                            'timeout',
+                            f'等待首字超过 {self._first_token_timeout_ms} 毫秒',
+                        ) from exc
+
+                    elapsed_ms = int((time.monotonic() - started) * 1_000)
+                    exchange.first_token(elapsed_ms)
+                    if self._slow_threshold_ms and elapsed_ms >= self._slow_threshold_ms:
+                        emit(
+                            'llm_slow',
+                            task=self.task,
+                            model=candidate.name,
+                            provider=candidate.provider,
+                            elapsedMs=elapsed_ms,
+                        )
+                    yielded = True
+                    yield first_chunk
+                    async for chunk in iterator:
+                        yielded = True
+                        yield chunk
                     self._health.recover(candidate.provider)
                     return
-                except TimeoutError as exc:
-                    raise LlmError(
-                        'timeout',
-                        f'等待首字超过 {self._first_token_timeout_ms} 毫秒',
-                    ) from exc
-
-                elapsed_ms = int((time.monotonic() - started) * 1_000)
-                exchange.first_token(elapsed_ms)
-                if self._slow_threshold_ms and elapsed_ms >= self._slow_threshold_ms:
-                    emit(
-                        'llm_slow',
-                        task=self.task,
-                        model=candidate.name,
-                        provider=candidate.provider,
-                        elapsedMs=elapsed_ms,
-                    )
-                yielded = True
-                yield first_chunk
-                async for chunk in iterator:
-                    yielded = True
-                    yield chunk
-                self._health.recover(candidate.provider)
-                return
             except LlmError as exc:
                 # 用户主动打断不属于服务商故障，不记录为失败，也不切换到备用服务商。
                 if exc.kind != 'aborted':

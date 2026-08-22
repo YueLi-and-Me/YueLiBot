@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from typing import Any, AsyncIterator, Literal
 from urllib.parse import urlencode
 import asyncio
@@ -314,9 +315,12 @@ class OpenAiChatProvider:
                         response_format,
                         tools,
                     )
-                async for chunk in chunks:
-                    yielded_content = True
-                    yield chunk
+                # 路由层可能在动作已定或任务截止时提前关闭本层；显式持有内部
+                # 单次请求流，确保关闭能一路传到 httpx 响应。
+                async with aclosing(chunks) as request_stream:
+                    async for chunk in request_stream:
+                        yielded_content = True
+                        yield chunk
                 return
             except LlmError as exc:
                 retryable = exc.kind in ('network', 'quota')
@@ -352,15 +356,17 @@ class OpenAiChatProvider:
         :raises LlmError: 网络、HTTP、服务端或取消错误。
         副作用：发起一次 HTTP 流式请求。
         """
-        async for chunk in self._stream_http(
+        stream = self._stream_http(
             messages,
             temperature,
             max_tokens,
             signal,
             None,
             tools,
-        ):
-            yield chunk
+        )
+        async with aclosing(stream) as http_stream:
+            async for chunk in http_stream:
+                yield chunk
 
     async def _stream_once_structured(
         self,
@@ -385,15 +391,17 @@ class OpenAiChatProvider:
         """
         if response_format != {'type': 'json_object'}:
             raise ValueError(f'不支持的结构化输出格式：{response_format!r}')
-        async for chunk in self._stream_http(
+        stream = self._stream_http(
             messages,
             temperature,
             max_tokens,
             signal,
             response_format,
             tools,
-        ):
-            yield chunk
+        )
+        async with aclosing(stream) as http_stream:
+            async for chunk in http_stream:
+                yield chunk
 
     async def _stream_http(
         self,
