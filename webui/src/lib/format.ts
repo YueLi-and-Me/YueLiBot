@@ -141,6 +141,7 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   attention_filtered: '未进入注意范围',
   away: '暂时离开',
   backfill: '历史补全',
+  billing: '余额不足',
   bot_sleeping: '机器人正在睡觉',
   brief: '简短',
   browsing: '浏览网页',

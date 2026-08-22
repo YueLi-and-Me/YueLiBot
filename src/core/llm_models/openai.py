@@ -29,7 +29,8 @@ ReasoningParseMode = Literal['field', 'tag', 'none']
 class LlmError(Exception):
     """表示模型请求失败及其可供路由层判断的错误类别。
 
-    :ivar kind: 错误类别，例如 `auth`、`quota`、`network`、`timeout` 或 `aborted`。
+    :ivar kind: 错误类别，例如 `auth`、`billing`、`quota`、`network`、`timeout`
+        或 `aborted`。
     :ivar detail: 可选的原始错误详情，默认值为空字符串。
     """
 
@@ -42,7 +43,7 @@ class LlmError(Exception):
         副作用：初始化异常属性，不执行网络操作。
         """
         super().__init__(message)
-        self.kind = kind   # auth | quota | model | network | timeout | blocked | aborted | unknown
+        self.kind = kind   # auth | billing | quota | model | network | timeout | blocked | aborted | unknown
         self.detail = detail
 
 
@@ -53,6 +54,7 @@ class LlmError(Exception):
 # 照着做的话，日志与失败面板共用同一份措辞，避免两处各写一套说法。
 LLM_ERROR_HINTS: dict[str, str] = {
     'auth': '鉴权没过：API Key 无效或过期，也可能是这个 Key 没有该模型的权限',
+    'billing': '账户余额不足：请充值，或从任务候选中移除这个服务商的模型',
     'quota': '额度或频率受限：余额不足、免费额度用尽，或撞上服务商限流',
     'model': '模型不可用：模型名在该服务商不存在，或渠道没开通',
     'network': '网络不通：连不上服务商，先看代理和 base_url',
@@ -87,10 +89,11 @@ def _classify_status(status: int) -> str:
     """根据 HTTP 状态码归类模型请求错误。
 
     :param status: 模型接口返回的 HTTP 状态码。
-    :return: `auth`、`quota`、`model`、`network` 或 `unknown` 类别。
+    :return: `auth`、`billing`、`quota`、`model`、`network` 或 `unknown` 类别。
     副作用：不访问网络。
     """
     if status in (401, 403): return 'auth'
+    if status == 402: return 'billing'
     if status == 429: return 'quota'
     if status == 404: return 'model'
     if status >= 500: return 'network'

@@ -374,6 +374,7 @@ VALUE_LABELS: Dict[str, str] = {
     "work": "处理工作",
     "assistant": "机器人",
     "awake": "清醒",
+    "billing": "余额不足",
     "attention_filtered": "未进入注意范围",
     "frequency_budget": "发言频率攒够候选",
     "frequency_wait": "发言频率未攒够",
