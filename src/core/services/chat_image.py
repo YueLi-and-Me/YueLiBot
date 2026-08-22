@@ -29,8 +29,10 @@ from src.core.prompts.registry import get_prompt, prompt_metadata
 
 logger = get_logger(__name__)
 
-# 单张图片识别的截止时间，避免聊天图片拖慢回合上下文构建。
-IMAGE_DESCRIPTION_DEADLINE_S = 8.0
+# 单张图片识别至少保留的总截止时间；实际值还必须覆盖视觉路由的首字窗口。
+MIN_IMAGE_DESCRIPTION_DEADLINE_S = 8.0
+# 首字到达后只需生成一段短描述，额外留出收尾时间，同时继续约束挂起的响应流。
+IMAGE_DESCRIPTION_COMPLETION_GRACE_S = 5.0
 # 图片来源下载截止时间；来源不可达时保留占位符，不让后台任务永久挂起。
 IMAGE_DOWNLOAD_TIMEOUT_S = 10.0
 # 聊天图片通常远小于屏幕截图，但仍设置上限防止异常文件占满内存。
@@ -139,6 +141,14 @@ class ChatImageDescriber:
         """
         self._cfg = cfg
         self._provider = provider
+        # 视觉 Router 自己负责首字超时与候选切换；图片服务的总截止如果更短，
+        # 会在 Router 形成 timeout 记录之前直接取消请求，使配置中的首字窗口失效。
+        # 总截止至少覆盖一个完整首字窗口，再给短描述留出固定收尾时间。
+        configured_first_token_s = cfg.routing.vision.first_token_timeout_ms / 1_000
+        self._description_deadline_s = max(
+            MIN_IMAGE_DESCRIPTION_DEADLINE_S,
+            configured_first_token_s + IMAGE_DESCRIPTION_COMPLETION_GRACE_S,
+        )
         self._cache: dict[tuple[str, str], str] = {}
         self._pending: dict[tuple[str, str], asyncio.Task[str | None]] = {}
         self._protocol_error: str | None = None
@@ -281,8 +291,8 @@ class ChatImageDescriber:
                 logger.warning('chat_image_source_failed', error=str(exc))
                 return None
 
-        # 一条消息内的多张图共用同一个短超时客户端并发下载，避免串行
-        # 8s/10s 累加，也不把连接挂在进程级客户端上影响其它请求。
+        # 一条消息内的多张图共用同一个短超时客户端并发下载，避免描述与下载
+        # 截止时间串行累加，也不把连接挂在进程级客户端上影响其它请求。
         async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as http:
             return list(await asyncio.gather(
                 *(_describe_one(source, http) for source in sources)
@@ -360,14 +370,14 @@ class ChatImageDescriber:
             trace.emit('image_description', result='skipped', hash=digest, error=self._protocol_error)
             return None
         try:
-            description = await asyncio.wait_for(
-                self._call_model(image_bytes, media_type, prompt_id),
-                timeout=IMAGE_DESCRIPTION_DEADLINE_S,
-            )
-        except asyncio.TimeoutError:
+            # 在当前图片任务内施加截止时间，避免 wait_for 再创建一层取消任务；
+            # 超时会沿同一调用栈关闭路由与 HTTP 流。
+            async with asyncio.timeout(self._description_deadline_s):
+                description = await self._call_model(image_bytes, media_type, prompt_id)
+        except TimeoutError:
             logger.warning(
                 'chat_image_description_timeout',
-                seconds=IMAGE_DESCRIPTION_DEADLINE_S,
+                seconds=self._description_deadline_s,
                 hash=digest,
             )
             trace.emit('image_description', result='timeout', hash=digest)
