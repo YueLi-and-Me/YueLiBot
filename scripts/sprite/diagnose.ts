@@ -12,6 +12,15 @@ import { createProvider, setupProxy } from './providers/index.ts'
 
 const BASE = (process.env.GEMINI_BASE_URL?.trim() || 'https://generativelanguage.googleapis.com').replace(/\/+$/, '')
 
+/** 诊断脚本只允许向 HTTPS 端点发起请求，拒绝其它协议的目标。 */
+function httpsEndpointOf(pathAndQuery: string): URL {
+  const parsed = new URL(`${BASE}${pathAndQuery}`)
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`诊断目标必须是 HTTPS，收到 ${parsed.protocol}//${parsed.host}`)
+  }
+  return parsed
+}
+
 interface ModelInfo {
   name?: string
   supportedGenerationMethods?: string[]
@@ -66,7 +75,7 @@ async function main() {
   // 2. Key 有效性
   let models: ModelInfo[] = []
   const keyOk = await step('[2/3] Key 有效性（ListModels）', async () => {
-    const res = await fetch(`${BASE}/v1beta/models?pageSize=200`, {
+    const res = await fetch(httpsEndpointOf('/v1beta/models?pageSize=200'), {
       headers: { 'x-goog-api-key': key },
       signal: AbortSignal.timeout(30_000),
     })
