@@ -11,7 +11,7 @@
  * 单独验证进程和就绪信号处理。
  */
 
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
@@ -21,6 +21,35 @@ import { join } from 'node:path'
 interface BackendConnection {
   port: number
   token: string
+}
+
+/** 结束一个子进程及其整棵进程树。
+
+ * Windows 上优先 taskkill /T；taskkill 偶尔迟迟不返回，不能让已知的 Python
+ * 父进程一直活着阻塞 Electron 退出，因此保留 2 秒后的直接终止兜底。
+ * execFile 永不经由 shell 解释参数；pid 值先通过纯数字校验再进入参数表，
+ * 杜绝被目标程序解释为选项前缀的可能，异常形态直接走直杀兜底。
+ *
+ * @param target 要结束的子进程。
+ * @sideEffects 启动 taskkill 子进程或直接终止目标进程。
+ */
+function stopProcessTree(target: ChildProcess): void {
+  const directKill = () => {
+    if (target.exitCode === null) target.kill()
+  }
+  const pidText = String(target.pid ?? '')
+  if (process.platform !== 'win32' || !/^\d+$/.test(pidText)) {
+    directKill()
+    return
+  }
+  const fallback = setTimeout(directKill, 2_000)
+  const taskkill = execFile('taskkill', ['/T', '/F', '/pid', pidText], () => {})
+  const finish = () => {
+    clearTimeout(fallback)
+    directKill()
+  }
+  taskkill.on('error', finish)
+  taskkill.on('close', finish)
 }
 
 function terminalDisplayWidth(text: string): number {
@@ -341,25 +370,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     if (!child || child.exitCode !== null) return
     // Windows 没有真正的 SIGTERM；Node 会退化成 TerminateProcess，
     // 但 uvicorn 若已经 fork 出 reloader 子进程就会留孤儿。
-    // 优先用 taskkill /T 杀整棵树；Windows 的 taskkill 偶尔会迟迟不返回，
-    // 不能让已知的 Python 父进程一直活着阻塞 Electron 退出，所以保留直接终止兜底。
-    if (process.platform === 'win32' && child.pid) {
-      const terminateDirectly = () => {
-        if (child.exitCode === null) child.kill()
-      }
-      const fallback = setTimeout(terminateDirectly, 2_000)
-      const taskkill = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-        stdio: 'ignore',
-      })
-      const finish = () => {
-        clearTimeout(fallback)
-        terminateDirectly()
-      }
-      taskkill.on('error', finish)
-      taskkill.on('close', finish)
-    } else {
-      child.kill('SIGTERM')
-    }
+    stopProcessTree(child)
   }
 
   /**
@@ -585,23 +596,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
       this.adapter = null
       return
     }
-    if (process.platform === 'win32' && adapter.pid) {
-      const terminateDirectly = () => {
-        if (adapter.exitCode === null) adapter.kill()
-      }
-      const fallback = setTimeout(terminateDirectly, 2_000)
-      const taskkill = spawn('taskkill', ['/pid', String(adapter.pid), '/T', '/F'], {
-        stdio: 'ignore',
-      })
-      const finish = () => {
-        clearTimeout(fallback)
-        terminateDirectly()
-      }
-      taskkill.on('error', finish)
-      taskkill.on('close', finish)
-    } else {
-      adapter.kill('SIGTERM')
-    }
+    stopProcessTree(adapter)
   }
 
   /**
