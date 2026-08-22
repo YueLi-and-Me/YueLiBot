@@ -4663,6 +4663,16 @@ class ChatService:
                         streamId=context.stream.id,
                         emotion=event.emotion,
                     )
+                else:
+                    # 落空此前完全静默：模型写了 <emoji> 但检索没有可用候选时，
+                    # 终端与观察面板都看不到任何痕迹，现场只能表现为「发不出」。
+                    # 这里留一条与命中对称的事件，便于区分「没写」和「写了没中」。
+                    trace.emit(
+                        'emoji_selection_missed',
+                        turnId=sink.turn,
+                        streamId=context.stream.id,
+                        emotion=event.emotion,
+                    )
             self._handle_side_effects(
                 context, event, sink.now, sink.turn, sink.side_effects, sink.source_text,
             )

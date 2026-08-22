@@ -11,6 +11,7 @@ import type { ObservabilityStream, TraceEntry } from '../../../electron/shared/i
 const TRACE_KIND_LABELS: Record<string, string> = {
   action_decision: '行动决策',
   emoji_selected: '选择表情包',
+  emoji_selection_missed: '表情包未命中库',
   expression_select: '表达方式选择',
   foreground: '前台活动变化',
   image_description: '图片理解',
