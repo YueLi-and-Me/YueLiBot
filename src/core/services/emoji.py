@@ -158,6 +158,31 @@ class EmojiLibrary:
         row = self._db.execute('SELECT 1 FROM emoji LIMIT 1').fetchone()
         return row is not None
 
+    def frequent_tags(self, limit: int = 12) -> tuple[str, ...]:
+        """统计覆盖表情最多的情绪标签，供提示词锚定 emotion 词表。
+
+        模型自拟的情绪词与视觉标注的标签词表天然存在偏差，把库内高频标签
+        回填进提示词可以显著提高检索命中率；词表保持小规模，避免挤占
+        协议文本的注意力。
+
+        :param limit: 返回的最大标签数，必须大于零。
+        :return: 按覆盖表情数降序、同数按字典序排列的前若干标签；库为空时
+            返回空元组。
+        :raises ValueError: limit 非正数。
+        副作用：只读 emoji 表，不修改任何记录。
+        """
+
+        if limit < 1:
+            raise ValueError('表情包高频标签 limit 必须大于零')
+        counts: dict[str, int] = {}
+        for (tags,) in self._db.execute('SELECT emotion_tags FROM emoji'):
+            for tag in str(tags).split(','):
+                tag = tag.strip()
+                if tag:
+                    counts[tag] = counts.get(tag, 0) + 1
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return tuple(tag for tag, _count in ranked[:limit])
+
     async def auto_register_directory(
         self,
         describer: EmojiDescriptionProvider,

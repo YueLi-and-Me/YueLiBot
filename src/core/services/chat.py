@@ -3125,9 +3125,11 @@ class ChatService:
                 *history,
             ]
 
+        emoji_enabled = self._emoji_available(prepared.context)
         system = build_system_prompt(
             protocol_text=protocol_text,
-            emoji_enabled=self._emoji_available(prepared.context),
+            emoji_enabled=emoji_enabled,
+            emoji_tags=self._emoji_prompt_tags(emoji_enabled),
             **shared_context,
         )
         # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
@@ -3456,6 +3458,19 @@ class ChatService:
             < EMOJI_MAX_PER_REPLY_WINDOW
         )
 
+    def _emoji_prompt_tags(self, enabled: bool) -> tuple[str, ...]:
+        """表情包可用时取库内高频情绪标签，供协议锚定 emotion 用词。
+
+        :param enabled: ``_emoji_available`` 的判定结果；不可用时返回空元组，
+            规则文本随之退回自由措辞口径。
+        :return: 覆盖表情最多的前若干标签。
+        副作用：只读 emoji 表。
+        """
+
+        if not enabled or self._emoji_library is None:
+            return ()
+        return self._emoji_library.frequent_tags()
+
     def _react_available(self, context: ConversationContext) -> bool:
         """判断当前 stream 能否执行 QQ 表情回应。
 
@@ -3578,6 +3593,7 @@ class ChatService:
             self._selectable_message_previews(batch),
             quote_supported=frame.capabilities.quote,
             emoji_enabled=frame.capabilities.emoji,
+            emoji_tags=self._emoji_prompt_tags(frame.capabilities.emoji),
             target_person=target_person,
             cognitive_rounds=self._cognitive_rounds,
             available_reactions=frame.capabilities.available_reactions,
@@ -3775,6 +3791,7 @@ class ChatService:
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
+                emoji_tags=self._emoji_prompt_tags(frame.capabilities.emoji),
             )
             replyer_context = self._render_prepared_context(
                 prepared,
@@ -4053,6 +4070,7 @@ class ChatService:
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
+                emoji_tags=self._emoji_prompt_tags(frame.capabilities.emoji),
             )
             replyer_context = await self._enrich_prepared_context(
                 prepared,
