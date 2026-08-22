@@ -46,7 +46,7 @@ export interface ModelConfig {
 /** 一个模型任务的路由配置。 */
 export interface TaskConfig {
   model_list: string[]
-  selection_strategy: 'sequential' | 'random'
+  selection_strategy: 'sequential' | 'random' | 'balance'
   first_token_timeout_ms: number
   slow_threshold_ms: number
 }

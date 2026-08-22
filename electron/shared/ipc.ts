@@ -268,9 +268,10 @@ export type ReasoningParseMode = 'field' | 'tag' | 'none'
  * 任务在多个候选模型之间的挑选顺序。
  *   sequential = 按列表顺序，永远优先第一条（主备）
  *   random     = 每次随机起点，把流量摊到多家（分摊额度）
- * 两种策略都遵守同一条熔断规则：刚失败过的厂商在冷却期内排到最后。
+ *   balance    = 在健康候选之间逐轮轮询，稳定地分摊请求
+ * 三种策略都遵守同一条熔断规则：刚失败过的厂商在冷却期内排到最后。
  */
-export type SelectionStrategy = 'sequential' | 'random'
+export type SelectionStrategy = 'sequential' | 'random' | 'balance'
 
 /** providers.toml 里的一条可复用连接。一个厂商可供多个模型引用。 */
 export interface ApiProviderConfig {

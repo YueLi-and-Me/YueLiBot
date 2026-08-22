@@ -450,7 +450,8 @@ function renderTask(
   if (routing.model_list.length > 1) {
     card.append(selectField('挑选顺序', routing.selection_strategy, [
       ['sequential', '按顺序（主力优先，挂了才顶上）'],
-      ['random', '随机（把流量摊到多家）'],
+      ['random', '随机（每次打乱候选）'],
+      ['balance', '负载均衡（健康模型逐轮分摊）'],
     ], (value) => { routing.selection_strategy = value as SelectionStrategy }))
   }
   return card

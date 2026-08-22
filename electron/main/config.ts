@@ -486,8 +486,8 @@ function parseTaskRouting(
     throw new Error(`${itemPath} 的 model_list 必须是模型名数组`)
   }
   const strategy = stringAtOr(value, 'selection_strategy', 'sequential', itemPath)
-  if (strategy !== 'sequential' && strategy !== 'random') {
-    throw new Error(`${itemPath} 的 selection_strategy 只能是 sequential 或 random`)
+  if (strategy !== 'sequential' && strategy !== 'random' && strategy !== 'balance') {
+    throw new Error(`${itemPath} 的 selection_strategy 只能是 sequential、random 或 balance`)
   }
   // 重复候选会让顺序轮询重复命中同一模型，并使随机策略的权重失真，因此在加载期拒绝。
   const seen = new Set<string>()
@@ -1526,7 +1526,7 @@ function taskBlock(task: ModelTask, routing: TaskRoutingConfig): string {
   return `[model_tasks.${task}]
 # ${TASK_DESCRIPTIONS[task]}使用的模型定义名，按优先级从前往后写
 model_list = ${tomlStringArray(routing.model_list)}
-# 挑选顺序：sequential = 永远优先第一条（主备）；random = 每次随机起点（分摊额度）
+# 挑选顺序：sequential = 主力优先；random = 随机；balance = 健康候选逐轮分摊
 # 无论哪种，刚失败过的厂商都会在冷却期内被排到最后
 selection_strategy = ${tomlString(routing.selection_strategy)}
 # 流式任务等待首字的上限，超时后切换候选

@@ -211,7 +211,8 @@ class ModelRouter:
 
         :param task: 任务名称。
         :param candidates: 按优先级排列的模型候选序列。
-        :param strategy: `sequential` 或 `random`，默认值为 `sequential`。
+        :param strategy: `sequential`、`random` 或 `balance`，默认值为
+            `sequential`；`balance` 在健康候选之间逐轮轮询。
         :param health: 可选共享厂商健康状态；为空时创建新实例。
         :param first_token_timeout_ms: 首个增量的任务级超时，默认值为 30000。
         :param slow_threshold_ms: 慢响应记录阈值，默认值为 8000；0 表示禁用。
@@ -223,6 +224,9 @@ class ModelRouter:
         self._health = health or ProviderHealth()
         self._first_token_timeout_ms = first_token_timeout_ms
         self._slow_threshold_ms = slow_threshold_ms
+        # 每个任务独立计数；order() 在进入任何 await 前完成，当前事件循环中的
+        # 并发请求不会读到同一个游标值。
+        self._balance_cursor = 0
         self._clients: Dict[str, OpenAiChatProvider] = {}
 
     @property
@@ -264,7 +268,8 @@ class ModelRouter:
         :return: 按配置策略排序、可用候选在前且冷却候选在后的新列表；没有候选时返回空列表。
 
         副作用：
-            读取并可能清理已过期的厂商冷却记录；不修改候选配置。
+            读取并可能清理已过期的厂商冷却记录；负载均衡策略会推进轮询游标，
+            不修改候选配置。
         """
         if not self._candidates:
             return []
@@ -273,6 +278,14 @@ class ModelRouter:
             ordered = random.sample(ordered, len(ordered))
         ready = [c for c in ordered if self._health.available(c.provider)]
         cooling = [c for c in ordered if not self._health.available(c.provider)]
+        if self._strategy == 'balance':
+            # 只在健康候选中轮询，避免冷却候选占用轮次导致分配倾斜；所有候选都
+            # 冷却时仍轮询完整集合，让失败诊断与自动恢复路径保持可达。
+            pool = ready or cooling
+            offset = self._balance_cursor % len(pool)
+            self._balance_cursor += 1
+            rotated = pool[offset:] + pool[:offset]
+            return rotated + cooling if ready else rotated
         return ready + cooling
 
     def client(self, candidate: ModelCandidate) -> OpenAiChatProvider:

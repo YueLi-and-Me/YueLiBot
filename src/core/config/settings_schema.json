@@ -1233,9 +1233,13 @@
                 {
                   "value": "random",
                   "label": "随机（random）"
+                },
+                {
+                  "value": "balance",
+                  "label": "负载均衡（balance）"
                 }
               ],
-              "help": "sequential 永远优先第一条；random 每次随机起点，把流量摊到多家。"
+              "help": "sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。"
             },
             {
               "key": "first_token_timeout_ms",

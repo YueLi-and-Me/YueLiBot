@@ -900,10 +900,11 @@ export function ModelConfigPage() {
                       </Select>
                     </div>
                     <div className="grid gap-3 md:grid-cols-3">
-                      <Field label="模型选择策略" help="顺序优先：优先使用前面的模型；随机分流：每次从候选里随机选择。">
+                      <Field label="模型选择策略" help="顺序优先适合主力加备用；随机选择会打乱候选；负载均衡按轮次稳定分摊给健康模型。">
                         <Select value={taskConfig.selection_strategy} onChange={(event) => updateTask(selectedTask, { selection_strategy: event.target.value as TaskConfig['selection_strategy'] })}>
                           <option value="sequential">按顺序优先（sequential）</option>
                           <option value="random">随机选择（random）</option>
+                          <option value="balance">负载均衡（balance）</option>
                         </Select>
                       </Field>
                       <Field label="首字超时 ms">

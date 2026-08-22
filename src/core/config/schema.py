@@ -698,12 +698,13 @@ class TaskRoutingConfig(BaseModel):
 
     model_list 排第一的是主力，其余是它挂掉之后依次顶上的备用。
     sequential = 永远优先第一条；random = 每次随机起点，把流量摊到多家。
+    balance = 在健康候选之间逐轮轮询，稳定地分摊请求。
     """
 
     model_config = ConfigDict(protected_namespaces=())
 
     model_list: List[str] = Field(default_factory=list)
-    selection_strategy: Literal['sequential', 'random'] = 'sequential'
+    selection_strategy: Literal['sequential', 'random', 'balance'] = 'sequential'
     # provider 管网络读，first_token 管切换，slow 只记账。
     first_token_timeout_ms: int = Field(default=30_000, ge=1_000)
     slow_threshold_ms: int = Field(default=8_000, ge=0)
@@ -800,7 +801,7 @@ class TaskRouting(BaseModel):
 
     task: str
     candidates: List[ModelCandidate] = Field(default_factory=list)
-    strategy: Literal['sequential', 'random'] = 'sequential'
+    strategy: Literal['sequential', 'random', 'balance'] = 'sequential'
     first_token_timeout_ms: int = Field(default=30_000, ge=1_000)
     slow_threshold_ms: int = Field(default=8_000, ge=0)
 
