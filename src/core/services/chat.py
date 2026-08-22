@@ -142,6 +142,12 @@ SCENE_WINDOW_MESSAGES = 60
 # 她自己表态，撞上限属于异常路径，会强制收尾并留下明确记录。
 MAX_TURN_ROUNDS = 10
 
+# 私聊等待的下文超时。群聊可以「等着等着就算了」（没有下文就一直沉默），私聊
+# 对面是一个在等回应的具体的人，超时后必须把这半句话接住，否则等待动作会把
+# 私聊变成永久已读不回。取值覆盖人与人连发两条消息的常见间隔（两到五秒），
+# 同时不至于让每句被等待的话都拖太久。
+DIRECT_WAIT_TIMEOUT_S = 10.0
+
 # 续跑轮插入在候选块与输出要求之间的提示模板，``recap`` 由回合循环填入她这一轮
 # 实际做过的事。两件事必须同时说清，缺任意一件续跑轮都会跑偏：
 #
@@ -297,6 +303,18 @@ class _RoundResult:
     recap: str = ''
 
 
+@dataclass(frozen=True)
+class _WaitHold:
+    """一次 wait 的持有状态。
+
+    :ivar watermark: 批次退回缓冲后的消息总数；缓冲长度超过它说明有新消息到达。
+    :ivar since: 开始等待的毫秒时间戳，供私聊的下文超时兜底判断使用。
+    """
+
+    watermark: int
+    since: int
+
+
 class ChatService:
     """协调消息归属、记忆召回、模型流式输出、解析副作用和平台投递。
 
@@ -396,7 +414,7 @@ class ChatService:
         # stream_id -> 进入等待时的缓冲长度。她选择「先等等」之后，本批消息被放回
         # 缓冲；在缓冲长度没有变化（也就是没有任何新消息进来）之前不再重开回合，
         # 否则轮询周期一到就会把同一批重新问一遍模型。
-        self._waiting: dict[int, int] = {}
+        self._waiting: dict[int, _WaitHold] = {}
         self._speak_enabled = cfg.group_chat.self_started_topics
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
@@ -715,9 +733,16 @@ class ChatService:
             # 等待中的 stream 只被新消息唤醒：她要等的就是「对方把话说完」，
             # 没有下文就一直等着——这与真人「等着等着就算了」是同一个行为，
             # 而不是卡住：任何一条新消息都会解除等待并强制她表态。
+            # 私聊例外：对面是一个在等回应的人，等到超时就必须把这半句话接住，
+            # 否则 wait 会把私聊变成永久已读不回。
             waiting_at = self._waiting.get(stream_id)
-            if waiting_at is not None and len(buffered) <= waiting_at:
-                continue
+            if waiting_at is not None and len(buffered) <= waiting_at.watermark:
+                direct_hold = buffered[0].context.stream.kind == 'direct'
+                within_window = (
+                    now - waiting_at.since < DIRECT_WAIT_TIMEOUT_S * 1_000
+                )
+                if not direct_hold or within_window:
+                    continue
             if not self.claim_stream(stream_id, 'reply'):
                 continue
             del buffered[:boundary]
@@ -4296,9 +4321,12 @@ class ChatService:
         3. **标记等待**——`_tick` 据此在没有新消息之前不再重开回合，否则轮询
            周期一到就会把同一批重新问一遍模型。
 
-        没有新消息就一直等下去，这是有意的：她在等一句没有来的话，那就一直没有
-        回应，和真人「等着等着就算了」是同一个行为。任何一条新消息都会解除等待，
-        并且那一轮 wait 已不在动作集里，她必须表态。
+        没有新消息就一直等下去，这是群聊有意的语义：她在等一句没有来的话，那就
+        一直没有回应，和真人「等着等着就算了」是同一个行为。任何一条新消息都会
+        解除等待，并且那一轮 wait 已不在动作集里，她必须表态。私聊不能沿用这条
+        语义——对面是一个在等回应的具体的人——因此等待持有开始时刻，超过
+        ``DIRECT_WAIT_TIMEOUT_S`` 仍无下文时，``_tick`` 会强制重开回合，那一轮
+        同样没有 wait，她必须把半句话接住。
 
         :param context: 当前会话上下文。
         :param batch: 本轮取走但决定不消费的消息批次。
@@ -4313,7 +4341,7 @@ class ChatService:
         self._extended_pending[stream_id] = (
             self._extended_pending.get(stream_id, 0) + len(batch)
         )
-        self._waiting[stream_id] = len(buffered)
+        self._waiting[stream_id] = _WaitHold(len(buffered), current_time())
         self._mark_stage(
             context, GATED,
             f'她先等等：{", ".join(outcome.decision.reason_codes)}',

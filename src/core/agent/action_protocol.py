@@ -676,9 +676,12 @@ def available_actions(
             actions.add('poke')
         if allow_speak:
             actions.add('speak')
-        # 等待只在群聊有意义；用户发起的私聊必须回复，主动追问则使用独立的
-        # reply / silent 决策帧，两条路径都不能把同一条私聊重新排队。
-        if allow_wait and stream_kind == 'group':
+    # 等待在群聊与私聊都成立：对方把一句话拆成几条连发时，逐条抢答比等一下
+    # 更失真。三条边界各不相同——群聊的 @必回是明确点名要她说话，不允许拖着；
+    # 私聊的门控虽然也是必回，但那只约束「最终必须表态」，等对方把话说完由
+    # 服务层的超时兜底保证，不冲突；桌面是即时交互界面，不排队。
+    if allow_wait and stream_kind != 'desktop':
+        if not (disposition == 'force' and stream_kind == 'group'):
             actions.add('wait')
     # 认知动作与 stream 类型、门控态都无关：无论她最终要不要开口，
     # 「先想一下再决定」这件事在任何出口都成立，只受轮次预算约束。
