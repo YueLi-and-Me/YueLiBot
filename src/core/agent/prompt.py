@@ -574,7 +574,7 @@ def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
     """把本回合可选消息渲染为「编号 = 原文」的锚点清单。
 
     Agent 上下文的历史已逐行带 ``[编号]`` 前缀，本清单在此之上再框定范围：
-    历史里编号很多，但只有当前批次内的几条可以作为 targets，越界同样按
+    历史里编号很多，但只有当前批次内的几条可以作为目标消息，越界同样按
     illegal_action 失败。两者缺一不可——只给清单则编号在历史里无处对应，
     只给历史则模型分不清哪几条是本回合可选的。
 
@@ -598,7 +598,7 @@ def _render_turn_scope(target_person: str) -> str:
 
     可选清单只覆盖当前人物这一批消息，是缓冲按人物切批的结果，不是模型选错了。
     线上观测到的全部 illegal_action 都是同一种形态：模型想接的是群里另一个人刚
-    说的话，清单里没有对应编号，于是把 targets 写成人名，整轮被判协议失败、
+    说的话，清单里没有对应编号，于是把目标字段写成人名，整轮被判协议失败、
     表现为她突然不回话。因此这里必须说清两件事：越界不可行，以及别人的话会有
     属于他们自己的回合，不必抢在这一轮里接。
 
@@ -705,7 +705,7 @@ def render_tool_protocol(
     重复一大段，反而稀释掉动作本身的说明。
 
     :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
-        工具声明里 targets 是一串裸数字，没有这份对照模型认不出指的是哪句话。
+        工具声明里 target 是一个裸数字，没有这份对照模型认不出指的是哪句话。
     :param quote_supported: 平台是否支持模型显式指定引用目标。
     :param target_person: 本回合批次发送者的显示名；私聊传空字符串。
     :param cognitive_rounds: 本回合的认知轮次预算，用于渲染检索说明。
@@ -718,7 +718,7 @@ def render_tool_protocol(
     quote_rule = (
         '需要点明在回哪一条时可以填 quote，取值同样只能来自上面的可选消息。'
         if quote_supported
-        else '不要填 quote，需要指向哪一条由 targets 决定。'
+        else '不要填 quote，需要指向哪一条由 target 决定。'
     )
     return get_prompt('chat.tool.protocol').render(
         turn_scope=_render_turn_scope(target_person),

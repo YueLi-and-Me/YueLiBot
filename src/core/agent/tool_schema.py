@@ -96,12 +96,12 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
         required.append('reasons')
 
     if action in ('reply', 'react', 'poke'):
-        properties['targets'] = {
+        properties['target'] = {
             'type': 'integer',
             'enum': list(frame.selectable_message_ids),
             'description': '这一轮针对的那条消息编号，只填一个，必须来自给定取值。',
         }
-        required.append('targets')
+        required.append('target')
 
     if action in ('reply', 'speak'):
         properties['length'] = {
@@ -145,6 +145,7 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
                 'type': 'object',
                 'properties': properties,
                 'required': required,
+                'additionalProperties': False,
             },
         },
     }
@@ -173,10 +174,14 @@ def decision_head_from_tool_call(
     if not isinstance(payload, dict):
         raise IllegalActionError(f'工具 {name} 的参数必须是对象')
 
-    action = cast(ConversationAction, name.strip())
+    normalized_name = name.strip()
+    if normalized_name not in _ACTION_DESCRIPTIONS:
+        raise IllegalActionError(f'未知动作：{normalized_name}')
+    action = cast(ConversationAction, normalized_name)
+    _validate_payload_shape(action, payload, frame)
     head = DecisionHead(
         action=action,
-        target_message_ids=_target_ids(payload.get('targets')),
+        target_message_ids=_target_id(payload.get('target')),
         quote_message_id=_optional_int(payload.get('quote'), 'quote'),
         reason_codes=_reason_codes(payload.get('reasons')),
         length=_length(payload.get('length')),
@@ -188,28 +193,59 @@ def decision_head_from_tool_call(
     return head
 
 
-def _target_ids(raw: Any) -> tuple[int, ...]:
-    """把 targets 参数规范化为整数元组。
+def _validate_payload_shape(
+    action: ConversationAction,
+    payload: Dict[str, Any],
+    frame: DecisionFrame,
+) -> None:
+    """按本轮工具声明拒绝未知字段与缺失的必填字段。
 
-    同时接受单值与数组：不同服务商对 ``type: integer`` 的遵从程度不一致，有的会
-    包成单元素数组。这里只放宽输入形状，不放宽取值——越界仍由帧校验拒绝。
+    工具服务商不一定替调用方执行 JSON Schema 校验，因此不能依赖 ``required``
+    或 ``additionalProperties`` 自动生效。若字段名发生漂移，必须在这里直接指出
+    未知字段或缺失字段，不能等动作头把它误报成「没有目标消息」。
 
-    :param raw: 工具参数里的 targets 原值。
+    :param action: 已确认属于封闭动作集的工具名。
+    :param payload: 已解析的工具参数对象。
+    :param frame: 本回合固定快照，用于生成同源工具声明。
+    :raises IllegalActionError: 动作不在本轮动作集、出现未知字段或缺少必填字段。
+    """
+    if action not in frame.available_actions:
+        raise IllegalActionError(
+            f'动作 {action} 不在本回合可用动作 {sorted(frame.available_actions)} 中'
+        )
+    parameters = _tool_for(action, frame)['function']['parameters']
+    allowed = frozenset(parameters['properties'])
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise IllegalActionError(
+            f'工具 {action} 收到未知字段：{", ".join(unknown)}'
+        )
+    missing = [field for field in parameters['required'] if field not in payload]
+    if missing:
+        raise IllegalActionError(
+            f'工具 {action} 缺少必填字段：{", ".join(missing)}'
+        )
+
+
+def _target_id(raw: Any) -> tuple[int, ...]:
+    """把单个 target 参数规范化为内部目标消息元组。
+
+    工具协议只允许选择一条目标消息，因此数组属于形状错误；数字字符串仍接受，
+    因为部分 OpenAI 兼容服务会把 JSON Schema 的 integer 参数序列化成字符串。
+    取值范围仍由动作头的帧校验严格限制。
+
+    :param raw: 工具参数里的 target 原值。
     :return: 消息编号元组；未提供时为空元组。
-    :raises IllegalActionError: 取值不是可转成整数的标量。
+    :raises IllegalActionError: 取值不是可转成整数的单个标量。
     """
     if raw is None:
         return ()
-    values = raw if isinstance(raw, list) else [raw]
-    ids: List[int] = []
-    for value in values:
-        if isinstance(value, bool) or not isinstance(value, (int, str)):
-            raise IllegalActionError(f'targets 必须是消息编号，收到 {value!r}')
-        try:
-            ids.append(int(value))
-        except ValueError as exc:
-            raise IllegalActionError(f'targets 必须是消息编号，收到 {value!r}') from exc
-    return tuple(ids)
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise IllegalActionError(f'target 必须是单个消息编号，收到 {raw!r}')
+    try:
+        return (int(raw),)
+    except ValueError as exc:
+        raise IllegalActionError(f'target 必须是单个消息编号，收到 {raw!r}') from exc
 
 
 def _optional_int(raw: Any, field: str) -> int | None:
