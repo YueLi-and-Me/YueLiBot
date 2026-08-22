@@ -24,7 +24,9 @@ def _table_columns(db: sqlite3.Connection, table: str) -> list[str]:
     :raises sqlite3.Error: 表结构查询失败时抛出。
     副作用：只读 SQLite 表结构。
     """
-    return [str(row[1]) for row in db.execute(f'PRAGMA table_info({table})').fetchall()]
+    # 表值函数形态的 PRAGMA 支持参数绑定，表名走占位符而不是拼进 SQL 文本。
+    rows = db.execute('SELECT name FROM pragma_table_info(?)', (table,)).fetchall()
+    return [str(row[0]) for row in rows]
 
 
 def _rebuild_persona_bond(db: sqlite3.Connection) -> tuple[int, int]:

@@ -19,25 +19,6 @@ from src.core.common.logger import get_logger
 logger = get_logger(__name__)
 
 
-# 找出在群聊 stream 中发过 user 消息、却没有对应成员关系行的 (stream, person) 组合。
-# 回填与自检共用同一份判定条件，避免两处口径漂移。
-_MISSING_MEMBERSHIPS = '''
-    SELECT m.stream_id AS stream_id, m.sender_person_id AS person_id,
-           MAX(m.created_at) AS last_spoke_at
-      FROM messages AS m
-      JOIN streams AS s ON s.id = m.stream_id
-      JOIN persons AS p ON p.id = m.sender_person_id
-     WHERE s.kind = 'group'
-       AND m.role = 'user'
-       AND NOT EXISTS (
-           SELECT 1 FROM group_memberships AS gm
-            WHERE gm.stream_id = m.stream_id
-              AND gm.person_id = m.sender_person_id
-       )
-     GROUP BY m.stream_id, m.sender_person_id
-'''
-
-
 @register(8)
 def v8_to_v9(db: sqlite3.Connection) -> None:
     """按历史群聊发言记录补齐缺失的群成员关系。
@@ -55,12 +36,47 @@ def v8_to_v9(db: sqlite3.Connection) -> None:
     # 本就表示「未设置群名片」，与真实的空名片同义，不会伪造出一个不存在的名片。
     # updated_at 取该人在该群的最后一条发言时间：这是成员关系最后一次被确凿观察到
     # 的时刻，取当前时间反而会谎称这条关系刚刚被平台确认过。
-    inserted = db.execute(
-        f'''INSERT INTO group_memberships (stream_id, person_id, group_card, updated_at)
-            SELECT stream_id, person_id, '', last_spoke_at FROM ({_MISSING_MEMBERSHIPS})'''
-    ).rowcount
+    # 查询语句保持整句字面量：安全门禁不接受任何动态构造的 SQL 文本；回填与自检
+    # 两处的判定条件必须逐字一致，自检才有意义。
+    missing = db.execute('''
+        SELECT m.stream_id AS stream_id, m.sender_person_id AS person_id,
+               MAX(m.created_at) AS last_spoke_at
+          FROM messages AS m
+          JOIN streams AS s ON s.id = m.stream_id
+          JOIN persons AS p ON p.id = m.sender_person_id
+         WHERE s.kind = 'group'
+           AND m.role = 'user'
+           AND NOT EXISTS (
+               SELECT 1 FROM group_memberships AS gm
+                WHERE gm.stream_id = m.stream_id
+                  AND gm.person_id = m.sender_person_id
+           )
+         GROUP BY m.stream_id, m.sender_person_id
+    ''').fetchall()
+    if missing:
+        db.executemany(
+            'INSERT INTO group_memberships (stream_id, person_id, group_card, updated_at) '
+            'VALUES (?, ?, ?, ?)',
+            [(stream_id, person_id, '', last_spoke_at)
+             for stream_id, person_id, last_spoke_at in missing],
+        )
+    inserted = len(missing)
 
-    remaining = db.execute(f'SELECT COUNT(*) FROM ({_MISSING_MEMBERSHIPS})').fetchone()[0]
+    remaining = len(db.execute('''
+        SELECT m.stream_id AS stream_id, m.sender_person_id AS person_id,
+               MAX(m.created_at) AS last_spoke_at
+          FROM messages AS m
+          JOIN streams AS s ON s.id = m.stream_id
+          JOIN persons AS p ON p.id = m.sender_person_id
+         WHERE s.kind = 'group'
+           AND m.role = 'user'
+           AND NOT EXISTS (
+               SELECT 1 FROM group_memberships AS gm
+                WHERE gm.stream_id = m.stream_id
+                  AND gm.person_id = m.sender_person_id
+           )
+         GROUP BY m.stream_id, m.sender_person_id
+    ''').fetchall())
     if remaining:
         raise RuntimeError(f'v9 迁移自检失败：仍有 {remaining} 个群聊发言者缺少成员关系')
 

@@ -21,6 +21,47 @@ logger = get_logger(__name__)
 TS_FINAL_SCHEMA_VERSION = 3
 
 
+def write_user_version(db: sqlite3.Connection, version: int) -> None:
+    """把版本号写入 SQLite 原生 ``PRAGMA user_version``。
+
+    :param db: 已打开的 SQLite 连接。
+    :param version: 要写入的整数版本号，只允许已登记的迁移版本域。
+    :return: 无返回值。
+    :raises ValueError: 版本号不在已登记的迁移版本域内。
+    :raises sqlite3.Error: PRAGMA 执行失败时传播数据库异常。
+    副作用：修改数据库的 ``user_version`` 元信息；不提交事务。
+    """
+    # PRAGMA 赋值不支持参数绑定，动态构造语句文本也会被安全门禁判为注入路径；
+    # 每个版本保留一条整句字面量，语句结构不可能被值改变，域外版本直接拒绝。
+    # 新增迁移版本时必须同步补一条分支，漏补会在入口以 ValueError 暴露。
+    if version == 1:
+        db.execute("PRAGMA user_version = 1")
+    elif version == 2:
+        db.execute("PRAGMA user_version = 2")
+    elif version == 3:
+        db.execute("PRAGMA user_version = 3")
+    elif version == 4:
+        db.execute("PRAGMA user_version = 4")
+    elif version == 5:
+        db.execute("PRAGMA user_version = 5")
+    elif version == 6:
+        db.execute("PRAGMA user_version = 6")
+    elif version == 7:
+        db.execute("PRAGMA user_version = 7")
+    elif version == 8:
+        db.execute("PRAGMA user_version = 8")
+    elif version == 9:
+        db.execute("PRAGMA user_version = 9")
+    elif version == 10:
+        db.execute("PRAGMA user_version = 10")
+    elif version == 11:
+        db.execute("PRAGMA user_version = 11")
+    elif version == 12:
+        db.execute("PRAGMA user_version = 12")
+    else:
+        raise ValueError(f"未登记的 schema 版本号：{version}")
+
+
 def _table_exists(db: sqlite3.Connection, name: str) -> bool:
     """判断指定名称的 SQLite 表是否存在。
 
@@ -96,7 +137,7 @@ def bootstrap_version(db: sqlite3.Connection, current_version: int) -> int:
 
     # 全新安装：DDL 已经把表按最新形态建好了，没有历史需要迁移
     if is_fresh_database(db):
-        db.execute(f"PRAGMA user_version = {current_version}")
+        write_user_version(db, current_version)
         logger.info("bootstrap_fresh_database", version=current_version)
         return current_version
 
@@ -107,7 +148,7 @@ def bootstrap_version(db: sqlite3.Connection, current_version: int) -> int:
         meta_version = TS_FINAL_SCHEMA_VERSION
         logger.warning("bootstrap_meta_version_missing", assumed=meta_version)
 
-    db.execute(f"PRAGMA user_version = {meta_version}")
+    write_user_version(db, meta_version)
     logger.info(
         "bootstrap_adopted_ts_version",
         from_meta=meta_version,

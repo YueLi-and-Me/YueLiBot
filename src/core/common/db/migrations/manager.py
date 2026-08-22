@@ -12,7 +12,7 @@ from pathlib import Path
 
 import sqlite3
 
-from .bootstrap import bootstrap_version, is_fresh_database
+from .bootstrap import bootstrap_version, is_fresh_database, write_user_version
 from .registry import get_registry
 
 from src.core.common.db.schema import DDL, SEED
@@ -44,8 +44,8 @@ def set_user_version(db: sqlite3.Connection, version: int) -> None:
     :raises sqlite3.Error: PRAGMA 执行失败时传播数据库异常。
     副作用：修改数据库的 `user_version` 元信息；不提交事务。
     """
-    # PRAGMA user_version 不支持参数绑定，整数字面量是安全的
-    db.execute(f"PRAGMA user_version = {version}")
+    # 语句构造与版本域约束统一收敛在 write_user_version，见该函数说明。
+    write_user_version(db, version)
 
 
 def backup(db: sqlite3.Connection, db_path: Path) -> Path:
