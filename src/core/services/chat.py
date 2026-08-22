@@ -3622,6 +3622,7 @@ class ChatService:
             target_person=target_person,
             cognitive_rounds=self._cognitive_rounds,
             available_reactions=frame.capabilities.available_reactions,
+            stream_kind=context.stream.kind,
         )
 
     def _render_agent_messages(

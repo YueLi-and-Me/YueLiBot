@@ -626,6 +626,7 @@ def render_action_protocol(
     target_person: str = '',
     cognitive_rounds: int = 0,
     available_reactions: Sequence[str] = (),
+    stream_kind: str = 'group',
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -647,6 +648,7 @@ def render_action_protocol(
         约束在 available_actions，两处口径必须一致。
     :param available_reactions: 本平台真实可用的表情回应标识；react 不在动作集时
         传空序列，此时该段完全不渲染。
+    :param stream_kind: 会话类型；等待动作的收尾语义在群聊与私聊不同。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
@@ -691,7 +693,7 @@ def render_action_protocol(
         cognition_rule=_cognition_protocol_rule(actions, ids, cognitive_rounds),
         react_rule=_react_protocol_rule(actions, ids, available_reactions),
         poke_rule=_poke_protocol_rule(actions, ids),
-        wait_rule=_wait_protocol_rule(actions),
+        wait_rule=_wait_protocol_rule(actions, stream_kind),
         speak_rule=_speak_protocol_rule(actions),
     )
 
@@ -817,17 +819,26 @@ def _speak_protocol_rule(actions: FrozenSet[str]) -> str:
     ]) + '\n'
 
 
-def _wait_protocol_rule(actions: FrozenSet[str]) -> str:
+def _wait_protocol_rule(actions: FrozenSet[str], stream_kind: str) -> str:
     """渲染「先等等」动作的说明。
 
     与 silent 的分界必须写清楚，否则模型会把两者当同义词：silent 是放弃这一茬，
-    wait 是话没说完先不表态、这些消息之后还会再看一遍。
+    wait 是话没说完先不表态、这些消息之后还会再看一遍。收尾语义按会话类型
+    分化——提示词里出现另一种会话的措辞，会让现场把当前回合误读成那个类型。
 
     :param actions: 本轮实际可用的动作集合。
+    :param stream_kind: 会话类型；等待的收尾语义在群聊与私聊不同。
     :return: 等待说明文本；wait 不可用时返回空字符串。
     """
     if 'wait' not in actions:
         return ''
+    if stream_kind == 'direct':
+        ending = (
+            '- 等不到下文时这些消息稍后会再回来一次，届时同样必须表态，'
+            '不会一直晾着对方'
+        )
+    else:
+        ending = '- 等不到下文就当没这茬'
     return '\n'.join([
         '',
         '大家常把一句话拆成几条短消息连着发。刚到的这条很短、语义悬着、'
@@ -839,8 +850,7 @@ def _wait_protocol_rule(actions: FrozenSet[str]) -> str:
         '- 这和 silent 不是一回事：silent 是「这茬我不接了」，'
         'wait 是「我在等下文」，这些消息之后你还会再看到一次',
         '- 只能等一次。等过之后再看到这些消息时就必须表态，那时没有这个选项了',
-        '- 群聊里等不到下文就当没这茬；私聊里等不到下文时这些消息稍后也会'
-        '再回来一次，那时同样必须表态，不会一直晾着对方',
+        ending,
     ]) + '\n'
 
 

@@ -34,16 +34,27 @@ from .action_protocol import (
 _ACTION_DESCRIPTIONS: Dict[str, str] = {
     'reply': '对某条消息开口回应。只有真的要说话时才用它。',
     'silent': '这一轮不接话。别人正在聊自己的事、没有新东西可加、话题已经结束时用它。',
-    'wait': (
-        '大家常把一句话拆成几条短消息连着发。刚到的这条很短、语义悬着或明显'
-        '还在往下讲时，用它等下文合并进来后一次接住，不要逐条抢答。群聊等不到'
-        '下文就当没这茬；私聊等不到下文时这批消息稍后会再回来，届时必须表态。'
-    ),
+    'wait': '话还没说完，先不表态，等对方把话说完再决定。',
     'react': '不说话，只给某条消息贴一个表情回应。',
     'poke': '不说话，只戳一下某条消息的发送者。',
     'speak': '没有人在跟你说话，但你自己想起了什么想说。没料就别用。',
     'recall': '先查一下长期记忆里与某件事相关的内容，再决定这一轮做什么。',
     'inspect': '先查一下某个人的画像与最近互动，再决定这一轮做什么。',
+}
+
+# 等待的收尾语义随会话类型分化，正文与各自的超时/合并行为一一对应；
+# 提示词里出现另一种会话的措辞会让现场误判当前回合的类型。
+_WAIT_DESCRIPTIONS: Dict[str, str] = {
+    'group': (
+        '大家常把一句话拆成几条短消息连着发。刚到的这条很短、语义悬着或明显'
+        '还在往下讲时，用它等下文合并进来后一次接住，不要逐条抢答。'
+        '等不到下文就当没这茬。'
+    ),
+    'direct': (
+        '对方常把一句话拆成几条短消息连着发。刚到的这条很短、语义悬着或明显'
+        '还在往下讲时，用它等下文合并进来后一次接住，不要逐条抢答。'
+        '等不到下文时这批消息稍后会再回来一次，届时必须表态，不会一直晾着。'
+    ),
 }
 
 # 理由码按动作分域，与 _validate_reason_codes 同一套划分。react 与 poke
@@ -144,7 +155,11 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
         'type': 'function',
         'function': {
             'name': action,
-            'description': _ACTION_DESCRIPTIONS[action],
+            'description': (
+                _WAIT_DESCRIPTIONS.get(frame.stream_kind)
+                if action == 'wait'
+                else _ACTION_DESCRIPTIONS[action]
+            ),
             'parameters': {
                 'type': 'object',
                 'properties': properties,
