@@ -181,7 +181,9 @@ def render_dialogue(
             text = (message.content or '').strip()
             person = by_person.get(message.sender_person_id or -1)
             speaker = f'[{person.external_id}] {person.display_name}' if person else '某人'
-        text = text.strip()
+        # 一条消息压成一行：她的多气泡回复经 strip_say_tags 后是换行分隔的，
+        # 直接输出会产生没有说话人前缀的续行，抽取模型无从判断那句是谁说的。
+        text = ' '.join(part for part in text.splitlines() if part.strip()).strip()
         if text:
             lines.append(f'{speaker}：{text}')
     return '\n'.join(lines)
