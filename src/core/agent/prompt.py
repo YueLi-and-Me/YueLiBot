@@ -930,7 +930,7 @@ def _cognition_protocol_rule(
     cognitive_rounds: int,
     tool_mode: bool = False,
 ) -> str:
-    """渲染本轮认知动作（recall / inspect）的可用性与用法说明。
+    """渲染本轮认知动作（recall / inspect / consult）的可用性与用法说明。
 
     认知动作只在本回合还剩检索次数时进入动作空间，因此本段按实际动作集渲染：
     **动作集里没有的东西绝不能出现在提示词里**，展示一个本轮非法的动作等同于
@@ -950,8 +950,8 @@ def _cognition_protocol_rule(
         return ''
     lines = [
         '',
-        '上面的聊天记录只是你们此刻的互动，你和这些人之间还有更多过去的事没有摆在眼前。'
-        '想不起来的时候，可以先查一下再决定这一轮做什么：',
+        '上面的聊天记录只是你们此刻的互动，你和这些人之间还有更多过去的事和你知道的'
+        '知识没有摆在眼前。想不起来或拿不准的时候，可以先查一下再决定这一轮做什么：',
     ]
     if tool_mode:
         # 工具模式下检索动作的调用形状由函数签名承载，这里只讲什么时候用它。
@@ -963,6 +963,10 @@ def _cognition_protocol_rule(
             )
         if 'inspect' in available:
             lines.append('- 翻这个会话里更早的聊天记录，也就是上面聊天记录之前发生的事')
+        if 'consult' in available:
+            lines.append(
+                '- 查你知道的知识和资料，比如概念、定义、事实——这不是翻聊天记录'
+            )
         lines.extend([
             f'- 这一回合你最多只能查 {cognitive_rounds} 次，查完必须给出最终动作',
             '- 绝大多数时候都不需要查，直接给出最终动作。'
@@ -979,9 +983,14 @@ def _cognition_protocol_rule(
             '- <decision action="inspect" query="想查的东西"/>：'
             '翻这个会话里更早的聊天记录，也就是上面聊天记录之前发生的事'
         )
+    if 'consult' in available:
+        lines.append(
+            '- <decision action="consult" query="想查的东西"/>：'
+            '查你知道的知识和资料，比如概念、定义、事实——这不是翻聊天记录'
+        )
     lines.extend([
         '- query 必填，写你想查什么，用几个关键词就行；'
-        '这两个动作都不写 targets、reasons、length、quote',
+        '这些动作都不写 targets、reasons、length、quote',
         '- 查完会把结果告诉你，你再决定这一轮回不回、回什么；动作标签之后不要写任何正文',
         f'- 这一回合你最多只能查 {cognitive_rounds} 次，查完必须给出最终动作',
         '- 绝大多数时候都不需要查，直接给出最终动作。'
@@ -991,7 +1000,7 @@ def _cognition_protocol_rule(
         lines.extend([
             '',
             '# 先查再回的例子',
-            f'<decision action="{available[0]}" query="上次说的那个演出"/>',
+            f'<decision action="{available[0]}" query="对方刚才提到的那个概念"/>',
             '（收到检索结果之后，下一轮再写 '
             f'<decision action="reply" targets="{selectable_ids[0]}" '
             'reasons="pending_thread" length="brief"/> 和台词）',
