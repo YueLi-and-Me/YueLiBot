@@ -1,8 +1,9 @@
 """解析模型流式响应中的结构化标签，并增量生成文本和副作用事件。
 
 输出协议使用类 XML 标签，以便在标签或属性被拆分到多个网络块时继续解析；
-解析器同时支持纯文本、未闭合 ``<say>`` 和跨块标签。未完成标签保留在内部
-缓冲区，完整标签转换为事件，普通文本转换为隐式发言事件。
+解析器默认支持纯文本、未闭合 ``<say>`` 和跨块标签。未完成标签保留在内部
+缓冲区，完整标签转换为事件，普通文本转换为隐式发言事件；调用方也可关闭隐式
+发言，让必须遵守 ``<say>`` 的回复生成链路精准暴露协议错误。
 
 本模块不执行网络 I/O，不写入记忆，也不更新人格状态；调用方负责消费事件并
 处理持久化和副作用。
@@ -146,6 +147,11 @@ ParseEvent = Union[
     DecisionEvent,
 ]
 
+
+class ResponseProtocolError(ValueError):
+    """表示调用方启用严格模式后，模型输出违反可见正文标签协议。"""
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 内部会处理的标签名。其余一律当普通文本。
 # ─────────────────────────────────────────────────────────────────────
@@ -213,9 +219,11 @@ class ResponseParser:
     :meth:`push`，在流结束时调用 :meth:`flush` 释放残留文本并补齐说话结束事件。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, implicit_say: bool = True) -> None:
         """创建处于文档外部状态的空解析器。
 
+        :param implicit_say: 是否把标签外普通文本隐式包装为发言。默认开启以保持旧
+            管线兼容；拆分后的 replyer 应关闭，使缺失 ``<say>`` 及时暴露。
         :return: 无返回值。
         副作用：初始化内部缓冲区和标签状态，不执行 I/O。
         """
@@ -225,6 +233,7 @@ class ResponseParser:
         self._memory_type: str | None = None
         self._memory_buf = ''
         self._skip_until = ''
+        self._implicit_say = implicit_say
 
     def push(self, chunk: str) -> list[ParseEvent]:
         """追加一段模型输出并尽可能产生解析事件。
@@ -257,10 +266,7 @@ class ResponseParser:
             # 残留可能是没闭合的正文，也可能是半截标签
             tail = '' if re.match(r'^<[^>]*$', self._buf) else self._buf
             if tail.strip():
-                if not self._say_open:
-                    out.append(SayEvent())
-                    self._say_open = True
-                out.append(TextEvent(value=tail))
+                self._emit_text(out, tail)
 
         self._buf = ''
 
@@ -467,11 +473,12 @@ class ResponseParser:
         return True
 
     def _emit_text(self, out: list[ParseEvent], text: str) -> None:
-        """将一段普通文本包装为隐式说话事件。
+        """将一段普通文本包装为隐式说话事件，或在严格模式下拒绝它。
 
         :param out: 用于追加 `SayEvent` 和 `TextEvent` 的输出列表。
         :param text: 待输出的原始文本。
         :return: `None`；空文本或外部纯空白文本不会追加事件。
+        :raises ResponseProtocolError: 严格模式下正文出现在 ``<say>`` 标签之外。
         副作用：必要时打开说话状态并向 `out` 追加事件。
         """
         if not text:
@@ -479,6 +486,8 @@ class ResponseParser:
         if self._state != 'say':
             if not text.strip():
                 return
+            if not self._implicit_say:
+                raise ResponseProtocolError('回复生成的可见正文必须完整放在 <say> 标签内')
             if not self._say_open:
                 out.append(SayEvent())
                 self._say_open = True

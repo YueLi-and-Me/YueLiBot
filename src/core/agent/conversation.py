@@ -4,8 +4,9 @@
 一次模型输出，解析器在动作头（<decision>）完整且通过回合帧校验之前，不向调用方
 放出任何正文事件。
 
-- 选到**终局动作**（reply / silent / react）时回合结束：reply 的正文与副作用事件
-  逐批流出，silent 与 react 不产生任何用户可见内容。
+- 选到**终局动作**（reply / silent / react）时回合结束：单模型 reply 的正文与副作用
+  事件逐批流出；拆分 replyer 的产物通过整轮协议校验后统一放出；silent 与 react
+  不产生任何用户可见内容。
 - 选到**认知动作**（recall / inspect）时本轮结束、回合继续：执行检索、把观察结果
   追加进消息序列，再发起下一轮。认知轮**不放出任何事件**，用户侧完全不可见。
 
@@ -34,7 +35,7 @@ from __future__ import annotations
 
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, List, cast
 
 import asyncio
 import time
@@ -59,7 +60,15 @@ from .cognition import (
     CognitiveRequest,
     CognitiveScope,
 )
-from .parser import DecisionEvent, EmojiEvent, ParseEvent, ResponseParser, TextEvent
+from .parser import (
+    DecisionEvent,
+    EmojiEvent,
+    ParseEvent,
+    ResponseParser,
+    ResponseProtocolError,
+    SayEvent,
+    TextEvent,
+)
 
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
@@ -555,6 +564,10 @@ class ConversationAgent:
             status = 'timeout' if exc.kind == 'timeout' else 'provider_error'
             detail = str(exc)
             return finish()
+        except ResponseProtocolError as exc:
+            status = 'parse_error'
+            detail = str(exc)
+            return finish()
         except IllegalActionError as exc:
             status = 'illegal_action'
             detail = str(exc)
@@ -617,10 +630,12 @@ class ConversationAgent:
         emoji_emotions: list[str],
         signal: asyncio.Event | None,
     ) -> None:
-        """调用回复生成模型，把正文与副作用事件按既有口径放出。
+        """调用回复生成模型，校验完整协议后放出正文与副作用事件。
 
-        与决策流共用 ``release``，因此分句、表情包与副作用标签的下游处理完全
-        一致——调用方感知不到正文来自哪一次模型调用。
+        与决策流共用 ``release``，因此分句、表情包与副作用标签的下游处理口径
+        完全一致。replyer 事件先在本函数内暂存，只有完整响应含非空 ``<say>`` 且
+        标签外没有裸正文时才统一放出，避免后段协议错误发生前已经发送台词、TTS
+        或写入记忆。
 
         回复生成模型**不允许再出动作头**：动作已经定了，它只负责把话说出来。
         出现的动作头一律忽略，不覆盖已通过校验的决策。
@@ -632,19 +647,23 @@ class ConversationAgent:
         :param emoji_emotions: 表情包目标情绪累积列表，就地追加。
         :param signal: 可选取消事件。
         :raises LlmError: 由调用处的既有分支转成失败状态；aborted 原样上抛。
-        副作用：一次模型往返，并通过 release 放出正文事件。
+        :raises ResponseProtocolError: 回复缺少非空 ``<say>`` 或出现标签外正文。
+        副作用：一次模型往返；协议完整有效时通过 release 放出暂存事件。
         """
-        parser = ResponseParser()
+        parser = ResponseParser(implicit_say=False)
+        staged_events: List[ParseEvent] = []
+        staged_body_parts: List[str] = []
+        staged_emoji_emotions: List[str] = []
 
-        async def consume(events: list[ParseEvent]) -> None:
+        def stage(events: list[ParseEvent]) -> None:
             for event in events:
                 if isinstance(event, DecisionEvent):
                     continue
-                await release([event])
+                staged_events.append(event)
                 if isinstance(event, TextEvent):
-                    body_parts.append(event.value)
+                    staged_body_parts.append(event.value)
                 elif isinstance(event, EmojiEvent):
-                    emoji_emotions.append(event.emotion)
+                    staged_emoji_emotions.append(event.emotion)
 
         assert self._replyer is not None
         async with aclosing(
@@ -661,9 +680,18 @@ class ConversationAgent:
                 text = chunk.get('text')
                 if not text:
                     continue
-                await consume(parser.push(text))
-        # 冲刷未闭合标签，与决策流同款宽容度。
-        await consume(parser.flush())
+                stage(parser.push(text))
+        # 先完整校验 replyer 协议，再一次性放行事件。这样即使末尾才出现裸文本，
+        # 前面的台词、TTS、记忆和情绪副作用也不会已经对外生效。
+        stage(parser.flush())
+        if (
+            not any(isinstance(event, SayEvent) for event in staged_events)
+            or not ''.join(staged_body_parts).strip()
+        ):
+            raise ResponseProtocolError('回复生成没有产生非空 <say> 正文')
+        await release(staged_events)
+        body_parts.extend(staged_body_parts)
+        emoji_emotions.extend(staged_emoji_emotions)
 
     def _parse_head(self, event: DecisionEvent, frame: DecisionFrame) -> DecisionHead:
         """把解析器动作头转换为已通过帧校验的 DecisionHead。
