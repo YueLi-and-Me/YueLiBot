@@ -337,11 +337,13 @@ class ModelRouter:
                      signal: asyncio.Event | None = None,
                      response_format: Dict[str, str] | None = None,
                      tools: List[dict] | None = None,
+                     require_text: bool = False,
                      ) -> AsyncIterator[dict]:
-        """依次尝试候选模型，直到一个候选产生首个输出增量。
+        """依次尝试候选模型，直到一个候选产生首个可用输出增量。
 
         一旦向调用方产生内容就不再切换候选，避免同一请求重复输出；首 token 超时
-        包含下层 provider 的内部重试时间。
+        包含下层 provider 的内部重试时间。要求正文时，推理增量会暂存到首段正文
+        到达；只有推理或明确拒绝图片输入的候选不会抢占本轮成功位置。
 
         :param messages: OpenAI 兼容消息列表。
         :param temperature: 采样温度，默认 ``0.85``。
@@ -349,6 +351,7 @@ class ModelRouter:
         :param signal: 可选取消事件，传递给底层 provider。
         :param response_format: 可选响应格式配置。
         :param tools: 可选的工具声明列表，透传给候选 provider。
+        :param require_text: 是否要求候选至少产生一段非空正文；视觉描述应启用。
 
         :yield: 底层 provider 返回的增量字典，顺序与实际模型流一致。
 
@@ -385,6 +388,7 @@ class ModelRouter:
                 signal=signal,
                 response_format=response_format,
                 tools=tools,
+                require_text=require_text,
                 exchange=exchange,
             )
             # 上层会在动作头完整、图片截止或用户中断时提前关闭路由流；这里必须
@@ -407,6 +411,7 @@ class ModelRouter:
                                  signal: asyncio.Event | None,
                                  response_format: Dict[str, str] | None,
                                  tools: List[dict] | None,
+                                 require_text: bool,
                                  exchange: '_ExchangeRecord',
                                  ) -> AsyncIterator[dict]:
         """按候选顺序实际发起请求，产生增量并在切换候选时更新记录状态。
@@ -460,18 +465,44 @@ class ModelRouter:
                 async with aclosing(chunks) as candidate_stream:
                     iterator = candidate_stream.__aiter__()
                     started = time.monotonic()
+                    initial_chunks: list[dict] = []
+                    initial_reasoning = ''
                     try:
-                        # 任务级首字窗口包含下层内部重试，窗口耗尽会在重试跑满前切换候选。
+                        # 任务级首字窗口包含下层内部重试。视觉描述要求真正的正文，
+                        # 不能让 reasoning 增量或空流被当作候选成功而阻断故障切换。
                         async with asyncio.timeout(self._first_token_timeout_ms / 1_000):
-                            first_chunk = await anext(iterator)
+                            while True:
+                                first_chunk = await anext(iterator)
+                                initial_chunks.append(first_chunk)
+                                reasoning = first_chunk.get('reasoning')
+                                if reasoning:
+                                    initial_reasoning += str(reasoning)
+                                text = first_chunk.get('text')
+                                if not require_text or (isinstance(text, str) and text):
+                                    break
                     except StopAsyncIteration:
-                        self._health.recover(candidate.provider)
-                        return
+                        if not require_text:
+                            # 非文本任务或兼容接口可能合法地返回空流，维持既有语义；
+                            # 只有调用方显式要求正文时才把空流作为候选失败。
+                            self._health.recover(candidate.provider)
+                            return
+                        raise LlmError(
+                            'model',
+                            '模型流已结束，但没有返回正文',
+                            initial_reasoning[-400:],
+                        )
                     except TimeoutError as exc:
                         raise LlmError(
                             'timeout',
                             f'等待首字超过 {self._first_token_timeout_ms} 毫秒',
                         ) from exc
+
+                    if require_text and 'unsupported image' in initial_reasoning.casefold():
+                        raise LlmError(
+                            'model',
+                            '当前候选拒绝图片输入：Unsupported Image',
+                            initial_reasoning[-400:],
+                        )
 
                     elapsed_ms = int((time.monotonic() - started) * 1_000)
                     exchange.first_token(elapsed_ms)
@@ -483,8 +514,9 @@ class ModelRouter:
                             provider=candidate.provider,
                             elapsedMs=elapsed_ms,
                         )
-                    yielded = True
-                    yield first_chunk
+                    for initial_chunk in initial_chunks:
+                        yielded = True
+                        yield initial_chunk
                     async for chunk in iterator:
                         yielded = True
                         yield chunk

@@ -60,6 +60,7 @@ class ImageDescriptionProvider(Protocol):
         temperature: float = 0.85,
         max_tokens: int | None = None,
         signal: asyncio.Event | None = None,
+        require_text: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """按增量块产生视觉模型响应。"""
 
@@ -439,6 +440,7 @@ class ChatImageDescriber:
                 messages=[{'role': 'user', 'content': content}],
                 temperature=generation.temperature,
                 max_tokens=generation.token_limit,
+                require_text=True,
             )
             async with aclosing(stream) as model_stream:
                 async for chunk in model_stream:
