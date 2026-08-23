@@ -857,6 +857,37 @@ class MemoryStore:
         ).fetchone()
         return int(row[0])
 
+    def messages_after(self, stream_id: int, since_id: int, limit: int) -> list[StoredMessage]:
+        """按 ID 顺序取某条消息之后的一批消息，不受摘要归档状态影响。
+
+        与 :meth:`working_memory` / :meth:`oldest_pending` 的差别是有意的：那两个都按
+        ``episode_id IS NULL`` 判定「待处理」，消息一旦被摘要归档就此不可见。事实抽取是
+        第二个独立的消费者，若共用同一判据，两者会互相吃掉输入且不报错——因此它按自己的
+        游标取消息，与摘要队列完全解耦。
+
+        :param stream_id: 目标 stream ID。
+        :param since_id: 起点消息 ID（不含）；``0`` 表示从头开始。
+        :param limit: 最多返回的消息条数。
+        :return: 按 ID 正序排列的 `StoredMessage` 列表。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表，不写任何列。
+        """
+        rows = self._db.execute(
+            '''SELECT id, role, content, created_at, sender_person_id FROM messages
+               WHERE stream_id = ? AND id > ? ORDER BY id ASC LIMIT ?''',
+            (stream_id, since_id, limit),
+        ).fetchall()
+        return [
+            StoredMessage(
+                message_id=r[0],
+                role=r[1],
+                content=r[2],
+                created_at=r[3],
+                sender_person_id=r[4],
+            )
+            for r in rows
+        ]
+
     def recent_speakers(
         self,
         stream_id: int,
