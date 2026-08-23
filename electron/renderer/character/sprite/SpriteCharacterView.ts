@@ -7,6 +7,9 @@
 import type { CharacterView, CharacterViewOptions, Emotion, Gesture, OutfitItem } from '../types.ts'
 import type { SpriteManifest } from '../../../shared/sprite-manifest.ts'
 
+/** 渲染循环的帧间隔上限（毫秒），即 30fps。 */
+const FRAME_MS = 1000 / 30
+
 /**
  * 立绘差分实现。
  *
@@ -39,6 +42,7 @@ export class SpriteCharacterView implements CharacterView {
   private outfit: readonly OutfitItem[] = []
   private raf = 0
   private startedAt = performance.now()
+  private lastFrameAt = 0
   private disposed = false
 
   ready = false
@@ -193,7 +197,14 @@ export class SpriteCharacterView implements CharacterView {
 
   private loop = (): void => {
     if (this.disposed) return
-    this.draw(performance.now())
+    // 渲染上限 30fps：待机微动（呼吸/摇摆）使每帧都有绘制，rAF 在高刷屏上会
+    // 跑到 120/144Hz，整图 drawImage 的 GPU 占用随之翻倍。30fps 是桌宠类应用的
+    // 常见帧率，肉眼无感知差异，渲染开销直接减半以上。
+    const now = performance.now()
+    if (now - this.lastFrameAt >= FRAME_MS) {
+      this.lastFrameAt = now
+      this.draw(now)
+    }
     this.raf = requestAnimationFrame(this.loop)
   }
 
