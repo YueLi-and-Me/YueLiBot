@@ -3,14 +3,14 @@
 方舟、DeepSeek、Qwen、月之暗面、智谱、Ollama、OpenAI 本身都提供
 `POST {baseUrl}/chat/completions`，所以一个实现打通全部。
 
-客户端负责鉴权参数组装、SSE 增量解析、思考字段/标签分流和请求级重试；
-在已经向上游产生正文后不重放请求，以避免重复输出和副作用。
+客户端负责鉴权参数组装、SSE 增量解析、HTTP 200 诊断正文识别、思考字段/标签
+分流和请求级重试；在已经向上游产生正文后不重放请求，以避免重复输出和副作用。
 """
 
 from __future__ import annotations
 
 from contextlib import aclosing
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator, Dict, List, Literal
 from urllib.parse import urlencode
 import asyncio
 import json
@@ -140,6 +140,115 @@ def _extract_status_error(payload: Any) -> tuple[str, str]:
     if code or message:
         return str(code), str(message)
     return '', ''
+
+
+_POLICY_NOTICE_LEAD = 'the prompt could not be submitted.'
+_POLICY_NOTICE_MARKERS = (
+    'the prompt contains sensitive words',
+    'generative ai prohibited use policy',
+)
+_POLICY_NOTICE_BUFFER_LIMIT = 2_048
+
+
+def _normalize_policy_notice(text: str) -> str:
+    """折叠供应商诊断文本中的空白，保留可稳定核对的英文签名。
+
+    :param text: 已累计的原始模型正文。
+    :return: 去除首尾空白、连续空白折叠并转为小写的文本。
+    副作用：不修改输入文本。
+    """
+
+    return ' '.join(text.split()).casefold()
+
+
+class _StreamPolicyNoticeGuard:
+    """在首个正文块外泄前识别被兼容网关包装成 HTTP 200 的安全拦截。
+
+    只暂存与现场固定英文签名仍可能匹配的起始块。普通 ``<say>``、JSON 或其他
+    文本在第一个块即可排除并原序释放，不给正常请求增加整段缓冲；命中时则在
+    ``ModelRouter`` 看到任何正文前抛出 ``blocked``，保留切换候选的机会。
+    """
+
+    def __init__(self) -> None:
+        """创建尚未暂存任何候选诊断块的守卫。"""
+
+        self._chunks: List[Dict] = []
+        self._text = ''
+        self._resolved = False
+
+    def push(self, chunk: Dict) -> List[Dict]:
+        """检查一个模型增量，返回当前可以安全向上游释放的块。
+
+        :param chunk: OpenAI 兼容 provider 已解析的增量字典。
+        :return: 可以立即释放的原始增量；候选诊断仍未判定时返回空列表。
+        :raises LlmError: 累计正文命中已知安全拦截签名。
+        副作用：候选签名未排除时暂存原始增量以保持分片顺序。
+        """
+
+        if self._resolved:
+            return [chunk]
+        text = chunk.get('text')
+        if not isinstance(text, str):
+            if not self._chunks:
+                return [chunk]
+            if chunk.get('tool_calls'):
+                return self._release_with(chunk)
+            self._chunks.append(chunk)
+            return []
+
+        self._chunks.append(chunk)
+        self._text += text
+        normalized = _normalize_policy_notice(self._text)
+        if self._is_blocked(normalized):
+            raise LlmError(
+                'blocked',
+                '模型接口以 HTTP 200 正文返回内容拦截提示',
+                self._text[:400],
+            )
+        if self._could_still_match(normalized):
+            return []
+        return self._release(resolved=True)
+
+    def flush(self) -> List[Dict]:
+        """流结束时释放未构成完整拦截签名的暂存块。"""
+
+        return self._release()
+
+    @staticmethod
+    def _is_blocked(normalized: str) -> bool:
+        """判断折叠后的正文是否包含完整且特异的 Google 拦截签名。"""
+
+        return (
+            normalized.startswith(_POLICY_NOTICE_LEAD)
+            and all(marker in normalized for marker in _POLICY_NOTICE_MARKERS)
+        )
+
+    @staticmethod
+    def _could_still_match(normalized: str) -> bool:
+        """判断当前前缀是否仍可能成长为已知拦截签名。"""
+
+        if len(normalized) > _POLICY_NOTICE_BUFFER_LIMIT:
+            return False
+        return (
+            not normalized
+            or _POLICY_NOTICE_LEAD.startswith(normalized)
+            or normalized.startswith(_POLICY_NOTICE_LEAD)
+        )
+
+    def _release_with(self, chunk: Dict) -> List[Dict]:
+        """把一个非文本终局块追加到暂存序列后统一释放。"""
+
+        self._chunks.append(chunk)
+        return self._release(resolved=True)
+
+    def _release(self, *, resolved: bool = False) -> List[Dict]:
+        """按原顺序取走全部暂存块并清空守卫状态。"""
+
+        chunks = self._chunks
+        self._chunks = []
+        self._text = ''
+        self._resolved = resolved
+        return chunks
 
 
 class _ReasoningTagParser:
@@ -317,10 +426,15 @@ class OpenAiChatProvider:
                     )
                 # 路由层可能在动作已定或任务截止时提前关闭本层；显式持有内部
                 # 单次请求流，确保关闭能一路传到 httpx 响应。
+                policy_guard = _StreamPolicyNoticeGuard()
                 async with aclosing(chunks) as request_stream:
                     async for chunk in request_stream:
+                        for guarded_chunk in policy_guard.push(chunk):
+                            yielded_content = True
+                            yield guarded_chunk
+                    for guarded_chunk in policy_guard.flush():
                         yielded_content = True
-                        yield chunk
+                        yield guarded_chunk
                 return
             except LlmError as exc:
                 retryable = exc.kind in ('network', 'quota')
