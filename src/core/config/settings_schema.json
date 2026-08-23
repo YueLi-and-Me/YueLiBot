@@ -262,6 +262,22 @@
               "help": "每次摘要消化的最老消息条数；必须小于触发数量。"
             },
             {
+              "key": "fact_extract_trigger_messages",
+              "type": "integer",
+              "label": "事实抽取触发消息数",
+              "min": 8,
+              "max": 500,
+              "help": "累计多少条消息后回看一次并抽取长期事实；比摘要更密，因为事实的时效性更强"
+            },
+            {
+              "key": "fact_extract_batch_messages",
+              "type": "integer",
+              "label": "单次抽取消息数",
+              "min": 4,
+              "max": 200,
+              "help": "每次抽取回看的最旧消息条数，必须小于触发消息数"
+            },
+            {
               "key": "session_gap_minutes",
               "type": "integer",
               "label": "会话间隔（分钟）",
@@ -1189,6 +1205,11 @@
               "description": "压缩长对话为角色记忆的模型；留空继承对话候选。"
             },
             {
+              "key": "memory",
+              "label": "记忆抽取",
+              "description": "回合结束后回看一段对话、抽出值得长期记住的事实的模型；后台任务，不在回复关键路径上，可以用便宜快的模型。留空继承对话候选。"
+            },
+            {
               "key": "schedule",
               "label": "日程安排",
               "description": "生成角色每日日程的模型；留空继承对话候选。"
@@ -1292,6 +1313,11 @@
               "key": "summary",
               "label": "长期记忆摘要",
               "description": "摘要任务的采样参数。"
+            },
+            {
+              "key": "memory",
+              "label": "记忆抽取",
+              "description": "事实抽取要稳定的结构化输出，温度取最低一档；上限给足，截断会让 JSON 不可解析而整批丢弃。"
             },
             {
               "key": "schedule",

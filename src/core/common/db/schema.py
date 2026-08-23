@@ -132,6 +132,106 @@ CREATE INDEX IF NOT EXISTS idx_facts_person_active ON facts(person_id, active);
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(tokens, content='', tokenize='unicode61');
 CREATE VIRTUAL TABLE IF NOT EXISTS cues_fts  USING fts5(tokens, content='', tokenize='unicode61');
 
+-- ------------------------------------------------------------ L3 知识与图谱
+-- 以下六张表全部是纯新增，因此按既有惯例只写 CREATE TABLE IF NOT EXISTS、不写迁移：
+-- 新增表不改动任何既有表结构，为它单开一个 user_version 只是多造一个要维护的版本号。
+-- 建表时机与其余表一致，由启动时的幂等建表覆盖。
+CREATE TABLE IF NOT EXISTS knowledge (
+  id          INTEGER PRIMARY KEY,
+  content     TEXT    NOT NULL,
+  -- 去重键与 facts.content_key 同口径，迁移脚本重复执行时靠它保持幂等。
+  content_key TEXT    NOT NULL UNIQUE,
+  source      TEXT    NOT NULL DEFAULT '',
+  tokens_v2   TEXT    NOT NULL DEFAULT '',
+  -- float32 packed，与 facts.embedding 同格式。迁移进来的历史知识必须用当前向量
+  -- 模型重算：不同模型的向量空间不可比，直接搬旧值检索结果是错的。
+  embedding   BLOB,
+  created_at  INTEGER NOT NULL
+);
+-- 与 facts_fts 同款：content='' 的外部内容表，rowid 必须由写入方显式对齐主键，
+-- 漏对齐会让检索结果指向错误的行。
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(tokens, content='', tokenize='unicode61');
+
+CREATE TABLE IF NOT EXISTS knowledge_nodes (
+  id         INTEGER PRIMARY KEY,
+  concept    TEXT    NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_edges (
+  id         INTEGER PRIMARY KEY,
+  source_id  INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+  target_id  INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+  -- 关联强度，取值 (0, 1]；迁移来的历史边保留原强度，之后由使用频次维护。
+  strength   REAL    NOT NULL DEFAULT 1.0,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(source_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_edges_source ON knowledge_edges(source_id);
+
+-- ---------------------------------------------------------------- 黑话与表达
+CREATE TABLE IF NOT EXISTS jargon (
+  id         INTEGER PRIMARY KEY,
+  term       TEXT    NOT NULL,
+  meaning    TEXT    NOT NULL,
+  -- NULL 表示全局通用，非空表示只在该会话里成立。同一个词在不同群含义可以不同，
+  -- 所以唯一键带上 stream_id。
+  stream_id  INTEGER REFERENCES streams(id) ON DELETE CASCADE,
+  -- confirmed 才参与提示词注入；pending 是尚未判定的候选，只存不用。
+  status     TEXT    NOT NULL DEFAULT 'confirmed',
+  hits       INTEGER NOT NULL DEFAULT 0,
+  source     TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE(term, stream_id)
+);
+CREATE INDEX IF NOT EXISTS idx_jargon_status ON jargon(status, stream_id);
+
+CREATE TABLE IF NOT EXISTS expressions (
+  id         INTEGER PRIMARY KEY,
+  situation  TEXT    NOT NULL,
+  style      TEXT    NOT NULL,
+  stream_id  INTEGER REFERENCES streams(id) ON DELETE CASCADE,
+  use_count  INTEGER NOT NULL DEFAULT 0,
+  source     TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  UNIQUE(situation, style, stream_id)
+);
+
+-- ------------------------------------------------------------ 记忆联想网络
+-- 三层记忆各有各的生命周期与衰减口径，不能合并成一张宽表（那是三份重复真相的老错误），
+-- 但联想需要一个统一的 id 空间来表达「这条事实和那段情节有关」。memory_nodes 是纯指针：
+-- 删掉它不丢任何记忆，重建只要扫一遍 facts / episodes / knowledge 三张表。
+CREATE TABLE IF NOT EXISTS memory_nodes (
+  id       INTEGER PRIMARY KEY,
+  ref_kind TEXT    NOT NULL,   -- 'fact' | 'episode' | 'knowledge'
+  ref_id   INTEGER NOT NULL,
+  UNIQUE(ref_kind, ref_id)
+);
+-- 边的唯一来源是「一起被点亮过」：同批写入，或同一次召回里真正进了提示词的那些。
+-- 与 knowledge_edges 刻意分开——那张表表达「概念 A 与概念 B 相关」，这张表达
+-- 「这两段记忆总是一起出现」，合并会让建边规则立刻分裂成两套。
+-- 强度衰减复用 facts 的 retention 口径；跌破 FREEZE 只置非活跃，绝不删除。
+CREATE TABLE IF NOT EXISTS memory_edges (
+  id         INTEGER PRIMARY KEY,
+  source_id  INTEGER NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+  target_id  INTEGER NOT NULL REFERENCES memory_nodes(id) ON DELETE CASCADE,
+  strength   REAL    NOT NULL DEFAULT 0.35,
+  updated_at INTEGER NOT NULL,
+  active     INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(source_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(active, source_id);
+
+-- -------------------------------------------------------------- 人物画像缓存
+-- 派生缓存，不是第三份真相：每一句都能追溯到某条 fact 或 episode，整表删掉重建
+-- 不丢任何信息。dirty=1 表示有新证据待刷新，由后台任务批量重算，不在回合关键路径上。
+CREATE TABLE IF NOT EXISTS person_profile (
+  person_id      INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+  summary        TEXT    NOT NULL DEFAULT '',
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  refreshed_at   INTEGER NOT NULL DEFAULT 0,
+  dirty          INTEGER NOT NULL DEFAULT 1
+);
+
 -- ---------------------------------------------------------------- 待说的话
 CREATE TABLE IF NOT EXISTS pending_utterances (
   id            INTEGER PRIMARY KEY,

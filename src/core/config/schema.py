@@ -366,6 +366,11 @@ class ConversationConfig(BaseModel):
     recalled_episode_limit: int = Field(default=2, ge=0, le=20)
     recent_episode_limit: int = Field(default=2, ge=0, le=20)
     episode_context_limit: int = Field(default=3, ge=0, le=30)
+    # 事实抽取的节奏，口径与 summarize_* 完全一致：累计到触发阈值就取最旧的一批
+    # 交给抽取任务。默认比摘要更密（32/12），因为事实的时效性比情节摘要强——
+    # 一条「他下周要考试」隔两小时才入库就已经错过了可用的窗口。
+    fact_extract_trigger_messages: int = Field(default=32, ge=8, le=500)
+    fact_extract_batch_messages: int = Field(default=12, ge=4, le=200)
 
     @model_validator(mode='after')
     def _validate_summary_window(self) -> 'ConversationConfig':
@@ -377,6 +382,10 @@ class ConversationConfig(BaseModel):
         """
         if self.summarize_batch_messages >= self.summarize_trigger_messages:
             raise ValueError('summarize_batch_messages 必须小于 summarize_trigger_messages')
+        if self.fact_extract_batch_messages >= self.fact_extract_trigger_messages:
+            raise ValueError(
+                'fact_extract_batch_messages 必须小于 fact_extract_trigger_messages'
+            )
         remaining = self.summarize_trigger_messages - self.summarize_batch_messages
         if remaining > self.working_memory_messages:
             raise ValueError(
@@ -464,6 +473,11 @@ class GenerationConfig(BaseModel):
     )
     vision: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=120)
+    )
+    # 记忆抽取要的是稳定的结构化输出，温度取全局最低一档；上限给足是因为一批
+    # 消息可能同时产出多条事实，截断会让 JSON 直接不可解析而整批丢弃。
+    memory: GenerationTaskConfig = Field(
+        default_factory=lambda: GenerationTaskConfig(temperature=0.1, max_tokens=1024)
     )
 
 
@@ -760,6 +774,9 @@ class ModelTaskConfig(BaseModel):
     # 情景分析：把一段历史概括成「此刻是什么情况」。它原来借用摘要那一档，
     # 但这件事已经从群聊后台画像扩展到私聊即时决策，在关键路径上，值得单开。
     scene: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    # 记忆抽取：回合结束后回看一段对话，判断有没有值得长期记住的事实。它是后台
+    # 任务、不在回复关键路径上，做的是结构化抽取而非发挥，配便宜快的模型即可。
+    memory: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
@@ -839,6 +856,7 @@ class RoutingConfig(BaseModel):
     planner: TaskRouting = Field(default_factory=lambda: TaskRouting(task='planner'))
     replyer: TaskRouting = Field(default_factory=lambda: TaskRouting(task='replyer'))
     scene: TaskRouting = Field(default_factory=lambda: TaskRouting(task='scene'))
+    memory: TaskRouting = Field(default_factory=lambda: TaskRouting(task='memory'))
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
 
