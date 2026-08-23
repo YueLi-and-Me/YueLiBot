@@ -146,7 +146,12 @@ CREATE TABLE IF NOT EXISTS knowledge (
   -- float32 packed，与 facts.embedding 同格式。迁移进来的历史知识必须用当前向量
   -- 模型重算：不同模型的向量空间不可比，直接搬旧值检索结果是错的。
   embedding   BLOB,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- 命中计数与 facts.hit_count 同口径。本轮不参与检索打分，只落数据：
+  -- 检索调优要的是「哪些知识真的被用到过」，而那份数据只能事后积累，
+  -- 补列的窗口在真机建表之前，错过就得为两个整数付一次迁移。
+  hit_count   INTEGER NOT NULL DEFAULT 0,
+  last_hit_at INTEGER
 );
 -- 与 facts_fts 同款：content='' 的外部内容表，rowid 必须由写入方显式对齐主键，
 -- 漏对齐会让检索结果指向错误的行。
