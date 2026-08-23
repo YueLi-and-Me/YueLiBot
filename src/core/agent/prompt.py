@@ -217,6 +217,27 @@ def _scene_block(scene: Optional[Tuple[str, str]]) -> str:
     ]))
 
 
+def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
+    """把本轮命中的黑话渲染为「背景，不是任务」的提示词块。
+
+    与 ``_activity_block`` / ``_scene_block`` 同一条纪律：只注入本轮消息里
+    真正命中的词条（查表与截断在 ``agent/jargon.py``，这里是纯渲染器），
+    收尾必须压一句「听得懂就行、别刻意去用」——没有这句，模型会把「我
+    知道这个词的意思」当成本轮要交代的内容。
+
+    :param jargon: ``(词, 含义)`` 序列；`None` 或空序列表示不生成该块。
+    :return: 带段落前缀的黑话块；无命中时返回空字符串，整块省略。
+    """
+    if not jargon:
+        return ''
+    return _prefixed_block('\n'.join([
+        '# 这个群里的一些说法',
+        *[f'「{term}」= {meaning}' for term, meaning in jargon],
+        '',
+        '这是他们平时的说法，你听得懂就行。别刻意去用，也不要解释给他们听。',
+    ]))
+
+
 def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> str:
     """把一组记忆条目渲染为带标题和使用规则的列表块。
 
@@ -272,6 +293,7 @@ def build_system_prompt(
     emoji_enabled: bool = False,
     emoji_tags: Sequence[str] = (),
     scene: Optional[Tuple[str, str]] = None,
+    jargon: Optional[Sequence[Tuple[str, str]]] = None,
     decision_only: bool = False,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
@@ -300,6 +322,8 @@ def build_system_prompt(
         变成唯一主指令，而不是追加成与既有直接发言指令竞争的第二套规则。
     :param emoji_enabled: 本轮是否允许发表情包。
     :param emoji_tags: 表情包库内高频情绪标签，用于锚定 ``<emoji>`` 的 emotion 用词。
+    :param jargon: 本轮消息命中的黑话 ``(词, 含义)`` 列表，由 ``agent/jargon.py``
+        查表截断后传入；为空时整块省略。
     :param decision_only: 只产出动作决策、不写正文时置真。此时省略回复风格、
         临时语调与表达样本三块——它们全都只影响「话怎么说」，决策层用不上，
         留着既占上下文也会诱导它顺手把台词写了。身份、人格、关系与记忆照常
@@ -358,6 +382,7 @@ def build_system_prompt(
         'persona': _prefixed_block(persona),
         'activity': _activity_block(activity),
         'scene': _scene_block(scene),
+        'jargon': _jargon_block(jargon),
         'facts': _memory_block(
             '你早就知道的事',
             facts,
@@ -410,6 +435,7 @@ def build_itemized_system_prompt(
     aliases: Optional[List[str]] = None,
     platform_name: Optional[str] = None,
     scene: Optional[Tuple[str, str]] = None,
+    jargon: Optional[Sequence[Tuple[str, str]]] = None,
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     decision_only: bool = False,
 ) -> Tuple[str, List[str]]:
@@ -439,6 +465,7 @@ def build_itemized_system_prompt(
     :param aliases: 可选 Bot 别名。
     :param platform_name: 平台侧 Bot 显示名。
     :param scene: 可选群聊场景画像。
+    :param jargon: 本轮消息命中的黑话 ``(词, 含义)`` 列表；为空时不生成该上下文项。
     :param render_params: 可选的提示词渲染参数收集字典。
     :param decision_only: 是否只做动作决策；为真时省略表达层内容。
 
@@ -515,6 +542,7 @@ def build_itemized_system_prompt(
         ('重逢背景', resumption or ''),
         ('当前活动', _activity_block(activity).strip()),
         ('会话场景', _scene_block(scene).strip()),
+        ('群里的说法', _jargon_block(jargon).strip()),
         ('长期记忆', _memory_block(
             '你早就知道的事',
             facts,
