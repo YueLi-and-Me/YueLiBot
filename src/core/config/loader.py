@@ -170,6 +170,14 @@ def _build_routing(
             raise ValueError(
                 f'models.toml 的 model_tasks.{task}.model_list 引用了不存在的模型：{model_name}'
             ) from exc
+        # visual 是模型目录对图片输入能力的显式声明。只在 WebUI 里过滤还不够：
+        # 手工编辑 TOML 仍可能把纯文本模型放进视觉路由，最终让模型把图片当作
+        # Unsupported Image。加载期直接拒绝，避免错误描述进入聊天上下文和缓存。
+        if task == 'vision' and not model.visual:
+            raise ValueError(
+                f'model_tasks.vision 的候选 {model_name} 没有标记 visual = true，'
+                '不能用于屏幕视觉或聊天图片理解'
+            )
         provider = _selected_provider(model, providers)
         # 豆包语音是私有协议，只能承载 tts。指到别的任务上只会在运行时抛出
         # 难以定位的错误，不如在加载阶段就说清楚。
