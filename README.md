@@ -27,6 +27,8 @@
 - 🎭 **她会因为你而变**：按人隔离的好感度会随交互漂移，冷落她也有代价；全局精力持续影响她的表达。人格不是一段写死的提示词。
 - 👀 **她知道什么时候不该说话**：日程、屏幕感知和打扰预算共同决定她开不开口。一个随时插话的桌宠只会被关掉。
 - 🌙 **你不看她的时候她也在**：会做梦，会补偿离线期间的时间流逝，写的日记你可以翻。
+- 💬 **不只在桌面**：QQ 私聊和白名单群里是同一个她——同一份记忆、同一条关系轴，只是出口不同。群里她也会先判断这一轮该不该开口。
+- 🎛 **内部是可以看见的**：浏览器里配模型、翻她这一轮每一级模型调用的输入输出、改提示词再拿历史事件重放。
 - 🖼 **不依赖 Live2D**：角色是 AI 生成的立绘差分，一张参考图加一句描述就能出一整套表情。
 
 ---
@@ -58,7 +60,7 @@ uv pip install "rembg[cli]" onnxruntime
 
 ### 2. 配置
 
-第一次运行会打开设置窗口。保存后，运行时配置固定写入项目根目录的 `config\`，按职责拆成四份：
+第一次运行会打开设置窗口。保存后，运行时配置固定写入项目根目录的 `config\`，按职责拆成五份：
 
 | 文件 | 内容 |
 | :--- | :--- |
@@ -66,6 +68,7 @@ uv pip install "rembg[cli]" onnxruntime
 | `models.toml` | 具体模型、任务引用，各任务的温度和输出上限 |
 | `bot.toml` | Bot 名字、用户关系、人格提示词与会话记忆策略 |
 | `features.toml` | 语音、视觉、向量召回和调试开关 |
+| `napcat.toml` | QQ 接入：协议端地址与令牌、机器人登录号、群白名单（见下一节） |
 
 数据库、日志和 Electron 缓存统一放在项目根目录的 `data\`。程序启动时会拒绝把运行时根目录解析到 C 盘；特殊启动方式可用 `YUELI_PROJECT_ROOT` 明确指定其它盘。项目根目录若存在旧版 `config.toml`，会自动迁移为四文件结构并保留原文件。
 
@@ -144,6 +147,19 @@ npm run dev
 - 角色轮廓之外全部鼠标穿透，不挡桌面操作
 - `Ctrl+Shift+Q` 退出
 
+### 4. 管理面板
+
+后端启动时会在控制台打印面板地址与登录 token（默认 `http://127.0.0.1:7999`），token 由 Python 生成并落在 `data\runtime\`，不会写进日志或事件流。面板四个页面：
+
+| 页面 | 用途 |
+| :--- | :--- |
+| 观察 | 管线阶段板、事件账本检索、日志流；每一级模型调用的完整输入输出都能翻回来看 |
+| 模型 | 厂商与模型目录、各任务的候选清单与采样参数 |
+| 人物 | 她记住的人、各自的关系状态与事实 |
+| 设置 | 五份 TOML 的读改存，含群聊、感知出口与主动互动开关 |
+
+面板只监听 `127.0.0.1`，所有接口过 token 鉴权；浏览器拿到的是独立会话凭据，不是后端的主 token。
+
 ---
 
 ## ⚠️ 三个不报错的坑 · PITFALLS
@@ -160,23 +176,32 @@ npm run dev
 
 业务域已经从 TypeScript 迁到 Python：Electron 只做平台层和进程治理，对话、记忆、人格、日程、主动行为全在 Python 后端。
 
-目录形状：`src/` 是 Python 包根，一个模块一个文件夹，入口在仓库根的 `bot.py`；Electron 那一侧整体收在 `electron/`。
+目录形状：`src/` 是 Python 包根，按「内核 / 桌宠 / 平台适配器」分成三个包，入口在仓库根的 `bot.py`；Electron 那一侧整体收在 `electron/`，管理面板的前端在 `webui/`。
 
 ```
 bot.py              后端入口
 
 src/                业务真源（Python 包根）
   main.py           启动装配：读配置、建服务、拉 uvicorn
-  agent/            人设、提示词、表达习惯、增量标签解析、历史修复、反思
-  llm_models/       OpenAI 兼容的流式对话与多厂商路由
-  memory/           三层记忆、分词、遗忘曲线
-  persona/          按人好感度 + 全局精力 → 自然语言行为指令
-  awareness/        前台归类、键鼠强度、兴趣值、意图队列、睡眠状态
-  schedule/         24h 生成式日程
-  services/         对话编排、主动感知、视觉、TTS、追踪
-  api/              FastAPI 路由与 WebSocket
-  config/           配置 schema 与多文件 TOML 加载
-  common/           时钟、日志、SQLite 连接与迁移
+  core/             内核：与出口无关的业务真源
+    agent/          人设、动作协议与解析、认知动作、观察 Agent、表达习惯、反思
+    llm_models/     OpenAI 兼容的流式对话、多厂商路由与每次调用的落盘记录
+    memory/         三层记忆、分词、遗忘曲线
+    persona/        按人好感度 + 全局精力 → 自然语言行为指令
+    awareness/      前台归类、键鼠强度、兴趣值、意图队列、睡眠状态
+    schedule/       24h 生成式日程
+    services/       对话编排、主动感知、图片理解、表情包、TTS
+    observe/        管线事件账本、冻结的阶段 ID、事件广播
+    platform_io/    出口契约：桌面的流式出口与 QQ 的整句出口共用同一套
+    prompts/        外置提示词模板、占位符校验与版本归档
+    api/            FastAPI 路由与 WebSocket
+    webui/          管理面板的静态资源托管与日志接口
+    config/         配置 schema 与多文件 TOML 加载
+    common/         时钟、日志、SQLite 连接与迁移
+  desktop/          桌宠专属：前台归类、屏幕视觉、传感器
+  platforms/napcat/ QQ 适配器，由 supervisor 拉成独立进程
+
+webui/              管理面板前端（React + Vite），构建产物出到 out/webui
 
 electron/           Electron 端（TypeScript）
   main/             主进程（持有 API Key）
@@ -223,6 +248,7 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 | :--- | :--- |
 | `npm run dev` | 开发模式 |
 | `npm run dev:renderer` | 只起渲染层（浏览器里调画面，比重启 Electron 快得多） |
+| `npm run dev:webui` | 只起管理面板前端，需要后端已经在跑 |
 | `npm run build` | 生产构建 |
 | `npm run selftest` | **无头自检**，8 段断言 |
 | `npm run typecheck` | 类型检查 |
@@ -235,7 +261,7 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 > 测试文件（`pytests/`、`tests/`、`*.test.ts`）和 `docs/` **都不进版本库**，检出后不会有这些目录，上面三条测试命令也就无从执行。它们只存在于开发机的工作区。
 > 版本库里刻意只留代码和这份 README——所以 README 必须自己把话说完整，不指望读者能翻到别的文件。
 >
-> 因此**本项目不做 CI**：检出的仓库里没有测试可跑。验证只在开发机进行，标准是三条绿状态门（`pytest` / `tsc --noEmit` / `vitest run`）。
+> 因此**本项目不做 CI**：检出的仓库里没有测试可跑。验证只在开发机进行，标准是四条绿状态门（`uv run pytest` / `npm run typecheck` / `npm test` / `npm run build`）——`tsc --noEmit` 拦不住「类型过了但打包塌了」，所以构建也是一条门。
 > 这是自觉取舍，代价是没有人能替你复核——所以地基级改动（数据库迁移、记忆分区这类）的额外验收项一条都不能省。
 
 ### 自检
