@@ -57,7 +57,11 @@ __pycache__/
 .idea/
 .vscode/
 
-# AI 工具的本地配置与缓存
+# AI 工具的本地配置与缓存。除编辑器插件目录外，还包括代码审查工具的运行状态与
+# 报告（.mimosa/），以及设计参考素材的抓取产物（.scrape/，含 png 等二进制）。
+# 两者都是开发机本地产物，体积随运行次数增长，同 IDE 目录一并挡在版本库外。
 .claude/
 .cursor/
 .aider*
+.mimosa/
+.scrape/
