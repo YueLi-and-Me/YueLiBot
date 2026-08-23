@@ -3,7 +3,7 @@
  *
  * 指标行采用「左侧 muted 名称 + 右侧等宽数字值」的双栏排布；进度条用原生
  * progress 语义的重绘实现，保证无障碍名称可读；状态组件统一空数据、加载中
- * 与错误提示的呈现。
+ * 与错误提示的呈现。进度条为樱粉填充，呼应设计语言主色。
  */
 import { LoaderCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -51,7 +51,7 @@ interface ProgressProps {
 }
 
 /**
- * 渲染品牌蓝进度条。
+ * 渲染樱粉色进度条。
  *
  * @param props.value 当前值。
  * @param props.max 最大值。
@@ -94,7 +94,7 @@ interface ChipProps {
  */
 export function Chip({ label, value }: ChipProps) {
   return (
-    <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-0.5 text-xs text-secondary-foreground">
+    <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/70 bg-secondary px-2.5 py-0.5 text-xs text-secondary-foreground">
       <strong className="font-medium">{label}</strong>
       <span className="truncate">{value}</span>
     </span>

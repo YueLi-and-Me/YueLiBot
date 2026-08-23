@@ -1,9 +1,10 @@
 /**
- * 应用侧栏：深藏青撞色的品牌与导航容器。
+ * 应用侧栏：随主题切换的一体化品牌与导航容器。
  *
- * 自上而下为品牌区（蓝色渐变字母块 + 面板名称）、主导航（会话观察/人物画像）、
+ * 自上而下为品牌区（渐变水母标识 +「月璃」）、主导航（会话观察/模型/人物/设置）、
  * 会话分区锚点组（仅会话观察页可见）、底部操作区（主题开关 + 登出）。
- * 侧栏在明暗两主题下保持藏青不变；窄屏时整体隐藏，由 AppShell 的顶部条替代。
+ * 导航激活态为浅青底 pill，通过 motion 的 `layoutId` 共享元素转场在导航项间
+ * 滑动；窄屏时整体隐藏，由 AppShell 的顶部条替代。
  */
 import {
   Activity,
@@ -17,12 +18,15 @@ import {
   Terminal,
   Users,
 } from 'lucide-react'
+import { LayoutGroup, motion } from 'motion/react'
 import type { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router'
 
 import { ThemeSwitch, cn } from '@/components/ui'
 import { useAuth } from '@/hooks/use-auth'
 import { useTheme } from '@/hooks/use-theme'
+
+import { BrandMark } from './BrandMark'
 
 /** 会话观察页内的锚点分区导航项。 */
 const ANCHOR_ITEMS = [
@@ -32,23 +36,21 @@ const ANCHOR_ITEMS = [
   { hash: '#logs', label: '实时日志', icon: Terminal },
 ] as const
 
+/** 激活 pill 的弹簧参数，全站导航滑动统一使用。 */
+const PILL_SPRING = { type: 'spring', stiffness: 480, damping: 38, mass: 0.6 } as const
+
 /**
- * 渲染品牌区：蓝色渐变字母块与面板名称。
+ * 渲染品牌区：渐变水母标识与面板名称。
  *
  * @returns 品牌区元素。
  */
 function Brand() {
   return (
     <div className="flex items-center gap-3 px-5 pt-6 pb-5">
-      <span
-        className="grid size-9 flex-none place-items-center rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 text-[17px] font-bold text-white shadow-[0_2px_10px_rgb(30_100_220/0.45)]"
-        aria-hidden="true"
-      >
-        Y
-      </span>
+      <BrandMark className="size-9 rounded-xl" />
       <div className="min-w-0 leading-tight">
-        <strong className="block truncate text-[15px] font-semibold text-white">Bot 观察面板</strong>
-        <span className="text-[10px] font-medium tracking-[0.18em] text-sidebar-muted">YUELI / WEBUI</span>
+        <strong className="block truncate text-[15px] font-semibold text-sidebar-foreground">月璃</strong>
+        <span className="text-[10px] font-medium tracking-[0.18em] text-sidebar-muted">YUELI CONSOLE</span>
       </div>
     </div>
   )
@@ -69,20 +71,31 @@ interface NavLinkProps {
  * 渲染单个侧栏导航项。
  *
  * @param props.to 链接目标。
- * @param props.active 激活态：品牌蓝实心底 + 白字。
+ * @param props.active 激活态：浅青底 pill（layoutId 滑动）+ 主色文字。
  * @returns 导航链接元素；锚点项使用原生 a，路由项使用 Link。
+ * @remarks 必须位于 LayoutGroup 内，激活 pill 才能在导航项间滑动。
  */
 function NavLink({ to, active = false, icon, label }: NavLinkProps) {
   const classes = cn(
-    'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors duration-150',
+    'relative flex items-center rounded-lg px-3 py-2 text-[13px] font-medium transition-colors duration-150',
     active
-      ? 'bg-sidebar-active text-sidebar-active-foreground shadow-[0_2px_8px_rgb(30_100_220/0.4)]'
-      : 'text-sidebar-muted hover:bg-white/6 hover:text-sidebar-foreground',
+      ? 'text-sidebar-active-foreground'
+      : 'text-sidebar-muted hover:bg-sidebar-active/50 hover:text-sidebar-foreground',
   )
   const content = (
     <>
-      <span className="[&>svg]:size-4" aria-hidden="true">{icon}</span>
-      {label}
+      {active ? (
+        <motion.span
+          layoutId="nav-active-pill"
+          className="absolute inset-0 rounded-lg bg-sidebar-active"
+          transition={PILL_SPRING}
+          aria-hidden="true"
+        />
+      ) : null}
+      <span className="relative z-10 flex items-center gap-2.5">
+        <span className="[&>svg]:size-4" aria-hidden="true">{icon}</span>
+        {label}
+      </span>
     </>
   )
   if (to.startsWith('#')) {
@@ -114,7 +127,7 @@ function SectionTitle({ children }: { children: ReactNode }) {
 }
 
 /**
- * 渲染深藏青侧栏。
+ * 渲染一体化侧栏。
  *
  * @returns aside 侧栏元素；宽 244px，桌面端常驻。
  * @remarks 「会话分区」锚点组仅在会话观察页展示，人物画像页整组隐藏（与旧版
@@ -130,29 +143,31 @@ export function Sidebar() {
   const onHome = !onPersons && !onModels && !onSettings
 
   return (
-    <aside className="hidden w-(--sidebar-width) flex-none flex-col border-r border-sidebar-border bg-sidebar lg:flex">
+    <aside className="m-3 mr-0 hidden w-(--sidebar-width) flex-none flex-col rounded-2xl border border-sidebar-border bg-sidebar shadow-card lg:flex">
       <Brand />
-      <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-3">
-        <SectionTitle>概览</SectionTitle>
-        <NavLink to="/" active={onHome} icon={<MessageSquare />} label="会话观察" />
-        <NavLink to="/models" active={location.pathname.startsWith('/models')} icon={<Cpu />} label="模型与厂商" />
-        <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
-        <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
-        {onHome ? (
-          <div className="mt-1 border-t border-sidebar-border/60 pt-1">
-            <SectionTitle>会话分区</SectionTitle>
-            {ANCHOR_ITEMS.map((item) => (
-              <NavLink key={item.hash} to={item.hash} icon={<item.icon />} label={item.label} />
-            ))}
-          </div>
-        ) : null}
-      </nav>
+      <LayoutGroup id="sidebar-nav">
+        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-3">
+          <SectionTitle>概览</SectionTitle>
+          <NavLink to="/" active={onHome} icon={<MessageSquare />} label="会话观察" />
+          <NavLink to="/models" active={location.pathname.startsWith('/models')} icon={<Cpu />} label="模型与厂商" />
+          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
+          <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
+          {onHome ? (
+            <div className="mt-1 border-t border-sidebar-border/60 pt-1">
+              <SectionTitle>会话分区</SectionTitle>
+              {ANCHOR_ITEMS.map((item) => (
+                <NavLink key={item.hash} to={item.hash} icon={<item.icon />} label={item.label} />
+              ))}
+            </div>
+          ) : null}
+        </nav>
+      </LayoutGroup>
       <div className="flex items-center justify-between gap-2 border-t border-sidebar-border px-4 py-3.5">
         <ThemeSwitch dark={dark} onToggle={toggle} />
         <button
           type="button"
           onClick={() => void logout()}
-          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-sidebar-muted transition-colors hover:bg-white/6 hover:text-sidebar-foreground"
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-sidebar-muted transition-colors hover:bg-sidebar-active/50 hover:text-sidebar-foreground"
         >
           <LogOut className="size-4" aria-hidden="true" />
           登出
@@ -177,24 +192,21 @@ export function MobileTopbar() {
 
   return (
     <div className="flex flex-none items-center gap-2 border-b border-sidebar-border bg-sidebar px-3 py-2 lg:hidden">
-      <span
-        className="grid size-7 flex-none place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-blue-600 text-[13px] font-bold text-white"
-        aria-hidden="true"
-      >
-        Y
-      </span>
-      <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        <NavLink to="/" active={!onPersons && !onModels && !onSettings} icon={<Activity />} label="会话观察" />
-        <NavLink to="/models" active={onModels} icon={<Cpu />} label="模型与厂商" />
-        <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
-        <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
-      </nav>
+      <BrandMark className="size-7 rounded-lg" />
+      <LayoutGroup id="mobile-topbar">
+        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          <NavLink to="/" active={!onPersons && !onModels && !onSettings} icon={<Activity />} label="会话观察" />
+          <NavLink to="/models" active={onModels} icon={<Cpu />} label="模型与厂商" />
+          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
+          <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
+        </nav>
+      </LayoutGroup>
       <ThemeSwitch dark={dark} onToggle={toggle} className="scale-[0.85]" />
       <button
         type="button"
         onClick={() => void logout()}
         aria-label="登出"
-        className="cursor-pointer rounded-lg p-1.5 text-sidebar-muted transition-colors hover:bg-white/6 hover:text-sidebar-foreground"
+        className="cursor-pointer rounded-lg p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-active/50 hover:text-sidebar-foreground"
       >
         <LogOut className="size-4" aria-hidden="true" />
       </button>

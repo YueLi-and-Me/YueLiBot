@@ -21,6 +21,28 @@ const SNAPSHOT_REFRESH_MS = 15_000
 /** 阶段看板轮询间隔；阶段状态需要秒级精度以反映后端当前处理步骤。 */
 const STAGE_POLL_MS = 1_000
 
+/**
+ * 比较两轮阶段记录是否实质相同。
+ *
+ * 轮询每秒触发，但绝大多数时候阶段没有变化；逐字段比较后复用旧数组引用，
+ * 可以避免 ObservePage 每秒整页无意义重渲染（事件账本等重面板靠引用相等跳
+ * 过 reconciliation）。阶段活跃时 stageElapsedMs 持续增长，会自然触发更新。
+ */
+function sameStages(current: StageEntry[], next: StageEntry[]): boolean {
+  if (current.length !== next.length) return false
+  return current.every((entry, index) => {
+    const other = next[index]
+    return (
+      !!other &&
+      entry.streamId === other.streamId &&
+      entry.stage === other.stage &&
+      entry.detail === other.detail &&
+      entry.turnId === other.turnId &&
+      entry.stageElapsedMs === other.stageElapsedMs
+    )
+  })
+}
+
 /** 单条阶段看板记录，对应后端 /stages 响应数组元素。 */
 export interface StageEntry {
   streamId: number
@@ -156,7 +178,8 @@ export function useStages(): StageEntry[] {
         const response = await fetch('/stages', { credentials: 'same-origin' })
         if (!response.ok || cancelled) return
         const payload = await response.json() as { stages?: StageEntry[] }
-        setStages(payload.stages ?? [])
+        const next = payload.stages ?? []
+        setStages((current) => (sameStages(current, next) ? current : next))
       } catch {
         // 网络抖动静默跳过，等待下一次轮询。
       }

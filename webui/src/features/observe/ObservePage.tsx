@@ -8,7 +8,7 @@
  * 本组件只负责会话流选中态、自动刷新开关与各分区的编排，不直接发起请求。
  */
 import { RefreshCw } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button, ErrorText, Field, Select, Toggle } from '@/components/ui'
@@ -22,6 +22,18 @@ import { SnapshotSections } from './SnapshotSections'
 import { StageBoard } from './StageBoard'
 import { StatusStrip } from './StatusStrip'
 import { TracePanel } from './TracePanel'
+
+/*
+ * 重面板 memo 化：阶段看板每秒轮询会带着 ObservePage 一起重渲染，这些面板的
+ * props 全部是稳定引用（state 数组、useCallback 方法、原始值），引用不变时
+ * 整体跳过 reconciliation，每秒的开销只剩 StageBoard 自身。
+ */
+const MemoStatusStrip = memo(StatusStrip)
+const MemoSnapshotSections = memo(SnapshotSections)
+const MemoTracePanel = memo(TracePanel)
+const MemoPromptRecordPanel = memo(PromptRecordPanel)
+const MemoPromptWorkbench = memo(PromptWorkbench)
+const MemoLogPanel = memo(LogPanel)
 
 /**
  * 渲染会话观察页。
@@ -52,7 +64,7 @@ export function ObservePage() {
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
-        eyebrow="YUELI / WEBUI"
+        eyebrow="YUELI · CONSOLE"
         title="机器人观察面板"
         subtitle="按会话流读取的只读运行快照"
         actions={
@@ -85,13 +97,13 @@ export function ObservePage() {
       {streamsError ? <ErrorText>{streamsError}</ErrorText> : null}
       {snapshotError ? <ErrorText>{snapshotError}</ErrorText> : null}
 
-      {payload ? <StatusStrip payload={payload} /> : null}
+      {payload ? <MemoStatusStrip payload={payload} /> : null}
 
       <StageBoard stages={stages} />
 
-      {payload ? <SnapshotSections payload={payload} /> : null}
+      {payload ? <MemoSnapshotSections payload={payload} /> : null}
 
-      <TracePanel
+      <MemoTracePanel
         traces={traces.traces}
         skippedCount={traces.skippedCount}
         historyCursor={traces.historyCursor}
@@ -99,11 +111,11 @@ export function ObservePage() {
         streamId={streamId}
       />
 
-      <PromptRecordPanel enabled />
+      <MemoPromptRecordPanel enabled />
 
-      <PromptWorkbench enabled />
+      <MemoPromptWorkbench enabled />
 
-      <LogPanel enabled />
+      <MemoLogPanel enabled />
     </div>
   )
 }

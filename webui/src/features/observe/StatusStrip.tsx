@@ -45,21 +45,21 @@ function buildItems(payload: ObservabilityPayload): StatusItem[] {
       value: sleepLabel,
       detail: `睡意 ${fixed(sleep.probability, 2)} · 距入睡 ${fixed(sleep.minutesFromBedtime)} 分钟`,
       icon: <MoonStar />,
-      tintClass: 'bg-tint-blue/10 text-tint-blue',
+      tintClass: 'bg-tint-coral/10 text-tint-coral',
     },
     {
       label: '今日预算',
       value: `${used} / ${used + remaining}`,
       detail: `剩余 ${remaining} · 攒满还需 ${fixed(impulse.minutesToFull)} 分钟`,
       icon: <Zap />,
-      tintClass: 'bg-tint-cyan/10 text-tint-cyan',
+      tintClass: 'bg-tint-amber/10 text-tint-amber',
     },
     {
       label: '视觉响应',
       value: `${fixed(vision.looks)} 看 / ${fixed(vision.spoke)} 说`,
       detail: `视觉${vision.enabled === true ? '已开启' : '未开启'} · 静默 ${displayValue(record(payload.sensing).silent)}`,
       icon: <Eye />,
-      tintClass: 'bg-tint-teal/10 text-tint-teal',
+      tintClass: 'bg-tint-olive/10 text-tint-olive',
     },
     {
       label: '会话人物',
@@ -70,7 +70,7 @@ function buildItems(payload: ObservabilityPayload): StatusItem[] {
             .join('、')
         : '暂无参与人物',
       icon: <Users />,
-      tintClass: 'bg-tint-violet/10 text-tint-violet',
+      tintClass: 'bg-tint-plum/10 text-tint-plum',
     },
   ]
 }
@@ -87,17 +87,17 @@ export function StatusStrip({ payload }: { payload: ObservabilityPayload }) {
       {buildItems(payload).map((item) => (
         <div
           key={item.label}
-          className="flex items-start justify-between gap-3 rounded-xl border border-border bg-card p-4 shadow-card transition-shadow duration-200 hover:shadow-lifted"
+          className="flex items-start justify-between gap-3 rounded-xl border border-border bg-card p-4 shadow-card transition-shadow duration-200 animate-rise hover:shadow-lifted"
         >
           <div className="min-w-0">
             <p className="text-xs font-medium text-muted-foreground">{item.label}</p>
-            <p className="mt-1 truncate font-mono text-xl font-bold tabular-nums">{item.value}</p>
+            <p className="mt-1 truncate font-mono text-xl font-semibold tabular-nums">{item.value}</p>
             <p className="mt-1 truncate text-[11px] text-muted-foreground" title={item.detail}>
               {item.detail}
             </p>
           </div>
           <span
-            className={cn('grid size-9 flex-none place-items-center rounded-lg [&>svg]:size-4.5', item.tintClass)}
+            className={cn('grid size-9 flex-none place-items-center rounded-xl [&>svg]:size-4.5', item.tintClass)}
             aria-hidden="true"
           >
             {item.icon}

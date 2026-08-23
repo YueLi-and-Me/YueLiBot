@@ -1,22 +1,23 @@
 /**
  * 卡片与分区标题组件，是观察面板内容分区的基础容器。
  *
- * Card 提供白底、发丝描边、10px 圆角与单层轻阴影的统一表面；SectionHeading
+ * Card 提供白底、海军蓝硬描边、大圆角与实心基座的统一表面，悬停时微微抬起
+ * （基座加高 + 轻位移），呼应按压设计语言中的「抬起/沉入」两态；SectionHeading
  * 渲染「图标色块 + 标题 + 副标题 + 可选工具区」的分区头部，图标色块使用四个
- * 协调色调之一，呼应品牌蓝的冷色系谱。
+ * 协调色调（樱粉/天蓝/薄荷/薰衣草）之一，呼应粉白蓝主色的系谱。
  */
 import type { HTMLAttributes, ReactNode } from 'react'
 
 import { cn } from './cn'
 
 /** 分区标题图标可选色调，与 index.css 中的 tint 令牌一一对应。 */
-export type HeadingTint = 'blue' | 'cyan' | 'teal' | 'violet'
+export type HeadingTint = 'coral' | 'amber' | 'olive' | 'plum'
 
 const TINT_CLASSES: Record<HeadingTint, string> = {
-  blue: 'bg-tint-blue/10 text-tint-blue',
-  cyan: 'bg-tint-cyan/10 text-tint-cyan',
-  teal: 'bg-tint-teal/10 text-tint-teal',
-  violet: 'bg-tint-violet/10 text-tint-violet',
+  coral: 'bg-tint-coral/10 text-tint-coral',
+  amber: 'bg-tint-amber/10 text-tint-amber',
+  olive: 'bg-tint-olive/10 text-tint-olive',
+  plum: 'bg-tint-plum/10 text-tint-plum',
 }
 
 interface CardProps extends HTMLAttributes<HTMLElement> {
@@ -33,7 +34,8 @@ export function Card({ className, children, ...rest }: CardProps) {
   return (
     <section
       className={cn(
-        'rounded-xl border border-border bg-card text-card-foreground shadow-card',
+        'rounded-xl border-[1.5px] border-ink bg-card text-card-foreground shadow-card',
+        'transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-lifted',
         className,
       )}
       {...rest}
@@ -66,7 +68,7 @@ interface SectionHeadingProps {
  * @param props.actions 右侧工具区节点。
  * @returns header 元素；工具区存在时自动两端对齐。
  */
-export function SectionHeading({ title, subtitle, icon, tint = 'blue', actions }: SectionHeadingProps) {
+export function SectionHeading({ title, subtitle, icon, tint = 'coral', actions }: SectionHeadingProps) {
   return (
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
       <div className="flex min-w-0 items-center gap-2.5">

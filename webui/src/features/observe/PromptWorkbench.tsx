@@ -39,12 +39,12 @@ export function PromptWorkbench({ enabled }: { enabled: boolean }) {
   const resetDisabled = busy || readOnly || !detail || detail.source === 'builtin'
 
   return (
-    <Card id="prompts" aria-label="提示词工作台" className="scroll-mt-6">
+    <Card id="prompts" aria-label="提示词工作台" className="animate-rise scroll-mt-6">
       <SectionHeading
         title="提示词工作台"
         subtitle="本机可编辑；远程连接保持只读"
         icon={<FileText />}
-        tint="violet"
+        tint="plum"
         actions={
           <>
             <Field label="模板" htmlFor="prompt-select" className="w-64">
@@ -122,7 +122,7 @@ export function PromptWorkbench({ enabled }: { enabled: boolean }) {
                 readOnly={readOnly}
                 value={editorValue}
                 onChange={(event) => setEditorValue(event.target.value)}
-                className="h-96 resize-y border-transparent bg-terminal font-mono text-xs leading-relaxed text-terminal-foreground read-only:opacity-80"
+                className="h-96 resize-y border-terminal-border bg-terminal font-mono text-xs leading-relaxed text-terminal-foreground read-only:opacity-80"
               />
             </div>
             <div className="flex flex-wrap items-center gap-2.5">
@@ -134,10 +134,10 @@ export function PromptWorkbench({ enabled }: { enabled: boolean }) {
             </div>
             {detail ? (
               <details>
-                <summary className="cursor-pointer text-xs font-medium text-primary select-none">
+                <summary className="cursor-pointer text-xs font-medium text-primary-strong select-none">
                   查看内置版本
                 </summary>
-                <pre className="mt-1.5 max-h-72 overflow-auto rounded-lg bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
+                <pre className="mt-1.5 max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
                   {detail.builtinContent}
                 </pre>
               </details>

@@ -5,11 +5,26 @@
  * 支持 object、map（model_tasks/generation）和 table_list（厂商/模型目录）三类
  * 结构。保存时整包提交，后端完成启动级校验后原子写回五个 TOML 文件。
  */
-import { FileCog, Plus, RefreshCw, Save, Settings, Trash2 } from 'lucide-react'
+import { Database, FileCog, Layers, Plus, RefreshCw, Save, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Button, Card, CardBody, ErrorText, Input, Loading, Select, Textarea, Toggle } from '@/components/ui'
+import {
+  Button,
+  Card,
+  CardBody,
+  Checkbox,
+  ConfirmDialog,
+  ErrorText,
+  Input,
+  Loading,
+  SectionHeading,
+  SegmentedTabs,
+  Select,
+  Textarea,
+  Toggle,
+  toast,
+} from '@/components/ui'
 import {
   useSettingsConfig,
   type SettingsFieldSchema,
@@ -145,19 +160,17 @@ function MultiEnumField({ field, value, onChange }: { field: SettingsFieldSchema
       {options.map((option) => {
         const checked = selected.has(option.value)
         return (
-          <label key={option.value} className="inline-flex cursor-pointer items-center gap-1.5 text-sm">
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={() => {
-                const next = new Set(selected)
-                if (checked) next.delete(option.value)
-                else next.add(option.value)
-                onChange(options.filter((item) => next.has(item.value)).map((item) => item.value))
-              }}
-            />
-            {option.label}
-          </label>
+          <Checkbox
+            key={option.value}
+            checked={checked}
+            label={option.label}
+            onChange={() => {
+              const next = new Set(selected)
+              if (checked) next.delete(option.value)
+              else next.add(option.value)
+              onChange(options.filter((item) => next.has(item.value)).map((item) => item.value))
+            }}
+          />
         )
       })}
     </div>
@@ -267,11 +280,8 @@ function ObjectSection({ section, values, onChange }: {
   onChange: (fieldKey: string, value: unknown) => void
 }) {
   return (
-    <Card>
-      <div className="border-b border-border px-5 py-4">
-        <h2 className="text-[15px] font-semibold">{section.label}</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">{section.description}</p>
-      </div>
+    <Card className="animate-rise">
+      <SectionHeading title={section.label} subtitle={section.description} icon={<SlidersHorizontal />} tint="coral" />
       <CardBody>
         <div className="grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
           {section.fields.map((field) => (
@@ -302,11 +312,8 @@ function MapSection({ section, values, onChange }: {
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         {section.entries.map((entry) => (
-          <Card key={entry.key}>
-            <div className="border-b border-border px-5 py-3">
-              <h3 className="text-sm font-semibold">{entry.label}</h3>
-              <p className="mt-0.5 text-xs text-muted-foreground">{entry.description}</p>
-            </div>
+          <Card key={entry.key} className="animate-rise">
+            <SectionHeading title={entry.label} subtitle={entry.description} icon={<Layers />} tint="amber" />
             <CardBody>
               <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
                 {section.fields
@@ -337,6 +344,8 @@ function TableListSection({ section, values, onChange, onAdd, onRemove }: {
   onRemove: (rowIndex: number) => void
 }) {
   const rows = asRecordArray(values[section.key])
+  // 待确认删除的行索引；null 表示确认弹窗处于关闭状态。
+  const [pendingRemove, setPendingRemove] = useState<number | null>(null)
   const rowTitle = (row: SettingsRecord, index: number) => {
     const name = String(row.name ?? row.model_identifier ?? '')
     return name ? `第 ${index + 1} 条 · ${name}` : `第 ${index + 1} 条（未命名）`
@@ -359,21 +368,23 @@ function TableListSection({ section, values, onChange, onAdd, onRemove }: {
         </p>
       ) : null}
       {rows.map((row, rowIndex) => (
-        <Card key={`${section.key}-${rowIndex}-${String(row.name ?? '')}`}>
-          <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3">
-            <h3 className="text-sm font-semibold">{rowTitle(row, rowIndex)}</h3>
-            <Button
-              size="sm"
-              variant="danger-outline"
-              onClick={() => {
-                if (window.confirm(`删除${rowTitle(row, rowIndex)}？`)) onRemove(rowIndex)
-              }}
-              title="删除条目"
-            >
-              <Trash2 className="size-3.5" aria-hidden="true" />
-              删除
-            </Button>
-          </div>
+        <Card key={`${section.key}-${rowIndex}-${String(row.name ?? '')}`} className="animate-rise">
+          <SectionHeading
+            title={rowTitle(row, rowIndex)}
+            icon={<Database />}
+            tint="olive"
+            actions={
+              <Button
+                size="sm"
+                variant="danger-outline"
+                onClick={() => setPendingRemove(rowIndex)}
+                title="删除条目"
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                删除
+              </Button>
+            }
+          />
           <CardBody>
             <div className="grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
               {section.fields.map((field) => (
@@ -388,6 +399,21 @@ function TableListSection({ section, values, onChange, onAdd, onRemove }: {
           </CardBody>
         </Card>
       ))}
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        title="删除条目"
+        description={
+          pendingRemove !== null
+            ? `删除${rowTitle(rows[pendingRemove] ?? {}, pendingRemove)}？改动会在保存配置后写回文件。`
+            : undefined
+        }
+        confirmText="删除"
+        onConfirm={() => {
+          if (pendingRemove !== null) onRemove(pendingRemove)
+          setPendingRemove(null)
+        }}
+        onCancel={() => setPendingRemove(null)}
+      />
     </div>
   )
 }
@@ -407,6 +433,17 @@ export function SettingsConfigPage() {
       next.schema.files.some((file) => file.file === current) ? current : next.schema.files[0]?.file ?? current
     ))
   }, [state.snapshot])
+
+  // 保存结果由 hook 以 status 文本回报（失败文本带「保存失败」前缀）；这里转成全局
+  // Toast 后立即清除，页面不再渲染内联状态条。进行中的「正在校验并保存…」只通过
+  // 按钮禁用态体现，不弹通知。
+  const { status, clearStatus } = state
+  useEffect(() => {
+    if (!status || status === '正在校验并保存…') return
+    if (status.startsWith('保存失败')) toast.error(status)
+    else toast.success(status)
+    clearStatus()
+  }, [status, clearStatus])
 
   if (state.loading && !draft) {
     return (
@@ -492,7 +529,7 @@ export function SettingsConfigPage() {
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
-        eyebrow="YUELI / WEBUI"
+        eyebrow="YUELI · CONSOLE"
         title="月璃设置"
         subtitle="直接编辑五份配置文件；字段说明来自 settings_schema.json，保存后重启后端生效。"
         actions={
@@ -510,32 +547,17 @@ export function SettingsConfigPage() {
       />
 
       {state.error ? <ErrorText>{state.error}</ErrorText> : null}
-      {state.status ? (
-        <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" role="status">
-          {state.status}
-        </p>
-      ) : null}
 
-      <div className="flex flex-wrap gap-1.5 rounded-xl border border-border bg-card p-1.5 shadow-card">
-        {files.map((file) => (
-          <button
-            key={file.file}
-            type="button"
-            onClick={() => setActiveFile(file.file)}
-            className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors ${activeFile === file.file ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`}
-          >
-            <Settings className="size-3.5" aria-hidden="true" />
-            {file.label}
-            <span className={`font-mono text-[10px] ${activeFile === file.file ? 'text-primary-foreground/70' : 'text-muted-foreground/70'}`}>
-              {file.file}
-            </span>
-          </button>
-        ))}
-      </div>
+      <SegmentedTabs
+        tabs={files.map((file) => ({ value: file.file, label: `${file.label}（${file.file}）` }))}
+        value={selectedFile?.file ?? activeFile}
+        onChange={setActiveFile}
+        className="max-w-full flex-wrap"
+      />
       {selectedFile ? (
         <div className="space-y-4">
           <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/20 px-4 py-3">
-            <FileCog className="mt-0.5 size-4 flex-none text-primary" aria-hidden="true" />
+            <FileCog className="mt-0.5 size-4 flex-none text-primary-strong" aria-hidden="true" />
             <p className="text-xs leading-relaxed text-muted-foreground">
               <strong className="text-foreground">{selectedFile.label}（{selectedFile.file}）</strong>
               {' '}— {selectedFile.description}

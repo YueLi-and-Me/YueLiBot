@@ -18,12 +18,12 @@ import type { StageEntry } from '@/hooks/use-observability'
  */
 export function StageBoard({ stages }: { stages: StageEntry[] }) {
   return (
-    <Card id="overview" aria-label="各会话当前阶段" className="scroll-mt-6">
+    <Card id="overview" aria-label="各会话当前阶段" className="animate-rise scroll-mt-6">
       <SectionHeading
         title="此刻在做什么"
         subtitle="每条会话停在哪一步、停了多久"
         icon={<Activity />}
-        tint="blue"
+        tint="coral"
         actions={
           stages.length ? (
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -44,7 +44,7 @@ export function StageBoard({ stages }: { stages: StageEntry[] }) {
             )}
           >
             <strong className="text-[13px] font-semibold">{entry.streamName}</strong>
-            <span className="inline-flex items-center rounded-full bg-primary-soft px-2 py-0.5 text-xs font-medium text-primary">
+            <span className="inline-flex items-center rounded-full bg-primary-soft px-2 py-0.5 text-xs font-medium text-primary-strong">
               {entry.stageLabel}
             </span>
             <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{entry.detail}</span>

@@ -121,7 +121,7 @@ function ReplayControl({ seq }: { seq: number }) {
             ] as Array<[string, string]>).map(([label, value]) => (
               <div key={label} className="flex min-w-0 flex-col gap-1">
                 <span className="text-[11px] text-muted-foreground">{label}</span>
-                <pre className="max-h-64 overflow-auto rounded-lg bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
+                <pre className="max-h-64 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
                   {value || '（空输出）'}
                 </pre>
               </div>
@@ -193,10 +193,10 @@ function TurnCard({
           return (
             <div key={key} className="flex flex-col gap-2">
               <details className="group">
-                <summary className="cursor-pointer text-xs font-medium text-primary select-none">
+                <summary className="cursor-pointer text-xs font-medium text-primary-strong select-none">
                   展开发送给模型的提示词
                 </summary>
-                <pre className="mt-1.5 max-h-72 overflow-auto rounded-lg bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
+                <pre className="mt-1.5 max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
                   {formatMessages(entry.messages)}
                 </pre>
               </details>
@@ -343,12 +343,12 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
   }
 
   return (
-    <Card id="events" aria-label="运行时调试追踪" className="scroll-mt-6">
+    <Card id="events" aria-label="运行时调试追踪" className="animate-rise scroll-mt-6">
       <SectionHeading
         title="事件账本"
         subtitle="按轮次聚合对话，按时间追溯后台事件"
         icon={<List />}
-        tint="cyan"
+        tint="amber"
         actions={
           <>
             <Field label="事件类型" htmlFor="trace-filter" className="w-56">

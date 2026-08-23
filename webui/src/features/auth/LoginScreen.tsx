@@ -1,7 +1,7 @@
 /**
  * 登录页：token 校验前的唯一可见界面。
  *
- * 居中卡片承载品牌标识、token 输入与错误提示；画布为白底叠加两团静态蓝色
+ * 居中卡片承载品牌标识、token 输入与错误提示；画布叠加两团静态樱粉/天蓝
  * 径向光晕（纯 CSS 渐变，无外部资源，满足 CSP）。登录成功后凭据只保存在
  * HttpOnly Cookie 中，页面不持有 token。
  */
@@ -9,6 +9,7 @@ import { LoaderCircle } from 'lucide-react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 
+import { BrandMark } from '@/components/layout/BrandMark'
 import { Button, Input, ThemeSwitch } from '@/components/ui'
 import { useAuth } from '@/hooks/use-auth'
 import { useTheme } from '@/hooks/use-theme'
@@ -42,34 +43,29 @@ export function LoginScreen() {
 
   return (
     <div className="relative grid min-h-full place-items-center overflow-hidden bg-background px-4">
-      {/* 静态蓝色光晕：营造蓝白氛围但不引入动效开销 */}
+      {/* 静态樱粉/天蓝双色光晕：呼应品牌渐变但不引入动效开销 */}
       <div
         className="pointer-events-none absolute -top-40 -left-40 size-[34rem] rounded-full opacity-70 dark:opacity-40"
-        style={{ background: 'radial-gradient(closest-side, hsl(212 96% 60% / 0.14), transparent 72%)' }}
+        style={{ background: 'radial-gradient(closest-side, hsl(340 92% 72% / 0.16), transparent 72%)' }}
         aria-hidden="true"
       />
       <div
         className="pointer-events-none absolute -right-40 -bottom-40 size-[30rem] rounded-full opacity-60 dark:opacity-30"
-        style={{ background: 'radial-gradient(closest-side, hsl(192 88% 52% / 0.12), transparent 72%)' }}
+        style={{ background: 'radial-gradient(closest-side, hsl(205 95% 66% / 0.14), transparent 72%)' }}
         aria-hidden="true"
       />
       <div className="absolute top-4 right-4">
         <ThemeSwitch dark={dark} onToggle={toggle} />
       </div>
-      <div className="relative w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-lifted">
-        <div className="flex flex-col items-start gap-4">
-          <span
-            className="grid size-11 place-items-center rounded-2xl bg-gradient-to-br from-sky-400 to-blue-600 text-xl font-bold text-white shadow-[0_4px_14px_rgb(30_100_220/0.4)]"
-            aria-hidden="true"
-          >
-            Y
-          </span>
-          <div>
-            <p className="text-[11px] font-semibold tracking-[0.18em] text-primary">YUELI / WEBUI</p>
-            <h1 className="mt-1 text-xl font-bold tracking-tight">Bot 观察面板</h1>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
-              输入后端启动时公告的 token。登录后凭据只保存在 HttpOnly Cookie 中。
-            </p>
+      <div className="relative w-full max-w-sm animate-scale-in rounded-2xl border-[1.5px] border-ink bg-card p-8 shadow-lifted">
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <BrandMark className="size-12 rounded-2xl" />
+            <div>
+              <p className="text-[11px] font-semibold tracking-[0.18em] text-primary-strong">YUELI · CONSOLE</p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight">月璃</h1>
+              <p className="mt-1.5 text-sm text-muted-foreground">管理控制台</p>
+            </div>
           </div>
           <form onSubmit={onSubmit} className="flex w-full flex-col gap-3">
             <div className="flex flex-col gap-1.5">

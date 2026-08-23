@@ -1,8 +1,8 @@
 /**
  * 小型开关组件，用于「自动刷新」等布尔控制项。
  *
- * 以 `role="switch"` 的按钮实现，轨道/滑块全部为品牌蓝语义色；比主题开关
- * 更小巧，适合工具栏内嵌。
+ * 以 `role="switch"` 的按钮实现，轨道/滑块全部为主色语义色；滑块位移使用
+ * 全站统一的强调缓动曲线，比主题开关更小巧，适合工具栏内嵌。
  */
 import { cn } from './cn'
 
@@ -39,15 +39,15 @@ export function Toggle({ checked, onChange, label, className }: ToggleProps) {
     >
       <span
         className={cn(
-          'relative inline-flex h-5 w-9 flex-none items-center rounded-full transition-colors duration-200',
-          checked ? 'bg-primary' : 'bg-input',
+          'relative inline-flex h-[22px] w-10 flex-none items-center rounded-full border-[1.5px] border-ink/50 transition-colors duration-200',
+          checked ? 'bg-primary' : 'bg-muted',
         )}
         aria-hidden="true"
       >
         <span
           className={cn(
-            'inline-block size-3.5 rounded-full bg-white shadow-card transition-transform duration-200',
-            checked ? 'translate-x-[19px]' : 'translate-x-[3px]',
+            'inline-block size-3.5 rounded-full border border-ink/40 bg-white transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+            checked ? 'translate-x-[20px]' : 'translate-x-[2.5px]',
           )}
         />
       </span>

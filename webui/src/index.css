@@ -1,18 +1,25 @@
 /*
- * 后端观察 WebUI 的设计令牌与全局样式入口。
+ * 月璃管理 WebUI 的设计令牌与全局样式入口。
  *
- * 视觉语言：蓝白扁平仪表盘。亮色主题（默认）为白底微蓝画布 + 纯白卡片 + 发丝级
- * 蓝灰描边 + 品牌蓝主色；侧栏为深藏青撞色，明暗两主题下保持藏青不变；暗色主题为
- * 藏青蓝夜底 + 白字。日志与代码面板保持恒定深色终端，避免可读性随主题抖动。
+ * 视觉语言：「粉白蓝 · 云端软糖」——粉白画布 + 海军蓝硬描边 + 樱花粉主色
+ * 与天空蓝点缀；所有可交互表面都站在一条实心海军蓝基座上（实心底边阴影），
+ * 悬停时微微抬起、按下时沉入基座，柔影被完全替换为手绘感的实心底边。亮色
+ * 主题为粉白画布 + 雾蓝发丝分隔；暗色主题反转为深空蓝底 + 雾蓝纸白墨线
+ * （墨色令牌 --ink 随主题反转）。
+ * 日志与代码面板保持恒定深海军蓝终端，避免可读性随主题抖动。
  *
  * 令牌分层：语义色（background/card/primary/...）→ Tailwind 主题映射 → 组件直接
  * 使用语义类名；主题切换由 <html data-theme="light|dark"> 驱动，属性由前端主题
  * 模块在挂载前写入，因此无需 prefers-color-scheme 兜底分支。
  *
  * 依赖关系：本文件是样式唯一入口，经 Tailwind v4 编译；图标全部为 lucide 内联
- * SVG，外部字体与图片资源被 CSP 禁止，字体只使用系统栈。
+ * SVG；字体为 fontsource 自托管可变字体（Inter / JetBrains Mono，仅拉丁字形，
+ * 中文走系统栈）——同源加载满足 CSP `default-src 'self'`，且避免了 CJK 可变
+ * 字体子集在日志流场景下持续加载造成的 CPU 抖动。
  */
 @import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
 
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
@@ -25,6 +32,7 @@
   --color-muted-foreground: hsl(var(--muted-foreground));
   --color-primary: hsl(var(--primary));
   --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-strong: hsl(var(--primary-strong));
   --color-primary-soft: hsl(var(--primary-soft));
   --color-secondary: hsl(var(--secondary));
   --color-secondary-foreground: hsl(var(--secondary-foreground));
@@ -40,10 +48,10 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --color-ink: hsl(var(--ink));
 
-  /* 侧栏专用令牌：深藏青撞色，明暗主题共享同一组取值 */
+  /* 侧栏专用令牌：随主题切换的一体化表面，明暗两套取值 */
   --color-sidebar: hsl(var(--sidebar));
-  --color-sidebar-deep: hsl(var(--sidebar-deep));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
   --color-sidebar-muted: hsl(var(--sidebar-muted));
   --color-sidebar-border: hsl(var(--sidebar-border));
@@ -55,29 +63,49 @@
   --color-terminal-foreground: var(--terminal-fg);
   --color-terminal-border: var(--terminal-border);
 
-  /* 分区标题图标的四个协调色调 */
-  --color-tint-blue: hsl(var(--tint-blue));
-  --color-tint-cyan: hsl(var(--tint-cyan));
-  --color-tint-teal: hsl(var(--tint-teal));
-  --color-tint-violet: hsl(var(--tint-violet));
+  /* 分区标题图标的四个协调暖色调 */
+  --color-tint-coral: hsl(var(--tint-coral));
+  --color-tint-amber: hsl(var(--tint-amber));
+  --color-tint-olive: hsl(var(--tint-olive));
+  --color-tint-plum: hsl(var(--tint-plum));
 
   --font-sans: var(--font-family-sans);
   --font-mono: var(--font-family-mono);
 
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
-  --radius-xl: 14px;
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
 
   --shadow-card: var(--shadow-surface);
   --shadow-lifted: var(--shadow-raised);
+  --shadow-dialog: var(--shadow-overlay);
 
-  --animate-fade-in: fade-in 0.25s ease-out;
-  --animate-rise: rise 0.35s cubic-bezier(0, 0, 0.2, 1) both;
+  /* 基座触感按压：实心底边基座的三档状态（默认/悬停抬起/按下沉入） */
+  --shadow-press: 0 3px 0 hsl(var(--ink));
+  --shadow-press-hover: 0 5px 0 hsl(var(--ink));
+  --shadow-press-active: 0 1px 0 hsl(var(--ink));
+
+  /* 统一动效语言：一条强调曲线 + 150/250ms 两档时长 */
+  --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+
+  --animate-fade-in: fade-in 0.2s ease-out both;
+  --animate-rise: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-page-in: page-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-scale-in: scale-in 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-toast-in: toast-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-pulse-dot: pulse-dot 2s ease-in-out infinite;
   --animate-spin-slow: spin 1s linear infinite;
 }
 
+/*
+ * 注意：所有入场动画的结束帧一律写 `transform: none` 而不是等价的
+ * translateY(0) scale(1)。fill mode 为 both 时结束帧会永久保留在计算样式里，
+ * 非 none 的 transform 会让每张卡片长期占用一个独立合成层，滚动时合成开销
+ * 随卡片数线性增长；none 则动画结束后立即归还图层。
+ */
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -86,11 +114,47 @@
 @keyframes rise {
   from {
     opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 路由切换入场：整页轻微上浮 + 淡入，比卡片更收敛 */
+@keyframes page-in {
+  from {
+    opacity: 0;
     transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
+  }
+}
+
+/* 弹窗入场：轻微放大 + 上浮，避免生硬的瞬现 */
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.965);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Toast 入场：自右下角滑入 */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
   }
 }
 
@@ -100,125 +164,162 @@
 }
 
 /* ============================================================================
- * 设计令牌：亮色主题（默认，蓝白）
+ * 设计令牌：亮色主题（默认，粉白画布 + 海军蓝墨线 + 樱粉天蓝）
  * ========================================================================== */
 :root {
   color-scheme: light;
 
-  /* 画布与文字：白底带一丝蓝调，避免纯白刺眼 */
-  --background: 213 45% 97.6%;
-  --foreground: 222 47% 14%;
+  /* 画布与文字：淡粉画布，文字与硬描边统一为海军蓝墨色，中性色带粉调 */
+  --background: 340 80% 98.6%;
+  --foreground: 222 47% 17%;
   --card: 0 0% 100%;
-  --card-foreground: 222 47% 14%;
-  --muted: 213 40% 95%;
-  --muted-foreground: 215 18% 46%;
-  --secondary: 213 45% 94%;
-  --secondary-foreground: 220 45% 22%;
-  --accent: 212 70% 94.5%;
-  --accent-foreground: 216 80% 38%;
+  --card-foreground: 222 47% 17%;
+  --muted: 330 45% 95.5%;
+  --muted-foreground: 222 18% 40%;
+  --secondary: 335 70% 96%;
+  --secondary-foreground: 335 45% 26%;
+  --accent: 205 100% 93%;
+  --accent-foreground: 212 85% 32%;
 
-  /* 品牌主色：星月水母的品牌蓝 */
-  --primary: 212 96% 48%;
-  --primary-foreground: 210 40% 99%;
-  --primary-soft: 212 96% 48% / 0.1;
+  /* 品牌主色：樱花粉面（浅粉填充，配深莓字与海军蓝描边构成按压三层结构）；
+   * strong 为文字安全深粉，链接/图标/焦点走它 */
+  --primary: 340 92% 82%;
+  --primary-foreground: 335 65% 20%;
+  --primary-strong: 338 72% 46%;
+  --primary-soft: 340 92% 82% / 0.18;
+
+  /* 品牌渐变：樱花粉 → 天空蓝，仅用于 logo、登录页光晕等极少点缀 */
+  --brand-gradient: linear-gradient(135deg, hsl(340 92% 78%), hsl(205 92% 68%));
 
   /* 语义状态色 */
-  --destructive: 0 74% 50%;
+  --destructive: 0 72% 46%;
   --destructive-foreground: 210 40% 99%;
-  --destructive-soft: 0 74% 50% / 0.09;
-  --success: 160 66% 34%;
-  --success-soft: 160 66% 34% / 0.1;
-  --warning: 38 92% 42%;
-  --warning-soft: 38 92% 42% / 0.12;
+  --destructive-soft: 0 72% 46% / 0.09;
+  --success: 152 55% 34%;
+  --success-soft: 152 55% 34% / 0.1;
+  --warning: 36 90% 38%;
+  --warning-soft: 36 90% 38% / 0.12;
 
-  /* 描边与焦点环：发丝级蓝灰 */
-  --border: 214 32% 89%;
-  --input: 214 28% 84%;
-  --ring: 212 96% 48%;
+  /* 描边与焦点环：分隔线用淡粉发丝，控件硬描边（--input）与基座用海军蓝墨色 */
+  --border: 335 40% 90%;
+  --input: 222 47% 17%;
+  --ring: 338 72% 46%;
 
-  /* 深藏青侧栏（明暗主题共享） */
-  --sidebar: 225 55% 10%;
-  --sidebar-deep: 227 60% 7%;
-  --sidebar-foreground: 214 35% 84%;
-  --sidebar-muted: 217 20% 58%;
-  --sidebar-border: 223 38% 20%;
-  --sidebar-active: 213 90% 54%;
-  --sidebar-active-foreground: 210 40% 99%;
+  /* 触感基座的墨色：硬描边 + 实心底边阴影 */
+  --ink: 222 47% 15%;
 
-  /* 分区图标色调 */
-  --tint-blue: 213 90% 46%;
-  --tint-cyan: 192 84% 38%;
-  --tint-teal: 168 70% 34%;
-  --tint-violet: 262 58% 52%;
+  /* 淡粉画布：樱粉光晕为主、天蓝光晕收尾，层次仍主要交给墨线与基座 */
+  --bg-aurora:
+    radial-gradient(46rem 32rem at 8% -12%, hsl(338 95% 80% / 0.28), transparent 62%),
+    radial-gradient(38rem 28rem at 96% 108%, hsl(205 95% 80% / 0.18), transparent 62%),
+    radial-gradient(30rem 24rem at 78% -16%, hsl(300 80% 85% / 0.14), transparent 65%);
 
-  /* 恒定深色终端 */
-  --terminal-bg: #0a1428;
-  --terminal-fg: #d7e4f5;
-  --terminal-border: rgb(148 187 255 / 0.16);
+  /* 浅色一体化侧栏：淡粉纸底，激活项为更实的粉色块 */
+  --sidebar: 335 75% 96.6%;
+  --sidebar-foreground: 222 40% 16%;
+  --sidebar-muted: 330 15% 42%;
+  --sidebar-border: 335 45% 89.5%;
+  --sidebar-active: 340 95% 90%;
+  --sidebar-active-foreground: 338 72% 30%;
 
-  /* 字体：CSP 禁止网络字体，仅使用系统栈 */
-  --font-family-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-family-mono: 'Cascadia Mono', 'JetBrains Mono', Consolas, 'SF Mono',
-    'Sarasa Mono SC', monospace;
+  /* 分区图标色调：樱粉 / 天蓝 / 薄荷 / 薰衣草 */
+  --tint-coral: 338 75% 55%;
+  --tint-amber: 205 88% 50%;
+  --tint-olive: 162 48% 38%;
+  --tint-plum: 265 60% 62%;
 
-  /* 阴影：克制单层，深色以蓝黑为基 */
-  --shadow-surface: 0 1px 2px rgb(18 45 90 / 0.05);
-  --shadow-raised: 0 4px 14px -4px rgb(18 45 90 / 0.12);
+  /* 恒定深色终端（深海军蓝底） */
+  --terminal-bg: #151a28;
+  --terminal-fg: #e6ebf6;
+  --terminal-border: rgb(150 190 250 / 0.16);
+
+  /* 字体：拉丁/数字走 Inter Variable，中文走系统栈；等宽为 JetBrains Mono */
+  --font-family-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+  --font-family-mono: 'JetBrains Mono Variable', 'Cascadia Mono', Consolas,
+    'SF Mono', 'Sarasa Mono SC', monospace;
+
+  /* 阴影：实心墨色基座替代柔影，浮层再叠一层深投影制造悬空感 */
+  --shadow-surface: 0 3px 0 hsl(var(--ink));
+  --shadow-raised:
+    0 5px 0 hsl(var(--ink)),
+    0 16px 32px -16px hsl(var(--ink) / 0.25);
+  --shadow-overlay:
+    0 6px 0 hsl(var(--ink)),
+    0 24px 64px -16px hsl(var(--ink) / 0.3);
 
   /* 布局尺寸 */
   --sidebar-width: 244px;
 }
 
 /* ============================================================================
- * 设计令牌：暗色主题（藏青蓝夜）
+ * 设计令牌：暗色主题（深空蓝底 + 雾蓝纸白墨线 + 樱粉）
  * ========================================================================== */
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --background: 226 52% 7%;
-  --foreground: 213 40% 94%;
-  --card: 224 42% 11%;
-  --card-foreground: 213 40% 94%;
-  --muted: 223 35% 16%;
-  --muted-foreground: 215 22% 64%;
-  --secondary: 223 35% 18%;
-  --secondary-foreground: 213 40% 92%;
-  --accent: 219 45% 20%;
-  --accent-foreground: 212 90% 72%;
+  /* 深空蓝画布：整体提亮一档，墨线在暗色下反转为雾蓝纸白描边 */
+  --background: 230 26% 14%;
+  --foreground: 220 32% 93%;
+  --card: 228 22% 17.5%;
+  --card-foreground: 220 32% 93%;
+  --muted: 227 16% 22.5%;
+  --muted-foreground: 224 16% 70%;
+  --secondary: 228 18% 23%;
+  --secondary-foreground: 220 28% 90%;
+  --accent: 215 45% 26%;
+  --accent-foreground: 205 95% 80%;
 
-  --primary: 212 96% 56%;
-  --primary-foreground: 224 60% 8%;
-  --primary-soft: 212 96% 56% / 0.16;
+  /* 粉面与深莓字双主题恒定（按钮观感不随主题变化）；链接/图标用亮粉 */
+  --primary: 340 92% 82%;
+  --primary-foreground: 335 65% 20%;
+  --primary-strong: 340 95% 76%;
+  --primary-soft: 340 92% 82% / 0.16;
 
-  --destructive: 0 74% 60%;
+  --brand-gradient: linear-gradient(135deg, hsl(340 92% 76%), hsl(205 95% 68%));
+
+  --destructive: 0 84% 64%;
   --destructive-foreground: 210 40% 99%;
-  --destructive-soft: 0 74% 60% / 0.14;
-  --success: 162 72% 46%;
-  --success-soft: 162 72% 46% / 0.14;
-  --warning: 40 94% 58%;
-  --warning-soft: 40 94% 58% / 0.14;
+  --destructive-soft: 0 84% 64% / 0.14;
+  --success: 152 65% 48%;
+  --success-soft: 152 65% 48% / 0.14;
+  --warning: 36 95% 58%;
+  --warning-soft: 36 95% 58% / 0.14;
 
-  --border: 222 30% 21%;
-  --input: 222 28% 28%;
-  --ring: 212 96% 56%;
+  --border: 227 16% 27%;
+  --input: 220 30% 88%;
+  --ring: 340 95% 76%;
 
-  /* 暗色下侧栏略深于内容底，维持撞色层次 */
-  --sidebar: 227 58% 8%;
-  --sidebar-deep: 228 62% 5.5%;
-  --sidebar-foreground: 214 35% 84%;
-  --sidebar-muted: 217 20% 58%;
-  --sidebar-border: 223 36% 17%;
-  --sidebar-active: 213 90% 54%;
-  --sidebar-active-foreground: 210 40% 99%;
+  /* 反转墨色：暗色下的硬描边与基座用雾蓝纸白 */
+  --ink: 220 32% 88%;
 
-  --tint-blue: 212 96% 66%;
-  --tint-cyan: 188 90% 56%;
-  --tint-teal: 165 78% 54%;
-  --tint-violet: 266 88% 72%;
+  /* 极光画布：深空蓝底上粉/天蓝/薰衣草三缕光晕，打破单色调 */
+  --bg-aurora:
+    radial-gradient(46rem 32rem at 6% -12%, hsl(338 90% 68% / 0.16), transparent 62%),
+    radial-gradient(42rem 30rem at 94% 110%, hsl(213 95% 66% / 0.13), transparent 62%),
+    radial-gradient(34rem 26rem at 72% -18%, hsl(272 85% 70% / 0.1), transparent 65%);
 
-  --shadow-surface: 0 1px 2px rgb(0 0 0 / 0.35);
-  --shadow-raised: 0 6px 18px -6px rgb(0 0 0 / 0.5);
+  /* 暗色侧栏：带紫调的深海军蓝，与主区拉开色相层次 */
+  --sidebar: 252 24% 13%;
+  --sidebar-foreground: 220 28% 90%;
+  --sidebar-muted: 240 14% 64%;
+  --sidebar-border: 250 18% 21%;
+  --sidebar-active: 335 48% 25%;
+  --sidebar-active-foreground: 340 100% 84%;
+
+  --tint-coral: 340 92% 70%;
+  --tint-amber: 205 95% 65%;
+  --tint-olive: 162 50% 60%;
+  --tint-plum: 265 70% 74%;
+
+  --shadow-surface: 0 3px 0 hsl(var(--ink) / 0.85);
+  --shadow-raised:
+    0 5px 0 hsl(var(--ink) / 0.85),
+    0 16px 36px -14px hsl(0 0% 0% / 0.55);
+  --shadow-overlay:
+    0 6px 0 hsl(var(--ink) / 0.85),
+    0 28px 72px -16px hsl(0 0% 0% / 0.65);
 }
 
 @layer base {
@@ -241,14 +342,37 @@
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* 明暗主题切换时画布与文字颜色平滑过渡 */
+    transition:
+      background-color 0.3s ease,
+      color 0.3s ease;
   }
 
-  /* 选中文本使用品牌蓝淡底，呼应主色 */
+  /*
+   * 极光画布：独立的固定伪元素图层，而非 body 背景。
+   *
+   * 之前用 `background-attachment: fixed` 挂在 body 上，但多簇大尺寸径向渐变
+   * 在 fixed 附着下会随主区滚动持续触发全视口重绘，表现为整体卡顿。改为
+   * `position: fixed` 的 ::before 后，图层只被合成一次，滚动时零重绘开销。
+   * z-index: -1 使其沉到画布背景之上、所有内容之下（body 背景色已传播到
+   * canvas，涂在负 z 层级之下）。
+   */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background-image: var(--bg-aurora);
+    background-repeat: no-repeat;
+    pointer-events: none;
+  }
+
+  /* 选中文本使用主色淡底，呼应品牌 */
   ::selection {
     background: hsl(var(--primary) / 0.18);
   }
 
-  /* 全局焦点环：无障碍必须，统一品牌蓝 */
+  /* 全局焦点环：无障碍必须，统一主色 */
   :focus-visible {
     outline: 2px solid hsl(var(--ring) / 0.65);
     outline-offset: 2px;
@@ -508,6 +632,34 @@
   }
 }
 
+/*
+ * 卡片入场交错：同一容器内的 rise 卡片按 nth-child 依次延迟起播，把「整页
+ * 同时浮现」改成队列式上浮的律动感；超过 8 个后统一封顶 350ms。
+ * 注意必须写在 @layer 之外：animate-rise 是 Tailwind utilities 层的 animation
+ * 简写（内含 delay 0），层内规则会被它覆盖，未分层样式才能胜出。
+ */
+.animate-rise:nth-child(2) {
+  animation-delay: 50ms;
+}
+.animate-rise:nth-child(3) {
+  animation-delay: 100ms;
+}
+.animate-rise:nth-child(4) {
+  animation-delay: 150ms;
+}
+.animate-rise:nth-child(5) {
+  animation-delay: 200ms;
+}
+.animate-rise:nth-child(6) {
+  animation-delay: 250ms;
+}
+.animate-rise:nth-child(7) {
+  animation-delay: 300ms;
+}
+.animate-rise:nth-child(n + 8) {
+  animation-delay: 350ms;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .theme-switch,
   .theme-switch-clouds,
@@ -518,6 +670,14 @@
   }
 
   .live-dot {
+    animation: none;
+  }
+
+  .animate-rise,
+  .animate-page-in,
+  .animate-fade-in,
+  .animate-scale-in,
+  .animate-toast-in {
     animation: none;
   }
 }

@@ -1,8 +1,9 @@
 /**
  * 表单控件基础组件：字段包装器、输入框、文本域与原生下拉框。
  *
- * 控件统一 8px 圆角、发丝描边与品牌蓝焦点态；Select 使用原生 select 保证
- * 键盘与读屏行为，右侧内嵌 chevron 图标替换浏览器默认箭头。
+ * 控件统一 12px 圆角与发丝描边；悬停时描边加深，聚焦时主色描边 + 双层柔光
+ * 焦点环（叠加在全局 outline 焦点环之上，视觉更细腻）；Select 使用原生 select
+ * 保证键盘与读屏行为，右侧内嵌 chevron 图标替换浏览器默认箭头。
  */
 import { ChevronDown, Info } from 'lucide-react'
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react'
@@ -10,7 +11,7 @@ import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTML
 import { cn } from './cn'
 
 const CONTROL_CLASSES =
-  'w-full rounded-md border border-input bg-card px-3 text-sm text-foreground shadow-card transition-colors duration-150 placeholder:text-muted-foreground/70 hover:border-ring/50 focus:border-ring focus:outline-none disabled:cursor-not-allowed disabled:opacity-60'
+  'w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground transition-[border-color,box-shadow] duration-150 placeholder:text-muted-foreground/60 hover:border-ring/45 focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60'
 
 interface FieldProps {
   /** 字段标签文本；不传则不渲染 label。 */

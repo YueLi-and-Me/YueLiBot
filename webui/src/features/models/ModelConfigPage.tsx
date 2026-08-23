@@ -29,15 +29,19 @@ import {
   Card,
   CardBody,
   Chip,
+  ConfirmDialog,
+  Dialog,
   ErrorText,
   Field,
   Input,
   Loading,
   Metric,
   SectionHeading,
+  SegmentedTabs,
   Select,
   Textarea,
   Toggle,
+  toast,
 } from '@/components/ui'
 import {
   useModelConfig,
@@ -198,7 +202,8 @@ export function ModelConfigPage() {
   const [search, setSearch] = useState('')
   const [providerDialog, setProviderDialog] = useState<{ index: number | 'new'; form: ProviderConfig; template: string } | null>(null)
   const [modelDialog, setModelDialog] = useState<{ index: number; model: ModelConfig } | null>(null)
-  const [restartStatus, setRestartStatus] = useState('')
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
+  const [providerDeleteTarget, setProviderDeleteTarget] = useState<string | null>(null)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
 
   useEffect(() => {
@@ -217,6 +222,18 @@ export function ModelConfigPage() {
   useEffect(() => {
     setValidationErrors([])
   }, [draft])
+
+  // 保存/测试/拉取等操作的状态文本不再占用页面顶部条幅，统一转为全局 toast；
+  // 弹出后立即清除 hook 内的状态，避免同一文本因状态残留而重复提示。
+  const status = state.status
+  const clearStatus = state.clearStatus
+  useEffect(() => {
+    if (!status) return
+    if (status.includes('失败')) toast.error(status)
+    else if (status.startsWith('正在')) toast.info(status)
+    else toast.success(status)
+    clearStatus()
+  }, [status, clearStatus])
 
   if (state.loading && !draft) {
     return (
@@ -350,15 +367,37 @@ export function ModelConfigPage() {
     setProviderFilter('all')
   }
 
+  // 重启前的确认由 ConfirmDialog 承担，这里只负责发指令与结果反馈。
   const restartBackend = async () => {
-    if (!window.confirm('确定重启月璃吗？重启期间她会暂时无法回复。')) return
     try {
       await apiMutate<{ ok: boolean }>('/system/restart', 'POST')
-      setRestartStatus('已发送重启指令，月璃即将重启…')
+      toast.success('已发送重启指令，月璃即将重启…')
       window.setTimeout(() => window.location.reload(), 2200)
     } catch (error) {
-      setRestartStatus(`重启失败：${error instanceof Error ? error.message : String(error)}`)
+      toast.error(`重启失败：${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  // 删除厂商：连带移除其名下模型，并把这些模型从所有任务的候选列表中剔除。
+  const removeProvider = (removed: string) => {
+    setDraft((current) => {
+      if (!current) return current
+      const removedModelNames = new Set(
+        current.models.filter((model) => model.api_provider === removed).map((model) => model.name),
+      )
+      return {
+        ...current,
+        providers: current.providers.filter((provider) => provider.name !== removed),
+        models: current.models.filter((model) => model.api_provider !== removed),
+        tasks: Object.fromEntries(
+          Object.entries(current.tasks).map(([task, value]) => [
+            task,
+            { ...value, model_list: value.model_list.filter((name) => !removedModelNames.has(name)) },
+          ]),
+        ) as ModelConfigSnapshot['tasks'],
+      }
+    })
+    setProviderFilter('all')
   }
 
   const usedTasks = (modelName: string) =>
@@ -433,7 +472,7 @@ export function ModelConfigPage() {
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
-        eyebrow="YUELI / WEBUI"
+        eyebrow="YUELI · CONSOLE"
         title="模型管理"
         subtitle="模型设置负责厂商与模型表；功能分配负责每个任务的候选模型。保存后重启后端生效。"
         actions={
@@ -446,7 +485,7 @@ export function ModelConfigPage() {
               <Save className="size-4" aria-hidden="true" />
               保存配置
             </Button>
-            <Button variant="secondary" onClick={() => void restartBackend()} disabled={state.busy}>
+            <Button variant="secondary" onClick={() => setRestartConfirmOpen(true)} disabled={state.busy}>
               <RefreshCw className="size-4" aria-hidden="true" />
               重启后端
             </Button>
@@ -455,16 +494,6 @@ export function ModelConfigPage() {
       />
 
       {state.error ? <ErrorText>{state.error}</ErrorText> : null}
-      {state.status ? (
-        <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" role="status">
-          {state.status}
-        </p>
-      ) : null}
-      {restartStatus ? (
-        <p className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-sm text-primary" role="status">
-          {restartStatus}
-        </p>
-      ) : null}
       {validationErrors.length ? (
         <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
           <p className="text-sm font-semibold text-destructive">保存前请先修正以下问题：</p>
@@ -474,7 +503,7 @@ export function ModelConfigPage() {
         </div>
       ) : null}
 
-      <Card>
+      <Card className="animate-rise">
         <CardBody className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
@@ -505,29 +534,23 @@ export function ModelConfigPage() {
         </CardBody>
       </Card>
 
-      <div className="flex items-center gap-1 rounded-xl border border-border bg-card p-1 shadow-card">
-        <button
-          type="button"
-          onClick={() => setTab('models')}
-          className={`flex-1 cursor-pointer rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${tab === 'models' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-        >
-          模型设置
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('tasks')}
-          className={`flex-1 cursor-pointer rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${tab === 'tasks' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-        >
-          功能分配
-        </button>
-      </div>
+      <SegmentedTabs
+        tabs={[
+          { value: 'models', label: '模型设置' },
+          { value: 'tasks', label: '功能分配' },
+        ]}
+        value={tab}
+        onChange={setTab}
+        className="w-full"
+        tabClassName="flex-1"
+      />
 
       {tab === 'models' ? (
         <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <Card>
+          <Card className="animate-rise">
             <SectionHeading
               icon={<Cpu className="size-4.5" aria-hidden="true" />}
-              tint="blue"
+              tint="coral"
               title="模型厂商"
               subtitle={`${draft.models.length} 个模型 · ${draft.providers.length} 个厂商`}
               actions={
@@ -541,7 +564,7 @@ export function ModelConfigPage() {
               <button
                 type="button"
                 onClick={() => setProviderFilter('all')}
-                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === 'all' ? 'bg-primary/10 font-semibold text-primary' : 'hover:bg-muted'}`}
+                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === 'all' ? 'bg-primary/10 font-semibold text-primary-strong' : 'hover:bg-muted'}`}
               >
                 <span>全部厂商</span>
                 <span className="font-mono text-xs">{draft.models.length}</span>
@@ -553,7 +576,7 @@ export function ModelConfigPage() {
                     <button
                       type="button"
                       onClick={() => setProviderFilter(provider.name)}
-                      className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === provider.name ? 'bg-primary/10 font-semibold text-primary' : 'hover:bg-muted'}`}
+                      className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === provider.name ? 'bg-primary/10 font-semibold text-primary-strong' : 'hover:bg-muted'}`}
                     >
                       <span className="min-w-0">
                         <strong className="block truncate">{provider.name}</strong>
@@ -561,10 +584,12 @@ export function ModelConfigPage() {
                       </span>
                       <span className="font-mono text-xs">{count}</span>
                     </button>
-                    <div className="flex gap-1 px-3 pb-1 opacity-0 transition-opacity group-hover:opacity-100">
-                      <button
-                        type="button"
-                        className="cursor-pointer rounded px-1.5 text-xs text-muted-foreground hover:text-primary"
+                    {/* 快捷编辑入口仅悬停/聚焦时露出；focus-visible 保证键盘可达。 */}
+                    <div className="flex gap-1 px-3 pb-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-1.5 text-xs opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                         onClick={() => setProviderDialog({
                           index,
                           form: JSON.parse(JSON.stringify(provider)) as ProviderConfig,
@@ -572,9 +597,10 @@ export function ModelConfigPage() {
                             ? PROVIDER_TEMPLATES.find((item) => item.base_url === provider.base_url)?.key ?? 'custom'
                             : 'custom',
                         })}
+                        aria-label={`编辑厂商 ${provider.name}`}
                       >
                         编辑
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 )
@@ -584,7 +610,7 @@ export function ModelConfigPage() {
 
           <div className="flex min-w-0 flex-col gap-4">
             {selectedProvider ? (
-              <Card>
+              <Card className="animate-rise">
                 <CardBody className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -631,28 +657,7 @@ export function ModelConfigPage() {
                     <Button
                       size="sm"
                       variant="danger-outline"
-                      onClick={() => {
-                        const removed = selectedProvider.name
-                        if (!window.confirm(`删除厂商「${removed}」及其关联模型？`)) return
-                        setDraft((current) => {
-                          if (!current) return current
-                          const removedModelNames = new Set(
-                            current.models.filter((model) => model.api_provider === removed).map((model) => model.name),
-                          )
-                          return {
-                            ...current,
-                            providers: current.providers.filter((provider) => provider.name !== removed),
-                            models: current.models.filter((model) => model.api_provider !== removed),
-                            tasks: Object.fromEntries(
-                              Object.entries(current.tasks).map(([task, value]) => [
-                                task,
-                                { ...value, model_list: value.model_list.filter((name) => !removedModelNames.has(name)) },
-                              ]),
-                            ) as ModelConfigSnapshot['tasks'],
-                          }
-                        })
-                        setProviderFilter('all')
-                      }}
+                      onClick={() => setProviderDeleteTarget(selectedProvider.name)}
                       title="删除厂商"
                       aria-label={`删除厂商 ${selectedProvider.name}`}
                     >
@@ -679,10 +684,10 @@ export function ModelConfigPage() {
               />
             ) : null}
 
-            <Card>
+            <Card className="animate-rise">
               <SectionHeading
                 icon={<Cpu className="size-4.5" aria-hidden="true" />}
-                tint="teal"
+                tint="olive"
                 title="模型列表"
                 subtitle="点击行内「编辑」展开完整参数；视觉和温度可直接在表格中改"
                 actions={
@@ -767,7 +772,7 @@ export function ModelConfigPage() {
                               ? '暂无模型配置，点击「添加模型」或先「拉取模型」'
                               : '当前筛选条件下没有模型'}
                             {draft.models.length > 0 && (providerFilter !== 'all' || search.trim()) ? (
-                              <button type="button" className="ml-2 cursor-pointer font-semibold text-primary underline-offset-4 hover:underline" onClick={clearModelFilters}>
+                              <button type="button" className="ml-2 cursor-pointer font-semibold text-primary-strong underline-offset-4 hover:underline" onClick={clearModelFilters}>
                                 清除筛选，查看全部 {draft.models.length} 个模型
                               </button>
                             ) : null}
@@ -787,7 +792,7 @@ export function ModelConfigPage() {
                           >
                             <td className="px-4 py-2.5 text-center">
                               <span
-                                className={`mx-auto block size-3 rounded-full border ${usage.length ? 'border-primary bg-primary shadow-[0_0_0_3px_rgba(37,99,235,0.15)]' : 'border-border bg-muted'}`}
+                                className={`mx-auto block size-3 rounded-full ${usage.length ? 'bg-primary ring-2 ring-primary/25' : 'bg-input'}`}
                                 title={usage.length ? `已分配给：${usageLabel.join('、')}` : '未使用'}
                                 aria-label={usage.length ? '已使用' : '未使用'}
                               />
@@ -801,7 +806,7 @@ export function ModelConfigPage() {
                             <td className="px-3 py-2.5">{model.api_provider}</td>
                             <td className="px-3 py-2.5 text-center">
                               <span
-                                className={`mx-auto block size-3 rounded-full border ${model.visual ? 'border-primary bg-primary shadow-[0_0_0_3px_rgba(37,99,235,0.15)]' : 'border-border bg-muted'}`}
+                                className={`mx-auto block size-3 rounded-full ${model.visual ? 'bg-primary ring-2 ring-primary/25' : 'bg-input'}`}
                                 title={model.visual ? '已启用视觉' : '未启用视觉'}
                                 aria-label={model.visual ? '已启用视觉' : '未启用视觉'}
                               />
@@ -810,7 +815,7 @@ export function ModelConfigPage() {
                               {thinkingState === 'default' ? (
                                 <span className="text-xs text-muted-foreground">默认</span>
                               ) : (
-                                <span className={thinkingEnabled ? 'text-xs text-primary' : 'text-xs text-muted-foreground'}>
+                                <span className={thinkingEnabled ? 'text-xs text-primary-strong' : 'text-xs text-muted-foreground'}>
                                   {thinkingEnabled ? '开启' : '关闭'}
                                 </span>
                               )}
@@ -842,10 +847,10 @@ export function ModelConfigPage() {
         </div>
       ) : (
         <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <Card>
+          <Card className="animate-rise">
             <SectionHeading
               icon={<Cpu className="size-4.5" aria-hidden="true" />}
-              tint="violet"
+              tint="plum"
               title="模型类别"
               subtitle="选择要配置的任务"
             />
@@ -880,10 +885,10 @@ export function ModelConfigPage() {
             </CardBody>
           </Card>
 
-          <Card>
+          <Card className="animate-rise">
             <SectionHeading
               icon={<Cpu className="size-4.5" aria-hidden="true" />}
-              tint="violet"
+              tint="plum"
               title={`功能分配 · ${taskLabel(selectedTask)}`}
               subtitle={`任务字段 ${selectedTask} · ${taskDescription(selectedTask)}；第一位是主力模型，后续是故障切换备用`}
             />
@@ -899,7 +904,7 @@ export function ModelConfigPage() {
                     <Field label="模型列表" htmlFor="task-model-list">
                       <div className="flex min-h-12 flex-wrap gap-1.5 rounded-lg border border-border bg-muted/20 p-2">
                         {taskConfig.model_list.map((modelName, index) => (
-                          <span key={`${selectedTask}-${modelName}`} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs text-primary">
+                          <span key={`${selectedTask}-${modelName}`} className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs text-primary-strong">
                             <span className="text-[10px] text-muted-foreground">#{index + 1}</span>
                             {modelName}
                             <button type="button" className="cursor-pointer text-muted-foreground hover:text-destructive" onClick={() => updateTask(selectedTask, { model_list: taskConfig.model_list.filter((name) => name !== modelName) })} aria-label={`移除 ${modelName}`}>
@@ -967,11 +972,36 @@ export function ModelConfigPage() {
           onSave={saveProviderDialog}
         />
       ) : null}
+
+      <ConfirmDialog
+        open={restartConfirmOpen}
+        title="重启月璃"
+        description="重启期间她会暂时无法回复。"
+        confirmText="重启"
+        danger
+        onConfirm={() => {
+          setRestartConfirmOpen(false)
+          void restartBackend()
+        }}
+        onCancel={() => setRestartConfirmOpen(false)}
+      />
+      <ConfirmDialog
+        open={providerDeleteTarget !== null}
+        title="删除厂商"
+        description={`删除厂商「${providerDeleteTarget ?? ''}」及其关联模型？`}
+        confirmText="删除"
+        danger
+        onConfirm={() => {
+          if (providerDeleteTarget) removeProvider(providerDeleteTarget)
+          setProviderDeleteTarget(null)
+        }}
+        onCancel={() => setProviderDeleteTarget(null)}
+      />
     </div>
   )
 }
 
-/** 提供商弹窗：对齐 MaiBot ProviderForm 的模板搜索、锁定字段、密钥显示与校验。 */
+/** 提供商弹窗：外壳为 Dialog 原语（ESC/遮罩关闭、焦点陷阱），表单对齐 MaiBot ProviderForm 的模板搜索、锁定字段、密钥显示与校验。 */
 function ProviderDialog({
   dialog,
   providers,
@@ -1058,128 +1088,126 @@ function ProviderDialog({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="添加提供商">
-      <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-lifted">
-        <header className="flex items-center justify-between border-b border-border px-5 py-4">
-          <h2 className="text-base font-semibold">{dialog.index === 'new' ? '添加提供商' : '编辑提供商'}</h2>
-          <button type="button" className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted" onClick={onCancel} aria-label="关闭">
-            <X className="size-4.5" aria-hidden="true" />
-          </button>
-        </header>
-
-        <form
-          className="flex flex-col"
-          autoComplete="off"
-          onSubmit={(event) => {
-            event.preventDefault()
-            submit()
-          }}
-        >
-          <div className="flex flex-col gap-4 overflow-y-auto px-5 py-4">
-            <div className="flex flex-col gap-2">
-              <span className="flex items-center gap-1.5">
-                <label htmlFor="provider-template" className="text-xs font-medium text-muted-foreground">提供商模板</label>
-              </span>
-              <div className="relative flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={!isUsingTemplate}
-                  onClick={() => setComboboxOpen((value) => !value)}
-                  className={`flex h-9 min-w-0 flex-1 items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm shadow-card ${isUsingTemplate ? 'cursor-pointer hover:border-ring/50' : 'cursor-not-allowed bg-muted opacity-60'}`}
-                  role="combobox"
-                  aria-expanded={comboboxOpen}
-                >
-                  <span className="truncate">
-                    {isUsingTemplate ? selectedTemplate?.label ?? '选择提供商模板...' : '自定义提供商'}
-                  </span>
-                  <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
-                </button>
-                <Button type="button" variant="secondary" className="shrink-0" onClick={toggleTemplateMode}>
-                  {isUsingTemplate ? '使用自定义提供商' : '使用供应商模板'}
-                </Button>
-                {comboboxOpen ? (
-                  <div className="absolute top-11 left-0 z-10 w-full rounded-xl border border-border bg-card p-2 shadow-lifted">
-                    <Input
-                      autoFocus
-                      value={templateSearch}
-                      onChange={(event) => setTemplateSearch(event.target.value)}
-                      placeholder="搜索提供商模板..."
-                    />
-                    <div className="mt-2 max-h-72 overflow-y-auto">
-                      {visibleTemplateOptions.length ? visibleTemplateOptions.map((template) => (
-                        <button
-                          key={template.key}
-                          type="button"
-                          onClick={() => applyTemplate(template.key)}
-                          className="flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-left text-sm hover:bg-muted"
-                        >
-                          <Check className={`mr-2 size-4 ${templateKey === template.key ? 'opacity-100' : 'opacity-0'}`} aria-hidden="true" />
-                          {template.label}
-                        </button>
-                      )) : <p className="px-2 py-4 text-center text-xs text-muted-foreground">未找到匹配的模板</p>}
-                    </div>
+    <Dialog
+      open
+      onClose={onCancel}
+      title={dialog.index === 'new' ? '添加提供商' : '编辑提供商'}
+      width="max-w-2xl"
+      footer={
+        <>
+          <Button variant="ghost" onClick={onCancel}>取消</Button>
+          <Button type="submit" form="provider-form">保存</Button>
+        </>
+      }
+    >
+      <form
+        id="provider-form"
+        className="flex flex-col"
+        autoComplete="off"
+        onSubmit={(event) => {
+          event.preventDefault()
+          submit()
+        }}
+      >
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <span className="flex items-center gap-1.5">
+              <label htmlFor="provider-template" className="text-xs font-medium text-muted-foreground">提供商模板</label>
+            </span>
+            <div className="relative flex items-center gap-2">
+              <button
+                type="button"
+                disabled={!isUsingTemplate}
+                onClick={() => setComboboxOpen((value) => !value)}
+                className={`flex h-9 min-w-0 flex-1 items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm shadow-card ${isUsingTemplate ? 'cursor-pointer hover:border-ring/50' : 'cursor-not-allowed bg-muted opacity-60'}`}
+                role="combobox"
+                aria-expanded={comboboxOpen}
+              >
+                <span className="truncate">
+                  {isUsingTemplate ? selectedTemplate?.label ?? '选择提供商模板...' : '自定义提供商'}
+                </span>
+                <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
+              </button>
+              <Button type="button" variant="secondary" className="shrink-0" onClick={toggleTemplateMode}>
+                {isUsingTemplate ? '使用自定义提供商' : '使用供应商模板'}
+              </Button>
+              {comboboxOpen ? (
+                <div className="absolute top-11 left-0 z-10 w-full rounded-xl border border-border bg-card p-2 shadow-lifted">
+                  <Input
+                    autoFocus
+                    value={templateSearch}
+                    onChange={(event) => setTemplateSearch(event.target.value)}
+                    placeholder="搜索提供商模板..."
+                  />
+                  <div className="mt-2 max-h-72 overflow-y-auto">
+                    {visibleTemplateOptions.length ? visibleTemplateOptions.map((template) => (
+                      <button
+                        key={template.key}
+                        type="button"
+                        onClick={() => applyTemplate(template.key)}
+                        className="flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-left text-sm hover:bg-muted"
+                      >
+                        <Check className={`mr-2 size-4 ${templateKey === template.key ? 'opacity-100' : 'opacity-0'}`} aria-hidden="true" />
+                        {template.label}
+                      </button>
+                    )) : <p className="px-2 py-4 text-center text-xs text-muted-foreground">未找到匹配的模板</p>}
                   </div>
-                ) : null}
-              </div>
-              <p className="text-xs text-muted-foreground">选择预设模板可自动填充 URL 和客户端类型，支持搜索</p>
+                </div>
+              ) : null}
             </div>
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Field label="名称 *" htmlFor="provider-name" help="为这个 API 提供商设置一个便于识别的名称，用于在模型配置中引用。\n\n推荐使用厂商官方名称，如 DeepSeek、OpenAI\n名称需要唯一，不能与现有提供商重复">
-                <Input id="provider-name" value={form.name} onChange={(event) => updateForm({ name: event.target.value }, 'name')} placeholder="例如: DeepSeek, SiliconFlow" aria-invalid={errors.name ? true : undefined} />
-                {errors.name ? <p role="alert" className="text-xs text-destructive">{errors.name}</p> : null}
-              </Field>
-              <Field label="客户端类型" htmlFor="provider-client-type" help="指定与提供商通信时使用的 API 协议格式。\n\nOpenAI：兼容 OpenAI API 格式的提供商\nOpenAI Responses：OpenAI Responses API 原生格式\nGemini：Google Gemini 专用格式">
-                <Select id="provider-client-type" value={form.client_type} disabled={isUsingTemplate} onChange={(event) => updateForm({ client_type: event.target.value as ProviderConfig['client_type'] })}>
-                  <option value="openai">openai</option>
-                  <option value="volcengine">volcengine</option>
-                </Select>
-              </Field>
-            </div>
-
-            <Field label="基础 URL *" htmlFor="provider-base-url" help="提供商的 API 端点基础 URL，通常以 /v1 结尾。\n\nOpenAI 格式：https://api.openai.com/v1\nDeepSeek：https://api.deepseek.com\n硅基流动：https://api.siliconflow.cn/v1\n选择模板会自动填充正确的 URL">
-              <Input id="provider-base-url" value={form.base_url} disabled={isUsingTemplate} onChange={(event) => updateForm({ base_url: event.target.value }, 'base_url')} placeholder="https://api.example.com/v1" aria-invalid={errors.base_url ? true : undefined} />
-              {errors.base_url ? <p role="alert" className="text-xs text-destructive">{errors.base_url}</p> : null}
-            </Field>
-
-            <Field label="API Key *" htmlFor="provider-api-key" help="从提供商平台获取的身份验证密钥。\n\n通常以 sk- 开头\n请妥善保管，不要泄露给他人\n可以点击眼睛图标切换显示/隐藏\n点击复制图标可快速复制密钥">
-              <div className="flex gap-2">
-                <Input id="provider-api-key" type={showApiKey ? 'text' : 'password'} value={form.api_key} onChange={(event) => updateForm({ api_key: event.target.value }, 'api_key')} placeholder="sk-..." aria-invalid={errors.api_key ? true : undefined} />
-                <Button type="button" variant="secondary" size="sm" onClick={() => setShowApiKey((value) => !value)} title={showApiKey ? '隐藏密钥' : '显示密钥'}>
-                  {showApiKey ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
-                </Button>
-                <Button type="button" variant="secondary" size="sm" onClick={() => void copyApiKey()} title="复制密钥">
-                  <Copy className="size-4" aria-hidden="true" />
-                </Button>
-              </div>
-              {errors.api_key ? <p role="alert" className="text-xs text-destructive">{errors.api_key}</p> : null}
-            </Field>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <Field label="最大重试" htmlFor="provider-max-retries" help="API 请求失败时的最大重试次数。设置为 0 表示不重试。默认值：2">
-                <Input id="provider-max-retries" type="number" min={0} value={form.max_retries} onChange={(event) => updateForm({ max_retries: Number(event.target.value) })} placeholder="默认: 2" />
-              </Field>
-              <Field label="超时(秒)" htmlFor="provider-timeout" help="单次 API 请求的超时时间（秒）。超时后会触发重试或报错。默认值：30 秒">
-                <Input id="provider-timeout" type="number" min={1} value={Math.round(form.timeout_ms / 1000)} onChange={(event) => updateForm({ timeout_ms: Number(event.target.value) * 1000 })} placeholder="默认: 30" />
-              </Field>
-              <Field label="重试间隔(秒)" htmlFor="provider-retry-interval" help="两次重试之间的等待时间（秒）。适当的间隔可以避免触发 API 限流。默认值：10 秒">
-                <Input id="provider-retry-interval" type="number" min={1} value={Math.round(form.retry_interval_ms / 1000)} onChange={(event) => updateForm({ retry_interval_ms: Number(event.target.value) * 1000 })} placeholder="默认: 10" />
-              </Field>
-            </div>
+            <p className="text-xs text-muted-foreground">选择预设模板可自动填充 URL 和客户端类型，支持搜索</p>
           </div>
 
-          <footer className="flex justify-end gap-2 border-t border-border px-5 py-4">
-            <Button type="button" variant="secondary" onClick={onCancel}>取消</Button>
-            <Button type="submit">保存</Button>
-          </footer>
-        </form>
-      </div>
-    </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="名称 *" htmlFor="provider-name" help="为这个 API 提供商设置一个便于识别的名称，用于在模型配置中引用。\n\n推荐使用厂商官方名称，如 DeepSeek、OpenAI\n名称需要唯一，不能与现有提供商重复">
+              <Input id="provider-name" value={form.name} onChange={(event) => updateForm({ name: event.target.value }, 'name')} placeholder="例如: DeepSeek, SiliconFlow" aria-invalid={errors.name ? true : undefined} />
+              {errors.name ? <p role="alert" className="text-xs text-destructive">{errors.name}</p> : null}
+            </Field>
+            <Field label="客户端类型" htmlFor="provider-client-type" help="指定与提供商通信时使用的 API 协议格式。\n\nOpenAI：兼容 OpenAI API 格式的提供商\nOpenAI Responses：OpenAI Responses API 原生格式\nGemini：Google Gemini 专用格式">
+              <Select id="provider-client-type" value={form.client_type} disabled={isUsingTemplate} onChange={(event) => updateForm({ client_type: event.target.value as ProviderConfig['client_type'] })}>
+                <option value="openai">openai</option>
+                <option value="volcengine">volcengine</option>
+              </Select>
+            </Field>
+          </div>
+
+          <Field label="基础 URL *" htmlFor="provider-base-url" help="提供商的 API 端点基础 URL，通常以 /v1 结尾。\n\nOpenAI 格式：https://api.openai.com/v1\nDeepSeek：https://api.deepseek.com\n硅基流动：https://api.siliconflow.cn/v1\n选择模板会自动填充正确的 URL">
+            <Input id="provider-base-url" value={form.base_url} disabled={isUsingTemplate} onChange={(event) => updateForm({ base_url: event.target.value }, 'base_url')} placeholder="https://api.example.com/v1" aria-invalid={errors.base_url ? true : undefined} />
+            {errors.base_url ? <p role="alert" className="text-xs text-destructive">{errors.base_url}</p> : null}
+          </Field>
+
+          <Field label="API Key *" htmlFor="provider-api-key" help="从提供商平台获取的身份验证密钥。\n\n通常以 sk- 开头\n请妥善保管，不要泄露给他人\n可以点击眼睛图标切换显示/隐藏\n点击复制图标可快速复制密钥">
+            <div className="flex gap-2">
+              <Input id="provider-api-key" type={showApiKey ? 'text' : 'password'} value={form.api_key} onChange={(event) => updateForm({ api_key: event.target.value }, 'api_key')} placeholder="sk-..." aria-invalid={errors.api_key ? true : undefined} />
+              <Button type="button" variant="secondary" size="sm" onClick={() => setShowApiKey((value) => !value)} title={showApiKey ? '隐藏密钥' : '显示密钥'}>
+                {showApiKey ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
+              </Button>
+              <Button type="button" variant="secondary" size="sm" onClick={() => void copyApiKey()} title="复制密钥">
+                <Copy className="size-4" aria-hidden="true" />
+              </Button>
+            </div>
+            {errors.api_key ? <p role="alert" className="text-xs text-destructive">{errors.api_key}</p> : null}
+          </Field>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Field label="最大重试" htmlFor="provider-max-retries" help="API 请求失败时的最大重试次数。设置为 0 表示不重试。默认值：2">
+              <Input id="provider-max-retries" type="number" min={0} value={form.max_retries} onChange={(event) => updateForm({ max_retries: Number(event.target.value) })} placeholder="默认: 2" />
+            </Field>
+            <Field label="超时(秒)" htmlFor="provider-timeout" help="单次 API 请求的超时时间（秒）。超时后会触发重试或报错。默认值：30 秒">
+              <Input id="provider-timeout" type="number" min={1} value={Math.round(form.timeout_ms / 1000)} onChange={(event) => updateForm({ timeout_ms: Number(event.target.value) * 1000 })} placeholder="默认: 30" />
+            </Field>
+            <Field label="重试间隔(秒)" htmlFor="provider-retry-interval" help="两次重试之间的等待时间（秒）。适当的间隔可以避免触发 API 限流。默认值：10 秒">
+              <Input id="provider-retry-interval" type="number" min={1} value={Math.round(form.retry_interval_ms / 1000)} onChange={(event) => updateForm({ retry_interval_ms: Number(event.target.value) * 1000 })} placeholder="默认: 10" />
+            </Field>
+          </div>
+        </div>
+      </form>
+    </Dialog>
   )
 }
 
 
-/** 模型编辑弹窗：集中维护模型标识、能力、生成参数与厂商请求参数。 */
+/** 模型编辑弹窗：外壳为 Dialog 原语，内部集中维护模型标识、能力、生成参数与厂商请求参数。 */
 function ModelDialog({
   model,
   index,
@@ -1226,171 +1254,165 @@ function ModelDialog({
   const thinkingEnabled = thinkingState !== 'disabled'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="添加模型">
-      <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-lifted">
-        <header className="flex items-center justify-between border-b border-border px-5 py-4">
-          <div>
-            <h2 className="text-base font-semibold">{index >= 0 ? '编辑模型' : '添加模型'}</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">配置模型的基本信息和参数</p>
-          </div>
-          <button type="button" className="cursor-pointer rounded-md p-1 text-muted-foreground hover:bg-muted" onClick={onCancel} aria-label="关闭">
-            <X className="size-4.5" aria-hidden="true" />
-          </button>
-        </header>
-
-        <form
-          className="flex flex-col"
-          autoComplete="off"
-          onSubmit={(event) => {
-            event.preventDefault()
-            if (!validate()) return
-            onSave(form)
-          }}
-        >
-          <div className="flex flex-col gap-4 overflow-y-auto px-5 py-4">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Field label="模型名称 *" htmlFor="model-name" help="用于在功能分配中识别这个模型；名称需要唯一。">
-                <Input id="model-name" value={form.name} onChange={(event) => updateForm({ name: event.target.value }, 'name')} placeholder="例如: qwen3-30b" aria-invalid={errors.name ? true : undefined} />
-                {errors.name ? <p role="alert" className="text-xs text-destructive">{errors.name}</p> : null}
-              </Field>
-              <Field label="API 提供商 *" htmlFor="model-provider" help="选择模型所属的厂商；切换厂商后可以拉取该厂商的可用模型列表。">
-                <Select
-                  id="model-provider"
-                  value={form.api_provider}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    updateForm({ api_provider: value }, 'api_provider')
-                    if (value) onFetchModels(value)
-                  }}
-                  aria-invalid={errors.api_provider ? true : undefined}
-                >
-                  <option value="">选择提供商</option>
-                  {providers.map((provider) => (
-                    <option key={provider.name} value={provider.name}>{provider.name}</option>
-                  ))}
-                </Select>
-                {errors.api_provider ? <p role="alert" className="text-xs text-destructive">{errors.api_provider}</p> : null}
-              </Field>
-            </div>
-
-            <Field label="模型标识符 *" htmlFor="model-identifier" help="API 提供商提供的真实模型 ID；可以从厂商模型列表中搜索选择，也可以手动填写。">
-              <div className="relative flex flex-col gap-2 sm:flex-row">
-                <button
-                  type="button"
-                  className="flex h-9 min-w-0 items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm shadow-card sm:w-[46%]"
-                  onClick={() => setIdentifierOpen((value) => !value)}
-                >
-                  <span className="truncate">
-                    {form.model_identifier || '搜索或选择模型...'}
-                  </span>
-                  <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
-                </button>
-                <Input
-                  id="model-identifier"
-                  value={form.model_identifier}
-                  onChange={(event) => updateForm({ model_identifier: event.target.value }, 'model_identifier')}
-                  placeholder="手动输入模型标识符"
-                  aria-invalid={errors.model_identifier ? true : undefined}
-                />
-                {identifierOpen ? (
-                  <div className="absolute top-11 left-0 z-10 w-full rounded-xl border border-border bg-card p-2 shadow-lifted">
-                    <Input autoFocus value={identifierSearch} onChange={(event) => setIdentifierSearch(event.target.value)} placeholder="搜索模型..." />
-                    <div className="mt-2 max-h-64 overflow-y-auto">
-                      {visibleRemoteModels.length ? visibleRemoteModels.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          className="flex w-full cursor-pointer flex-col rounded-lg px-2.5 py-2 text-left text-sm hover:bg-muted"
-                          onClick={() => {
-                            updateForm({ model_identifier: item.id }, 'model_identifier')
-                            setIdentifierOpen(false)
-                          }}
-                        >
-                          <span className="truncate">{item.id}</span>
-                          {item.name !== item.id ? <span className="truncate text-xs text-muted-foreground">{item.name}</span> : null}
-                        </button>
-                      )) : <p className="px-2 py-4 text-center text-xs text-muted-foreground">未找到匹配的模型</p>}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-              {errors.model_identifier ? <p role="alert" className="text-xs text-destructive">{errors.model_identifier}</p> : null}
-            </Field>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="视觉能力" help="开启后，这个模型可以被分配给图片理解和屏幕视觉任务。">
-                <Toggle checked={form.visual} onChange={(checked) => updateForm({ visual: checked })} label={form.visual ? '已开启视觉' : '未开启视觉'} />
-              </Field>
-              <Field label="思考模式" help="控制请求体中的 enable_thinking；未显式设置时沿用模型默认行为。">
-                <Toggle
-                  checked={thinkingEnabled}
-                  onChange={(checked) => updateForm({ extra_body: withModelThinking(form, checked) })}
-                  label={thinkingState === 'default' ? '模型默认（点击关闭）' : thinkingEnabled ? '开启思考' : '关闭思考'}
-                />
-              </Field>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="输入价格 (¥/M token)" htmlFor="model-price-in">
-                <Input id="model-price-in" type="number" step="0.1" min={0} value={form.price_in} onChange={(event) => updateForm({ price_in: Number(event.target.value) })} placeholder="默认: 0" />
-              </Field>
-              <Field label="输出价格 (¥/M token)" htmlFor="model-price-out">
-                <Input id="model-price-out" type="number" step="0.1" min={0} value={form.price_out} onChange={(event) => updateForm({ price_out: Number(event.target.value) })} placeholder="默认: 0" />
-              </Field>
-            </div>
-
-            <Button type="button" variant={advanced ? 'primary' : 'secondary'} size="sm" className="self-start" onClick={() => setAdvanced((value) => !value)}>
-              高级设置
+    <Dialog
+      open
+      onClose={onCancel}
+      title={index >= 0 ? '编辑模型' : '添加模型'}
+      description="配置模型的基本信息和参数"
+      width="max-w-2xl"
+      footer={
+        <>
+          {index >= 0 ? (
+            <Button variant="danger-outline" size="sm" className="mr-auto" onClick={onDelete}>
+              <Trash2 className="size-4" aria-hidden="true" />
+              删除模型
             </Button>
+          ) : null}
+          <Button variant="ghost" onClick={onCancel}>取消</Button>
+          <Button type="submit" form="model-form">保存</Button>
+        </>
+      }
+    >
+      <form
+        id="model-form"
+        className="flex flex-col"
+        autoComplete="off"
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!validate()) return
+          onSave(form)
+        }}
+      >
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="模型名称 *" htmlFor="model-name" help="用于在功能分配中识别这个模型；名称需要唯一。">
+              <Input id="model-name" value={form.name} onChange={(event) => updateForm({ name: event.target.value }, 'name')} placeholder="例如: qwen3-30b" aria-invalid={errors.name ? true : undefined} />
+              {errors.name ? <p role="alert" className="text-xs text-destructive">{errors.name}</p> : null}
+            </Field>
+            <Field label="API 提供商 *" htmlFor="model-provider" help="选择模型所属的厂商；切换厂商后可以拉取该厂商的可用模型列表。">
+              <Select
+                id="model-provider"
+                value={form.api_provider}
+                onChange={(event) => {
+                  const value = event.target.value
+                  updateForm({ api_provider: value }, 'api_provider')
+                  if (value) onFetchModels(value)
+                }}
+                aria-invalid={errors.api_provider ? true : undefined}
+              >
+                <option value="">选择提供商</option>
+                {providers.map((provider) => (
+                  <option key={provider.name} value={provider.name}>{provider.name}</option>
+                ))}
+              </Select>
+              {errors.api_provider ? <p role="alert" className="text-xs text-destructive">{errors.api_provider}</p> : null}
+            </Field>
+          </div>
 
-            {advanced ? (
-              <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3 dark:border-amber-500/40 dark:bg-amber-500/10">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <Field label="自定义模型温度" help="启用后将覆盖「功能分配」中的任务温度配置。低温度更确定，高温度更有创造性。">
-                    <div className="flex items-center gap-3">
-                      <Toggle checked={form.temperature !== null} onChange={(checked) => updateForm({ temperature: checked ? 0.7 : null })} label="启用" />
-                      {form.temperature !== null ? (
-                        <Input type="number" step="0.05" min={0} max={2} value={form.temperature} onChange={(event) => updateForm({ temperature: Number(event.target.value) })} className="w-24" />
-                      ) : null}
-                    </div>
-                  </Field>
-                  <Field label="模型级最大 token" help="留空表示继承任务配置。">
-                    <Input type="number" min={1} value={form.max_tokens ?? ''} onChange={(event) => updateForm({ max_tokens: event.target.value === '' ? null : Number(event.target.value) })} placeholder="继承任务配置" />
-                  </Field>
-                  <Field label="思考内容解析" help="这里只决定怎样读取模型已经返回的思考内容，不会开启或关闭模型思考。">
-                    <Select value={form.reasoning_parse_mode} onChange={(event) => updateForm({ reasoning_parse_mode: event.target.value as ModelConfig['reasoning_parse_mode'] })}>
-                      <option value="field">解析思考字段（field）</option>
-                      <option value="tag">解析 think 标签（tag）</option>
-                      <option value="none">不解析思考内容（none）</option>
-                    </Select>
-                  </Field>
-                  <Field label="Embedding 维度" help="仅嵌入模型需要填写。">
-                    <Input type="number" min={0} value={form.embedding_dim} onChange={(event) => updateForm({ embedding_dim: Number(event.target.value) })} />
-                  </Field>
+          <Field label="模型标识符 *" htmlFor="model-identifier" help="API 提供商提供的真实模型 ID；可以从厂商模型列表中搜索选择，也可以手动填写。">
+            <div className="relative flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                className="flex h-9 min-w-0 items-center justify-between rounded-md border border-input bg-card px-3 text-left text-sm shadow-card sm:w-[46%]"
+                onClick={() => setIdentifierOpen((value) => !value)}
+              >
+                <span className="truncate">
+                  {form.model_identifier || '搜索或选择模型...'}
+                </span>
+                <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
+              </button>
+              <Input
+                id="model-identifier"
+                value={form.model_identifier}
+                onChange={(event) => updateForm({ model_identifier: event.target.value }, 'model_identifier')}
+                placeholder="手动输入模型标识符"
+                aria-invalid={errors.model_identifier ? true : undefined}
+              />
+              {identifierOpen ? (
+                <div className="absolute top-11 left-0 z-10 w-full rounded-xl border border-border bg-card p-2 shadow-lifted">
+                  <Input autoFocus value={identifierSearch} onChange={(event) => setIdentifierSearch(event.target.value)} placeholder="搜索模型..." />
+                  <div className="mt-2 max-h-64 overflow-y-auto">
+                    {visibleRemoteModels.length ? visibleRemoteModels.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="flex w-full cursor-pointer flex-col rounded-lg px-2.5 py-2 text-left text-sm hover:bg-muted"
+                        onClick={() => {
+                          updateForm({ model_identifier: item.id }, 'model_identifier')
+                          setIdentifierOpen(false)
+                        }}
+                      >
+                        <span className="truncate">{item.id}</span>
+                        {item.name !== item.id ? <span className="truncate text-xs text-muted-foreground">{item.name}</span> : null}
+                      </button>
+                    )) : <p className="px-2 py-4 text-center text-xs text-muted-foreground">未找到匹配的模型</p>}
+                  </div>
                 </div>
-                <Field label="extra_body（JSON）" className="mt-3" help="需要透传给厂商请求体的额外参数；JSON 对象格式。">
-                  <Textarea rows={3} value={JSON.stringify(form.extra_body)} onChange={(event) => {
-                    try { updateForm({ extra_body: JSON.parse(event.target.value) }) } catch { /* 编辑中 */ }
-                  }} />
+              ) : null}
+            </div>
+            {errors.model_identifier ? <p role="alert" className="text-xs text-destructive">{errors.model_identifier}</p> : null}
+          </Field>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="视觉能力" help="开启后，这个模型可以被分配给图片理解和屏幕视觉任务。">
+              <Toggle checked={form.visual} onChange={(checked) => updateForm({ visual: checked })} label={form.visual ? '已开启视觉' : '未开启视觉'} />
+            </Field>
+            <Field label="思考模式" help="控制请求体中的 enable_thinking；未显式设置时沿用模型默认行为。">
+              <Toggle
+                checked={thinkingEnabled}
+                onChange={(checked) => updateForm({ extra_body: withModelThinking(form, checked) })}
+                label={thinkingState === 'default' ? '模型默认（点击关闭）' : thinkingEnabled ? '开启思考' : '关闭思考'}
+              />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="输入价格 (¥/M token)" htmlFor="model-price-in">
+              <Input id="model-price-in" type="number" step="0.1" min={0} value={form.price_in} onChange={(event) => updateForm({ price_in: Number(event.target.value) })} placeholder="默认: 0" />
+            </Field>
+            <Field label="输出价格 (¥/M token)" htmlFor="model-price-out">
+              <Input id="model-price-out" type="number" step="0.1" min={0} value={form.price_out} onChange={(event) => updateForm({ price_out: Number(event.target.value) })} placeholder="默认: 0" />
+            </Field>
+          </div>
+
+          <Button type="button" variant={advanced ? 'primary' : 'secondary'} size="sm" className="self-start" onClick={() => setAdvanced((value) => !value)}>
+            高级设置
+          </Button>
+
+          {advanced ? (
+            <div className="rounded-lg border border-warning/40 bg-warning-soft p-3 text-foreground">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="自定义模型温度" help="启用后将覆盖「功能分配」中的任务温度配置。低温度更确定，高温度更有创造性。">
+                  <div className="flex items-center gap-3">
+                    <Toggle checked={form.temperature !== null} onChange={(checked) => updateForm({ temperature: checked ? 0.7 : null })} label="启用" />
+                    {form.temperature !== null ? (
+                      <Input type="number" step="0.05" min={0} max={2} value={form.temperature} onChange={(event) => updateForm({ temperature: Number(event.target.value) })} className="w-24" />
+                    ) : null}
+                  </div>
+                </Field>
+                <Field label="模型级最大 token" help="留空表示继承任务配置。">
+                  <Input type="number" min={1} value={form.max_tokens ?? ''} onChange={(event) => updateForm({ max_tokens: event.target.value === '' ? null : Number(event.target.value) })} placeholder="继承任务配置" />
+                </Field>
+                <Field label="思考内容解析" help="这里只决定怎样读取模型已经返回的思考内容，不会开启或关闭模型思考。">
+                  <Select value={form.reasoning_parse_mode} onChange={(event) => updateForm({ reasoning_parse_mode: event.target.value as ModelConfig['reasoning_parse_mode'] })}>
+                    <option value="field">解析思考字段（field）</option>
+                    <option value="tag">解析 think 标签（tag）</option>
+                    <option value="none">不解析思考内容（none）</option>
+                  </Select>
+                </Field>
+                <Field label="Embedding 维度" help="仅嵌入模型需要填写。">
+                  <Input type="number" min={0} value={form.embedding_dim} onChange={(event) => updateForm({ embedding_dim: Number(event.target.value) })} />
                 </Field>
               </div>
-            ) : null}
-          </div>
-
-          <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-4">
-            {index >= 0 ? (
-              <Button type="button" variant="danger-outline" size="sm" onClick={onDelete}>
-                <Trash2 className="size-4" aria-hidden="true" />
-                删除模型
-              </Button>
-            ) : <span />}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={onCancel}>取消</Button>
-              <Button type="submit">保存</Button>
+              <Field label="extra_body（JSON）" className="mt-3" help="需要透传给厂商请求体的额外参数；JSON 对象格式。">
+                <Textarea rows={3} value={JSON.stringify(form.extra_body)} onChange={(event) => {
+                  try { updateForm({ extra_body: JSON.parse(event.target.value) }) } catch { /* 编辑中 */ }
+                }} />
+              </Field>
             </div>
-          </footer>
-        </form>
-      </div>
-    </div>
+          ) : null}
+        </div>
+      </form>
+    </Dialog>
   )
 }

@@ -1,46 +1,57 @@
 /**
- * 按钮基础组件，覆盖观察面板全部按钮形态。
+ * 按钮基础组件，覆盖管理面板全部按钮形态。
  *
- * 变体语义：primary 为品牌蓝主操作；secondary 为白底描边次操作；ghost 为无框
- * 轻量操作；danger-outline 为危险确认操作。所有变体统一 8px 圆角、中等字重，
- * 禁用态降透明度并阻断指针事件。
+ * 基座触感按压设计：按钮站在墨色实心底边基座上，悬停时上浮 2px（底边同步
+ * 加深）、按下时沉入基座，形成有物理感的按压反馈；ghost 变体无基座，用于工具
+ * 栏轻量操作。变体语义：primary 主色实心、secondary 白底次操作、ghost 无框、
+ * danger-outline 危险描边、danger 危险实心（确认弹窗用）。禁用态降透明度并
+ * 阻断指针事件。
  */
+import { cva, type VariantProps } from 'class-variance-authority'
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
 import { cn } from './cn'
 
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger-outline'
-type ButtonSize = 'sm' | 'md'
+const buttonVariants = cva(
+  'inline-flex cursor-pointer select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border-[1.5px] font-semibold transition-[transform,box-shadow,background-color,color,filter] duration-100 disabled:pointer-events-none disabled:opacity-50',
+  {
+    variants: {
+      variant: {
+        primary:
+          'border-ink bg-primary text-primary-foreground shadow-press hover:-translate-y-0.5 hover:shadow-press-hover hover:brightness-105 active:translate-y-[1.5px] active:shadow-press-active',
+        secondary:
+          'border-ink bg-card text-foreground shadow-press hover:-translate-y-0.5 hover:bg-accent hover:text-accent-foreground hover:shadow-press-hover active:translate-y-[1.5px] active:shadow-press-active',
+        ghost:
+          'border-transparent text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+        'danger-outline':
+          'border-destructive bg-card text-destructive shadow-[0_3px_0_hsl(var(--destructive))] hover:-translate-y-0.5 hover:bg-destructive-soft hover:shadow-[0_5px_0_hsl(var(--destructive))] active:translate-y-[1.5px] active:shadow-[0_1px_0_hsl(var(--destructive))]',
+        danger:
+          'border-ink bg-destructive text-destructive-foreground shadow-press hover:-translate-y-0.5 hover:shadow-press-hover hover:brightness-105 active:translate-y-[1.5px] active:shadow-press-active',
+      },
+      size: {
+        sm: 'h-8 px-3 text-[13px]',
+        md: 'h-9 px-4 text-sm',
+      },
+    },
+    defaultVariants: {
+      variant: 'primary',
+      size: 'md',
+    },
+  },
+)
 
-const VARIANT_CLASSES: Record<ButtonVariant, string> = {
-  primary:
-    'bg-primary text-primary-foreground shadow-card hover:brightness-108 active:brightness-95',
-  secondary:
-    'border border-border bg-card text-foreground shadow-card hover:bg-accent hover:text-accent-foreground',
-  ghost: 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-  'danger-outline':
-    'border border-destructive/50 text-destructive hover:bg-destructive-soft',
-}
-
-const SIZE_CLASSES: Record<ButtonSize, string> = {
-  sm: 'h-8 px-3 text-[13px]',
-  md: 'h-9 px-4 text-sm',
-}
-
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  /** 按钮视觉变体，默认值为 `primary`。 */
-  variant?: ButtonVariant
-  /** 按钮尺寸档位，默认值为 `md`。 */
-  size?: ButtonSize
+interface ButtonProps
+  extends ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
   children: ReactNode
 }
 
 /**
  * 渲染统一风格的按钮。
  *
- * @param props.variant 视觉变体。
- * @param props.size 尺寸档位。
- * @param props.className 调用方追加的类名，优先级最高。
+ * @param props.variant 视觉变体，默认值为 `primary`。
+ * @param props.size 尺寸档位，默认值为 `md`。
+ * @param props.className 调用方追加的类名，冲突时优先级最高。
  * @returns 按钮元素。
  */
 export function Button({
@@ -54,13 +65,7 @@ export function Button({
   return (
     <button
       type={type}
-      className={cn(
-        'inline-flex cursor-pointer select-none items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap transition-all duration-150',
-        'disabled:pointer-events-none disabled:opacity-50',
-        VARIANT_CLASSES[variant],
-        SIZE_CLASSES[size],
-        className,
-      )}
+      className={cn(buttonVariants({ variant, size }), className)}
       {...rest}
     >
       {children}

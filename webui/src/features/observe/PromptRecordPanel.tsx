@@ -41,11 +41,11 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
     usePromptRecords(enabled)
 
   return (
-    <Card id="prompt-records" aria-label="分阶段调用记录" className="scroll-mt-6">
+    <Card id="prompt-records" aria-label="分阶段调用记录" className="animate-rise scroll-mt-6">
       <SectionHeading
         title="分阶段调用记录"
         subtitle="每次模型调用一份，按任务分目录"
-        icon={<Layers className="size-4" aria-hidden="true" />}
+        icon={<Layers />}
         actions={
           <>
             <Field label="模型任务" htmlFor="record-task" className="w-56">
@@ -93,7 +93,7 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
                   </span>
                   <span className="text-sm">{summaryTitle(summary)}</span>
                   {summary.errorType ? (
-                    <span className="rounded-full border border-border px-2 py-0.5 text-xs text-destructive">
+                    <span className="rounded-full bg-destructive-soft px-2 py-0.5 text-xs font-medium text-destructive">
                       {summary.errorType}
                     </span>
                   ) : null}
@@ -123,11 +123,14 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
                       <div className="flex flex-col gap-2">
                         <p className="text-xs font-medium text-muted-foreground">请求消息</p>
                         {(detail.request?.messages ?? []).map((message, index) => (
-                          <div key={index} className="rounded border border-border">
-                            <p className="border-b border-border px-2 py-1 font-mono text-xs text-muted-foreground">
+                          <div
+                            key={index}
+                            className="overflow-hidden rounded-lg border border-terminal-border bg-terminal"
+                          >
+                            <p className="border-b border-terminal-border px-3 py-1.5 font-mono text-xs text-terminal-foreground/60">
                               {message.role}
                             </p>
-                            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-2 py-1 text-xs">
+                            <pre className="max-h-72 overflow-auto px-3 py-2 font-mono text-xs whitespace-pre-wrap break-words text-terminal-foreground">
                               {message.content}
                             </pre>
                           </div>
@@ -137,7 +140,7 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
                       {detail.response?.reasoning ? (
                         <div className="flex flex-col gap-1">
                           <p className="text-xs font-medium text-muted-foreground">推理</p>
-                          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border px-2 py-1 text-xs">
+                          <pre className="max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap break-words text-terminal-foreground">
                             {detail.response.reasoning}
                           </pre>
                         </div>
@@ -145,7 +148,7 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
 
                       <div className="flex flex-col gap-1">
                         <p className="text-xs font-medium text-muted-foreground">模型产出</p>
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded border border-border px-2 py-1 text-xs">
+                        <pre className="max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap break-words text-terminal-foreground">
                           {detail.response?.text || '（空）'}
                         </pre>
                       </div>

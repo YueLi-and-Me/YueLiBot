@@ -92,7 +92,7 @@ function ProfileSections({ profile }: { profile: PersonProfile }) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
       <Card className="animate-rise md:col-span-12 xl:col-span-4">
-        <SectionHeading title="关系状态" subtitle="persona_bond" icon={<Heart />} tint="violet" />
+        <SectionHeading title="关系状态" subtitle="persona_bond" icon={<Heart />} tint="plum" />
         <CardBody className="flex flex-col gap-2">
           <div className="flex flex-col divide-y divide-border/60">
             <Metric label="好感度" value={fixed(profile.bond.intimacy, 1)} />
@@ -107,7 +107,7 @@ function ProfileSections({ profile }: { profile: PersonProfile }) {
           title="身份与会话"
           subtitle="identities / streams"
           icon={<IdCard />}
-          tint="blue"
+          tint="coral"
         />
         <CardBody className="flex flex-col gap-3">
           <div className="flex flex-col divide-y divide-border/60">
@@ -129,7 +129,7 @@ function ProfileSections({ profile }: { profile: PersonProfile }) {
           title="事实记忆"
           subtitle={`${profile.facts.length} 条`}
           icon={<BookMarked />}
-          tint="teal"
+          tint="olive"
         />
         <CardBody>
           {profile.facts.length ? (
@@ -173,7 +173,7 @@ export function PersonDetailPage() {
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
-        eyebrow="YUELI / PERSONS"
+        eyebrow="YUELI · CONSOLE"
         title={profile ? profile.displayName : '人物画像'}
         subtitle={subtitle}
         actions={

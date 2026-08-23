@@ -28,7 +28,7 @@ function PersonCard({ person }: { person: PersonSummary }) {
         title={person.displayName}
         subtitle={person.kind === 'owner' ? '本人' : `联系人 #${person.id}`}
         icon={<UserRound />}
-        tint={person.kind === 'owner' ? 'violet' : 'blue'}
+        tint={person.kind === 'owner' ? 'plum' : 'coral'}
       />
       <CardBody className="flex flex-1 flex-col gap-3">
         <div className="flex flex-col divide-y divide-border/60">
@@ -58,7 +58,7 @@ export function PersonsPage() {
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
-        eyebrow="YUELI / PERSONS"
+        eyebrow="YUELI · CONSOLE"
         title="人物画像"
         subtitle="每个人的身份、关系与事实记忆彼此独立。"
         actions={

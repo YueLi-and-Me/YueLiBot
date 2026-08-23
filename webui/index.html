@@ -5,9 +5,9 @@
   应用渲染；样式经 src/index.css 由 Tailwind 编译后随构建产物注入。
 
   约束说明：
-  - 严格 CSP 禁止内联脚本与外部资源，图标一律使用打包进 JS 的内联 SVG，字体只
-    使用系统栈；开发服务器下该 meta 由 vite.config.ts 的钩子移除，以放行
-    react-refresh 必需的内联 preamble。
+  - 严格 CSP 禁止内联脚本与外部资源，图标一律使用打包进 JS 的内联 SVG，字体为
+    fontsource 自托管可变字体（同源加载）；开发服务器下该 meta 由
+    vite.config.ts 的钩子移除，以放行 react-refresh 必需的内联 preamble。
   - 主题由 <html> 上的 data-theme 属性控制（light / dark），属性在 React 首次
     渲染前由 src/lib/theme.ts 写入。
 -->
@@ -20,7 +20,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'"
     />
-    <title>Bot 观察面板</title>
+    <title>月璃 · 管理面板</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>
