@@ -44,6 +44,7 @@ from src.core.agent.cognition import (
     CognitiveExecutor,
     CognitiveScope,
     InspectAction,
+    ConsultAction,
     RecallAction,
 )
 from src.core.agent.conversation import AgentOutcome, ConversationAgent
@@ -504,6 +505,9 @@ class ChatService:
             CognitiveExecutor([
                 RecallAction(self.memory, self._registry.stream_display_name),
                 InspectAction(self.memory, self._registry.stream_display_name),
+                # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；
+                # 执行器缺这一条就会在她真的选中时撞 KeyError，装配必须同步。
+                ConsultAction(db, embed_query=self._vector.embed_query),
             ])
             if self._cognitive_rounds > 0
             else None
