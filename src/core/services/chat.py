@@ -2647,11 +2647,35 @@ class ChatService:
         }
 
     def list_person_profiles(self) -> List[Dict[str, Any]]:
-        """列出人物画像索引。
+        """列出人物画像索引，附带列表页排序所需的关系与事实计数。
 
-        :return: 每个人物的身份与会话归属摘要，不展开关系状态和事实正文。
+        关系与计数直接并进本列表，而不是另开一条汇总路由：``/api/persons`` 已经是
+        人物列表的唯一入口，再加一条「同样的列表 + 三个字段」的端点就是同一资源的
+        两份真相。逐人取数复用 :meth:`Persona.inspect` 与 :meth:`MemoryStore.fact_count`，
+        不另写统计 SQL——「这个人有多少条事实」只能有一个口径。两者分别命中
+        ``persona_bond`` 主键与 ``idx_facts_person_active``，都是索引查找。
+
+        :return: 每个人物的身份与会话归属摘要，附 ``intimacy``、``factCount``
+            与 ``bondUpdatedAt``；不展开事实正文（那是详情路由的职责）。
+        :raises ValueError: 人物不存在时由注册表抛出。
+        :raises sqlite3.Error: 读取关系或事实计数失败。
+        副作用：只读，不创建缺失的 contact 关系记录。
         """
-        return [self._person_summary(person) for person in self._registry.list_persons()]
+        profiles: List[Dict[str, Any]] = []
+        for person in self._registry.list_persons():
+            summary = self._person_summary(person)
+            # inspect 而非 get：列表是只读视图，不该因为「看了一眼」就给谁建关系记录。
+            state = self.persona.inspect(person.id)
+            summary.update({
+                'intimacy': state.intimacy,
+                'factCount': self.memory.fact_count(person.id),
+                # 命名取自来源而非语义：对 contact 它确实是最后互动时间（apply_elapsed
+                # 对非 owner 提前返回），但 owner 那一行还会被每小时的时间结算推进，
+                # 叫 lastInteractionAt 会对那一行说谎。
+                'bondUpdatedAt': state.updated_at,
+            })
+            profiles.append(summary)
+        return profiles
 
     def person_profile(self, person_id: int, now: int | None = None) -> Dict[str, Any]:
         """组装指定人物的身份、关系和事实画像。
