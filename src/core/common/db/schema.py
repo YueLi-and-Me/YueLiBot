@@ -299,6 +299,23 @@ CREATE TABLE IF NOT EXISTS persona_snapshots (
   mood       REAL    NOT NULL DEFAULT 50.0
 );
 CREATE INDEX IF NOT EXISTS idx_persona_snapshots_time ON persona_snapshots(captured_at DESC);
+
+-- -------------------------------------------------------------- 生活活动时间线
+-- 这里只记录实际发生或事后补叙的活动，不从旧日程推断历史事实。
+CREATE TABLE IF NOT EXISTS activities (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind           TEXT    NOT NULL,
+  doing          TEXT    NOT NULL,
+  mood           TEXT    NOT NULL,
+  energy_pace    INTEGER NOT NULL,
+  mood_pace      INTEGER NOT NULL,
+  advances       INTEGER,
+  started_at     INTEGER NOT NULL,
+  expected_until INTEGER NOT NULL,
+  ended_at       INTEGER,
+  source         TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(started_at DESC);
 """
 
 SEED = """

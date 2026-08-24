@@ -585,6 +585,11 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             'reason': reason,
         })
 
+    # 只有私聊与协议 @ 会在睡着时得到 force；先保留门控时的 asleep 审计事实，
+    # 再打断时间线里的 sleep 段，避免名字命中或戳一戳旁路既有丢弃优先级。
+    if asleep and gate_result.disposition == 'force':
+        app_state.chat.wake_from_inbound(now)
+
     image_sources = tuple(body.image_sources)
     emoji_sources = tuple(body.emoji_sources)
     emoji_sub_types = tuple(body.emoji_sub_types)

@@ -97,76 +97,21 @@
         {
           "kind": "object",
           "key": "schedule",
-          "label": "日程与作息",
-          "description": "每日日程段数、自动睡眠和生成失败时的备用文本。",
+          "label": "每日方向与活动",
+          "description": "控制活动能否进入睡眠、方向生成失败时的备用主题与重试节奏。",
           "fields": [
-            {
-              "key": "min_slots",
-              "type": "integer",
-              "label": "最少日程段数",
-              "min": 1,
-              "max": 24,
-              "help": "每天生成的日程段数下限。"
-            },
-            {
-              "key": "max_slots",
-              "type": "integer",
-              "label": "最多日程段数",
-              "min": 1,
-              "max": 24,
-              "help": "每天生成的日程段数上限；不能小于最少段数。"
-            },
             {
               "key": "sleep_enabled",
               "type": "boolean",
-              "label": "自动睡眠",
-              "help": "是否进入自动睡眠离线状态；关闭后仍按 bedtime/wake 形成休息与精力节律。"
-            },
-            {
-              "key": "fallback_bedtime",
-              "type": "time",
-              "label": "备用入睡时间",
-              "help": "模型不可用或输出不合法时使用的入睡时间，格式 HH:MM。"
-            },
-            {
-              "key": "fallback_wake",
-              "type": "time",
-              "label": "备用醒来时间",
-              "help": "模型不可用或输出不合法时使用的醒来时间，格式 HH:MM。"
-            },
-            {
-              "key": "bedtime_day_boundary",
-              "type": "time",
-              "label": "跨日分界",
-              "help": "小于等于此时间的 bedtime 视为计划日结束后的次日时间。"
-            },
-            {
-              "key": "fallback_activity",
-              "type": "string",
-              "label": "备用活动",
-              "maxLength": 72,
-              "help": "日程生成失败时使用的活动文本，1~72 字符。"
-            },
-            {
-              "key": "fallback_mood",
-              "type": "string",
-              "label": "备用状态",
-              "maxLength": 40,
-              "help": "日程生成失败时使用的状态文本，1~40 字符。"
+              "label": "允许睡眠活动",
+              "help": "开启后活动模型可以选择 sleep；关闭后仍可选择会正常回应的 rest。"
             },
             {
               "key": "fallback_theme",
               "type": "string",
-              "label": "备用日主题",
+              "label": "备用方向主题",
               "maxLength": 72,
-              "help": "日程生成失败时使用的当日主题，1~72 字符。"
-            },
-            {
-              "key": "fallback_carry_over",
-              "type": "string",
-              "label": "备用承接事项",
-              "maxLength": 72,
-              "help": "日程生成失败时使用的明日承接事项，1~72 字符。"
+              "help": "每日方向生成失败时使用的当日主题，1~72 字符。"
             },
             {
               "key": "generation_retry_interval_minutes",

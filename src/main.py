@@ -44,13 +44,16 @@ DEFAULT_BACKEND_PORT = 7999
 
 
 class _LLMGenerator:
-    """把明确注入的日程路由适配为 DayPlanService 需要的生成接口。"""
+    """把明确注入的调度路由适配为 JSON 生成接口。"""
 
     def __init__(
         self,
         schedule_provider: LlmProvider,
         temperature: float,
         max_tokens: int | None,
+        *,
+        prompt_id: str,
+        template_id: str,
     ) -> None:
         """绑定日程模型提供者及生成参数。
 
@@ -62,12 +65,14 @@ class _LLMGenerator:
         self._schedule_provider = schedule_provider
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._prompt_id = prompt_id
+        self._template_id = template_id
 
     async def generate(
         self,
         prompt: str,
     ) -> str:
-        """流式生成并拼接一份日程 JSON 文本。
+        """流式生成并拼接一份调度 JSON 文本。
 
         :param prompt: 已渲染的日程生成提示词。
 
@@ -77,20 +82,20 @@ class _LLMGenerator:
         :raises Exception: 提供者连接、协议或流式迭代错误直接传播。
 
         副作用：
-            写入模型请求观察事件；不会持久化日程，持久化由日程服务负责。
+            写入模型请求观察事件；不会持久化结果，持久化由业务服务负责。
         """
 
         raw = ''
         reasoning_length = 0
         messages = [{'role': 'user', 'content': prompt}]
-        # 日程请求要求 JSON object，推理字段只计数用于诊断，不混入返回正文。
+        # 调度请求要求 JSON object，推理字段只计数用于诊断，不混入返回正文。
         trace.emit(
             'llm_request',
             messages=messages,
             temperature=self._temperature,
             maxTokens=self._max_tokens,
             renderParams=current_render_params(),
-            **prompt_metadata('schedule', ('schedule',)),
+            **prompt_metadata(self._prompt_id, (self._template_id,)),
         )
         async for chunk in self._schedule_provider.stream(
             messages=messages,
@@ -107,7 +112,7 @@ class _LLMGenerator:
         # 空正文通常表示 provider 只返回推理或响应协议不匹配，必须显式暴露。
         if not raw.strip():
             raise ValueError(
-                '日程模型未返回正文'
+                f'{self._prompt_id} 模型未返回正文'
                 f'（正文字符={len(raw)}，推理字符={reasoning_length}）'
             )
         return raw
@@ -522,7 +527,10 @@ def main() -> None:
         logger.info("tts_ready", voice=cfg.tts.voice,
                     candidates=len(routers.tts.candidates))
 
-    # 日程服务是可选依赖；未成功装配时由 AwarenessService 使用配置备用日程。
+    from src.core.schedule.timeline import ActivityTimeline
+    timeline = ActivityTimeline(db)
+
+    # 日程服务是可选依赖；活动时间线即使没有日程模型也保持可读。
     schedule = None
     try:
         from src.core.schedule.plan import DayPlanService
@@ -534,10 +542,24 @@ def main() -> None:
                 schedule_provider,
                 schedule_generation.temperature,
                 schedule_generation.token_limit,
+                prompt_id='schedule',
+                template_id='schedule',
+            )
+            if schedule_provider else None
+        )
+        activity_generator = (
+            _LLMGenerator(
+                schedule_provider,
+                schedule_generation.temperature,
+                schedule_generation.token_limit,
+                prompt_id='activity.next',
+                template_id='activity.next',
             )
             if schedule_provider else None
         )
         schedule = DayPlanService(
+            db=db,
+            timeline=timeline,
             store=chat_svc.memory,
             persona_state=lambda: chat_svc.persona.get(desktop_context.person.id),
             interaction_density=lambda n: chat_svc.memory.interaction_density(
@@ -547,6 +569,7 @@ def main() -> None:
             anniversary_at=lambda: chat_svc.memory.first_seen_at(desktop_context.person.id),
             last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
             generator=schedule_generator,
+            activity_generator=activity_generator,
             character_name=cfg.bot.name,
             character_personality=cfg.personality.personality,
             schedule_config=cfg.schedule,
@@ -565,6 +588,7 @@ def main() -> None:
     awareness = AwarenessService(
         chat=app_state.chat,
         schedule=schedule,
+        timeline=timeline,
         cfg=cfg,
         push_event=_push_event,
         sensor=sensor,

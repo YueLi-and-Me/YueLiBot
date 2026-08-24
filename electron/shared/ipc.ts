@@ -14,25 +14,39 @@ export type ParseEvent =
   | { type: 'memory'; memoryType?: string; content: string }
   | { type: 'mood'; favor?: number; energy?: number }
 
-/** 日程时段（Python 侧 DayPlan.slots 字段，渲染层只读取）。 */
-export interface DayPlanSlot {
-  from: string
+/** 每日方向中的一条主线意向，不包含任何执行钟点。 */
+export interface DayPlanIntention {
+  what: string
+  carriedDays: number
+}
+
+/** 每日方向（Python 侧产物，通过观察与日记接口下发）。 */
+export interface DayPlan {
+  date: string
+  theme: string
+  intentions: DayPlanIntention[]
+  roughRhythm: string
+}
+
+export interface ActivitySnapshot {
+  id: number
+  kind: 'awake' | 'rest' | 'sleep'
   doing: string
   mood: string
   energyPace: number
   moodPace: number
+  advances: number | null
+  startedAt: number
+  expectedUntil: number
+  endedAt?: number | null
+  source: 'decided' | 'backfilled' | 'interrupted'
 }
 
-/** 每日计划（Python 侧产物，通过 /diary 下发）。 */
-export interface DayPlan {
-  date: string
-  slots: DayPlanSlot[]
-  bedtimeHint: string
-  wakeHint: string
-  theme: string
-  carryOver: string
-  sleepEnabled: boolean
-  bedtimeDayBoundary: string
+export interface IntentionProgress {
+  index: number
+  what: string
+  carriedDays: number
+  advanced: boolean
 }
 
 /** 观察面板中一条可切换的会话流。 */
@@ -113,6 +127,9 @@ export interface ObservabilityPayload {
     statusLabel: string
   }
   schedule: DayPlan | null
+  activity?: ActivitySnapshot
+  activityTimeline?: ActivitySnapshot[]
+  intentionProgress?: IntentionProgress[]
   conversation: {
     workingMessages: number
     participants: ConversationParticipant[]
@@ -335,16 +352,8 @@ export interface YueliConfig {
     max_replies_in_window: number
   }
   schedule: {
-    min_slots: number
-    max_slots: number
     sleep_enabled: boolean
-    fallback_bedtime: string
-    fallback_wake: string
-    bedtime_day_boundary: string
-    fallback_activity: string
-    fallback_mood: string
     fallback_theme: string
-    fallback_carry_over: string
     generation_retry_interval_minutes: number
   }
   personality: {

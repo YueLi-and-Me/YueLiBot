@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Awaitable, Callable, Protocol
 
 import asyncio
@@ -28,14 +27,14 @@ from src.core.awareness.interest import (
     minutes_to_full, spend, wants_to_speak,
 )
 from src.core.awareness.signals import Classified
-from src.core.awareness.sleep import SleepInputs, SleepStateController
+from src.core.awareness.sleep import SleepStateController
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import DISPATCHING, FAILED, GENERATING, REPLIED
 from src.core.persona.state import status_label
-from src.core.schedule.plan import _slot_at, day_plan_date, describe_day_plan, fallback_day_plan
+from src.core.schedule.timeline import ActivityTimeline
 
 logger = get_logger(__name__)
 
@@ -80,6 +79,7 @@ class AwarenessService:
         self,
         chat: Any,
         schedule: Any | None,
+        timeline: ActivityTimeline,
         cfg: Any,
         push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
         sensor: ProactiveSensor | None = None,
@@ -88,6 +88,7 @@ class AwarenessService:
 
         :param chat: 提供记忆、人物、当前睡眠和主动生成能力的聊天服务。
         :param schedule: 可选日程服务；缺失时使用配置生成备用作息。
+        :param timeline: Bot 实际生活活动的唯一连续时间线。
         :param cfg: 提供主动感知、视觉和日程配置的运行时配置。
         :param push_event: 异步向客户端推送状态事件的回调。
         :param sensor: 可选的平台信号提供者；缺失时服务以无信号模式运行。
@@ -100,60 +101,22 @@ class AwarenessService:
         started_at = current_time()
         self.chat = chat
         self._schedule = schedule
+        self._timeline = timeline
         self._cfg = cfg
         self._push_event = push_event
         self._sensor = sensor
         self._enabled = cfg.generation.proactive.enabled
 
         # 启动前恢复 promise，保证服务重建不会丢失尚未到期的主动意图。
-        self._sleep = SleepStateController(input_source=self._sleep_inputs, state_store=chat.memory)
+        self._sleep = SleepStateController(timeline=timeline)
         self._budget: ProactiveState = initial_state(started_at)
         self._interest: InterestState = initial_interest_state(started_at)
         self._pending: list[PendingIntent] = self._restore_promises()
-        self._last_pushed_asleep: bool | None = None
-        self._last_plan_slot = ''
+        self._last_pushed_sleep: tuple[bool, bool, bool] | None = None
+        self._last_activity_id: int | None = None
 
         self._poll_task: asyncio.Task | None = None
         self._stop = asyncio.Event()
-
-    # ------------------------------------------------------------ 依赖注入回调
-
-    def _sleep_inputs(self, now: int) -> SleepInputs:
-        """根据日程或备用配置组装睡眠状态机输入。
-
-        :param now: 当前毫秒时间戳。
-
-        :return: 包含作息提示、精力、最近互动时间和睡眠开关的 ``SleepInputs``。
-
-        :raises Exception: 日程、人物或记忆存储读取失败时直接传播，避免使用错误的
-                默认状态掩盖数据问题。
-        """
-
-        # 日程服务是权威作息来源；只有未配置日程时才使用配置中的备用时段。
-        if self._schedule:
-            schedule_inputs = self._schedule.sleep_inputs(now)
-            return SleepInputs(
-                date=schedule_inputs['date'],
-                bedtime_hint=schedule_inputs['bedtime_hint'],
-                wake_hint=schedule_inputs['wake_hint'],
-                energy=schedule_inputs['energy'],
-                last_interaction_at=schedule_inputs['last_interaction_at'],
-                sleep_enabled=schedule_inputs['sleep_enabled'],
-                bedtime_day_boundary=schedule_inputs['bedtime_day_boundary'],
-            )
-
-        date = day_plan_date(now)
-        plan = fallback_day_plan(date, self._cfg.schedule)
-        desktop_context = self.chat.desktop_context
-        return SleepInputs(
-            date=plan.date,
-            bedtime_hint=plan.bedtime_hint,
-            wake_hint=plan.wake_hint,
-            energy=self.chat.persona.get(desktop_context.person.id).energy,
-            last_interaction_at=self.chat.memory.last_message_at(desktop_context.stream.id),
-            sleep_enabled=plan.sleep_enabled,
-            bedtime_day_boundary=plan.bedtime_day_boundary,
-        )
 
     def _restore_promises(self) -> list[PendingIntent]:
         """从记忆存储恢复仍属于 promise 类型的待投放意图。
@@ -283,7 +246,9 @@ class AwarenessService:
         :return: 使用 camelCase 字段名的可序列化诊断字典；不包含截图内容。
         """
         now = now if now is not None else current_time()
-        sleep_eval = self._sleep.inspect(now)
+        sleep_state = self._sleep.current(now)
+        activity = self._timeline.current(now)
+        recent_activities = self._timeline.between(now - 24 * 60 * 60_000, now + 1)[-12:]
         factors = self._interest_factors(now)
         classified = self._sensor.signal if self._sensor else None
         minutes = self._sensor.minutes(now) if self._sensor else 0
@@ -295,23 +260,49 @@ class AwarenessService:
                 'mood': state.mood,
                 'statusLabel': status_label(
                     state,
-                    asleep=sleep_eval.asleep,
-                    just_woke=sleep_eval.just_woke,
-                    drowsy=sleep_eval.drowsy,
+                    asleep=sleep_state.asleep,
+                    just_woke=sleep_state.just_woke,
+                    resting=sleep_state.resting,
                 ),
             },
             'sleep': {
-                'asleep': sleep_eval.asleep,
-                'drowsy': sleep_eval.drowsy,
-                'justWoke': sleep_eval.just_woke,
-                'probability': sleep_eval.probability,
-                'cutoff': sleep_eval.cutoff,
-                'minutesFromBedtime': sleep_eval.minutes_from_bedtime,
-                'minutesUntilWake': sleep_eval.minutes_until_wake,
-                'naturalWakeTargetAt': sleep_eval.natural_wake_target_at,
-                'effectiveWakeAt': sleep_eval.effective_wake_at,
-                'sleepDebtDelayMinutes': sleep_eval.sleep_debt_delay_minutes,
+                'asleep': sleep_state.asleep,
+                'justWoke': sleep_state.just_woke,
+                'resting': sleep_state.resting,
             },
+            'activity': {
+                'id': activity.id,
+                'kind': activity.kind,
+                'doing': activity.doing,
+                'mood': activity.mood,
+                'energyPace': activity.energy_pace,
+                'moodPace': activity.mood_pace,
+                'advances': activity.advances,
+                'startedAt': activity.started_at,
+                'expectedUntil': activity.expected_until,
+                'source': activity.source,
+            },
+            'activityTimeline': [
+                {
+                    'id': item.id,
+                    'kind': item.kind,
+                    'doing': item.doing,
+                    'mood': item.mood,
+                    'energyPace': item.energy_pace,
+                    'moodPace': item.mood_pace,
+                    'advances': item.advances,
+                    'startedAt': item.started_at,
+                    'expectedUntil': item.expected_until,
+                    'endedAt': item.ended_at,
+                    'source': item.source,
+                }
+                for item in recent_activities
+            ],
+            'intentionProgress': (
+                self._schedule.intention_progress(now)
+                if self._schedule is not None
+                else []
+            ),
             'impulse': {
                 'used': self._budget.used,
                 'remaining': max(0, DAILY_BUDGET - self._budget.used),
@@ -352,6 +343,7 @@ class AwarenessService:
 
         self.chat.set_activity_provider(self._activity_text)
         self.chat.set_sleep_state_provider(lambda: self._sleep.current())
+        self.chat.set_sleep_wake_handler(self._sleep.wake)
         self.chat.set_promise_handler(self.stash_promise)
         if self._sensor:
             self._sensor.startup()
@@ -398,7 +390,7 @@ class AwarenessService:
         if not self._enabled:
             return
         asyncio.create_task(self._handle_foreground(classified, now, window_changed))
-        asyncio.create_task(self._refresh_sleep(now))
+        asyncio.create_task(self._refresh_activity_state(now))
 
     # ------------------------------------------------------------ 主动搭话决策
 
@@ -555,15 +547,11 @@ class AwarenessService:
             return False
 
         minutes = self._sensor.minutes(now) if self._sensor else 0
-        if intent.intent_type == IntentType.Plan and self._schedule:
-            # Plan 意图本身就是「时段换了，因此想说点什么」，具体活动是这条主动消息
-            # 仅有的由头，必须显式带上；对话回合的默认不注入不适用于这里。
-            base = describe_day_plan(
-                self._schedule.get(now),
-                datetime.fromtimestamp(now / 1000),
-                self.chat.persona.get(self.chat.desktop_context.person.id),
-                self.chat.current_sleep(),
-                include_activity=True,
+        if intent.intent_type == IntentType.Plan:
+            activity = self._timeline.current(now)
+            base = (
+                f'你此刻在「{activity.doing}」。这段状态会让你「{activity.mood}」。'
+                '如果想主动提起，只说眼下真实发生的事，不要复述全天计划。'
             )
         elif intent.intent_type == IntentType.Promise:
             base = (
@@ -668,29 +656,32 @@ class AwarenessService:
 
     # ------------------------------------------------------------ 睡眠状态推送
 
-    async def _refresh_sleep(self, now: int) -> None:
-        """刷新睡眠状态并在状态变化时推送客户端事件。
+    async def _refresh_activity_state(self, now: int) -> None:
+        """刷新活动派生的睡眠状态并在变化时推送客户端事件。
 
         :param now: 当前毫秒时间戳。
 
         副作用：
-            可能写入睡眠转换观察事件并推送 ``sleep.state``；状态评估异常只记录
-            警告，不中断前台事件处理。
+            可能写入睡眠转换观察事件并推送 ``sleep.state``；读取异常只记录警告，
+            不中断前台事件处理。
         """
         try:
             state = self._sleep.current(now)
         except Exception as exc:
-            logger.warning('sleep_eval_failed', error=str(exc))
+            logger.warning('activity_sleep_read_failed', error=str(exc))
             return
-        if state.asleep != self._last_pushed_asleep:
-            self._last_pushed_asleep = state.asleep
-            trace.emit('sleep_transition', asleep=state.asleep, drowsy=state.drowsy,
-                       probability=state.probability)
+        snapshot = (state.asleep, state.just_woke, state.resting)
+        if snapshot != self._last_pushed_sleep:
+            self._last_pushed_sleep = snapshot
+            trace.emit(
+                'sleep_transition',
+                asleep=state.asleep,
+                resting=state.resting,
+            )
             await self._push_event('sleep.state', {
                 'asleep': state.asleep,
-                'drowsy': state.drowsy,
                 'justWoke': state.just_woke,
-                'probability': state.probability,
+                'resting': state.resting,
             })
 
     # ------------------------------------------------------------ 后台轮询
@@ -724,19 +715,17 @@ class AwarenessService:
         await self._flush_pending(now)
         if self._schedule:
             asyncio.create_task(self._schedule.ensure(now))
-            plan = self._schedule.get(now)
-            slot = _slot_at(plan, datetime.fromtimestamp(now / 1000))
-            slot_key = f'{plan.date}:{slot.from_time}'
-            if self._last_plan_slot and slot_key != self._last_plan_slot:
-                self._stash(PendingIntent(
-                    intent_type=IntentType.Plan,
-                    earliest_at=now,
-                    expires_at=now + IntentType.Plan.ttl_ms,
-                    activity=self._sensor.signal.activity if self._sensor and self._sensor.signal else 'idle',
-                    wants_vision=False,
-                ), now)
-            self._last_plan_slot = slot_key
-        await self._refresh_sleep(now)
+        activity = self._timeline.current(now)
+        if self._last_activity_id is not None and activity.id != self._last_activity_id:
+            self._stash(PendingIntent(
+                intent_type=IntentType.Plan,
+                earliest_at=now,
+                expires_at=now + IntentType.Plan.ttl_ms,
+                activity=self._sensor.signal.activity if self._sensor and self._sensor.signal else 'idle',
+                wants_vision=False,
+            ), now)
+        self._last_activity_id = activity.id
+        await self._refresh_activity_state(now)
         classified = self._sensor.signal if self._sensor else None
         if classified is not None:
             self._grow_interest(now)
