@@ -65,10 +65,29 @@ class ActivityDraft:
 
 @dataclass(frozen=True)
 class ActivityTransition:
-    """一次调用同时给出的缺口补叙与下一段活动。"""
+    """一次调用给出的活动延续，或缺口补叙与下一段活动。"""
 
-    next_activity: ActivityDraft
+    next_activity: ActivityDraft | None = None
+    continuation_minutes: int | None = None
     backfilled: Sequence[ActivityDraft] = ()
+
+    def __post_init__(self) -> None:
+        """保证一次转换只有一个动作，长缺口不能伪装成活动延续。"""
+
+        has_next = self.next_activity is not None
+        has_continuation = self.continuation_minutes is not None
+        if has_next == has_continuation:
+            raise ValueError('活动转换必须且只能选择延续或切换')
+        if has_continuation:
+            minutes = self.continuation_minutes
+            if (
+                isinstance(minutes, bool)
+                or not isinstance(minutes, int)
+                or not 10 <= minutes <= 600
+            ):
+                raise ValueError('活动延续 minutes 必须是 10 到 600 的整数')
+            if self.backfilled:
+                raise ValueError('长缺口补叙不能延续上一段活动')
 
 
 ActivityDecider = Callable[[Activity, int, int], Awaitable[ActivityTransition]]
@@ -196,7 +215,17 @@ def parse_activity_decision(
                 return None
             backfilled.append(draft)
     else:
-        next_value = value
+        decision = value.get('decision')
+        if decision == 'continue':
+            if set(value) != {'decision', 'minutes'}:
+                return None
+            continuation_minutes = _integer(value.get('minutes'))
+            if continuation_minutes is None or not 10 <= continuation_minutes <= 600:
+                return None
+            return ActivityTransition(continuation_minutes=continuation_minutes)
+        if decision != 'switch' or set(value) != {'decision', 'activity'}:
+            return None
+        next_value = value.get('activity')
         backfilled = []
     next_activity = _parse_draft(
         next_value,
@@ -245,7 +274,12 @@ def build_activity_prompt(
             '时长只表示各段相对占比，系统会把它们连续铺满。'
         )
     else:
-        backfill_rule = '没有长缺口。直接输出一个活动对象，不要包 next，不要输出 backfill。'
+        backfill_rule = (
+            '没有长缺口。先判断是继续当前活动，还是切换核心对象。只允许输出以下一种：\n'
+            '{"decision":"continue","minutes":45}\n'
+            '{"decision":"switch","activity":活动对象}\n'
+            '不要输出 backfill，也不要直接输出裸活动对象。'
+        )
     sleep_rule = (
         '允许选择 sleep；真的睡着时才用 sleep，闭目养神但仍会回应要用 rest。'
         if context.sleep_enabled
@@ -604,7 +638,7 @@ class ActivityTimeline:
         now: int,
         gap_ms: int,
     ) -> None:
-        """根据缺口长度结束旧段、补满缺口并写入下一段。"""
+        """延续当前活动，或根据缺口长度补满缺口并写入下一段。"""
 
         with self._db:
             still_open = self._db.execute(
@@ -613,27 +647,46 @@ class ActivityTimeline:
             ).fetchone()
             if still_open is None:
                 return
-            if gap_ms <= SHORT_GAP_MS:
+            if transition.continuation_minutes is not None:
+                if gap_ms > SHORT_GAP_MS:
+                    raise ValueError('长缺口不能延续上一段活动')
                 self._db.execute(
-                    'UPDATE activities SET ended_at = ? WHERE id = ?',
-                    (now, previous.id),
+                    'UPDATE activities SET expected_until = ? WHERE id = ?',
+                    (
+                        now + transition.continuation_minutes * MINUTE_MS,
+                        previous.id,
+                    ),
+                )
+                logger.debug(
+                    '延续当前活动，不新增时间线段',
+                    activity_id=previous.id,
+                    minutes=transition.continuation_minutes,
                 )
             else:
-                self._db.execute(
-                    'UPDATE activities SET ended_at = ? WHERE id = ?',
-                    (previous.expected_until, previous.id),
+                if gap_ms <= SHORT_GAP_MS:
+                    self._db.execute(
+                        'UPDATE activities SET ended_at = ? WHERE id = ?',
+                        (now, previous.id),
+                    )
+                else:
+                    self._db.execute(
+                        'UPDATE activities SET ended_at = ? WHERE id = ?',
+                        (previous.expected_until, previous.id),
+                    )
+                    self._insert_backfill(
+                        transition.backfilled,
+                        previous.expected_until,
+                        now,
+                    )
+                next_activity = transition.next_activity
+                if next_activity is None:
+                    raise ValueError('活动切换缺少下一段活动')
+                self._insert_draft(
+                    next_activity,
+                    started_at=now,
+                    ended_at=None,
+                    source='decided',
                 )
-                self._insert_backfill(
-                    transition.backfilled,
-                    previous.expected_until,
-                    now,
-                )
-            self._insert_draft(
-                transition.next_activity,
-                started_at=now,
-                ended_at=None,
-                source='decided',
-            )
         self.assert_invariants()
 
     def _insert_backfill(
