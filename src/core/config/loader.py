@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Callable, Dict, List, Tuple
 
 import sys
+
+from pydantic import BaseModel
 
 from .schema import (
     ApiProviderConfig,
@@ -30,6 +32,7 @@ from src.core.common.logger import get_logger
 from src.core.llm_models.openai import resolve_base_url
 
 _config: Config | None = None
+_config_dir: Path | None = None
 logger = get_logger(__name__)
 
 
@@ -340,9 +343,10 @@ def load_config(path: Path) -> Config:
     :raises SystemExit: 路径不是目录、配置读取或字段校验失败时以状态码 ``1`` 退出。
 
     副作用：
-        首次调用读取配置文件并写入模块级缓存；失败时向标准错误输出诊断信息。
+        首次调用读取配置文件并写入模块级缓存与目录记录（供热重载复用）；
+        失败时向标准错误输出诊断信息。
     """
-    global _config
+    global _config, _config_dir
     if _config is not None:
         return _config
 
@@ -356,6 +360,7 @@ def load_config(path: Path) -> Config:
         print(f'[yueli] 配置错误，请检查 {path}：\n{exc}', file=sys.stderr)
         sys.exit(1)
 
+    _config_dir = path
     return _config
 
 
@@ -375,7 +380,147 @@ def reset_config() -> None:
     """清空进程级配置缓存。
 
     :return: 无返回值。
-    副作用：将后续 :func:`get_config` 置为未初始化；仅供测试隔离配置使用。
+    副作用：将后续 :func:`get_config` 置为未初始化并遗忘配置目录；仅供测试隔离配置使用。
+    """
+    global _config, _config_dir
+    _config = None
+    _config_dir = None
+
+
+# ---------------------------------------------------------------- 配置热重载
+# 三类字段（见任务包四交付报告的逐字段结论）：
+# 1. 能热重载——只在使用点读取、没有拷贝残留，重载换掉持有方引用即生效；
+# 2. 必须重启——进程启动时就决定形态（模型客户端、日志管道、可选服务装配）；
+# 3. 需要改代码才能热重载——被拷进实例属性（chat.py:408 一类），本包不动。
+# 下面前缀表只登记第 2、3 类；不在表里的即第 1 类。前缀匹配按点分段做，
+# 避免 'log' 误命中 'logging' 这类同前缀字段名。
+RESTART_REQUIRED_PREFIXES: Tuple[str, ...] = (
+    'routing',                    # 厂商/模型/任务路由：模型客户端与熔断状态一次装配
+    'tts.enabled',                # TtsService 只在启动时创建；voice/speed/format 动态读
+    'vision.enabled',             # 视觉链路启动装配（关→开必须重启；开→关动态读）
+    'vision.fullscreen_silent',   # 视觉采集链路启动形态
+    'vision.capture_mode',        # 同上
+    'vector.enabled',             # VectorService 启动装配
+    'log',                        # 日志管道、快照与事件保留策略启动定型
+)
+DEFERRED_PREFIXES: Tuple[str, ...] = (
+    'conversation',               # chat.py __init__ 全段拷贝
+    'conversation_agent',         # 同上
+    'perception',                 # surfaces 拷成 frozenset
+    'generation.chat',            # 采样参数拷进实例属性
+    'generation.planner',
+    'generation.replyer',
+    'generation.proactive',
+    'bot.name',                   # 名字与别名另有拷贝路径（提及检测、摘要人格）
+    'bot.aliases',
+    'personality.expression_habits',
+    'personality.proactive_expression_habits',
+    'group_chat.scene_refresh_messages',
+    'group_chat.self_started_topics',
+    'group_chat.at_mention_must_reply',
+    'group_chat.name_mention_probability',
+    'group_chat.persona_weight',
+)
+
+# 订阅回调列表：第 1 类字段的持有方在重载成功后拿到新配置。这个项目用不上
+# 观察者框架，一个模块级列表加一个注册函数就是全部机制。
+_reload_listeners: List[Callable[[Config, Config], None]] = []
+
+
+def add_config_reload_listener(
+    listener: Callable[[Config, Config], None],
+) -> Callable[[], None]:
+    """登记一个配置热重载回调。
+
+    :param listener: 回调，参数为 ``(旧配置, 新配置)``；在重载成功、全局配置
+        已替换之后同步调用。
+    :return: 注销函数；重复注销安全。
+    副作用：追加进模块级回调列表。
+    """
+    _reload_listeners.append(listener)
+
+    def _remove() -> None:
+        """从回调列表移除已登记的监听器。"""
+        try:
+            _reload_listeners.remove(listener)
+        except ValueError:
+            pass
+
+    return _remove
+
+
+def _changed_leaves(path: str, old_value: object, new_value: object) -> List[str]:
+    """递归比较一个字段的旧新取值，返回发生变化的叶子路径。
+
+    pydantic 模型继续下钻到标量；列表与字典整体视为一个字段——厂商表这类
+    列表重排后的逐下标路径只有噪声没有信息量，而配置里含密钥，路径一律
+    不携带值。
+
+    :param path: 当前字段的点路径。
+    :param old_value: 旧配置中的取值。
+    :param new_value: 新配置中的取值。
+    :return: 变化字段的点路径列表；两值相等时为空。
+    """
+    if isinstance(old_value, BaseModel) and isinstance(new_value, BaseModel):
+        paths: List[str] = []
+        for name in type(old_value).model_fields:
+            child_old = getattr(old_value, name)
+            child_new = getattr(new_value, name)
+            if child_old != child_new:
+                paths.extend(_changed_leaves(f'{path}.{name}', child_old, child_new))
+        return paths
+    return [path]
+
+
+def _annotate_change(path: str) -> str:
+    """按三类前缀表给变更路径加生效性标注。
+
+    :param path: 点路径字段名。
+    :return: 带中文标注的行；第 1 类返回原路径。
+    """
+    for prefix in RESTART_REQUIRED_PREFIXES:
+        if path == prefix or path.startswith(prefix + '.'):
+            return f'{path}（需要重启才生效）'
+    for prefix in DEFERRED_PREFIXES:
+        if path == prefix or path.startswith(prefix + '.'):
+            return f'{path}（已被运行时持有，本次重载不生效）'
+    return path
+
+
+def reload_config() -> Tuple[Config, List[str]]:
+    """重读配置目录并整体替换全局配置，返回新配置与标注后的变更清单。
+
+    与启动共用 :func:`_load_split_config`，因此校验完全一致：版本、引用、任务
+    路由与功能开关任何一项不过都在替换**之前**抛出，全局配置保持原状——
+    不落盘、不半应用、不做「失败就用旧配置继续跑」的静默兜底。
+
+    :return: ``(新配置, 标注后的变更字段行列表)``；没有变化时清单为空。
+
+    :raises Exception: 配置读取或校验失败时原样抛出，进程继续用旧配置运行。
+    :raises RuntimeError: 尚未成功调用过 :func:`load_config`。
+
+    副作用：
+        校验通过后替换模块级配置单例并逐一调用订阅回调（单个回调失败只记
+        ``config_reload_listener_failed`` 日志，不阻断其余回调、不回滚配置——
+        配置本体已完整应用，个别持有方失联是要暴露的缺陷，不是要隐藏的状态）。
     """
     global _config
-    _config = None
+    if _config is None or _config_dir is None:
+        raise RuntimeError('配置未初始化，请先调用 load_config(path)')
+    previous = _config
+    # 先完整构建再替换：这里抛出的任何异常都发生在全局配置被碰之前。
+    fresh = _load_split_config(_config_dir)
+    changed = [
+        line
+        for name in type(fresh).model_fields
+        for line in _changed_leaves(name, getattr(previous, name), getattr(fresh, name))
+    ]
+    summary = [_annotate_change(path) for path in changed]
+    _config = fresh
+    logger.info('config_reloaded', changedFields=summary if summary else ['（无字段变化）'])
+    for listener in list(_reload_listeners):
+        try:
+            listener(previous, fresh)
+        except Exception:
+            logger.exception('config_reload_listener_failed')
+    return fresh, summary
