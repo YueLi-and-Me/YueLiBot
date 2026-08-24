@@ -120,7 +120,7 @@
               "key": "sleep_enabled",
               "type": "boolean",
               "label": "自动睡眠",
-              "help": "是否启用自动睡眠状态；关闭后 bedtime/wake 仅保留为结构字段。"
+              "help": "是否进入自动睡眠离线状态；关闭后仍按 bedtime/wake 形成休息与精力节律。"
             },
             {
               "key": "fallback_bedtime",

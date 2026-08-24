@@ -660,13 +660,13 @@ class ChatService:
         self,
         context: ConversationContext,
         now: int | None = None,
-        earlier_asleep: bool = False,
+        earlier_resting: bool = False,
     ) -> None:
         """结算指定人物自上次状态更新时间以来的作息影响。
 
         :param context: 已完成会话和人物归属解析的上下文。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
-        :param earlier_asleep: 区间起点之前已入睡时是否计入被截断的睡眠时间。
+        :param earlier_resting: 区间起点之前已休息时是否计入被截断的休息时间。
 
         副作用：
             owner 上会更新人格状态并保存每日快照；非 owner 只读取状态，不写入
@@ -677,11 +677,15 @@ class ChatService:
         person_id = context.person.id
         before = self.persona.get(person_id)
         if self._schedule:
-            asleep_hours = self._schedule.sleep_hours_between(before.updated_at, now, earlier_asleep)
+            rest_hours = self._schedule.rest_hours_between(
+                before.updated_at,
+                now,
+                earlier_resting,
+            )
         else:
-            asleep_hours = 0.0
+            rest_hours = 0.0
         if context.relationship_signals_enabled:
-            self.persona.apply_elapsed(person_id, now, asleep_hours)
+            self.persona.apply_elapsed(person_id, now, rest_hours)
             self.persona.snapshot_daily(person_id, now)
 
     async def startup(self) -> None:

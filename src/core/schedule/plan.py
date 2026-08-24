@@ -456,13 +456,13 @@ def build_plan_prompt(
     """
 
     settings = schedule_config or ScheduleConfig()
-    # 睡眠开关只影响运行时语义，时间字段仍保持合法格式以满足统一 JSON 结构。
+    # 自动睡眠只决定是否进入离线状态；休息窗口仍承担精力昼夜节律的时间边界。
     sleep_rule = (
         '- 已启用睡眠状态。bedtimeHint 与 wakeHint 可以是任意合法 HH:MM，具体节奏服从角色设定，'
         '不强行套用人类夜间作息。'
         if settings.sleep_enabled
-        else '- 不启用睡眠状态。bedtimeHint 与 wakeHint 仍需填写合法 HH:MM 以保持结构稳定，'
-        '但运行时会忽略它们，不要为了填字段编造睡眠情节。'
+        else '- 不启用睡眠状态。bedtimeHint 与 wakeHint 仍需填写合法 HH:MM，作为角色每天的'
+        '休息窗口和精力节律；运行时不会因此进入睡着离线状态，也不要编造睡眠情节。'
     )
     # 所有配置值转换为模板字符串，避免模板注册表接收未声明类型。
     values = {
@@ -765,14 +765,14 @@ class DayPlanService:
             'last_interaction_at': self._last_interaction_at(),
         }
 
-    def sleep_hours_between(self, from_ms: int, to_ms: int, earlier_asleep: bool = False) -> float:
-        """计算时间区间与配置作息窗口重叠的睡眠小时数。
+    def rest_hours_between(self, from_ms: int, to_ms: int, earlier_resting: bool = False) -> float:
+        """计算时间区间与配置作息窗口重叠的休息小时数。
 
         :param from_ms: 区间起点毫秒时间戳。
         :param to_ms: 区间终点毫秒时间戳。
-        :param earlier_asleep: 起点之前已经入睡时是否将被截断的历史区间计入。
+        :param earlier_resting: 起点之前已经休息时是否将被截断的历史区间计入。
 
-        :return: 睡眠窗口重叠时长，单位为小时；终点不晚于起点时返回 0.0。
+        :return: 休息窗口重叠时长，单位为小时；终点不晚于起点时返回 0.0。
 
         性能：
             最多按 ``MAX_HOURS_FOR_ELAPSED_INTEGRATION`` 小时的细粒度区间计算，
@@ -781,11 +781,11 @@ class DayPlanService:
 
         if to_ms <= from_ms:
             return 0.0
-        # 只精确计算最近 48 小时；更早部分仅在调用方确认区间起点已入睡时计入。
+        # 只精确计算最近 48 小时；更早部分仅在调用方确认区间起点已休息时计入。
         detailed_from = max(from_ms, to_ms - MAX_HOURS_FOR_ELAPSED_INTEGRATION * HOUR_MS)
-        sleep_ms = (
+        rest_ms = (
             detailed_from - from_ms
-            if earlier_asleep and self._config.sleep_enabled
+            if earlier_resting
             else 0
         )
         cursor = datetime.fromtimestamp(detailed_from / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -795,16 +795,13 @@ class DayPlanService:
             # 按自然日读取日程，分别计算该日作息窗口与目标区间的交集。
             date = day_plan_date(cursor)
             plan = self._read(date) or fallback_day_plan(date, self._config)
-            if not plan.sleep_enabled:
-                cursor += timedelta(days=1)
-                continue
             bedtime_at, wake_at = planned_sleep_window(plan)
             overlap_start = max(detailed_from, bedtime_at)
             overlap_end = min(to_ms, wake_at)
             if overlap_end > overlap_start:
-                sleep_ms += overlap_end - overlap_start
+                rest_ms += overlap_end - overlap_start
             cursor += timedelta(days=1)
-        return sleep_ms / HOUR_MS
+        return rest_ms / HOUR_MS
 
     def activities_between(self, from_dt: datetime, to_dt: datetime) -> List[str]:
         """提取时间区间内按小时变化的活动描述。
