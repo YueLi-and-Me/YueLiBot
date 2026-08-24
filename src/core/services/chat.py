@@ -405,6 +405,11 @@ class ChatService:
         # 事实抽取与摘要同形态但各走各的游标：摘要用 episode_id 表达「已消费」，
         # 抽取用 meta 里的独立游标，两者共用同一判据会互相吃掉输入且不报错。
         self._memory_provider = memory_provider
+        if memory_provider is None:
+            # 没有 memory 路由时抽取整条功能是关的。这句必须在启动时说出来：
+            # _maybe_extract_facts 的三处前置判断都是静默 return，没有这条日志，
+            # 「已接线但永远不产出」在外部看来与「正常但这段对话没什么可记的」完全一样。
+            logger.warning('fact_extract_disabled', reason='memory 模型路由不可用')
         self._fact_extract_trigger = conversation.fact_extract_trigger_messages
         self._fact_extract_batch = conversation.fact_extract_batch_messages
         self._extracting: set[int] = set()
@@ -4038,6 +4043,13 @@ class ChatService:
             # 人格结算是附加状态，失败不能回滚已经展示并持久化的对话正文。
             logger.warning('persona_apply_turn_failed', turnId=turn, error=str(exc))
         asyncio.create_task(self._maybe_summarize(context.stream.id))
+        # 抽取必须与摘要同处收尾：多 Agent 路径是当前默认路径，回合从这里结束。
+        # - 现象：接线只挂在旧单发路径的收尾处，真机上 episodes 涨到 1088 条，
+        #   而 facts 停在 2 条、抽取游标 fact_extract_cursor 从未被创建。
+        # - 原因：两条收尾路径只有摘要挂了两处，抽取只挂了旧那一处，而默认走的是这条。
+        # - 后果：漏挂不会报错也不留日志（_maybe_extract_facts 的前置判断都是静默 return），
+        #   表现为「功能已接线但永远不产出」，只能靠游标为空反推。
+        asyncio.create_task(self._maybe_extract_facts(context.stream.id))
         self._schedule_scene_observation(context)
 
     async def _run_conversation_round(
