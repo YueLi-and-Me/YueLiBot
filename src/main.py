@@ -485,6 +485,7 @@ def main() -> None:
         planner_provider=routers.planner if routers.planner.ready else None,
         replyer_provider=routers.replyer if routers.replyer.ready else None,
         scene_provider=routers.scene if routers.scene.ready else None,
+        memory_provider=routers.memory if routers.memory.ready else None,
         image_describer=image_describer,
         emoji_library=emoji_library,
     )

@@ -57,6 +57,8 @@ from src.core.agent.conversation_gate import (
     mentions_bot_name,
 )
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
+from src.core.agent.fact_extract import Participant, run_extraction
+from src.core.agent.jargon import lookup_jargon
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import (
     close_dangling_say,
@@ -128,6 +130,9 @@ CHAT_POLL_INTERVAL_S = 0.1
 # 部分 Gemini 兼容网关会把 system 单独提取；保留一条固定的非 system 指令，
 # 既满足其 contents 非空约束，也不把触发情境伪装成用户提出的新问题。
 PROACTIVE_TRIGGER_MESSAGE = '请按上面的要求开始。'
+# 一次事实抽取最多带多少个在场者进提示词。群里挂着几百号人，全带既撑爆名单又拖慢
+# 身份解析；没在近期说过话的人，这批对话里也不会有关于他的事实。
+_EXTRACTION_PARTICIPANT_LIMIT = 12
 
 # 对齐群聊既有回复窗口，在同一窗口内最多发送一张表情包。
 EMOJI_MAX_PER_REPLY_WINDOW = 1
@@ -340,6 +345,7 @@ class ChatService:
         planner_provider: LlmProvider | None = None,
         replyer_provider: LlmProvider | None = None,
         scene_provider: LlmProvider | None = None,
+        memory_provider: LlmProvider | None = None,
         image_describer: ChatImageDescriber | None = None,
         emoji_library: EmojiLibrary | None = None,
         action_policy: ActionPolicy | None = None,
@@ -390,6 +396,12 @@ class ChatService:
         self._working_memory_messages = conversation.working_memory_messages
         self._summarize_trigger_messages = conversation.summarize_trigger_messages
         self._summarize_batch_messages = conversation.summarize_batch_messages
+        # 事实抽取与摘要同形态但各走各的游标：摘要用 episode_id 表达「已消费」，
+        # 抽取用 meta 里的独立游标，两者共用同一判据会互相吃掉输入且不报错。
+        self._memory_provider = memory_provider
+        self._fact_extract_trigger = conversation.fact_extract_trigger_messages
+        self._fact_extract_batch = conversation.fact_extract_batch_messages
+        self._extracting: set[int] = set()
         self._session_gap_ms = conversation.session_gap_minutes * 60_000
         self._fact_recall_limit = conversation.fact_recall_limit
         self._recalled_episode_limit = conversation.recalled_episode_limit
@@ -462,6 +474,8 @@ class ChatService:
         self._proactive_max_tokens = generation.proactive.token_limit
         self._summary_temperature = generation.summary.temperature
         self._summary_max_tokens = generation.summary.token_limit
+        self._memory_temperature = generation.memory.temperature
+        self._memory_max_tokens = generation.memory.token_limit
         self._bot_names: tuple[str, ...] = (cfg.bot.name, *cfg.bot.aliases)
         self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
         self._name_mention_probability = cfg.group_chat.name_mention_probability
@@ -1243,6 +1257,7 @@ class ChatService:
                 # 她刚开过口，对话仍在她这边：与 Agent 路径同口径重新敞开自然回应窗口。
                 self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
+                asyncio.create_task(self._maybe_extract_facts(context.stream.id))
             except LlmError as exc:
                 if exc.kind == 'aborted':
                     # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
@@ -3135,6 +3150,8 @@ class ChatService:
             'resumption': prepared.resumption,
             'platform_name': prepared.platform_bot_name,
             'scene': self._scene_for_prompt(prepared.context),
+            # 只注入本轮消息命中的黑话；查表与截断在 agent/jargon.py，这里只取结果。
+            'jargon': lookup_jargon(self._db, prepared.context.stream.id, prepared.query),
             'render_params': render_params,
             'decision_only': decision_only,
             **prompt_kwargs,
@@ -5174,6 +5191,67 @@ class ChatService:
             pass
         finally:
             self._summarizing.discard(stream_id)
+
+    def _extraction_participants(self, stream_id: int) -> list[Participant]:
+        """取本会话近期发言者，解析成带平台编号的在场者名单。
+
+        只取最近发言过的人而不是全体成员：群里挂着几百号人，逐个查身份既慢又会
+        把提示词里的名单撑爆，而没说过话的人这批对话里也不会有关于他的事实。
+
+        :param stream_id: 目标会话 ID。
+        :return: 至多 :data:`_EXTRACTION_PARTICIPANT_LIMIT` 个在场者；没有可解析
+            身份的人会被跳过——归属只认平台编号，昵称不作数。
+        副作用：只读 messages 与 identities，不写任何表。
+        """
+
+        people: list[Participant] = []
+        for person_id in self.memory.recent_speakers(stream_id)[:_EXTRACTION_PARTICIPANT_LIMIT]:
+            identities = self._registry.list_identities(person_id)
+            if not identities:
+                continue
+            identity = identities[0]
+            people.append(Participant(
+                external_id=identity.external_id,
+                display_name=identity.display_name,
+                person_id=person_id,
+            ))
+        return people
+
+    async def _maybe_extract_facts(self, stream_id: int) -> None:
+        """在待抽取消息达到阈值时后台抽取人物事实并写入长期记忆。
+
+        与 :meth:`_maybe_summarize` 同一条纪律：独立模型任务、回合之后执行、
+        同一会话同时只允许一个在飞、失败只丢该批且不影响已完成的对话。
+
+        :param stream_id: 待检查的会话 ID。
+        :return: 无返回值。
+        副作用：可能发起一次模型请求、写入 facts 并推进抽取游标。
+        """
+
+        if stream_id in self._extracting or self._memory_provider is None:
+            return
+        self._extracting.add(stream_id)
+        try:
+            participants = self._extraction_participants(stream_id)
+            if not participants:
+                return
+            await run_extraction(
+                self.memory,
+                self._memory_provider,
+                stream_id=stream_id,
+                participants=participants,
+                bot_name=self._bot_display_name,
+                trigger_messages=self._fact_extract_trigger,
+                batch_messages=self._fact_extract_batch,
+                temperature=self._memory_temperature,
+                max_tokens=self._memory_max_tokens,
+            )
+        except Exception as exc:
+            # 抽取是旁路设施：任何失败都不该回滚已完成的回合。游标只在成功时推进，
+            # 所以这一批下次会重跑，不存在「因为一次异常永久跳过这段对话」。
+            logger.warning('fact_extract_failed', streamId=stream_id, error=str(exc))
+        finally:
+            self._extracting.discard(stream_id)
 
 
 def _extract_lines(raw: str) -> list[dict] | None:

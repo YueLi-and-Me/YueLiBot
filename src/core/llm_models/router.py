@@ -642,7 +642,7 @@ class ModelRouters:
         """按任务构造全部模型路由，决策与表达各占一个独立槽。
 
         :param config: 含 `routing` 属性的配置对象。
-        副作用：创建八个 `ModelRouter` 和一个共享 `ProviderHealth`，不发起模型请求。
+        副作用：为每个任务各创建一个 `ModelRouter`，共享同一份 `ProviderHealth`，不发起模型请求。
         :raises AttributeError: 配置缺少路由字段时传播属性错误。
         """
         self.health = ProviderHealth()
@@ -656,6 +656,7 @@ class ModelRouters:
         self.planner = self._build('planner', routing.planner)
         self.replyer = self._build('replyer', routing.replyer)
         self.scene = self._build('scene', routing.scene)
+        self.memory = self._build('memory', routing.memory)
         self.tts = self._build('tts', routing.tts)
         self.embedding = self._build('embedding', routing.embedding)
         self._routers: Dict[str, ModelRouter] = {
@@ -668,6 +669,7 @@ class ModelRouters:
             'planner': self.planner,
             'replyer': self.replyer,
             'scene': self.scene,
+            'memory': self.memory,
             'tts': self.tts,
             'embedding': self.embedding,
         }
