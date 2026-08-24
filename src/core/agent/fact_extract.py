@@ -322,6 +322,16 @@ def persist_facts(
             continue
         fact_id = store.add_fact(person.person_id, FactInput(content=fact.content, kind=fact.kind), now)
         if fact_id:
+            # 写入成功必须发事件：`<memory>` 标签那条旧写入路径连同它的 memory_fact
+            # 事件一起删掉了，本处是这个事件此后唯一的生产者。少了它，控制台与
+            # WebUI 都看不见事实写入，★W1-1「facts 新增并伴随写入事件」也无从验证。
+            trace.emit(
+                'memory_fact',
+                factId=fact_id,
+                personId=person.person_id,
+                memoryKind=fact.kind,
+                content=fact.content,
+            )
             written.append(fact_id)
     return written
 

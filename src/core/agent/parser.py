@@ -57,20 +57,6 @@ class SayEndEvent:
 
 
 @dataclass
-class MemoryEvent:
-    """表示模型声明的一条可供记忆层处理的内容。
-
-    :ivar type: 固定为 `memory`。
-    :ivar memory_type: 可选记忆类型，例如偏好或事实。
-    :ivar content: 去除首尾空白后的记忆正文。
-    """
-
-    type: str = 'memory'
-    memory_type: str | None = None
-    content: str = ''
-
-
-@dataclass
 class MoodEvent:
     """表示模型输出的好感或精力变化量。
 
@@ -140,7 +126,6 @@ ParseEvent = Union[
     SayEvent,
     TextEvent,
     SayEndEvent,
-    MemoryEvent,
     MoodEvent,
     PromiseEvent,
     EmojiEvent,
@@ -157,7 +142,7 @@ class ResponseProtocolError(ValueError):
 # ─────────────────────────────────────────────────────────────────────
 _KNOWN = frozenset(['say', 'memory', 'mood', 'promise', 'emoji', 'decision'])
 
-_State = Literal['outside', 'say', 'memory', 'skip']
+_State = Literal['outside', 'say', 'discard']
 
 
 def _parse_attrs(src: str) -> dict[str, str]:
@@ -230,9 +215,6 @@ class ResponseParser:
         self._buf = ''
         self._state: _State = 'outside'
         self._say_open = False
-        self._memory_type: str | None = None
-        self._memory_buf = ''
-        self._skip_until = ''
         self._implicit_say = implicit_say
 
     def push(self, chunk: str) -> list[ParseEvent]:
@@ -256,13 +238,8 @@ class ResponseParser:
         """
         out = self._run()
 
-        if self._state == 'memory' and self._memory_buf.strip():
-            out.append(MemoryEvent(
-                memory_type=self._memory_type,
-                content=self._memory_buf.strip()
-            ))
-            self._memory_buf = ''
-        elif self._state != 'skip' and self._buf:
+        # discard 状态下的残留是未闭合的废止标签内容，丢弃而不是当成台词吐出去。
+        if self._state != 'discard' and self._buf:
             # 残留可能是没闭合的正文，也可能是半截标签
             tail = '' if re.match(r'^<[^>]*$', self._buf) else self._buf
             if tail.strip():
@@ -286,10 +263,8 @@ class ResponseParser:
         out: list[ParseEvent] = []
         progressed = True
         while progressed:
-            if self._state == 'memory':
-                progressed = self._step_memory(out)
-            elif self._state == 'skip':
-                progressed = self._step_skip(out)
+            if self._state == 'discard':
+                progressed = self._step_discard()
             else:
                 progressed = self._step_text(out)
         return out
@@ -368,21 +343,21 @@ class ResponseParser:
             return
 
         if name == 'memory':
+            # <memory> 已废止：事实抽取改由回合之后的独立后台任务承担
+            # （agent/fact_extract.py），不再让正在说话的模型顺手打标签。
+            #
+            # 这里仍然识别它、但只吞不写，是刻意的：
+            # - 现象：若把 memory 从已知标签里摘掉，模型偶尔仍吐出的
+            #   `<memory type="...">…</memory>` 会被当成普通文本，整段协议标签
+            #   直接漏进她的可见台词。
+            # - 原因：未登记的标签一律走 _emit_text 当正文处理。
+            # - 后果：宁可静默丢弃，也不能让协议外壳出现在对话里；真要观察模型
+            #   还写不写这个标签，看 data/logs/prompt/ 里的原始响应，不看这里。
             if closing:
-                # 仅保存非空记忆，避免空标签污染长期记忆表。
-                if self._memory_buf.strip():
-                    out.append(MemoryEvent(
-                        memory_type=self._memory_type,
-                        content=self._memory_buf.strip()
-                    ))
-                self._memory_buf = ''
-                self._memory_type = None
                 self._state = 'say' if self._say_open else 'outside'
                 return
-            self._memory_type = attrs.get('type')
-            self._memory_buf = ''
             if not self_closing:
-                self._state = 'memory'
+                self._state = 'discard'
             return
 
         if name == 'mood':
@@ -428,14 +403,14 @@ class ResponseParser:
             ))
             return
 
-    def _step_memory(self, out: list[ParseEvent]) -> bool:
-        """在记忆状态中寻找闭合标签并积累记忆正文。
+    def _step_discard(self) -> bool:
+        """吞掉已废止标签的正文，直到其闭合标签为止，不产出任何事件。
 
-        :param out: 用于追加完成的 `MemoryEvent` 的当前输出列表。
-        :return: 找到并处理闭合标签时返回 `True`，否则保留尾部片段并返回 `False`。
-        副作用：消费内部缓冲区并修改记忆正文缓冲区。
+        :return: 找到并消费闭合标签时返回 `True`，否则保留尾部片段并返回 `False`。
+        副作用：消费内部缓冲区并恢复说话/外部状态；不写入输出列表。
         """
-        # 接受两种闭合写法：<memory> 正式名和遗留的 <system_reminder>
+        # 接受两种闭合写法：<memory> 正式名和遗留的 <system_reminder>。
+        # 两种都留着是因为历史响应里两种都出现过，少认一种就会漏进台词。
         buf_lower = self._buf.lower()
         idx = -1
         for close_tag in ('</memory', '</system_reminder'):
@@ -443,32 +418,15 @@ class ResponseParser:
             if pos != -1 and (idx == -1 or pos < idx):
                 idx = pos
         if idx == -1:
+            # 闭合标签可能被分片切断，保留可能构成标签前缀的尾巴等下一片。
             keep = max(0, len(self._buf) - len('</system_reminder>'))
-            self._memory_buf += self._buf[:keep]
             self._buf = self._buf[keep:]
             return False
-        self._memory_buf += self._buf[:idx]
         gt = self._buf.find('>', idx)
         if gt == -1:
             self._buf = self._buf[idx:]
             return False
         self._buf = self._buf[gt + 1:]
-        self._handle_tag(out, '/memory')
-        return True
-
-    def _step_skip(self, _out: list[ParseEvent]) -> bool:
-        """跳过不支持标签的正文，直到找到预设的结束标记。
-
-        :param _out: 为保持状态机接口一致而传入的输出列表，本方法不会写入它。
-        :return: 找到结束标记并切回文本状态时返回 `True`，否则返回 `False`。
-        副作用：消费或保留内部缓冲区，并恢复说话/外部状态。
-        """
-        idx = self._buf.lower().find(self._skip_until)
-        if idx == -1:
-            keep = max(0, len(self._buf) - len(self._skip_until))
-            self._buf = self._buf[keep:]
-            return False
-        self._buf = self._buf[idx + len(self._skip_until):]
         self._state = 'say' if self._say_open else 'outside'
         return True
 

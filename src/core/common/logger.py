@@ -317,7 +317,7 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
     ),
     'sleep_transition': ('asleep', 'drowsy', 'probability'),
     'interest': ('interest', 'factors'),
-    'memory_fact': ('turnId', 'memoryKind', 'content'),
+    'memory_fact': ('personId', 'memoryKind', 'content'),
     'mood_delta': ('turnId', 'favor', 'energy'),
     'promise_stashed': ('turnId', 'subject', 'at'),
 }

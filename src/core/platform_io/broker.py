@@ -1,8 +1,8 @@
 """非桌面平台的单播出站路由。
 
 desktop 继续使用 ChatService 的解析事件链路，不实现 PlatformDriver。解析事件中只有
-TextEvent 和 SayEndEvent 对应平台消息，SayEvent、MemoryEvent 与 MoodEvent 分别负责
-表现层和观察层副作用，因此本模块只为 direct 与 group 等外部平台提供单播驱动路由。
+TextEvent 和 SayEndEvent 对应平台消息，SayEvent 与 MoodEvent 分别负责表现层和
+观察层副作用，因此本模块只为 direct 与 group 等外部平台提供单播驱动路由。
 """
 
 from __future__ import annotations

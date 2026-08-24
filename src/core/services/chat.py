@@ -68,7 +68,7 @@ from src.core.agent.history import (
     strip_side_effect_tags,
 )
 from src.core.agent.parser import (
-    EmojiEvent, MemoryEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent,
+    EmojiEvent, MoodEvent, ParseEvent, PromiseEvent, ResponseParser, SayEndEvent,
     SayEvent, TextEvent,
 )
 from src.core.agent.prompt import (
@@ -4791,18 +4791,7 @@ class ChatService:
             可能写入事实、人格状态或待投放 promise，并发出对应观察事件。
         """
 
-        if isinstance(event, MemoryEvent) and event.content:
-            # 事实先写入统一记忆存储，向量补算由上层异步服务处理。
-            memory_kind = event.memory_type or '未分类'
-            self.memory.add_fact(
-                context.person.id,
-                FactInput(content=event.content, kind=memory_kind),
-                now,
-            )
-            trace.emit('memory_fact', turnId=turn, content=event.content, memoryKind=memory_kind)
-            if sink is not None:
-                sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
-        elif isinstance(event, MoodEvent):
+        if isinstance(event, MoodEvent):
             # 群聊关系增量由上下文决定权重，Persona 本身不感知平台会话。
             self.persona.apply_event(
                 context.person.id,
@@ -4921,10 +4910,6 @@ class ChatService:
             ev = {'turnId': turn, 'kind': 'parse', 'event': {'type': 'text', 'value': event.value}}
         elif isinstance(event, SayEndEvent):
             ev = {'turnId': turn, 'kind': 'parse', 'event': {'type': 'sayEnd'}}
-        elif isinstance(event, MemoryEvent):
-            ev = {'turnId': turn, 'kind': 'parse',
-                  'event': {'type': 'memory', 'content': event.content,
-                             **({'memoryType': event.memory_type} if event.memory_type else {})}}
         elif isinstance(event, MoodEvent):
             ev = {'turnId': turn, 'kind': 'parse',
                   'event': {'type': 'mood',
