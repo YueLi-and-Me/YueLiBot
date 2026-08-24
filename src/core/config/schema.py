@@ -732,9 +732,19 @@ class ModelTaskConfig(BaseModel):
     replyer: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     # 情景分析：把一段历史概括成「此刻是什么情况」。它原来借用摘要那一档，
     # 但这件事已经从群聊后台画像扩展到私聊即时决策，在关键路径上，值得单开。
+    # 也因此它是少数**延迟与判断质量都要**的槽：输出直接喂给决策层，读错了当前局面，
+    # 整个回合的走向就跟着错，而它又卡在她开口之前。
     scene: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
-    # 记忆抽取：回合结束后回看一段对话，判断有没有值得长期记住的事实。它是后台
-    # 任务、不在回复关键路径上，做的是结构化抽取而非发挥，配便宜快的模型即可。
+    # 记忆抽取：回合结束后回看一段对话，判断有没有值得长期记住的事实。
+    #
+    # 不在回复关键路径上，因此**对延迟没有要求**；但这不等于可以配差模型——
+    # 原注释写的「配便宜快的模型即可」把「不需要发挥」误当成了「不需要判断力」，
+    # 已按下述理由更正：
+    # - 它要判断哪条算稳定事实、这条属于谁、哪些是与人无关的知识，全是判断题；
+    # - 归属判断错了的后果是永久且无人察觉的：错事实会被反复召回、进提示词、
+    #   喂给画像层、再长出联想边（见 agent/fact_extract.py 里「记错人比不记更糟」）。
+    # 对比回复生成——那里写砸一句话是当场可见、转瞬即逝的。按「错了的代价」排，
+    # 这一档的判断质量要求不低于回复生成，省钱要省在别处。
     memory: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
