@@ -81,6 +81,15 @@ export interface PersonSummary {
   kind: 'owner' | 'contact'
   displayName: string
   firstSeenAt: number
+  /** 好感度（`persona_bond.intimacy`）。 */
+  intimacy: number
+  /** 事实条数；`active` 为当前生效条数，`total` 含已冻结。 */
+  factCount: { total: number; active: number }
+  /**
+   * `persona_bond.updated_at` 毫秒时间戳。对 contact 即最后互动时间；
+   * owner 行会被每小时结算推进，不代表互动，界面不要按「最后互动」渲染。
+   */
+  bondUpdatedAt: number
   identities: PersonIdentity[]
   streams: ObservabilityStream[]
   groupMemberships: GroupMembership[]
