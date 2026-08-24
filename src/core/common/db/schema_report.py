@@ -159,7 +159,7 @@ def report_schema_changes(changes: SchemaChanges, version: int) -> None:
         rows.append('')
         rows.append('原因：CREATE TABLE IF NOT EXISTS 对已存在的表不加列，也不报错。')
         rows.append('处置：为这些列写一支迁移；改 DDL 本身不会补上它们。')
-    print_box('数据库结构变更', rows, width=96)
+    print_box('数据库结构变更', rows, width=96, source=__name__)
     if changes.drifted:
         logger.error('db_schema_drift', tables=sorted(changes.drifted), version=version)
     else:

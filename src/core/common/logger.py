@@ -33,6 +33,7 @@ from .logger_colors import (
     module_alias,
     module_color,
     normalize_logger_name,
+    set_color_enabled,
 )
 
 from src.core.webui.logs import webui_logs
@@ -278,6 +279,9 @@ def _stringify(value: Any) -> str:
 _trace_date_format = '%m-%d %H:%M:%S'
 # LIVE_ONLY 事件高频且本身就是给观察面板的实时流，控制台逐条打印会淹没其它日志。
 _trace_console_silent_kinds = frozenset({'llm_chunk', 'foreground'})
+# 追踪出口在色表与别名表里的身份。借用 observe.events 那一条登记，追踪行于是和
+# 该模块的普通日志同色同名，读者不必分辨「这行是日志还是追踪」——它们本就是一回事。
+_TRACE_LOGGER_NAME = 'observe.events'
 
 # 来源元数据在同一轮的每条事件里都会重复出现；完整来源仍写入事件账本，控制台只
 # 在需要时把发送者放进面板标题。这样日志不会被账号、群名片和昵称字段横向撑开。
@@ -429,25 +433,72 @@ def _pack_trace_rows(summary: Dict[str, Any]) -> list[str]:
     return rows or ['—']
 
 
+def _render_trace_line(
+    timestamp: str,
+    event_name: str,
+    sender: str,
+    summary: Dict[str, Any],
+) -> str:
+    """把一条一行就说得清的追踪事件渲染成与普通日志同构的单行文本。
+
+    行的构成与 :class:`ModuleColoredConsoleRenderer` 逐段对齐——时间戳、来源标签、
+    中文事件名、``字段：值`` 分段——因此追踪与普通日志在同一屏里读起来是一套东西，
+    而不是两种排版。色彩同样复用那边的层级色，不另立一套。
+
+    :param timestamp: 已格式化的事件时间。
+    :param event_name: 已翻成中文的事件名。
+    :param sender: 发送者显示名；空串表示该事件与具体发言人无关。
+    :param summary: 已压缩的字段表。
+    :return: 单行文本；:func:`is_color_enabled` 为假时不含任何 ANSI 序列。
+    副作用：无。
+    """
+
+    colored = is_color_enabled()
+    tint = module_color(_TRACE_LOGGER_NAME) if colored else ''
+    tag = f'[{module_alias(_TRACE_LOGGER_NAME)}]'
+    head = [
+        f'{tint}{timestamp}{RESET_COLOR}' if tint else timestamp,
+        f'{tint}{tag}{RESET_COLOR}' if tint else tag,
+        f'{EVENT_COLOR}{event_name}{RESET_COLOR}' if colored else event_name,
+    ]
+    if sender:
+        head.append(f'{FIELD_VALUE_COLOR}{sender}{RESET_COLOR}' if colored else sender)
+    items = []
+    for key, value in summary.items():
+        label, text = field_label(key), _stringify(value)
+        items.append(
+            f'{FIELD_LABEL_COLOR}{label}{RESET_COLOR}：{FIELD_VALUE_COLOR}{text}{RESET_COLOR}'
+            if colored
+            else f'{label}：{text}'
+        )
+    separator = f' {SEPARATOR_COLOR}│{RESET_COLOR} ' if colored else ' │ '
+    return ' '.join(head + ([separator.join(items)] if items else []))
+
+
 def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
-    """把一条管线 trace 事件渲染成紧凑信息框并打到控制台与 WebUI 日志面板。
+    """把一条管线 trace 事件呈现到控制台与 WebUI 日志面板。
 
     该出口绕开 ``src.core.observe.events`` 模块级 logger，保证 trace 不会因为导入
     时机落回旧式 structlog 行。事件账本与观察面板订阅者由调用方另行处理，本函数
     只负责控制台与日志面板这两条展示支路。
 
+    **一行说得清的事件只打一行，需要并排读几行才说得清的才配一个信息框。**
+    判据直接取 :func:`_pack_trace_rows` 的产出行数，不额外引入阈值常量——那个函数
+    已经按控制台宽度决定了字段怎么排，它说一行装得下，就没有理由再套四条框线。
+    改动前的规则是「无 turnId 一律出框」，真机 30 小时的后果是 589 个框/小时，
+    其中绝大多数框里只有一两个字段（如「兴趣度：11.289」），既刷屏又读不出信息。
+
     :param entry: ``emit`` 已组装完的事件字典，包含 ``at``、``kind`` 等保留字段。
 
     副作用：
-        向标准输出写一个多行信息框，并把同一段文本发布到
-        ``webui_logs``；``llm_chunk``、``foreground`` 等高频实时事件被静音，
-        只广播不进控制台。
+        向标准输出写一行或一个信息框，并把同一段文本发布到 ``webui_logs``；
+        ``llm_chunk``、``foreground`` 等高频实时事件被静音，只广播不进控制台。
     """
     if entry.get('kind') in _trace_console_silent_kinds:
         return
-    # 带 turnId 的管线事件已由 trace_console 的轮末合成面板整体呈现，这里不再逐条打纯文本框，
+    # 带 turnId 的管线事件已由 trace_console 的轮末合成面板整体呈现，这里不再逐条打，
     # 避免同一轮既出嵌套大面板又出一串小框。事件账本仍保留完整事件，观察面板订阅不受影响；
-    # 无 turnId 的管线事件（如部分主动感知事件）仍按原样出框，保留其控制台可见性。
+    # 无 turnId 的管线事件（如部分主动感知事件）仍在这里呈现，保留其控制台可见性。
     if entry.get('turnId') is not None:
         return
     from datetime import datetime
@@ -458,16 +509,28 @@ def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
     }
     summary = _summarize_trace_fields(fields)
     kind = str(fields.get('kind', ''))
-    event_name = (
-        str(fields.get('stageLabel') or '')
-        if kind == 'stage'
-        else event_label(kind)
-    )
-    title = f'{timestamp} · 运行追踪 · {event_name}'
+    # 阶段事件用 stageLabel 当事件名（它才是「已收到」「正在思考」这些具体阶段）；
+    # 取不到时退回事件类型的中文名，不能让行首出现一个空的事件名。
+    stage_label = str(fields.get('stageLabel') or '') if kind == 'stage' else ''
+    event_name = stage_label or event_label(kind)
+    # 已经当成事件名打出来的阶段名不再作为字段重复一遍，否则会出现
+    # 「已收到 │ 处理阶段：已收到」这种同一个值说两次。
+    if stage_label:
+        summary.pop('stageLabel', None)
     sender = str(fields.get('senderDisplayName') or '').strip()
-    if sender:
-        title += f' · {sender}'
-    line = render_box(title, _pack_trace_rows(summary), width=_TRACE_PANEL_WIDTH)
+    rows = _pack_trace_rows(summary)
+    if len(rows) == 1:
+        line = _render_trace_line(timestamp, event_name, sender, summary)
+    else:
+        title = f'{timestamp} · 运行追踪 · {event_name}'
+        if sender:
+            title += f' · {sender}'
+        line = render_box(
+            title,
+            rows,
+            width=_TRACE_PANEL_WIDTH,
+            tint=module_color(_TRACE_LOGGER_NAME) if is_color_enabled() else '',
+        )
     print(line)
     webui_logs.publish(line)
 
@@ -574,6 +637,9 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
     file_level = _resolve_level(config.file_level, 'log.file_level')         if config.file_level else level
 
     colored = is_color_enabled() and config.color_scope != 'none'
+    # 裁定值写回色表模块，管线追踪出口与信息框此后都读同一个开关，
+    # 不会再出现「普通日志有色、信息框全灰」这种同屏两套观感。
+    set_color_enabled(colored)
 
     shared_processors: List[Any] = [
         structlog.contextvars.merge_contextvars,

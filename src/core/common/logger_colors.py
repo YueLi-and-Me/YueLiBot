@@ -117,12 +117,33 @@ MODULE_ALIASES: Dict[str, str] = {
 }
 
 
+# 全进程着色开关的显式裁定值。None 表示尚未裁定，此时按终端能力自行判断。
+# 存在的理由：着色此前由三处各自决定（structlog 渲染器读 log.color_scope、管线追踪
+# 出口与信息框各自调 is_color_enabled()），结果是同一屏里普通日志有色而信息框全灰。
+# 收敛到这一个开关之后，`log.color_scope = 'none'` 能真正关掉全部着色。
+_color_override: bool | None = None
+
+
+def set_color_enabled(enabled: bool) -> None:
+    """由日志初始化统一裁定全进程是否着色。
+
+    :param enabled: 是否允许输出 ANSI 颜色，通常为终端能力与 ``log.color_scope`` 的合取。
+    :return: 无返回值。
+    副作用：改写模块级裁定值，此后 :func:`is_color_enabled` 一律返回该值。
+    """
+    global _color_override
+    _color_override = enabled
+
+
 def is_color_enabled() -> bool:
     """判断当前控制台是否允许输出 ANSI 颜色。
 
-    :return: 标准输出是 TTY，或环境变量 `YUELI_FORCE_COLOR` 等于 `1` 时返回 `True`。
-    副作用：只读取标准输出状态和进程环境变量。
+    :return: :func:`set_color_enabled` 已裁定时返回该裁定值；否则标准输出是 TTY
+        或环境变量 `YUELI_FORCE_COLOR` 等于 `1` 时返回 `True`。
+    副作用：只读取模块级裁定值、标准输出状态和进程环境变量。
     """
+    if _color_override is not None:
+        return _color_override
     return sys.stdout.isatty() or os.environ.get("YUELI_FORCE_COLOR") == "1"
 
 
@@ -338,4 +359,5 @@ __all__ = [
     "module_alias",
     "module_color",
     "normalize_logger_name",
+    "set_color_enabled",
 ]
