@@ -40,6 +40,7 @@ from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
 from .profile import mark_dirty as mark_profiles_dirty
 
+from src.core.memory.association import link_together
 from src.core.memory.knowledge import add_knowledge
 from src.core.memory.store import FactInput, MemoryStore, StoredMessage
 from src.core.observe import events as trace
@@ -484,6 +485,13 @@ async def run_extraction(
         return None
     written = persist_facts(store, extraction.facts, participants, db, now)
     knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
+    # 同批产出的事实与知识描述的是同一段时间里发生的事，这是最强的一类关联，
+    # 也是联想层两种建边时机中的第一种（另一种是「一起被召回并被采用」，在认知动作那侧）。
+    linked = link_together(
+        db,
+        [('fact', fact_id) for fact_id in written] + [('knowledge', kid) for kid in knowledge_ids],
+        now,
+    )
     advance_cursor(store, stream_id, batch[-1].message_id)
     trace.emit(
         'memory_extract',
@@ -492,5 +500,6 @@ async def run_extraction(
         extracted=len(extraction.facts),
         written=written,
         knowledge=len(knowledge_ids),
+        edges=linked,
     )
     return written

@@ -33,8 +33,12 @@ from typing import Awaitable, Callable, Dict, Protocol, Sequence
 import sqlite3
 
 from src.core.common.clock import now as current_time
+from src.core.memory.association import (
+    HOPS, ShortTermActivation, SpreadHit, link_together, node_id, spread,
+)
 from src.core.memory.knowledge import search_knowledge, touch_knowledge
 from src.core.memory.store import MemoryStore, StoredMessage
+from src.core.observe import events as trace
 from src.core.platform_io.types import StreamKind
 
 # 回灌给模型的观察正文上限。观察会占用本回合上下文预算，且每多一轮 ReAct 就再占一次；
@@ -143,6 +147,7 @@ class RecallAction:
         self,
         store: MemoryStore,
         speaker_name: SpeakerNamer,
+        db: sqlite3.Connection,
         *,
         fact_limit: int = 5,
         episode_limit: int = 3,
@@ -151,6 +156,7 @@ class RecallAction:
 
         :param store: 记忆存储；只使用其只读检索接口。
         :param speaker_name: 人物显示名解析函数，用于说明事实归属于谁。
+        :param db: 当前库连接，供联想层读写边；与 ``ConsultAction`` 同惯例直接收连接。
         :param fact_limit: 单次返回的事实条数上限，必须大于 0。
         :param episode_limit: 单次返回的情节条数上限，必须大于 0。
         :raises ValueError: 任一上限小于 1。
@@ -159,8 +165,38 @@ class RecallAction:
             raise ValueError('记忆检索条数上限必须大于 0')
         self._store = store
         self._speaker_name = speaker_name
+        self._db = db
         self._fact_limit = fact_limit
         self._episode_limit = episode_limit
+        # 短期激活留在动作实例上，因此天然是进程内的：进程重启后重新构造，残留自动消失。
+        self._activation = ShortTermActivation()
+
+    def _describe_node(self, hit: SpreadHit, stream_id: int) -> str:
+        """把一条扩散命中渲染成一句「顺带想起」。
+
+        :param hit: 扩散结果。
+        :param stream_id: 当前会话 ID，用于解析事实归属的显示名。
+        :return: 一句可直接进观察文本的描述；指向的记忆已不存在时返回空串。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读。
+        """
+        if hit.ref_kind == 'fact':
+            row = self._db.execute(
+                'SELECT person_id, content FROM facts WHERE id = ?', (hit.ref_id,)
+            ).fetchone()
+            if row is None:
+                return ''
+            who = self._speaker_name(int(row[0]), stream_id)
+            return f'还想到关于{who}：{_clip(str(row[1]), _ITEM_MAX_CHARS)}'
+        if hit.ref_kind == 'episode':
+            row = self._db.execute(
+                'SELECT summary FROM episodes WHERE id = ?', (hit.ref_id,)
+            ).fetchone()
+            return f'还想到你们聊过：{_clip(str(row[0]), _ITEM_MAX_CHARS)}' if row else ''
+        row = self._db.execute(
+            'SELECT content FROM knowledge WHERE id = ?', (hit.ref_id,)
+        ).fetchone()
+        return f'还想到：{_clip(str(row[0]), _ITEM_MAX_CHARS)}' if row else ''
 
     async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
         """按检索词召回事实与情节并渲染为观察文本。
@@ -187,9 +223,41 @@ class RecallAction:
             lines.append(f'- 你记得关于{who}：{_clip(fact.content, _ITEM_MAX_CHARS)}')
         for episode in episodes:
             lines.append(f'- 你们聊过：{_clip(episode.summary, _ITEM_MAX_CHARS)}')
+
+        # 第二步：从命中的这些出发沿边扩散，把「没查但被牵出来」的东西也捞上来。
+        # 与种子**分开成段**：种子是她记得的，扩散结果是她顺带想起的，语气不是一回事，
+        # 混在一起她就会把联想当成确凿的记忆说出去。
+        seeds = (
+            [('fact', fact.id, fact.score) for fact in facts]
+            + [('episode', episode.id, episode.score) for episode in episodes]
+        )
+        now = current_time()
+        spread_hits = spread(self._db, seeds, now, activation=self._activation)
+        if spread_hits:
+            lines.append('顺带想起来的：')
+            for hit in spread_hits:
+                text = self._describe_node(hit, request.stream_id)
+                if text:
+                    lines.append(f'- {text}')
+
+        adopted = [(kind, ref) for kind, ref, _ in seeds]
+        adopted += [(hit.ref_kind, hit.ref_id) for hit in spread_hits]
+        # 只有真正进了这段观察文本的才加强边——被检索到不等于被用到，
+        # 这个区分是边质量的全部来源（★W6-2）。
+        link_together(self._db, adopted, now)
+        self._activation.touch(
+            [node_id(self._db, kind, ref) for kind, ref in adopted], now,
+        )
+        trace.emit(
+            'memory_spread',
+            query=request.query,
+            seeds=len(seeds),
+            spread=len(spread_hits),
+            hops=HOPS,
+        )
         return CognitiveObservation(
             text='\n'.join(lines),
-            hit_count=len(facts) + len(episodes),
+            hit_count=len(facts) + len(episodes) + len(spread_hits),
         )
 
 

@@ -531,7 +531,7 @@ class ChatService:
         # 群聊后台调度，不决定 Agent 是否存在。它与 reply / silent 决策 Agent 分离。
         self._cognitive_executor = (
             CognitiveExecutor([
-                RecallAction(self.memory, self._registry.stream_display_name),
+                RecallAction(self.memory, self._registry.stream_display_name, db),
                 InspectAction(self.memory, self._registry.stream_display_name),
                 # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；
                 # 执行器缺这一条就会在她真的选中时撞 KeyError，装配必须同步。
