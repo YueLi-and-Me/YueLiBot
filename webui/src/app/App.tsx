@@ -33,6 +33,12 @@ const PersonsPage = lazy(() =>
 const PersonDetailPage = lazy(() =>
   import('@/features/persons/PersonDetailPage').then((m) => ({ default: m.PersonDetailPage })),
 )
+const JargonPage = lazy(() =>
+  import('@/features/jargon/JargonPage').then((m) => ({ default: m.JargonPage })),
+)
+const ExpressionsPage = lazy(() =>
+  import('@/features/expressions/ExpressionsPage').then((m) => ({ default: m.ExpressionsPage })),
+)
 
 /** 页面块加载中的占位：与门禁检查态一致的居中加载样式。 */
 function PageFallback() {
@@ -72,6 +78,8 @@ function AuthGate() {
           <Route path="settings" element={<SettingsConfigPage />} />
           <Route path="persons" element={<PersonsPage />} />
           <Route path="persons/:personId" element={<PersonDetailPage />} />
+          <Route path="jargon" element={<JargonPage />} />
+          <Route path="expressions" element={<ExpressionsPage />} />
           <Route path="*" element={<ObservePage />} />
         </Route>
       </Routes>
