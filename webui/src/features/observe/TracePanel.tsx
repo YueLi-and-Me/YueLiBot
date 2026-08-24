@@ -6,7 +6,7 @@
  * 输出与新输出。数据通道由 use-traces hook 提供，被会话观察页引用。
  */
 import { List, RotateCcw } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 
 import { Button, Card, CardBody, Chip, Empty, Field, Input, SectionHeading, Select, Toggle, cn } from '@/components/ui'
@@ -15,6 +15,7 @@ import { apiMutate, UnauthorizedError } from '@/lib/api'
 import {
   dateTime,
   displayValue,
+  elapsedLabel,
   fixed,
   formatMessages,
   optionalText,
@@ -147,24 +148,147 @@ function TraceDetails({ entry }: { entry: TraceEntry }) {
 }
 
 /**
+ * 折叠的模型提示词查看器：展开时才把提示词全文挂载进 DOM。
+ *
+ * @param props.messages llm_request 事件携带的完整请求消息。
+ * @returns 折叠条；展开后为终端样式的提示词全文。
+ * @remarks 原生 <details> 只是视觉隐藏，子树无论展开与否都会进入 DOM 与布局；
+ * 提示词全文可达数万字符，30 个轮次卡片常驻挂载会把页面 DOM 推至上万节点，
+ * 事件突发时的整表重渲染表现为百毫秒级长任务。改为受控展开，折叠时零成本。
+ */
+function PromptDetails({ messages }: { messages: TraceEntry['messages'] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="cursor-pointer self-start text-xs font-medium text-primary-strong select-none"
+      >
+        {open ? '收起发送给模型的提示词' : '展开发送给模型的提示词'}
+      </button>
+      {open ? (
+        <pre className="max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
+          {formatMessages(messages)}
+        </pre>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * 逆序找到指定类型的最后一条事件。
+ *
+ * @param entries 单轮事件列表（按时间升序）。
+ * @param kind 目标事件类型。
+ * @returns 最后一条命中事件；没有时为 `undefined`。
+ */
+function findLastKind(entries: TraceEntry[], kind: string): TraceEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (entry !== undefined && entry.kind === kind) return entry
+  }
+  return undefined
+}
+
+/**
+ * 把单轮事件按类型聚合成一行计数文本，供无对话内容的轮次做摘要。
+ *
+ * @param entries 单轮事件列表。
+ * @returns 形如「兴趣度更新 ×28 · 主动意图评估 ×2」的文本。
+ */
+function kindCountLabel(entries: TraceEntry[]): string {
+  const counts = new Map<string, number>()
+  for (const entry of entries) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1)
+  return [...counts].map(([kind, count]) => `${traceKindLabel(kind)} ×${count}`).join(' · ')
+}
+
+/** TurnCard 的入参。 */
+interface TurnCardProps {
+  turnId: number
+  entries: TraceEntry[]
+  /** 是否展开为该轮全部事件的完整列表。 */
+  expanded: boolean
+  onShowTurn: (turnId: number) => void
+  onCollapse: (turnId: number) => void
+}
+
+/** 一轮对话的终局阶段：一轮正常对话恰好到达其中之一次。 */
+const TERMINAL_STAGES = new Set(['replied', 'gated', 'failed'])
+
+/**
+ * 判断分组是否混入了多轮对话的事件。
+ *
+ * 轮次编号是进程内计数器、每次启动从 0 重来（chat.py `ChatService._next_turn`），
+ * 而事件账本跨重启持久化，不同启动的回合会共用同一编号。一轮对话内全部
+ * user_input 都先于终局阶段发出（批量消息也不例外），因此「终局阶段多于一个」
+ * 或「终局之后又出现 user_input」都说明该组是多次对话的拼接，摘要不能跨轮配对。
+ *
+ * @param entries 单组事件列表（按时间升序）。
+ * @returns 该组是否混有多轮对话。
+ */
+function isMergedTurnGroup(entries: TraceEntry[]): boolean {
+  let terminals = 0
+  let seenTerminal = false
+  for (const entry of entries) {
+    if (entry.kind === 'stage' && TERMINAL_STAGES.has(optionalText(entry.stage))) {
+      terminals += 1
+      seenTerminal = true
+    } else if (entry.kind === 'user_input' && seenTerminal) {
+      return true
+    }
+  }
+  return terminals > 1
+}
+
+/**
+ * 轮次卡片的 memo 相等性：轮次事件只会追加（新事件）或从头部淘汰（数量上限
+ * 截断），因此比较长度与首尾事件引用即可判定内容是否变化，无需深比较。
+ */
+function sameTurnCard(prev: TurnCardProps, next: TurnCardProps): boolean {
+  if (prev.turnId !== next.turnId || prev.expanded !== next.expanded) return false
+  if (prev.onShowTurn !== next.onShowTurn || prev.onCollapse !== next.onCollapse) return false
+  const before = prev.entries
+  const after = next.entries
+  if (before.length !== after.length) return false
+  return before[0] === after[0] && before[before.length - 1] === after[after.length - 1]
+}
+
+/**
  * 渲染单个对话轮次卡片。
  *
  * @param props.turnId 轮次 ID。
  * @param props.entries 该轮次的全部事件。
+ * @param props.expanded 是否展开为全部事件的完整列表。
  * @param props.onShowTurn 「查看该轮全部事件」回调。
+ * @param props.onCollapse 「收起事件列表」回调。
  * @returns 轮次卡片；含 llm_error 时描边标红。
+ * @remarks 默认只给一屏能看完的摘要：用户原话一行、她的回复一行、结论一行，
+ * 全部细节留给展开态。头部只渲染有真实取值的字段：主动评估类事件（interest、
+ * proactive_intent 等）由后台回路发出，从来不携带来源字段，这类轮次的头部
+ * 不再硬凑「来源 / 会话 / 人物」，改用事件条数与耗时。轮次编号跨重启被复用、
+ * 多轮对话混入同组时（见 isMergedTurnGroup）不生成配对摘要与耗时，只提示展开。
+ * memo 化：事件流每来
+ * 一条新事件整个 TracePanel 都会重渲染，但只有事件真正发生变化的轮次卡片
+ * 才需要重新提交，其余卡片按引用比较整体跳过。
  */
-function TurnCard({
-  turnId,
-  entries,
-  onShowTurn,
-}: {
-  turnId: number
-  entries: TraceEntry[]
-  onShowTurn: (turnId: number) => void
-}) {
+const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn, onCollapse }: TurnCardProps) {
   const origin = entries.find((entry) => entry.platform !== undefined)
   const hasError = entries.some((entry) => entry.kind === 'llm_error')
+  const userInput = entries.find((entry) => entry.kind === 'user_input')
+  const botReply = findLastKind(entries, 'llm_final')
+  const observation = findLastKind(entries, 'observation')
+  const llmError = findLastKind(entries, 'llm_error')
+  const firstEntry = entries[0]
+  const lastEntry = entries[entries.length - 1]
+  const durationMs =
+    entries.length > 1 && firstEntry !== undefined && lastEntry !== undefined
+      ? Math.max(0, lastEntry.at - firstEntry.at)
+      : 0
+  const senderName = origin ? optionalText(origin.senderDisplayName) : ''
+  /* 编号被多次对话复用的分组不做配对摘要与耗时：跨轮配对会把不存在的
+   * 问答组合说成事实，首尾相减的耗时同样失真；条数仍是真实计数，保留。 */
+  const mergedTurns = isMergedTurnGroup(entries)
   return (
     <article
       className={cn(
@@ -174,13 +298,64 @@ function TurnCard({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <strong className="text-[13px] font-semibold">
-          第 {turnId} 轮 · 来源：{displayValue(origin?.platform ?? '未知')} · 会话 #{origin?.streamId ?? '—'} · 人物 #{origin?.personId ?? '—'}
+          第 {turnId} 轮
+          {senderName ? ` · ${senderName}` : ''}
+          {origin ? ` · 来源：${displayValue(origin.platform)}` : ''}
+          {origin?.streamId != null ? ` · 会话 #${origin.streamId}` : ''}
+          {origin?.personId != null ? ` · 人物 #${origin.personId}` : ''}
+          <span className="ml-2 font-mono text-xs font-normal text-muted-foreground tabular-nums">
+            {entries.length} 条{mergedTurns ? '' : ` · 耗时 ${elapsedLabel(durationMs)}`}
+          </span>
+          {hasError ? (
+            <span className="ml-2 rounded-full bg-destructive-soft px-2 py-0.5 text-xs font-medium text-destructive">
+              模型错误
+            </span>
+          ) : null}
         </strong>
-        <Button variant="ghost" size="sm" onClick={() => onShowTurn(turnId)}>
-          查看该轮全部事件
-        </Button>
+        {expanded ? (
+          <Button variant="ghost" size="sm" onClick={() => onCollapse(turnId)}>
+            收起事件列表
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => onShowTurn(turnId)}>
+            查看该轮全部事件
+          </Button>
+        )}
       </div>
-      {entries.map((entry, index) => {
+      {expanded ? null : (
+        <div className="flex flex-col gap-1.5">
+          {mergedTurns ? (
+            <p className="text-[13px] text-muted-foreground">
+              轮次编号在进程重启后被复用，该组混有多轮对话的事件；为避免错配不生成摘要，请展开逐条查看。
+            </p>
+          ) : (
+            <>
+              {userInput ? (
+                <p className="truncate text-[13px]" title={text(userInput.text)}>
+                  {traceSenderLabel(userInput)}：{text(userInput.text)}
+                </p>
+              ) : null}
+              {botReply ? (
+                <p className="truncate rounded-md bg-primary-soft px-2.5 py-1.5 text-[13px]" title={text(botReply.text)}>
+                  {optionalText(botReply.botName) || 'Bot'}：{text(botReply.text)}
+                </p>
+              ) : null}
+              {observation ? (
+                <p className="truncate text-[13px] text-warning">未回复：{displayValue(observation.reason)}</p>
+              ) : null}
+              {llmError ? (
+                <p className="truncate text-[13px] text-destructive">
+                  模型调用失败：{displayValue(llmError.errorKind)} · {text(llmError.message)}
+                </p>
+              ) : null}
+              {!userInput && !botReply && !observation && !llmError ? (
+                <p className="truncate text-[13px] text-muted-foreground">{kindCountLabel(entries)}</p>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
+      {expanded ? entries.map((entry, index) => {
         const key = `${entry.seq ?? index}-${entry.kind}`
         if (entry.kind === 'user_input') {
           return (
@@ -192,14 +367,7 @@ function TurnCard({
         if (entry.kind === 'llm_request') {
           return (
             <div key={key} className="flex flex-col gap-2">
-              <details className="group">
-                <summary className="cursor-pointer text-xs font-medium text-primary-strong select-none">
-                  展开发送给模型的提示词
-                </summary>
-                <pre className="mt-1.5 max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
-                  {formatMessages(entry.messages)}
-                </pre>
-              </details>
+              <PromptDetails messages={entry.messages} />
               {typeof entry.seq === 'number' ? <ReplayControl seq={entry.seq} /> : null}
             </div>
           )
@@ -240,10 +408,38 @@ function TurnCard({
             <TraceDetails entry={entry} />
           </div>
         )
-      })}
+      }) : null}
     </article>
   )
-}
+}, sameTurnCard)
+
+/**
+ * 后台事件列表的单行（memo：事件对象引用不变时跳过重渲染）。
+ *
+ * @param props.entry 单条后台事件。
+ * @returns 事件行元素。
+ */
+const BackgroundRow = memo(function BackgroundRow({ entry }: { entry: TraceEntry }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-border/70 bg-card/70 px-2.5 py-2">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+        <span className="flex-none text-muted-foreground tabular-nums">{dateTime(entry.at)}</span>
+        <strong className="flex-none font-semibold text-accent-foreground" title={entry.kind}>
+          {traceKindLabel(entry.kind)}
+        </strong>
+      </div>
+      {/* 观察事件直接展示原消息和后端门控原因，避免把「未回复」误判为链路故障。 */}
+      {entry.kind === 'observation' ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          <span className="min-w-0 break-all">{traceSenderLabel(entry)}：{text(entry.text)}</span>
+          <span className="text-warning">未回复：{displayValue(entry.reason)}</span>
+        </div>
+      ) : (
+        <TraceDetails entry={entry} />
+      )}
+    </div>
+  )
+})
 
 /** TracePanel 的入参：事件通道状态与当前会话流。 */
 interface TracePanelProps {
@@ -270,6 +466,8 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
   const [untilInput, setUntilInput] = useState('')
   const [searchStatus, setSearchStatus] = useState('')
   const [searching, setSearching] = useState(false)
+  /** 当前展开为完整事件列表的轮次；`null` 表示全部卡片都是摘要态。 */
+  const [expandedTurnId, setExpandedTurnId] = useState<number | null>(null)
 
   const visible = useMemo(
     () =>
@@ -321,8 +519,9 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
     setSearching(false)
   }
 
-  /** 从任意事件卡片切换到指定轮次的完整历史。 */
-  const showTurn = (turnId: number) => {
+  /** 从任意事件卡片切换到指定轮次的完整历史，并把该卡片展开为完整事件列表。 */
+  /* useCallback 固定引用：TurnCard 的 memo 比较依赖 onShowTurn 引用稳定。 */
+  const showTurn = useCallback((turnId: number) => {
     setCurrentStreamOnly(false)
     setTurnIdInput(String(turnId))
     setKindsInput('')
@@ -333,9 +532,16 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
     const params = new URLSearchParams({ limit: String(SEARCH_LIMIT), turnId: String(turnId) })
     void search(params, false).then((message) => {
       if (message) setSearchStatus(message)
+      setExpandedTurnId(turnId)
       setSearching(false)
     })
-  }
+  }, [search])
+
+  /** 把展开的轮次卡片收回到摘要态。 */
+  /* useCallback 固定引用：TurnCard 的 memo 比较依赖 onCollapse 引用稳定。 */
+  const collapseTurn = useCallback((turnId: number) => {
+    setExpandedTurnId((current) => (current === turnId ? null : current))
+  }, [])
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault()
@@ -425,7 +631,14 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
           <h3 className="text-[13px] font-semibold text-muted-foreground">对话轮次</h3>
           {turnGroups.length ? (
             turnGroups.map(([turnId, entries]) => (
-              <TurnCard key={turnId} turnId={turnId} entries={entries} onShowTurn={showTurn} />
+              <TurnCard
+                key={turnId}
+                turnId={turnId}
+                entries={entries}
+                expanded={expandedTurnId === turnId}
+                onShowTurn={showTurn}
+                onCollapse={collapseTurn}
+              />
             ))
           ) : (
             <Empty>当前筛选条件下没有对话轮次。</Empty>
@@ -437,26 +650,7 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
           {backgroundEntries.length ? (
             <div className="flex max-h-[26rem] flex-col gap-1 overflow-y-auto rounded-lg border border-border bg-muted/40 p-3 font-mono text-xs">
               {backgroundEntries.map((entry, index) => (
-                <div
-                  key={`${entry.seq ?? `live-${entry.at}-${index}`}`}
-                  className="flex flex-col gap-1.5 rounded-md border border-border/70 bg-card/70 px-2.5 py-2"
-                >
-                  <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
-                    <span className="flex-none text-muted-foreground tabular-nums">{dateTime(entry.at)}</span>
-                    <strong className="flex-none font-semibold text-accent-foreground" title={entry.kind}>
-                      {traceKindLabel(entry.kind)}
-                    </strong>
-                  </div>
-                  {/* 观察事件直接展示原消息和后端门控原因，避免把「未回复」误判为链路故障。 */}
-                  {entry.kind === 'observation' ? (
-                    <div className="flex flex-wrap gap-x-3 gap-y-1">
-                      <span className="min-w-0 break-all">{traceSenderLabel(entry)}：{text(entry.text)}</span>
-                      <span className="text-warning">未回复：{displayValue(entry.reason)}</span>
-                    </div>
-                  ) : (
-                    <TraceDetails entry={entry} />
-                  )}
-                </div>
+                <BackgroundRow key={`${entry.seq ?? `live-${entry.at}-${index}`}`} entry={entry} />
               ))}
             </div>
           ) : (

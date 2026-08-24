@@ -132,7 +132,7 @@ function SectionTitle({ children }: { children: ReactNode }) {
  * 渲染一体化侧栏。
  *
  * @returns aside 侧栏元素；宽 244px，桌面端常驻。
- * @remarks 「会话分区」锚点组仅在会话观察页展示，人物画像页整组隐藏（与旧版
+ * @remarks 「会话分区」锚点组仅在会话观察页展示，人物与关系页整组隐藏（与旧版
  * 行为一致，避免锚点指向不存在的分区）。
  */
 export function Sidebar() {
@@ -154,7 +154,7 @@ export function Sidebar() {
           <SectionTitle>概览</SectionTitle>
           <NavLink to="/" active={onHome} icon={<MessageSquare />} label="会话观察" />
           <NavLink to="/models" active={location.pathname.startsWith('/models')} icon={<Cpu />} label="模型与厂商" />
-          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
+          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
           <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
           <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
@@ -210,7 +210,7 @@ export function MobileTopbar() {
             label="会话观察"
           />
           <NavLink to="/models" active={onModels} icon={<Cpu />} label="模型与厂商" />
-          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物画像" />
+          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
           <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
           <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />

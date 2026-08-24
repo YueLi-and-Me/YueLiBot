@@ -342,10 +342,6 @@
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    /* 明暗主题切换时画布与文字颜色平滑过渡 */
-    transition:
-      background-color 0.3s ease,
-      color 0.3s ease;
   }
 
   /*
@@ -658,6 +654,21 @@
 }
 .animate-rise:nth-child(n + 8) {
   animation-delay: 350ms;
+}
+
+/* 主题切换帧：全局禁用过渡与动画（日月开关自身除外）。
+ *
+ * data-theme 翻转会让全部 CSS 变量瞬间变化，若不加干预，页面上数百个带
+ * transition-colors 的元素会把颜色变化各自拉成 150~250ms 的逐帧过渡，整页
+ * 持续重绘造成肉眼可见的掉帧。加上本类后，新主题在一帧内整体生效，用一次
+ * 性全页重绘代替逐帧动画。未分层 + !important 保证压过 utilities 层中
+ * 的 !important 规则（important 的层级优先级与常规相反，分层内声明会输给
+ * 未分层声明）。两帧后由 lib/theme.ts 移除本类，恢复日常微交互。 */
+.theme-flip *:not(.theme-switch, .theme-switch *),
+.theme-flip *::before,
+.theme-flip *::after {
+  transition: none !important;
+  animation: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

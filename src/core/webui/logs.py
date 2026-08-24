@@ -26,11 +26,15 @@ class _Subscriber:
 class WebUiLogStream:
     """保存有限积压日志并跨线程广播到 WebSocket 订阅者。"""
 
-    def __init__(self, backlog_size: int = 300, queue_size: int = 200) -> None:
+    def __init__(self, backlog_size: int = 500, queue_size: int = 500) -> None:
         """初始化日志积压和订阅队列。
 
-        :param backlog_size: 内存中保留的最近日志条数，默认 300。
-        :param queue_size: 每个订阅者队列容量，默认 200；满队列丢弃最旧事件。
+        两个容量都以「行」为单位，默认值取前端日志面板的保留行数（MAX_LOG_ROWS
+        = 500）：backlog 回放正好填满前端窗口，多出来的行本来也会被前端丢弃；
+        队列同样按这个窗口取值，避免一块上百行的面板刚入队就把队首挤掉半块。
+
+        :param backlog_size: 内存中保留的最近日志行数，默认 500。
+        :param queue_size: 每个订阅者队列容量，默认 500；满队列丢弃最旧事件。
 
         :raises ValueError: ``deque`` 或 ``asyncio.Queue`` 对非法容量的错误由标准库
                 直接传播。
@@ -42,25 +46,39 @@ class WebUiLogStream:
         self._seq = 0
         self._lock = threading.Lock()
 
-    def publish(self, line: str) -> Dict[str, object]:
-        """登记一行日志并向当前订阅者异步广播。
+    def publish(self, line: str) -> None:
+        """登记一段日志文本并向当前订阅者异步广播。
 
-        :param line: 已按控制台规则渲染的日志文本，通常包含 ANSI 颜色控制码。
-
-        :return: 包含单调递增 ``seq`` 和 ``line`` 字段的日志事件字典。
+        :param line: 已按控制台规则渲染的日志文本，通常包含 ANSI 颜色控制码；
+            允许是多行文本，例如 rich 面板整块捕获的结果。
 
         副作用：
-            更新有限 backlog 和序号，并在线程锁外向每个订阅者事件循环安排投递回调。
-            积压和队列容量由构造参数限制。
+            按行拆分后逐行更新有限 backlog 和序号，并在线程锁外向每个订阅者
+            事件循环安排投递回调。积压和队列容量由构造参数限制。
+            拆行兼容 CRLF；整体为空的文本不产生任何事件行。
+
+        【关键】多行文本必须在这里拆成逐行事件，不能整块入队。
+
+        - 现象：观察面板一打开就整机卡顿。``trace_console`` 的回合面板与
+          ``emit_console_trace`` 的信息框都是整块多行文本，一块两级回合面板实测
+          11.5 KB、99 行、922 个 ANSI 转义序列。
+        - 原因：前端把每个 ANSI 片段渲染成一个 ``span``，而保留窗口按「条」计数。
+          生产者按「块」发布、消费者按「行」预算，两端差两个数量级：500 块面板
+          约合 46 万个 DOM 节点、5.5 MB 文本；建连回放更是把整个积压一次性同步
+          挂载并触发全量布局。
+        - 后果：若恢复整块发布，``backlog_size``、``queue_size`` 与前端的
+          MAX_LOG_ROWS 三个上限会同时失去意义，面板重新变成打开即卡死。
         """
         with self._lock:
-            self._seq += 1
-            item: Dict[str, object] = {'seq': self._seq, 'line': line}
-            self._backlog.append(item)
+            items: List[Dict[str, object]] = []
+            for text in line.splitlines():
+                self._seq += 1
+                items.append({'seq': self._seq, 'line': text})
+            self._backlog.extend(items)
             subscribers = list(self._subscribers)
         for subscriber in subscribers:
-            subscriber.loop.call_soon_threadsafe(self._offer, subscriber.queue, item)
-        return item
+            for item in items:
+                subscriber.loop.call_soon_threadsafe(self._offer, subscriber.queue, item)
 
     def subscribe(self) -> Tuple[_Subscriber, List[Dict[str, object]]]:
         """登记当前事件循环的日志订阅者并返回注册时的积压副本。

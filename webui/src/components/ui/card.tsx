@@ -29,6 +29,9 @@ interface CardProps extends HTMLAttributes<HTMLElement> {
  *
  * @param props.className 追加类名，常用于 grid 跨度控制。
  * @returns section 卡片元素。
+ * @remarks `content-visibility: auto` 让屏外卡片完全跳过布局与绘制，长页面
+ * （观察页常态七八千个 DOM 节点）滚动时每帧只栅格化可见卡片；
+ * `contain-intrinsic-size` 用最近渲染尺寸兜底，避免滚动条随屏外卡片跳动。
  */
 export function Card({ className, children, ...rest }: CardProps) {
   return (
@@ -36,6 +39,7 @@ export function Card({ className, children, ...rest }: CardProps) {
       className={cn(
         'rounded-xl border-[1.5px] border-ink bg-card text-card-foreground shadow-card',
         'transition-[transform,box-shadow] duration-200 ease-out hover:-translate-y-0.5 hover:shadow-lifted',
+        '[content-visibility:auto] [contain-intrinsic-size:auto_320px]',
         className,
       )}
       {...rest}
