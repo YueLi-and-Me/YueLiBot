@@ -238,6 +238,14 @@ export function ModelConfigPage() {
     clearStatus()
   }, [status, clearStatus])
 
+  // 重启逻辑与设置页共用 use-restart；确认弹窗在草稿有未保存改动时加一行丢失提醒。
+  //
+  // 必须留在下面两处提前返回**之前**：它是 Hook，而提前返回会让首次渲染（读取中、
+  // 尚无 draft）跳过它，draft 到位后的下一次渲染又调用它，React 因前后 Hook 数量
+  // 不一致抛 #310 并整页白屏。改动前它写在组件中段（原本是个普通函数的位置），
+  // 换成 Hook 时没有跟着上移，`/models` 因此完全打不开。
+  const { restarting, restartBackend } = useRestart()
+
   if (state.loading && !draft) {
     return (
       <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
@@ -369,10 +377,6 @@ export function ModelConfigPage() {
     setSearch('')
     setProviderFilter('all')
   }
-
-  // 重启逻辑与设置页共用 use-restart；这里的确认弹窗在有未保存改动时加一行
-  // 丢失提醒，两页行为保持一致。
-  const { restarting, restartBackend } = useRestart()
 
   // 删除厂商：连带移除其名下模型，并把这些模型从所有任务的候选列表中剔除。
   const removeProvider = (removed: string) => {
