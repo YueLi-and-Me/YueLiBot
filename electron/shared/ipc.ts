@@ -320,6 +320,12 @@ export interface ApiProviderConfig {
   client_type: ClientType
   /** 仅 volcengine：App ID，与 api_key（Access Token）成对使用 */
   app_id: string
+  /** 模型列表端点，用于 WebUI 连通性测试与模型拉取；OpenAI 兼容默认 /models */
+  model_list_endpoint: string
+  /** 中转头等需要额外 HTTP 头的厂商在这里写键值；认证头仍由 auth_* 负责 */
+  default_headers: Record<string, string>
+  /** 中转头等需要固定查询参数的厂商在这里写键值 */
+  default_query: Record<string, string>
   timeout_ms: number
   max_retries: number
   retry_interval_ms: number
@@ -334,6 +340,15 @@ export interface ModelDefinitionConfig {
   api_provider: string
   extra_body: Record<string, unknown>
   reasoning_parse_mode: ReasoningParseMode
+  /** 视觉能力标记：只有 visual = true 的模型才能进入 vision / 图片描述任务 */
+  visual: boolean
+  /** 可选模型级温度覆盖；留空（null）时使用任务 generation 配置 */
+  temperature: number | null
+  /** 可选模型级最大输出覆盖；留空（null）时使用任务 generation 配置 */
+  max_tokens: number | null
+  /** 计费参考价，单位元/百万 token；仅用于 WebUI 展示 */
+  price_in: number
+  price_out: number
   /** 向量维度，仅 embedding 模型使用 */
   embedding_dim: number
 }
@@ -359,6 +374,14 @@ export interface YueliConfig {
     persona_weight: number
     reply_window_minutes: number
     max_replies_in_window: number
+    /** 允许对群消息贴表情回应 */
+    reactions_enabled: boolean
+    /** 允许使用 QQ 戳一戳 */
+    pokes_enabled: boolean
+    /** 允许她主动起话头（不接任何人的话） */
+    self_started_topics: boolean
+    /** 观察任务刷新场景画像前跳过的消息条数；0 表示不刷新 */
+    scene_refresh_messages: number
   }
   schedule: {
     sleep_enabled: boolean
@@ -383,6 +406,34 @@ export interface YueliConfig {
     recalled_episode_limit: number
     recent_episode_limit: number
     episode_context_limit: number
+    /** 未抽取消息达到此数量后触发一次事实抽取 */
+    fact_extract_trigger_messages: number
+    /** 每次事实抽取消化的最老消息条数 */
+    fact_extract_batch_messages: number
+  }
+  /** 对话 Agent（决策/表达分离）的运行模式与触发参数。 */
+  conversation_agent: {
+    mode: 'off' | 'shadow' | 'selected_streams' | 'enabled'
+    selected_streams: string[]
+    trigger_mode: 'signal' | 'frequency' | 'reply_necessity'
+    frequency_talk_value: number
+    reply_necessity_threshold: number
+    max_cognitive_rounds: number
+    split_replyer: boolean
+    tool_calling: boolean
+  }
+  /** 气泡拆分与打字节奏。 */
+  typing: {
+    bubble_target_chars: number
+    max_bubbles_per_say: number
+    delay_enabled: boolean
+    chinese_char_seconds: number
+    latin_char_seconds: number
+    send_gap_seconds: number
+    max_delay_seconds: number
+    emoji_pick_seconds: number
+    follow_up: { enabled: boolean; peer_silence_minutes: number }
+    nudge: { enabled: boolean; peer_silence_minutes: number; max_per_silence: number }
   }
   generation: {
     chat: { temperature: number; max_tokens: number }
@@ -391,12 +442,16 @@ export interface YueliConfig {
     expression: { temperature: number; max_tokens: number }
     schedule: { temperature: number; max_tokens: number }
     vision: { temperature: number; max_tokens: number }
+    planner: { temperature: number; max_tokens: number }
+    replyer: { temperature: number; max_tokens: number }
+    scene: { temperature: number; max_tokens: number }
+    memory: { temperature: number; max_tokens: number }
   }
   /** 所有可用连接。轮询就是在这些连接之间换。 */
   api_providers: ApiProviderConfig[]
   /** 所有模型定义。同一个厂商可以有多个模型，同一个模型 ID 也能挂在多个厂商下。 */
   models: ModelDefinitionConfig[]
-  /** 七类任务各自的候选模型与轮询策略。 */
+  /** 各类任务各自的候选模型与轮询策略。 */
   model_tasks: {
     chat: TaskRoutingConfig
     proactive: TaskRoutingConfig
@@ -404,6 +459,10 @@ export interface YueliConfig {
     schedule: TaskRoutingConfig
     vision: TaskRoutingConfig
     expression: TaskRoutingConfig
+    planner: TaskRoutingConfig
+    replyer: TaskRoutingConfig
+    scene: TaskRoutingConfig
+    memory: TaskRoutingConfig
     tts: TaskRoutingConfig
     embedding: TaskRoutingConfig
   }
@@ -415,6 +474,8 @@ export interface YueliConfig {
   }
   vision: {
     enabled: boolean
+    /** 允许理解 QQ 聊天里收到的图片 */
+    chat_image_enabled: boolean
     fullscreen_silent: boolean
     /** window = 只截前台那一个窗口；screen = 截整个主屏（能看到桌面，但会连带截到别的窗口） */
     capture_mode: 'window' | 'screen'
@@ -435,6 +496,10 @@ export interface YueliConfig {
     library_levels: Record<string, string>
     suppress_libraries: string[]
     request_snapshots: boolean; max_snapshot_files: number
+    /** 每次模型调用按任务分目录存进 logs/prompt/<任务>/，密钥已隐去 */
+    prompt_records: boolean
+    /** 每个任务子目录保留的记录份数 */
+    max_prompt_records_per_task: number
     event_retention_count: number; event_retention_hours: number
   }
   advanced: {

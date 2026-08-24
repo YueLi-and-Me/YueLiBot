@@ -511,6 +511,7 @@ addProviderButton.addEventListener('click', () => {
     name: uniqueName('服务商', loadedConfig.api_providers.map((p) => p.name)),
     kind: 'openai', base_url: '', api_key: '', client_type: 'openai', app_id: '',
     auth_type: 'bearer', auth_name: '',
+    model_list_endpoint: '/models', default_headers: {}, default_query: {},
     timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
   })
   renderDynamicSections()
@@ -523,7 +524,9 @@ addModelButton.addEventListener('click', () => {
   loadedConfig.models.push({
     name: uniqueName('模型', loadedConfig.models.map((m) => m.name)),
     model_identifier: '', api_provider: provider.name,
-    extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0,
+    extra_body: {}, reasoning_parse_mode: 'field',
+    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    embedding_dim: 0,
   })
   renderDynamicSections()
 })
