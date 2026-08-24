@@ -23,7 +23,7 @@ import {
 import { useEffect, useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
-import { apiMutate } from '@/lib/api'
+import { hasDraftChanges, useRestart } from '@/hooks/use-restart'
 import {
   Button,
   Card,
@@ -55,12 +55,13 @@ import {
 
 const TASK_NAMES = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'vision',
-  'expression', 'tts', 'embedding',
+  'expression', 'memory', 'tts', 'embedding',
 ] as const
 // 生成参数（温度、token 上限）覆盖后端 GenerationConfig 里的每一档任务。
 // tts 与 embedding 不在其中：语音合成与向量化没有温度和输出上限可言。
 const GENERATION_TASKS = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'expression', 'vision',
+  'memory',
 ] as const
 
 /** 任务字段的中文名称，仅用于功能分配页展示；TOML 配置键名保持英文不变。 */
@@ -74,6 +75,7 @@ const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
   schedule: '日程安排',
   vision: '屏幕视觉',
   expression: '表达选择',
+  memory: '记忆抽取',
   tts: '语音合成',
   embedding: '向量嵌入',
 }
@@ -89,6 +91,7 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   schedule: '生成角色每日日程计划的模型',
   vision: '识别用户询问的屏幕画面的视觉模型',
   expression: '为当前语境挑选表达习惯的模型',
+  memory: '回合结束后回看一段对话、判断有没有值得长期记住的事实。后台任务不在回复关键路径上，做结构化抽取而非发挥，配便宜快的模型即可；留空继承日常对话',
   tts: '把回复文本合成为语音的模型',
   embedding: '为长期记忆生成检索向量的嵌入模型',
 }
@@ -367,16 +370,9 @@ export function ModelConfigPage() {
     setProviderFilter('all')
   }
 
-  // 重启前的确认由 ConfirmDialog 承担，这里只负责发指令与结果反馈。
-  const restartBackend = async () => {
-    try {
-      await apiMutate<{ ok: boolean }>('/system/restart', 'POST')
-      toast.success('已发送重启指令，月璃即将重启…')
-      window.setTimeout(() => window.location.reload(), 2200)
-    } catch (error) {
-      toast.error(`重启失败：${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
+  // 重启逻辑与设置页共用 use-restart；这里的确认弹窗在有未保存改动时加一行
+  // 丢失提醒，两页行为保持一致。
+  const { restarting, restartBackend } = useRestart()
 
   // 删除厂商：连带移除其名下模型，并把这些模型从所有任务的候选列表中剔除。
   const removeProvider = (removed: string) => {
@@ -485,7 +481,11 @@ export function ModelConfigPage() {
               <Save className="size-4" aria-hidden="true" />
               保存配置
             </Button>
-            <Button variant="secondary" onClick={() => setRestartConfirmOpen(true)} disabled={state.busy}>
+            <Button
+              variant="secondary"
+              onClick={() => setRestartConfirmOpen(true)}
+              disabled={state.busy || restarting}
+            >
               <RefreshCw className="size-4" aria-hidden="true" />
               重启后端
             </Button>
@@ -976,7 +976,9 @@ export function ModelConfigPage() {
       <ConfirmDialog
         open={restartConfirmOpen}
         title="重启月璃"
-        description="重启期间她会暂时无法回复。"
+        description={hasDraftChanges(draft, state.snapshot)
+          ? '重启期间她会暂时无法回复。当前有未保存的修改，重启后将丢失。'
+          : '重启期间她会暂时无法回复。'}
         confirmText="重启"
         danger
         onConfirm={() => {
