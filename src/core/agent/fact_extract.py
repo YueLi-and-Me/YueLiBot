@@ -38,6 +38,8 @@ from .history import strip_say_tags, strip_side_effect_tags
 from src.core.common.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
+from .profile import mark_dirty as mark_profiles_dirty
+
 from src.core.memory.knowledge import add_knowledge
 from src.core.memory.store import FactInput, MemoryStore, StoredMessage
 from src.core.observe import events as trace
@@ -341,6 +343,7 @@ def persist_facts(
     store: MemoryStore,
     facts: Sequence[ExtractedFact],
     participants: Sequence[Participant],
+    db: sqlite3.Connection,
     now: Optional[int] = None,
 ) -> List[int]:
     """按平台编号归属把事实写入长期记忆。
@@ -352,6 +355,7 @@ def persist_facts(
     :param store: 记忆存储实例。
     :param facts: :func:`parse_extraction` 校验过的事实列表。
     :param participants: 在场者名单，用于把平台编号解析成 ``person_id``。
+    :param db: 当前库连接，用于给写过新事实的人置画像脏位。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :return: 实际写入或强化的事实 ID 列表，顺序与输入一致；被丢弃的条目不占位。
     :raises sqlite3.Error: 写入失败时由 ``add_fact`` 抛出。
@@ -361,6 +365,7 @@ def persist_facts(
     now = now if now is not None else current_time()
     by_external = {p.external_id: p for p in participants}
     written: List[int] = []
+    touched: set[int] = set()
     for fact in facts:
         person = by_external.get(fact.person_ref)
         if person is None:
@@ -381,6 +386,10 @@ def persist_facts(
                 content=fact.content,
             )
             written.append(fact_id)
+            touched.add(person.person_id)
+    # 写过新事实的人，画像随之过期。置位在这里而不是在画像模块里反查，
+    # 是因为「谁被写过」只有这一层知道；画像刷新是后台任务，只消费脏位。
+    mark_profiles_dirty(db, sorted(touched), now)
     return written
 
 
@@ -473,7 +482,7 @@ async def run_extraction(
         # 也不要因为一次故障永久跳过这段对话。
         trace.emit('memory_extract_failed', streamId=stream_id, cursor=cursor)
         return None
-    written = persist_facts(store, extraction.facts, participants, now)
+    written = persist_facts(store, extraction.facts, participants, db, now)
     knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
     advance_cursor(store, stream_id, batch[-1].message_id)
     trace.emit(
