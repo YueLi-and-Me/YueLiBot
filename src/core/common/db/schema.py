@@ -273,11 +273,12 @@ CREATE TABLE IF NOT EXISTS persona_bond (
   updated_at INTEGER NOT NULL
 );
 
--- energy 是全局唯一的自身状态，使用 CHECK(id=1) 强制表中只保留一行。
+-- energy 和 mood 是全局唯一的自身状态，使用 CHECK(id=1) 强制表中只保留一行。
 CREATE TABLE IF NOT EXISTS persona_self (
   id         INTEGER PRIMARY KEY CHECK (id = 1),
   energy     REAL    NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  mood       REAL    NOT NULL DEFAULT 50.0
 );
 
 -- 旧人格表仅用于历史数据迁移，不再由当前运行时写入。
@@ -294,7 +295,8 @@ CREATE TABLE IF NOT EXISTS persona_snapshots (
   date       TEXT PRIMARY KEY,
   intimacy   REAL    NOT NULL,
   energy     REAL    NOT NULL,
-  captured_at INTEGER NOT NULL
+  captured_at INTEGER NOT NULL,
+  mood       REAL    NOT NULL DEFAULT 50.0
 );
 CREATE INDEX IF NOT EXISTS idx_persona_snapshots_time ON persona_snapshots(captured_at DESC);
 """
@@ -309,8 +311,8 @@ VALUES (1, 'desktop', 'desktop', 'desktop');
 INSERT OR IGNORE INTO persona_bond (person_id, intimacy, updated_at)
 VALUES (1, 12, CAST(strftime('%s','now') AS INTEGER) * 1000);
 
-INSERT OR IGNORE INTO persona_self (id, energy, updated_at)
-VALUES (1, 80, CAST(strftime('%s','now') AS INTEGER) * 1000);
+INSERT OR IGNORE INTO persona_self (id, energy, mood, updated_at)
+VALUES (1, 80, 50.0, CAST(strftime('%s','now') AS INTEGER) * 1000);
 
 INSERT OR IGNORE INTO persona (id, intimacy, tsundere, reliance, energy, updated_at)
 VALUES (1, 12, 5, 20, 80, CAST(strftime('%s','now') AS INTEGER) * 1000);

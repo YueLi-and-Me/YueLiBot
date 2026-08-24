@@ -99,7 +99,7 @@ from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
 from src.core.persona.state import (
-    MoodDelta,
+    EventDelta,
     Persona,
     describe_acquaintance,
     describe_persona,
@@ -2631,6 +2631,7 @@ class ChatService:
             'now': now,
             'selfState': {
                 'energy': state.energy,
+                'mood': state.mood,
                 'statusLabel': status_label(
                     state,
                     asleep=sleep.asleep,
@@ -4803,9 +4804,9 @@ class ChatService:
                 sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
         elif isinstance(event, MoodEvent):
             # 群聊关系增量由上下文决定权重，Persona 本身不感知平台会话。
-            self.persona.apply_mood(
+            self.persona.apply_event(
                 context.person.id,
-                MoodDelta(favor=event.favor, energy=event.energy),
+                EventDelta(favor=event.favor, energy=event.energy),
                 now,
                 weight=self._persona_weight(context),
             )
@@ -5387,6 +5388,7 @@ def _plan_to_dict(plan: DayPlan | None) -> dict | None:
                 'doing': slot.doing,
                 'mood': slot.mood,
                 'energyPace': slot.energy_pace,
+                'moodPace': slot.mood_pace,
             }
             for slot in plan.slots
         ],

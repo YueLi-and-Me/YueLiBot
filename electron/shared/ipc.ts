@@ -20,6 +20,7 @@ export interface DayPlanSlot {
   doing: string
   mood: string
   energyPace: number
+  moodPace: number
 }
 
 /** 每日计划（Python 侧产物，通过 /diary 下发）。 */
@@ -108,6 +109,7 @@ export interface ObservabilityPayload {
   now: number
   selfState: {
     energy: number
+    mood: number
     statusLabel: string
   }
   schedule: DayPlan | null

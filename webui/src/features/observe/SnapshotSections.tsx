@@ -65,20 +65,23 @@ function MetricList({ children }: { children: ReactNode }) {
 }
 
 /**
- * 渲染自身精力指标和进度条。
+ * 渲染自身精力与心情指标和进度条。
  *
  * @param props.payload 后端观察快照。
  * @returns 自身状态分区。
  */
 function SelfStateSection({ payload }: { payload: ObservabilityPayload }) {
   const energy = payload.selfState.energy
+  const mood = payload.selfState.mood
   return (
-    <SectionCard title="自身状态" subtitle="当前精力" icon={<Heart />} tint="plum">
+    <SectionCard title="自身状态" subtitle="当前精力与心情" icon={<Heart />} tint="plum">
       <div className="flex flex-col gap-2">
         <MetricList>
           <Metric label="精力" value={fixed(energy, 1)} />
+          <Metric label="心情" value={fixed(mood, 1)} />
         </MetricList>
         <Progress value={energy} max={100} label="精力" />
+        <Progress value={mood} max={100} label="心情" />
       </div>
     </SectionCard>
   )

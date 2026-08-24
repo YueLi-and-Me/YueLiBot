@@ -292,6 +292,7 @@ class AwarenessService:
         return {
             'selfState': {
                 'energy': state.energy,
+                'mood': state.mood,
                 'statusLabel': status_label(
                     state,
                     asleep=sleep_eval.asleep,
