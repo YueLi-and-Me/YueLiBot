@@ -97,88 +97,90 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
 }
 
 /** 选型建议的四类取向，决定徽标文字与配色。 */
-type AdviceKind = 'fast' | 'good' | 'required' | 'baseline'
+type AdviceKind = 'fast' | 'quality' | 'required' | 'baseline'
 
 interface TaskAdvice {
   /** 取向，用于徽标。 */
   kind: AdviceKind
-  /** 一句具体建议，说清「为什么是这个取向」，而不是泛泛的「用小模型」。 */
+  /** 这一档真正需要的能力，以及配错了会怎样。不写泛泛的「用小模型」。 */
   note: string
 }
 
 /**
  * 每个任务槽的选型建议。
  *
+ * 分类判据是**这一档的瓶颈能力是什么、配错了代价多大多久才被发现**，
+ * 不是「是否在关键路径上」——那只决定要不要快，不决定能不能差。
+ * 初版把这两件事混为一谈，才把记忆抽取与情景分析错标成「宜快」：
+ * 前者的错误永久且无人察觉，后者直接决定整个回合的走向。
+ *
  * 写成 `Record<任务名, …>` 而不是可选表：新增模型槽时漏写这里会是**编译错误**，
  * 与 TASK_LABELS 同一道保险。此前 `memory` 槽就是因为前端清单漏改而在界面上
  * 根本配不了，那类漏改不该靠人记得。
- *
- * 每条都写清约束的来源，不写没有依据的推荐：`planner` 的「首字延迟主要由它决定」
- * 与 `memory` 的「后台任务、结构化抽取」都直接对应 config/schema.py 里那两段注释。
  */
 const TASK_ADVICE: Record<(typeof TASK_NAMES)[number], TaskAdvice> = {
   chat: {
     kind: 'baseline',
-    note: '其它槽留空时都继承它，所以它决定整体基线。配你最信任的通用模型。',
+    note: '其它槽留空时都继承它，所以它同时要能决策、能写、能概括。配你最信任的通用模型；只配这一个也能跑。',
   },
   planner: {
     kind: 'fast',
-    note: '只出动作头、不写正文，首字延迟主要由这一档决定——换快模型是压延迟的正路。',
+    note: '瓶颈是工具调用的可靠性，不是文采——动作走 function call，模型不支持或不稳就会反复出 illegal_action。它又卡在首字延迟上，所以要「支持工具调用的快模型」，不是单纯的小模型。',
   },
   replyer: {
-    kind: 'good',
-    note: '她真正说出口的那句话由它写，最值得用好模型；换差了「像不像人」会立刻下降。',
+    kind: 'quality',
+    note: '她说出口那句话的中文表达力与人格一致性全在这一档，是「像不像人」的主战场。换差了当场可见。这里不要省。',
   },
   scene: {
-    kind: 'fast',
-    note: '把一段聊天概括成「此刻是什么情况」，要的是稳定而非发挥，便宜快的就够。',
+    kind: 'quality',
+    note: '要读懂多人群聊里谁在跟谁说、话题走到哪，再把结论交给决策层——读错局面整个回合就错，而它卡在她开口之前。需要理解力，不需要文采。',
   },
   proactive: {
-    kind: 'good',
-    note: '她主动开口说的话由它生成，质量直接影响这次搭话是自然还是突兀。',
+    kind: 'quality',
+    note: '她主动开口说的话，考的是分寸感：同样的情境，说得自然还是突兀差别全在这。完全不赶时间，值得用好模型。',
   },
   summary: {
     kind: 'fast',
-    note: '后台压缩长对话，不在回复关键路径上，便宜快的就够。',
+    note: '把长对话压成情节摘要，要的是忠实、不编，不需要发挥。中档模型足够，长上下文比参数量更有用。',
   },
   schedule: {
-    kind: 'good',
-    note: '一天只跑一次，成本可以忽略，质量优先。',
+    kind: 'quality',
+    note: '一天只跑一次，成本可以忽略。考的是能不能想象出一天像样的生活，而不是排班表——直接用你手上最好的。',
   },
   vision: {
     kind: 'required',
-    note: '必须是能看图的多模态模型；配了纯文本模型，图片理解会直接失败。',
+    note: '必须是能看图的多模态模型。它既要认屏幕截图，也要描述群里的图片和表情包，中文描述质量直接进她的上下文。',
   },
   expression: {
     kind: 'fast',
-    note: '低温度的选择题，从候选表达里挑一条，便宜快的就够。',
+    note: '低温度地从候选表达里挑一条，纯选择题、没有发挥空间。这是整张表里最适合小模型的一档。',
   },
   memory: {
-    kind: 'fast',
-    note: '回合之后的后台抽取，不在关键路径上，做结构化抽取而非发挥，便宜快的就够。',
+    kind: 'quality',
+    note: '瓶颈是严格 JSON 与归属判断：格式坏一次整批事实直接丢弃，归属判错了则永久留在库里被反复召回、还会喂给画像与联想层。不在关键路径上所以不必快，但绝不该配差。',
   },
   tts: {
     kind: 'required',
-    note: '必须是语音合成模型。',
+    note: '必须是语音合成模型，与文本模型不通用。',
   },
   embedding: {
     kind: 'required',
-    note: '必须是嵌入模型。换模型等于换向量空间，旧向量全部作废、需要重算，别轻易改。',
+    note: '必须是嵌入模型。换模型等于换向量空间，库里已有的向量全部作废、需要整批重算，确定要换再换。',
   },
 }
 
 /** 徽标文字，短到能并排扫读。 */
 const ADVICE_TAGS: Record<AdviceKind, string> = {
   fast: '宜快',
-  good: '宜强',
+  quality: '重质量',
   required: '专用',
   baseline: '基线',
 }
 
-/** 徽标配色：取向不同给不同色相，扫一眼就能分出哪些槽该换快模型。 */
+/** 徽标配色：红＝模态硬要求，黄＝配差了代价高，蓝＝可以用小模型。 */
 const ADVICE_TINTS: Record<AdviceKind, string> = {
   fast: 'bg-primary-soft text-primary-strong',
-  good: 'bg-warning-soft text-warning',
+  quality: 'bg-warning-soft text-warning',
   required: 'bg-destructive-soft text-destructive',
   baseline: 'bg-muted text-muted-foreground',
 }
