@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 import asyncio
+import json
 import sqlite3
 
 from src.core.common.logger import get_logger
+from src.core.llm_models.snapshot import bind_render_params
 from src.core.persona.state import MOOD_RATE, ElapsedEffect
+from src.core.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
 
@@ -69,6 +72,246 @@ class ActivityTransition:
 
 
 ActivityDecider = Callable[[Activity, int, int], Awaitable[ActivityTransition]]
+
+
+class ActivityGenerator(Protocol):
+    """活动决策所需的最小模型生成接口。"""
+
+    async def generate(self, prompt: str) -> str:
+        """返回一份 JSON object 正文。"""
+
+        ...
+
+
+@dataclass(frozen=True)
+class ActivityDecisionContext:
+    """运行时已经知道、可供下一步活动判断的全部上下文。"""
+
+    character_name: str
+    character_personality: str
+    persona: str
+    sleep_history: str
+    intentions: str
+    intention_count: int
+    rough_rhythm: str
+    recent_activities: str
+    interaction: str
+    sleep_enabled: bool = True
+
+
+def _required_text(value: Any, *, maximum: int) -> str | None:
+    """校验模型输出中的必填单行文本，不做内容补写。"""
+
+    if not isinstance(value, str):
+        return None
+    normalized = ' '.join(value.split())
+    if not normalized or len(normalized) > maximum:
+        return None
+    return normalized
+
+
+def _integer(value: Any) -> int | None:
+    """只接收真正的 JSON 整数，排除 ``bool`` 与字符串隐式转换。"""
+
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _parse_draft(
+    value: Any,
+    *,
+    intention_count: int,
+    sleep_enabled: bool,
+) -> ActivityDraft | None:
+    """严格解析单段活动；能量值域由写入层负责限幅并记录告警。"""
+
+    if not isinstance(value, dict):
+        return None
+    kind = value.get('kind')
+    if kind not in _ENERGY_PACE_RANGES or (kind == 'sleep' and not sleep_enabled):
+        return None
+    doing = _required_text(value.get('doing'), maximum=80)
+    mood = _required_text(value.get('mood'), maximum=80)
+    energy_pace = _integer(value.get('energyPace'))
+    mood_pace = _integer(value.get('moodPace'))
+    minutes = _integer(value.get('minutes'))
+    advances_value = value.get('advances')
+    advances = _integer(advances_value) if advances_value is not None else None
+    if (
+        doing is None
+        or mood is None
+        or energy_pace is None
+        or mood_pace is None
+        or minutes is None
+        or not 10 <= minutes <= 600
+        or not -3 <= mood_pace <= 3
+        or (
+            advances is not None
+            and not 1 <= advances <= intention_count
+        )
+    ):
+        return None
+    return ActivityDraft(
+        kind=kind,
+        doing=doing,
+        mood=mood,
+        energy_pace=energy_pace,
+        mood_pace=mood_pace,
+        minutes=minutes,
+        advances=advances,
+    )
+
+
+def parse_activity_decision(
+    raw: str,
+    *,
+    intention_count: int,
+    require_backfill: bool,
+    sleep_enabled: bool = True,
+) -> ActivityTransition | None:
+    """解析一次下一步活动决策，长缺口必须同时提供补叙。
+
+    ``doing`` 有意不做钟点过滤：钟点只禁止出现在全天规划层，一次具体活动可以写
+    “十一点去交作业”。非法结构整体返回 ``None``，不局部猜测或补默认值。
+    """
+
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict) or intention_count < 0:
+        return None
+    if require_backfill:
+        backfill_value = value.get('backfill')
+        if not isinstance(backfill_value, list) or not backfill_value:
+            return None
+        next_value = value.get('next')
+        backfilled: list[ActivityDraft] = []
+        for item in backfill_value:
+            draft = _parse_draft(
+                item,
+                intention_count=intention_count,
+                sleep_enabled=sleep_enabled,
+            )
+            if draft is None:
+                return None
+            backfilled.append(draft)
+    else:
+        next_value = value
+        backfilled = []
+    next_activity = _parse_draft(
+        next_value,
+        intention_count=intention_count,
+        sleep_enabled=sleep_enabled,
+    )
+    if next_activity is None:
+        return None
+    return ActivityTransition(
+        next_activity=next_activity,
+        backfilled=tuple(backfilled),
+    )
+
+
+def _duration_text(duration_ms: int) -> str:
+    """把毫秒时长压成适合提示词阅读的中文小时/分钟描述。"""
+
+    total_minutes = max(0, duration_ms // MINUTE_MS)
+    hours, minutes = divmod(total_minutes, 60)
+    if hours and minutes:
+        return f'{hours} 小时 {minutes} 分'
+    if hours:
+        return f'{hours} 小时'
+    return f'{minutes} 分钟'
+
+
+def build_activity_prompt(
+    current: Activity,
+    now: int,
+    gap_ms: int,
+    context: ActivityDecisionContext,
+    *,
+    render_params: dict[str, dict[str, str]] | None = None,
+) -> str:
+    """渲染下一步活动提示词，长缺口与即时决策共用一次调用。"""
+
+    current_dt = datetime.fromtimestamp(now / 1000)
+    weekday = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][
+        current_dt.weekday()
+    ]
+    if gap_ms > SHORT_GAP_MS:
+        backfill_rule = (
+            f'上一条预期在 {datetime.fromtimestamp(current.expected_until / 1000):%m-%d %H:%M} '
+            f'结束，到现在有 {_duration_text(gap_ms)} 没有记录。输出 '
+            '{"backfill":[活动对象...],"next":活动对象}；backfill 必须按顺序覆盖整段缺口，'
+            '时长只表示各段相对占比，系统会把它们连续铺满。'
+        )
+    else:
+        backfill_rule = '没有长缺口。直接输出一个活动对象，不要包 next，不要输出 backfill。'
+    sleep_rule = (
+        '允许选择 sleep；真的睡着时才用 sleep，闭目养神但仍会回应要用 rest。'
+        if context.sleep_enabled
+        else '当前配置不允许选择 sleep；需要恢复时只能选择 rest，并保持可回应。'
+    )
+    values = {
+        'character_name': context.character_name,
+        'character_personality': context.character_personality,
+        'time_context': f'{current_dt:%Y-%m-%d %H:%M}，{weekday}',
+        'current_activity': (
+            f'{current.doing}，已经持续 {_duration_text(now - current.started_at)}；'
+            f'原本打算持续到 {datetime.fromtimestamp(current.expected_until / 1000):%H:%M}'
+        ),
+        'persona': context.persona,
+        'sleep_history': context.sleep_history,
+        'intentions': context.intentions,
+        'rough_rhythm': context.rough_rhythm,
+        'recent_activities': context.recent_activities,
+        'interaction': context.interaction,
+        'backfill_rule': backfill_rule,
+        'sleep_rule': sleep_rule,
+    }
+    if render_params is not None:
+        render_params['activity.next'] = values
+    return get_prompt('activity.next').render(**values)
+
+
+class ActivityDecisionService:
+    """用运行时连续状态生成下一段活动，不持有时间线写权限。"""
+
+    def __init__(
+        self,
+        generator: ActivityGenerator,
+        context: Callable[[int], ActivityDecisionContext],
+    ) -> None:
+        self._generator = generator
+        self._context = context
+
+    async def decide(
+        self,
+        current: Activity,
+        now: int,
+        gap_ms: int,
+    ) -> ActivityTransition:
+        """生成并严格解析一次活动转换；非法结果直接暴露给时间线续期。"""
+
+        context = self._context(now)
+        render_params: dict[str, dict[str, str]] = {}
+        prompt = build_activity_prompt(
+            current,
+            now,
+            gap_ms,
+            context,
+            render_params=render_params,
+        )
+        bind_render_params(render_params)
+        raw = await self._generator.generate(prompt)
+        parsed = parse_activity_decision(
+            raw,
+            intention_count=context.intention_count,
+            require_backfill=gap_ms > SHORT_GAP_MS,
+            sleep_enabled=context.sleep_enabled,
+        )
+        if parsed is None:
+            raise ValueError('下一步活动模型输出未通过结构校验')
+        return parsed
 
 
 def _activity_from_row(row: sqlite3.Row) -> Activity:
