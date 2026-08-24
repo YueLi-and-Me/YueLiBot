@@ -525,8 +525,7 @@ def main() -> None:
     # 日程服务是可选依赖；未成功装配时由 AwarenessService 使用配置备用日程。
     schedule = None
     try:
-        from src.core.schedule.plan import DayPlanService, ScheduleSleepState
-        from src.core.persona.state import describe_persona
+        from src.core.schedule.plan import DayPlanService
 
         chat_svc = app_state.chat
         schedule_generation = cfg.generation.schedule
@@ -540,15 +539,12 @@ def main() -> None:
         )
         schedule = DayPlanService(
             store=chat_svc.memory,
-            persona_description=lambda: describe_persona(
-                chat_svc.persona.get(desktop_context.person.id)
-            ),
+            persona_state=lambda: chat_svc.persona.get(desktop_context.person.id),
             interaction_density=lambda n: chat_svc.memory.interaction_density(
                 desktop_context.stream.id,
                 n,
             ),
             anniversary_at=lambda: chat_svc.memory.first_seen_at(desktop_context.person.id),
-            energy=lambda: chat_svc.persona.get(desktop_context.person.id).energy,
             last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
             generator=schedule_generator,
             character_name=cfg.bot.name,

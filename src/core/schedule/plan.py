@@ -18,6 +18,16 @@ from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.config.schema import ScheduleConfig
 from src.core.llm_models.snapshot import bind_render_params
+from src.core.persona.state import (
+    MOOD_RATE,
+    ElapsedEffect,
+    EnergyTier,
+    MoodTier,
+    PersonaState,
+    describe_persona_for_planning,
+    energy_tier,
+    mood_tier,
+)
 from src.core.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
@@ -26,6 +36,8 @@ PLAN_PREFIX = 'day_plan:'
 MAX_HOURS_FOR_HISTORY = 48
 MAX_HOURS_FOR_ELAPSED_INTEGRATION = 48
 HOUR_MS = 60 * 60_000
+BASE_AWAKE_DRAIN = 2.0
+REST_RECOVERY_RATE = 4.0
 
 
 @dataclass
@@ -35,6 +47,8 @@ class DayPlanSlot:
     from_time: str   # HH:MM
     doing: str
     mood: str
+    energy_pace: int = 0
+    mood_pace: int = 0
 
 
 @dataclass
@@ -121,6 +135,8 @@ def _fallback_slots(settings: ScheduleConfig) -> List[DayPlanSlot]:
             from_time=f'{index * 24 // settings.min_slots:02d}:00',
             doing=settings.fallback_activity,
             mood=settings.fallback_mood,
+            energy_pace=0,
+            mood_pace=0,
         )
         for index in range(settings.min_slots)
     ]
@@ -262,6 +278,20 @@ def _safe_doing(value: Any) -> str | None:
     return normalized or None
 
 
+def _parse_pace(value: Any) -> tuple[int, bool]:
+    """解析日程状态节奏字段并区分类型错误与越界整数。
+
+    :param value: 模型或历史数据中的 pace 原始值。
+
+    :return: ``(pace, valid)``。字段缺失、布尔值和非整数按兼容值 0 接收；
+        只有超出 [-3, 3] 的整数会令 ``valid`` 为 ``False``。
+    """
+
+    if type(value) is not int:
+        return (0, True)
+    return (value, -3 <= value <= 3)
+
+
 def activity_avoidance_items(slots: List[DayPlanSlot]) -> List[str]:
     """提取历史日程中需要避免重复安排的活动摘要。
 
@@ -326,10 +356,27 @@ def parse_day_plan(
         from_mins = clock_minutes(from_val)
         doing = _safe_doing(item.get('doing'))
         mood = _safe_plan_text(item.get('mood'), 1, 40)
-        if from_mins is None or from_mins <= previous or not doing or not mood:
+        energy_pace, energy_pace_valid = _parse_pace(item.get('energyPace'))
+        mood_pace, mood_pace_valid = _parse_pace(item.get('moodPace'))
+        if (
+            from_mins is None
+            or from_mins <= previous
+            or not doing
+            or not mood
+            or not energy_pace_valid
+            or not mood_pace_valid
+        ):
             return None
         previous = from_mins
-        slots.append(DayPlanSlot(from_time=from_val, doing=doing, mood=mood))
+        slots.append(
+            DayPlanSlot(
+                from_time=from_val,
+                doing=doing,
+                mood=mood,
+                energy_pace=energy_pace,
+                mood_pace=mood_pace,
+            )
+        )
 
     bedtime_hint = value.get('bedtimeHint', '')
     if not isinstance(bedtime_hint, str) or clock_minutes(bedtime_hint) is None:
@@ -456,13 +503,13 @@ def build_plan_prompt(
     """
 
     settings = schedule_config or ScheduleConfig()
-    # 睡眠开关只影响运行时语义，时间字段仍保持合法格式以满足统一 JSON 结构。
+    # 自动睡眠只决定是否进入离线状态；休息窗口仍承担精力昼夜节律的时间边界。
     sleep_rule = (
         '- 已启用睡眠状态。bedtimeHint 与 wakeHint 可以是任意合法 HH:MM，具体节奏服从角色设定，'
         '不强行套用人类夜间作息。'
         if settings.sleep_enabled
-        else '- 不启用睡眠状态。bedtimeHint 与 wakeHint 仍需填写合法 HH:MM 以保持结构稳定，'
-        '但运行时会忽略它们，不要为了填字段编造睡眠情节。'
+        else '- 不启用睡眠状态。bedtimeHint 与 wakeHint 仍需填写合法 HH:MM，作为角色每天的'
+        '休息窗口和精力节律；运行时不会因此进入睡着离线状态，也不要编造睡眠情节。'
     )
     # 所有配置值转换为模板字符串，避免模板注册表接收未声明类型。
     values = {
@@ -540,16 +587,59 @@ def _previous_date(now: datetime) -> str:
     return day_plan_date(now - timedelta(days=1))
 
 
+def _merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    """合并相交或首尾相接的毫秒时间区间。
+
+    :param intervals: 任意顺序的左闭右开区间。
+
+    :return: 按起点升序排列且互不重叠的区间。
+    """
+
+    merged: List[Tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _is_within_intervals(point: int, intervals: List[Tuple[int, int]]) -> bool:
+    """判断毫秒时刻是否位于任一左闭右开区间。"""
+
+    return any(start <= point < end for start, end in intervals)
+
+
+def _slot_boundary_times(
+    plan: DayPlan,
+    day_start: datetime,
+    lower: int,
+    upper: int,
+) -> List[int]:
+    """返回指定自然日内落入积分范围的日程时段边界。"""
+
+    boundaries: List[int] = []
+    for slot in plan.slots:
+        minutes = clock_minutes(slot.from_time)
+        if minutes is None:
+            continue
+        boundary = int((day_start + timedelta(minutes=minutes)).timestamp() * 1000)
+        if lower < boundary < upper:
+            boundaries.append(boundary)
+    return boundaries
+
+
 class DayPlanService:
     """提供日程读取、惰性生成、作息计算和历史活动查询。"""
 
     def __init__(
         self,
         store: _DayPlanStore,
-        persona_description: Callable[[], str],
+        persona_state: Callable[[], PersonaState],
         interaction_density: Callable[[int], str],
         anniversary_at: Callable[[], int],
-        energy: Callable[[], float],
         last_interaction_at: Callable[[], int | None],
         character_name: str,
         character_personality: str,
@@ -559,10 +649,9 @@ class DayPlanService:
         """初始化日程服务及其依赖回调。
 
         :param store: 提供 JSON 读写能力的日程存储。
-        :param persona_description: 返回当前人物状态描述的无参回调。
+        :param persona_state: 返回当前人物关系与主体状态的无参回调。
         :param interaction_density: 根据毫秒时间戳返回互动密度描述的回调。
         :param anniversary_at: 返回相识时间毫秒时间戳的回调。
-        :param energy: 返回当前主体精力的无参回调。
         :param last_interaction_at: 返回最近互动毫秒时间戳或 ``None`` 的回调。
         :param character_name: 角色名称。
         :param character_personality: 角色性格描述。
@@ -574,10 +663,9 @@ class DayPlanService:
         """
         # 保存注入回调而不在构造期读取存储，确保服务可在数据库和模型装配后复用。
         self._store = store
-        self._persona_description = persona_description
+        self._persona_state = persona_state
         self._interaction_density = interaction_density
         self._anniversary_at = anniversary_at
-        self._energy = energy
         self._last_interaction_at = last_interaction_at
         self._generator = generator
         self._character_name = character_name
@@ -705,6 +793,7 @@ class DayPlanService:
         return describe_day_plan(
             self.get(now),
             datetime.fromtimestamp(now / 1000),
+            self._persona_state(),
             sleep,
             include_activity=include_activity,
         )
@@ -760,51 +849,170 @@ class DayPlanService:
             plan = today
         return {
             'date': plan.date, 'bedtime_hint': plan.bedtime_hint, 'wake_hint': plan.wake_hint,
-            'sleep_enabled': plan.sleep_enabled, 'energy': self._energy(),
+            'sleep_enabled': plan.sleep_enabled, 'energy': self._persona_state().energy,
             'bedtime_day_boundary': plan.bedtime_day_boundary,
             'last_interaction_at': self._last_interaction_at(),
         }
 
-    def sleep_hours_between(self, from_ms: int, to_ms: int, earlier_asleep: bool = False) -> float:
-        """计算时间区间与配置作息窗口重叠的睡眠小时数。
+    def _rest_intervals_on_day(
+        self,
+        day_start: datetime,
+        day_end_ms: int,
+    ) -> List[Tuple[int, int]]:
+        """收集一个自然日内由相邻两份日程形成的休息区间。
+
+        bedtime 可按日期边界归到计划日次日，wake 最晚再落到后一天；因此回看
+        前两份日程并合并实际交集，才能覆盖非人类作息的长休息尾段。休息掩码
+        始终与自动睡眠开关无关。
+        """
+
+        day_start_ms = int(day_start.timestamp() * 1000)
+        intervals: List[Tuple[int, int]] = []
+        for offset in (-2, -1, 0):
+            plan_date = day_plan_date(day_start + timedelta(days=offset))
+            plan = self._read(plan_date) or fallback_day_plan(plan_date, self._config)
+            rest_start, rest_end = planned_sleep_window(plan)
+            clipped_start = max(day_start_ms, rest_start)
+            clipped_end = min(day_end_ms, rest_end)
+            if clipped_end > clipped_start:
+                intervals.append((clipped_start, clipped_end))
+        return _merge_intervals(intervals)
+
+    @staticmethod
+    def _daily_energy_pace_mean(
+        plan: DayPlan,
+        day_start: datetime,
+        day_start_ms: int,
+        day_end_ms: int,
+        rest_intervals: List[Tuple[int, int]],
+    ) -> float:
+        """计算整日清醒时段的时长加权 energyPace 均值。"""
+
+        boundaries = {
+            day_start_ms,
+            day_end_ms,
+            *_slot_boundary_times(plan, day_start, day_start_ms, day_end_ms),
+        }
+        for rest_start, rest_end in rest_intervals:
+            boundaries.update((rest_start, rest_end))
+        ordered = sorted(boundaries)
+        awake_ms = 0
+        weighted_pace_ms = 0.0
+        for segment_start, segment_end in zip(ordered, ordered[1:]):
+            midpoint = segment_start + (segment_end - segment_start) // 2
+            if _is_within_intervals(midpoint, rest_intervals):
+                continue
+            slot = _slot_at(plan, datetime.fromtimestamp(midpoint / 1000))
+            duration_ms = segment_end - segment_start
+            awake_ms += duration_ms
+            weighted_pace_ms += duration_ms * slot.energy_pace
+        return weighted_pace_ms / awake_ms if awake_ms else 0.0
+
+    @staticmethod
+    def _effect_on_day(
+        plan: DayPlan,
+        day_start: datetime,
+        from_ms: int,
+        to_ms: int,
+        rest_intervals: List[Tuple[int, int]],
+        pace_mean: float,
+    ) -> Tuple[float, float]:
+        """对单个自然日内的查询片段积分精力与心情事件变化。"""
+
+        boundaries = {
+            from_ms,
+            to_ms,
+            *_slot_boundary_times(plan, day_start, from_ms, to_ms),
+        }
+        for rest_start, rest_end in rest_intervals:
+            if from_ms < rest_start < to_ms:
+                boundaries.add(rest_start)
+            if from_ms < rest_end < to_ms:
+                boundaries.add(rest_end)
+        energy_delta = 0.0
+        mood_delta = 0.0
+        ordered = sorted(boundaries)
+        for segment_start, segment_end in zip(ordered, ordered[1:]):
+            midpoint = segment_start + (segment_end - segment_start) // 2
+            hours = (segment_end - segment_start) / HOUR_MS
+            if _is_within_intervals(midpoint, rest_intervals):
+                energy_delta += hours * REST_RECOVERY_RATE
+                continue
+            slot = _slot_at(plan, datetime.fromtimestamp(midpoint / 1000))
+            normalized_pace = slot.energy_pace - pace_mean
+            energy_delta += hours * BASE_AWAKE_DRAIN * (normalized_pace - 1)
+            mood_delta += hours * MOOD_RATE * slot.mood_pace
+        return (energy_delta, mood_delta)
+
+    def integrate_between(
+        self,
+        from_ms: int,
+        to_ms: int,
+        earlier_resting: bool = False,
+    ) -> ElapsedEffect:
+        """按日程休息窗口和清醒 pace 积分经过时间的状态变化。
 
         :param from_ms: 区间起点毫秒时间戳。
         :param to_ms: 区间终点毫秒时间戳。
-        :param earlier_asleep: 起点之前已经入睡时是否将被截断的历史区间计入。
+        :param earlier_resting: 超出最近 48 小时的早期区间是否按持续休息处理。
 
-        :return: 睡眠窗口重叠时长，单位为小时；终点不晚于起点时返回 0.0。
+        :return: 可由人格服务直接应用的精力与心情事件增量；终点不晚于起点时
+            返回两个零增量。
 
         性能：
-            最多按 ``MAX_HOURS_FOR_ELAPSED_INTEGRATION`` 小时的细粒度区间计算，
-            避免长时间跨度导致逐日读取无限增长。
+            仅对最近 48 小时逐自然日、时段和休息边界积分；更早区间维持原有
+            “全休息或全清醒”的截断语义，避免离线跨度导致无界读取。
         """
 
         if to_ms <= from_ms:
-            return 0.0
-        # 只精确计算最近 48 小时；更早部分仅在调用方确认区间起点已入睡时计入。
-        detailed_from = max(from_ms, to_ms - MAX_HOURS_FOR_ELAPSED_INTEGRATION * HOUR_MS)
-        sleep_ms = (
-            detailed_from - from_ms
-            if earlier_asleep and self._config.sleep_enabled
-            else 0
+            return ElapsedEffect(energy_delta=0.0, mood_delta=0.0)
+        detailed_from = max(
+            from_ms,
+            to_ms - MAX_HOURS_FOR_ELAPSED_INTEGRATION * HOUR_MS,
         )
-        cursor = datetime.fromtimestamp(detailed_from / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
-        cursor -= timedelta(days=1)
-        last_date = datetime.fromtimestamp(to_ms / 1000).replace(hour=0, minute=0, second=0, microsecond=0)
-        while cursor <= last_date:
-            # 按自然日读取日程，分别计算该日作息窗口与目标区间的交集。
-            date = day_plan_date(cursor)
-            plan = self._read(date) or fallback_day_plan(date, self._config)
-            if not plan.sleep_enabled:
-                cursor += timedelta(days=1)
-                continue
-            bedtime_at, wake_at = planned_sleep_window(plan)
-            overlap_start = max(detailed_from, bedtime_at)
-            overlap_end = min(to_ms, wake_at)
-            if overlap_end > overlap_start:
-                sleep_ms += overlap_end - overlap_start
-            cursor += timedelta(days=1)
-        return sleep_ms / HOUR_MS
+        earlier_hours = (detailed_from - from_ms) / HOUR_MS
+        earlier_rate = REST_RECOVERY_RATE if earlier_resting else -BASE_AWAKE_DRAIN
+        energy_delta = earlier_hours * earlier_rate
+        mood_delta = 0.0
+
+        cursor = datetime.fromtimestamp(detailed_from / 1000).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        while int(cursor.timestamp() * 1000) < to_ms:
+            day_start_ms = int(cursor.timestamp() * 1000)
+            next_day = cursor + timedelta(days=1)
+            day_end_ms = int(next_day.timestamp() * 1000)
+            query_start = max(detailed_from, day_start_ms)
+            query_end = min(to_ms, day_end_ms)
+            if query_end > query_start:
+                date = day_plan_date(cursor)
+                plan = self._read(date) or fallback_day_plan(date, self._config)
+                rest_intervals = self._rest_intervals_on_day(cursor, day_end_ms)
+                pace_mean = self._daily_energy_pace_mean(
+                    plan,
+                    cursor,
+                    day_start_ms,
+                    day_end_ms,
+                    rest_intervals,
+                )
+                day_energy_delta, day_mood_delta = self._effect_on_day(
+                    plan,
+                    cursor,
+                    query_start,
+                    query_end,
+                    rest_intervals,
+                    pace_mean,
+                )
+                energy_delta += day_energy_delta
+                mood_delta += day_mood_delta
+            cursor = next_day
+        return ElapsedEffect(
+            energy_delta=energy_delta,
+            mood_delta=mood_delta,
+        )
 
     def activities_between(self, from_dt: datetime, to_dt: datetime) -> List[str]:
         """提取时间区间内按小时变化的活动描述。
@@ -893,7 +1101,7 @@ class DayPlanService:
         prompt = build_plan_prompt(
             date=date, weekday=_weekday_cn(now),
             occasion=_day_occasion(now, self._anniversary_at()),
-            persona=self._persona_description(),
+            persona=describe_persona_for_planning(self._persona_state()),
             yesterday_theme=yesterday.theme if yesterday else '昨天没有留存计划，不要写得像固定流水线。',
             yesterday_bedtime=yesterday.bedtime_hint if yesterday else '没有记录',
             yesterday_wake=yesterday.wake_hint if yesterday else '没有记录',
@@ -969,10 +1177,27 @@ class DayPlanService:
             from_mins = clock_minutes(item.get('from', ''))
             doing = _safe_doing(item.get('doing'))
             mood = _safe_plan_text(item.get('mood'), 1, 40)
-            if from_mins is None or from_mins <= previous or not doing or not mood:
+            energy_pace, energy_pace_valid = _parse_pace(item.get('energyPace'))
+            mood_pace, mood_pace_valid = _parse_pace(item.get('moodPace'))
+            if (
+                from_mins is None
+                or from_mins <= previous
+                or not doing
+                or not mood
+                or not energy_pace_valid
+                or not mood_pace_valid
+            ):
                 return None
             previous = from_mins
-            slots.append(DayPlanSlot(from_time=item['from'], doing=doing, mood=mood))
+            slots.append(
+                DayPlanSlot(
+                    from_time=item['from'],
+                    doing=doing,
+                    mood=mood,
+                    energy_pace=energy_pace,
+                    mood_pace=mood_pace,
+                )
+            )
         bedtime_hint = raw.get('bedtimeHint', self._config.fallback_bedtime)
         if not isinstance(bedtime_hint, str) or clock_minutes(bedtime_hint) is None:
             bedtime_hint = self._config.fallback_bedtime
@@ -1008,7 +1233,16 @@ def _plan_to_dict(plan: DayPlan) -> Dict[str, Any]:
 
     return {
         'date': plan.date,
-        'slots': [{'from': s.from_time, 'doing': s.doing, 'mood': s.mood} for s in plan.slots],
+        'slots': [
+            {
+                'from': slot.from_time,
+                'doing': slot.doing,
+                'mood': slot.mood,
+                'energyPace': slot.energy_pace,
+                'moodPace': slot.mood_pace,
+            }
+            for slot in plan.slots
+        ],
         'bedtimeHint': plan.bedtime_hint,
         'wakeHint': plan.wake_hint,
         'theme': plan.theme,
@@ -1057,9 +1291,34 @@ def asks_about_activity(text: str) -> bool:
     return bool(_ACTIVITY_QUESTION.search(text))
 
 
+def _energy_behavior(state: PersonaState) -> str:
+    """把精力档转换为当前回合所需的最小行为提示。"""
+
+    tier = energy_tier(state)
+    if tier is EnergyTier.HIGH:
+        return '今天整体精神很好，反应可以更轻快，但不用因此变得吵闹'
+    if tier is EnergyTier.TIRED:
+        return '今天整体有点累，反应可以稍短、稍慢，但不要反复宣告困倦'
+    if tier is EnergyTier.SPENT:
+        return '今天整体已经精疲力尽，反应要明显简短迟缓，但不要自动催对方睡觉'
+    return ''
+
+
+def _mood_behavior(state: PersonaState) -> str:
+    """把非平稳心情档转换为当前回合的最小行为提示。"""
+
+    tier = mood_tier(state)
+    if tier is MoodTier.GOOD:
+        return '今天整体心情不错，可以自然流露一点期待感，但不要无缘无故持续兴奋'
+    if tier is MoodTier.LOW:
+        return '今天整体心情偏低，反应可以更收着些，但不要每句话都重复低落'
+    return ''
+
+
 def describe_day_plan(
     plan: DayPlan,
     now: datetime,
+    state: PersonaState,
     sleep: ScheduleSleepState,
     *,
     include_activity: bool = False,
@@ -1078,6 +1337,7 @@ def describe_day_plan(
 
     :param plan: 当前自然日的日程。
     :param now: 当前本地日期时间。
+    :param state: 当前人物关系与主体精力状态。
     :param sleep: 睡眠、困倦和刚醒状态。
     :param include_activity: 是否连具体活动一并渲染。仅在对方开口问起
         （见 :func:`asks_about_activity`），或主动搭话本就以日程为由头时为 ``True``。
@@ -1092,7 +1352,14 @@ def describe_day_plan(
     if sleep.just_woke:
         lines = ['你刚醒没多久，还在慢慢把意识拢回来；别装得已经精神十足，语气应有一点迷糊和迟缓。']
     else:
-        lines = [describe_mood_behavior(slot.mood)]
+        current_behavior = describe_mood_behavior(slot.mood).rstrip('。')
+        energy_behavior = '' if sleep.asleep or sleep.drowsy else _energy_behavior(state)
+        mood_behavior = '' if sleep.asleep else _mood_behavior(state)
+        if energy_behavior:
+            current_behavior = f'{current_behavior}；{energy_behavior}'
+        if mood_behavior:
+            current_behavior = f'{current_behavior}；{mood_behavior}'
+        lines = [f'{current_behavior}。']
         if include_activity:
             doing = slot.doing if slot.doing.startswith('你') else f'你{slot.doing}'
             # 写成条件句：既覆盖误命中的场合，也挡住「顺势宣告下一步」这类越界发挥。

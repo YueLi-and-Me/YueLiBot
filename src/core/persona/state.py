@@ -1,8 +1,8 @@
 """
-维护人物关系与主体精力，并将连续状态转换为模型可执行的行为约束。
+维护人物关系、主体精力与心情，并将连续状态转换为模型可执行的行为约束。
 
 本模块使用 ``persona_bond`` 保存按人物隔离的亲密度，使用
-``persona_self`` 保存主体共享的精力，并通过 ``persona_snapshots`` 记录
+``persona_self`` 保存主体共享的精力和心情，并通过 ``persona_snapshots`` 记录
 owner 的每日状态。``StreamRegistry`` 负责校验人物归属；关系等级由
 ``src.core.agent.relationship`` 计算，数据库连接由调用方创建并注入。
 """
@@ -10,6 +10,8 @@ owner 的每日状态。``StreamRegistry`` 负责校验人物归属；关系等�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+from math import exp
 
 import sqlite3
 
@@ -21,15 +23,28 @@ from src.core.platform_io.types import PersonRef
 
 @dataclass
 class PersonaState:
-    """某个人物当前的关系状态与主体精力。
+    """某个人物当前的关系状态与主体精力、心情。
 
-    ``intimacy`` 和 ``energy`` 的有效范围均为 0 至 100；``updated_at``
-    使用项目统一的毫秒时间戳，表示本次状态写入时间。
+    ``intimacy``、``energy`` 和 ``mood`` 的有效范围均为 0 至 100；
+    ``updated_at`` 使用项目统一的毫秒时间戳，表示本次状态写入时间。
     """
 
     intimacy: float    # 好感度 0~100
     energy: float      # 精力   0~100
+    mood: float        # 心情   0~100
     updated_at: int
+
+
+@dataclass
+class ElapsedEffect:
+    """日程服务预先积分得到的精力与心情变化。
+
+    两个增量均为目标时间区间内的事件合计值；人格服务只负责应用增量并执行心情
+    回归，不反向读取日程或睡眠配置。
+    """
+
+    energy_delta: float
+    mood_delta: float
 
 
 @dataclass
@@ -41,8 +56,8 @@ class PersonaSnapshot(PersonaState):
 
 
 @dataclass
-class MoodDelta:
-    """一次情绪事件对亲密度和精力的增量。
+class EventDelta:
+    """一次事件对亲密度和精力的增量。
 
     ``None`` 表示该维度不调整；实际增量会在应用前限制到 [-3, 3]，
     以防止单个事件覆盖长期累积状态。
@@ -52,16 +67,37 @@ class MoodDelta:
     energy: float | None = None
 
 
+class EnergyTier(Enum):
+    """由主体精力派生的对外状态档位。"""
+
+    HIGH = '精神很好'
+    NORMAL = '清醒'
+    TIRED = '疲惫'
+    SPENT = '精疲力尽'
+
+
+class MoodTier(Enum):
+    """由主体心情派生的对外状态档位。"""
+
+    GOOD = '心情不错'
+    FLAT = '心情平稳'
+    LOW = '心情低落'
+
+
 _RANGE: dict[str, tuple[float, float]] = {
     'intimacy': (0.0, 100.0),
     'energy': (0.0, 100.0),
+    'mood': (0.0, 100.0),
 }
+
+MOOD_RATE = 2.0
+MOOD_TAU = 6.0
 
 
 def _clamp(key: str, v: float) -> float:
     """将状态值限制在指定维度的 [0, 100] 范围内。
 
-    :param key: ``_RANGE`` 中的状态字段名，只接受 ``intimacy`` 或 ``energy``。
+    :param key: ``_RANGE`` 中的状态字段名，只接受 ``intimacy``、``energy`` 或 ``mood``。
     :param v: 待限制的数值。
 
     :return: 限制后的浮点数。
@@ -74,7 +110,7 @@ def _clamp(key: str, v: float) -> float:
 
 
 def _clamp_delta(v: float | None) -> float:
-    """限制一次情绪事件的增量并将无效输入归零。
+    """限制一次事件的增量并将无效输入归零。
 
     :param v: 原始增量；``None``、非有限值或绝对值不小于 1e9 的值视为无效。
 
@@ -87,7 +123,7 @@ def _clamp_delta(v: float | None) -> float:
 
 
 class Persona:
-    """通过统一数据库连接读写关系、精力和 owner 快照。"""
+    """通过统一数据库连接读写关系、精力、心情和 owner 快照。"""
 
     def __init__(self, db: sqlite3.Connection) -> None:
         """初始化状态服务。
@@ -128,27 +164,28 @@ class Persona:
             ).fetchone()
         if bond is None:
             raise RuntimeError(f'person {person.id} 的 persona_bond 创建失败')
-        # 精力属于主体而非人物，所有关系查询共享同一 persona_self 行。
+        # 精力和心情属于主体而非人物，所有关系查询共享同一 persona_self 行。
         self_state = self._db.execute(
-            'SELECT energy FROM persona_self WHERE id = 1'
+            'SELECT energy, mood FROM persona_self WHERE id = 1'
         ).fetchone()
         if self_state is None:
             raise RuntimeError('persona_self 行不存在，确认 v6 迁移已完整执行')
         return PersonaState(
             intimacy=bond[0],
             energy=self_state[0],
+            mood=self_state[1],
             updated_at=bond[1],
         )
 
     def inspect(self, person_id: int) -> PersonaState:
-        """只读人物关系与主体精力，不创建缺失的 contact 关系记录。
+        """只读人物关系与主体状态，不创建缺失的 contact 关系记录。
 
         :param person_id: ``persons.id`` 稳定主键。
 
         :return: 指定人物的当前状态；缺少 contact 关系时使用未持久化的默认亲密度 12.0。
 
         :raises ValueError: 人物不存在时由注册表抛出。
-        :raises RuntimeError: owner 关系记录或主体精力记录缺失。
+        :raises RuntimeError: owner 关系记录或主体状态记录缺失。
         """
         person = self._registry.person(person_id)
         bond = self._db.execute(
@@ -160,13 +197,14 @@ class Persona:
                 raise RuntimeError('owner persona_bond 不存在，确认 v7 迁移已完整执行')
             bond = (12.0, person.first_seen_at)
         self_state = self._db.execute(
-            'SELECT energy FROM persona_self WHERE id = 1'
+            'SELECT energy, mood FROM persona_self WHERE id = 1'
         ).fetchone()
         if self_state is None:
             raise RuntimeError('persona_self 行不存在，确认 v6 迁移已完整执行')
         return PersonaState(
             intimacy=bond[0],
             energy=self_state[0],
+            mood=self_state[1],
             updated_at=bond[1],
         )
 
@@ -191,7 +229,7 @@ class Persona:
         self._db.commit()
 
     def _write(self, person_id: int, state: PersonaState) -> None:
-        """原子更新人物亲密度和主体精力。
+        """原子更新人物亲密度和主体精力、心情。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param state: 已完成范围限制、准备持久化的新状态。
@@ -207,8 +245,9 @@ class Persona:
             (state.intimacy, state.updated_at, person_id),
         )
         self._db.execute(
-            'UPDATE persona_self SET energy = ?, updated_at = ? WHERE id = 1',
-            (state.energy, state.updated_at),
+            '''UPDATE persona_self SET energy = ?, mood = ?, updated_at = ?
+               WHERE id = 1''',
+            (state.energy, state.mood, state.updated_at),
         )
         self._db.commit()
 
@@ -231,9 +270,10 @@ class Persona:
         state = self.get(person_id)
         date = snapshot_date(now)
         self._db.execute(
-            '''INSERT OR IGNORE INTO persona_snapshots (date, intimacy, energy, captured_at)
-               VALUES (?, ?, ?, ?)''',
-            (date, state.intimacy, state.energy, now),
+            '''INSERT OR IGNORE INTO persona_snapshots
+               (date, intimacy, energy, mood, captured_at)
+               VALUES (?, ?, ?, ?, ?)''',
+            (date, state.intimacy, state.energy, state.mood, now),
         )
         self._db.commit()
 
@@ -255,7 +295,7 @@ class Persona:
         self._require_owner(person_id)
         now = now if now is not None else current_time()
         row = self._db.execute(
-            '''SELECT date, intimacy, energy, captured_at FROM persona_snapshots
+            '''SELECT date, intimacy, energy, mood, captured_at FROM persona_snapshots
                WHERE date < ? ORDER BY date DESC LIMIT 1''',
             (snapshot_date(now),),
         ).fetchone()
@@ -265,8 +305,9 @@ class Persona:
             date=row[0],
             intimacy=row[1],
             energy=row[2],
-            updated_at=row[3],
-            captured_at=row[3],
+            mood=row[3],
+            updated_at=row[4],
+            captured_at=row[4],
         )
 
     def snapshots(self, person_id: int, limit: int = 90) -> list[PersonaSnapshot]:
@@ -282,7 +323,7 @@ class Persona:
 
         self._require_owner(person_id)
         rows = self._db.execute(
-            '''SELECT date, intimacy, energy, captured_at FROM persona_snapshots
+            '''SELECT date, intimacy, energy, mood, captured_at FROM persona_snapshots
                ORDER BY date DESC LIMIT ?''',
             (limit,),
         ).fetchall()
@@ -291,24 +332,25 @@ class Persona:
                 date=row[0],
                 intimacy=row[1],
                 energy=row[2],
-                updated_at=row[3],
-                captured_at=row[3],
+                mood=row[3],
+                updated_at=row[4],
+                captured_at=row[4],
             )
             for row in rows
         ]
 
-    def apply_mood(
+    def apply_event(
         self,
         person_id: int,
-        delta: MoodDelta,
+        delta: EventDelta,
         now: int | None = None,
         *,
         weight: float,
     ) -> PersonaState:
-        """将情绪事件转换为亲密度和精力变化并持久化。
+        """将事件转换为亲密度和精力变化并持久化。
 
         :param person_id: ``persons.id`` 稳定主键。
-        :param delta: 情绪事件提供的亲密度和精力原始增量。
+        :param delta: 事件提供的亲密度和精力原始增量。
         :param now: 可选的本次写入毫秒时间戳；省略时读取统一时钟。
         :param weight: 事件权重，仅限关键字且必填；同时作用于亲密度和精力两个维度。
             不设默认值：漏传会让群聊按全速消耗全局精力且测试无感，故要求调用点显式打折。
@@ -330,6 +372,7 @@ class Persona:
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + favor * 1.2 * weight),
             energy=_clamp('energy', state.energy + energy * 3 * weight),
+            mood=state.mood,
             updated_at=now,
         )
         self._write(person_id, next_state)
@@ -363,6 +406,7 @@ class Persona:
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + 0.35 * weight),
             energy=_clamp('energy', state.energy - 0.4 * weight),
+            mood=state.mood,
             updated_at=now,
         )
         self._write(person_id, next_state)
@@ -372,14 +416,14 @@ class Persona:
         self,
         person_id: int,
         now: int | None = None,
-        asleep_hours: float = 0.0,
+        effect: ElapsedEffect | None = None,
     ) -> PersonaState:
-        """按经过的时间衰减关系并恢复或消耗 owner 精力。
+        """按经过的时间衰减关系，并应用 owner 在此期间的精力、心情变化。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
-        :param asleep_hours: 在经过时间内处于睡眠的小时数，负值按 0 处理，且不会
-                超过实际经过小时数。
+        :param effect: 调用方按日程积分得到的精力与心情事件变化；未提供时将全部
+            经过时间按清醒状态每小时消耗两点精力处理，心情只向基线回归。
 
         :return: 调整后的状态；非 owner 或经过时间不足一小时则返回原状态。
 
@@ -393,19 +437,22 @@ class Persona:
         now = now if now is not None else current_time()
         person = self._registry.person(person_id)
         state = self.get(person.id)
-        # 只有 owner 的共享精力参与时间结算，contact 的状态只随交互事件变化。
+        # 只有 owner 的共享精力和心情参与时间结算，contact 的状态只随交互事件变化。
         if person.kind != 'owner':
             return state
         hours = max(0.0, (now - state.updated_at) / 3_600_000)
         if hours < 1:
             return state
-        # 睡眠小时数限制在实际经过时长内，剩余时长按清醒状态计算精力消耗。
-        bounded_asleep = min(hours, max(0.0, asleep_hours))
-        awake_hours = hours - bounded_asleep
+        # 日程层决定精力曲线的形状；未装配日程时才退回原有的全清醒线性消耗。
+        energy_delta = effect.energy_delta if effect is not None else -hours * 2
+        mood_delta = effect.mood_delta if effect is not None else 0.0
+        mood = state.mood + mood_delta
+        mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
         days = hours / 24
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy - days * 0.6),
-            energy=_clamp('energy', state.energy + bounded_asleep * 4 - awake_hours * 2),
+            energy=_clamp('energy', state.energy + energy_delta),
+            mood=_clamp('mood', mood),
             updated_at=now,
         )
         self._write(person.id, next_state)
@@ -427,21 +474,105 @@ class Persona:
         return person
 
 
+def energy_tier(s: PersonaState) -> EnergyTier:
+    """按既有阈值把连续精力转换为唯一的派生档位。
+
+    :param s: 待判断的人物状态。
+    :return: 精力见底、疲惫、正常或充沛档位。
+    """
+
+    if s.energy < 20:
+        return EnergyTier.SPENT
+    if s.energy < 45:
+        return EnergyTier.TIRED
+    if s.energy > 85:
+        return EnergyTier.HIGH
+    return EnergyTier.NORMAL
+
+
+def mood_tier(s: PersonaState) -> MoodTier:
+    """按心情轴阈值把连续值转换为派生档位。
+
+    :param s: 待判断的人物状态。
+    :return: 心情不错、平稳或低落档位。
+    """
+
+    if s.mood > 65:
+        return MoodTier.GOOD
+    if s.mood < 35:
+        return MoodTier.LOW
+    return MoodTier.FLAT
+
+
+def status_label(
+    s: PersonaState,
+    *,
+    asleep: bool,
+    just_woke: bool,
+    drowsy: bool,
+) -> str:
+    """合成睡眠状态与精力档位的唯一对外状态标签。
+
+    :param s: 待描述的人物状态。
+    :param asleep: 当前是否已经睡着。
+    :param just_woke: 当前是否处于刚醒阶段。
+    :param drowsy: 当前是否正在犯困。
+    :return: 按睡着、刚醒、犯困、精力档的固定优先级生成的中文标签。
+    """
+
+    if asleep:
+        return '睡着'
+    if just_woke:
+        return '刚醒'
+    if drowsy:
+        return '犯困'
+    return energy_tier(s).value
+
+
 def describe_persona(s: PersonaState) -> str:
-    """将连续关系状态转换为有限的自然语言行为约束。
+    """将连续关系状态转换为不含状态重复信息的关系描述。
 
     :param s: 待描述的人物状态。
 
-    :return: 包含关系等级和精力区间提示的中文指令文本；不会暴露原始数值。
+    :return: 只包含关系等级的中文描述；不会暴露原始数值。
     """
-    lines = [f'你和对方的关系深度：{relationship_tier(s.intimacy)}。']
-    if s.energy < 20:
-        lines.append('你困得厉害，句子会明显变短，反应也慢一点；除非话题正好相关，不要自动催他睡觉。')
-    elif s.energy < 45:
-        lines.append('你有点累，懒得把每句话说得很完整，也没力气维持过分热情。')
-    elif s.energy > 85:
-        lines.append('你现在精神很好，更容易接住玩笑或顺手多讲一个刚想到的细节，但不用因此变得吵闹。')
-    return '\n'.join(lines)
+    return f'你和对方的关系深度：{relationship_tier(s.intimacy)}。'
+
+
+def describe_persona_for_planning(s: PersonaState) -> str:
+    """把当前精力与心情改写成供日程模型使用的安排口径。
+
+    :param s: 昨日结束时的人物状态。
+    :return: 不含原始数值、不会把单一状态铺满全天的中文规划约束。
+    """
+
+    tier = energy_tier(s)
+    if tier is EnergyTier.SPENT:
+        energy_guidance = (
+            '昨天结束时精力已经见底。今天的安排要明显轻一些，并且必须至少有两段是明确能回精力的'
+            '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'
+        )
+    elif tier is EnergyTier.TIRED:
+        energy_guidance = (
+            '昨天结束时精力偏低。今天的安排要轻一些，并且必须至少有两段是明确能回精力的'
+            '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'
+        )
+    elif tier is EnergyTier.HIGH:
+        energy_guidance = (
+            '昨天结束时精力很好。今天可以安排一些更费精力的事，但要保留消耗和恢复的起伏，'
+            '不要把一整天都写成亢奋。'
+        )
+    else:
+        energy_guidance = '昨天结束时精力平稳。今天按她自己的节奏安排，让消耗和恢复自然交替。'
+
+    mood = mood_tier(s)
+    if mood is MoodTier.GOOD:
+        mood_guidance = '昨天结束时心情不错。今天可以安排一两件她自己期待的小事。'
+    elif mood is MoodTier.LOW:
+        mood_guidance = '昨天结束时心情偏低。今天至少安排一两件她自己喜欢、能让心情回升的小事。'
+    else:
+        mood_guidance = ''
+    return '\n'.join(part for part in (energy_guidance, mood_guidance) if part)
 
 
 def describe_acquaintance(first_seen_at: int, now: int | None = None) -> str:

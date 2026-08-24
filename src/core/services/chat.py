@@ -98,7 +98,13 @@ from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, Recalled
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
-from src.core.persona.state import MoodDelta, Persona, describe_acquaintance, describe_persona
+from src.core.persona.state import (
+    EventDelta,
+    Persona,
+    describe_acquaintance,
+    describe_persona,
+    status_label,
+)
 from src.core.platform_io.broker import PlatformBroker
 from src.core.platform_io.registry import StreamRegistry
 from src.core.platform_io.types import (
@@ -660,13 +666,13 @@ class ChatService:
         self,
         context: ConversationContext,
         now: int | None = None,
-        earlier_asleep: bool = False,
+        earlier_resting: bool = False,
     ) -> None:
         """结算指定人物自上次状态更新时间以来的作息影响。
 
         :param context: 已完成会话和人物归属解析的上下文。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
-        :param earlier_asleep: 区间起点之前已入睡时是否计入被截断的睡眠时间。
+        :param earlier_resting: 区间起点之前已休息时是否计入被截断的休息时间。
 
         副作用：
             owner 上会更新人格状态并保存每日快照；非 owner 只读取状态，不写入
@@ -677,11 +683,15 @@ class ChatService:
         person_id = context.person.id
         before = self.persona.get(person_id)
         if self._schedule:
-            asleep_hours = self._schedule.sleep_hours_between(before.updated_at, now, earlier_asleep)
+            effect = self._schedule.integrate_between(
+                before.updated_at,
+                now,
+                earlier_resting,
+            )
         else:
-            asleep_hours = 0.0
+            effect = None
         if context.relationship_signals_enabled:
-            self.persona.apply_elapsed(person_id, now, asleep_hours)
+            self.persona.apply_elapsed(person_id, now, effect)
             self.persona.snapshot_daily(person_id, now)
 
     async def startup(self) -> None:
@@ -1026,8 +1036,8 @@ class ChatService:
             trimmed = '\n'.join(message.text for message in batch)
             try:
                 now = current_time()
-                asleep = self._sleep_state().asleep if self._sleep_state else False
-                self.settle_elapsed(context, now, asleep)
+                earlier_resting = self._sleep_state().asleep if self._sleep_state else False
+                self.settle_elapsed(context, now, earlier_resting)
                 self.memory.sweep(now)
 
                 # 图片描述在后台已尽力提前完成；这里等待结果后再做门控与上下文构建。
@@ -2604,8 +2614,8 @@ class ChatService:
         :param stream_id: ``streams.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
 
-        :return: 包含主体精力、日程、待处理消息数和会话参与人的可序列化字典；不展开
-            单个人物的关系和事实。
+        :return: 包含主体精力、统一状态标签、日程、待处理消息数和会话参与人的
+            可序列化字典；不展开单个人物的关系和事实。
 
         :raises ValueError: stream 不存在时由注册表抛出。
         """
@@ -2615,10 +2625,19 @@ class ChatService:
             self._conversation_participant(person, stream)
             for person in self._registry.list_persons(stream.id)
         ]
+        state = self.persona.inspect(self._desktop_context.person.id)
+        sleep = self.current_sleep()
         return {
             'now': now,
             'selfState': {
-                'energy': self.persona.inspect(self._desktop_context.person.id).energy,
+                'energy': state.energy,
+                'mood': state.mood,
+                'statusLabel': status_label(
+                    state,
+                    asleep=sleep.asleep,
+                    just_woke=sleep.just_woke,
+                    drowsy=sleep.drowsy,
+                ),
             },
             'schedule': _plan_to_dict(self._schedule.get(now)) if self._schedule else None,
             'conversation': {
@@ -4785,9 +4804,9 @@ class ChatService:
                 sink.append({'kind': 'memory_fact', 'content': event.content, 'memoryKind': memory_kind})
         elif isinstance(event, MoodEvent):
             # 群聊关系增量由上下文决定权重，Persona 本身不感知平台会话。
-            self.persona.apply_mood(
+            self.persona.apply_event(
                 context.person.id,
-                MoodDelta(favor=event.favor, energy=event.energy),
+                EventDelta(favor=event.favor, energy=event.energy),
                 now,
                 weight=self._persona_weight(context),
             )
@@ -5363,7 +5382,16 @@ def _plan_to_dict(plan: DayPlan | None) -> dict | None:
         return None
     return {
         'date': plan.date,
-        'slots': [{'from': s.from_time, 'doing': s.doing, 'mood': s.mood} for s in plan.slots],
+        'slots': [
+            {
+                'from': slot.from_time,
+                'doing': slot.doing,
+                'mood': slot.mood,
+                'energyPace': slot.energy_pace,
+                'moodPace': slot.mood_pace,
+            }
+            for slot in plan.slots
+        ],
         'bedtimeHint': plan.bedtime_hint,
         'wakeHint': plan.wake_hint,
         'theme': plan.theme,

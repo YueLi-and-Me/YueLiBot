@@ -34,6 +34,7 @@ from src.core.common.logger import get_logger
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import DISPATCHING, FAILED, GENERATING, REPLIED
+from src.core.persona.state import status_label
 from src.core.schedule.plan import _slot_at, day_plan_date, describe_day_plan, fallback_day_plan
 
 logger = get_logger(__name__)
@@ -286,8 +287,19 @@ class AwarenessService:
         factors = self._interest_factors(now)
         classified = self._sensor.signal if self._sensor else None
         minutes = self._sensor.minutes(now) if self._sensor else 0
+        state = self.chat.persona.inspect(self.chat.desktop_context.person.id)
         # 所有面板字段基于同一个 now 计算，避免前端看到跨毫秒采样的混合状态。
         return {
+            'selfState': {
+                'energy': state.energy,
+                'mood': state.mood,
+                'statusLabel': status_label(
+                    state,
+                    asleep=sleep_eval.asleep,
+                    just_woke=sleep_eval.just_woke,
+                    drowsy=sleep_eval.drowsy,
+                ),
+            },
             'sleep': {
                 'asleep': sleep_eval.asleep,
                 'drowsy': sleep_eval.drowsy,
@@ -549,6 +561,7 @@ class AwarenessService:
             base = describe_day_plan(
                 self._schedule.get(now),
                 datetime.fromtimestamp(now / 1000),
+                self.chat.persona.get(self.chat.desktop_context.person.id),
                 self.chat.current_sleep(),
                 include_activity=True,
             )

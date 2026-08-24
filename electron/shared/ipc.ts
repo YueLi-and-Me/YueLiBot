@@ -15,7 +15,13 @@ export type ParseEvent =
   | { type: 'mood'; favor?: number; energy?: number }
 
 /** 日程时段（Python 侧 DayPlan.slots 字段，渲染层只读取）。 */
-export interface DayPlanSlot { from: string; doing: string; mood: string }
+export interface DayPlanSlot {
+  from: string
+  doing: string
+  mood: string
+  energyPace: number
+  moodPace: number
+}
 
 /** 每日计划（Python 侧产物，通过 /diary 下发）。 */
 export interface DayPlan {
@@ -103,6 +109,8 @@ export interface ObservabilityPayload {
   now: number
   selfState: {
     energy: number
+    mood: number
+    statusLabel: string
   }
   schedule: DayPlan | null
   conversation: {

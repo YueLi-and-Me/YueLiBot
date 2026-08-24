@@ -35,14 +35,13 @@ function buildItems(payload: ObservabilityPayload): StatusItem[] {
   const sleep = record(payload.sleep)
   const impulse = record(payload.impulse)
   const vision = record(record(payload.sensing).visionStats)
-  const sleepLabel = sleep.asleep === true ? '睡着' : sleep.drowsy === true ? '犯困' : '清醒'
   const used = numeric(impulse.used) ?? 0
   const remaining = numeric(impulse.remaining) ?? 0
   const participants = payload.conversation.participants
   return [
     {
       label: '当前状态',
-      value: sleepLabel,
+      value: payload.selfState.statusLabel,
       detail: `睡意 ${fixed(sleep.probability, 2)} · 距入睡 ${fixed(sleep.minutesFromBedtime)} 分钟`,
       icon: <MoonStar />,
       tintClass: 'bg-tint-coral/10 text-tint-coral',
