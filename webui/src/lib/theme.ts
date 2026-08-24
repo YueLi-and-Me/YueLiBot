@@ -26,14 +26,30 @@ export function savedTheme(): ThemeName | null {
   }
 }
 
+/** 换肤帧守卫的 rAF 句柄；连续快速切换时取消上一轮的移除计划。 */
+let flipGuardFrame: number | null = null
+
 /**
  * 应用界面主题并写入本地存储。
  *
  * @param theme 目标主题名。
  * @returns 无返回值；存储写入失败不阻断切换，本次会话内仍生效。
+ * @remarks 翻转前先给 <html> 挂上 theme-flip 守卫类：禁用全页过渡与动画，
+ * 让全部令牌变化在一帧内一次性生效（对应样式见 index.css 末尾，守卫会
+ * 保留日月开关自身的动画）；连续两帧后移除，恢复日常微交互。首屏初始化
+ * 时同样经过本守卫，顺带消除初始渲染的过渡抖动。
  */
 export function applyTheme(theme: ThemeName): void {
-  document.documentElement.dataset.theme = theme
+  const root = document.documentElement
+  root.classList.add('theme-flip')
+  root.dataset.theme = theme
+  if (flipGuardFrame !== null) cancelAnimationFrame(flipGuardFrame)
+  flipGuardFrame = requestAnimationFrame(() => {
+    flipGuardFrame = requestAnimationFrame(() => {
+      root.classList.remove('theme-flip')
+      flipGuardFrame = null
+    })
+  })
   try {
     localStorage.setItem(THEME_STORAGE_KEY, theme)
   } catch {
