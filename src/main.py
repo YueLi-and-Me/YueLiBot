@@ -8,7 +8,7 @@ FastAPI。实际 HTTP/WebSocket 路由由 ``src.core.api`` 提供。
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 import argparse
 import asyncio
@@ -24,6 +24,14 @@ from src.core.common.backend_runtime import create_backend_runtime, runtime_file
 from src.core.common.console_layout import print_box
 from src.core.common.logger import get_logger, initialize_logging
 from src.core.config.loader import load_config
+from src.core.config.schema import (
+    BotDocument,
+    Config,
+    FeatureDocument,
+    ModelCatalog,
+    ProviderCatalog,
+)
+from src.core.config.upgrade import upgrade_config_directory
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
@@ -168,6 +176,33 @@ def _announce_ready() -> None:
     print("YUELI_READY=1", flush=True)
 
 
+def _announce_model_routing(cfg: Config) -> None:
+    """在启动早期展示各模型任务解析到的候选，让配置改动可见。
+
+    配置是四份 TOML 加一层默认值，「我改的那行到底生效没有」以前只能翻日志逐条找。
+    任务路由是其中最容易出错也最容易被误改的一层：模型改名、厂商引用错、新任务槽
+    没配而静默继承 chat，这三种都不会报错，只会在运行时表现为「换了个模型说话」。
+
+    :param cfg: 已完成交叉校验的配置对象。
+    :return: 无返回值。
+    副作用：向 stdout 打印信息框；不写日志文件（同 WebUI 入口框的口径，避免与
+        结构化日志重复刷屏）。
+    """
+
+    rows: List[str] = []
+    routing = cfg.routing
+    for task in type(routing).model_fields:
+        entry = getattr(routing, task)
+        candidates = entry.candidates
+        if not candidates:
+            rows.append(f'{task:<11}未配置候选')
+            continue
+        first = candidates[0]
+        extra = f'（+{len(candidates) - 1} 个备选）' if len(candidates) > 1 else ''
+        rows.append(f'{task:<11}{first.identifier}  ·  {first.provider}{extra}')
+    print_box('模型任务路由', rows, width=96)
+
+
 def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
     """在启动早期用醒目的信息框输出 WebUI 地址与登录 token。
 
@@ -276,11 +311,24 @@ def main() -> None:
     # 先把数据目录暴露给依赖环境变量的后端组件，再加载配置和日志。
     os.environ["YUELI_DATA_DIR"] = args.data_dir
 
-    cfg = load_config(Path(args.config_path))
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
+    # 配置对账必须在解析之前：新增字段先补进文件再读，用户才能在文件里看到它们，
+    # 而不是只看到一个「代码里有默认值」的隐形开关。写入前整目录备份。
+    upgrade_config_directory(
+        Path(args.config_path),
+        {
+            'providers.toml': ProviderCatalog,
+            'models.toml': ModelCatalog,
+            'bot.toml': BotDocument,
+            'features.toml': FeatureDocument,
+        },
+        data_dir,
+    )
+    cfg = load_config(Path(args.config_path))
     initialize_logging(cfg.log, data_dir / 'logs')
     logger = get_logger("main")
+    _announce_model_routing(cfg)
 
     from src.core.prompts.registry import configure_prompts
     configure_prompts(data_dir)
