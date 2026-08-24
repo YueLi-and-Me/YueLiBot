@@ -292,6 +292,7 @@ FIELD_LABELS: Dict[str, str] = {
     "stageLabel": "处理阶段",
     "start": "起始位置",
     "status": "状态",
+    "statusLabel": "状态",
     "sleep": "睡眠状态",
     "snapshotId": "快照编号",
     "streamId": "会话编号",

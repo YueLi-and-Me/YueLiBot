@@ -16,7 +16,7 @@
 最近互动：{{density}}
 
 输出结构：
-{"date":"YYYY-MM-DD","slots":[{"from":"HH:MM","doing":"省略主语的活动或状态","mood":"会影响回应的当前状态"}],"bedtimeHint":"HH:MM","wakeHint":"HH:MM","theme":"用大白话说今天大致在忙什么","carryOver":"今天明确接着做的一件小事"}
+{"date":"YYYY-MM-DD","slots":[{"from":"HH:MM","doing":"省略主语的活动或状态","mood":"会影响回应的当前状态","energyPace":0}],"bedtimeHint":"HH:MM","wakeHint":"HH:MM","theme":"用大白话说今天大致在忙什么","carryOver":"今天明确接着做的一件小事"}
 
 角色一致性：
 - 活动、节奏和状态必须服从角色设定；可以贴近日常，也可以是奇幻、机械、数据生命或其它非人类形态。
@@ -32,7 +32,9 @@
 
 结构与边界：
 - slots 为 {{min_slots}} 到 {{max_slots}} 段，from 严格升序；段数和分布服从角色自己的节奏。
-- slots 数组里的每一段必须是独立 JSON 对象，每个对象只能各有一个 from、doing、mood，禁止在同一对象里重复键。
+- slots 数组里的每一段必须是独立 JSON 对象，每个对象只能各有一个 from、doing、mood、energyPace，禁止在同一对象里重复键。
+- energyPace 是 -3 到 3 的整数，表示这段活动相对平均消耗精力的快慢，不是心情形容词：
+  -3 很耗，0 普通，+3 明显补回来。一天里负值和正值时段都要有，不要整天写同一个数。
 {{sleep_rule}}
 - doing 省略「我」和角色名等主语，写清活动、状态或变化。
 - doing 一段只写一件事，一句话说完，不要串起三四个动作，也不要写目的、意义或感受——那些是 mood 的事。

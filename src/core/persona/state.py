@@ -10,6 +10,7 @@ owner 的每日状态。``StreamRegistry`` 负责校验人物归属；关系等�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 import sqlite3
 
@@ -33,6 +34,17 @@ class PersonaState:
 
 
 @dataclass
+class ElapsedEffect:
+    """日程服务预先积分得到的精力变化。
+
+    ``energy_delta`` 是目标时间区间内休息恢复与清醒消耗的合计值；人格服务只负责
+    将它应用到当前状态，不反向读取日程或睡眠配置。
+    """
+
+    energy_delta: float
+
+
+@dataclass
 class PersonaSnapshot(PersonaState):
     """owner 在某个自然日保存的关系状态快照。"""
 
@@ -50,6 +62,15 @@ class MoodDelta:
 
     favor: float | None = None
     energy: float | None = None
+
+
+class EnergyTier(Enum):
+    """由主体精力派生的对外状态档位。"""
+
+    HIGH = '精神很好'
+    NORMAL = '清醒'
+    TIRED = '疲惫'
+    SPENT = '精疲力尽'
 
 
 _RANGE: dict[str, tuple[float, float]] = {
@@ -372,14 +393,14 @@ class Persona:
         self,
         person_id: int,
         now: int | None = None,
-        asleep_hours: float = 0.0,
+        effect: ElapsedEffect | None = None,
     ) -> PersonaState:
-        """按经过的时间衰减关系并恢复或消耗 owner 精力。
+        """按经过的时间衰减关系，并应用 owner 在此期间的精力变化。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
-        :param asleep_hours: 在经过时间内处于睡眠的小时数，负值按 0 处理，且不会
-                超过实际经过小时数。
+        :param effect: 调用方按日程积分得到的精力变化；未提供时将全部经过时间按
+            清醒状态每小时消耗两点精力处理。
 
         :return: 调整后的状态；非 owner 或经过时间不足一小时则返回原状态。
 
@@ -399,13 +420,12 @@ class Persona:
         hours = max(0.0, (now - state.updated_at) / 3_600_000)
         if hours < 1:
             return state
-        # 睡眠小时数限制在实际经过时长内，剩余时长按清醒状态计算精力消耗。
-        bounded_asleep = min(hours, max(0.0, asleep_hours))
-        awake_hours = hours - bounded_asleep
+        # 日程层决定精力曲线的形状；未装配日程时才退回原有的全清醒线性消耗。
+        energy_delta = effect.energy_delta if effect is not None else -hours * 2
         days = hours / 24
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy - days * 0.6),
-            energy=_clamp('energy', state.energy + bounded_asleep * 4 - awake_hours * 2),
+            energy=_clamp('energy', state.energy + energy_delta),
             updated_at=now,
         )
         self._write(person.id, next_state)
@@ -427,21 +447,81 @@ class Persona:
         return person
 
 
+def energy_tier(s: PersonaState) -> EnergyTier:
+    """按既有阈值把连续精力转换为唯一的派生档位。
+
+    :param s: 待判断的人物状态。
+    :return: 精力见底、疲惫、正常或充沛档位。
+    """
+
+    if s.energy < 20:
+        return EnergyTier.SPENT
+    if s.energy < 45:
+        return EnergyTier.TIRED
+    if s.energy > 85:
+        return EnergyTier.HIGH
+    return EnergyTier.NORMAL
+
+
+def status_label(
+    s: PersonaState,
+    *,
+    asleep: bool,
+    just_woke: bool,
+    drowsy: bool,
+) -> str:
+    """合成睡眠状态与精力档位的唯一对外状态标签。
+
+    :param s: 待描述的人物状态。
+    :param asleep: 当前是否已经睡着。
+    :param just_woke: 当前是否处于刚醒阶段。
+    :param drowsy: 当前是否正在犯困。
+    :return: 按睡着、刚醒、犯困、精力档的固定优先级生成的中文标签。
+    """
+
+    if asleep:
+        return '睡着'
+    if just_woke:
+        return '刚醒'
+    if drowsy:
+        return '犯困'
+    return energy_tier(s).value
+
+
 def describe_persona(s: PersonaState) -> str:
-    """将连续关系状态转换为有限的自然语言行为约束。
+    """将连续关系状态转换为不含状态重复信息的关系描述。
 
     :param s: 待描述的人物状态。
 
-    :return: 包含关系等级和精力区间提示的中文指令文本；不会暴露原始数值。
+    :return: 只包含关系等级的中文描述；不会暴露原始数值。
     """
-    lines = [f'你和对方的关系深度：{relationship_tier(s.intimacy)}。']
-    if s.energy < 20:
-        lines.append('你困得厉害，句子会明显变短，反应也慢一点；除非话题正好相关，不要自动催他睡觉。')
-    elif s.energy < 45:
-        lines.append('你有点累，懒得把每句话说得很完整，也没力气维持过分热情。')
-    elif s.energy > 85:
-        lines.append('你现在精神很好，更容易接住玩笑或顺手多讲一个刚想到的细节，但不用因此变得吵闹。')
-    return '\n'.join(lines)
+    return f'你和对方的关系深度：{relationship_tier(s.intimacy)}。'
+
+
+def describe_persona_for_planning(s: PersonaState) -> str:
+    """把当前精力改写成供日程模型使用的安排口径。
+
+    :param s: 昨日结束时的人物状态。
+    :return: 不含原始数值、不会把单一状态铺满全天的中文规划约束。
+    """
+
+    tier = energy_tier(s)
+    if tier == EnergyTier.SPENT:
+        return (
+            '昨天结束时精力已经见底。今天的安排要明显轻一些，并且必须至少有两段是明确能回精力的'
+            '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'
+        )
+    if tier == EnergyTier.TIRED:
+        return (
+            '昨天结束时精力偏低。今天的安排要轻一些，并且必须至少有两段是明确能回精力的'
+            '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'
+        )
+    if tier == EnergyTier.HIGH:
+        return (
+            '昨天结束时精力很好。今天可以安排一些更费精力的事，但要保留消耗和恢复的起伏，'
+            '不要把一整天都写成亢奋。'
+        )
+    return '昨天结束时精力平稳。今天按她自己的节奏安排，让消耗和恢复自然交替。'
 
 
 def describe_acquaintance(first_seen_at: int, now: int | None = None) -> str:

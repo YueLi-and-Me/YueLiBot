@@ -110,7 +110,7 @@ function SleepSection({ payload }: { payload: ObservabilityPayload }) {
         <MetricList>
           <Metric
             label="当前判断"
-            value={asleep ? '已睡着' : sleep.drowsy === true ? '正在犯困' : sleep.justWoke === true ? '刚醒' : '清醒'}
+            value={payload.selfState.statusLabel}
           />
           <Metric label="睡意概率" value={fixed(sleep.probability, 3)} />
           <Metric label="睡眠判定线" value={fixed(sleep.cutoff, 3)} />
