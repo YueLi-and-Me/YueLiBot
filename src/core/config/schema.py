@@ -17,15 +17,25 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
+# 配置格式版本的**唯一定义处**。loader 从这里导入，不再各写一份——两处必须永远
+# 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
+CONFIG_VERSION = '1.2.0'
+
+
 class InnerConfig(BaseModel):
     """表示一份配置文件的版本信息。
 
-    :ivar version: 当前配置格式版本，固定为 `1.1.0`。
+    :ivar version: 当前配置格式版本，取值恒为 :data:`CONFIG_VERSION`。
     """
 
     # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
-    # 旧配置由 Electron 侧在读取时就地升级，Python 只解析当前版本。
-    version: Literal['1.1.0'] = '1.1.0'
+    # 1.2.0 移除日程时刻表遗留字段，它们已被活动时间线取代。
+    #
+    # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
+    # 所以**删除或重命名配置字段时必须同时 bump 这里与 electron/main/config.ts**，
+    # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
+    # 为它们报一次「配置字段变更」。
+    version: Literal['1.2.0'] = CONFIG_VERSION
 
 
 class BotConfig(BaseModel):
