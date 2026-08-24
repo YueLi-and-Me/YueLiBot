@@ -1,31 +1,39 @@
-"""认知动作的定义、两个内置实现与窄执行器。
+"""认知动作的定义、三个内置实现与窄执行器。
 
 认知动作是 ReAct 回环里的非终局动作：它们不产生任何用户可见产物，只把检索结果
 渲染成一段观察文本回灌给模型，由模型在下一轮决定终局动作。本模块负责「查什么、
 怎么查、查到的东西怎么说给她听」，不负责轮次预算与动作空间收窄——那两件事分别由
 ``ConversationAgent`` 的循环和 ``action_protocol.available_actions`` 表达。
 
-两个内置动作：
+三个内置动作：
 
 - ``recall``：检索长期记忆（会话在场者的事实 + 该 stream 的情节），打的是
   「工作记忆窗口之外一片空白」这个缺口。
 - ``inspect``：检索本 stream 水位之前的聊天原文，打的是「她想接的东西不在视野里」
   这个缺口。
+- ``consult``：检索她知道的知识（knowledge 层），打的是「对方提到的东西她不懂」
+  这个缺口。知识不进每轮组装——两万余条里绝大多数与当前对话无关——只在她
+  主动查时出现。
 
-**这里刻意不叫 Registry，也不做插件挂载点或可见性标签。** 项目至今只有两个真实
+**这里刻意不叫 Registry，也不做插件挂载点或可见性标签。** 项目至今只有三个真实
 认知动作，先建注册表等于用想象中的工具定形状；等媒体资源动作也落地之后，再从
 四个真实动作归纳统一协议。
 
-依赖：``src.core.memory.store`` 的只读检索接口、``src.core.platform_io.types``
-的 ``StreamKind``；被 ``src.core.services.chat`` 组装并透传给 ``ConversationAgent``，
+依赖：``src.core.memory.store`` 的只读检索接口、``src.core.memory.knowledge``
+的知识检索接口、``src.core.platform_io.types`` 的 ``StreamKind``；被
+``src.core.services.chat`` 组装并透传给 ``ConversationAgent``，
 不反向依赖聊天服务或模型层。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Protocol, Sequence
+from typing import Awaitable, Callable, Dict, Protocol, Sequence
 
+import sqlite3
+
+from src.core.common.clock import now as current_time
+from src.core.memory.knowledge import search_knowledge, touch_knowledge
 from src.core.memory.store import MemoryStore, StoredMessage
 from src.core.platform_io.types import StreamKind
 
@@ -260,6 +268,70 @@ class InspectAction:
         if message.sender_person_id is None:
             raise RuntimeError('群聊历史消息缺少 sender_person_id')
         return f'{self._speaker_name(message.sender_person_id, request.stream_id)}：{content}'
+
+
+class ConsultAction:
+    """检索她知道的知识（knowledge 层）：概念、定义、事实性资料。
+
+    与 ``recall`` 的分工：recall 翻的是「她记得的事」（事实与情节，有遗忘曲线），
+    consult 查的是「她知道的东西」（知识，没有衰减）。知识不进入每轮组装，
+    只在她主动 consult 时出现；命中经 ``touch_knowledge`` 落计数，供后续
+    检索调优，不参与打分。
+    """
+
+    name = 'consult'
+
+    def __init__(
+        self,
+        db: sqlite3.Connection,
+        *,
+        embed_query: Callable[[str], Awaitable[bytes | None]] | None = None,
+        limit: int = 5,
+    ) -> None:
+        """保存知识检索依赖与返回条数上限。
+
+        :param db: 当前库连接。知识检索直接走 ``memory.knowledge`` 而不经
+            ``MemoryStore``——那里管的是「她的记忆」的衰减曲线，知识没有曲线。
+        :param embed_query: 可选的查询向量回调（``VectorService.embed_query``
+            口径：服务禁用或失败时返回 ``None``）；为 ``None`` 时只用 BM25。
+        :param limit: 单次返回的知识条数上限，必须大于 0。
+        :raises ValueError: 上限小于 1。
+        """
+        if limit < 1:
+            raise ValueError('知识检索条数上限必须大于 0')
+        self._db = db
+        self._embed_query = embed_query
+        self._limit = limit
+
+    async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
+        """按检索词查知识并渲染为观察文本。
+
+        :param request: 已校验的认知动作请求。
+        :return: 含命中条目的观察；无命中时返回明确的「没找到」。
+        :raises sqlite3.Error: 底层检索失败时原样上抛，由 Agent 记为失败状态。
+        副作用：只读知识库；向量服务失败时退回 BM25（与 recall 的向量缺失口径
+            一致）；对实际展示的命中记 hit_count / last_hit_at 并提交事务。
+        """
+        query_embedding: bytes | None = None
+        if self._embed_query is not None:
+            try:
+                query_embedding = await self._embed_query(request.query)
+            except Exception:
+                # 向量服务故障不阻断检索：退回纯 BM25，与 embed.py 的既有口径一致。
+                query_embedding = None
+        hits = search_knowledge(
+            self._db, request.query, self._limit, query_embedding=query_embedding,
+        )
+        if not hits:
+            return CognitiveObservation(
+                text=f'你查了查自己知道的东西，没有找到和「{request.query}」有关的知识。',
+                hit_count=0,
+            )
+        lines = [f'关于「{request.query}」，你查到这些知识：']
+        for hit in hits:
+            lines.append(f'- {_clip(hit.content, _ITEM_MAX_CHARS)}')
+        touch_knowledge(self._db, [hit.id for hit in hits], current_time())
+        return CognitiveObservation(text='\n'.join(lines), hit_count=len(hits))
 
 
 class CognitiveExecutor:

@@ -32,12 +32,12 @@ from src.core.platform_io.types import StreamKind
 # 终局动作：产出可见产物或明确结束本回合；react 仅当平台适配器已验证真实执行能力时开放。
 # 认知动作：不产生任何可见产物，执行后把观察结果回灌给模型并再发起一轮（ReAct 回环）。
 ConversationAction = Literal[
-    'reply', 'silent', 'react', 'poke', 'wait', 'speak', 'recall', 'inspect',
+    'reply', 'silent', 'react', 'poke', 'wait', 'speak', 'recall', 'inspect', 'consult',
 ]
 TERMINAL_ACTIONS: frozenset[ConversationAction] = frozenset({
     'reply', 'silent', 'react', 'poke', 'wait', 'speak',
 })
-COGNITIVE_ACTIONS: frozenset[ConversationAction] = frozenset({'recall', 'inspect'})
+COGNITIVE_ACTIONS: frozenset[ConversationAction] = frozenset({'recall', 'inspect', 'consult'})
 # 需要产出可见正文的终局动作。决策与表达拆开之后，只有这两个动作要再调一次
 # 回复生成模型；silent / wait / react / poke 在决策那一次调用就结束，不额外付费。
 SPEAKING_ACTIONS: frozenset[ConversationAction] = frozenset({'reply', 'speak'})
@@ -132,7 +132,7 @@ def _validate_reason_codes(
 ) -> None:
     """校验理由码的形状与动作分域，完整决策与动作头共用。
 
-    认知动作（recall/inspect）不参与本校验：理由码是给「回不回」这个决策做审计的
+    认知动作（recall/inspect/consult）不参与本校验：理由码是给「回不回」这个决策做审计的
     封闭枚举，而认知动作的审计信息是它的 query 本身。强行要求一个不承载信息的字段
     只会加重生成侧格式负担、抬高 parse_error 率——动作头合规率是花了一整轮 shadow
     才压到 0 的，不为此再赌一次。
@@ -473,7 +473,7 @@ class DecisionHead:
 
     与 ConversationDecision 的区别是 reply 的正文此刻尚未产生：reply 动作
     用 length 声明篇幅，正文随后以 <say> 流式输出；silent 只存在动作
-    头本身，其后不允许任何正文。认知动作（recall/inspect）同样只存在动作头，
+    头本身，其后不允许任何正文。认知动作（recall/inspect/consult）同样只存在动作头，
     其后不允许任何正文——它产出的是回灌给模型的观察，不是可见产物。
     """
 

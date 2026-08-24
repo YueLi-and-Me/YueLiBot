@@ -363,6 +363,7 @@ VALUE_LABELS: Dict[str, str] = {
     "wait": "先等下文",
     "recall": "翻长期记忆",
     "inspect": "翻更早的聊天",
+    "consult": "查知识资料",
     "cognitive_step": "先查了一下",
     "reply": "回复",
     "reading": "阅读",
