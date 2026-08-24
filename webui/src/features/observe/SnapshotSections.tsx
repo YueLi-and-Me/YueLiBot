@@ -75,13 +75,18 @@ function SelfStateSection({ payload }: { payload: ObservabilityPayload }) {
   const mood = payload.selfState.mood
   return (
     <SectionCard title="自身状态" subtitle="当前精力与心情" icon={<Heart />} tint="plum">
-      <div className="flex flex-col gap-2">
-        <MetricList>
+      {/* 进度条必须紧跟各自的数值行。改动前两个 Metric 走 MetricList、两条 Progress
+          作为列表的兄弟节点排在后面，渲染出来是「两行数字 + 两条无主的条」，
+          读者无法判断哪条对应哪个值。 */}
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-1.5">
           <Metric label="精力" value={fixed(energy, 1)} />
+          <Progress value={energy} max={100} label="精力" />
+        </div>
+        <div className="flex flex-col gap-1.5">
           <Metric label="心情" value={fixed(mood, 1)} />
-        </MetricList>
-        <Progress value={energy} max={100} label="精力" />
-        <Progress value={mood} max={100} label="心情" />
+          <Progress value={mood} max={100} label="心情" />
+        </div>
       </div>
     </SectionCard>
   )
