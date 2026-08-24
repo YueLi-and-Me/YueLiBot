@@ -124,18 +124,14 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
 
     :param side_effects: 解析事件产生的副作用字典列表。
 
-    :return: 当前支持的 ``memory_fact``、``mood_delta`` 和 ``promise_stashed``
-        副作用行；未知类型被忽略。
+    :return: 当前支持的 ``mood_delta`` 与 ``promise_stashed`` 副作用行；未知类型被忽略。
+        记忆写入不在其中——它已改由回合之后的后台抽取产出独立的 ``memory_fact``
+        观察事件，不再经过本轮的副作用 sink。
     """
 
     lines = []
     for effect in side_effects:
-        if effect.get('kind') == 'memory_fact':
-            lines.append(
-                f"记忆：[{value_label(str(effect.get('memoryKind', '')))}] "
-                f"{effect.get('content', '')}"
-            )
-        elif effect.get('kind') == 'mood_delta':
+        if effect.get('kind') == 'mood_delta':
             lines.append(
                 f"心情：好感 {effect.get('favor')}，精力 {effect.get('energy')}"
             )

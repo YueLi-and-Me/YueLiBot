@@ -96,6 +96,7 @@ TEMPLATE_IDS = (
     'chat.context.item',
     'memory.extract',
     'activity.next',
+    'memory.profile',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
@@ -114,6 +115,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'activity',
         'scene',
         'jargon',
+        'impressions',
         'facts',
         'episodes',
         'reply_style',
@@ -165,6 +167,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'sleep_rule',
         'time_context',
     }),
+    'memory.profile': frozenset({'bot_name', 'max_chars'}),
     'chat.tool.protocol': frozenset({
         'turn_scope',
         'selectable_messages',

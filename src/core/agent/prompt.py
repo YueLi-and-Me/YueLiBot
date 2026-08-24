@@ -238,6 +238,27 @@ def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
     ]))
 
 
+def _impressions_block(impressions: Optional[Sequence[str]]) -> str:
+    """把在场者的人物画像渲染为「背景，不是任务」的印象块。
+
+    与 ``_jargon_block`` 同一条纪律：只注入本轮在场者的画像（取数与上限在
+    ``agent/profile.py``，这里是纯渲染器），收尾必须压一句「不用向谁复述」——
+    没有这句，模型会把「我对你的印象是……」当成本轮要交代的内容。
+
+    :param impressions: 画像正文序列；``None`` 或空序列表示整块省略，
+        绝不输出只有标题的空块（★W5-4）。
+    :return: 带段落前缀的印象块；无画像时返回空字符串。
+    """
+    if not impressions:
+        return ''
+    return _prefixed_block('\n'.join([
+        '# 你对他们的印象',
+        *impressions,
+        '',
+        '这是你自己攒下的印象，不用向谁复述，也别拿它当判断人的标签。',
+    ]))
+
+
 def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> str:
     """把一组记忆条目渲染为带标题和使用规则的列表块。
 
@@ -294,6 +315,7 @@ def build_system_prompt(
     emoji_tags: Sequence[str] = (),
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
+    impressions: Optional[Sequence[str]] = None,
     decision_only: bool = False,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
@@ -383,6 +405,7 @@ def build_system_prompt(
         'activity': _activity_block(activity),
         'scene': _scene_block(scene),
         'jargon': _jargon_block(jargon),
+        'impressions': _impressions_block(impressions),
         'facts': _memory_block(
             '你早就知道的事',
             facts,
@@ -436,6 +459,7 @@ def build_itemized_system_prompt(
     platform_name: Optional[str] = None,
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
+    impressions: Optional[Sequence[str]] = None,
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     decision_only: bool = False,
 ) -> Tuple[str, List[str]]:
@@ -543,6 +567,7 @@ def build_itemized_system_prompt(
         ('当前活动', _activity_block(activity).strip()),
         ('会话场景', _scene_block(scene).strip()),
         ('群里的说法', _jargon_block(jargon).strip()),
+        ('你对他们的印象', _impressions_block(impressions).strip()),
         ('长期记忆', _memory_block(
             '你早就知道的事',
             facts,
