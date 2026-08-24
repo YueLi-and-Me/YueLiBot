@@ -362,6 +362,11 @@ class ActivityTimeline:
         self._decider = decider
         self._inflight: asyncio.Task[None] | None = None
 
+    def set_decider(self, decider: ActivityDecider) -> None:
+        """在组合根完成上下文服务装配后绑定唯一活动决策器。"""
+
+        self._decider = decider
+
     def current(self, now: int) -> Activity:
         """同步返回当前活动；边界决策只在后台进行，异常不会进入调用链。"""
 
@@ -475,6 +480,35 @@ class ActivityTimeline:
         ).fetchall()
         return [_activity_from_row(row) for row in rows]
 
+    def recent_summary(self, now: int, limit: int = 6) -> str:
+        """按真实时间线概括最近若干段活动，供下一步决策回看。"""
+
+        rows = self._db.execute(
+            """SELECT doing FROM activities
+               WHERE started_at <= ? ORDER BY started_at DESC, id DESC LIMIT ?""",
+            (now, limit),
+        ).fetchall()
+        activities = [str(row[0]) for row in reversed(rows)]
+        return ' → '.join(activities) if activities else '还没有活动记录'
+
+    def last_sleep_summary(self, now: int) -> str:
+        """描述最近一段真实睡眠的结束距离和持续时长。"""
+
+        row = self._db.execute(
+            """SELECT * FROM activities
+               WHERE kind = 'sleep' AND started_at <= ?
+               ORDER BY started_at DESC, id DESC LIMIT 1""",
+            (now,),
+        ).fetchone()
+        if row is None:
+            return '还没有睡眠记录'
+        activity = _activity_from_row(row)
+        sleep_end = min(now, activity.ended_at or now)
+        duration = _duration_text(sleep_end - activity.started_at)
+        if activity.ended_at is None:
+            return f'这一觉已经睡了 {duration}'
+        return f'{_duration_text(now - activity.ended_at)}前结束，睡了 {duration}'
+
     def _open_activity(self) -> Activity | None:
         """读取唯一进行中的活动。"""
 
@@ -500,6 +534,7 @@ class ActivityTimeline:
                 started_at=now,
                 ended_at=None,
                 source='decided',
+                expected_until=now,
             )
         row = self._db.execute(
             'SELECT * FROM activities WHERE id = ?',

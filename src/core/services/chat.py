@@ -5397,20 +5397,13 @@ def _plan_to_dict(plan: DayPlan | None) -> dict | None:
         return None
     return {
         'date': plan.date,
-        'slots': [
-            {
-                'from': slot.from_time,
-                'doing': slot.doing,
-                'mood': slot.mood,
-                'energyPace': slot.energy_pace,
-                'moodPace': slot.mood_pace,
-            }
-            for slot in plan.slots
-        ],
-        'bedtimeHint': plan.bedtime_hint,
-        'wakeHint': plan.wake_hint,
         'theme': plan.theme,
-        'carryOver': plan.carry_over,
-        'sleepEnabled': plan.sleep_enabled,
-        'bedtimeDayBoundary': plan.bedtime_day_boundary,
+        'intentions': [
+            {
+                'what': intention.what,
+                'carriedDays': intention.carried_days,
+            }
+            for intention in plan.intentions
+        ],
+        'roughRhythm': plan.rough_rhythm,
     }
