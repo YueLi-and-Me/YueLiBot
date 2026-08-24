@@ -917,6 +917,22 @@ class MemoryStore:
         ).fetchall()
         return list(dict.fromkeys(int(row[0]) for row in rows))
 
+    def latest_message_id(self, stream_id: int) -> int:
+        """返回该 stream 已落库的最大消息 ID。
+
+        供需要「不设上界」的 :meth:`recent_speakers` 调用方使用——它的 ``before_id``
+        是闭区间上界，用一个魔数当无穷大会让调用点读不出意图。
+
+        :param stream_id: 目标 stream ID。
+        :return: 最大消息 ID；该 stream 还没有消息时返回 ``0``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表。
+        """
+        row = self._db.execute(
+            'SELECT MAX(id) FROM messages WHERE stream_id = ?', (stream_id,)
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else 0
+
     def search_messages(
         self,
         stream_id: int,

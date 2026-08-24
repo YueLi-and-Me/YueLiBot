@@ -95,6 +95,8 @@ EVENT_LABELS: Dict[str, str] = {
     "proactive_speak_failed": "主动发言失败",
     "promise_handler_missing": "约定处理器缺失",
     "promise_rejected_for_person": "约定人物归属不匹配",
+    "profile_refresh_failed": "画像刷新失败",
+    "profile_refreshed": "人物画像已刷新",
     "promise_stashed": "约定已登记",
     "prompt_override_ignored": "提示词覆盖已忽略",
     "provider_model_list_probe_failed": "模型列表探测失败",

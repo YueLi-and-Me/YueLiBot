@@ -59,6 +59,7 @@ from src.core.agent.conversation_gate import (
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
 from src.core.agent.fact_extract import Participant, read_cursor, run_extraction
 from src.core.agent.jargon import lookup_jargon
+from src.core.agent.profile import profiles_for_injection, refresh_profiles
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import (
     close_dangling_say,
@@ -413,6 +414,8 @@ class ChatService:
         self._fact_extract_trigger = conversation.fact_extract_trigger_messages
         self._fact_extract_batch = conversation.fact_extract_batch_messages
         self._extracting: set[int] = set()
+        # 画像刷新不按会话分派，全局一把闸：它读的是本地事实，与当前是哪条会话无关。
+        self._refreshing_profiles = False
         self._session_gap_ms = conversation.session_gap_minutes * 60_000
         self._fact_recall_limit = conversation.fact_recall_limit
         self._recalled_episode_limit = conversation.recalled_episode_limit
@@ -1273,6 +1276,7 @@ class ChatService:
                 self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
                 asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+                asyncio.create_task(self._maybe_refresh_profiles())
             except LlmError as exc:
                 if exc.kind == 'aborted':
                     # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
@@ -3176,6 +3180,12 @@ class ChatService:
             'scene': self._scene_for_prompt(prepared.context),
             # 只注入本轮消息命中的黑话；查表与截断在 agent/jargon.py，这里只取结果。
             'jargon': lookup_jargon(self._db, prepared.context.stream.id, prepared.query),
+            # 只注入本轮在场者的画像；按亲密度取前 N 与「空画像不算数」都在 profile.py。
+            'impressions': [
+                summary for _, summary in profiles_for_injection(
+                    self._db, self._present_person_ids(prepared.context),
+                )
+            ],
             'render_params': render_params,
             'decision_only': decision_only,
             **prompt_kwargs,
@@ -3512,6 +3522,25 @@ class ChatService:
                 self.memory.recent_speakers(stream_id, frame.message_watermark)
             ),
         )
+
+    def _present_person_ids(self, context: ConversationContext) -> list[int]:
+        """给出本轮「在场者」的人物主键，供画像注入取数。
+
+        口径与认知检索的 ``CognitiveScope`` 保持一致——最近开口过的人，加上当前
+        这一位。两处若各定各的「在场」，同一轮里她检索得到的人和她有印象的人会
+        对不上，而这种错位在输出上完全看不出来。
+
+        :param context: 当前会话上下文。
+        :return: 去重后的人物主键，当前说话人排在最前。
+        :raises sqlite3.Error: 读取最近发言者失败。
+        副作用：只读。
+        """
+        ids = [context.person.id]
+        watermark = self.memory.latest_message_id(context.stream.id)
+        for person_id in self.memory.recent_speakers(context.stream.id, watermark):
+            if person_id not in ids:
+                ids.append(person_id)
+        return ids
 
     def _emoji_available(self, context: ConversationContext) -> bool:
         """判断当前 QQ stream 是否仍有表情包库和窗口发送额度。"""
@@ -4050,6 +4079,7 @@ class ChatService:
         # - 后果：漏挂不会报错也不留日志（_maybe_extract_facts 的前置判断都是静默 return），
         #   表现为「功能已接线但永远不产出」，只能靠游标为空反推。
         asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+        asyncio.create_task(self._maybe_refresh_profiles())
         self._schedule_scene_observation(context)
 
     async def _run_conversation_round(
@@ -5207,6 +5237,32 @@ class ChatService:
             pass
         finally:
             self._summarizing.discard(stream_id)
+
+    async def _maybe_refresh_profiles(self) -> None:
+        """在回合之外批量刷新过期的人物画像。
+
+        与摘要、事实抽取同一条纪律：后台任务、失败不阻塞回合。刷新的输入是本地
+        已有的事实与情节，因此**不依赖当前会话**，不按 stream 分派——同一时刻只
+        允许一轮在跑，避免几条会话同时收尾时把 memory 模型槽打满。
+
+        副作用：可能发起多次模型请求并写入 ``person_profile``。
+        """
+
+        if self._refreshing_profiles or self._memory_provider is None:
+            return
+        self._refreshing_profiles = True
+        try:
+            await refresh_profiles(
+                self._db,
+                self._memory_provider,
+                bot_name=self._bot_display_name,
+                temperature=self._memory_temperature,
+                max_tokens=self._memory_max_tokens,
+            )
+        except Exception as exc:
+            logger.warning('profile_refresh_failed', error=str(exc))
+        finally:
+            self._refreshing_profiles = False
 
     def _extraction_participants(self, batch: Sequence[StoredMessage]) -> list[Participant]:
         """从待抽取的这批消息里解析出在场者名单。
