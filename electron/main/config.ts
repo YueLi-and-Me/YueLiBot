@@ -27,7 +27,8 @@ const CONFIG_VERSION = '1.1.0'
 const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
-  'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression', 'tts', 'embedding',
+  'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
+  'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding',
 ] as const
 
 const NAPCAT_CONFIG_TEMPLATE = `# Bot 的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
@@ -60,7 +61,8 @@ list = []                    # 数字 QQ 群号；用户本人在群里也不会
 const DEFAULT_PROVIDER: ApiProviderConfig = {
   name: '主力', kind: 'ark', base_url: '', api_key: '', client_type: 'openai',
   auth_type: 'bearer', auth_name: '',
-  app_id: '', timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
+  app_id: '', model_list_endpoint: '/models', default_headers: {}, default_query: {},
+  timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
 }
 
 export const DEFAULT_CONFIG: YueliConfig = {
@@ -72,6 +74,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
     persona_weight: 0.05,
     reply_window_minutes: 10,
     max_replies_in_window: 3,
+    reactions_enabled: true,
+    pokes_enabled: false,
+    self_started_topics: true,
+    scene_refresh_messages: 15,
   },
   schedule: {
     sleep_enabled: true,
@@ -96,6 +102,30 @@ export const DEFAULT_CONFIG: YueliConfig = {
     recalled_episode_limit: 2,
     recent_episode_limit: 2,
     episode_context_limit: 3,
+    fact_extract_trigger_messages: 32,
+    fact_extract_batch_messages: 12,
+  },
+  conversation_agent: {
+    mode: 'off',
+    selected_streams: [],
+    trigger_mode: 'signal',
+    frequency_talk_value: 0.6,
+    reply_necessity_threshold: 80,
+    max_cognitive_rounds: 2,
+    split_replyer: true,
+    tool_calling: true,
+  },
+  typing: {
+    bubble_target_chars: 18,
+    max_bubbles_per_say: 3,
+    delay_enabled: true,
+    chinese_char_seconds: 0.28,
+    latin_char_seconds: 0.12,
+    send_gap_seconds: 0.4,
+    max_delay_seconds: 8,
+    emoji_pick_seconds: 1.5,
+    follow_up: { enabled: true, peer_silence_minutes: 1 },
+    nudge: { enabled: true, peer_silence_minutes: 3, max_per_silence: 2 },
   },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
@@ -104,11 +134,17 @@ export const DEFAULT_CONFIG: YueliConfig = {
     schedule: { temperature: 0.95, max_tokens: 4096 },
     expression: { temperature: 0.1, max_tokens: 4096 },
     vision: { temperature: 0.3, max_tokens: 120 },
+    planner: { temperature: 0.85, max_tokens: 0 },
+    replyer: { temperature: 0.85, max_tokens: 0 },
+    scene: { temperature: 0.3, max_tokens: 0 },
+    memory: { temperature: 0.1, max_tokens: 1024 },
   },
   api_providers: [DEFAULT_PROVIDER],
   models: [{
     name: 'chat', model_identifier: '', api_provider: '主力',
-    extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0,
+    extra_body: {}, reasoning_parse_mode: 'field',
+    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    embedding_dim: 0,
   }],
   model_tasks: {
     chat: { model_list: ['chat'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
@@ -117,6 +153,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
     schedule: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     vision: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     expression: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    planner: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    replyer: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    scene: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    memory: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     tts: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     embedding: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
   },
@@ -124,7 +164,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
   },
   vision: {
-    enabled: false, fullscreen_silent: true, capture_mode: 'window',
+    enabled: false, chat_image_enabled: false, fullscreen_silent: true, capture_mode: 'window',
   },
   perception: {
     surfaces: ['desktop'],
@@ -140,6 +180,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     library_levels: { httpx: 'WARNING', httpcore: 'WARNING', PIL: 'WARNING' },
     suppress_libraries: ['urllib3'],
     request_snapshots: true, max_snapshot_files: 50,
+    prompt_records: true, max_prompt_records_per_task: 200,
     event_retention_count: 20_000, event_retention_hours: 72,
   },
   advanced: {
@@ -155,7 +196,7 @@ type GenerationConfig = YueliConfig['generation']
  *
  * @returns 与默认配置结构相同且可独立修改的配置对象。
  */
-function cloneDefaults(): YueliConfig {
+export function cloneDefaults(): YueliConfig {
   return structuredClone(DEFAULT_CONFIG)
 }
 
@@ -395,6 +436,11 @@ function parseProviders(path: string): ApiProviderConfig[] {
       auth_name: stringAtOr(value, 'auth_name', '', itemPath),
       client_type: clientType as ClientType,
       app_id: stringAtOr(value, 'app_id', '', itemPath),
+      model_list_endpoint: stringAtOr(
+        value, 'model_list_endpoint', DEFAULT_PROVIDER.model_list_endpoint, itemPath,
+      ),
+      default_headers: stringRecordOr(value, 'default_headers', {}, itemPath),
+      default_query: stringRecordOr(value, 'default_query', {}, itemPath),
       timeout_ms: numberAt(value, 'timeout_ms', itemPath),
       max_retries: numberAtOr(value, 'max_retries', DEFAULT_PROVIDER.max_retries, itemPath),
       retry_interval_ms: numberAtOr(
@@ -420,7 +466,10 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
   if (document.generation === undefined) return structuredClone(DEFAULT_CONFIG.generation)
   const generation = recordAt(document, 'generation', path)
   const result = structuredClone(DEFAULT_CONFIG.generation)
-  for (const task of ['chat', 'proactive', 'summary', 'schedule', 'expression', 'vision'] as const) {
+  for (const task of [
+    'chat', 'proactive', 'summary', 'schedule', 'expression', 'vision',
+    'planner', 'replyer', 'scene', 'memory',
+  ] as const) {
     if (generation[task] === undefined) continue
     const taskConfig = recordAt(generation, task, `${path} 的 generation`)
     const parsed = {
@@ -539,12 +588,30 @@ function parseModels(
     if (reasoningMode !== 'field' && reasoningMode !== 'tag' && reasoningMode !== 'none') {
       throw new Error(`${itemPath} 的 reasoning_parse_mode 只能是 field、tag 或 none`)
     }
+    // 模型级温度与输出上限可留空（null）；留空时使用任务 generation 配置。
+    const modelTemperature = value.temperature === undefined
+      ? null
+      : numberAtOr(value, 'temperature', 0, itemPath)
+    if (modelTemperature !== null && (modelTemperature < 0 || modelTemperature > 2)) {
+      throw new Error(`${itemPath} 的 temperature 必须在 0 到 2 之间`)
+    }
+    const modelMaxTokens = value.max_tokens === undefined
+      ? null
+      : numberAtOr(value, 'max_tokens', 0, itemPath)
+    if (modelMaxTokens !== null && (!Number.isInteger(modelMaxTokens) || modelMaxTokens < 1)) {
+      throw new Error(`${itemPath} 的 max_tokens 必须是正整数`)
+    }
     return {
       name: stringAt(value, 'name', itemPath),
       model_identifier: stringAt(value, 'model_identifier', itemPath),
       api_provider: stringAt(value, 'api_provider', itemPath),
       extra_body: structuredClone(extraBody),
       reasoning_parse_mode: reasoningMode,
+      visual: value.visual === undefined ? false : booleanAt(value, 'visual', itemPath),
+      temperature: modelTemperature,
+      max_tokens: modelMaxTokens,
+      price_in: numberAtOr(value, 'price_in', 0, itemPath),
+      price_out: numberAtOr(value, 'price_out', 0, itemPath),
       embedding_dim: numberAtOr(value, 'embedding_dim', 0, itemPath),
     }
   })
@@ -591,6 +658,187 @@ function parseConversation(
     episode_context_limit: numberAtOr(
       conversation, 'episode_context_limit', defaults.episode_context_limit, path,
     ),
+    fact_extract_trigger_messages: numberAtOr(
+      conversation, 'fact_extract_trigger_messages', defaults.fact_extract_trigger_messages, path,
+    ),
+    fact_extract_batch_messages: numberAtOr(
+      conversation, 'fact_extract_batch_messages', defaults.fact_extract_batch_messages, path,
+    ),
+  }
+}
+
+/**
+ * 从配置文档读取对话 Agent 参数，并为缺失字段合并默认值。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 合并默认值后的对话 Agent 配置。
+ * @throws Error 当段不是表、枚举值或数值范围无效时抛出。
+ */
+function parseConversationAgent(
+  document: Record<string, unknown>, path: string,
+): YueliConfig['conversation_agent'] {
+  const defaults = DEFAULT_CONFIG.conversation_agent
+  if (document.conversation_agent === undefined) return structuredClone(defaults)
+  const section = recordAt(document, 'conversation_agent', path)
+  const sectionPath = `${path} 的 conversation_agent`
+  const mode = stringAtOr(section, 'mode', defaults.mode, sectionPath)
+  if (!['off', 'shadow', 'selected_streams', 'enabled'].includes(mode)) {
+    throw new Error(`${sectionPath}.mode 必须是 off、shadow、selected_streams 或 enabled`)
+  }
+  const streams = section.selected_streams
+  if (streams !== undefined
+    && (!Array.isArray(streams) || !streams.every((value) => typeof value === 'string'))) {
+    throw new Error(`${sectionPath}.selected_streams 必须是字符串数组`)
+  }
+  const triggerMode = stringAtOr(section, 'trigger_mode', defaults.trigger_mode, sectionPath)
+  if (!['signal', 'frequency', 'reply_necessity'].includes(triggerMode)) {
+    throw new Error(`${sectionPath}.trigger_mode 必须是 signal、frequency 或 reply_necessity`)
+  }
+  const frequencyTalkValue = numberAtOr(
+    section, 'frequency_talk_value', defaults.frequency_talk_value, sectionPath,
+  )
+  if (frequencyTalkValue <= 0 || frequencyTalkValue > 1) {
+    throw new Error(`${sectionPath}.frequency_talk_value 必须在 0 到 1 之间（不含 0）`)
+  }
+  const replyNecessityThreshold = numberAtOr(
+    section, 'reply_necessity_threshold', defaults.reply_necessity_threshold, sectionPath,
+  )
+  if (!Number.isInteger(replyNecessityThreshold)
+    || replyNecessityThreshold < 0 || replyNecessityThreshold > 100) {
+    throw new Error(`${sectionPath}.reply_necessity_threshold 必须是 0 到 100 的整数`)
+  }
+  const cognitiveRounds = numberAtOr(
+    section, 'max_cognitive_rounds', defaults.max_cognitive_rounds, sectionPath,
+  )
+  if (!Number.isInteger(cognitiveRounds) || cognitiveRounds < 0 || cognitiveRounds > 4) {
+    throw new Error(`${sectionPath}.max_cognitive_rounds 必须是 0 到 4 的整数`)
+  }
+  return {
+    mode: mode as YueliConfig['conversation_agent']['mode'],
+    selected_streams: streams === undefined
+      ? [...defaults.selected_streams]
+      : [...(streams as string[])],
+    trigger_mode: triggerMode as YueliConfig['conversation_agent']['trigger_mode'],
+    frequency_talk_value: frequencyTalkValue,
+    reply_necessity_threshold: replyNecessityThreshold,
+    max_cognitive_rounds: cognitiveRounds,
+    split_replyer: section.split_replyer === undefined
+      ? defaults.split_replyer
+      : booleanAt(section, 'split_replyer', sectionPath),
+    tool_calling: section.tool_calling === undefined
+      ? defaults.tool_calling
+      : booleanAt(section, 'tool_calling', sectionPath),
+  }
+}
+
+/**
+ * 读取数值字段并在缺失时回落默认值，随后按「大于等于下界」校验。
+ *
+ * @param record 所属配置表。
+ * @param key 字段名。
+ * @param defaults 提供回落值的默认配置。
+ * @param minInclusive 允许的最小值（含）。
+ * @param path 用于错误信息的配置路径。
+ * @returns 配置值或默认值。
+ * @throws Error 当值小于下界或不是有限数值时抛出。
+ */
+function nonNegativeNumberAtOr(
+  record: Record<string, unknown>,
+  key: string,
+  defaultValue: number,
+  path: string,
+): number {
+  const value = numberAtOr(record, key, defaultValue, path)
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${path} 的 ${key} 必须是不小于 0 的数值`)
+  }
+  return value
+}
+
+/**
+ * 从配置文档读取气泡拆分与打字节奏参数，并为缺失字段合并默认值。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 合并默认值后的打字节奏配置。
+ * @throws Error 当段不是表、数值范围或嵌套段无效时抛出。
+ */
+function parseTyping(document: Record<string, unknown>, path: string): YueliConfig['typing'] {
+  const defaults = DEFAULT_CONFIG.typing
+  if (document.typing === undefined) return structuredClone(defaults)
+  const section = recordAt(document, 'typing', path)
+  const sectionPath = `${path} 的 typing`
+  const bubbleTargetChars = numberAtOr(
+    section, 'bubble_target_chars', defaults.bubble_target_chars, sectionPath,
+  )
+  if (!Number.isInteger(bubbleTargetChars) || bubbleTargetChars < 1) {
+    throw new Error(`${sectionPath}.bubble_target_chars 必须是正整数`)
+  }
+  const maxBubblesPerSay = numberAtOr(
+    section, 'max_bubbles_per_say', defaults.max_bubbles_per_say, sectionPath,
+  )
+  if (!Number.isInteger(maxBubblesPerSay) || maxBubblesPerSay < 1) {
+    throw new Error(`${sectionPath}.max_bubbles_per_say 必须是正整数`)
+  }
+  const followUp = section.follow_up === undefined
+    ? undefined
+    : recordAt(section, 'follow_up', sectionPath)
+  const nudge = section.nudge === undefined ? undefined : recordAt(section, 'nudge', sectionPath)
+  const followUpSilence = followUp === undefined
+    ? defaults.follow_up.peer_silence_minutes
+    : numberAtOr(
+      followUp, 'peer_silence_minutes', defaults.follow_up.peer_silence_minutes, sectionPath,
+    )
+  if (followUpSilence <= 0) {
+    throw new Error(`${sectionPath}.follow_up.peer_silence_minutes 必须大于 0`)
+  }
+  const nudgeSilence = nudge === undefined
+    ? defaults.nudge.peer_silence_minutes
+    : numberAtOr(nudge, 'peer_silence_minutes', defaults.nudge.peer_silence_minutes, sectionPath)
+  if (nudgeSilence <= 0) {
+    throw new Error(`${sectionPath}.nudge.peer_silence_minutes 必须大于 0`)
+  }
+  const nudgeMaxPerSilence = nudge === undefined
+    ? defaults.nudge.max_per_silence
+    : numberAtOr(nudge, 'max_per_silence', defaults.nudge.max_per_silence, sectionPath)
+  if (!Number.isInteger(nudgeMaxPerSilence) || nudgeMaxPerSilence < 0) {
+    throw new Error(`${sectionPath}.nudge.max_per_silence 必须是非负整数`)
+  }
+  return {
+    bubble_target_chars: bubbleTargetChars,
+    max_bubbles_per_say: maxBubblesPerSay,
+    delay_enabled: section.delay_enabled === undefined
+      ? defaults.delay_enabled
+      : booleanAt(section, 'delay_enabled', sectionPath),
+    chinese_char_seconds: nonNegativeNumberAtOr(
+      section, 'chinese_char_seconds', defaults.chinese_char_seconds, sectionPath,
+    ),
+    latin_char_seconds: nonNegativeNumberAtOr(
+      section, 'latin_char_seconds', defaults.latin_char_seconds, sectionPath,
+    ),
+    send_gap_seconds: nonNegativeNumberAtOr(
+      section, 'send_gap_seconds', defaults.send_gap_seconds, sectionPath,
+    ),
+    max_delay_seconds: nonNegativeNumberAtOr(
+      section, 'max_delay_seconds', defaults.max_delay_seconds, sectionPath,
+    ),
+    emoji_pick_seconds: nonNegativeNumberAtOr(
+      section, 'emoji_pick_seconds', defaults.emoji_pick_seconds, sectionPath,
+    ),
+    follow_up: {
+      enabled: followUp === undefined || followUp.enabled === undefined
+        ? defaults.follow_up.enabled
+        : booleanAt(followUp, 'enabled', sectionPath),
+      peer_silence_minutes: followUpSilence,
+    },
+    nudge: {
+      enabled: nudge === undefined || nudge.enabled === undefined
+        ? defaults.nudge.enabled
+        : booleanAt(nudge, 'enabled', sectionPath),
+      peer_silence_minutes: nudgeSilence,
+      max_per_silence: nudgeMaxPerSilence,
+    },
   }
 }
 
@@ -832,9 +1080,29 @@ function readSplitConfig(directory: string): YueliConfig {
   if (!Number.isInteger(maxRepliesInWindow) || maxRepliesInWindow < 0) {
     throw new Error(`${botPath} 的 group_chat.max_replies_in_window 必须是非负整数`)
   }
+  const reactionsEnabled = groupChat.reactions_enabled === undefined
+    ? DEFAULT_CONFIG.group_chat.reactions_enabled
+    : booleanAt(groupChat, 'reactions_enabled', botPath)
+  const pokesEnabled = groupChat.pokes_enabled === undefined
+    ? DEFAULT_CONFIG.group_chat.pokes_enabled
+    : booleanAt(groupChat, 'pokes_enabled', botPath)
+  const selfStartedTopics = groupChat.self_started_topics === undefined
+    ? DEFAULT_CONFIG.group_chat.self_started_topics
+    : booleanAt(groupChat, 'self_started_topics', botPath)
+  const sceneRefreshMessages = numberAtOr(
+    groupChat,
+    'scene_refresh_messages',
+    DEFAULT_CONFIG.group_chat.scene_refresh_messages,
+    botPath,
+  )
+  if (!Number.isInteger(sceneRefreshMessages) || sceneRefreshMessages < 0) {
+    throw new Error(`${botPath} 的 group_chat.scene_refresh_messages 必须是非负整数`)
+  }
   const personality = recordAt(botDocument, 'personality', botPath)
   assertNoRetiredPersonalityFields(personality)
   const conversation = parseConversation(botDocument, botPath)
+  const conversationAgent = parseConversationAgent(botDocument, botPath)
+  const typing = parseTyping(botDocument, botPath)
   const schedule = parseSchedule(botDocument, botPath)
   const toneVariants = personality.tone_variants
   if (!Array.isArray(toneVariants) || !toneVariants.every((value) => typeof value === 'string')) {
@@ -883,6 +1151,10 @@ function readSplitConfig(directory: string): YueliConfig {
       persona_weight: personaWeight,
       reply_window_minutes: replyWindowMinutes,
       max_replies_in_window: maxRepliesInWindow,
+      reactions_enabled: reactionsEnabled,
+      pokes_enabled: pokesEnabled,
+      self_started_topics: selfStartedTopics,
+      scene_refresh_messages: sceneRefreshMessages,
     },
     schedule,
     personality: {
@@ -895,6 +1167,8 @@ function readSplitConfig(directory: string): YueliConfig {
       proactive_expression_habits: [...proactiveExpressionHabits] as string[],
     },
     conversation,
+    conversation_agent: conversationAgent,
+    typing,
     generation,
     api_providers: providers,
     models,
@@ -908,6 +1182,9 @@ function readSplitConfig(directory: string): YueliConfig {
     },
     vision: {
       enabled: booleanAt(vision, 'enabled', featuresPath),
+      chat_image_enabled: vision.chat_image_enabled === undefined
+        ? DEFAULT_CONFIG.vision.chat_image_enabled
+        : booleanAt(vision, 'chat_image_enabled', featuresPath),
       fullscreen_silent: booleanAt(vision, 'fullscreen_silent', featuresPath),
       capture_mode: captureModeAt(vision, featuresPath),
     },
@@ -933,10 +1210,38 @@ function readSplitConfig(directory: string): YueliConfig {
  * @throws Error 当值不是字符串数组时抛出。
  */
 function parseSuppressLibraries(value: unknown, path: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
     throw new Error(`${path} 的 log.suppress_libraries 必须是字符串数组`)
   }
   return [...(value as string[])]
+}
+
+/**
+ * 读取「键和值都是字符串」的 TOML 表，缺失时返回默认值。
+ *
+ * @param record 所属配置表。
+ * @param key 字段名。
+ * @param defaultValue 字段缺失时使用的默认映射。
+ * @param path 用于错误信息的配置路径。
+ * @returns 新建的字符串映射；不持有 TOML 解析结果的可变引用。
+ * @throws Error 当字段存在但不是表，或包含非字符串值时抛出。
+ */
+function stringRecordOr(
+  record: Record<string, unknown>,
+  key: string,
+  defaultValue: Record<string, string>,
+  path: string,
+): Record<string, string> {
+  if (record[key] === undefined) return { ...defaultValue }
+  const table = recordAt(record, key, path)
+  const result: Record<string, string> = {}
+  for (const [name, value] of Object.entries(table)) {
+    if (typeof value !== 'string') {
+      throw new Error(`${path} 的 ${key}.${name} 必须是字符串`)
+    }
+    result[name] = value
+  }
+  return result
 }
 
 /**
@@ -1014,6 +1319,12 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
       : booleanAt(log, 'request_snapshots', `${path} 的 log`),
     max_snapshot_files: numberAtOr(
       log, 'max_snapshot_files', fallback.max_snapshot_files, `${path} 的 log`,
+    ),
+    prompt_records: log.prompt_records === undefined
+      ? fallback.prompt_records
+      : booleanAt(log, 'prompt_records', `${path} 的 log`),
+    max_prompt_records_per_task: numberAtOr(
+      log, 'max_prompt_records_per_task', fallback.max_prompt_records_per_task, `${path} 的 log`,
     ),
     event_retention_count: eventRetentionCount,
     event_retention_hours: eventRetentionHours,
@@ -1114,7 +1425,13 @@ function readLegacyConfig(path: string): YueliConfig {
   const pushProvider = (connection: LegacyConnection): string => {
     if (!providers.some((provider) => provider.name === connection.providerName)) {
       const { providerName, ...rest } = connection
-      providers.push({ name: providerName, ...rest })
+      providers.push({
+        model_list_endpoint: DEFAULT_PROVIDER.model_list_endpoint,
+        default_headers: {},
+        default_query: {},
+        name: providerName,
+        ...rest,
+      })
     }
     return connection.providerName
   }
@@ -1128,6 +1445,7 @@ function readLegacyConfig(path: string): YueliConfig {
     api_provider: chat.providerName,
     extra_body: {},
     reasoning_parse_mode: 'field',
+    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     embedding_dim: 0,
   })
   tasks.chat = { ...tasks.chat, model_list: ['chat'], selection_strategy: 'sequential' }
@@ -1140,7 +1458,9 @@ function readLegacyConfig(path: string): YueliConfig {
     models.push({
       name: 'vision', model_identifier: vision.model,
       api_provider: pushProvider(connection), extra_body: {},
-      reasoning_parse_mode: 'field', embedding_dim: 0,
+      reasoning_parse_mode: 'field',
+      visual: true, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      embedding_dim: 0,
     })
     tasks.vision = { ...tasks.vision, model_list: ['vision'], selection_strategy: 'sequential' }
   }
@@ -1150,7 +1470,9 @@ function readLegacyConfig(path: string): YueliConfig {
     models.push({
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
       api_provider: pushProvider(connection), extra_body: {},
-      reasoning_parse_mode: 'none', embedding_dim: 0,
+      reasoning_parse_mode: 'none',
+      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      embedding_dim: 0,
     })
     tasks.tts = { ...tasks.tts, model_list: ['tts'], selection_strategy: 'sequential' }
   }
@@ -1165,6 +1487,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'embedding', model_identifier: vector.embedding_model,
       api_provider: pushProvider(connection), extra_body: {},
       reasoning_parse_mode: 'none',
+      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
     tasks.embedding = {
@@ -1370,10 +1693,16 @@ auth_type = ${tomlString(provider.auth_type)}
 # header 的头名或 query 的参数名；其它模式留空
 auth_name = ${tomlString(provider.auth_name)}
 # 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音，只能用于 tts
-client_type = ${tomlString(provider.client_type)}${provider.client_type === 'volcengine' ? `
-# 豆包语音的 App ID，与 api_key（Access Token）成对使用
+client_type = ${tomlString(provider.client_type)}
+# 豆包语音的 App ID，与 api_key（Access Token）成对使用；其它协议留空
 # 取自控制台：豆包语音 → 语音合成大模型 → 页面下方「服务接口认证信息」
-app_id = ${tomlString(provider.app_id)}` : ''}
+app_id = ${tomlString(provider.app_id)}
+# 模型列表端点，用于 WebUI 连通性测试与模型拉取；OpenAI 兼容默认 /models
+model_list_endpoint = ${tomlString(provider.model_list_endpoint)}
+# 中转头等需要额外 HTTP 头的厂商在这里写键值；认证头仍由 auth_* 负责
+default_headers = ${tomlInlineTable(provider.default_headers)}
+# 中转头等需要固定查询参数的厂商在这里写键值
+default_query = ${tomlInlineTable(provider.default_query)}
 # 单次 HTTP 连接与流式读取超时，单位毫秒；首字阶段仍受任务级首字超时整体截断
 timeout_ms = ${provider.timeout_ms}
 # 同一条连接内的重试次数；需要让重试跑满时，应调大任务级首字超时
@@ -1390,6 +1719,15 @@ retry_interval_ms = ${provider.retry_interval_ms}`
  * @throws Error 当 `extra_body` 包含不支持的 TOML 值时抛出。
  */
 function modelBlock(model: ModelDefinitionConfig): string {
+  // 模型级温度与输出上限可留空；留空时不写键，回落到任务 generation 配置。
+  const modelOverrides = model.temperature === null && model.max_tokens === null
+    ? `# 模型级 temperature / max_tokens 覆盖：需要时取消注释填写，留空则用任务 generation 配置
+# temperature = 0.7
+# max_tokens = 2048`
+    : `# 模型级温度覆盖；留空时使用任务 generation 配置，范围 0~2
+temperature = ${model.temperature}
+# 模型级最大输出覆盖；留空时使用任务 generation 配置
+max_tokens = ${model.max_tokens}`
   return `[[models]]
 # 配置内部模型名，必须唯一；上方 model_tasks 的 model_list 引用这个值
 name = ${tomlString(model.name)}
@@ -1401,6 +1739,12 @@ api_provider = ${tomlString(model.api_provider)}
 extra_body = ${tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)}
 # field = 接口字段；tag = <think>；none = 不解析
 reasoning_parse_mode = ${tomlString(model.reasoning_parse_mode)}
+# 视觉能力标记：只有 true 的模型才能进入 vision / 图片描述任务
+visual = ${model.visual}
+${modelOverrides}
+# 计费参考价，单位元/百万 token；仅用于展示
+price_in = ${model.price_in}
+price_out = ${model.price_out}
 # 向量维度，仅 embedding 模型使用；其它模型保持 0
 embedding_dim = ${model.embedding_dim}`
 }
@@ -1457,6 +1801,10 @@ const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
   schedule: '每日生活计划；留空时继承用户聊天候选',
   vision: '前台窗口图片理解；模型和接口都必须接受图片消息',
   expression: '挑选表达方式；分类型小任务，留空时继承用户聊天候选',
+  planner: '行动决策；留空时继承用户聊天候选。首字延迟主要由它决定',
+  replyer: '回复生成；留空时继承用户聊天候选',
+  scene: '情景分析；群聊画像与私聊追问判断都用它，留空时继承用户聊天候选',
+  memory: '记忆抽取；后台任务不在回复关键路径，做结构化抽取，配便宜快的模型。留空时继承用户聊天候选',
   tts: '语音合成',
   embedding: '向量记忆召回',
 }
@@ -1496,6 +1844,10 @@ function serializeModels(cfg: YueliConfig): string {
     schedule: '每日生活计划的生成参数',
     expression: '挑选表达方式的生成参数',
     vision: '前台窗口视觉描述的生成参数',
+    planner: '行动决策的生成参数；决策不产出正文，想让动作更稳可单独调低',
+    replyer: '回复生成的生成参数；写她实际说出口的那句话',
+    scene: '情景分析的生成参数；要稳定概括而不是发挥',
+    memory: '记忆抽取的生成参数；要稳定的结构化输出，温度取最低一档',
   }
   const generation = (Object.keys(generationDescriptions) as Array<keyof GenerationConfig>)
     .map((task) => generationBlock(task, cfg.generation[task], generationDescriptions[task]))
@@ -1560,6 +1912,14 @@ persona_weight = ${cfg.group_chat.persona_weight}
 reply_window_minutes = ${cfg.group_chat.reply_window_minutes}
 # 非必回消息在时间窗口内允许的最大回复次数
 max_replies_in_window = ${cfg.group_chat.max_replies_in_window}
+# 允许对群消息贴表情回应（在别人消息上点一个表情，不发新消息）
+reactions_enabled = ${cfg.group_chat.reactions_enabled}
+# 允许使用 QQ 戳一戳；它比贴表情吵得多，默认关闭
+pokes_enabled = ${cfg.group_chat.pokes_enabled}
+# 允许她主动起话头（不接任何人的话）；没什么非说不可的仍然该选沉默
+self_started_topics = ${cfg.group_chat.self_started_topics}
+# 观察任务刷新场景画像前跳过的消息条数；0 表示不刷新
+scene_refresh_messages = ${cfg.group_chat.scene_refresh_messages}
 
 [schedule]
 # 是否允许活动决策选择 sleep；关闭后仍可选择会回应的 rest
@@ -1608,6 +1968,60 @@ recalled_episode_limit = ${cfg.conversation.recalled_episode_limit}
 recent_episode_limit = ${cfg.conversation.recent_episode_limit}
 # 去重后最终写入系统提示词的情节总上限
 episode_context_limit = ${cfg.conversation.episode_context_limit}
+# 未抽取消息达到此数量后触发一次事实抽取；与摘要各自维护游标互不影响
+fact_extract_trigger_messages = ${cfg.conversation.fact_extract_trigger_messages}
+# 每次事实抽取消化的最老消息条数
+fact_extract_batch_messages = ${cfg.conversation.fact_extract_batch_messages}
+
+[conversation_agent]
+# 对话 Agent 运行模式：off 关闭 / shadow 只记录不改行为 / selected_streams 仅指定会话 / enabled 全量
+mode = ${tomlString(cfg.conversation_agent.mode)}
+# mode = selected_streams 时生效；写会话标识，其余会话保持旧管线
+selected_streams = ${tomlStringArray(cfg.conversation_agent.selected_streams)}
+# 触发口径：signal 有明确信号才回 / frequency 按频率值轮到就回 / reply_necessity 按回复必要性打分
+trigger_mode = ${tomlString(cfg.conversation_agent.trigger_mode)}
+# trigger_mode = frequency 时的阈值，范围 0~1（不含 0）
+frequency_talk_value = ${cfg.conversation_agent.frequency_talk_value}
+# trigger_mode = reply_necessity 时的必要性分数阈值，0~100
+reply_necessity_threshold = ${cfg.conversation_agent.reply_necessity_threshold}
+# 一回合允许的检索（recall/inspect）次数上限，0~4
+max_cognitive_rounds = ${cfg.conversation_agent.max_cognitive_rounds}
+# 决策与表达分离：决策层只选动作，回复生成层写正文
+split_replyer = ${cfg.conversation_agent.split_replyer}
+# 工具调用模式：动作空间由工具声明承载，而不是 XML 动作头
+tool_calling = ${cfg.conversation_agent.tool_calling}
+
+[typing]
+# 一句话的目标字符数，超过就按气泡拆开发送
+bubble_target_chars = ${cfg.typing.bubble_target_chars}
+# 一句话最多拆成几个气泡
+max_bubbles_per_say = ${cfg.typing.max_bubbles_per_say}
+# 是否按打字节奏延迟发送；关闭则整句立即发出
+delay_enabled = ${cfg.typing.delay_enabled}
+# 每个中文字符的模拟输入秒数
+chinese_char_seconds = ${cfg.typing.chinese_char_seconds}
+# 每个英文字符的模拟输入秒数
+latin_char_seconds = ${cfg.typing.latin_char_seconds}
+# 两个气泡之间的间隔秒数
+send_gap_seconds = ${cfg.typing.send_gap_seconds}
+# 单条消息延迟上限秒数；再长的话也按时发出
+max_delay_seconds = ${cfg.typing.max_delay_seconds}
+# 挑选表情包的固定秒数
+emoji_pick_seconds = ${cfg.typing.emoji_pick_seconds}
+
+[typing.follow_up]
+# 对方停止输入后是否补发未说完的话
+enabled = ${cfg.typing.follow_up.enabled}
+# 对方静默多少分钟后不再补发
+peer_silence_minutes = ${cfg.typing.follow_up.peer_silence_minutes}
+
+[typing.nudge]
+# 对方输入中却迟迟不发时，是否轻轻戳一下催一催
+enabled = ${cfg.typing.nudge.enabled}
+# 对方输入中静默多少分钟才考虑戳
+peer_silence_minutes = ${cfg.typing.nudge.peer_silence_minutes}
+# 一次静默期内最多戳几次；戳多了比不戳难受
+max_per_silence = ${cfg.typing.nudge.max_per_silence}
 `
 }
 
@@ -1641,6 +2055,8 @@ cluster = ${tomlValue(cfg.tts.cluster)}
 [vision]
 # 用户询问屏幕内容时截取一帧发送给视觉模型；未询问时不截取。默认关闭
 enabled = ${tomlValue(cfg.vision.enabled)}
+# 允许理解 QQ 聊天里收到的图片；候选模型必须标记 visual = true
+chat_image_enabled = ${tomlValue(cfg.vision.chat_image_enabled)}
 # 检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报
 fullscreen_silent = ${tomlValue(cfg.vision.fullscreen_silent)}
 # 截什么："window" 只截前台那一个窗口；"screen" 截整个主屏。
@@ -1686,6 +2102,10 @@ suppress_libraries = ${tomlStringArray(cfg.log.suppress_libraries)}
 request_snapshots = ${tomlValue(cfg.log.request_snapshots)}
 # 最多保留几份快照
 max_snapshot_files = ${tomlValue(cfg.log.max_snapshot_files)}
+# 每次模型调用（成功也算）按任务分目录存进 logs/prompt/<任务>/，密钥已隐去
+prompt_records = ${tomlValue(cfg.log.prompt_records)}
+# 每个任务子目录保留的记录份数；按任务分别计数，高频任务不挤掉低频任务
+max_prompt_records_per_task = ${tomlValue(cfg.log.max_prompt_records_per_task)}
 # 管线事件最多保留多少条
 event_retention_count = ${tomlValue(cfg.log.event_retention_count)}
 # 管线事件最多保留多少小时
@@ -1980,6 +2400,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         api_provider: DEFAULT_PROVIDER.name,
         extra_body: extraBody,
         reasoning_parse_mode: 'field',
+        visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
         embedding_dim: 0,
       }] : [],
       model_tasks: {
