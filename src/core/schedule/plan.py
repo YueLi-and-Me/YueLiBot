@@ -429,6 +429,10 @@ class DayPlanService:
                 current_behavior = f'{current_behavior}；{energy_behavior}'
             if mood_behavior:
                 current_behavior = f'{current_behavior}；{mood_behavior}'
+            variance = self.plan_variance(now)
+            if variance is not None:
+                # 偏离感知与此刻状态合并成同一句；不另起重复的系统段，也不要求纠正。
+                current_behavior = f'{current_behavior}；{variance}'
             lines = [f'{current_behavior}。']
             if include_activity:
                 doing = activity.doing
@@ -468,6 +472,45 @@ class DayPlanService:
         """返回指定日期最近一次方向生成问题。"""
 
         return self._generation_issues.get(day_plan_date(now))
+
+    def intention_progress(self, now: int) -> List[Dict[str, Any]]:
+        """对照当天方向与真实 advances，返回可观测的逐条推进状态。"""
+
+        plan = self.get(now)
+        advanced = self._timeline.advanced_intention_indexes(plan.date)
+        return [
+            {
+                'index': index,
+                'what': intention.what,
+                'carriedDays': intention.carried_days,
+                'advanced': index in advanced,
+            }
+            for index, intention in enumerate(plan.intentions, start=1)
+        ]
+
+    def plan_variance(self, now: int) -> str | None:
+        """当天过大半后至多指出一条尚未推进的方向，不把偏离当成故障。"""
+
+        current_dt = datetime.fromtimestamp(now / 1000)
+        day_start = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        progress = (current_dt - day_start) / (day_end - day_start)
+        if progress < 0.6:
+            return None
+        unfinished = next(
+            (
+                item
+                for item in self.intention_progress(now)
+                if not item['advanced']
+            ),
+            None,
+        )
+        if unfinished is None:
+            return None
+        return (
+            f'你知道今天本来想「{unfinished["what"]}」，到现在还没碰；'
+            '这只是你自己察觉到了偏离，不代表必须立刻改回计划'
+        )
 
     def activity_decision_context(self, now: int) -> ActivityDecisionContext:
         """组合下一步活动真正需要的连续状态与当日方向。"""
