@@ -166,7 +166,10 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
   id         INTEGER PRIMARY KEY,
   source_id  INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
   target_id  INTEGER NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
-  -- 关联强度，取值 (0, 1]；迁移来的历史边保留原强度，之后由使用频次维护。
+  -- 关联强度＝共现次数，不是概率：迁移进来的历史边是 1~261 的整数计数，原样保留，
+  -- 之后由使用频次继续累加。它只用于 related_concepts 的相对排序，相对序才是语义。
+  -- ⚠ 消费方不得直接把它乘进复合打分（会被大计数支配），要乘先在使用处归一化。
+  -- 需要 (0, 1] 语义的是 memory_edges.strength，那张表走 reinforce 的饱和口径。
   strength   REAL    NOT NULL DEFAULT 1.0,
   updated_at INTEGER NOT NULL,
   UNIQUE(source_id, target_id)
