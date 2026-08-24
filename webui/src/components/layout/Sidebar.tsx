@@ -200,7 +200,7 @@ export function MobileTopbar() {
 
   return (
     <div className="flex flex-none items-center gap-2 border-b border-sidebar-border bg-sidebar px-3 py-2 lg:hidden">
-      <BrandMark className="size-7 rounded-xl" />
+      <BrandMark className="size-7 rounded-lg" />
       <LayoutGroup id="mobile-topbar">
         <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           <NavLink

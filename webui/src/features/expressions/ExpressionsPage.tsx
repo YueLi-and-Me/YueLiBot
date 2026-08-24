@@ -100,7 +100,7 @@ export function ExpressionsPage() {
       />
       <div
         role="note"
-        className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300"
+        className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning"
       >
         <Quote className="mt-0.5 size-4 flex-none" aria-hidden="true" />
         <p>

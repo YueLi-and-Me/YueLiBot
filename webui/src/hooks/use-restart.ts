@@ -17,19 +17,21 @@ const RELOAD_DELAY_MS = 2200
 /**
  * 发送重启指令并反馈结果。
  *
- * @returns `restarting` 是否已发出指令（用于禁用触发按钮），`restartBackend`
- *   执行 POST /system/restart，成功与失败都走全局 toast。
+ * @returns `restarting` 在指令在飞以及已成功发出、等待新进程期间为真，调用方
+ *   据此禁用触发按钮，避免双击发出两次 POST（第二次可能打在刚拉起的新进程上）；
+ *   `restartBackend` 执行重启，成功与失败都走全局 toast，失败时解除禁用。
  */
 export function useRestart(): { restarting: boolean; restartBackend: () => Promise<void> } {
   const [restarting, setRestarting] = useState(false)
 
   const restartBackend = useCallback(async () => {
+    setRestarting(true)
     try {
       await apiMutate<{ ok: boolean }>('/system/restart', 'POST')
       toast.success('已发送重启指令，月璃即将重启…')
-      setRestarting(true)
       window.setTimeout(() => window.location.reload(), RELOAD_DELAY_MS)
     } catch (error) {
+      setRestarting(false)
       toast.error(`重启失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }, [])
