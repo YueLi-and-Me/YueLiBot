@@ -96,6 +96,93 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   embedding: '为长期记忆生成检索向量的嵌入模型',
 }
 
+/** 选型建议的四类取向，决定徽标文字与配色。 */
+type AdviceKind = 'fast' | 'good' | 'required' | 'baseline'
+
+interface TaskAdvice {
+  /** 取向，用于徽标。 */
+  kind: AdviceKind
+  /** 一句具体建议，说清「为什么是这个取向」，而不是泛泛的「用小模型」。 */
+  note: string
+}
+
+/**
+ * 每个任务槽的选型建议。
+ *
+ * 写成 `Record<任务名, …>` 而不是可选表：新增模型槽时漏写这里会是**编译错误**，
+ * 与 TASK_LABELS 同一道保险。此前 `memory` 槽就是因为前端清单漏改而在界面上
+ * 根本配不了，那类漏改不该靠人记得。
+ *
+ * 每条都写清约束的来源，不写没有依据的推荐：`planner` 的「首字延迟主要由它决定」
+ * 与 `memory` 的「后台任务、结构化抽取」都直接对应 config/schema.py 里那两段注释。
+ */
+const TASK_ADVICE: Record<(typeof TASK_NAMES)[number], TaskAdvice> = {
+  chat: {
+    kind: 'baseline',
+    note: '其它槽留空时都继承它，所以它决定整体基线。配你最信任的通用模型。',
+  },
+  planner: {
+    kind: 'fast',
+    note: '只出动作头、不写正文，首字延迟主要由这一档决定——换快模型是压延迟的正路。',
+  },
+  replyer: {
+    kind: 'good',
+    note: '她真正说出口的那句话由它写，最值得用好模型；换差了「像不像人」会立刻下降。',
+  },
+  scene: {
+    kind: 'fast',
+    note: '把一段聊天概括成「此刻是什么情况」，要的是稳定而非发挥，便宜快的就够。',
+  },
+  proactive: {
+    kind: 'good',
+    note: '她主动开口说的话由它生成，质量直接影响这次搭话是自然还是突兀。',
+  },
+  summary: {
+    kind: 'fast',
+    note: '后台压缩长对话，不在回复关键路径上，便宜快的就够。',
+  },
+  schedule: {
+    kind: 'good',
+    note: '一天只跑一次，成本可以忽略，质量优先。',
+  },
+  vision: {
+    kind: 'required',
+    note: '必须是能看图的多模态模型；配了纯文本模型，图片理解会直接失败。',
+  },
+  expression: {
+    kind: 'fast',
+    note: '低温度的选择题，从候选表达里挑一条，便宜快的就够。',
+  },
+  memory: {
+    kind: 'fast',
+    note: '回合之后的后台抽取，不在关键路径上，做结构化抽取而非发挥，便宜快的就够。',
+  },
+  tts: {
+    kind: 'required',
+    note: '必须是语音合成模型。',
+  },
+  embedding: {
+    kind: 'required',
+    note: '必须是嵌入模型。换模型等于换向量空间，旧向量全部作废、需要重算，别轻易改。',
+  },
+}
+
+/** 徽标文字，短到能并排扫读。 */
+const ADVICE_TAGS: Record<AdviceKind, string> = {
+  fast: '宜快',
+  good: '宜强',
+  required: '专用',
+  baseline: '基线',
+}
+
+/** 徽标配色：取向不同给不同色相，扫一眼就能分出哪些槽该换快模型。 */
+const ADVICE_TINTS: Record<AdviceKind, string> = {
+  fast: 'bg-primary-soft text-primary-strong',
+  good: 'bg-warning-soft text-warning',
+  required: 'bg-destructive-soft text-destructive',
+  baseline: 'bg-muted text-muted-foreground',
+}
+
 /** 把任务英文键名转为中文展示名；未知键名原样返回，避免掩盖配置异常。 */
 function taskLabel(task: string): string {
   return TASK_LABELS[task as (typeof TASK_NAMES)[number]] ?? task
@@ -869,7 +956,8 @@ export function ModelConfigPage() {
                     onClick={() => setSelectedTask(task)}
                     className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${selectedTask === task ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
                     aria-pressed={selectedTask === task}
-                    title={`${TASK_LABELS[task]}（${task}）：${TASK_DESCRIPTIONS[task]}`}
+                    title={`${TASK_LABELS[task]}（${task}）：${TASK_DESCRIPTIONS[task]}
+选型建议：${TASK_ADVICE[task].note}`}
                   >
                     <span className="min-w-0">
                       <strong className="block truncate">
@@ -880,8 +968,19 @@ export function ModelConfigPage() {
                         {assigned.length ? assigned.join('、') : '未配置模型'}
                       </span>
                     </span>
-                    <span className={`font-mono text-xs ${selectedTask === task ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
-                      {assigned.length}
+                    <span className="flex flex-none items-center gap-2">
+                      <span
+                        className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                          selectedTask === task
+                            ? 'bg-primary-foreground/20 text-primary-foreground'
+                            : ADVICE_TINTS[TASK_ADVICE[task].kind]
+                        }`}
+                      >
+                        {ADVICE_TAGS[TASK_ADVICE[task].kind]}
+                      </span>
+                      <span className={`font-mono text-xs ${selectedTask === task ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}>
+                        {assigned.length}
+                      </span>
                     </span>
                   </button>
                 )
@@ -897,6 +996,17 @@ export function ModelConfigPage() {
               subtitle={`任务字段 ${selectedTask} · ${taskDescription(selectedTask)}；第一位是主力模型，后续是故障切换备用`}
             />
             <CardBody>
+              {/* 选型建议单独成行：它是「照着做」的信息，塞进副标题会和字段说明糊在一起。 */}
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+                <span
+                  className={`mt-0.5 flex-none rounded-full px-1.5 py-0.5 text-[10px] font-medium ${ADVICE_TINTS[TASK_ADVICE[selectedTask as (typeof TASK_NAMES)[number]].kind]}`}
+                >
+                  {ADVICE_TAGS[TASK_ADVICE[selectedTask as (typeof TASK_NAMES)[number]].kind]}
+                </span>
+                <p className="text-[13px] leading-relaxed text-muted-foreground">
+                  {TASK_ADVICE[selectedTask as (typeof TASK_NAMES)[number]].note}
+                </p>
+              </div>
               {(() => {
                 const taskConfig = draft.tasks[selectedTask]
                 if (!taskConfig) return null
