@@ -213,6 +213,34 @@ interface TurnCardProps {
   onCollapse: (turnId: number) => void
 }
 
+/** 一轮对话的终局阶段：一轮正常对话恰好到达其中之一次。 */
+const TERMINAL_STAGES = new Set(['replied', 'gated', 'failed'])
+
+/**
+ * 判断分组是否混入了多轮对话的事件。
+ *
+ * 轮次编号是进程内计数器、每次启动从 0 重来（chat.py `ChatService._next_turn`），
+ * 而事件账本跨重启持久化，不同启动的回合会共用同一编号。一轮对话内全部
+ * user_input 都先于终局阶段发出（批量消息也不例外），因此「终局阶段多于一个」
+ * 或「终局之后又出现 user_input」都说明该组是多次对话的拼接，摘要不能跨轮配对。
+ *
+ * @param entries 单组事件列表（按时间升序）。
+ * @returns 该组是否混有多轮对话。
+ */
+function isMergedTurnGroup(entries: TraceEntry[]): boolean {
+  let terminals = 0
+  let seenTerminal = false
+  for (const entry of entries) {
+    if (entry.kind === 'stage' && TERMINAL_STAGES.has(optionalText(entry.stage))) {
+      terminals += 1
+      seenTerminal = true
+    } else if (entry.kind === 'user_input' && seenTerminal) {
+      return true
+    }
+  }
+  return terminals > 1
+}
+
 /**
  * 轮次卡片的 memo 相等性：轮次事件只会追加（新事件）或从头部淘汰（数量上限
  * 截断），因此比较长度与首尾事件引用即可判定内容是否变化，无需深比较。
@@ -238,7 +266,9 @@ function sameTurnCard(prev: TurnCardProps, next: TurnCardProps): boolean {
  * @remarks 默认只给一屏能看完的摘要：用户原话一行、她的回复一行、结论一行，
  * 全部细节留给展开态。头部只渲染有真实取值的字段：主动评估类事件（interest、
  * proactive_intent 等）由后台回路发出，从来不携带来源字段，这类轮次的头部
- * 不再硬凑「来源 / 会话 / 人物」，改用事件条数与耗时。memo 化：事件流每来
+ * 不再硬凑「来源 / 会话 / 人物」，改用事件条数与耗时。轮次编号跨重启被复用、
+ * 多轮对话混入同组时（见 isMergedTurnGroup）不生成配对摘要与耗时，只提示展开。
+ * memo 化：事件流每来
  * 一条新事件整个 TracePanel 都会重渲染，但只有事件真正发生变化的轮次卡片
  * 才需要重新提交，其余卡片按引用比较整体跳过。
  */
@@ -256,6 +286,9 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
       ? Math.max(0, lastEntry.at - firstEntry.at)
       : 0
   const senderName = origin ? optionalText(origin.senderDisplayName) : ''
+  /* 编号被多次对话复用的分组不做配对摘要与耗时：跨轮配对会把不存在的
+   * 问答组合说成事实，首尾相减的耗时同样失真；条数仍是真实计数，保留。 */
+  const mergedTurns = isMergedTurnGroup(entries)
   return (
     <article
       className={cn(
@@ -271,7 +304,7 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
           {origin?.streamId != null ? ` · 会话 #${origin.streamId}` : ''}
           {origin?.personId != null ? ` · 人物 #${origin.personId}` : ''}
           <span className="ml-2 font-mono text-xs font-normal text-muted-foreground tabular-nums">
-            {entries.length} 条 · 耗时 {elapsedLabel(durationMs)}
+            {entries.length} 条{mergedTurns ? '' : ` · 耗时 ${elapsedLabel(durationMs)}`}
           </span>
           {hasError ? (
             <span className="ml-2 rounded-full bg-destructive-soft px-2 py-0.5 text-xs font-medium text-destructive">
@@ -291,27 +324,35 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
       </div>
       {expanded ? null : (
         <div className="flex flex-col gap-1.5">
-          {userInput ? (
-            <p className="truncate text-[13px]" title={text(userInput.text)}>
-              {traceSenderLabel(userInput)}：{text(userInput.text)}
+          {mergedTurns ? (
+            <p className="text-[13px] text-muted-foreground">
+              轮次编号在进程重启后被复用，该组混有多轮对话的事件；为避免错配不生成摘要，请展开逐条查看。
             </p>
-          ) : null}
-          {botReply ? (
-            <p className="truncate rounded-md bg-primary-soft px-2.5 py-1.5 text-[13px]" title={text(botReply.text)}>
-              {optionalText(botReply.botName) || 'Bot'}：{text(botReply.text)}
-            </p>
-          ) : null}
-          {observation ? (
-            <p className="truncate text-[13px] text-warning">未回复：{displayValue(observation.reason)}</p>
-          ) : null}
-          {llmError ? (
-            <p className="truncate text-[13px] text-destructive">
-              模型调用失败：{displayValue(llmError.errorKind)} · {text(llmError.message)}
-            </p>
-          ) : null}
-          {!userInput && !botReply && !observation && !llmError ? (
-            <p className="truncate text-[13px] text-muted-foreground">{kindCountLabel(entries)}</p>
-          ) : null}
+          ) : (
+            <>
+              {userInput ? (
+                <p className="truncate text-[13px]" title={text(userInput.text)}>
+                  {traceSenderLabel(userInput)}：{text(userInput.text)}
+                </p>
+              ) : null}
+              {botReply ? (
+                <p className="truncate rounded-md bg-primary-soft px-2.5 py-1.5 text-[13px]" title={text(botReply.text)}>
+                  {optionalText(botReply.botName) || 'Bot'}：{text(botReply.text)}
+                </p>
+              ) : null}
+              {observation ? (
+                <p className="truncate text-[13px] text-warning">未回复：{displayValue(observation.reason)}</p>
+              ) : null}
+              {llmError ? (
+                <p className="truncate text-[13px] text-destructive">
+                  模型调用失败：{displayValue(llmError.errorKind)} · {text(llmError.message)}
+                </p>
+              ) : null}
+              {!userInput && !botReply && !observation && !llmError ? (
+                <p className="truncate text-[13px] text-muted-foreground">{kindCountLabel(entries)}</p>
+              ) : null}
+            </>
+          )}
         </div>
       )}
       {expanded ? entries.map((entry, index) => {
