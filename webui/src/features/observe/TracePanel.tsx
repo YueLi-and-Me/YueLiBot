@@ -15,6 +15,7 @@ import { apiMutate, UnauthorizedError } from '@/lib/api'
 import {
   dateTime,
   displayValue,
+  elapsedLabel,
   fixed,
   formatMessages,
   optionalText,
@@ -175,11 +176,41 @@ function PromptDetails({ messages }: { messages: TraceEntry['messages'] }) {
   )
 }
 
+/**
+ * 逆序找到指定类型的最后一条事件。
+ *
+ * @param entries 单轮事件列表（按时间升序）。
+ * @param kind 目标事件类型。
+ * @returns 最后一条命中事件；没有时为 `undefined`。
+ */
+function findLastKind(entries: TraceEntry[], kind: string): TraceEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (entry !== undefined && entry.kind === kind) return entry
+  }
+  return undefined
+}
+
+/**
+ * 把单轮事件按类型聚合成一行计数文本，供无对话内容的轮次做摘要。
+ *
+ * @param entries 单轮事件列表。
+ * @returns 形如「兴趣度更新 ×28 · 主动意图评估 ×2」的文本。
+ */
+function kindCountLabel(entries: TraceEntry[]): string {
+  const counts = new Map<string, number>()
+  for (const entry of entries) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1)
+  return [...counts].map(([kind, count]) => `${traceKindLabel(kind)} ×${count}`).join(' · ')
+}
+
 /** TurnCard 的入参。 */
 interface TurnCardProps {
   turnId: number
   entries: TraceEntry[]
+  /** 是否展开为该轮全部事件的完整列表。 */
+  expanded: boolean
   onShowTurn: (turnId: number) => void
+  onCollapse: (turnId: number) => void
 }
 
 /**
@@ -187,7 +218,8 @@ interface TurnCardProps {
  * 截断），因此比较长度与首尾事件引用即可判定内容是否变化，无需深比较。
  */
 function sameTurnCard(prev: TurnCardProps, next: TurnCardProps): boolean {
-  if (prev.turnId !== next.turnId || prev.onShowTurn !== next.onShowTurn) return false
+  if (prev.turnId !== next.turnId || prev.expanded !== next.expanded) return false
+  if (prev.onShowTurn !== next.onShowTurn || prev.onCollapse !== next.onCollapse) return false
   const before = prev.entries
   const after = next.entries
   if (before.length !== after.length) return false
@@ -199,14 +231,31 @@ function sameTurnCard(prev: TurnCardProps, next: TurnCardProps): boolean {
  *
  * @param props.turnId 轮次 ID。
  * @param props.entries 该轮次的全部事件。
+ * @param props.expanded 是否展开为全部事件的完整列表。
  * @param props.onShowTurn 「查看该轮全部事件」回调。
+ * @param props.onCollapse 「收起事件列表」回调。
  * @returns 轮次卡片；含 llm_error 时描边标红。
- * @remarks memo 化：事件流每来一条新事件整个 TracePanel 都会重渲染，但只有
- * 事件真正发生变化的轮次卡片才需要重新提交，其余卡片按引用比较整体跳过。
+ * @remarks 默认只给一屏能看完的摘要：用户原话一行、她的回复一行、结论一行，
+ * 全部细节留给展开态。头部只渲染有真实取值的字段：主动评估类事件（interest、
+ * proactive_intent 等）由后台回路发出，从来不携带来源字段，这类轮次的头部
+ * 不再硬凑「来源 / 会话 / 人物」，改用事件条数与耗时。memo 化：事件流每来
+ * 一条新事件整个 TracePanel 都会重渲染，但只有事件真正发生变化的轮次卡片
+ * 才需要重新提交，其余卡片按引用比较整体跳过。
  */
-const TurnCard = memo(function TurnCard({ turnId, entries, onShowTurn }: TurnCardProps) {
+const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn, onCollapse }: TurnCardProps) {
   const origin = entries.find((entry) => entry.platform !== undefined)
   const hasError = entries.some((entry) => entry.kind === 'llm_error')
+  const userInput = entries.find((entry) => entry.kind === 'user_input')
+  const botReply = findLastKind(entries, 'llm_final')
+  const observation = findLastKind(entries, 'observation')
+  const llmError = findLastKind(entries, 'llm_error')
+  const firstEntry = entries[0]
+  const lastEntry = entries[entries.length - 1]
+  const durationMs =
+    entries.length > 1 && firstEntry !== undefined && lastEntry !== undefined
+      ? Math.max(0, lastEntry.at - firstEntry.at)
+      : 0
+  const senderName = origin ? optionalText(origin.senderDisplayName) : ''
   return (
     <article
       className={cn(
@@ -216,13 +265,56 @@ const TurnCard = memo(function TurnCard({ turnId, entries, onShowTurn }: TurnCar
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <strong className="text-[13px] font-semibold">
-          第 {turnId} 轮 · 来源：{displayValue(origin?.platform ?? '未知')} · 会话 #{origin?.streamId ?? '—'} · 人物 #{origin?.personId ?? '—'}
+          第 {turnId} 轮
+          {senderName ? ` · ${senderName}` : ''}
+          {origin ? ` · 来源：${displayValue(origin.platform)}` : ''}
+          {origin?.streamId != null ? ` · 会话 #${origin.streamId}` : ''}
+          {origin?.personId != null ? ` · 人物 #${origin.personId}` : ''}
+          <span className="ml-2 font-mono text-xs font-normal text-muted-foreground tabular-nums">
+            {entries.length} 条 · 耗时 {elapsedLabel(durationMs)}
+          </span>
+          {hasError ? (
+            <span className="ml-2 rounded-full bg-destructive-soft px-2 py-0.5 text-xs font-medium text-destructive">
+              模型错误
+            </span>
+          ) : null}
         </strong>
-        <Button variant="ghost" size="sm" onClick={() => onShowTurn(turnId)}>
-          查看该轮全部事件
-        </Button>
+        {expanded ? (
+          <Button variant="ghost" size="sm" onClick={() => onCollapse(turnId)}>
+            收起事件列表
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => onShowTurn(turnId)}>
+            查看该轮全部事件
+          </Button>
+        )}
       </div>
-      {entries.map((entry, index) => {
+      {expanded ? null : (
+        <div className="flex flex-col gap-1.5">
+          {userInput ? (
+            <p className="truncate text-[13px]" title={text(userInput.text)}>
+              {traceSenderLabel(userInput)}：{text(userInput.text)}
+            </p>
+          ) : null}
+          {botReply ? (
+            <p className="truncate rounded-md bg-primary-soft px-2.5 py-1.5 text-[13px]" title={text(botReply.text)}>
+              {optionalText(botReply.botName) || 'Bot'}：{text(botReply.text)}
+            </p>
+          ) : null}
+          {observation ? (
+            <p className="truncate text-[13px] text-warning">未回复：{displayValue(observation.reason)}</p>
+          ) : null}
+          {llmError ? (
+            <p className="truncate text-[13px] text-destructive">
+              模型调用失败：{displayValue(llmError.errorKind)} · {text(llmError.message)}
+            </p>
+          ) : null}
+          {!userInput && !botReply && !observation && !llmError ? (
+            <p className="truncate text-[13px] text-muted-foreground">{kindCountLabel(entries)}</p>
+          ) : null}
+        </div>
+      )}
+      {expanded ? entries.map((entry, index) => {
         const key = `${entry.seq ?? index}-${entry.kind}`
         if (entry.kind === 'user_input') {
           return (
@@ -275,7 +367,7 @@ const TurnCard = memo(function TurnCard({ turnId, entries, onShowTurn }: TurnCar
             <TraceDetails entry={entry} />
           </div>
         )
-      })}
+      }) : null}
     </article>
   )
 }, sameTurnCard)
@@ -333,6 +425,8 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
   const [untilInput, setUntilInput] = useState('')
   const [searchStatus, setSearchStatus] = useState('')
   const [searching, setSearching] = useState(false)
+  /** 当前展开为完整事件列表的轮次；`null` 表示全部卡片都是摘要态。 */
+  const [expandedTurnId, setExpandedTurnId] = useState<number | null>(null)
 
   const visible = useMemo(
     () =>
@@ -384,7 +478,7 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
     setSearching(false)
   }
 
-  /** 从任意事件卡片切换到指定轮次的完整历史。 */
+  /** 从任意事件卡片切换到指定轮次的完整历史，并把该卡片展开为完整事件列表。 */
   /* useCallback 固定引用：TurnCard 的 memo 比较依赖 onShowTurn 引用稳定。 */
   const showTurn = useCallback((turnId: number) => {
     setCurrentStreamOnly(false)
@@ -397,9 +491,16 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
     const params = new URLSearchParams({ limit: String(SEARCH_LIMIT), turnId: String(turnId) })
     void search(params, false).then((message) => {
       if (message) setSearchStatus(message)
+      setExpandedTurnId(turnId)
       setSearching(false)
     })
   }, [search])
+
+  /** 把展开的轮次卡片收回到摘要态。 */
+  /* useCallback 固定引用：TurnCard 的 memo 比较依赖 onCollapse 引用稳定。 */
+  const collapseTurn = useCallback((turnId: number) => {
+    setExpandedTurnId((current) => (current === turnId ? null : current))
+  }, [])
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault()
@@ -489,7 +590,14 @@ export function TracePanel({ traces, skippedCount, historyCursor, search, stream
           <h3 className="text-[13px] font-semibold text-muted-foreground">对话轮次</h3>
           {turnGroups.length ? (
             turnGroups.map(([turnId, entries]) => (
-              <TurnCard key={turnId} turnId={turnId} entries={entries} onShowTurn={showTurn} />
+              <TurnCard
+                key={turnId}
+                turnId={turnId}
+                entries={entries}
+                expanded={expandedTurnId === turnId}
+                onShowTurn={showTurn}
+                onCollapse={collapseTurn}
+              />
             ))
           ) : (
             <Empty>当前筛选条件下没有对话轮次。</Empty>
