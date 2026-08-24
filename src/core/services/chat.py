@@ -5267,6 +5267,7 @@ class ChatService:
             await run_extraction(
                 self.memory,
                 self._memory_provider,
+                self._db,
                 stream_id=stream_id,
                 participants=participants,
                 bot_name=self._bot_display_name,

@@ -12,7 +12,8 @@
   键值表里，与摘要的 ``episode_id`` 队列完全解耦。
 - :func:`render_dialogue` / :func:`render_participants` / :func:`render_known_facts`：
   组装模型输入；「已经记住的」清单是本模块成立的关键，见 :func:`render_known_facts`。
-- :func:`parse_facts`：严格校验模型输出的 JSON 数组，非法即整批丢弃。
+- :func:`parse_extraction`：严格校验模型输出，非法即整批丢弃；同一次往返
+  同时给出人物事实与知识候选。
 - :func:`extract_facts`：一次模型往返。
 - :func:`persist_facts`：按平台编号归属落库，走 ``MemoryStore.add_fact``。
 - :func:`run_extraction`：上面几步的编排，调用方只需提供 store、provider 与在场者。
@@ -30,12 +31,14 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import json
 import re
+import sqlite3
 
 from .history import strip_say_tags, strip_side_effect_tags
 
 from src.core.common.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
+from src.core.memory.knowledge import add_knowledge
 from src.core.memory.store import FactInput, MemoryStore, StoredMessage
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
@@ -49,6 +52,8 @@ KNOWN_FACT_LIMIT = 30
 KNOWN_FACT_PER_PERSON = 6
 # 模型未给出 kind 时的兜底类别，与 FactInput 的默认值一致。
 DEFAULT_KIND = '未分类'
+# 知识层的来源标识，与迁移进来的历史知识区分开，便于事后核对哪些是她自己学到的。
+KNOWLEDGE_SOURCE = 'fact_extract'
 # 对话正文短于此长度时不发起模型请求：抽不出东西，纯浪费一次往返。
 MIN_DIALOGUE_CHARS = 40
 
@@ -189,28 +194,64 @@ def render_dialogue(
     return '\n'.join(lines)
 
 
-def parse_facts(raw: str) -> Optional[List[ExtractedFact]]:
-    """从模型输出中提取并校验事实数组。
+@dataclass
+class Extraction:
+    """一次抽取的完整产出：人物事实与知识候选。
+
+    两者由同一次模型往返产出，而不是各跑一次——同一段对话读两遍是纯粹的浪费，
+    而且两次读的结果可能互相矛盾。
+
+    :ivar facts: 关于具体某个人的稳定事实，写入 L2 ``facts``。
+    :ivar knowledge: 与人无关的客观信息，写入 L3 ``knowledge``。
+    """
+
+    facts: List[ExtractedFact]
+    knowledge: List[str]
+
+
+def parse_extraction(raw: str) -> Optional[Extraction]:
+    """从模型输出中提取并校验事实与知识候选。
+
+    契约是一个对象而非裸数组：知识候选没有归属也没有类别，硬塞进事实数组只能靠
+    判别字段区分，那会让「缺字段」既可能是知识也可能是坏数据，无法整批判废。
 
     :param raw: 可能带 Markdown 代码围栏或额外说明的模型输出。
-    :return: 校验通过的事实列表（空数组是合法结果，表示这批没什么可记的）；
-        JSON 非法、顶层不是数组、或任一条目缺字段时返回 ``None`` 表示整批丢弃。
+    :return: 校验通过的产出（两个列表都空是合法结果，表示这批没什么可记的）；
+        JSON 非法、顶层不是对象、或任一事实条目缺字段时返回 ``None`` 表示整批丢弃。
     副作用：不写存储，不抛出解析异常。
     """
 
     text = re.sub(r'```(?:json)?', '', raw or '', flags=re.IGNORECASE).strip()
-    start = text.find('[')
-    end = text.rfind(']')
+    start = text.find('{')
+    end = text.rfind('}')
     if start < 0 or end <= start:
         return None
     try:
         payload = json.loads(text[start:end + 1])
     except Exception:
         return None
-    if not isinstance(payload, list):
+    if not isinstance(payload, dict):
         return None
+    # 两个键一个都没有时判废，而不是当成「这批没什么可记的」。
+    # - 现象：旧契约的裸数组 `[{"person":..., "content":...}]` 会被上面的
+    #   find('{') / rfind('}') 抓成其中的内层对象，从而被解析成一个合法的空产出。
+    # - 后果：模型若退回旧格式，本批的事实会被静默丢弃，游标却照常推进——
+    #   这段对话再也不会被重抽一次，且全程不报错。
+    if 'facts' not in payload and 'knowledge' not in payload:
+        return None
+    raw_facts = payload.get('facts')
+    raw_knowledge = payload.get('knowledge')
+    # 两个键都允许缺省（等同空列表），但给了就必须是数组——给成别的类型说明模型
+    # 没按契约输出，整批不可信。
+    if raw_facts is None:
+        raw_facts = []
+    if raw_knowledge is None:
+        raw_knowledge = []
+    if not isinstance(raw_facts, list) or not isinstance(raw_knowledge, list):
+        return None
+
     facts: List[ExtractedFact] = []
-    for item in payload:
+    for item in raw_facts:
         if not isinstance(item, dict):
             return None
         person = item.get('person')
@@ -227,7 +268,14 @@ def parse_facts(raw: str) -> Optional[List[ExtractedFact]]:
             kind=kind.strip() if isinstance(kind, str) and kind.strip() else DEFAULT_KIND,
             content=content.strip(),
         ))
-    return facts
+
+    knowledge: List[str] = []
+    for item in raw_knowledge:
+        # 知识条目只有正文。非字符串或空串**单条跳过**而不是整批丢弃：知识是旁路
+        # 产物，不该因为它的一条脏数据牵连本批的事实写入。
+        if isinstance(item, str) and item.strip():
+            knowledge.append(item.strip())
+    return Extraction(facts=facts, knowledge=knowledge)
 
 
 async def extract_facts(
@@ -239,8 +287,8 @@ async def extract_facts(
     dialogue: str,
     temperature: float,
     max_tokens: Optional[int],
-) -> Optional[List[ExtractedFact]]:
-    """请求模型从一段对话里抽出人物事实。
+) -> Optional[Extraction]:
+    """请求模型从一段对话里抽出人物事实与知识候选。
 
     :param provider: 提供流式文本输出的模型客户端。
     :param bot_name: Bot 展示名，进系统提示词。
@@ -286,7 +334,7 @@ async def extract_facts(
     except Exception:
         # 抽取是旁路设施：模型故障不该让已经完成的回合受任何影响，整批丢弃即可。
         return None
-    return parse_facts(raw)
+    return parse_extraction(raw)
 
 
 def persist_facts(
@@ -302,7 +350,7 @@ def persist_facts(
     本函数不再叠任何一层判重——那会让同一件事算两遍。
 
     :param store: 记忆存储实例。
-    :param facts: :func:`parse_facts` 校验过的事实列表。
+    :param facts: :func:`parse_extraction` 校验过的事实列表。
     :param participants: 在场者名单，用于把平台编号解析成 ``person_id``。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :return: 实际写入或强化的事实 ID 列表，顺序与输入一致；被丢弃的条目不占位。
@@ -336,9 +384,42 @@ def persist_facts(
     return written
 
 
+def persist_knowledge(
+    db: sqlite3.Connection,
+    candidates: Sequence[str],
+    now: Optional[int] = None,
+) -> List[int]:
+    """把与人无关的客观信息写入知识层（L3）。
+
+    与事实抽取共用同一次模型往返，避免为知识再读一遍同样的对话。去重与建索引
+    都由 :func:`~src.core.memory.knowledge.add_knowledge` 承担，本函数不再叠一层。
+
+    :param db: 当前库连接；与 ``lookup_jargon`` 同惯例直接收连接，
+        不从 ``MemoryStore`` 扒私有属性。
+    :param candidates: :func:`parse_extraction` 校验过的知识正文列表。
+    :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
+    :return: 新建或命中的知识行 ID 列表。
+    :raises sqlite3.Error: 写入失败时由 ``add_knowledge`` 抛出。
+    副作用：写入 ``knowledge`` 与 ``knowledge_fts`` 并提交事务。
+    """
+
+    now = now if now is not None else current_time()
+    ids: List[int] = []
+    for content in candidates:
+        kid = add_knowledge(db, content, KNOWLEDGE_SOURCE, now)
+        # 同一批里换个说法重复提到同一件事时 add_knowledge 会返回同一行 ID。
+        # 去重后再计数，否则观察事件里的「数量」会大于库里实际新增的行数。
+        if kid and kid not in ids:
+            ids.append(kid)
+    if ids:
+        trace.emit('knowledge_learned', count=len(ids), source=KNOWLEDGE_SOURCE)
+    return ids
+
+
 async def run_extraction(
     store: MemoryStore,
     provider: LlmProvider,
+    db: sqlite3.Connection,
     *,
     stream_id: int,
     participants: Sequence[Participant],
@@ -378,7 +459,7 @@ async def run_extraction(
     batch = store.messages_after(stream_id, cursor, batch_messages)
     if not batch:
         return None
-    facts = await extract_facts(
+    extraction = await extract_facts(
         provider,
         bot_name=bot_name,
         participants=participants,
@@ -387,18 +468,20 @@ async def run_extraction(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    if facts is None:
+    if extraction is None:
         # 解析失败或模型故障：不推进游标，下次重跑同一批。宁可重复抽一次，
         # 也不要因为一次故障永久跳过这段对话。
         trace.emit('memory_extract_failed', streamId=stream_id, cursor=cursor)
         return None
-    written = persist_facts(store, facts, participants, now)
+    written = persist_facts(store, extraction.facts, participants, now)
+    knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
     advance_cursor(store, stream_id, batch[-1].message_id)
     trace.emit(
         'memory_extract',
         streamId=stream_id,
         messageCount=len(batch),
-        extracted=len(facts),
+        extracted=len(extraction.facts),
         written=written,
+        knowledge=len(knowledge_ids),
     )
     return written

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from .decay import relevance_from_bm25, retention_weight, score
+from .similarity import exact_key
 from .tokenize import index_tokens, match_query
 
 
@@ -64,6 +65,54 @@ def index_knowledge(db: sqlite3.Connection, limit: int = 1000) -> int:
     if rows:
         db.commit()
     return len(rows)
+
+
+def add_knowledge(
+    db: sqlite3.Connection,
+    content: str,
+    source: str,
+    now: int,
+) -> int:
+    """写入一条知识并**同步建好全文索引**，返回其主键。
+
+    索引必须当场建，不能留给离线重算：``search_knowledge`` 是
+    ``knowledge_fts JOIN knowledge`` 的形态，没有 FTS 行的知识不是排名靠后，
+    而是**整行检索不到**。写进去却查不出来比不写更糟——表面上功能正常。
+
+    向量则相反，留给 ``scripts/knowledge_reindex.py`` 异步补：缺向量只是退回
+    BM25 打分（见 :func:`search_knowledge`），词面仍能命中，不影响可见性。
+
+    去重靠 ``content_key`` 唯一约束，与 ``facts.content_key`` 同口径
+    （``similarity.exact_key``）。重复内容直接返回既有行 ID，不新增、不报错——
+    同一件事被不同批次的对话反复提到是常态，不是异常。
+
+    :param db: 当前库连接。
+    :param content: 知识正文；首尾空白会去掉，规范化后为空时返回 0。
+    :param source: 来源标识，例如 ``fact_extract``。
+    :param now: 当前毫秒时间戳。
+    :return: 新建或既有知识行的 ID；``content`` 为空时返回 0。
+    :raises sqlite3.Error: 写入或提交失败。
+    副作用：写入 knowledge 与 knowledge_fts 并提交事务。
+    """
+    text = (content or '').strip()
+    if not text:
+        return 0
+    key = exact_key(text)
+    row = db.execute('SELECT id FROM knowledge WHERE content_key = ?', (key,)).fetchone()
+    if row is not None:
+        return int(row[0])
+    cursor = db.execute(
+        'INSERT INTO knowledge (content, content_key, source, created_at) VALUES (?, ?, ?, ?)',
+        (text, key, source, now),
+    )
+    kid = int(cursor.lastrowid)
+    tokens = index_tokens(text)
+    # 外部内容表不感知主表行，rowid 必须显式对齐主键——这个项目在 facts_fts 上
+    # 踩过一次：对不齐会让检索结果指向错误的行，而行数看起来完全正常。
+    db.execute('INSERT INTO knowledge_fts (rowid, tokens) VALUES (?, ?)', (kid, tokens))
+    db.execute('UPDATE knowledge SET tokens_v2 = ? WHERE id = ?', (tokens, kid))
+    db.commit()
+    return kid
 
 
 def knowledge_without_embedding(db: sqlite3.Connection, limit: int) -> list[tuple[int, str]]:
