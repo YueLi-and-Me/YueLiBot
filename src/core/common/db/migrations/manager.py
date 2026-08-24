@@ -16,6 +16,11 @@ from .bootstrap import bootstrap_version, is_fresh_database, write_user_version
 from .registry import get_registry
 
 from src.core.common.db.schema import DDL, SEED
+from src.core.common.db.schema_report import (
+    describe_schema_changes,
+    report_schema_changes,
+    snapshot_shape,
+)
 from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -91,6 +96,7 @@ def _initialize_fresh_database(db: sqlite3.Connection) -> None:
     set_user_version(db, CURRENT_VERSION)
     db.commit()
     logger.info("db_fresh_initialized", version=CURRENT_VERSION)
+    report_schema_changes(describe_schema_changes({}, snapshot_shape(db)), CURRENT_VERSION)
 
 
 def _apply_current_schema(db: sqlite3.Connection) -> None:
@@ -141,6 +147,9 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
     )
 
     registry = get_registry()
+    # 整轮对账：迁移的 ALTER TABLE 与 DDL 的建表都要落进同一份报告，
+    # 否则「这次启动到底改了库的什么」要分两处看。
+    before = snapshot_shape(db)
 
     # 先对齐历史版本字段与 user_version，再查找迁移注册表中的当前入口。
     current = bootstrap_version(db, CURRENT_VERSION)
@@ -148,6 +157,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
     if current >= CURRENT_VERSION:
         logger.debug("db_up_to_date", version=current)
         _apply_current_schema(db)
+        report_schema_changes(describe_schema_changes(before, snapshot_shape(db)), current)
         return
 
     logger.info("db_migration_start", from_version=current, to_version=CURRENT_VERSION)
@@ -173,4 +183,5 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         current += 1
 
     _apply_current_schema(db)
+    report_schema_changes(describe_schema_changes(before, snapshot_shape(db)), current)
     logger.info("db_migration_done", version=current)
