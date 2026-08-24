@@ -20,11 +20,20 @@ import type {
  */
 
 /**
+ * 配置格式版本。**删除或重命名配置字段时必须 bump 它**——`directoryIsStale()`
+ * 只比版本号、不比字段；不 bump 就不会重写，废弃字段会一直留在用户文件里，
+ * 后端每次启动都要为它们报一次「配置字段变更」。
+ *
+ * bump 之前必须先确认写入器是 schema 的超集（`scripts/config_parity.py` 守这一条）：
+ * 模板缺字段时重写会静默清掉用户的配置，1.2.0 这次就是先补齐写入器才敢动版本号的。
+ *
  * 1.1.0 起 model_tasks 从「一个任务一个模型名」改成「一个任务一串候选模型 +
  * 轮询策略」。读到 1.0.0 会按旧形态解析并在下次保存时升级，不会拒绝启动。
+ * 1.2.0 移除日程时刻表遗留字段（min_slots / max_slots / fallback_* / bedtime_*），
+ * 它们已被活动时间线取代；旧文件按 1.1.0 解析后重写即自动清除。
  */
-const CONFIG_VERSION = '1.1.0'
-const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0'] as const
+const CONFIG_VERSION = '1.2.0'
+const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
