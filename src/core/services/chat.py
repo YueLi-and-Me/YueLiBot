@@ -554,6 +554,7 @@ class ChatService:
         self._direct_follow_ups: dict[int, _DirectFollowUpState] = {}
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
+        self._wake_sleep: Callable[[int], SleepState] | None = None
         self._promise_handler: Callable[[int, str], None] | None = None
         self._schedule: DayPlanService | None = None
 
@@ -616,6 +617,16 @@ class ChatService:
 
         self._sleep_state = fn
 
+    def set_sleep_wake_handler(self, fn: Callable[[int], SleepState]) -> None:
+        """绑定由确定性入站事件触发的睡眠打断回调。"""
+
+        self._wake_sleep = fn
+
+    def wake_from_inbound(self, now: int) -> SleepState | None:
+        """让私聊或协议 @ 在门控放行后立即结束当前 sleep 活动。"""
+
+        return self._wake_sleep(now) if self._wake_sleep is not None else None
+
     def set_promise_handler(self, fn: Callable[[int, str], None]) -> None:
         """绑定解析后约定的统一调度回调。
 
@@ -641,14 +652,18 @@ class ChatService:
     def current_sleep(self) -> ScheduleSleepState:
         """读取当前睡眠状态并转换为调度服务使用的类型。
 
-        :return: 当前 ``asleep``、``drowsy`` 和 ``just_woke`` 标志；未绑定状态回调时
+        :return: 当前 ``asleep``、``resting`` 和 ``just_woke`` 标志；未绑定状态回调时
             返回三个标志均为 ``False`` 的默认值。
         """
 
         s = self._sleep_state() if self._sleep_state else None
         if s is None:
-            return ScheduleSleepState(asleep=False, drowsy=False)
-        return ScheduleSleepState(asleep=s.asleep, drowsy=s.drowsy, just_woke=s.just_woke)
+            return ScheduleSleepState(asleep=False)
+        return ScheduleSleepState(
+            asleep=s.asleep,
+            just_woke=s.just_woke,
+            resting=s.resting,
+        )
 
     async def ensure_schedule(self, now: int | None = None) -> None:
         """确保指定时间对应的日程已经可用。
@@ -1036,7 +1051,7 @@ class ChatService:
             trimmed = '\n'.join(message.text for message in batch)
             try:
                 now = current_time()
-                earlier_resting = self._sleep_state().asleep if self._sleep_state else False
+                earlier_resting = self.current_sleep().asleep
                 self.settle_elapsed(context, now, earlier_resting)
                 self.memory.sweep(now)
 
@@ -1865,7 +1880,7 @@ class ChatService:
             return False
         if self._agent_scope(context, 'deliberate') != 'live':
             return False
-        if self._sleep_state is not None and self._sleep_state().asleep:
+        if self.current_sleep().asleep:
             return False
         last_reply_at = self.memory.last_assistant_reply_at(stream_id)
         if last_reply_at is None:
@@ -2008,7 +2023,7 @@ class ChatService:
             return False
         if state.follow_up_message_at is not None or self._buffers.get(stream_id):
             return False
-        if self._sleep_state is not None and self._sleep_state().asleep:
+        if self.current_sleep().asleep:
             return False
         if self.memory.last_assistant_reply_at(stream_id) != state.normal_reply_message_at:
             return False
@@ -2636,7 +2651,7 @@ class ChatService:
                     state,
                     asleep=sleep.asleep,
                     just_woke=sleep.just_woke,
-                    drowsy=sleep.drowsy,
+                    resting=sleep.resting,
                 ),
             },
             'schedule': _plan_to_dict(self._schedule.get(now)) if self._schedule else None,
@@ -3268,7 +3283,7 @@ class ChatService:
         :param candidate_count: 本批候选消息数；扩展触发模式用它累计频率预算。
         :return: 门控结果与全部判定输入事实。
         """
-        asleep = self._sleep_state().asleep if self._sleep_state else False
+        asleep = self.current_sleep().asleep
         reply_count = 0
         last_bot_reply_elapsed_ms: int | None = None
         current_topic_available = False

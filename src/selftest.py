@@ -24,6 +24,7 @@ from src.core.observe.store import close as close_event_store
 from src.core.observe.store import configure as configure_event_store
 from src.core.services.chat import ChatService, InboundMessage
 from src.core.services.proactive import AwarenessService
+from src.core.schedule.timeline import ActivityTimeline
 
 logger = get_logger(__name__)
 
@@ -97,7 +98,7 @@ async def run_selftest(cfg: Any) -> int:
         # 三条链路分别验证对话、摘要和纯编排状态；缺少模型时由子检查报告跳过。
         chat_ok = await _check_chat(chat, chat_provider, events)
         reflect_ok = await _check_reflect(chat, summary_provider)
-        aware_ok = await _check_aware(chat, cfg, _push_event)
+        aware_ok = await _check_aware(chat, cfg, _push_event, ActivityTimeline(db))
         return 0 if (chat_ok and reflect_ok and aware_ok) else 1
     finally:
         close_event_store()
@@ -186,6 +187,7 @@ async def _check_aware(
     chat: ChatService,
     cfg: Any,
     push_event: Callable[[str, dict[str, Any]], Awaitable[None]],
+    timeline: ActivityTimeline,
 ) -> bool:
     """在不调用模型的情况下验证前台活动和睡眠状态编排。
 
@@ -200,7 +202,13 @@ async def _check_aware(
     """
 
     try:
-        awareness = AwarenessService(chat=chat, schedule=None, cfg=cfg, push_event=push_event)
+        awareness = AwarenessService(
+            chat=chat,
+            schedule=None,
+            timeline=timeline,
+            cfg=cfg,
+            push_event=push_event,
+        )
 
         awareness.on_foreground({"process": "Code.exe", "title": "main.py - test", "fullscreen": False})
         activity = awareness._last_classified.activity if awareness._last_classified else None

@@ -70,8 +70,8 @@ class ScheduleSleepState:
     """日程服务提供给对话编排的睡眠状态。"""
 
     asleep: bool
-    drowsy: bool
     just_woke: bool = False
+    resting: bool = False
 
 
 @dataclass
@@ -783,7 +783,7 @@ class DayPlanService:
         """生成当前日程和睡眠状态的中文提示文本。
 
         :param now: 当前毫秒时间戳。
-        :param sleep: 当前睡眠状态。
+        :param sleep: 当前睡眠和休息状态。
         :param include_activity: 是否连当前时段的具体活动一并渲染；默认只给情绪与
             作息影响，详见 :func:`describe_day_plan`。
 
@@ -1338,7 +1338,7 @@ def describe_day_plan(
     :param plan: 当前自然日的日程。
     :param now: 当前本地日期时间。
     :param state: 当前人物关系与主体精力状态。
-    :param sleep: 睡眠、困倦和刚醒状态。
+    :param sleep: 睡眠、休息和刚醒状态。
     :param include_activity: 是否连具体活动一并渲染。仅在对方开口问起
         （见 :func:`asks_about_activity`），或主动搭话本就以日程为由头时为 ``True``。
 
@@ -1353,7 +1353,7 @@ def describe_day_plan(
         lines = ['你刚醒没多久，还在慢慢把意识拢回来；别装得已经精神十足，语气应有一点迷糊和迟缓。']
     else:
         current_behavior = describe_mood_behavior(slot.mood).rstrip('。')
-        energy_behavior = '' if sleep.asleep or sleep.drowsy else _energy_behavior(state)
+        energy_behavior = '' if sleep.asleep or sleep.resting else _energy_behavior(state)
         mood_behavior = '' if sleep.asleep else _mood_behavior(state)
         if energy_behavior:
             current_behavior = f'{current_behavior}；{energy_behavior}'
@@ -1369,9 +1369,6 @@ def describe_day_plan(
             )
     if sleep.asleep:
         lines.append('你已经睡着了；如果他现在找你说话，你是被叫醒的，反应要符合刚醒时的迷糊。')
-    elif sleep.drowsy:
-        lines.append(
-            f'你开始犯困，本来想在{plan.bedtime_hint}左右休息；'
-            '困意体现在回话变短、变懒、接话没那么起劲，不是反复宣告自己要去睡。'
-        )
+    elif sleep.resting:
+        lines.append('你正在休息，精力不会继续下降，但仍然清醒并会正常回应。')
     return '\n'.join(lines)

@@ -315,7 +315,7 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
         'turnId', 'eventStatus', 'detail', 'gate', 'decision', 'version',
         'snapshotId', 'messageWatermark',
     ),
-    'sleep_transition': ('asleep', 'drowsy', 'probability'),
+    'sleep_transition': ('asleep', 'resting'),
     'interest': ('interest', 'factors'),
     'memory_fact': ('turnId', 'memoryKind', 'content'),
     'mood_delta': ('turnId', 'favor', 'energy'),

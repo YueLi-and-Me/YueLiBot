@@ -522,7 +522,10 @@ def main() -> None:
         logger.info("tts_ready", voice=cfg.tts.voice,
                     candidates=len(routers.tts.candidates))
 
-    # 日程服务是可选依赖；未成功装配时由 AwarenessService 使用配置备用日程。
+    from src.core.schedule.timeline import ActivityTimeline
+    timeline = ActivityTimeline(db)
+
+    # 日程服务是可选依赖；活动时间线即使没有日程模型也保持可读。
     schedule = None
     try:
         from src.core.schedule.plan import DayPlanService
@@ -565,6 +568,7 @@ def main() -> None:
     awareness = AwarenessService(
         chat=app_state.chat,
         schedule=schedule,
+        timeline=timeline,
         cfg=cfg,
         push_event=_push_event,
         sensor=sensor,

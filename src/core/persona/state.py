@@ -509,23 +509,23 @@ def status_label(
     *,
     asleep: bool,
     just_woke: bool,
-    drowsy: bool,
+    resting: bool,
 ) -> str:
-    """合成睡眠状态与精力档位的唯一对外状态标签。
+    """合成活动休息状态与精力档位的唯一对外状态标签。
 
     :param s: 待描述的人物状态。
     :param asleep: 当前是否已经睡着。
     :param just_woke: 当前是否处于刚醒阶段。
-    :param drowsy: 当前是否正在犯困。
-    :return: 按睡着、刚醒、犯困、精力档的固定优先级生成的中文标签。
+    :param resting: 当前是否在休息但仍会回应。
+    :return: 按睡着、刚醒、休息、精力档的固定优先级生成的中文标签。
     """
 
     if asleep:
         return '睡着'
     if just_woke:
         return '刚醒'
-    if drowsy:
-        return '犯困'
+    if resting:
+        return '休息中'
     return energy_tier(s).value
 
 
