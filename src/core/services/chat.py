@@ -98,6 +98,7 @@ from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, Recalled
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
+from src.core.observe.store import max_turn_id
 from src.core.persona.state import (
     EventDelta,
     Persona,
@@ -535,7 +536,13 @@ class ChatService:
         self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
         self.persona.snapshot_daily(self._desktop_context.person.id)
-        self._turn_id = 0
+        # 从账本里已出现过的最大回合 ID 接着发号，而不是每次启动从 0 重来。
+        # - 现象：turn_id 与上次运行的回合撞号，WebUI 按 turnId 聚合时把不同启动的
+        #   对话并成一张卡。真机实测 turn_id=33 同时装着 4 次启动的 4 条 user_input、
+        #   横跨 31 小时；摘要卡因此会把某次提问与几小时后另一次的回复配成一对。
+        # - 原因：回合 ID 由进程内计数器分配（见 _next_turn），而事件账本跨重启持久化。
+        # - 后果：改回从 0 起算会让这种错误配对重新出现，重启越频繁越严重。
+        self._turn_id = max_turn_id()
         self._inflight: dict[int, _InflightTurn] = {}
         self._buffers: dict[int, list[_BufferedMessage]] = {}
         self._stream_claims: dict[int, str] = {}
@@ -2882,7 +2889,11 @@ class ChatService:
         return f'未绑定联系人 #{person.id}'
 
     def _next_turn(self) -> int:
-        """分配进程内单调递增的回合 ID。
+        """分配单调递增的回合 ID，跨重启不与历史回合撞号。
+
+        计数器本身仍在进程内，但起点由构造时的 :func:`max_turn_id` 从事件账本播种，
+        因此新回合的编号一定大于账本里现存的任何一个。**观察面板按 turnId 聚合，
+        这个不撞号是它成立的前提。**
 
         :return: 新分配的正整数回合 ID。
 

@@ -349,6 +349,31 @@ class EventStore:
             ).fetchone()
         return self._row_to_event(row) if row is not None else None
 
+    def max_turn_id(self) -> int:
+        """返回账本中已出现过的最大回合 ID。
+
+        供 :class:`~src.core.services.chat.ChatService` 在启动时给回合计数器播种。
+        回合 ID 由进程内计数器分配，而账本跨重启持久化——不播种就会每次启动从 1
+        重新发号，与上次运行的回合撞号。真机实测：``turn_id = 33`` 曾同时装着 4 次
+        不同启动的对话、横跨 31 小时，WebUI 按 turnId 聚合时把它们并成一张卡。
+
+        账本按 ``retention_count`` / ``retention_hours`` 清理旧事件，因此这里取到的
+        是**幸存事件**中的最大值——被清掉的回合已经不在账本里，不构成碰撞源，
+        所以这个口径是充分的。
+
+        :return: 最大 ``turn_id``；账本为空或尚未配置时返回 ``0``。账本没配置就没有
+            可碰撞的历史回合，从 0 起算是正确结果而非兜底。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 ``pipeline_events``。
+        """
+        with self._lock:
+            if self._connection is None:
+                return 0
+            row = self._connection.execute(
+                "SELECT MAX(turn_id) FROM pipeline_events"
+            ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else 0
+
     def first_matching_after(
         self,
         seq: int,
@@ -532,6 +557,15 @@ def current_stages(scan_limit: int = 50) -> List[Dict[str, Any]]:
     :raises RuntimeError: 模块级账本尚未配置。
     """
     return event_store.current_stages(scan_limit)
+
+
+def max_turn_id() -> int:
+    """读取模块级事件账本中已出现过的最大回合 ID。
+
+    :return: 最大 ``turn_id``；账本为空或尚未配置时返回 ``0``。
+    :raises sqlite3.Error: 查询失败。
+    """
+    return event_store.max_turn_id()
 
 
 def search_events(
