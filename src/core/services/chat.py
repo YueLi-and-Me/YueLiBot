@@ -1370,11 +1370,26 @@ class ChatService:
         return turn
 
     def claim_stream(self, stream_id: int, source: str) -> bool:
-        """尝试为一个驱动源占用 stream，并记录竞争失败。"""
+        """尝试为一个驱动源占用 stream，只在**跨源**抢占失败时记录竞争。
+
+        :param stream_id: 待占用的会话流主键。
+        :param source: 驱动源标识，当前为 ``reply`` 或 ``proactive``。
+        :return: 占用成功为 ``True``；已被占用为 ``False``。
+        副作用：占用成功时写入占用表；跨源抢占失败时发出 ``turn_competition`` 事件。
+        """
         active_source = self._stream_claims.get(stream_id)
         if active_source is None:
             self._stream_claims[stream_id] = source
             return True
+        # 同源抢占失败不是竞争，是系统循环按设计在等：回合在飞时缓冲区仍有消息，
+        # _tick 每 CHAT_POLL_INTERVAL_S（0.1 秒）就会再试一次。
+        # - 现象：改动前这里无条件发事件，真机 30 小时产出 14153 条 turn_competition，
+        #   占全部控制台输出的 80%，且 activeSource 与 blockedSource **无一例外相同**。
+        # - 原因：轮询循环的每一次空转都被当成了一次值得上报的竞争。
+        # - 后果：真正有价值的跨源竞争（reply 与 proactive 抢同一个 stream）被淹没在
+        #   同源噪声里，30 小时内一条都没能被看见。
+        if active_source == source:
+            return False
         trace.emit(
             'turn_competition',
             streamId=stream_id,

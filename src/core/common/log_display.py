@@ -70,6 +70,7 @@ EVENT_LABELS: Dict[str, str] = {
     "llm_ready": "模型已就绪",
     "llm_request": "请求模型",
     "llm_request_retry": "模型请求重试",
+    "llm_slow": "模型响应缓慢",
     "memory_extract": "记忆抽取完成",
     "memory_extract_failed": "记忆抽取失败",
     "memory_fact": "写入记忆",
@@ -116,6 +117,9 @@ EVENT_LABELS: Dict[str, str] = {
     "sleep_eval_failed": "睡眠状态评估失败",
     "sleep_transition": "睡眠状态变化",
     "speak_audio_failed": "语音发送失败",
+    # 阶段事件正常由 stageLabel 给出具体阶段名，这条只是 stageLabel 缺失时的兜底显示，
+    # 避免控制台打出一个没有事件名的空行。
+    "stage": "处理阶段",
     "stream_registry_ready": "会话归属表已就绪",
     "turn_action": "轮次动作规划",
     "turn_competition": "轮次竞争处理",
@@ -162,6 +166,7 @@ FIELD_LABELS: Dict[str, str] = {
     "asleep": "已入睡",
     "assumed": "推定版本",
     "at": "时间",
+    "atmosphere": "气氛",
     "attempt": "尝试次数",
     "availableActions": "可用动作",
     "backendPort": "后端端口",
@@ -209,9 +214,18 @@ FIELD_LABELS: Dict[str, str] = {
     "failed_model": "失败模型",
     "failed_provider": "失败服务",
     "favor": "好感变化",
+    # 兴趣增长的五个乘数与合成速率，来自 awareness.interest.InterestFactors.as_trace()。
+    # 它们相乘得到每分钟兴趣增长量，是复盘「她为什么这时候想说话」的唯一依据。
+    "fAbsence": "久未互动系数",
+    "fActivity": "活动系数",
+    "fEnergy": "精力系数",
+    "fFavor": "好感系数",
+    "fIgnored": "被冷落系数",
+    "ratePerMinute": "每分钟增长",
     "file": "文件",
     "files": "文件",
     "fn": "迁移函数",
+    "followUp": "跟进",
     "from_meta": "元数据版本",
     "from_version": "原版本",
     "gateDisposition": "门控结果",
@@ -248,6 +262,8 @@ FIELD_LABELS: Dict[str, str] = {
     "nameMentioned": "叫到机器人名字",
     "naturalReplyElapsedMs": "自然接话间隔",
     "note": "说明",
+    # 认知动作（recall / inspect / consult）检索回来的结果，会作为下一轮决策的输入。
+    "observation": "观察结果",
     "owner_person_id": "主人编号",
     "path": "路径",
     "peer": "远端地址",
@@ -276,6 +292,8 @@ FIELD_LABELS: Dict[str, str] = {
     "repliesInWindow": "窗口内回复数",
     "result": "结果",
     "retryCount": "重试次数",
+    # ReAct 回环里这是第几次认知往返；0 表示直接给出终局动作，没有先去检索。
+    "roundIndex": "认知回合",
     "scene": "场景变化",
     "seconds": "秒数",
     "senderDisplayName": "发送者显示名",
@@ -312,6 +330,8 @@ FIELD_LABELS: Dict[str, str] = {
     "text": "正文",
     "to_version": "目标版本",
     "tried": "已尝试数量",
+    "topic": "话题",
+    "trigger": "触发来源",
     "turnId": "轮次",
     "userId": "用户编号",
     "version": "版本",
@@ -415,6 +435,48 @@ VALUE_LABELS: Dict[str, str] = {
     "remembered_something": "想起一件相关的事",
     "long_silence": "太久没说话了",
     "promise_due": "之前答应的事到点了",
+
+    # 回复门控的三档处置（``agent.conversation_gate``）。drop 已在上方登记为「拦截」。
+    "deliberate": "交给她定",
+    "force": "必须回应",
+
+    # DROP 理由码：确定的硬过滤，不承载「她大概不想说」。
+    # 与 DELIBERATE 那组分开补是因为此前只登记了 DELIBERATE，控制台于是一半中文
+    # 一半机器码（现场表现：「决策理由：name_mention、被戳了一下、ongoing_topic」）。
+    "self_message": "她自己发的",
+    "asleep": "已经睡了",
+    "consumed": "这条已经处理过",
+    "timeout_window": "超出超时窗",
+    "message_type_disallowed": "这类消息被配置关掉了",
+
+    # FORCE 理由码：用户直接找她，模型没有沉默选项。
+    "at_mention_must_reply": "被 @ 且设了必回",
+    "direct_conversation": "对方在直接跟她说话",
+    "system_confirmation": "系统确认",
+
+    # DELIBERATE 理由码里此前漏登记的几条。
+    "name_mention": "叫到她名字",
+    "direct_mention": "被 @ 了",
+    "reply_to_bot": "回复了她的消息",
+    "ongoing_topic": "她在参与的话题还在继续",
+    "clear_question": "有人明确在问",
+    "recognizable_target": "认得出在说谁",
+
+    # 主动搭话的预算与场景决策理由（``awareness.budget``）。
+    "hidden": "窗口没开着",
+    "budget": "今天主动次数用完了",
+    "scene-reserve": "留给场景的额度不够了",
+    "deferred_to_trigger_mode": "交给扩展触发口径判断",
+
+    # 主动意图类型（``awareness.intent.IntentType``）。
+    "Idle": "闲着想说话",
+    "Scene": "看到场景变化",
+    "Plan": "日程到点",
+    "Promise": "之前的约定",
+
+    # 占用会话的驱动源与跟进触发来源。
+    "proactive": "主动搭话",
+    "direct_follow_up": "私聊跟进",
 }
 
 

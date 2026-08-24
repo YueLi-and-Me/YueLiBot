@@ -288,7 +288,7 @@ def report_config_changes(diffs: List[FileDiff]) -> None:
             rows.append(f'{diff.name} 新增 {item.path} = {item.value}（默认值，已写入文件）')
         for path in diff.removed:
             rows.append(f'{diff.name} 已废弃 {path}（代码不再读取，文件里保留，需要你确认后手删）')
-    print_box('配置字段变更', rows, width=104)
+    print_box('配置字段变更', rows, width=104, source=__name__)
     logger.info(
         'config_fields_changed',
         added=[f'{d.name}:{i.path}' for d in interesting for i in d.added],

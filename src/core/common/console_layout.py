@@ -3,6 +3,10 @@
 启动公告和管线追踪都需要在 Electron 转发、PowerShell 直跑以及 WebUI 日志面板
 中保持相同的结构。这里不依赖终端宽度或光标重绘，只生成普通 Unicode 文本框；
 完整结构化数据仍由各自的日志/事件账本负责保存。
+
+对外暴露 :func:`display_width`（终端显示宽度）、:func:`render_box`（生成框体文本）
+与 :func:`print_box`（写控制台并同步 WebUI 日志面板）。被 ``common.logger`` 的管线
+追踪出口、``common.db.schema_report``、``config.upgrade`` 与 ``main`` 的启动公告使用。
 """
 
 from __future__ import annotations
@@ -11,6 +15,10 @@ from collections.abc import Iterable
 from typing import Any
 
 import unicodedata
+
+from .logger_colors import RESET_COLOR, is_color_enabled, module_color, normalize_logger_name
+
+from src.core.webui.logs import webui_logs
 
 
 _MIN_PANEL_WIDTH = 48
@@ -87,17 +95,35 @@ def _row_text(row: Any) -> str:
     return str(row)
 
 
+def _paint(text: str, tint: str) -> str:
+    """给一段已经排好版的文本套上 ANSI 前景色。
+
+    :param text: 已完成宽度计算的纯文本片段。
+    :param tint: ANSI 前景色序列；空串表示不着色。
+    :return: 着色后的文本；``tint`` 为空时原样返回，保证无色场景零变化。
+    副作用：无。
+    """
+
+    return f"{tint}{text}{RESET_COLOR}" if tint else text
+
+
 def render_box(
     title: str,
     rows: Iterable[Any],
     *,
     width: int = 88,
+    tint: str = "",
 ) -> str:
     """把标题和若干行内容渲染成固定边界的信息框。
 
     :param title: 信息框标题。
     :param rows: 文本行，或 ``(标签, 值)`` 二元组；值会按 ``str`` 展示。
+        必须是**不含 ANSI 转义序列的纯文本**——排版按显示宽度逐字符计算，
+        转义序列会被算进宽度并可能被 :func:`_wrap` 从中间切断。着色由本函数
+        统一施加在框线与标题上，调用方不要自己给行内容上色。
     :param width: 目标外框宽度，范围外会被限制到可读区间。
+    :param tint: 框线与标题的 ANSI 前景色序列；空串表示不着色，此时输出与
+        着色前逐字节一致（重定向到文件与 pytest 下走的就是这一支）。
     :return: 包含顶部、内容和底部边界的多行文本。
     :raises ValueError: ``title`` 为空或 ``rows`` 为空。
     副作用：不写标准输出，不修改传入的行集合。
@@ -106,7 +132,9 @@ def render_box(
     normalized_title = str(title).strip()
     if not normalized_title:
         raise ValueError("信息框标题不能为空")
-    normalized_rows = [_row_text(row).strip() for row in rows]
+    # 只去右侧空白：左侧缩进是调用方表达层级的手段（数据库结构变更的表名清单就靠
+    # 它区分「本次新建的表」与表名本身），两侧都 strip 会把那层结构抹平。
+    normalized_rows = [_row_text(row).rstrip() for row in rows]
     if not normalized_rows:
         raise ValueError("信息框至少需要一行内容")
 
@@ -119,18 +147,57 @@ def render_box(
 
     title_prefix = f"╭─ {title_text} "
     top = title_prefix + "─" * max(panel_width - display_width(title_prefix) - 1, 0) + "╮"
+    bottom = f"╰{'─' * (panel_width - 2)}╯"
+    # padding 由纯文本 row 算出，着色只包在算完之后的框线上，转义序列因此从不
+    # 参与宽度计算，也不会被 _wrap 切断。
     body = [
-        f"│ {row}{' ' * max(content_width - display_width(row), 0)} │"
+        f"{_paint('│', tint)} {row}"
+        f"{' ' * max(content_width - display_width(row), 0)} {_paint('│', tint)}"
         for row in wrapped_rows
     ]
-    bottom = f"╰{'─' * (panel_width - 2)}╯"
-    return "\n".join([top, *body, bottom])
+    return "\n".join([_paint(top, tint), *body, _paint(bottom, tint)])
 
 
-def print_box(title: str, rows: Iterable[Any], *, width: int = 88) -> None:
-    """立即把信息框写到标准输出并刷新，适合启动阶段公告。"""
+def print_box(
+    title: str,
+    rows: Iterable[Any],
+    *,
+    width: int = 88,
+    source: str = "",
+    publish: bool = True,
+) -> None:
+    """把信息框写到标准输出，并（默认）同步发布到 WebUI 日志面板。
 
-    print(render_box(title, rows, width=width), flush=True)
+    两处一起发是必需的，不是顺手：启动公告与数据库结构变更只由本函数呈现，
+    只 ``print`` 的话它们**永远不会出现在 WebUI 实时日志面板**——2026-08-24
+    的现场表现就是用户在面板里找不到迁移记录，而控制台那一屏早被刷走了。
+
+    :param title: 信息框标题。
+    :param rows: 文本行，或 ``(标签, 值)`` 二元组。
+    :param width: 目标外框宽度。
+    :param source: 调用方模块名，通常直接传 ``__name__``；用于从模块色表取框线颜色，
+        使信息框与该模块的普通日志同色。留空表示不着色。着色与否还受
+        :func:`~src.core.common.logger_colors.is_color_enabled` 的全进程裁定约束。
+    :param publish: 是否同时发布到 ``webui_logs``，默认 ``True``。
+        **框里含密钥时必须显式传 ``False``**：WebUI 日志流会把内容推给所有已连接的
+        面板并留在内存积压里，而认证 token 的落盘位置受 ``data/runtime/`` 的权限限制，
+        日志通道没有那道限制。目前唯一的 ``False`` 调用方是 ``main`` 里两个带登录
+        token 的启动公告。
+    :return: 无返回值。
+    :raises ValueError: ``title`` 为空或 ``rows`` 为空时由 :func:`render_box` 抛出。
+    副作用：向标准输出写一个多行信息框并立即刷新；``publish`` 为真时另向
+        ``webui_logs`` 发布同一段文本。
+    """
+
+    tint = (
+        module_color(normalize_logger_name(source))
+        if source and is_color_enabled()
+        else ""
+    )
+    text = render_box(title, rows, width=width, tint=tint)
+    print(text, flush=True)
+    if publish:
+        webui_logs.publish(text)
 
 
 __all__ = ["display_width", "print_box", "render_box"]

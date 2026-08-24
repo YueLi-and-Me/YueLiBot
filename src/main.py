@@ -205,7 +205,7 @@ def _announce_model_routing(cfg: Config) -> None:
         first = candidates[0]
         extra = f'（+{len(candidates) - 1} 个备选）' if len(candidates) > 1 else ''
         rows.append(f'{task:<11}{first.identifier}  ·  {first.provider}{extra}')
-    print_box('模型任务路由', rows, width=96)
+    print_box('模型任务路由', rows, width=96, source=__name__)
 
 
 def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
@@ -242,6 +242,8 @@ def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
         ],
         # 路径和 64 位 token 都需要保持在单行，启动时才能直接复制。
         width=112,
+        # 不发 WebUI 日志流：框里带着当前进程的主凭据，见本函数文档第 1 条。
+        publish=False,
     )
 
 
@@ -257,6 +259,8 @@ def _announce_webui_ready(port: int, token: str) -> None:
         ],
         # 64 位 token 不能在确认框里折行，否则用户复制时容易漏字符。
         width=88,
+        # 同上：含 token，不进 WebUI 日志流。
+        publish=False,
     )
 
 
