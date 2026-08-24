@@ -1,10 +1,10 @@
 /**
- * 人物画像列表页：一人一行展示机器人已认识的全部人物。
+ * 人物与关系列表页：一人一行展示机器人已认识的全部人物。
  *
- * 每行给出显示名、平台身份、好感度、生效事实条数与最后互动时间，点击行进
- * 入完整画像页。列表可按好感度或最后互动时间排序，排序在前端完成（全部行
- * 已在内存中）。数据来自 hooks/use-persons 的 usePersons，本组件不直接发起
- * 请求。
+ * 每行给出显示名、平台身份、同框的群、好感度、生效事实条数与最后互动时间，
+ * 点击行进入完整画像页。列表可按好感度或最后互动时间排序，排序在前端完成
+ * （全部行已在内存中）。数据来自 hooks/use-persons 的 usePersons，本组件不
+ * 直接发起请求。
  */
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
@@ -64,7 +64,7 @@ function SortButton({ column, label, sortKey, sortAsc, onToggle }: SortButtonPro
 
 /** 行网格的列模板；表头与数据行共用，保证列对齐。 */
 const ROW_GRID =
-  'grid grid-cols-[minmax(7rem,1.2fr)_minmax(9rem,1.6fr)_5.5rem_4.5rem_9.5rem_1.25rem] items-center gap-3'
+  'grid grid-cols-[minmax(7rem,1.2fr)_minmax(9rem,1.6fr)_4.5rem_5.5rem_4.5rem_9.5rem_1.25rem] items-center gap-3'
 
 /**
  * 渲染单个人物行。
@@ -79,6 +79,9 @@ function PersonRow({ person }: { person: PersonSummary }) {
   const identitiesLabel = person.identities.length
     ? person.identities.map((identity) => `${identity.platform}:${identity.externalId}`).join('、')
     : '无'
+  /* 同一个人在一个群里可能换过多张群名片，按 stream 去重后才是「同框的群」的数量。 */
+  const sharedGroups = [...new Map(person.groupMemberships.map((m) => [m.streamId, m.groupExternalId])).values()]
+  const groupsTitle = sharedGroups.map((externalId) => `群 ${externalId}`).join('、')
   return (
     <Link
       to={`/persons/${person.id}`}
@@ -90,6 +93,9 @@ function PersonRow({ person }: { person: PersonSummary }) {
       </span>
       <span className="truncate font-mono text-xs text-muted-foreground" title={identitiesLabel}>
         {identitiesLabel}
+      </span>
+      <span className="tabular-nums text-muted-foreground" title={groupsTitle || undefined}>
+        {sharedGroups.length ? `${sharedGroups.length} 个` : '无'}
       </span>
       <span className="tabular-nums">{fixed(person.intimacy, 1)}</span>
       <span
@@ -107,7 +113,7 @@ function PersonRow({ person }: { person: PersonSummary }) {
 }
 
 /**
- * 渲染人物画像列表页。
+ * 渲染人物与关系列表页。
  *
  * @returns 页面容器元素；一人一行的列表，默认可点击进详情页。
  */
@@ -119,6 +125,12 @@ export function PersonsPage() {
   const sorted = useMemo(() => {
     const rows = [...persons]
     rows.sort((left, right) => {
+      /* owner 的 bondUpdatedAt 被每小时结算推进、界面按「—」展示，按最后互动
+       * 排序时不能让它凭一个不展示的值占位置，固定沉底（与升降序无关）。 */
+      if (sortKey === 'bondUpdatedAt') {
+        if (left.kind === 'owner' && right.kind !== 'owner') return 1
+        if (right.kind === 'owner' && left.kind !== 'owner') return -1
+      }
       const delta = sortKey === 'intimacy' ? left.intimacy - right.intimacy : left.bondUpdatedAt - right.bondUpdatedAt
       return sortAsc ? delta : -delta
     })
@@ -139,7 +151,7 @@ export function PersonsPage() {
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
       <PageHeader
         eyebrow="YUELI · CONSOLE"
-        title="人物画像"
+        title="人物与关系"
         subtitle="每个人的身份、关系与事实记忆彼此独立。"
         actions={
           <Link to="/">
@@ -152,10 +164,11 @@ export function PersonsPage() {
       {!loading && !error && persons.length === 0 ? <Empty>还没有认识任何人。</Empty> : null}
       {sorted.length ? (
         <Card className="animate-rise overflow-x-auto">
-          <CardBody className="min-w-[640px] p-0">
+          <CardBody className="min-w-[720px] p-0">
             <div className={cn(ROW_GRID, 'border-b border-border px-4 py-2 text-xs font-medium text-muted-foreground')}>
               <span>显示名</span>
               <span>平台身份</span>
+              <span>同框的群</span>
               <SortButton column="intimacy" label="好感度" sortKey={sortKey} sortAsc={sortAsc} onToggle={toggleSort} />
               <span>事实</span>
               <SortButton column="bondUpdatedAt" label="最后互动" sortKey={sortKey} sortAsc={sortAsc} onToggle={toggleSort} />
