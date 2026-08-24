@@ -135,16 +135,36 @@ def set_color_enabled(enabled: bool) -> None:
     _color_override = enabled
 
 
-def is_color_enabled() -> bool:
-    """判断当前控制台是否允许输出 ANSI 颜色。
+def detect_color_support() -> bool:
+    """只探测终端能力，**不受裁定值影响**。
 
-    :return: :func:`set_color_enabled` 已裁定时返回该裁定值；否则标准输出是 TTY
-        或环境变量 `YUELI_FORCE_COLOR` 等于 `1` 时返回 `True`。
+    与 :func:`is_color_enabled` 分开是必需的，不是重复：裁定值是模块级全局状态，
+    而做裁定的 ``initialize_logging`` 本身必须从环境重新推导。
+
+    - 现象：两者合一时，先跑过一次无色初始化的进程里，后续
+      ``initialize_logging`` 会读到上一次留下的裁定值，新设的 ``YUELI_FORCE_COLOR``
+      与 ``log.color_scope`` 全部失效。
+    - 原因：``colored = is_color_enabled() and ...`` 把上一次的**结论**当成了这一次的
+      **输入**，裁定于是自我引用并永久粘住。
+    - 后果：全量测试里表现为顺序依赖——单跑通过、连跑失败，且失败的是断言日志
+      渲染文本的用例（真机上则是重新初始化日志后颜色再也回不来）。
+
+    :return: 标准输出是 TTY，或环境变量 ``YUELI_FORCE_COLOR`` 等于 ``1``。
+    副作用：只读取标准输出状态和进程环境变量。
+    """
+    return sys.stdout.isatty() or os.environ.get("YUELI_FORCE_COLOR") == "1"
+
+
+def is_color_enabled() -> bool:
+    """供**消费方**判断是否着色：管线追踪出口与信息框都读这一个开关。
+
+    :return: :func:`set_color_enabled` 已裁定时返回该裁定值；否则回落到
+        :func:`detect_color_support`。做裁定的一方不要调用本函数，用探测函数。
     副作用：只读取模块级裁定值、标准输出状态和进程环境变量。
     """
     if _color_override is not None:
         return _color_override
-    return sys.stdout.isatty() or os.environ.get("YUELI_FORCE_COLOR") == "1"
+    return detect_color_support()
 
 
 def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
@@ -353,6 +373,7 @@ __all__ = [
     "MODULE_COLORS",
     "RESET_COLOR",
     "SEPARATOR_COLOR",
+    "detect_color_support",
     "enable_windows_ansi",
     "is_color_enabled",
     "level_color",

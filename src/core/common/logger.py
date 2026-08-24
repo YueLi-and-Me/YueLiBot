@@ -27,6 +27,7 @@ from .logger_colors import (
     FIELD_VALUE_COLOR,
     RESET_COLOR,
     SEPARATOR_COLOR,
+    detect_color_support,
     enable_windows_ansi,
     is_color_enabled,
     level_color,
@@ -636,7 +637,9 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
     console_level = _resolve_level(config.console_level, 'log.console_level')         if config.console_level else level
     file_level = _resolve_level(config.file_level, 'log.file_level')         if config.file_level else level
 
-    colored = is_color_enabled() and config.color_scope != 'none'
+    # 用探测而非 is_color_enabled()：后者会返回上一次的裁定值，让本次初始化
+    # 读到自己上次的结论，新的环境与 color_scope 就再也生效不了（见 detect_color_support）。
+    colored = detect_color_support() and config.color_scope != 'none'
     # 裁定值写回色表模块，管线追踪出口与信息框此后都读同一个开关，
     # 不会再出现「普通日志有色、信息框全灰」这种同屏两套观感。
     set_color_enabled(colored)
