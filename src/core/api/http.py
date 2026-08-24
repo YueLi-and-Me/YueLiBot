@@ -12,6 +12,7 @@ from typing import List, Literal
 
 import asyncio
 import os
+import sqlite3
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -31,6 +32,7 @@ from .state import app_state   # 全局服务状态
 from src.core.agent.action_protocol import ActionDecisionEvent, GateInputFacts
 from src.core.agent.conversation_gate import GateRequest, decide_disposition, mentions_bot_name
 from src.core.common.clock import now as current_time
+from src.core.common.db.connection import get_db, run_in_thread
 from src.core.common.logger import get_logger
 from src.core.config.loader import get_config
 from src.core.observe import events as trace
@@ -1110,3 +1112,258 @@ async def person_detail(person_id: int) -> dict:
         return app_state.chat.person_profile(person_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+# ------------------------------------------------------- 黑话与表达方式（只读浏览）
+# 以下两条路由只做 SELECT：词条由历史迁移落库（jargon 1000 条 confirmed、
+# expressions 3362 条），运行时消费走 agent/jargon.py 的查表命中，与本处无关。
+# SQL 为完全静态文本：全部筛选值一律参数绑定，可选条件用 ``? IS NULL``
+# 参数开关表达；LIKE 关键词先转义 %、_ 与 \，排序方向来自 Literal 枚举、
+# 只决定执行哪一条静态语句，杜绝任何外部输入进 SQL 文本。
+
+
+def _like_keyword(keyword: str) -> str:
+    """把用户关键词转成转义后的 LIKE 模式。
+
+    :param keyword: 原始关键词，调用方已去空白。
+    :return: ``%关键词%`` 模式，其中 ``%``、``_``、``\\`` 已按 ESCAPE 子句转义。
+    """
+    escaped = (
+        keyword
+        .replace('\\', '\\\\')
+        .replace('%', r'\%')
+        .replace('_', r'\_')
+    )
+    return f'%{escaped}%'
+
+
+def _list_jargon_rows(
+    db: sqlite3.Connection,
+    entry_status: str,
+    stream_id: int | None,
+    global_only: bool,
+    keyword: str | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict], int]:
+    """同步查询黑话词条一页与符合条件的总数。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param entry_status: 只取该状态的词条（confirmed / pending）。
+    :param stream_id: 只取该会话专属词条；``None`` 表示不限。
+    :param global_only: 为真时只取全局词条（``stream_id IS NULL``）。
+    :param keyword: 关键词，同时匹配词与含义；``None`` 表示不过滤。
+    :param limit: 页大小。
+    :param offset: 偏移量。
+    :return: ``(词条字典列表, 总数)``。
+    :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
+    """
+    # 与查询文本占位符一一对应的绑定参数：NULL / 0 即关闭对应可选条件。
+    keyword_pattern = _like_keyword(keyword) if keyword else None
+    filters = [
+        entry_status,               # status = ?
+        stream_id, stream_id,       # ? IS NULL OR stream_id = ?
+        1 if global_only else 0,    # ? = 0 OR stream_id IS NULL
+        keyword_pattern, keyword_pattern, keyword_pattern,  # LIKE 开关与两个模式
+    ]
+    total = int(db.execute(
+        '''SELECT COUNT(*) FROM jargon
+           WHERE status = ?
+             AND (? IS NULL OR stream_id = ?)
+             AND (? = 0 OR stream_id IS NULL)
+             AND (? IS NULL OR term LIKE ? ESCAPE '\\' OR meaning LIKE ? ESCAPE '\\')''',
+        filters,
+    ).fetchone()[0])
+    rows = db.execute(
+        '''SELECT id, term, meaning, stream_id, status, hits, source, created_at
+           FROM jargon
+           WHERE status = ?
+             AND (? IS NULL OR stream_id = ?)
+             AND (? = 0 OR stream_id IS NULL)
+             AND (? IS NULL OR term LIKE ? ESCAPE '\\' OR meaning LIKE ? ESCAPE '\\')
+           ORDER BY id
+           LIMIT ? OFFSET ?''',
+        [*filters, limit, offset],
+    ).fetchall()
+    entries = [
+        {
+            'id': row['id'],
+            'term': row['term'],
+            'meaning': row['meaning'],
+            'streamId': row['stream_id'],
+            'status': row['status'],
+            'hits': row['hits'],
+            'source': row['source'],
+            'createdAt': row['created_at'],
+        }
+        for row in rows
+    ]
+    return entries, total
+
+
+def _list_expression_rows(
+    db: sqlite3.Connection,
+    stream_id: int | None,
+    use_desc: bool,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict], int]:
+    """同步查询表达方式一页与总数，按使用次数排序、id 作稳定次序。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param stream_id: 只取该会话的表达；``None`` 表示不限。
+    :param use_desc: 为真按使用次数降序，否则升序。
+    :param limit: 页大小。
+    :param offset: 偏移量。
+    :return: ``(表达字典列表, 总数)``。
+    :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
+    """
+    # ? IS NULL 参数开关：传 NULL 即关闭会话过滤，SQL 文本保持完全静态。
+    filters = [stream_id, stream_id]
+    total = int(db.execute(
+        'SELECT COUNT(*) FROM expressions WHERE (? IS NULL OR stream_id = ?)',
+        filters,
+    ).fetchone()[0])
+    if use_desc:
+        rows = db.execute(
+            '''SELECT id, situation, style, stream_id, use_count, source, created_at
+               FROM expressions
+               WHERE (? IS NULL OR stream_id = ?)
+               ORDER BY use_count DESC, id DESC
+               LIMIT ? OFFSET ?''',
+            [*filters, limit, offset],
+        ).fetchall()
+    else:
+        rows = db.execute(
+            '''SELECT id, situation, style, stream_id, use_count, source, created_at
+               FROM expressions
+               WHERE (? IS NULL OR stream_id = ?)
+               ORDER BY use_count ASC, id ASC
+               LIMIT ? OFFSET ?''',
+            [*filters, limit, offset],
+        ).fetchall()
+    entries = [
+        {
+            'id': row['id'],
+            'situation': row['situation'],
+            'style': row['style'],
+            'streamId': row['stream_id'],
+            'useCount': row['use_count'],
+            'source': row['source'],
+            'createdAt': row['created_at'],
+        }
+        for row in rows
+    ]
+    return entries, total
+
+
+def _unreadable_db() -> HTTPException:
+    """构造数据库未初始化的 503 异常，供两条只读路由复用。"""
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail='数据库未初始化',
+    )
+
+
+def _read_db_or_503() -> sqlite3.Connection:
+    """取进程级数据库连接，把「未初始化」精确圈定在 get_db 这一步。
+
+    RuntimeError 在查询路径里还可能有别的来源，那些不属于「未初始化」；
+    因此只有这里捕获转换，路由层的其余异常一律按查询失败记录并返回 500。
+
+    :return: 进程级 SQLite 连接。
+    :raises fastapi.HTTPException: 尚未调用 ``open_db`` 时 503。
+    """
+    try:
+        return get_db()
+    except RuntimeError as exc:
+        raise _unreadable_db() from exc
+
+
+@router.get('/api/jargon', dependencies=[Depends(_auth)])
+async def jargon_entries(
+    entry_status: Literal['confirmed', 'pending'] = Query(
+        default='confirmed', alias='status',
+    ),
+    stream_id: int | None = Query(default=None, alias='streamId', ge=1),
+    global_only: bool = Query(default=False, alias='globalOnly'),
+    keyword: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """分页浏览黑话词表，只读。
+
+    ``streamId`` 选中某会话的专属词条，``globalOnly`` 只看全局词条，两者都不传
+    则全部返回——词条响应里的 ``streamId`` 为 ``null`` 即全局，前端据此区分
+    「全局通用」与「只在某个群成立」。默认只给已确认词条，待定候选需显式传
+    ``status=pending``。
+
+    :param entry_status: 词条状态过滤，默认 ``confirmed``。
+    :param stream_id: 会话 ID 过滤；``None`` 表示不限。
+    :param global_only: 为真时只返回全局词条。
+    :param keyword: 关键词，同时匹配词条与含义。
+    :param limit: 页大小，1 到 200，默认 50。
+    :param offset: 偏移量，从 0 起。
+
+    :return: ``entries`` 词条列表与 ``total`` 符合条件总数。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；查询失败时 500，
+        完整 traceback 以 ``jargon_query_failed`` 事件落日志。
+
+    副作用：
+        仅读取 jargon 表，不写任何列，不影响运行时的提示词注入路径。
+    """
+    cleaned_keyword = keyword.strip() if keyword else None
+    if cleaned_keyword == '':
+        cleaned_keyword = None
+    db = _read_db_or_503()
+    try:
+        entries, total = await run_in_thread(
+            _list_jargon_rows,
+            db, entry_status, stream_id, global_only, cleaned_keyword, limit, offset,
+        )
+    except Exception as exc:
+        logger.exception('jargon_query_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'黑话词表查询失败：{exc}',
+        ) from exc
+    return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}
+
+
+@router.get('/api/expressions', dependencies=[Depends(_auth)])
+async def expression_entries(
+    stream_id: int | None = Query(default=None, alias='streamId', ge=1),
+    order: Literal['use_desc', 'use_asc'] = Query(default='use_desc'),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """分页浏览历史迁移的表达方式，只读。
+
+    这些表达尚无运行时消费方（回复生成仍走配置里的固定序列），页面前端会
+    如实标注「尚未接入生成」；本路由同样只做展示查询。
+
+    :param stream_id: 会话 ID 过滤；``None`` 表示不限。
+    :param order: ``use_desc`` 按使用次数降序（默认），``use_asc`` 升序。
+    :param limit: 页大小，1 到 200，默认 50。
+    :param offset: 偏移量，从 0 起。
+
+    :return: ``entries`` 表达列表与 ``total`` 符合条件总数。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；查询失败时 500，
+        完整 traceback 以 ``expression_query_failed`` 事件落日志。
+
+    副作用：
+        仅读取 expressions 表，不写任何列。
+    """
+    db = _read_db_or_503()
+    try:
+        entries, total = await run_in_thread(
+            _list_expression_rows,
+            db, stream_id, order == 'use_desc', limit, offset,
+        )
+    except Exception as exc:
+        logger.exception('expression_query_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'表达方式查询失败：{exc}',
+        ) from exc
+    return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}

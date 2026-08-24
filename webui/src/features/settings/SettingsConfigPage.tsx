@@ -34,6 +34,7 @@ import {
   type SettingsSnapshot,
   type SettingsTableListSection,
 } from '@/hooks/use-settings-config'
+import { hasDraftChanges, useRestart } from '@/hooks/use-restart'
 
 type SettingsValues = SettingsSnapshot['values']
 type SettingsRecord = Record<string, unknown>
@@ -423,6 +424,9 @@ export function SettingsConfigPage() {
   const state = useSettingsConfig()
   const [draft, setDraft] = useState<SettingsValues | null>(null)
   const [activeFile, setActiveFile] = useState('bot.toml')
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
+  // 与模型页共用同一段重启逻辑；确认弹窗在草稿有未保存改动时加丢失提醒。
+  const { restarting, restartBackend } = useRestart()
 
   useEffect(() => {
     const snapshot = state.snapshot
@@ -542,6 +546,14 @@ export function SettingsConfigPage() {
               <Save className="size-4" aria-hidden="true" />
               保存配置
             </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setRestartConfirmOpen(true)}
+              disabled={state.busy || restarting}
+            >
+              <RefreshCw className="size-4" aria-hidden="true" />
+              重启后端
+            </Button>
           </>
         }
       />
@@ -598,6 +610,21 @@ export function SettingsConfigPage() {
           })}
         </div>
       ) : null}
+
+      <ConfirmDialog
+        open={restartConfirmOpen}
+        title="重启月璃"
+        description={hasDraftChanges(draft, state.snapshot?.values ?? null)
+          ? '重启期间她会暂时无法回复。当前有未保存的修改，重启后将丢失。'
+          : '重启期间她会暂时无法回复。'}
+        confirmText="重启"
+        danger
+        onConfirm={() => {
+          setRestartConfirmOpen(false)
+          void restartBackend()
+        }}
+        onCancel={() => setRestartConfirmOpen(false)}
+      />
     </div>
   )
 }
