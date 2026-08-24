@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from html import escape
-from typing import Any, Callable, Dict, Iterable, List, Mapping
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
 import asyncio
 import inspect
@@ -57,7 +57,7 @@ from src.core.agent.conversation_gate import (
     mentions_bot_name,
 )
 from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
-from src.core.agent.fact_extract import Participant, run_extraction
+from src.core.agent.fact_extract import Participant, read_cursor, run_extraction
 from src.core.agent.jargon import lookup_jargon
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import (
@@ -5192,20 +5192,26 @@ class ChatService:
         finally:
             self._summarizing.discard(stream_id)
 
-    def _extraction_participants(self, stream_id: int) -> list[Participant]:
-        """取本会话近期发言者，解析成带平台编号的在场者名单。
+    def _extraction_participants(self, batch: Sequence[StoredMessage]) -> list[Participant]:
+        """从待抽取的这批消息里解析出在场者名单。
 
-        只取最近发言过的人而不是全体成员：群里挂着几百号人，逐个查身份既慢又会
-        把提示词里的名单撑爆，而没说过话的人这批对话里也不会有关于他的事实。
+        **必须按批解析，不能用「最近发言的人」**：抽取游标从 0 起步，第一批取的是
+        这个会话最老的十几条消息，而那时候说话的人未必还在最近发言名单里。名单对不上
+        的后果不是报错，是模型抽出的事实全部按「归属不明」被丢弃——静默地什么都不写。
 
-        :param stream_id: 目标会话 ID。
-        :return: 至多 :data:`_EXTRACTION_PARTICIPANT_LIMIT` 个在场者；没有可解析
-            身份的人会被跳过——归属只认平台编号，昵称不作数。
-        副作用：只读 messages 与 identities，不写任何表。
+        :param batch: 本次交给模型的消息批，按 ID 正序。
+        :return: 至多 :data:`_EXTRACTION_PARTICIPANT_LIMIT` 个在场者，按批内首次发言
+            顺序排列；解析不出平台身份的人会被跳过——归属只认编号，昵称不作数。
+        副作用：只读 identities，不写任何表。
         """
 
+        seen: list[int] = []
+        for message in batch:
+            person_id = message.sender_person_id
+            if person_id is not None and person_id not in seen:
+                seen.append(person_id)
         people: list[Participant] = []
-        for person_id in self.memory.recent_speakers(stream_id)[:_EXTRACTION_PARTICIPANT_LIMIT]:
+        for person_id in seen[:_EXTRACTION_PARTICIPANT_LIMIT]:
             identities = self._registry.list_identities(person_id)
             if not identities:
                 continue
@@ -5232,7 +5238,14 @@ class ChatService:
             return
         self._extracting.add(stream_id)
         try:
-            participants = self._extraction_participants(stream_id)
+            # 先按同一口径取出这一批，用它的发言人解析在场者；run_extraction 内部会
+            # 再读一次同样的批次。多一次只读查询换取「名单与批次必然对齐」。
+            cursor = read_cursor(self.memory, stream_id)
+            if self.memory.message_count_after(stream_id, cursor) < self._fact_extract_trigger:
+                return
+            participants = self._extraction_participants(
+                self.memory.messages_after(stream_id, cursor, self._fact_extract_batch)
+            )
             if not participants:
                 return
             await run_extraction(
