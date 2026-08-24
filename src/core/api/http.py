@@ -12,6 +12,7 @@ from typing import List, Literal
 
 import asyncio
 import os
+import sqlite3
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -1132,6 +1133,7 @@ def _like_keyword(keyword: str) -> str:
 
 
 def _list_jargon_rows(
+    db: sqlite3.Connection,
     entry_status: str,
     stream_id: int | None,
     global_only: bool,
@@ -1141,6 +1143,7 @@ def _list_jargon_rows(
 ) -> tuple[list[dict], int]:
     """同步查询黑话词条一页与符合条件的总数。
 
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
     :param entry_status: 只取该状态的词条（confirmed / pending）。
     :param stream_id: 只取该会话专属词条；``None`` 表示不限。
     :param global_only: 为真时只取全局词条（``stream_id IS NULL``）。
@@ -1150,7 +1153,6 @@ def _list_jargon_rows(
     :return: ``(词条字典列表, 总数)``。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
     """
-    db = get_db()
     # 与查询文本占位符一一对应的绑定参数：NULL / 0 即关闭对应可选条件。
     keyword_pattern = _like_keyword(keyword) if keyword else None
     filters = [
@@ -1195,6 +1197,7 @@ def _list_jargon_rows(
 
 
 def _list_expression_rows(
+    db: sqlite3.Connection,
     stream_id: int | None,
     use_desc: bool,
     limit: int,
@@ -1202,6 +1205,7 @@ def _list_expression_rows(
 ) -> tuple[list[dict], int]:
     """同步查询表达方式一页与总数，按使用次数排序、id 作稳定次序。
 
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
     :param stream_id: 只取该会话的表达；``None`` 表示不限。
     :param use_desc: 为真按使用次数降序，否则升序。
     :param limit: 页大小。
@@ -1209,7 +1213,6 @@ def _list_expression_rows(
     :return: ``(表达字典列表, 总数)``。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
     """
-    db = get_db()
     # ? IS NULL 参数开关：传 NULL 即关闭会话过滤，SQL 文本保持完全静态。
     filters = [stream_id, stream_id]
     total = int(db.execute(
@@ -1257,6 +1260,21 @@ def _unreadable_db() -> HTTPException:
     )
 
 
+def _read_db_or_503() -> sqlite3.Connection:
+    """取进程级数据库连接，把「未初始化」精确圈定在 get_db 这一步。
+
+    RuntimeError 在查询路径里还可能有别的来源，那些不属于「未初始化」；
+    因此只有这里捕获转换，路由层的其余异常一律按查询失败记录并返回 500。
+
+    :return: 进程级 SQLite 连接。
+    :raises fastapi.HTTPException: 尚未调用 ``open_db`` 时 503。
+    """
+    try:
+        return get_db()
+    except RuntimeError as exc:
+        raise _unreadable_db() from exc
+
+
 @router.get('/api/jargon', dependencies=[Depends(_auth)])
 async def jargon_entries(
     entry_status: Literal['confirmed', 'pending'] = Query(
@@ -1283,7 +1301,8 @@ async def jargon_entries(
     :param offset: 偏移量，从 0 起。
 
     :return: ``entries`` 词条列表与 ``total`` 符合条件总数。
-    :raises fastapi.HTTPException: 数据库未初始化时 503，查询失败时 500。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；查询失败时 500，
+        完整 traceback 以 ``jargon_query_failed`` 事件落日志。
 
     副作用：
         仅读取 jargon 表，不写任何列，不影响运行时的提示词注入路径。
@@ -1291,14 +1310,14 @@ async def jargon_entries(
     cleaned_keyword = keyword.strip() if keyword else None
     if cleaned_keyword == '':
         cleaned_keyword = None
+    db = _read_db_or_503()
     try:
         entries, total = await run_in_thread(
             _list_jargon_rows,
-            entry_status, stream_id, global_only, cleaned_keyword, limit, offset,
+            db, entry_status, stream_id, global_only, cleaned_keyword, limit, offset,
         )
-    except RuntimeError as exc:
-        raise _unreadable_db() from exc
     except Exception as exc:
+        logger.exception('jargon_query_failed')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f'黑话词表查询失败：{exc}',
@@ -1324,19 +1343,20 @@ async def expression_entries(
     :param offset: 偏移量，从 0 起。
 
     :return: ``entries`` 表达列表与 ``total`` 符合条件总数。
-    :raises fastapi.HTTPException: 数据库未初始化时 503，查询失败时 500。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；查询失败时 500，
+        完整 traceback 以 ``expression_query_failed`` 事件落日志。
 
     副作用：
         仅读取 expressions 表，不写任何列。
     """
+    db = _read_db_or_503()
     try:
         entries, total = await run_in_thread(
             _list_expression_rows,
-            stream_id, order == 'use_desc', limit, offset,
+            db, stream_id, order == 'use_desc', limit, offset,
         )
-    except RuntimeError as exc:
-        raise _unreadable_db() from exc
     except Exception as exc:
+        logger.exception('expression_query_failed')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f'表达方式查询失败：{exc}',
