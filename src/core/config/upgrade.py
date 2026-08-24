@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Type, get_args, get_origin
 
+import re
 import shutil
 import tomllib
 import types
@@ -66,7 +67,8 @@ class FileDiff:
 
     :ivar name: 文件名，用于展示。
     :ivar added: 需要补进文件的新增字段。
-    :ivar removed: 文件里有但 schema 已不认识的字段路径，只报告不删除。
+    :ivar removed: 文件里有但 schema 已不认识的字段路径；升级时就地删除，
+        这里保留的是**实际删掉的**那些，用于展示。
     """
 
     name: str
@@ -269,6 +271,68 @@ def apply_added_fields(path: Path, added: List[AddedField]) -> None:
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
+def apply_removed_fields(path: Path, removed: List[str]) -> List[str]:
+    """把代码已经不再读取的字段从 TOML 里删掉。
+
+    改动前这些字段只被报告、从不删除，于是**每次启动都重报同一份清单**，
+    而那个信息框的意义本来是「这次启动改了什么」。
+
+    做法：按行删（与 :func:`apply_added_fields` 同一条纪律——重写整份会丢掉用户的
+    注释与排版），删完**重新解析一遍**；解析不过就整份还原，当作没删。有这道
+    回读校验兜底，删除逻辑本身就不必去处理跨行数组、引号里的方括号这些边角情况——
+    真遇上了就是还原，而不是把配置改成起不来。
+
+    注释一律不动：孤立的注释无害，误删用户自己写的说明无法挽回。
+
+    :param path: 目标 TOML 文件。
+    :param removed: 废弃字段的点分路径，例如 ``schedule.min_slots``；整段废弃时传表名。
+    :return: 实际删掉的路径；文件里已经没有、或删后解析失败时返回空列表。
+    :raises OSError: 读写文件失败。
+    副作用：改写目标文件；调用前必须已经完成 :func:`backup_config_directory`。
+    """
+
+    if not removed:
+        return []
+    original = path.read_text(encoding='utf-8')
+    lines = original.splitlines()
+    wanted = set(removed)
+
+    kept: List[str] = []
+    dropped: List[str] = []
+    section = ''
+    dropping_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            section = stripped[1:-1].strip().strip('"\'')
+            dropping_section = section in wanted
+            if dropping_section:
+                dropped.append(section)
+                continue
+        elif dropping_section:
+            continue
+        else:
+            match = re.match(r'^\s*(?:"([^"]+)"|\'([^\']+)\'|([A-Za-z0-9_\-]+))\s*=', line)
+            key = (match.group(1) or match.group(2) or match.group(3)) if match else None
+            full = f'{section}.{key}' if section and key else key
+            if full in wanted:
+                dropped.append(full)
+                continue
+        kept.append(line)
+
+    if not dropped:
+        return []
+    text = '\n'.join(kept).rstrip('\n') + '\n'
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        # 删出了语法错误（多半是跨行值只删掉了首行）：原样留着，交回给报告去提示。
+        logger.warning('config_prune_reverted', file=path.name, fields=dropped)
+        return []
+    path.write_text(text, encoding='utf-8')
+    return dropped
+
+
 def report_config_changes(diffs: List[FileDiff]) -> None:
     """把配置差异逐条打印成控制台信息框。
 
@@ -287,7 +351,7 @@ def report_config_changes(diffs: List[FileDiff]) -> None:
         for item in diff.added:
             rows.append(f'{diff.name} 新增 {item.path} = {item.value}（默认值，已写入文件）')
         for path in diff.removed:
-            rows.append(f'{diff.name} 已废弃 {path}（代码不再读取，文件里保留，需要你确认后手删）')
+            rows.append(f'{diff.name} 删除 {path}（代码已不再读取，旧值见本次配置备份）')
     print_box('配置字段变更', rows, width=104, source=__name__)
     logger.info(
         'config_fields_changed',
@@ -319,9 +383,13 @@ def upgrade_config_directory(
         raw = tomllib.loads(path.read_text(encoding='utf-8'))
         diffs.append(diff_document(raw, model, name))
 
-    if any(diff.added for diff in diffs):
+    # 删除与补齐都要先备份：config/ 含明文密钥又不在版本控制里，改坏没有第二份。
+    if any(diff.added or diff.removed for diff in diffs):
         backup_config_directory(directory, data_dir)
         for diff in diffs:
             apply_added_fields(directory / diff.name, diff.added)
+            # 废弃字段就地删除，而不是留在文件里等人手删。留着的代价是这个信息框
+            # 每次启动都重报同一份清单，「本次启动改了什么」的意义随之失效。
+            diff.removed = apply_removed_fields(directory / diff.name, diff.removed)
     report_config_changes(diffs)
     return diffs
