@@ -32,7 +32,7 @@ interface StatusItem {
  * @returns 状态卡数组，顺序固定。
  */
 function buildItems(payload: ObservabilityPayload): StatusItem[] {
-  const sleep = record(payload.sleep)
+  const activity = record(payload.activity)
   const impulse = record(payload.impulse)
   const vision = record(record(payload.sensing).visionStats)
   const used = numeric(impulse.used) ?? 0
@@ -42,7 +42,7 @@ function buildItems(payload: ObservabilityPayload): StatusItem[] {
     {
       label: '当前状态',
       value: payload.selfState.statusLabel,
-      detail: `睡意 ${fixed(sleep.probability, 2)} · 距入睡 ${fixed(sleep.minutesFromBedtime)} 分钟`,
+      detail: `${displayValue(activity.kind)} · ${displayValue(activity.doing)}`,
       icon: <MoonStar />,
       tintClass: 'bg-tint-coral/10 text-tint-coral',
     },

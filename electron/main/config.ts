@@ -74,16 +74,8 @@ export const DEFAULT_CONFIG: YueliConfig = {
     max_replies_in_window: 3,
   },
   schedule: {
-    min_slots: 8,
-    max_slots: 10,
     sleep_enabled: true,
-    fallback_bedtime: '23:00',
-    fallback_wake: '07:00',
-    bedtime_day_boundary: '02:00',
-    fallback_activity: '按自己的节奏度过这段时间',
-    fallback_mood: '状态平稳',
     fallback_theme: '按自己的节奏度过今天。',
-    fallback_carry_over: '无',
     generation_retry_interval_minutes: 10,
   },
   personality: {
@@ -603,38 +595,14 @@ function parseConversation(
 }
 
 /**
- * 校验 24 小时制的 `HH:MM` 时间字符串。
- *
- * @param value 待校验的时间文本，必须使用两位小时和两位分钟。
- * @param path 用于错误信息的配置路径。
- * @returns {void} 无返回值；校验通过表示时间符合 24 小时制格式。
- * @throws Error 当格式无效、小时不在 00~23 或分钟不在 00~59 时抛出。
- */
-function assertClock(value: string, path: string): void {
-  const match = /^(\d{2}):(\d{2})$/.exec(value)
-  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) {
-    throw new Error(`${path} 必须是合法 HH:MM 时间`)
-  }
-}
-
-/**
- * 校验日程段数量、备用时间、文本长度和生成重试间隔。
+ * 校验每日方向的备用主题和生成重试间隔。
  *
  * @param schedule 待校验的日程配置。
  * @param path 用于错误信息的配置路径。
- * @returns {void} 无返回值；校验通过表示日程字段满足范围和格式约束。
- * @throws Error 当数量范围、时间格式、文本长度或重试间隔不满足约束时抛出。
+ * @returns {void} 无返回值；校验通过表示方向字段满足范围和格式约束。
+ * @throws Error 当主题文本或重试间隔不满足约束时抛出。
  */
 function assertSchedule(schedule: YueliConfig['schedule'], path: string): void {
-  if (!Number.isInteger(schedule.min_slots) || schedule.min_slots < 1 || schedule.min_slots > 24) {
-    throw new Error(`${path}.min_slots 必须是 1 到 24 的整数`)
-  }
-  if (!Number.isInteger(schedule.max_slots) || schedule.max_slots < 1 || schedule.max_slots > 24) {
-    throw new Error(`${path}.max_slots 必须是 1 到 24 的整数`)
-  }
-  if (schedule.min_slots > schedule.max_slots) {
-    throw new Error(`${path}.min_slots 不能大于 max_slots`)
-  }
   if (
     !Number.isInteger(schedule.generation_retry_interval_minutes)
     || schedule.generation_retry_interval_minutes < 1
@@ -642,19 +610,9 @@ function assertSchedule(schedule: YueliConfig['schedule'], path: string): void {
   ) {
     throw new Error(`${path}.generation_retry_interval_minutes 必须是 1 到 1440 的整数`)
   }
-  assertClock(schedule.fallback_bedtime, `${path}.fallback_bedtime`)
-  assertClock(schedule.fallback_wake, `${path}.fallback_wake`)
-  assertClock(schedule.bedtime_day_boundary, `${path}.bedtime_day_boundary`)
-  for (const [field, maxLength] of [
-    ['fallback_activity', 72],
-    ['fallback_mood', 40],
-    ['fallback_theme', 72],
-    ['fallback_carry_over', 72],
-  ] as const) {
-    const value = schedule[field].trim()
-    if (!value || value.length > maxLength) {
-      throw new Error(`${path}.${field} 必须是 1 到 ${maxLength} 个字符`)
-    }
+  const theme = schedule.fallback_theme.trim()
+  if (!theme || theme.length > 72) {
+    throw new Error(`${path}.fallback_theme 必须是 1 到 72 个字符`)
   }
 }
 
@@ -673,22 +631,10 @@ function parseSchedule(
   const value = recordAt(document, 'schedule', path)
   const defaults = DEFAULT_CONFIG.schedule
   const schedule: YueliConfig['schedule'] = {
-    min_slots: numberAtOr(value, 'min_slots', defaults.min_slots, path),
-    max_slots: numberAtOr(value, 'max_slots', defaults.max_slots, path),
     sleep_enabled: value.sleep_enabled === undefined
       ? defaults.sleep_enabled
       : booleanAt(value, 'sleep_enabled', path),
-    fallback_bedtime: stringAtOr(value, 'fallback_bedtime', defaults.fallback_bedtime, path),
-    fallback_wake: stringAtOr(value, 'fallback_wake', defaults.fallback_wake, path),
-    bedtime_day_boundary: stringAtOr(
-      value, 'bedtime_day_boundary', defaults.bedtime_day_boundary, path,
-    ),
-    fallback_activity: stringAtOr(value, 'fallback_activity', defaults.fallback_activity, path),
-    fallback_mood: stringAtOr(value, 'fallback_mood', defaults.fallback_mood, path),
     fallback_theme: stringAtOr(value, 'fallback_theme', defaults.fallback_theme, path),
-    fallback_carry_over: stringAtOr(
-      value, 'fallback_carry_over', defaults.fallback_carry_over, path,
-    ),
     generation_retry_interval_minutes: numberAtOr(
       value,
       'generation_retry_interval_minutes',
@@ -1616,20 +1562,10 @@ reply_window_minutes = ${cfg.group_chat.reply_window_minutes}
 max_replies_in_window = ${cfg.group_chat.max_replies_in_window}
 
 [schedule]
-# 每天生成的日程段数范围
-min_slots = ${cfg.schedule.min_slots}
-max_slots = ${cfg.schedule.max_slots}
-# 是否启用自动睡眠状态；关闭后 bedtime/wake 仅保留为结构字段
+# 是否允许活动决策选择 sleep；关闭后仍可选择会回应的 rest
 sleep_enabled = ${cfg.schedule.sleep_enabled}
-# 模型不可用或输出不合法时使用的作息与日程文本
-fallback_bedtime = ${tomlString(cfg.schedule.fallback_bedtime)}
-fallback_wake = ${tomlString(cfg.schedule.fallback_wake)}
-# 小于等于此时间的 bedtime 视为计划日结束后的次日时间
-bedtime_day_boundary = ${tomlString(cfg.schedule.bedtime_day_boundary)}
-fallback_activity = ${tomlString(cfg.schedule.fallback_activity)}
-fallback_mood = ${tomlString(cfg.schedule.fallback_mood)}
+# 每日方向模型不可用或输出不合法时使用的主题
 fallback_theme = ${tomlString(cfg.schedule.fallback_theme)}
-fallback_carry_over = ${tomlString(cfg.schedule.fallback_carry_over)}
 # 生成失败后再次尝试前等待的分钟数
 generation_retry_interval_minutes = ${cfg.schedule.generation_retry_interval_minutes}
 

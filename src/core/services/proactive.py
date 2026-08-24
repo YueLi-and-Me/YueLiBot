@@ -248,6 +248,7 @@ class AwarenessService:
         now = now if now is not None else current_time()
         sleep_state = self._sleep.current(now)
         activity = self._timeline.current(now)
+        recent_activities = self._timeline.between(now - 24 * 60 * 60_000, now + 1)[-12:]
         factors = self._interest_factors(now)
         classified = self._sensor.signal if self._sensor else None
         minutes = self._sensor.minutes(now) if self._sensor else 0
@@ -281,6 +282,27 @@ class AwarenessService:
                 'expectedUntil': activity.expected_until,
                 'source': activity.source,
             },
+            'activityTimeline': [
+                {
+                    'id': item.id,
+                    'kind': item.kind,
+                    'doing': item.doing,
+                    'mood': item.mood,
+                    'energyPace': item.energy_pace,
+                    'moodPace': item.mood_pace,
+                    'advances': item.advances,
+                    'startedAt': item.started_at,
+                    'expectedUntil': item.expected_until,
+                    'endedAt': item.ended_at,
+                    'source': item.source,
+                }
+                for item in recent_activities
+            ],
+            'intentionProgress': (
+                self._schedule.intention_progress(now)
+                if self._schedule is not None
+                else []
+            ),
             'impulse': {
                 'used': self._budget.used,
                 'remaining': max(0, DAILY_BUDGET - self._budget.used),

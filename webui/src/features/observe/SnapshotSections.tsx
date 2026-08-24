@@ -1,12 +1,12 @@
 /**
- * 观察快照的七个业务分区：自身状态、睡眠、日程、打扰预算、感知视觉、会话与语音。
+ * 观察快照的七个业务分区：自身状态、活动时间线、今日方向、打扰预算、感知视觉、会话与语音。
  *
  * 分区以 12 列网格排布，常规分区占 4 列、宽分区占 8 列，dense 自动流回填空隙；
  * 数据全部来自后端已聚合的快照值，本模块只做展示映射。被会话观察页引用。
  */
 import {
   BatteryCharging,
-  BedDouble,
+  History,
   CalendarClock,
   Heart,
   MessageSquare,
@@ -17,7 +17,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 
 import { Card, CardBody, Chip, Metric, Progress, SectionHeading, cn } from '@/components/ui'
-import { dateTime, displayValue, durationCn, fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
+import { dateTime, displayValue, fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
 import type { ObservabilityPayload } from '../../../../electron/shared/ipc.ts'
 
 /** 网格跨度：常规分区。 */
@@ -88,88 +88,98 @@ function SelfStateSection({ payload }: { payload: ObservabilityPayload }) {
 }
 
 /**
- * 渲染睡意概率、睡眠判定线、计划时间和睡眠债指标。
+ * 渲染当前真实活动和最近二十四小时的活动时间线。
  *
  * @param props.payload 后端观察快照。
- * @returns 睡眠状态分区。
- * @remarks 入睡前倒数到计划就寝，入睡后倒数到自然醒；两个剩余量都由后端按
- * 同一 now 计算。
+ * @returns 活动时间线分区。
  */
-function SleepSection({ payload }: { payload: ObservabilityPayload }) {
-  const sleep = record(payload.sleep)
-  const probability = numeric(sleep.probability)
-  const asleep = sleep.asleep === true
-  const untilBedtime = numeric(sleep.minutesFromBedtime)
-  const remaining = asleep
-    ? numeric(sleep.minutesUntilWake)
-    : untilBedtime === null ? null : -untilBedtime
-  const countdownValue = remaining === null
-    ? '—'
-    : remaining > 0 ? `预计还有 ${durationCn(remaining)}` : `已过 ${durationCn(-remaining)}`
+function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
+  const activity = payload.activity
+  const timeline = payload.activityTimeline ?? []
   return (
-    <SectionCard title="睡眠状态" subtitle="生理时钟" icon={<BedDouble />} tint="coral">
-      <div className="flex flex-col gap-2">
-        {probability !== null ? <Progress value={probability} max={1} label="睡意概率" /> : null}
-        <MetricList>
-          <Metric
-            label="当前判断"
-            value={payload.selfState.statusLabel}
-          />
-          <Metric label="睡意概率" value={fixed(sleep.probability, 3)} />
-          <Metric label="睡眠判定线" value={fixed(sleep.cutoff, 3)} />
-          <Metric label={asleep ? '距离起床' : '距离入睡'} value={countdownValue} />
-          <Metric label="自然醒目标" value={dateTime(sleep.naturalWakeTargetAt)} />
-          <Metric label="有效醒来时刻" value={dateTime(sleep.effectiveWakeAt)} />
-          <Metric label="睡眠债延迟" value={`${fixed(sleep.sleepDebtDelayMinutes)} 分钟`} />
-        </MetricList>
-      </div>
+    <SectionCard title="活动时间线" subtitle="实际发生的生活记录" icon={<History />} tint="coral" wide>
+      {activity === undefined ? (
+        <p className="text-sm text-muted-foreground">活动时间线当前不可用。</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-1.5">
+            <Chip label="当前" value={activity.doing} />
+            <Chip label="类型" value={displayValue(activity.kind)} />
+            <Chip label="预计到" value={dateTime(activity.expectedUntil)} />
+            <Chip label="来源" value={displayValue(activity.source)} />
+          </div>
+          <MetricList>
+            <Metric label="回应状态" value={payload.selfState.statusLabel} />
+            <Metric label="当下影响" value={activity.mood} />
+            <Metric label="精力 / 心情节奏" value={`${activity.energyPace} / ${activity.moodPace}`} />
+          </MetricList>
+          <ol className="relative ml-1.5 flex flex-col gap-3 border-l border-border pl-5">
+            {timeline.map((item) => (
+              <li key={item.id} className="relative">
+                <span
+                  className="absolute top-[7px] -left-[23.5px] size-2 rounded-full bg-primary"
+                  aria-hidden="true"
+                />
+                <strong className="text-[13px] font-semibold">
+                  {dateTime(item.startedAt)} · {item.doing}
+                </strong>
+                <p className="text-xs text-muted-foreground">
+                  {displayValue(item.kind)} · {item.mood} · {displayValue(item.source)}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </SectionCard>
   )
 }
 
 /**
- * 渲染当天主题、睡眠提示和日程时间线。
+ * 渲染当天主题、作息意向与主线意向的实际推进情况。
  *
  * @param props.payload 后端观察快照；`schedule` 为空时显示服务不可用状态。
  * @returns 日程分区（宽版）。
  */
 function ScheduleSection({ payload }: { payload: ObservabilityPayload }) {
   const schedule = payload.schedule
+  const progress = payload.intentionProgress ?? []
   return (
     <SectionCard
-      title="今天的日程"
-      subtitle={schedule?.date ?? '今日安排'}
+      title="今天的方向"
+      subtitle={schedule?.date ?? '今日方向'}
       icon={<CalendarClock />}
       tint="amber"
       wide
     >
       {schedule === null ? (
-        <p className="text-sm text-muted-foreground">日程服务当前不可用。</p>
+        <p className="text-sm text-muted-foreground">每日方向服务当前不可用。</p>
       ) : (
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap gap-1.5">
             <Chip label="主题" value={schedule.theme} />
-            {schedule.sleepEnabled ? (
-              <>
-                <Chip label="入睡" value={schedule.bedtimeHint} />
-                <Chip label="醒来" value={schedule.wakeHint} />
-              </>
-            ) : (
-              <Chip label="自动睡眠" value="已关闭" />
-            )}
-            <Chip label="承接" value={schedule.carryOver} />
+            <Chip label="作息意向" value={schedule.roughRhythm} />
           </div>
           <ol className="relative ml-1.5 flex flex-col gap-3 border-l border-border pl-5">
-            {schedule.slots.map((slot) => (
-              <li key={`${slot.from}-${slot.doing}`} className="relative">
-                <span
-                  className="absolute top-[7px] -left-[23.5px] size-2 rounded-full bg-primary"
-                  aria-hidden="true"
-                />
-                <strong className="text-[13px] font-semibold">{slot.from} · {slot.doing}</strong>
-                <p className="text-xs text-muted-foreground">{slot.mood}</p>
-              </li>
-            ))}
+            {schedule.intentions.map((intention, index) => {
+              const state = progress.find((item) => item.index === index + 1)
+              return (
+                <li key={`${index}-${intention.what}`} className="relative">
+                  <span
+                    className={cn(
+                      'absolute top-[7px] -left-[23.5px] size-2 rounded-full',
+                      state?.advanced ? 'bg-tint-olive' : 'bg-muted-foreground/40',
+                    )}
+                    aria-hidden="true"
+                  />
+                  <strong className="text-[13px] font-semibold">{index + 1}. {intention.what}</strong>
+                  <p className="text-xs text-muted-foreground">
+                    {state?.advanced ? '今天已经推进' : '今天还没推进'}
+                    {intention.carriedDays > 0 ? ` · 已滚动 ${intention.carriedDays} 天` : ''}
+                  </p>
+                </li>
+              )
+            })}
           </ol>
         </div>
       )}
@@ -328,7 +338,7 @@ export function SnapshotSections({ payload }: { payload: ObservabilityPayload })
   return (
     <div className="grid grid-cols-1 gap-4 [grid-auto-flow:dense] md:grid-cols-12">
       <SelfStateSection payload={payload} />
-      <SleepSection payload={payload} />
+      <ActivitySection payload={payload} />
       <ScheduleSection payload={payload} />
       <BudgetSection payload={payload} />
       <SensingSection payload={payload} />

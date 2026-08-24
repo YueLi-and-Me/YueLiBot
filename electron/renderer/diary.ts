@@ -97,7 +97,7 @@ function heading(text: string, level: 'h2' | 'h3' = 'h2'): HTMLHeadingElement {
 }
 
 /**
- * 渲染当天主题和日程段。
+ * 渲染当天方向、作息意向和主线意向。
  *
  * @param payload 后端返回的完整日记数据。
  * @returns 无返回值。
@@ -109,11 +109,18 @@ function renderToday(payload: DiaryPayload): void {
   theme.textContent = payload.today.theme
   today.append(theme)
 
-  for (const slot of payload.today.slots) {
+  const rhythm = document.createElement('p')
+  rhythm.className = 'today-rhythm'
+  rhythm.textContent = payload.today.roughRhythm
+  today.append(rhythm)
+
+  for (const intention of payload.today.intentions) {
     const row = document.createElement('div')
     row.className = 'today-slot'
     const doing = document.createElement('span')
-    doing.textContent = slot.doing
+    doing.textContent = intention.carriedDays > 0
+      ? `${intention.what}（已滚动 ${intention.carriedDays} 天）`
+      : intention.what
     row.append(doing)
     today.append(row)
   }

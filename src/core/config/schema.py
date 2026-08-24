@@ -216,71 +216,30 @@ class TypingConfig(BaseModel):
 
 
 class ScheduleConfig(BaseModel):
-    """日程形状与作息开关；这些是用户选择，不由解析器写死。"""
+    """每日方向生成与活动睡眠选择的用户配置。"""
 
-    min_slots: int = Field(default=8, ge=1, le=24)
-    max_slots: int = Field(default=10, ge=1, le=24)
     sleep_enabled: bool = True
-    fallback_bedtime: str = '23:00'
-    fallback_wake: str = '07:00'
-    bedtime_day_boundary: str = '02:00'
-    fallback_activity: str = Field(
-        default='按自己的节奏度过这段时间',
-        min_length=1,
-        max_length=72,
-    )
-    fallback_mood: str = Field(default='状态平稳', min_length=1, max_length=40)
     fallback_theme: str = Field(
         default='按自己的节奏度过今天。',
         min_length=1,
         max_length=72,
     )
-    fallback_carry_over: str = Field(
-        default='无',
-        min_length=1,
-        max_length=72,
-    )
     generation_retry_interval_minutes: int = Field(default=10, ge=1, le=1440)
 
-    @field_validator(
-        'fallback_activity',
-        'fallback_mood',
-        'fallback_theme',
-        'fallback_carry_over',
-    )
+    @field_validator('fallback_theme')
     @classmethod
-    def _strip_fallback_text(cls, value: str) -> str:
-        """去除日程备用文本空白并拒绝空内容。
+    def _strip_fallback_theme(cls, value: str) -> str:
+        """去除备用主题首尾空白并拒绝空内容。
 
-        :param value: 日程备用活动、心情、主题或承接文本。
-        :return: 去除首尾空白后的文本。
+        :param value: 每日方向生成失败时显示的主题。
+        :return: 去除首尾空白后的主题。
         :raises ValueError: 文本为空或只包含空白。
         副作用：不修改原字符串。
         """
         normalized = value.strip()
         if not normalized:
-            raise ValueError('日程备用文本不能为空')
+            raise ValueError('schedule.fallback_theme 不能为空')
         return normalized
-
-    @model_validator(mode='after')
-    def _validate_schedule(self) -> 'ScheduleConfig':
-        """验证日程槽位范围和三个时间字段的 `HH:MM` 格式。
-
-        :return: 当前完成校验的日程配置。
-        :raises ValueError: 最小槽位数大于最大槽位数，或时间不在合法范围内。
-        副作用：不修改配置字段。
-        """
-        if self.min_slots > self.max_slots:
-            raise ValueError('schedule.min_slots 不能大于 schedule.max_slots')
-        for field_name, value in (
-            ('fallback_bedtime', self.fallback_bedtime),
-            ('fallback_wake', self.fallback_wake),
-            ('bedtime_day_boundary', self.bedtime_day_boundary),
-        ):
-            match = re.fullmatch(r'(\d{2}):(\d{2})', value)
-            if match is None or int(match.group(1)) > 23 or int(match.group(2)) > 59:
-                raise ValueError(f'schedule.{field_name} 必须是合法 HH:MM 时间')
-        return self
 
 
 class PersonalityConfig(BaseModel):

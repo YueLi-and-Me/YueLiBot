@@ -187,49 +187,17 @@
 
         <section class="panel-card">
           <header class="section-heading">
-            <h2>日程与作息</h2>
-            <label class="toggle"><input type="checkbox" name="schedule.sleep_enabled" /> 自动睡眠</label>
+            <h2>生活方向与活动</h2>
+            <label class="toggle"><input type="checkbox" name="schedule.sleep_enabled" /> 允许睡眠活动</label>
           </header>
           <div class="section-body">
             <p class="hint">
-              日程内容会服从已配置的人设。这里控制结构、备用文本和作息；关闭自动睡眠后，角色不会按日程自动入睡。
+              每日只生成方向、意向和粗略节奏，实际生活由活动时间线持续记录。关闭后，模型不会选择睡眠活动。
             </p>
             <label class="field">
-              <span class="field-label">最少日程段数</span>
-              <input type="number" name="schedule.min_slots" min="1" max="24" step="1" required />
-            </label>
-            <label class="field">
-              <span class="field-label">最多日程段数</span>
-              <input type="number" name="schedule.max_slots" min="1" max="24" step="1" required />
-            </label>
-            <label class="field">
-              <span class="field-label">备用入睡时间</span>
-              <input type="time" name="schedule.fallback_bedtime" required />
-            </label>
-            <label class="field">
-              <span class="field-label">备用醒来时间</span>
-              <input type="time" name="schedule.fallback_wake" required />
-            </label>
-            <label class="field">
-              <span class="field-label">跨日分界</span>
-              <input type="time" name="schedule.bedtime_day_boundary" required />
-              <span class="hint">入睡时间不晚于此值时，按计划日结束后的次日解释。</span>
-            </label>
-            <label class="field">
-              <span class="field-label">备用活动</span>
-              <input type="text" name="schedule.fallback_activity" maxlength="72" required />
-            </label>
-            <label class="field">
-              <span class="field-label">备用状态</span>
-              <input type="text" name="schedule.fallback_mood" maxlength="40" required />
-            </label>
-            <label class="field">
-              <span class="field-label">备用日主题</span>
+              <span class="field-label">备用生活方向</span>
               <input type="text" name="schedule.fallback_theme" maxlength="72" required />
-            </label>
-            <label class="field">
-              <span class="field-label">备用承接事项</span>
-              <input type="text" name="schedule.fallback_carry_over" maxlength="72" required />
+              <span class="hint">当天方向生成失败时使用，不包含任何具体时刻。</span>
             </label>
             <label class="field">
               <span class="field-label">生成失败重试间隔（分钟）</span>
