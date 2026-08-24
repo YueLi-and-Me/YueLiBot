@@ -514,6 +514,35 @@ class DayPlanService:
             sleep_enabled=self._config.sleep_enabled,
         )
 
+    def _unfinished_intentions(
+        self,
+        plan: DayPlan | None,
+    ) -> List[DayPlanIntention]:
+        """筛出前一天没有被任何真实活动推进的意向，并把滚动天数加一。"""
+
+        if plan is None:
+            return []
+        advanced = self._timeline.advanced_intention_indexes(plan.date)
+        return [
+            DayPlanIntention(
+                what=intention.what,
+                carried_days=intention.carried_days + 1,
+            )
+            for index, intention in enumerate(plan.intentions, start=1)
+            if index not in advanced
+        ]
+
+    @staticmethod
+    def _unfinished_prompt(intentions: List[DayPlanIntention]) -> str:
+        """把未完成意向和真实滚动天数渲染成模型可取舍的清单。"""
+
+        if not intentions:
+            return '没有；昨天想做的都推进过，或没有有效的新结构方向。'
+        return '\n'.join(
+            f'{index}. {intention.what}（已经滚了 {intention.carried_days} 天）'
+            for index, intention in enumerate(intentions, start=1)
+        )
+
     def _read(self, date: str) -> DayPlan | None:
         """只读当前结构；旧 slots 计划明确失效并等待当天重新生成。"""
 
@@ -592,6 +621,7 @@ class DayPlanService:
             self._store.write_json(_plan_key(date), _plan_to_dict(fallback))
             return fallback
         yesterday = self._read(_previous_date(now))
+        unfinished = self._unfinished_intentions(yesterday)
         render_params: dict[str, dict[str, str]] = {}
         prompt = build_plan_prompt(
             date=date,
@@ -603,7 +633,7 @@ class DayPlanService:
                 if yesterday is not None
                 else '昨天没有有效的新结构方向，不要据旧时刻表续写。'
             ),
-            unfinished_intentions='今天没有从昨天滚入的意向。',
+            unfinished_intentions=self._unfinished_prompt(unfinished),
             density=self._interaction_density(int(now.timestamp() * 1000)),
             character_name=self._character_name,
             character_personality=self._character_personality,
