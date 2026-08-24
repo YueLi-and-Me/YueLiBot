@@ -1694,10 +1694,10 @@ auth_type = ${tomlString(provider.auth_type)}
 auth_name = ${tomlString(provider.auth_name)}
 # 请求协议适配器：openai = OpenAI 兼容；volcengine = 豆包语音，只能用于 tts
 client_type = ${tomlString(provider.client_type)}
-# 豆包语音的 App ID，与 api_key（Access Token）成对使用；其它协议留空
+${provider.client_type === 'volcengine' ? `# 豆包语音的 App ID，与 api_key（Access Token）成对使用
 # 取自控制台：豆包语音 → 语音合成大模型 → 页面下方「服务接口认证信息」
 app_id = ${tomlString(provider.app_id)}
-# 模型列表端点，用于 WebUI 连通性测试与模型拉取；OpenAI 兼容默认 /models
+` : ''}# 模型列表端点，用于 WebUI 连通性测试与模型拉取；OpenAI 兼容默认 /models
 model_list_endpoint = ${tomlString(provider.model_list_endpoint)}
 # 中转头等需要额外 HTTP 头的厂商在这里写键值；认证头仍由 auth_* 负责
 default_headers = ${tomlInlineTable(provider.default_headers)}

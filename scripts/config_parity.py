@@ -53,6 +53,9 @@ SKIP_TOP_SECTIONS = frozenset({'inner'})
 # 默认 None 的可写字段：TOML 没有 null，模板只在有值时写键，允许缺席。
 NULLABLE_TABLE_FIELDS: dict[str, frozenset[str]] = {
     'models': frozenset({'temperature', 'max_tokens'}),
+    # app_id 是豆包语音（volcengine）专属，模板只在该协议下写出：把它无条件塞进
+    # 每个厂商块会让人要读的配置里出现一堆不相干的空字段，既有用例专门断言过这一点。
+    'api_providers': frozenset({'app_id'}),
 }
 
 # 文件 → 文档模型。schema 是真相源；这里的映射只描述「哪个文件长什么样」。
