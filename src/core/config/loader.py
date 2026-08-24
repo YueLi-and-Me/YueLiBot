@@ -12,6 +12,7 @@ from typing import Dict
 import sys
 
 from .schema import (
+    CONFIG_VERSION,
     ApiProviderConfig,
     BotDocument,
     Config,
@@ -33,7 +34,7 @@ _config: Config | None = None
 logger = get_logger(__name__)
 
 
-CONFIG_VERSION = '1.1.0'
+# 版本号定义在 schema 里，这里只导入：两处各写一份必然漂移。
 _VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
 CHAT_INHERITING_TASKS = (
     'proactive', 'summary', 'schedule', 'expression', 'planner', 'replyer', 'scene',
