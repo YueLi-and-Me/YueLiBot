@@ -222,8 +222,10 @@ def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
 
     与 ``_activity_block`` / ``_scene_block`` 同一条纪律：只注入本轮消息里
     真正命中的词条（查表与截断在 ``agent/jargon.py``，这里是纯渲染器），
-    收尾必须压一句「听得懂就行、别刻意去用」——没有这句，模型会把「我
-    知道这个词的意思」当成本轮要交代的内容。
+    表头必须声明这是机械匹配的结果、可能不准、只用来听懂大家在说什么
+    ——没有这句，她会把词条释义当成可信事实转述；收尾必须压一句
+    「听得懂就行、别刻意去用」——没有这句，模型会把「我知道这个词的意思」
+    当成本轮要交代的内容。
 
     :param jargon: ``(词, 含义)`` 序列；`None` 或空序列表示不生成该块。
     :return: 带段落前缀的黑话块；无命中时返回空字符串，整块省略。
@@ -232,6 +234,8 @@ def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
         return ''
     return _prefixed_block('\n'.join([
         '# 这个群里的一些说法',
+        '下面这些说法是按字面从上下文里机械匹配出来的，可能有不准的地方，'
+        '只用来听懂他们在说什么。',
         *[f'「{term}」= {meaning}' for term, meaning in jargon],
         '',
         '这是他们平时的说法，你听得懂就行。别刻意去用，也不要解释给他们听。',
