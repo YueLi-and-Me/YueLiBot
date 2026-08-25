@@ -22,6 +22,10 @@
   本轮排序。
 - 词典整表只有千级行且常驻页缓存，按 scope 取回后内存匹配比拼装 IN 列表
   更直接，也不受绑定参数个数上限牵制。
+- 释义在注入前压缩到首句或 30 字：迁移数据的释义平均 271 字、六成带百科腔，
+  原样贴出会让黑话块吃掉整份提示词的可观份额。截断口径只在本模块
+  （:func:`compress_meaning`），``prompt.py`` 侧是纯渲染器不做二次截断，
+  这是既有纪律。
 
 本模块不做自动学习、不做候选表、不做衰减：黑话是词典不是记忆，一个词的
 含义不会因为三个月没人用就失效。
@@ -46,6 +50,40 @@ _CJK_CHAR_RE = re.compile(r'[一-鿿]')
 
 # 命中词条的展示形态：(词, 含义)，与 jargon 表的 term/meaning 列一一对应。
 JargonEntry = Tuple[str, str]
+
+# 释义压缩上限（字符）。取首句（首个句末标点或换行之前），首句超长再硬截到
+# 该上限；上限含结尾省略号，保证压缩结果整体不超过 30 字。
+_MEANING_LIMIT = 30
+_SENTENCE_ENDINGS = '。！？'
+
+
+def compress_meaning(meaning: str) -> str:
+    """把黑话释义压缩到首句或 30 字以内。
+
+    迁移进来的释义平均 271 字、六成带百科腔（「『x』一词源自日语……」这类），
+    原样注入会把黑话块撑到占整份提示词近 8%。真人解释一个梗也只说一句，
+    首句足够她听懂语境。
+
+    :param meaning: jargon 表里原样的释义文本。
+    :return: 首个 ``。！？\\n`` 之前的短句；首句本身超长时硬截并带省略号；
+        空白输入返回空字符串。
+    副作用：无——只压缩展示文本，不回写 jargon 表。
+    """
+    text = (meaning or '').strip()
+    if not text:
+        return ''
+    cut = len(text)
+    for index, char in enumerate(text):
+        if char in _SENTENCE_ENDINGS:
+            cut = index + 1
+            break
+        if char == '\n':
+            cut = index
+            break
+    first_sentence = text[:cut].strip()
+    if len(first_sentence) <= _MEANING_LIMIT:
+        return first_sentence
+    return first_sentence[:_MEANING_LIMIT - 1] + '…'
 
 
 def _candidates(message_text: str) -> frozenset[str]:
@@ -109,6 +147,6 @@ def lookup_jargon(
     # 排序用读出来的旧 hits：本轮的 +1 不参与本轮排序。
     ranked = sorted(matched.values(), key=lambda row: (-row['hits'], row['term']))
     return [
-        (row['term'].strip(), row['meaning'])
+        (row['term'].strip(), compress_meaning(row['meaning']))
         for row in ranked[:MAX_INJECTED_JARGON]
     ]
