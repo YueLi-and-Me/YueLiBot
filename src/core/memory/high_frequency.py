@@ -26,6 +26,24 @@ from src.core.memory.tokenize import words
 # 重复替换以拆掉引用头里的嵌套占位（``[回复 某人：[表情包]]``）。
 _PLACEHOLDER_SPAN = re.compile(r'\[(?:表情|表情包|图片|语音|视频|文件|回复|引用)[^\]]*\]')
 
+
+def strip_machine_spans(text: str) -> str:
+    """剥掉平台渲染进消息正文的机器段，重复替换以拆掉嵌套。
+
+    占位段（``[图片：…]``、``[表情包：…]``）与引用回复头是管线生成的，不是
+    人打的字。高频统计与黑话匹配共用这一清洗：机器文本在任何一侧都会失真
+    （统计侧「表情包」霸榜，匹配侧「片」被「图片」刷高计数）。
+
+    :param text: 原始消息文本。
+    :return: 机器段替换为空白后的文本；无机器段时与输入语义相同。
+    副作用：无。
+    """
+    previous = None
+    while previous != text:
+        previous = text
+        text = _PLACEHOLDER_SPAN.sub(' ', text)
+    return text
+
 # 纯数字与数字符号混合的 token（时间戳、编号）不构成「群里的说法」。
 # 与 tokenize._CJK_RE 同口径的 BMP 主区间，不导入私有名；两边若要改口径应一起改。
 _HAS_WORD_CHAR = re.compile(r'[A-Za-z㐀-䶿一-鿿豈-﫿]')
@@ -45,6 +63,9 @@ _FUNCTION_WORDS = frozenset({
     '你们', '我们', '他们', '她们', '自己', '别人', '大家', '这里', '那里',
     '的话', '只有', '所有', '以及', '或者', '如果', '因为', '所以',
     '虽然', '不过', '直接', '稍微', '根本', '一定', '完全', '继续', '说的',
+    '是不是', '不能够', '不会', '不能', '一点', '没事', '小时', '说话',
+    '看看', '试试', '想要', '回来', '以后', '之前', '上次', '下次', '今天',
+    '明天', '昨天', '早上', '晚上', '下午', '中午', '有点', '这种', '那种',
     'the', 'and', 'you', 'for', 'that', 'this', 'with', 'have', 'just',
     'like', 'not', 'are', 'but', 'can', 'all', 'was', 'out', 'ok', 'no',
 })
@@ -53,7 +74,7 @@ _FUNCTION_WORDS = frozenset({
 def collect_terms(
     texts: Sequence[str],
     *,
-    limit: int = 100,
+    limit: int = 500,
     per_message_cap: int = 3,
 ) -> List[Tuple[str, int, int]]:
     """从一组消息文本统计高频词。
@@ -67,8 +88,10 @@ def collect_terms(
     整体失效。
 
     :param texts: 已剥离机器段与否皆可的消息文本，时间顺序。
-    :param limit: 落表条数上限；与打分公式 ``max(0, 100 - rank)`` 的量程
-        对齐，超出名次的额外分恰为零。
+    :param limit: 落表条数上限。打分公式 ``max(0, 100 - rank)`` 的量程只到
+        前 100 名，但基础加分（1000 + 出现次数×2）对全表有效——真黑话常是
+        中频词（真机实测：词表里的黑话词在频表里排到第 461 名），容量必须
+        盖住这个分布，沉底机制才够得着它。
     :param per_message_cap: 单条消息内同一个词的计数上限，防粘贴长文
         劫持词频。
     :return: ``(词, 出现次数, 覆盖消息数)`` 元组列表，按
@@ -79,11 +102,7 @@ def collect_terms(
     occurrences: Dict[str, int] = {}
     messages: Dict[str, int] = {}
     for raw in texts:
-        text = raw or ''
-        previous = None
-        while previous != text:
-            previous = text
-            text = _PLACEHOLDER_SPAN.sub(' ', text)
+        text = strip_machine_spans(raw or '')
         tokens = [
             token for token in words(text)
             # 收词下限：CJK ≥2 字、拉丁与其他 ≥2 字符，理由见函数 docstring。
@@ -118,7 +137,7 @@ def rebuild_stream_terms(
     *,
     now: int,
     window_ms: int = 7 * 24 * 60 * 60 * 1000,
-    limit: int = 100,
+    limit: int = 500,
 ) -> int:
     """重建一个会话的高频词表快照。
 

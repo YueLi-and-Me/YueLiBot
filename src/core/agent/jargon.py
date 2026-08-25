@@ -50,6 +50,7 @@ import time
 from dataclasses import dataclass
 from typing import Collection, Dict, List, Optional, Sequence, Tuple
 
+from src.core.memory.high_frequency import strip_machine_spans
 from src.core.observe.events import emit
 
 # 单轮注入黑话条数上限，本块唯一的常量：一轮命中十几个词说明要么语料太杂、
@@ -202,6 +203,9 @@ _HIGH_FREQUENCY_BASE_BONUS = 1000.0
 # 首次命中位置的惩罚系数：越早被人提起越相关；但 0.01/条的量级只是稳定排序
 # 的微调，几十条消息全加起来也盖不过一次出现。
 _POSITION_PENALTY = 0.01
+# 单条消息内同一个词的计数上限：与高频词表统计同一条防失真规则——一条粘贴
+# 长文或一个机器段不该把某个词的「自身出现次数」刷到压过别的信号。
+_PER_MESSAGE_CAP = 3
 
 
 def _rank_matches(
@@ -276,8 +280,10 @@ def lookup_jargon(
     # 会话级 use 开关：关掉后整条召回静默跳过，hits 与去重登记都不发生。
     if not jargon_use_enabled(db, stream_id):
         return []
+    # 机器段（图片/表情包占位、引用头）不是人打的字，统计前剥掉——与高频
+    # 词表共用同一条清洗，否则「片」会被「[图片：…]」刷高自身计数。
     texts = [
-        text.strip().lower()
+        strip_machine_spans(text.strip().lower())
         for text in ([scan_texts] if isinstance(scan_texts, str) else scan_texts)
         if text and text.strip()
     ]
@@ -297,8 +303,8 @@ def lookup_jargon(
             continue
         count = 0
         first_index = len(texts)
-        for index, text in enumerate(texts):
-            occurrences = text.count(key)
+        for index, raw in enumerate(texts):
+            occurrences = min(raw.count(key), _PER_MESSAGE_CAP)
             if occurrences:
                 count += occurrences
                 first_index = min(first_index, index)
