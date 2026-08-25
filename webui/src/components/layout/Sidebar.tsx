@@ -17,6 +17,7 @@ import {
   MessageSquare,
   Quote,
   Settings,
+  Sticker,
   Terminal,
   Users,
 } from 'lucide-react'
@@ -144,7 +145,8 @@ export function Sidebar() {
   const onSettings = location.pathname.startsWith('/settings')
   const onJargon = location.pathname.startsWith('/jargon')
   const onExpressions = location.pathname.startsWith('/expressions')
-  const onHome = !onPersons && !onModels && !onSettings && !onJargon && !onExpressions
+  const onEmojis = location.pathname.startsWith('/emojis')
+  const onHome = !onPersons && !onModels && !onSettings && !onJargon && !onExpressions && !onEmojis
 
   return (
     <aside className="m-3 mr-0 hidden w-(--sidebar-width) flex-none flex-col rounded-2xl border border-sidebar-border bg-sidebar shadow-card lg:flex">
@@ -157,6 +159,7 @@ export function Sidebar() {
           <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
           <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
           <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
+          <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
           {onHome ? (
             <div className="mt-1 border-t border-sidebar-border/60 pt-1">
@@ -197,6 +200,7 @@ export function MobileTopbar() {
   const onSettings = location.pathname.startsWith('/settings')
   const onJargon = location.pathname.startsWith('/jargon')
   const onExpressions = location.pathname.startsWith('/expressions')
+  const onEmojis = location.pathname.startsWith('/emojis')
 
   return (
     <div className="flex flex-none items-center gap-2 border-b border-sidebar-border bg-sidebar px-3 py-2 lg:hidden">
@@ -205,7 +209,7 @@ export function MobileTopbar() {
         <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           <NavLink
             to="/"
-            active={!onPersons && !onModels && !onSettings && !onJargon && !onExpressions}
+            active={!onPersons && !onModels && !onSettings && !onJargon && !onExpressions && !onEmojis}
             icon={<Activity />}
             label="会话观察"
           />
@@ -213,6 +217,7 @@ export function MobileTopbar() {
           <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
           <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
           <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
+          <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
         </nav>
       </LayoutGroup>

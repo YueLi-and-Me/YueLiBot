@@ -24,7 +24,7 @@ from .chat_image import (
     merge_emoji_descriptions,
     merge_image_descriptions,
 )
-from .emoji import EmojiLibrary
+from .emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
 from .trace_console import mark_turn_start, render_action_decision, render_observation, render_turn, render_turn_error
 from .vector import VectorService
 
@@ -931,7 +931,9 @@ class ChatService:
         emoji_descriptions = await emoji_task if emoji_task is not None else []
         enriched = merge_image_descriptions(text, descriptions)
         enriched = merge_emoji_descriptions(enriched, emoji_descriptions)
-        if self._emoji_library is not None:
+        # collect_enabled 关闭时入站图片只识别不入库：识别结果仍回写正文，
+        # 但不再把新图收进可发送库。
+        if self._emoji_library is not None and self._cfg.emoji.collect_enabled:
             for description, sub_type in zip(
                 emoji_descriptions,
                 emoji_sub_types,
@@ -939,13 +941,22 @@ class ChatService:
             ):
                 if description is None:
                     continue
-                await self._emoji_library.register(
-                    description.image_bytes,
-                    description.emotion_tags,
-                    description.media_type,
-                    description.content_hash,
-                    sub_type,
-                )
+                try:
+                    await self._emoji_library.register(
+                        description.image_bytes,
+                        description.emotion_tags,
+                        description.media_type,
+                        description.content_hash,
+                        sub_type,
+                    )
+                except (EmojiBannedError, EmojiContentRejectedError) as exc:
+                    # 封禁命中、超限或内容审查拒绝只影响这一张图，不应让整条
+                    # 消息的图片描述任务失败；事件与告警已在 register 内落账。
+                    logger.warning(
+                        'emoji_inbound_register_rejected',
+                        hash=description.content_hash,
+                        error=str(exc),
+                    )
         if enriched != text:
             self.memory.update_message_content(stream_id, message_id, enriched)
         return enriched
@@ -5087,14 +5098,20 @@ class ChatService:
             logger.warning('outbound_reply_empty', streamId=context.stream.id, turnId=turn)
             return
         # Broker 负责平台驱动选择和失败归一化；图片引用由 QQ 驱动透传给适配器。
+        emoji_refs = tuple(reference for _emotion, reference, _sub_type in emoji_items)
         receipt = await self._broker.dispatch(OutboundMessage(
             stream=context.stream,
             segments=segments,
-            emoji_refs=tuple(reference for _emotion, reference, _sub_type in emoji_items),
+            emoji_refs=emoji_refs,
             emoji_sub_types=tuple(sub_type for _emotion, _reference, sub_type in emoji_items),
             batch_delays_ms=self._batch_delays_ms(segments, len(emoji_items)),
             quote_external_message_id=quote_external_message_id,
         ))
+        # 只有拿到投递回执（发送成功）才回写使用记录；发送失败不动两列，
+        # 淘汰判据不允许把「没发出去」记成「用过」。
+        if self._emoji_library is not None:
+            for reference in emoji_refs:
+                self._emoji_library.record_use(reference)
         trace.emit(
             'outbound_delivered',
             platform=receipt.platform,

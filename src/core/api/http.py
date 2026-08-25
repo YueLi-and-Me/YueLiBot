@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from typing import List, Literal
+from typing import Any, List, Literal
 
 import asyncio
 import os
@@ -1367,3 +1367,144 @@ async def expression_entries(
             detail=f'表达方式查询失败：{exc}',
         ) from exc
     return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}
+
+
+def _emoji_library_or_503() -> Any:
+    """返回已装配的表情包库，未初始化时按 503 拒绝。"""
+
+    library = app_state.emoji_library
+    if library is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='表情包库尚未初始化',
+        )
+    return library
+
+
+class EmojiBanBody(BaseModel):
+    """封禁请求体：只带可选原因。"""
+
+    reason: str = ''
+
+
+@router.get('/api/emojis', dependencies=[Depends(_auth)])
+async def emoji_entries(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """分页浏览表情包库，附带库容量总览。
+
+    排序与后台淘汰同口径（use_count 升序、last_used_at 升序），页面看到的
+    先后就是真的会先被淘汰的先后；未使用过的记录 last_used_at 为 null。
+
+    :param limit: 页大小，1 到 200，默认 50。
+    :param offset: 偏移量，从 0 起。
+
+    :return: entries 表情包记录列表、total 总数与 stats 容量总览。
+    :raises fastapi.HTTPException: 服务未初始化 503；查询失败 500。
+
+    副作用：
+        只读 emoji 表、封禁表与目录元数据，不修改任何内容。
+    """
+    library = _emoji_library_or_503()
+    try:
+        entries = await run_in_thread(library.page, limit, offset)
+        stats = await run_in_thread(library.stats)
+    except Exception as exc:
+        logger.exception('emoji_query_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'表情包列表查询失败：{exc}',
+        ) from exc
+    return {
+        'entries': entries,
+        'total': stats['count'],
+        'stats': stats,
+        'limit': limit,
+        'offset': offset,
+    }
+
+
+@router.get('/api/emojis/{content_hash}/thumbnail', dependencies=[Depends(_auth)])
+async def emoji_thumbnail(content_hash: str) -> Response:
+    """返回一张表情包的原图字节，供管理页缩略图使用。
+
+    :param content_hash: 64 位十六进制内容哈希。
+    :return: 按扩展名给出 MIME 类型的图片响应。
+    :raises fastapi.HTTPException: 服务未初始化 503；哈希非法 400；记录或
+        文件不存在 404。
+    """
+    library = _emoji_library_or_503()
+    try:
+        path = await run_in_thread(library.file_path, content_hash)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='表情包记录或文件不存在',
+        )
+    try:
+        data = await run_in_thread(path.read_bytes)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'表情包文件读取失败：{exc}',
+        ) from exc
+    media_type = {
+        '.gif': 'image/gif',
+        '.png': 'image/png',
+        '.webp': 'image/webp',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+    }.get(path.suffix.lower(), 'image/jpeg')
+    return Response(content=data, media_type=media_type)
+
+
+@router.post('/api/emojis/{content_hash}/ban', dependencies=[Depends(_auth)])
+async def emoji_ban(content_hash: str, body: EmojiBanBody) -> dict:
+    """按内容哈希封禁一张图；封禁独立于 emoji 行存在。
+
+    :param content_hash: 64 位十六进制内容哈希。
+    :param body: 可选封禁原因。
+    :return: ok 与本次是否新增封禁。
+    :raises fastapi.HTTPException: 服务未初始化 503；哈希非法 400。
+    """
+    library = _emoji_library_or_503()
+    try:
+        banned = await run_in_thread(library.ban, content_hash, body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {'ok': True, 'banned': banned}
+
+
+@router.post('/api/emojis/{content_hash}/unban', dependencies=[Depends(_auth)])
+async def emoji_unban(content_hash: str) -> dict:
+    """解除一条封禁记录。
+
+    :param content_hash: 64 位十六进制内容哈希。
+    :return: ok 与本次是否确实删除了封禁。
+    :raises fastapi.HTTPException: 服务未初始化 503；哈希非法 400。
+    """
+    library = _emoji_library_or_503()
+    try:
+        unbanned = await run_in_thread(library.unban, content_hash)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {'ok': True, 'unbanned': unbanned}
+
+
+@router.delete('/api/emojis/{content_hash}', dependencies=[Depends(_auth)])
+async def emoji_delete(content_hash: str) -> dict:
+    """删除一条表情包记录及其磁盘文件。
+
+    :param content_hash: 64 位十六进制内容哈希。
+    :return: ok 与本次是否确实删除了记录。
+    :raises fastapi.HTTPException: 服务未初始化 503；哈希非法 400。
+    """
+    library = _emoji_library_or_503()
+    try:
+        removed = await run_in_thread(library.remove, content_hash)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {'ok': True, 'removed': removed}

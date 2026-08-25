@@ -39,6 +39,9 @@ const JargonPage = lazy(() =>
 const ExpressionsPage = lazy(() =>
   import('@/features/expressions/ExpressionsPage').then((m) => ({ default: m.ExpressionsPage })),
 )
+const EmojisPage = lazy(() =>
+  import('@/features/emojis/EmojisPage').then((m) => ({ default: m.EmojisPage })),
+)
 
 /** 页面块加载中的占位：与门禁检查态一致的居中加载样式。 */
 function PageFallback() {
@@ -80,6 +83,7 @@ function AuthGate() {
           <Route path="persons/:personId" element={<PersonDetailPage />} />
           <Route path="jargon" element={<JargonPage />} />
           <Route path="expressions" element={<ExpressionsPage />} />
+          <Route path="emojis" element={<EmojisPage />} />
           <Route path="*" element={<ObservePage />} />
         </Route>
       </Routes>

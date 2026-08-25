@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 # 配置格式版本的**唯一定义处**。loader 从这里导入，不再各写一份——两处必须永远
 # 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
-CONFIG_VERSION = '1.2.0'
+CONFIG_VERSION = '1.3.0'
 
 
 class InnerConfig(BaseModel):
@@ -30,12 +30,13 @@ class InnerConfig(BaseModel):
 
     # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
     # 1.2.0 移除日程时刻表遗留字段，它们已被活动时间线取代。
+    # 1.3.0 新增 [emoji] 与 [emoji.cleanup] 两段表情包库管理配置。
     #
     # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
     # 所以**删除或重命名配置字段时必须同时 bump 这里与 electron/main/config.ts**，
     # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
     # 为它们报一次「配置字段变更」。
-    version: Literal['1.2.0'] = CONFIG_VERSION
+    version: Literal['1.3.0'] = CONFIG_VERSION
 
 
 class BotConfig(BaseModel):
@@ -362,6 +363,49 @@ class ConversationConfig(BaseModel):
                 '不能大于 working_memory_messages'
             )
         return self
+
+
+class EmojiCleanupConfig(BaseModel):
+    """表情包库孤儿文件清理任务的节奏与保留期。
+
+    孤儿文件是「目录里有文件、emoji 表里毫无记录」的内容：启动校验只查
+    「库→文件」方向时它完全不可见，会无限期占着磁盘。本配置只控制后台清理
+    任务的检查节奏与保留期，不参与任何一次性的存量清理。
+    """
+
+    # 是否定期清理孤儿文件；关闭后孤儿文件只会被巡检报告，不会被删除。
+    enabled: bool = True
+    # 两次孤儿清理检查之间的最小间隔，单位为小时；必须大于 0。
+    check_interval_hours: float = Field(default=6.0, gt=0.0)
+    # 孤儿文件至少保留多少天才会被清理，单位为天；必须大于等于 0，0 表示
+    # 下次检查时立即清理。
+    orphan_retention_days: int = Field(default=30, ge=0)
+
+
+class EmojiConfig(BaseModel):
+    """表情包库的容量、收集与淘汰参数。
+
+    淘汰在后台维护任务里执行，不进入收表情的入站热路径；淘汰顺序是
+    ``(use_count 升序, last_used_at 升序)``——最少用、且最久没用的先走，
+    一条确定性 SQL，可解释、可回放，不调用模型。
+    """
+
+    # 可发送表情的最大条数；0 表示不限。超过后由后台维护任务按淘汰顺序
+    # 收回到该值为止。
+    max_count: int = Field(default=0, ge=0)
+    # 库满后是否自动淘汰最冷的条目；关闭时只记录超限告警，不删除任何记录。
+    auto_evict: bool = True
+    # 两次库容量检查之间的最小间隔，单位为分钟；必须大于 0。
+    check_interval_minutes: int = Field(default=5, ge=1)
+    # 收集时的单文件大小上限，单位为 MB；0 表示不限。
+    max_file_size_mb: float = Field(default=5.0, ge=0.0)
+    # 入库前是否调用视觉模型审查内容；关闭时零模型调用，开启但视觉模型
+    # 不可用时拒绝入库并告警，不静默放行。
+    content_filtration: bool = False
+    # 是否从聊天里自动收集表情包；关闭后入站图片只识别不入库。
+    collect_enabled: bool = True
+    # 孤儿文件清理任务的独立节奏配置。
+    cleanup: EmojiCleanupConfig = Field(default_factory=EmojiCleanupConfig)
 
 
 class GenerationTaskConfig(BaseModel):
@@ -860,6 +904,7 @@ class BotDocument(BaseModel):
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
     typing: TypingConfig = Field(default_factory=TypingConfig)
+    emoji: EmojiConfig = Field(default_factory=EmojiConfig)
 
     @model_validator(mode='before')
     @classmethod
@@ -925,6 +970,7 @@ class Config(BaseModel):
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
     typing: TypingConfig = Field(default_factory=TypingConfig)
+    emoji: EmojiConfig = Field(default_factory=EmojiConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     # 八类任务的候选模型与轮询策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)

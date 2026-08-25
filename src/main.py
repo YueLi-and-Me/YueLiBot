@@ -21,6 +21,7 @@ import uvicorn
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.api.auth import token_manager
 from src.core.common.backend_runtime import create_backend_runtime, runtime_file_path
+from src.core.common.clock import now as current_time
 from src.core.common.console_layout import print_box
 from src.core.common.logger import get_logger, initialize_logging
 from src.core.config.loader import load_config
@@ -36,7 +37,7 @@ from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
 from src.core.services.chat_image import ChatImageDescriber
-from src.core.services.emoji import EmojiLibrary
+from src.core.services.emoji import EmojiLibrary, VisionEmojiContentFilter
 from src.core.prompts.registry import prompt_metadata
 
 
@@ -462,9 +463,27 @@ def main() -> None:
         logger.info("vision_model_ready", model=vision_provider.model,
                     candidates=len(vision_provider.candidates))
     image_describer = ChatImageDescriber(cfg, vision_provider)
-    emoji_library = EmojiLibrary(db, data_dir / 'emojis', embed_client)
+    # 内容过滤只在配置开启时装配（决定五：走既有 vision 槽，不开新槽）；
+    # 过滤关闭时该对象为 None，入库路径零模型调用。
+    emoji_content_filter = (
+        VisionEmojiContentFilter(
+            vision_provider,
+            temperature=cfg.generation.vision.temperature,
+            max_tokens=cfg.generation.vision.token_limit or 32,
+        )
+        if cfg.emoji.content_filtration
+        else None
+    )
+    emoji_library = EmojiLibrary(
+        db,
+        data_dir / 'emojis',
+        embed_client,
+        config=cfg.emoji,
+        content_filter=emoji_content_filter,
+    )
     verified_emoji_count = emoji_library.verify_integrity()
     logger.info('emoji_library_ready', count=verified_emoji_count)
+    app_state.emoji_library = emoji_library
 
     async def _push_event(
         channel: str,
@@ -618,10 +637,69 @@ def main() -> None:
     async def _stop_emoji_auto_register() -> None:
         """投放目录扫描不持有后台资源，关闭阶段无需处理。"""
 
+    emoji_maintenance_stop = asyncio.Event()
+
+    async def _emoji_maintenance() -> None:
+        """按配置节奏在后台检查库容量并清理孤儿文件。
+
+        淘汰与清理都不进入收表情的入站热路径（决定三）：容量按
+        check_interval_minutes 检查，孤儿文件按 cleanup.check_interval_hours
+        检查，两次检查共用同一个等待循环。max_count 为 0 表示不设限；
+        auto_evict 关闭时只告警不删除。
+        """
+        emoji_cfg = cfg.emoji
+        now_ms = current_time()
+        next_evict_ms = now_ms + emoji_cfg.check_interval_minutes * 60_000
+        next_cleanup_ms = now_ms + int(emoji_cfg.cleanup.check_interval_hours * 3_600_000)
+        while not emoji_maintenance_stop.is_set():
+            now_ms = current_time()
+            if emoji_cfg.max_count > 0 and now_ms >= next_evict_ms:
+                count = emoji_library.stats()['count']
+                if count > emoji_cfg.max_count:
+                    if emoji_cfg.auto_evict:
+                        evicted = emoji_library.evict_to_limit(emoji_cfg.max_count)
+                        logger.info(
+                            'emoji_maintenance_evicted',
+                            evictedCount=len(evicted),
+                            maxCount=emoji_cfg.max_count,
+                        )
+                    else:
+                        logger.warning(
+                            'emoji_over_limit',
+                            count=count,
+                            maxCount=emoji_cfg.max_count,
+                        )
+                next_evict_ms = now_ms + emoji_cfg.check_interval_minutes * 60_000
+            if emoji_cfg.cleanup.enabled and now_ms >= next_cleanup_ms:
+                emoji_library.cleanup_orphans(
+                    emoji_cfg.cleanup.orphan_retention_days,
+                )
+                next_cleanup_ms = now_ms + int(
+                    emoji_cfg.cleanup.check_interval_hours * 3_600_000,
+                )
+            wait_ms = max(min(next_evict_ms, next_cleanup_ms) - current_time(), 500)
+            try:
+                await asyncio.wait_for(
+                    emoji_maintenance_stop.wait(),
+                    timeout=wait_ms / 1000,
+                )
+            except TimeoutError:
+                continue
+
+    async def _stop_emoji_maintenance() -> None:
+        """置位停止事件，让维护循环在下一个等待点退出。"""
+
+        emoji_maintenance_stop.set()
+
     lifecycle.register(
         'emoji_auto_register',
         _auto_register_emojis,
         _stop_emoji_auto_register,
+    )
+    lifecycle.register(
+        'emoji_maintenance',
+        _emoji_maintenance,
+        _stop_emoji_maintenance,
     )
     lifecycle.register('chat', app_state.chat.startup, app_state.chat.shutdown)
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
