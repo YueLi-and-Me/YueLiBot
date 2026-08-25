@@ -73,6 +73,7 @@ EVENT_LABELS: Dict[str, str] = {
     "llm_request_retry": "模型请求重试",
     "llm_slow": "模型响应缓慢",
     "fact_extract_disabled": "事实抽取未启用",
+    "jargon_hit": "黑话命中",
     "knowledge_learned": "学到新知识",
     "memory_extract": "记忆抽取完成",
     "memory_spread": "联想扩散",

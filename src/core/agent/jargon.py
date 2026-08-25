@@ -50,6 +50,8 @@ import time
 from dataclasses import dataclass
 from typing import Collection, Dict, List, Optional, Sequence, Tuple
 
+from src.core.observe.events import emit
+
 # 单轮注入黑话条数上限，本块唯一的常量：一轮命中十几个词说明要么语料太杂、
 # 要么那批词条质量有问题，注入更多只会稀释真正相关的那几条。它只在这里
 # 执行——prompt 侧是纯渲染器，不做二次截断。打分权重与去重 TTL 等调节
@@ -336,7 +338,22 @@ def lookup_jargon(
     selected = ranked[:MAX_INJECTED_JARGON]
     if injected is not None:
         injected.record(stream_id, [term for term, _ in selected], stamp)
-    return [
+    entries = [
         (match.row['term'].strip(), compress_meaning(match.row['meaning']))
         for _, match in selected
     ]
+    if entries:
+        # 命中才发、未命中不发：账本回答的是「注入了什么、质量如何」，无命中
+        # 的回合对这两个问题都没有信息量。控制台呈现由既有分层判据决定
+        # （一行装得下走行、装不下走框），这里不做任何控制台格式化。
+        emit(
+            'jargon_hit',
+            candidates=len(matched),
+            injected=len(entries),
+            highFrequencyHits=sum(
+                1 for term, _ in selected if term in high_frequency),
+            truncated=len(fresh) - len(entries),
+            chars=sum(len(term) + len(meaning) for term, meaning in entries),
+            terms=[term for term, _ in entries],
+        )
+    return entries
