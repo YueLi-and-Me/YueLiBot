@@ -623,6 +623,11 @@ def main() -> None:
         _auto_register_emojis,
         _stop_emoji_auto_register,
     )
+    # 高频词表是黑话召回打分的输入，首轮全量重建必须在首个回合前完成，
+    # 因此排在 chat 之前注册。
+    from src.core.services.jargon_stats import JargonStatsService
+    jargon_stats = JargonStatsService(db)
+    lifecycle.register('jargon_stats', jargon_stats.startup, jargon_stats.shutdown)
     lifecycle.register('chat', app_state.chat.startup, app_state.chat.shutdown)
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 

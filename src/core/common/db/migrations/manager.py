@@ -25,7 +25,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 14  # 当前 schema 版本，生活活动改为连续时间线
+CURRENT_VERSION = 15  # 当前 schema 版本，新增会话高频词表
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -146,6 +146,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v11_to_v12,
         v12_to_v13,
         v13_to_v14,
+        v14_to_v15,
     )
 
     registry = get_registry()
