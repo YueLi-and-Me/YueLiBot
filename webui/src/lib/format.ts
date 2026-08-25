@@ -160,6 +160,7 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   desktop: '桌面',
   direct: '私聊',
   direct_question: '明确提问',
+  direct_emoji_like: '有人给她的消息贴了表情回应',
   directly_addressed: '直接叫到机器人',
   disabled: '未启用',
   drop: '拦截',

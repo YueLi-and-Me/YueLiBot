@@ -50,6 +50,7 @@ DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
     'name_mention',            # 出现名字/别名但无真实 @
     'direct_mention',          # 真实 @ 但 @必回 未开启
     'direct_poke',             # 有人戳了 Bot 自己
+    'direct_emoji_like',       # 有人给 Bot 的消息贴了表情回应
     'reply_to_bot',            # 回复了 Bot 的消息
     'ongoing_topic',           # Bot 正在参与的话题在继续
     'pending_thread',          # 存在当前人物的未决线索
@@ -100,6 +101,10 @@ class GateRequest:
     # 戳一戳不带任何内容，强制回复会被连戳刷屏，而她的动作集里本来就有 poke，
     # 可以戳回去。因此只抬入 DELIBERATE，接不接由她自己决定。
     poked_me: bool = False
+    # 本批是否包含「有人给 Bot 的消息贴了表情回应」。与戳一戳同口径只抬入
+    # DELIBERATE：它是明确的社交反馈，但群里贴表情非常频繁，FORCE 会被刷屏；
+    # 她自己的动作集里有 react，接不接由她自己决定。
+    emoji_liked_me: bool = False
     reply_to_bot: bool = False
     pending_thread_available: bool = False
     # 她正在参与的话题是否仍在继续。调用方按消息距离填充：从她上一条回复起
@@ -208,6 +213,8 @@ def decide_disposition(request: GateRequest) -> GateResult:
         codes.append('name_mention')
     if request.poked_me:
         codes.append('direct_poke')
+    if request.emoji_liked_me:
+        codes.append('direct_emoji_like')
     if request.reply_to_bot:
         codes.append('reply_to_bot')
     # 频率硬上限只约束「没人点名的自发参与」，不约束「有人正在叫她」。

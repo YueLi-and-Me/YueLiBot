@@ -80,6 +80,10 @@ class PlatformInboundBody(BaseModel):
     # 本条是「有人戳了 Bot」。戳一戳没有正文也没有 @，正文里没有任何门控能识别的
     # 信号，因此由适配器把这件事作为独立事实提交，门控据此抬入 DELIBERATE。
     poked_me: bool = Field(default=False, alias='pokedMe')
+    # 本条是「有人给 Bot 发的消息贴了表情回应」。与戳一戳同口径：只抬入
+    # DELIBERATE，绝不 FORCE——群里贴表情非常频繁，每次都唤醒会造成大量
+    # 无意义回合。
+    emoji_liked_me: bool = Field(default=False, alias='emojiLikedMe')
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
@@ -507,6 +511,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
         current_topic_available=current_topic_available,
         poked_me=body.poked_me,
+        emoji_liked_me=body.emoji_liked_me,
         # 入口与批次两个门控必须读同一份跟进事实，否则 reply_gate 审计事件报告的
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
         follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
