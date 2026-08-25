@@ -26,6 +26,8 @@
   bot 自己的发言：她不需要被科普自己说过的话。
 - bot 自己的名字与别名（含对用户的称呼）永远不得注入：那是她自己的身份，
   不是黑话；见 :func:`lookup_jargon` 的 ``protected_names``。
+- 会话级 ``use`` 开关（:func:`jargon_use_enabled`）：关掉的会话整条召回
+  静默跳过。``learn`` 开关留空位不实现——本系统尚无黑话学习侧。
 - 查表按 ``(term, stream_id)``：先本会话专属、再全局（``stream_id IS NULL``），
   同一个词两边都有时本会话优先——同一个词在不同群含义可以不同，这正是
   ``stream_id`` 存在的理由。
@@ -95,6 +97,51 @@ def compress_meaning(meaning: str) -> str:
 # 已注入词条的残留时长（毫秒）。「一段对话」没有硬边界，用 30 分钟近似：
 # 间隔更久的两条消息之间，话题大概率已经换过，再解释一次是正常行为。
 INJECTED_TTL_MS = 30 * 60 * 1000
+
+
+def jargon_use_enabled(db: sqlite3.Connection, stream_id: int) -> bool:
+    """读取会话级的黑话 use 开关。
+
+    开关落在 ``meta`` 表的 ``jargon:use:{stream_id}`` 键上，缺省即开——
+    关掉是少数会话的主动选择，不该为所有会话各写一行。``learn`` 开关的
+    键位（``jargon:learn:{stream_id}``）就此留空：本系统还没有黑话学习侧，
+    等有学习行为时按同名约定接上，不必再动这里的读取方。
+
+    :param db: 进程级 SQLite 连接。
+    :param stream_id: 会话 ID。
+    :return: 开关状态，缺省 ``True``。
+    :raises sqlite3.Error: 读 ``meta`` 失败时抛出。
+    副作用：无。
+    """
+    row = db.execute(
+        'SELECT value FROM meta WHERE key = ?',
+        (f'jargon:use:{stream_id}',),
+    ).fetchone()
+    return row is None or str(row['value']) != '0'
+
+
+def set_jargon_use(db: sqlite3.Connection, stream_id: int, enabled: bool) -> bool:
+    """写会话级的黑话 use 开关。
+
+    :param db: 进程级 SQLite 连接。
+    :param stream_id: 会话 ID。
+    :param enabled: 目标状态；写 ``True`` 时直接删键回到缺省，不为每个
+        会话留一行 ``'1'``。
+    :return: 写入后的实际状态。
+    :raises sqlite3.Error: 写 ``meta`` 失败时抛出。
+    副作用：删除或写入 ``meta`` 行并提交。
+    """
+    key = f'jargon:use:{stream_id}'
+    with db:
+        if enabled:
+            db.execute('DELETE FROM meta WHERE key = ?', (key,))
+        else:
+            db.execute(
+                '''INSERT INTO meta (key, value) VALUES (?, '0')
+                   ON CONFLICT(key) DO UPDATE SET value = '0' ''',
+                (key,),
+            )
+    return jargon_use_enabled(db, stream_id)
 
 
 class InjectedTerms:
@@ -216,13 +263,17 @@ def lookup_jargon(
         称呼）；按归一化后的词面比对，不受词条 status 与作用域影响。
     :param injected: 会话级已注入集合；省略时不做跨轮去重。
     :param now: 当前毫秒时间戳；省略时取系统时钟（仅供去重残留判定）。
-    :return: 至多 5 个 ``(词, 含义)`` 二元组，含义已压缩；无命中时为空列表。
+    :return: 至多 5 个 ``(词, 含义)`` 二元组，含义已压缩；无命中或该会话
+        关闭 use 开关时为空列表。
     :raises sqlite3.Error: 查询或写入 hits 失败时抛出。
     副作用：
         对命中的词条执行 ``hits = hits + 1`` 并提交——含被去重排除、被上限
         截掉、没进提示词的那些（命中发生在查表，截断发生在注入）；向
         ``injected`` 登记真正注入的词条。
     """
+    # 会话级 use 开关：关掉后整条召回静默跳过，hits 与去重登记都不发生。
+    if not jargon_use_enabled(db, stream_id):
+        return []
     texts = [
         text.strip().lower()
         for text in ([scan_texts] if isinstance(scan_texts, str) else scan_texts)
