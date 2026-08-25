@@ -99,8 +99,6 @@ export const DEFAULT_CONFIG: YueliConfig = {
     reply_style: '',
     tone_probability: 0,
     tone_variants: [],
-    expression_habits: [],
-    proactive_expression_habits: [],
   },
   conversation: {
     working_memory_messages: 40,
@@ -908,6 +906,8 @@ const RETIRED_PERSONALITY_FIELDS: Record<string, string> = {
   behavior: 'personality.behavior 已取消：接话方式并进 reply_style。',
   attention: 'personality.attention 已取消：接话方式并进 reply_style。',
   boundaries: 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。',
+  expression_habits: 'personality.expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。',
+  proactive_expression_habits: 'personality.proactive_expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。',
 }
 
 /**
@@ -1117,17 +1117,6 @@ function readSplitConfig(directory: string): YueliConfig {
   if (!Array.isArray(toneVariants) || !toneVariants.every((value) => typeof value === 'string')) {
     throw new Error(`${botPath} 的 personality.tone_variants 必须是字符串数组`)
   }
-  const expressionHabits = personality.expression_habits
-  if (!Array.isArray(expressionHabits) || !expressionHabits.every((value) => typeof value === 'string')) {
-    throw new Error(`${botPath} 的 personality.expression_habits 必须是字符串数组`)
-  }
-  const proactiveExpressionHabits = personality.proactive_expression_habits
-  if (
-    !Array.isArray(proactiveExpressionHabits)
-    || !proactiveExpressionHabits.every((value) => typeof value === 'string')
-  ) {
-    throw new Error(`${botPath} 的 personality.proactive_expression_habits 必须是字符串数组`)
-  }
   const toneProbability = numberAt(personality, 'tone_probability', botPath)
   if (toneProbability < 0 || toneProbability > 1) {
     throw new Error(`${botPath} 的 personality.tone_probability 必须在 0 到 1 之间`)
@@ -1172,8 +1161,6 @@ function readSplitConfig(directory: string): YueliConfig {
       reply_style: stringAt(personality, 'reply_style', botPath),
       tone_probability: toneProbability,
       tone_variants: [...toneVariants] as string[],
-      expression_habits: [...expressionHabits] as string[],
-      proactive_expression_habits: [...proactiveExpressionHabits] as string[],
     },
     conversation,
     conversation_agent: conversationAgent,
@@ -1887,10 +1874,6 @@ ${cfg.models.map(modelBlock).join('\n\n')}
 function serializeBot(cfg: YueliConfig): string {
   // 先单独编码数组字段，保证模板主体只负责组织配置段，不重复处理转义规则。
   const tones = cfg.personality.tone_variants.map((tone) => `  ${tomlString(tone)},`).join('\n')
-  const expressionHabits = cfg.personality.expression_habits
-    .map((habit) => `  ${tomlString(habit)},`).join('\n')
-  const proactiveExpressionHabits = cfg.personality.proactive_expression_habits
-    .map((habit) => `  ${tomlString(habit)},`).join('\n')
   return `# Bot 身份、用户关系、人格与对话记忆策略。
 # 功能开关和模型连接信息分别放在 features.toml 与 providers/models.toml。
 
@@ -1950,14 +1933,6 @@ tone_probability = ${cfg.personality.tone_probability}
 # 候选的会话级语调，只在新会话开始时至多抽取一条
 tone_variants = [
 ${tones}
-]
-# 回复时可供表达选择模型挑选的具体说话习惯；每条同时写清情境和接法
-expression_habits = [
-${expressionHabits}
-]
-# Bot 主动开口时可随机采用的具体说话习惯
-proactive_expression_habits = [
-${proactiveExpressionHabits}
 ]
 
 [conversation]
@@ -2148,8 +2123,6 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   }
   const personalityTextLists = [
     ['临时说话风格', cfg.personality.tone_variants],
-    ['表达习惯', cfg.personality.expression_habits],
-    ['主动搭话表达习惯', cfg.personality.proactive_expression_habits],
   ] as const
   for (const [label, values] of personalityTextLists) {
     if (values.some((value) => !value.trim())) throw new Error(`${label}不能包含空字符串`)

@@ -394,8 +394,6 @@ export interface YueliConfig {
     reply_style: string
     tone_probability: number
     tone_variants: string[]
-    expression_habits: string[]
-    proactive_expression_habits: string[]
   }
   conversation: {
     working_memory_messages: number

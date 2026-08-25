@@ -161,18 +161,6 @@
               "type": "string_list",
               "label": "临时说话方式候选",
               "help": "候选的会话级语调，每行一条，只在新会话开始时至多抽取一条。"
-            },
-            {
-              "key": "expression_habits",
-              "type": "string_list",
-              "label": "回复表达习惯",
-              "help": "回复时可供表达选择模型挑选的具体说话习惯；每条同时写清情境和接法。"
-            },
-            {
-              "key": "proactive_expression_habits",
-              "type": "string_list",
-              "label": "主动搭话表达习惯",
-              "help": "Bot 主动开口时可随机采用的具体说话习惯，每行一条。"
             }
           ]
         },
