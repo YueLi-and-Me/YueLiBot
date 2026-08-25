@@ -56,7 +56,7 @@ from src.core.agent.conversation_gate import (
     decide_disposition,
     mentions_bot_name,
 )
-from src.core.agent.expression import ExpressionSample, render_expression_habits, sample_expression_habits
+from src.core.agent.expression import ExpressionSample, fetch_expression_pool, render_expression_habits
 from src.core.agent.fact_extract import Participant, read_cursor, run_extraction
 from src.core.agent.jargon import lookup_jargon
 from src.core.agent.profile import profiles_for_injection, refresh_profiles
@@ -232,10 +232,11 @@ class _BufferedMessage:
 
 @dataclass
 class _SessionState:
-    """一个 stream 内稳定的语气、表达样本和单次重逢上下文。"""
+    """一个 stream 内稳定的语气、会话 nonce 和单次重逢上下文。"""
 
     started_at: int | None = None
     tone: str | None = None
+    # 会话 nonce：每次新会话重摇，供测试观测「跨过静默间隔后会话真的重开了」。
     seed: int = 0
     resumption_gap_ms: int | None = None
 
@@ -496,18 +497,15 @@ class ChatService:
         self._name_mention_probability = cfg.group_chat.name_mention_probability
         self._group_persona_weight = cfg.group_chat.persona_weight
         self._perception_surfaces = frozenset(cfg.perception.surfaces)
-        self._expression_habits = tuple(cfg.personality.expression_habits)
-        self._proactive_expression_habits = tuple(
-            cfg.personality.proactive_expression_habits
-        )
+        # 表达方式的唯一来源是 expressions 表，候选池按会话按轮变化，因此选择器
+        # 只持有模型调用参数：有 provider 就构造，候选空与否在每轮挑选时判断。
         self._expression_selector = (
             ExpressionSelector(
                 expression_provider,
                 temperature=generation.expression.temperature,
                 max_tokens=generation.expression.token_limit,
-                candidates=self._expression_habits,
             )
-            if expression_provider is not None and self._expression_habits
+            if expression_provider is not None
             else None
         )
         self.memory = MemoryStore(db)
@@ -1822,18 +1820,6 @@ class ChatService:
             return None
         return describe_resumption(gap_ms)
 
-    def _session_rng(self, stream_id: int) -> random.Random:
-        """创建绑定到当前会话种子的随机数生成器。
-
-        :param stream_id: 目标 stream 数据库 ID。
-
-        :return: 使用该会话随机种子的 ``random.Random`` 实例。
-
-        副作用：
-            仅读取进程内会话状态；不推进共享随机源状态。
-        """
-        return random.Random(self._session(stream_id).seed)
-
     def _persist_reply(
         self,
         context: ConversationContext,
@@ -2593,12 +2579,9 @@ class ChatService:
                 context.stream.id, 2
             )],
             schedule=schedule_desc,
+            # 主动开口同样从 expressions 表挑贴合当前情境的说法；没有独立候选源。
             expression_habits=render_expression_habits(
-                sample_expression_habits(
-                    self._proactive_expression_habits,
-                    limit=3,
-                    rng=self._session_rng(context.stream.id),
-                )
+                await self._pick_expression_habits(context, situation, [], None)
             ),
             tone=self._session(context.stream.id).tone,
             resumption=self._take_resumption(context.stream.id),
@@ -2991,35 +2974,59 @@ class ChatService:
         history: list[dict[str, str]],
         signal: asyncio.Event | None,
     ) -> list[ExpressionSample]:
-        """为当前回复选择表达习惯样本。
+        """为当前回复从 expressions 表选择表达样本。
 
         :param context: 当前会话上下文，用于阶段和错误 trace。
         :param query: 当前用户文本或主动情境。
         :param history: 已组装的对话历史。
         :param signal: 可选的取消信号。
 
-        :return: 选择出的表达样本；选择器未配置、输入错误或非中断模型错误时返回空列表。
+        :return: 选择出的表达样本；选择器未配置、候选池为空、输入错误或
+            非中断模型错误时返回空列表。
 
         :raises LlmError: 选择过程被主动中断时向上抛出。
         """
         if self._expression_selector is None:
             trace.emit('expression_select', source='disabled', count=0)
             return []
+        # 候选池按会话按轮现取；不足一池（含从未积累过表达方式的会话）时
+        # 本轮不选，不调用模型。
+        pool, total = fetch_expression_pool(self._db, context.stream.id)
+        if not pool:
+            trace.emit('expression_select', source='disabled', count=0, pool=0, total=total)
+            return []
         self._mark_stage(context, EXPRESSION)
         try:
             # 只把最近历史传给选择器，避免表达习惯选择占用完整上下文预算。
-            picked = await self._expression_selector.select(query, history[-8:], signal=signal)
+            picked = await self._expression_selector.select(query, history[-8:], pool, signal=signal)
         except LlmError as exc:
             if exc.kind == 'aborted':
                 raise
-            return self._expression_selection_failed(context, type(exc).__name__, str(exc))
+            return self._expression_selection_failed(
+                context, type(exc).__name__, str(exc), pool=len(pool), total=total
+            )
         except ValueError as exc:
-            return self._expression_selection_failed(context, 'ValueError', str(exc))
+            return self._expression_selection_failed(
+                context, 'ValueError', str(exc), pool=len(pool), total=total
+            )
+        # 选中即进提示词：渲染结果随本轮系统提示词一并发出，因此在这里回写
+        # 使用次数与最近使用时间；未选中的行两列都不动。
+        if picked:
+            used_at = current_time()
+            self._db.executemany(
+                'UPDATE expressions SET use_count = use_count + 1, last_used_at = ?'
+                ' WHERE id = ?',
+                [(used_at, sample.id) for sample in picked],
+            )
+            self._db.commit()
         trace.emit(
             'expression_select',
             source='model',
             count=len(picked),
-            habits=picked,
+            pool=len(pool),
+            total=total,
+            habits=[f'当“{sample.situation}”时，可以用“{sample.style}”来表达。'
+                    for sample in picked],
         )
         return picked
 
@@ -3028,12 +3035,17 @@ class ChatService:
         context: ConversationContext,
         error_type: str,
         message: str,
+        *,
+        pool: int,
+        total: int,
     ) -> list[ExpressionSample]:
         """记录表达样本选择失败并跳过本轮样本注入。
 
         :param context: 当前会话上下文。
         :param error_type: 错误类型名称。
         :param message: 错误详情。
+        :param pool: 本轮候选池大小。
+        :param total: 该会话候选总数。
 
         :return: 空表达样本列表。
 
@@ -3048,6 +3060,7 @@ class ChatService:
         logger.error('expression_select_failed', errorType=error_type, error=message,
                      snapshot=str(snapshot) if snapshot else None)
         trace.emit('expression_select', source='model', count=0,
+                   pool=pool, total=total,
                    errorType=error_type, error=message,
                    snapshotPath=str(snapshot) if snapshot else None)
         return []
