@@ -201,6 +201,10 @@ CREATE TABLE IF NOT EXISTS expressions (
   use_count  INTEGER NOT NULL DEFAULT 0,
   source     TEXT    NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
+  -- checked 预留给「只用人工确认过的表达」的质量闸门；当前全部置 0，读取不按它过滤。
+  checked    INTEGER NOT NULL DEFAULT 0,
+  -- 最近一次真正进提示词的时间，与 use_count 的回写同处发生；从未被选中为 NULL。
+  last_used_at INTEGER,
   UNIQUE(situation, style, stream_id)
 );
 
