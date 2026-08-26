@@ -184,11 +184,19 @@ CREATE TABLE IF NOT EXISTS jargon (
   -- NULL 表示全局通用，非空表示只在该会话里成立。同一个词在不同群含义可以不同，
   -- 所以唯一键带上 stream_id。
   stream_id  INTEGER REFERENCES streams(id) ON DELETE CASCADE,
-  -- confirmed 才参与提示词注入；pending 是尚未判定的候选，只存不用。
+  -- confirmed 才参与提示词注入；pending 是尚未判定的候选，只存不用。「判定为
+  -- 普通词」不设新取值：pending 且 inferred_at_sightings > 0 即是。
   status     TEXT    NOT NULL DEFAULT 'confirmed',
   hits       INTEGER NOT NULL DEFAULT 0,
   source     TEXT    NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
+  -- 学习期证据三列（v18）。sightings 是「本批语料出现过」的累计，每批每词至多
+  -- +1；它与 hits（查表命中，含被截掉没进提示词的）语义不同，不能混用。
+  -- evidence_ids 存证据消息 id 的 JSON 数组，推断时据此取上下文；
+  -- inferred_at_sightings 记上次推断时的 sightings，到 100 视为锁定不再推断。
+  sightings             INTEGER NOT NULL DEFAULT 0,
+  evidence_ids          TEXT,
+  inferred_at_sightings INTEGER NOT NULL DEFAULT 0,
   UNIQUE(term, stream_id)
 );
 CREATE INDEX IF NOT EXISTS idx_jargon_status ON jargon(status, stream_id);
