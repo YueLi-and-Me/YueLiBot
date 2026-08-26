@@ -209,58 +209,31 @@ def _announce_model_routing(cfg: Config) -> None:
     print_box('模型任务路由', rows, width=96, source=__name__)
 
 
-def _announce_webui_entry(port: int, token: str, runtime_path: Path) -> None:
-    """在启动早期用醒目的信息框输出 WebUI 地址与登录 token。
+def _announce_webui_ready(port: int, token: str, runtime_path: Path) -> None:
+    """在监听真正建立后打印唯一一次 WebUI 入口框。
+
+    只打一次：早先还有一个「正在初始化」的预告框，但它出现在启动日志顶部、
+    地址那一刻还连不上，用户照着点只会失败，而真正可用的时刻另有一个框——
+    同一份信息出现两次，先出现的那次还是错的。
 
     :param port: 后端实际监听端口。
     :param token: 当前进程认证 token；每次启动重新生成。
     :param runtime_path: 运行时凭据文件路径，供用户事后再取一次 token。
 
     副作用：
-        向标准输出写入包含 token 的启动信息框；应用不会主动把它写入 JSONL 或 WebUI
-        日志流，但外部启动器仍可能记录标准输出。
-
-    这里刻意用 ``print`` 而不是 logger，两个原因缺一不可：
-
-    1. **token 不能进文件日志。** logger 会同时写 ``data/logs`` 下的 JSONL 并推给
-       WebUI 日志流；而 token 的落盘位置 ``data/runtime/`` 由
-       ``_restrict_runtime_directory()`` 限制了权限，日志目录没有。写进日志等于绕开
-       那道限制，而日志文件长期留存、又经常被整份复制去排障。
-    2. **stdout 在两种启动方式下都看得见。** supervisor 只吞掉 ``YUELI_`` 前缀的协议行
-       （`supervisor.ts` 的 `_onLine`），其余 stdout 原样转发到 Electron 控制台。
-       反过来，这个信息框**不能**加 ``YUELI_`` 前缀，否则会被当成协议行吃掉。
-
-    token 不拼进 URL：URL 会进浏览器历史和 referrer，而 token 是当前进程的主凭据。
+        向标准输出写入包含 token 的信息框，不进日志文件与 WebUI 日志流。
     """
-
-    print_box(
-        'YueLiBot · WebUI 入口',
-        [
-            f'WebUI 观察面板：http://127.0.0.1:{port}',
-            f'登录 token：{token}',
-            f'token 每次启动重新生成，也可从 {runtime_path} 读取',
-            '状态：后端正在初始化，完成后会显示“WebUI 已就绪”',
-        ],
-        # 路径和 64 位 token 都需要保持在单行，启动时才能直接复制。
-        width=112,
-        # 不发 WebUI 日志流：框里带着当前进程的主凭据，见本函数文档第 1 条。
-        publish=False,
-    )
-
-
-def _announce_webui_ready(port: int, token: str) -> None:
-    """在监听真正建立后再次给出短的 WebUI 就绪确认。"""
 
     print_box(
         'WebUI 已就绪',
         [
             f'地址：http://127.0.0.1:{port}',
             f'登录 token：{token}',
-            '现在可以在浏览器中打开上面的地址',
+            f'token 每次启动重新生成，也可从 {runtime_path} 读取',
         ],
-        # 64 位 token 不能在确认框里折行，否则用户复制时容易漏字符。
-        width=88,
-        # 同上：含 token，不进 WebUI 日志流。
+        # 路径和 64 位 token 都要保持单行，用户才能直接复制。
+        width=112,
+        # 含当前进程主凭据，不进 WebUI 日志流与 JSONL。
         publish=False,
     )
 
@@ -268,17 +241,25 @@ def _announce_webui_ready(port: int, token: str) -> None:
 class _ReadyAnnouncingServer(uvicorn.Server):
     """在端口真正开始监听之后才打印就绪公告与 WebUI 状态框。"""
 
-    def __init__(self, config: uvicorn.Config, port: int, token: str) -> None:
-        """记录就绪公告所需的监听端口和认证 token。
+    def __init__(
+        self,
+        config: uvicorn.Config,
+        port: int,
+        token: str,
+        runtime_path: Path,
+    ) -> None:
+        """记录就绪公告所需的监听端口、认证 token 与凭据文件路径。
 
         :param config: Uvicorn 配置。
         :param port: 后端实际监听端口。
         :param token: 当前进程认证 token。
+        :param runtime_path: 运行时凭据文件路径。
         """
 
         super().__init__(config)
         self._entry_port = port
         self._entry_token = token
+        self._entry_runtime_path = runtime_path
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
         """完成 Uvicorn 启动后再输出就绪标记与 WebUI 状态框。
@@ -288,13 +269,14 @@ class _ReadyAnnouncingServer(uvicorn.Server):
         副作用：
             先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1`` 与 WebUI 就绪框。
 
-        启动早期已经输出带“正在初始化”状态的入口框；这里仅在监听真正建立后补上
-        “WebUI 已就绪”确认，避免用户误把预告地址当成已经可访问的服务。
+        入口框只在这里打一次：地址在监听建立之前是打不开的，提前预告等于给出
+        一个当时点了会失败的地址。
         """
 
         await super().startup(sockets=sockets)
         _announce_ready()
-        _announce_webui_ready(self._entry_port, self._entry_token)
+        _announce_webui_ready(
+            self._entry_port, self._entry_token, self._entry_runtime_path)
 
 
 def main() -> None:
@@ -358,13 +340,6 @@ def main() -> None:
     token_manager.configure(backend_runtime.token)
     _announce_port(port)
     _announce_token(backend_runtime.token)
-    # 端口已经被当前进程占住，先把入口放在启动日志顶部；真正监听后还会再打印一次
-    # “WebUI 已就绪”框，避免用户把初始化中的地址误认为服务已经可访问。
-    _announce_webui_entry(
-        port,
-        backend_runtime.token,
-        runtime_file_path(data_dir),
-    )
 
     from src.core.llm_models.snapshot import (
         configure as configure_snapshots,
@@ -620,10 +595,18 @@ def main() -> None:
     app_state.foreground_callback = awareness.on_foreground
 
     async def _auto_register_emojis() -> None:
-        """在聊天服务启动前用视觉模型登记表情包目录中的新增图片。"""
+        """在聊天服务启动前用视觉模型登记表情包目录中的新增图片。
+
+        只有真的登记了新图片才重新校验完整性：构造 EmojiLibrary 时已经全量
+        校验过一遍，扫描没有新增时库的形态没变，再算一遍是把每个文件的
+        SHA-256 白算第二次。真机 369 个文件（97 MB）的一次全量校验约 0.3 秒，
+        占整个启动的可观份额。
+        """
 
         summary = await emoji_library.auto_register_directory(image_describer)
-        verified_count = emoji_library.verify_integrity()
+        verified_count = (
+            emoji_library.verify_integrity() if summary.added else verified_emoji_count
+        )
         logger.info(
             'emoji_directory_scanned',
             discovered=summary.discovered,
@@ -763,6 +746,7 @@ def main() -> None:
         config,
         port=port,
         token=backend_runtime.token,
+        runtime_path=runtime_file_path(data_dir),
     ).run(sockets=[sock])
 
 
