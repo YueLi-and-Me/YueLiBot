@@ -3,13 +3,30 @@
  *
  * 一次回合在多级 Agent 下会产生多份记录（决策一份、生成一份、认知检索各一份），
  * 控制台只看得到最后一条可见产物；本面板按任务筛选后逐份回看「这一级收到什么、
- * 答了什么」。数据通道由 use-prompt-records hook 提供，被会话观察页引用。
+ * 答了什么」。摘要由后端按时间倒序给出，面板再切页展示，避免整卡片被几十条
+ * 折叠行撑长。数据通道由 use-prompt-records hook 提供，被会话观察页引用。
  */
 import { Layers } from 'lucide-react'
+import { useState } from 'react'
 
-import { Button, Card, CardBody, Chip, Empty, ErrorText, Field, SectionHeading, Select, cn } from '@/components/ui'
+import {
+  Button,
+  Card,
+  CardBody,
+  Chip,
+  Empty,
+  ErrorText,
+  Field,
+  Pager,
+  SectionHeading,
+  Select,
+  cn,
+} from '@/components/ui'
 import { usePromptRecords } from '@/hooks/use-prompt-records'
 import type { PromptRecordSummary } from '@/hooks/use-prompt-records'
+
+/** 调用记录每页条数。 */
+const RECORDS_PAGE_SIZE = 10
 
 /**
  * 把毫秒耗时渲染成秒；缺失时回退为占位符。
@@ -39,6 +56,22 @@ function summaryTitle(summary: PromptRecordSummary): string {
 export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
   const { enabled: recordsEnabled, tasks, task, setTask, records, openKey, toggle, detail, status, reload } =
     usePromptRecords(enabled)
+  const [page, setPage] = useState(0)
+  const pageCount = Math.max(1, Math.ceil(records.length / RECORDS_PAGE_SIZE))
+  // 刷新后记录数可能变少，旧页码会落在范围外；这里直接夹取而不用 effect 回写
+  // state，避免多渲染一轮。切换任务则显式回到第一页，否则会停在上一个任务的页码。
+  const current = Math.min(page, pageCount - 1)
+  const visible = records.slice(current * RECORDS_PAGE_SIZE, (current + 1) * RECORDS_PAGE_SIZE)
+
+  /**
+   * 切换任务筛选，并把页码复位到第一页。
+   *
+   * @param next 目标任务名；空串表示全部任务。
+   */
+  function changeTask(next: string) {
+    setTask(next)
+    setPage(0)
+  }
 
   return (
     <Card id="prompt-records" aria-label="分阶段调用记录" className="animate-rise scroll-mt-6">
@@ -49,7 +82,7 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
         actions={
           <>
             <Field label="模型任务" htmlFor="record-task" className="w-56">
-              <Select id="record-task" value={task} onChange={(event) => setTask(event.target.value)}>
+              <Select id="record-task" value={task} onChange={(event) => changeTask(event.target.value)}>
                 <option value="">全部任务</option>
                 {tasks.map((item) => (
                   <option key={item} value={item}>
@@ -73,7 +106,7 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
           <Empty>还没有记录。发生一次模型调用后这里就会出现。</Empty>
         ) : null}
 
-        {records.map((summary) => {
+        {visible.map((summary) => {
           const key = `${summary.task}/${summary.name}`
           const open = key === openKey
           return (
@@ -165,6 +198,8 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
             </div>
           )
         })}
+
+        <Pager page={current} pageCount={pageCount} total={records.length} onChange={setPage} />
       </CardBody>
     </Card>
   )

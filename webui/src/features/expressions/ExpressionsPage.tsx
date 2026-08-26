@@ -10,7 +10,6 @@ import { useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
 import {
-  Button,
   Card,
   CardBody,
   Chip,
@@ -18,6 +17,7 @@ import {
   ErrorText,
   Field,
   Loading,
+  Pager,
   Select,
   SegmentedTabs,
 } from '@/components/ui'
@@ -25,8 +25,8 @@ import { useExpressions, type ExpressionEntry } from '@/hooks/use-expressions'
 import { useStreams } from '@/hooks/use-observability'
 import { streamLabel } from '@/lib/format'
 
-/** 页大小；与后端路由的 le=200 上限保持余量。 */
-const PAGE_SIZE = 50
+/** 页大小；一屏多一点为宜，太长要一直滚。后端路由 le=200，取值留足余量。 */
+const PAGE_SIZE = 20
 
 /**
  * 渲染单条表达方式行。
@@ -149,26 +149,7 @@ export function ExpressionsPage() {
         </Card>
       ) : null}
 
-      {total > 0 ? (
-        <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-          <span>
-            共 {total} 条 · 第 {page + 1} / {pageCount} 页
-          </span>
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" disabled={page === 0 || loading} onClick={() => setPage(page - 1)}>
-              上一页
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page + 1 >= pageCount || loading}
-              onClick={() => setPage(page + 1)}
-            >
-              下一页
-            </Button>
-          </div>
-        </div>
-      ) : null}
+      <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
     </div>
   )
 }

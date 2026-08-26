@@ -1,13 +1,15 @@
 /**
- * 数据展示基础组件：指标行、进度条、标签片段与空/错误/加载状态。
+ * 数据展示基础组件：指标行、进度条、标签片段、翻页条与空/错误/加载状态。
  *
  * 指标行采用「左侧 muted 名称 + 右侧等宽数字值」的双栏排布；进度条用原生
- * progress 语义的重绘实现，保证无障碍名称可读；状态组件统一空数据、加载中
- * 与错误提示的呈现。进度条为樱粉填充，呼应设计语言主色。
+ * progress 语义的重绘实现，保证无障碍名称可读；翻页条把「共 N 条 · 第 X / Y 页」
+ * 与上下页按钮统一成一行，供各列表面板复用；状态组件统一空数据、加载中与错误
+ * 提示的呈现。进度条为樱粉填充，呼应设计语言主色。
  */
 import { LoaderCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 
+import { Button } from './button'
 import { cn } from './cn'
 
 interface MetricProps {
@@ -98,6 +100,64 @@ export function Chip({ label, value }: ChipProps) {
       <strong className="font-medium">{label}</strong>
       <span className="truncate">{value}</span>
     </span>
+  )
+}
+
+interface PagerProps {
+  /** 当前页码，从 0 开始。 */
+  page: number
+  /** 总页数，最小为 1。 */
+  pageCount: number
+  /** 条目总数，用于「共 N 条」文案。 */
+  total: number
+  /** 翻页回调，入参为目标页码（0 起）。 */
+  onChange: (page: number) => void
+  /** 是否禁用翻页按钮，用于服务端分页在取新一页期间锁住操作，默认值为 `false`。 */
+  disabled?: boolean
+}
+
+/**
+ * 渲染列表翻页条：左侧总量与页码，右侧上一页 / 下一页按钮。
+ *
+ * 三种形态按数据量退化：无数据时整条不渲染；只有一页时只留「共 N 条」，不显示
+ * 「第 1 / 1 页」和两个恒禁用的按钮；多页时才是完整形态。
+ *
+ * @param props.page 当前页码，0 起。
+ * @param props.pageCount 总页数。
+ * @param props.total 条目总数。
+ * @param props.onChange 翻页回调，入参为目标页码。
+ * @param props.disabled 是否禁用翻页按钮。
+ * @returns 翻页条元素；`total` 为 0 时返回 `null`。
+ */
+export function Pager({ page, pageCount, total, onChange, disabled = false }: PagerProps) {
+  if (total <= 0) return null
+  const paged = pageCount > 1
+  return (
+    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+      <span className="tabular-nums">
+        共 {total} 条{paged ? ` · 第 ${page + 1} / ${pageCount} 页` : ''}
+      </span>
+      {paged ? (
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={disabled || page <= 0}
+            onClick={() => onChange(page - 1)}
+          >
+            上一页
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={disabled || page + 1 >= pageCount}
+            onClick={() => onChange(page + 1)}
+          >
+            下一页
+          </Button>
+        </div>
+      ) : null}
+    </div>
   )
 }
 

@@ -13,10 +13,11 @@ import {
   Mic,
   ScanEye,
 } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 
-import { Card, CardBody, Chip, Metric, Progress, SectionHeading, cn } from '@/components/ui'
+import { Card, CardBody, Chip, Metric, Pager, Progress, SectionHeading, cn } from '@/components/ui'
 import { dateTime, displayValue, fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
 import type { ObservabilityPayload } from '../../../../electron/shared/ipc.ts'
 
@@ -24,6 +25,9 @@ import type { ObservabilityPayload } from '../../../../electron/shared/ipc.ts'
 const SPAN_NORMAL = 'md:col-span-6 xl:col-span-4'
 /** 网格跨度：宽分区。 */
 const SPAN_WIDE = 'md:col-span-12 xl:col-span-8'
+
+/** 活动时间线每页条数。 */
+const TIMELINE_PAGE_SIZE = 6
 
 interface SectionCardProps {
   /** 分区标题。 */
@@ -95,12 +99,22 @@ function SelfStateSection({ payload }: { payload: ObservabilityPayload }) {
 /**
  * 渲染当前真实活动和最近二十四小时的活动时间线。
  *
+ * 快照里的时间线是正序（最早在前），展示时整体倒置为最新在前并翻页：这一段随
+ * 一天推进只会变长，正序会把刚发生的活动挤到卡片底部，读者每次都要滚到最后。
+ *
  * @param props.payload 后端观察快照。
  * @returns 活动时间线分区。
  */
 function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
   const activity = payload.activity
   const timeline = payload.activityTimeline ?? []
+  const [page, setPage] = useState(0)
+  const ordered = useMemo(() => [...timeline].reverse(), [timeline])
+  const pageCount = Math.max(1, Math.ceil(ordered.length / TIMELINE_PAGE_SIZE))
+  // 快照每次轮询都会重算时间线，条数变少时旧页码会落在范围外；这里直接夹取而
+  // 不额外用 effect 回写 state，避免多渲染一轮。
+  const current = Math.min(page, pageCount - 1)
+  const visible = ordered.slice(current * TIMELINE_PAGE_SIZE, (current + 1) * TIMELINE_PAGE_SIZE)
   return (
     <SectionCard title="活动时间线" subtitle="实际发生的生活记录" icon={<History />} tint="coral" wide>
       {activity === undefined ? (
@@ -119,7 +133,7 @@ function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
             <Metric label="精力 / 心情节奏" value={`${activity.energyPace} / ${activity.moodPace}`} />
           </MetricList>
           <ol className="relative ml-1.5 flex flex-col gap-3 border-l border-border pl-5">
-            {timeline.map((item) => (
+            {visible.map((item) => (
               <li key={item.id} className="relative">
                 <span
                   className="absolute top-[7px] -left-[23.5px] size-2 rounded-full bg-primary"
@@ -134,6 +148,7 @@ function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
               </li>
             ))}
           </ol>
+          <Pager page={current} pageCount={pageCount} total={ordered.length} onChange={setPage} />
         </div>
       )}
     </SectionCard>

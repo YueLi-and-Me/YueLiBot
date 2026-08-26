@@ -2,16 +2,16 @@
  * 人物与关系列表页：一人一行展示机器人已认识的全部人物。
  *
  * 每行给出显示名、平台身份、同框的群、好感度、生效事实条数与最后互动时间，
- * 点击行进入完整画像页。列表可按好感度或最后互动时间排序，排序在前端完成
- * （全部行已在内存中）。数据来自 hooks/use-persons 的 usePersons，本组件不
- * 直接发起请求。
+ * 点击行进入完整画像页。列表可按好感度或最后互动时间排序，排序与翻页都在前端
+ * 完成（`/api/persons` 一次返回全部行，已在内存中）。数据来自 hooks/use-persons
+ * 的 usePersons，本组件不直接发起请求。
  */
 import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Button, Card, CardBody, Empty, ErrorText, Loading, cn } from '@/components/ui'
+import { Button, Card, CardBody, Empty, ErrorText, Loading, Pager, cn } from '@/components/ui'
 import { usePersons } from '@/hooks/use-persons'
 import { dateTime, fixed } from '@/lib/format'
 import type { PersonSummary } from '../../../../electron/shared/ipc.ts'
@@ -61,6 +61,9 @@ function SortButton({ column, label, sortKey, sortAsc, onToggle }: SortButtonPro
     </button>
   )
 }
+
+/** 每页人数。 */
+const PAGE_SIZE = 20
 
 /** 行网格的列模板；表头与数据行共用，保证列对齐。 */
 const ROW_GRID =
@@ -121,6 +124,7 @@ export function PersonsPage() {
   const { persons, loading, error } = usePersons()
   const [sortKey, setSortKey] = useState<SortKey>('intimacy')
   const [sortAsc, setSortAsc] = useState(false)
+  const [page, setPage] = useState(0)
 
   const sorted = useMemo(() => {
     const rows = [...persons]
@@ -137,15 +141,21 @@ export function PersonsPage() {
     return rows
   }, [persons, sortKey, sortAsc])
 
-  /** 切换排序列；重复点击同一列时翻转升降序。 */
+  /** 切换排序列；重复点击同一列时翻转升降序，并回到第一页。 */
   const toggleSort = (key: SortKey) => {
     if (key === sortKey) {
-      setSortAsc((current) => !current)
+      setSortAsc((ascending) => !ascending)
     } else {
       setSortKey(key)
       setSortAsc(false)
     }
+    // 换了排序口径还停在原页码，看到的是一批与刚才无关的人，不如回到榜首。
+    setPage(0)
   }
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount - 1)
+  const visible = sorted.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
 
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
@@ -175,13 +185,14 @@ export function PersonsPage() {
               <span />
             </div>
             <div className="flex flex-col divide-y divide-border/60">
-              {sorted.map((person) => (
+              {visible.map((person) => (
                 <PersonRow key={person.id} person={person} />
               ))}
             </div>
           </CardBody>
         </Card>
       ) : null}
+      <Pager page={currentPage} pageCount={pageCount} total={sorted.length} onChange={setPage} />
     </div>
   )
 }

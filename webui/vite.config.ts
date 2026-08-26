@@ -44,6 +44,11 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5181,
+    // 代理键是前缀匹配，不是路径段匹配：'/prompts' 并不覆盖 '/prompt-records'，
+    // 后者曾因此漏配——请求落在 dev server 上被 SPA 回退成 index.html，前端拿到
+    // HTML 去 JSON.parse，面板只报一句解析失败，看不出是代理问题。新增后端路由时
+    // 按完整前缀补一条；'/settings/config' 写全路径，避免连 SPA 的 /settings 页面
+    // 一起代理走。
     proxy: {
       '/auth': 'http://127.0.0.1:7999',
       '/api': 'http://127.0.0.1:7999',
@@ -52,7 +57,10 @@ export default defineConfig({
       '/stages': 'http://127.0.0.1:7999',
       '/events': 'http://127.0.0.1:7999',
       '/prompts': 'http://127.0.0.1:7999',
+      '/prompt-records': 'http://127.0.0.1:7999',
       '/models': 'http://127.0.0.1:7999',
+      '/settings/config': 'http://127.0.0.1:7999',
+      '/system/restart': 'http://127.0.0.1:7999',
       '/replay': 'http://127.0.0.1:7999',
       '/ws': {
         target: 'ws://127.0.0.1:7999',
@@ -63,5 +71,15 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, '../out/webui'),
     emptyOutDir: true,
+    // 字体一律产出为独立文件，不因体积小被内联成 data: URI。
+    // 现象：JetBrains Mono 的西里尔子集不足 4 KB，被内联进 CSS 后，页面 CSP
+    //   （default-src 'self'，未单列 font-src）按 default-src 拦掉该字体，控制台
+    //   每次加载都报 "violates the following Content Security Policy directive"。
+    // 原因：assetsInlineLimit 默认 4096 字节，命中的资源改写为 data: URI，字体来源
+    //   由此从同源变成 data:，与 index.html 声明的「字体同源自托管」不一致。
+    // 后果：另一条路是在 CSP 里放开 font-src data:，等于为一个用不到的子集放宽全站
+    //   字体来源；这里改为让构建产物符合既有策略，CSP 保持严格。
+    assetsInlineLimit: (filePath: string) =>
+      filePath.endsWith('.woff2') || filePath.endsWith('.woff') ? false : undefined,
   },
 })
