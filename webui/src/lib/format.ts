@@ -17,6 +17,8 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   emoji_selected: '选择表情包',
   emoji_selection_missed: '表情包未命中库',
   expression_select: '表达方式选择',
+  expression_learned: '表达方式学习完成',
+  expression_learn_failed: '表达方式学习失败',
   foreground: '前台活动变化',
   image_description: '图片理解',
   interest: '兴趣度更新',
@@ -138,6 +140,13 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   windowChanged: '窗口已切换',
   emojiEmotions: '表情情绪',
   expressionIntent: '表达意图',
+  learned: '新学数量',
+  discarded: '丢弃数量',
+  eliminated: '淘汰数量',
+  messageCount: '消息条数',
+  cursor: '游标',
+  candidates: '候选数量',
+  remaining: '剩余数量',
 }
 
 /** 常见协议枚举的中文值；只转换完全匹配项，不改写用户正文。 */

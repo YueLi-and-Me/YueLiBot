@@ -90,8 +90,9 @@ def fetch_expression_pool(
     3. 再从全量候选加权抽 5 条，与高频结果按行去重合并，候选池至多 10 条。
 
     加权抽样的权重是 use_count 在候选组内线性映射到 [1, 5]：最高频最多 5 倍
-    权重但不垄断，长尾始终有非零概率。不按 ``checked`` 过滤——该列是预留给
-    人工确认流程的闸门，启用前全表为 0，过滤会让候选池直接空掉。
+    权重但不垄断，长尾始终有非零概率。``checked`` 只排除 ``-1``（人工驳回，
+    立刻停止生效）；``0``（未复核）照常进池——复核不是使用的前置条件，把
+    未复核挡在池外等于整条线停摆；``1``（人工确认）也照常进池。
 
     :param db: 进程级 SQLite 连接（与 MemoryStore 同一来源）。
     :param stream_id: 当前会话 ID；候选池严格按会话隔离，不跨会话借。
@@ -104,7 +105,8 @@ def fetch_expression_pool(
     """
 
     rows = db.execute(
-        'SELECT id, situation, style, use_count FROM expressions WHERE stream_id = ?',
+        'SELECT id, situation, style, use_count FROM expressions'
+        ' WHERE stream_id = ? AND checked != -1',
         (stream_id,),
     ).fetchall()
     total = len(rows)

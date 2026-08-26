@@ -57,6 +57,12 @@ from src.core.agent.conversation_gate import (
     mentions_bot_name,
 )
 from src.core.agent.expression import ExpressionSample, fetch_expression_pool, render_expression_habits
+from src.core.agent.expression_learn import (
+    BATCH_MESSAGES as EXPRESSION_LEARN_BATCH,
+    TRIGGER_MESSAGES as EXPRESSION_LEARN_TRIGGER,
+    read_cursor as read_expression_learn_cursor,
+    run_learning,
+)
 from src.core.agent.fact_extract import Participant, read_cursor, run_extraction
 from src.core.agent.jargon import InjectedTerms, lookup_jargon
 from src.core.agent.profile import profiles_for_injection, refresh_profiles
@@ -426,6 +432,9 @@ class ChatService:
         self._fact_extract_trigger = conversation.fact_extract_trigger_messages
         self._fact_extract_batch = conversation.fact_extract_batch_messages
         self._extracting: set[int] = set()
+        # 表达学习的在飞守卫，与抽取同形态但互不相干：两个任务各走各的游标，
+        # 同一会话同一时刻各只允许一个在飞。
+        self._learning_expressions: set[int] = set()
         # 画像刷新不按会话分派，全局一把闸：它读的是本地事实，与当前是哪条会话无关。
         self._refreshing_profiles = False
         self._session_gap_ms = conversation.session_gap_minutes * 60_000
@@ -1317,6 +1326,7 @@ class ChatService:
                 self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
                 asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+                asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
                 asyncio.create_task(self._maybe_refresh_profiles())
             except LlmError as exc:
                 if exc.kind == 'aborted':
@@ -4194,6 +4204,8 @@ class ChatService:
         # - 后果：漏挂不会报错也不留日志（_maybe_extract_facts 的前置判断都是静默 return），
         #   表现为「功能已接线但永远不产出」，只能靠游标为空反推。
         asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+        # 表达学习同理，与抽取同处收尾、同样两处都挂。
+        asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
         asyncio.create_task(self._maybe_refresh_profiles())
         self._schedule_scene_observation(context)
 
@@ -5459,6 +5471,48 @@ class ChatService:
             logger.warning('fact_extract_failed', streamId=stream_id, error=str(exc))
         finally:
             self._extracting.discard(stream_id)
+
+    async def _maybe_learn_expressions(self, stream_id: int) -> None:
+        """在待学习消息达到阈值时后台学习表达方式，并顺路执行淘汰。
+
+        与 :meth:`_maybe_extract_facts` 同一条纪律：独立模型任务（复用 memory 槽）、
+        回合之后执行、同一会话同时只允许一个在飞、失败只丢该批且不影响已完成的
+        对话。游标独立（``expression_learn_cursor``），与事实抽取、摘要队列互不
+        消费对方输入。
+
+        :param stream_id: 待检查的会话 ID。
+        :return: 无返回值。
+        副作用：可能发起一次模型请求、写入并淘汰 expressions 行、推进学习游标。
+        """
+
+        if stream_id in self._learning_expressions or self._memory_provider is None:
+            return
+        self._learning_expressions.add(stream_id)
+        try:
+            # 先按同一口径取出这一批，用它的发言人解析在场者（名单只用于把对话
+            # 渲染成带名字的行）；run_learning 内部会再读一次同样的批次。
+            cursor = read_expression_learn_cursor(self.memory, stream_id)
+            if self.memory.message_count_after(stream_id, cursor) < EXPRESSION_LEARN_TRIGGER:
+                return
+            participants = self._extraction_participants(
+                self.memory.messages_after(stream_id, cursor, EXPRESSION_LEARN_BATCH)
+            )
+            await run_learning(
+                self.memory,
+                self._memory_provider,
+                self._db,
+                stream_id=stream_id,
+                participants=participants,
+                bot_name=self._bot_display_name,
+                temperature=self._memory_temperature,
+                max_tokens=self._memory_max_tokens,
+            )
+        except Exception as exc:
+            # 学习是旁路设施：任何失败都不该回滚已完成的回合。游标只在整批成功时
+            # 推进，这一批下次会重跑。
+            logger.warning('expression_learn_failed', streamId=stream_id, error=str(exc))
+        finally:
+            self._learning_expressions.discard(stream_id)
 
 
 def _extract_lines(raw: str) -> list[dict] | None:

@@ -39,6 +39,7 @@ const KIND_OPTIONS = [
   { value: 'llm_final', label: '模型输出完成' },
   { value: 'llm_error', label: '模型调用失败' },
   { value: 'expression_select', label: '表达方式选择' },
+  { value: 'expression_learned', label: '表达方式学习完成' },
   { value: 'interest', label: '兴趣度更新' },
   { value: 'proactive_intent', label: '主动意图评估' },
   { value: 'vision_glance', label: '视觉扫视' },

@@ -1217,6 +1217,7 @@ def _list_jargon_rows(
 def _list_expression_rows(
     db: sqlite3.Connection,
     stream_id: int | None,
+    checked: int | None,
     use_desc: bool,
     limit: int,
     offset: int,
@@ -1225,25 +1226,29 @@ def _list_expression_rows(
 
     :param db: 进程级 SQLite 连接，由路由层取得后传入。
     :param stream_id: 只取该会话的表达；``None`` 表示不限。
+    :param checked: 只取该复核状态的表达（0 未复核 / 1 已确认 / -1 已驳回）；
+        ``None`` 表示不限。
     :param use_desc: 为真按使用次数降序，否则升序。
     :param limit: 页大小。
     :param offset: 偏移量。
-    :return: ``(表达字典列表, 总数)``；每行含 ``useCount`` 累计次数与
-        ``lastUsedAt`` 最近一次被选中的毫秒时间戳（从未被选中时为 ``None``）。
+    :return: ``(表达字典列表, 总数)``；每行含 ``useCount`` 累计次数、
+        ``lastUsedAt`` 最近一次被选中的毫秒时间戳（从未被选中时为 ``None``）
+        与 ``checked`` 复核状态。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
     """
-    # ? IS NULL 参数开关：传 NULL 即关闭会话过滤，SQL 文本保持完全静态。
-    filters = [stream_id, stream_id]
+    # ? IS NULL 参数开关：传 NULL 即关闭对应过滤，SQL 文本保持完全静态。
+    filters = [stream_id, stream_id, checked, checked]
     total = int(db.execute(
-        'SELECT COUNT(*) FROM expressions WHERE (? IS NULL OR stream_id = ?)',
+        'SELECT COUNT(*) FROM expressions'
+        ' WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)',
         filters,
     ).fetchone()[0])
     if use_desc:
         rows = db.execute(
             '''SELECT id, situation, style, stream_id, use_count, source,
-                      created_at, last_used_at
+                      created_at, last_used_at, checked
                FROM expressions
-               WHERE (? IS NULL OR stream_id = ?)
+               WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)
                ORDER BY use_count DESC, id DESC
                LIMIT ? OFFSET ?''',
             [*filters, limit, offset],
@@ -1251,9 +1256,9 @@ def _list_expression_rows(
     else:
         rows = db.execute(
             '''SELECT id, situation, style, stream_id, use_count, source,
-                      created_at, last_used_at
+                      created_at, last_used_at, checked
                FROM expressions
-               WHERE (? IS NULL OR stream_id = ?)
+               WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)
                ORDER BY use_count ASC, id ASC
                LIMIT ? OFFSET ?''',
             [*filters, limit, offset],
@@ -1268,6 +1273,7 @@ def _list_expression_rows(
             'source': row['source'],
             'createdAt': row['created_at'],
             'lastUsedAt': row['last_used_at'],
+            'checked': row['checked'],
         }
         for row in rows
     ]
@@ -1394,17 +1400,19 @@ async def jargon_use_update(stream_id: int, body: JargonUseBody) -> dict:
 @router.get('/api/expressions', dependencies=[Depends(_auth)])
 async def expression_entries(
     stream_id: int | None = Query(default=None, alias='streamId', ge=1),
+    checked: int | None = Query(default=None, ge=-1, le=1),
     order: Literal['use_desc', 'use_asc'] = Query(default='use_desc'),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     """分页浏览表达方式词表，只读。
 
-    表达方式已接入回复生成（候选池抽样 → 选择模型），但词表本身「只出不进」：
-    全部条目来自一次性历史迁移，没有任何运行时路径会新增。前端据此区分
-    「在用」与「在学」两件事，本路由只做展示查询。
+    表达方式已接入回复生成（候选池抽样 → 选择模型），词表由回合收尾处的
+    后台学习任务增补（source 为「本机学习」），人工复核只负责剔除与保护：
+    确认（checked=1）的永不自动淘汰，驳回（checked=-1）的退出候选池。
 
     :param stream_id: 会话 ID 过滤；``None`` 表示不限。
+    :param checked: 复核状态过滤；``None`` 表示不限。
     :param order: ``use_desc`` 按使用次数降序（默认），``use_asc`` 升序。
     :param limit: 页大小，1 到 200，默认 50。
     :param offset: 偏移量，从 0 起。
@@ -1420,7 +1428,7 @@ async def expression_entries(
     try:
         entries, total = await run_in_thread(
             _list_expression_rows,
-            db, stream_id, order == 'use_desc', limit, offset,
+            db, stream_id, checked, order == 'use_desc', limit, offset,
         )
     except Exception as exc:
         logger.exception('expression_query_failed')
@@ -1429,6 +1437,70 @@ async def expression_entries(
             detail=f'表达方式查询失败：{exc}',
         ) from exc
     return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}
+
+
+class ExpressionCheckedBody(BaseModel):
+    """表达方式人工复核写入体。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    checked: Literal[-1, 0, 1]
+
+
+def _set_expression_checked(
+    db: sqlite3.Connection,
+    expression_id: int,
+    checked: int,
+) -> bool:
+    """同步写一条表达方式的复核状态，只动 ``checked`` 一列。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param expression_id: 表达方式行 ID。
+    :param checked: 目标复核状态（0 未复核 / 1 已确认 / -1 已驳回）。
+    :return: 目标行存在且已写入为 ``True``；行不存在为 ``False``。
+    :raises sqlite3.Error: 写入失败时抛出，由路由层转换。
+    """
+    cursor = db.execute(
+        'UPDATE expressions SET checked = ? WHERE id = ?',
+        (checked, expression_id),
+    )
+    db.commit()
+    return cursor.rowcount > 0
+
+
+@router.put('/api/expressions/{expression_id}/checked', dependencies=[Depends(_auth)])
+async def expression_checked_update(expression_id: int, body: ExpressionCheckedBody) -> dict:
+    """人工复核一条表达方式，只写 ``checked``。
+
+    复核不是使用的前置条件（未复核照常进候选池），它的职责是剔除与保护：
+    确认（1）的永不参与自动淘汰，驳回（-1）的立刻退出候选池但不删除——
+    删掉的表达学习器下次可能又学回来，-1 是「这条判过了」的记号。
+
+    :param expression_id: 表达方式行 ID。
+    :param body: 目标复核状态。
+    :return: 写入后的 ``id`` 与 ``checked`` 实际状态。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；行不存在时 404；
+        写入失败时 500，完整 traceback 以 ``expression_checked_write_failed``
+        事件落日志。
+    副作用：写 expressions 一行的 ``checked`` 列；候选池下一次取池即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        found = await run_in_thread(
+            _set_expression_checked, db, expression_id, body.checked,
+        )
+    except Exception as exc:
+        logger.exception('expression_checked_write_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'表达方式复核写入失败：{exc}',
+        ) from exc
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='表达方式不存在',
+        )
+    return {'id': expression_id, 'checked': body.checked}
 
 
 # --------------------------------------------------------------- 联想网络只读

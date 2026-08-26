@@ -98,6 +98,7 @@ TEMPLATE_IDS = (
     'activity.next',
     'memory.profile',
     'emoji.filter',
+    'expression.learn',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
@@ -201,6 +202,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'image.description': frozenset(),
     'emoji.description': frozenset(),
     'emoji.filter': frozenset(),
+    'expression.learn': frozenset({'bot_name'}),
 }
 
 _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')

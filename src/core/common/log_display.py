@@ -149,6 +149,8 @@ EVENT_LABELS: Dict[str, str] = {
     "ws_disconnected": "事件通道已断开",
     "ws_error": "事件通道异常",
     "ws_push_failed": "事件推送失败",
+    "expression_learned": "表达方式学习完成",
+    "expression_learn_failed": "表达方式学习失败",
 }
 
 for _version in range(3, 12):
@@ -355,6 +357,11 @@ FIELD_LABELS: Dict[str, str] = {
     "latencyMs": "模型耗时",
     "emojiEmotions": "表情情绪",
     "expressionIntent": "表达意图",
+    "learned": "新学数量",
+    "discarded": "丢弃数量",
+    "eliminated": "淘汰数量",
+    "messageCount": "消息条数",
+    "cursor": "游标",
 }
 
 
