@@ -41,6 +41,7 @@ const ExpressionsPage = lazy(() =>
 )
 const MemoryGraphPage = lazy(() =>
   import('@/features/memory/MemoryGraphPage').then((m) => ({ default: m.MemoryGraphPage })),
+)
 const EmojisPage = lazy(() =>
   import('@/features/emojis/EmojisPage').then((m) => ({ default: m.EmojisPage })),
 )
