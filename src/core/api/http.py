@@ -31,6 +31,7 @@ from .state import app_state   # 全局服务状态
 
 from src.core.agent.action_protocol import ActionDecisionEvent, GateInputFacts
 from src.core.agent.conversation_gate import GateRequest, decide_disposition, mentions_bot_name
+from src.core.agent.jargon import jargon_use_enabled, set_jargon_use
 from src.core.common.clock import now as current_time
 from src.core.common.db.connection import get_db, run_in_thread
 from src.core.common.logger import get_logger
@@ -1335,6 +1336,50 @@ async def jargon_entries(
             detail=f'黑话词表查询失败：{exc}',
         ) from exc
     return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}
+
+
+class JargonUseBody(BaseModel):
+    """会话级黑话 use 开关的写入体。"""
+
+    enabled: bool
+
+
+@router.get('/api/streams/{stream_id}/jargon/use', dependencies=[Depends(_auth)])
+async def jargon_use_status(stream_id: int) -> dict:
+    """读取一个会话的黑话 use 开关。
+
+    :param stream_id: 会话 ID。
+    :return: ``enabled`` 布尔状态；缺省为开。
+    :raises fastapi.HTTPException: 数据库未初始化时 503。
+    副作用：只读 ``meta`` 表。
+    """
+    db = _read_db_or_503()
+    enabled = await run_in_thread(jargon_use_enabled, db, stream_id)
+    return {'streamId': stream_id, 'enabled': enabled}
+
+
+@router.put('/api/streams/{stream_id}/jargon/use', dependencies=[Depends(_auth)])
+async def jargon_use_update(stream_id: int, body: JargonUseBody) -> dict:
+    """写一个会话的黑话 use 开关。
+
+    :param stream_id: 会话 ID。
+    :param body: 目标状态。
+    :return: 写入后的 ``enabled`` 实际状态。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；写入失败时 500，
+        完整 traceback 以 ``jargon_use_write_failed`` 事件落日志。
+    副作用：写 ``meta`` 表的 ``jargon:use:{stream_id}`` 键；下一回合的
+        召回立即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        enabled = await run_in_thread(set_jargon_use, db, stream_id, body.enabled)
+    except Exception as exc:
+        logger.exception('jargon_use_write_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'黑话开关写入失败：{exc}',
+        ) from exc
+    return {'streamId': stream_id, 'enabled': enabled}
 
 
 @router.get('/api/expressions', dependencies=[Depends(_auth)])

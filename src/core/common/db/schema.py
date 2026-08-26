@@ -193,6 +193,21 @@ CREATE TABLE IF NOT EXISTS jargon (
 );
 CREATE INDEX IF NOT EXISTS idx_jargon_status ON jargon(status, stream_id);
 
+-- 会话高频词表：后台任务按会话统计 messages 得出的真实高频词，供黑话召回打分
+-- （命中的词条拿到碾压性加分，未命中的误报靠它沉底）。它是统计快照不是词典——
+-- 整表按 built_at 全量重写，不逐行累积，因此没有 created_at/updated_at 双口径。
+CREATE TABLE IF NOT EXISTS high_frequency_terms (
+  stream_id        INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+  term             TEXT    NOT NULL,
+  -- 出现总次数与出现过它的消息条数：前者量强度，后者量覆盖面，排序先次数后条数。
+  occurrence_count INTEGER NOT NULL,
+  message_count    INTEGER NOT NULL,
+  -- 会话内的名次（1 起），打分公式里 max(0, 100 - rank) 直接使用。
+  rank             INTEGER NOT NULL,
+  built_at         INTEGER NOT NULL,
+  PRIMARY KEY (stream_id, term)
+);
+
 CREATE TABLE IF NOT EXISTS expressions (
   id         INTEGER PRIMARY KEY,
   situation  TEXT    NOT NULL,

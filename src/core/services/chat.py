@@ -58,7 +58,7 @@ from src.core.agent.conversation_gate import (
 )
 from src.core.agent.expression import ExpressionSample, fetch_expression_pool, render_expression_habits
 from src.core.agent.fact_extract import Participant, read_cursor, run_extraction
-from src.core.agent.jargon import lookup_jargon
+from src.core.agent.jargon import InjectedTerms, lookup_jargon
 from src.core.agent.profile import profiles_for_injection, refresh_profiles
 from src.core.agent.expression_select import ExpressionSelector
 from src.core.agent.history import (
@@ -293,6 +293,10 @@ class _PreparedTurnContext:
     # 动作头的 targets 必须落在消息编号上，编号只有在历史里逐行可见时模型
     # 才能指认；旧管线不需要编号，因此两份历史分开保存而不是就地改写。
     agent_history: list[dict[str, str]]
+    # 本回合的黑话命中（词, 压缩后的含义）。查表带着 hits 写库与去重登记
+    # 两类副作用，而组装好的上下文会被决策与回复两次渲染共用——查表放在
+    # 组装期执行一次，结果作为不可变字段带下去，渲染期只读。
+    jargon: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -399,6 +403,12 @@ class ChatService:
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
         self._bot_display_name = cfg.bot.name
+        # 黑话召回的服务级状态：她自己的名字与别名（含对用户的称呼）永不作为
+        # 黑话注入；已注入集合做跨轮去重，进程内、重启即消失。
+        self._jargon_protected_names: tuple[str, ...] = (
+            cfg.bot.name, *cfg.bot.aliases, cfg.bot.user_nickname,
+        )
+        self._jargon_injected = InjectedTerms()
         self._summary_personality = cfg.personality.personality
         conversation = cfg.conversation
         generation = cfg.generation
@@ -3202,6 +3212,20 @@ class ChatService:
                 and context.person.kind == 'owner'
                 and self._activity is not None):
             activity = self._activity()
+        # 黑话只扫他人消息：user 行都是别人说的（她自己的发言是 assistant 行），
+        # 本轮批次原文压轴——它是这轮最新的「别人在说什么」。用原始 content
+        # 而不是渲染后的历史，渲染行带时间戳与发言人前缀，不是人打的字。
+        jargon_scan_texts = [
+            message.content for message in wm if message.role == 'user'
+        ] + [query]
+        jargon = tuple(lookup_jargon(
+            self._db,
+            context.stream.id,
+            jargon_scan_texts,
+            protected_names=self._jargon_protected_names,
+            injected=self._jargon_injected,
+            now=now,
+        ))
         return _PreparedTurnContext(
             context=context,
             query=query,
@@ -3216,6 +3240,7 @@ class ChatService:
             resumption=resumption,
             raw_history=raw_history,
             agent_history=agent_history,
+            jargon=jargon,
         )
 
     def _render_prepared_context(
@@ -3267,8 +3292,9 @@ class ChatService:
             'resumption': prepared.resumption,
             'platform_name': prepared.platform_bot_name,
             'scene': self._scene_for_prompt(prepared.context),
-            # 只注入本轮消息命中的黑话；查表与截断在 agent/jargon.py，这里只取结果。
-            'jargon': lookup_jargon(self._db, prepared.context.stream.id, prepared.query),
+            # 只注入组装期查得的黑话命中；匹配、打分与截断在 agent/jargon.py，
+            # 决策与回复两次渲染共用同一份结果，副作用每回合只发生一次。
+            'jargon': prepared.jargon,
             # 只注入本轮在场者的画像；按亲密度取前 N 与「空画像不算数」都在 profile.py。
             'impressions': [
                 summary for _, summary in profiles_for_injection(
