@@ -82,7 +82,8 @@ def migrate(db: sqlite3.Connection) -> None:
         ' FROM expressions ORDER BY id'
     ).fetchall()
 
-    if _migration_needed(db):
+    columns_added = _migration_needed(db)
+    if columns_added:
         db.execute(
             'ALTER TABLE expressions ADD COLUMN checked INTEGER NOT NULL DEFAULT 0'
         )
@@ -100,8 +101,16 @@ def migrate(db: sqlite3.Connection) -> None:
     if after != before:
         raise RuntimeError('v16 迁移自检失败：expressions 原有数据发生变化')
 
-    drift = db.execute(
-        'SELECT COUNT(*) FROM expressions WHERE checked != 0 OR last_used_at IS NOT NULL'
-    ).fetchone()[0]
-    if drift:
-        raise RuntimeError('v16 迁移自检失败：新列出现非默认值')
+    # 只在本次真的执行了 ALTER 时才断言新列全默认。
+    #
+    # - 现象：链条重放（例如手工把 user_version 回退后重跑）时，这条自检会因为
+    #   「新列出现非默认值」失败，而库其实是好的。
+    # - 原因：功能上线后回写路径会往 checked / last_used_at 写入真实使用记录，
+    #   此时两列有值是正确数据，不是迁移写坏的痕迹。
+    # - 后果：无条件断言会把「已经在用的库」误判成损坏，迁移直接中止且无法自愈。
+    if columns_added:
+        drift = db.execute(
+            'SELECT COUNT(*) FROM expressions WHERE checked != 0 OR last_used_at IS NOT NULL'
+        ).fetchone()[0]
+        if drift:
+            raise RuntimeError('v16 迁移自检失败：新增的两列出现非默认值')
