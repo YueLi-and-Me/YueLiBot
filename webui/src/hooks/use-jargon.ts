@@ -21,6 +21,10 @@ export interface JargonEntry {
   hits: number
   source: string
   createdAt: number
+  /** 学习期累计出现次数（每批语料至多 +1），阶梯阈值判据。 */
+  sightings: number
+  /** 上次推断时的 sightings 值；0 表示尚未判定过。 */
+  inferredAtSightings: number
 }
 
 /** 一组过滤与分页条件。 */
