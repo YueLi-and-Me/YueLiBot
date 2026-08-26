@@ -1506,6 +1506,56 @@ async def expression_checked_update(expression_id: int, body: ExpressionCheckedB
     return {'id': expression_id, 'checked': body.checked}
 
 
+def _delete_expression(db: sqlite3.Connection, expression_id: int) -> bool:
+    """同步删除一条表达方式。
+
+    删除只由人在界面上发起。后台淘汰任务的范围被限定在本机学习产出上
+    （见 ``agent/expression_learn.py`` 的 ``eliminate_stale``），迁移带来的存量
+    一条都不自动删——存量里有整个会话的行从未被本机选中过，自动清理会让该
+    会话候选池归零、表达选择停摆。存量的取舍因此走这条人工路径。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param expression_id: 表达方式行 ID。
+    :return: 目标行存在且已删除为 ``True``；行不存在为 ``False``。
+    :raises sqlite3.Error: 删除失败时抛出，由路由层转换。
+    """
+    cursor = db.execute('DELETE FROM expressions WHERE id = ?', (expression_id,))
+    db.commit()
+    return cursor.rowcount > 0
+
+
+@router.delete('/api/expressions/{expression_id}', dependencies=[Depends(_auth)])
+async def expression_delete(expression_id: int) -> dict:
+    """删除一条表达方式。
+
+    与复核（``checked = -1``）的区别：驳回是可逆的记号，行还在、只是退出候选池，
+    学习器再学到同样的说法时 ``UNIQUE`` 约束会撞上它、不会重复插入；删除是不可逆
+    的，同样的说法以后可以被重新学回来。清理迁移存量用删除，压制某条说法用驳回。
+
+    :param expression_id: 表达方式行 ID。
+    :return: 被删除的 ``id``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；行不存在时 404；
+        删除失败时 500，完整 traceback 以 ``expression_delete_failed``
+        事件落日志。
+    副作用：从 expressions 表删除一行；候选池下一次取池即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        found = await run_in_thread(_delete_expression, db, expression_id)
+    except Exception as exc:
+        logger.exception('expression_delete_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'表达方式删除失败：{exc}',
+        ) from exc
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='表达方式不存在',
+        )
+    return {'id': expression_id}
+
+
 # --------------------------------------------------------------- 联想网络只读
 
 def _memory_payloads(

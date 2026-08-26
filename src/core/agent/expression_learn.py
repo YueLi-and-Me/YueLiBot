@@ -33,17 +33,26 @@
 - :func:`eliminate_stale`：确定性淘汰，与学习挂在同一次调用里，不另起后台任务。
 - :func:`run_learning`：上面几步的编排，调用方只提供 store、provider 与批次参数。
 
-淘汰规则（决定 6，刻意确定、可解释，不用模型判断删哪条）：
+淘汰规则（刻意确定、可解释，不用模型判断删哪条）：
 
+- **只淘汰本模块自己学来的行**（``source = LEARN_SOURCE``）。迁移带来的存量
+  一条都不自动删，要清理由人在 WebUI 上手删。
+  这条是硬约束，不要因为「存量绝大多数没被本机选中过」就把它们纳进来：
+  真机 3360 条存量分属两个会话，其中一个会话的行**全部**从未被本机选中过
+  （2026-08-26 实测 stream 5 有 1752 条、``last_used_at`` 非空 0 条）。
+  按「未被选中即淘汰」清一遍，那个会话的候选池会直接归零，
+  低于 ``agent/expression.py`` 的 ``MIN_POOL_CANDIDATES``，
+  表达选择在该会话彻底停摆——而学习器要补满需要很久。
 - 「从未在本机被选中」的判据是 ``last_used_at IS NULL``，不是 ``use_count = 0``：
-  本机学到的行两列同处回写（选中才同时加一、打时间戳），两者等价；而迁移存量
-  的 ``use_count`` 是旧部署带过来的历史值（真机 3360 条全部 ``use_count > 0``、
-  3330 条 ``last_used_at IS NULL``，2026-08-26 实测），不能当作本机使用证据。
-  **迁移进来的存量同样参与淘汰**——它们绝大多数从未在本机被选中过，正是该腾
-  位置的那批。不要误以为存量不可动。
+  本模块学到的行两列同处回写（选中才同时加一、打时间戳），两者等价；而存量的
+  ``use_count`` 是旧部署带过来的历史值，不能当作本机使用证据。范围既然已经
+  限定在本模块学来的行上，两个判据在实践中等价，取 ``last_used_at`` 是因为
+  它的语义不依赖数据来源。
 - ``checked = 1``（人工确认）的永不淘汰：人明确说好的东西不能被后台任务悄悄
   删掉。``checked = -1``（人工驳回）的同样不删：驳回是「这条判过了」的记号，
   删掉它学习器下次可能又学回来；它靠候选池 SQL 排除来停止生效，不靠删除。
+- 总量上限只约束本模块学来的行，与存量条数无关——否则存量本身就超过上限，
+  上限会退化成「每轮都在删新学的」。
 
 依赖：``src.core.memory.store``（读消息与游标）、``src.core.agent.sub_agent``
 （统一模型执行器）、``src.core.prompts.registry``（``expression.learn`` 模板）、
@@ -93,11 +102,14 @@ MAX_STYLE_CHARS = 60
 MAX_PAIRS_PER_BATCH = 8
 
 # 淘汰保留期，单位毫秒（30 天）。候选池每轮只抽 10 条（agent/expression.py），
-# 一条说法一个月都没被本机选中过，说明它在这个会话里没有适配场景。
+# 一条**本模块学来的**说法一个月都没被选中过，说明它在这个会话里没有适配场景。
+# 存量不适用：它们的入库时间是迁移那天，与「学了多久没被用」无关。
 RETENTION_MS = 30 * 24 * 60 * 60 * 1000
-# 全表总量上限（条）。取池按会话全取后内存抽样，表无限长只会让扫描与长尾
-# 噪声一起涨；2000 已远超抽样能覆盖的量级。
-MAX_TOTAL_ROWS = 2000
+# 本模块学来的行的总量上限（条）。注意口径是「学来的行」而不是全表：存量本身
+# 就有 3360 条，按全表算这个上限会退化成每轮都在删刚学到的东西。取池按会话
+# 全取后内存抽样，学习产出无限长只会让扫描与长尾噪声一起涨；2000 已远超
+# 抽样能覆盖的量级。
+MAX_LEARNED_ROWS = 2000
 
 # 对话正文短于此长度时不发起模型请求：整批都是占位符或空行，学不出东西。
 MIN_DIALOGUE_CHARS = 40
@@ -342,16 +354,21 @@ def persist_pairs(
 def eliminate_stale(db: sqlite3.Connection, now: Optional[int] = None) -> int:
     """按确定性规则淘汰表达方式，返回删除条数。
 
-    两道规则按序执行：
+    **淘汰范围只有本模块自己学来的行**（``source = LEARN_SOURCE``）。迁移带来的
+    存量一条都不自动删，清理由人在 WebUI 上手动进行。理由见模块 docstring：
+    存量里有整个会话的行从未被本机选中过，纳入淘汰会让该会话候选池归零、
+    表达选择停摆。
 
-    1. 保留期：``checked = 0`` 且从未在本机被选中（``last_used_at IS NULL``）且
+    在这个范围内两道规则按序执行：
+
+    1. 保留期：``checked = 0`` 且从未被选中（``last_used_at IS NULL``）且
        ``created_at`` 早于 ``now - RETENTION_MS`` 的行删除；
-    2. 总量上限：仍超 :data:`MAX_TOTAL_ROWS` 时，在同样「未复核且从未被选中」的
-       行里按 ``created_at`` 最旧继续删到达标。
+    2. 总量上限：学来的行仍超 :data:`MAX_LEARNED_ROWS` 时，在同样「未复核且
+       从未被选中」的行里按 ``created_at`` 最旧继续删到达标。
 
     两道规则都只动 ``checked = 0`` 的行：人工确认（1）的永不淘汰，人工驳回（-1）
-    的是「判过了」的记号，删了学习器可能又学回来。被本机选中过的行不删——它被
-    真实用过，去留交给使用频次的自然筛选，后台任务不删有使用证据的行。
+    的是「判过了」的记号，删了学习器可能又学回来。被选中过的行不删——它被真实
+    用过，去留交给使用频次的自然筛选，后台任务不删有使用证据的行。
 
     :param db: 当前库连接。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
@@ -364,19 +381,25 @@ def eliminate_stale(db: sqlite3.Connection, now: Optional[int] = None) -> int:
     cutoff = now - RETENTION_MS
     cursor = db.execute(
         'DELETE FROM expressions'
-        ' WHERE checked = 0 AND last_used_at IS NULL AND created_at < ?',
-        (cutoff,),
+        ' WHERE source = ? AND checked = 0 AND last_used_at IS NULL'
+        ' AND created_at < ?',
+        (LEARN_SOURCE, cutoff),
     )
     deleted = cursor.rowcount
-    remaining = int(db.execute('SELECT COUNT(*) FROM expressions').fetchone()[0])
-    excess = remaining - MAX_TOTAL_ROWS
+    # 上限只数本模块学来的行：全表计数会把 3000 多条存量算进来，excess 恒为正，
+    # 每轮都在删刚学到的东西。
+    learned_rows = int(db.execute(
+        'SELECT COUNT(*) FROM expressions WHERE source = ?',
+        (LEARN_SOURCE,),
+    ).fetchone()[0])
+    excess = learned_rows - MAX_LEARNED_ROWS
     if excess > 0:
         cursor = db.execute(
             'DELETE FROM expressions WHERE id IN ('
             '   SELECT id FROM expressions'
-            '   WHERE checked = 0 AND last_used_at IS NULL'
+            '   WHERE source = ? AND checked = 0 AND last_used_at IS NULL'
             '   ORDER BY created_at ASC, id ASC LIMIT ?)',
-            (excess,),
+            (LEARN_SOURCE, excess),
         )
         deleted += cursor.rowcount
     # 无条件提交：DELETE 即使一行未删也已开启隐式写事务，不提交会让连接挂着

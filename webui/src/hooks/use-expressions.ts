@@ -116,3 +116,18 @@ export async function setExpressionChecked(
 ): Promise<{ id: number; checked: ExpressionChecked }> {
   return apiMutate(`/api/expressions/${id}/checked`, 'PUT', { checked })
 }
+
+/**
+ * 删除一条表达方式。
+ *
+ * 与驳回的分工：驳回是可逆记号，行还在、只是退出候选池，学习器再学到同样的
+ * 说法时不会重复插入；删除不可逆，同样的说法以后可以被重新学回来。清理迁移
+ * 存量用删除——后台淘汰的范围只有本机学习产出，存量一条都不自动删。
+ *
+ * @param id 表达方式行 ID。
+ * @returns 被删除的 ID。
+ * @throws UnauthorizedError 会话失效时抛出；其余错误原样传播，由调用方展示。
+ */
+export async function deleteExpression(id: number): Promise<{ id: number }> {
+  return apiMutate(`/api/expressions/${id}`, 'DELETE')
+}

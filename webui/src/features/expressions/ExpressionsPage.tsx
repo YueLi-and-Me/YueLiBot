@@ -7,11 +7,18 @@
  *   选中会回写 use_count 与 last_used_at。行内「本机用过」徽标只在
  *   last_used_at 非空时出现，它是本部署真实用过的唯一证据。
  * - 在学：回合收尾处的后台任务从真实对话里学新说法（source 为「本机学习」），
- *   并按确定性规则淘汰从未被本机选中且过了保留期的条目。
+ *   并按确定性规则淘汰其中从未被选中且过了保留期的条目。
+ *   **自动淘汰只碰本机学来的行**，迁移存量一条都不自动删——存量里有整个会话
+ *   的行从未被本机选中过，自动清理会让该会话候选池归零、表达选择停摆。
  *
- * 人工复核不是使用的前置条件（未复核照常进候选池），它的职责是剔除与保护：
- * 确认（checked=1）的永不自动淘汰，驳回（checked=-1）的退出候选池并整行
- * 置灰删除线标示「不再生效」。复核状态可筛选，用于从几千条里找出待处理的。
+ * 三种行内动作各管一件事，不要混用：
+ * - 确认（checked=1）：永不自动淘汰，用于锁住特别贴的说法；
+ * - 驳回（checked=-1）：退出候选池但保留行，整行置灰加删除线标示「不再生效」。
+ *   这一行同时是「判过了」的记号，学习器再学到同样的说法会被唯一约束挡住；
+ * - 删除：不可逆地移除，同样的说法日后可以被重新学到。清理迁移存量走这条。
+ *
+ * 人工复核不是使用的前置条件（未复核照常进候选池），它的职责是剔除与保护。
+ * 复核状态可筛选，用于从几千条里找出待处理的。
  *
  * 列表按使用次数排序，一行一条。
  */
@@ -20,6 +27,7 @@ import { useState } from 'react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import {
   Button,
+  ConfirmDialog,
   Card,
   CardBody,
   Chip,
@@ -33,6 +41,7 @@ import {
   cn,
 } from '@/components/ui'
 import {
+  deleteExpression,
   setExpressionChecked,
   useExpressions,
   type ExpressionChecked,
@@ -57,8 +66,9 @@ const CHECKED_LABEL: Record<string, string> = {
  *
  * @param props.entry 表达数据。
  * @param props.streamLabelOf 按 streamId 取会话标签的函数。
- * @param props.pending 该行是否有复核写入在飞。
+ * @param props.pending 该行是否有写入在飞（复核或删除）。
  * @param props.onReview 点击确认/驳回时的回调。
+ * @param props.onDelete 点击删除时的回调；由调用方弹确认框，本组件只发起。
  * @returns 一行表达元素。
  */
 function ExpressionRow({
@@ -66,11 +76,13 @@ function ExpressionRow({
   streamLabelOf,
   pending,
   onReview,
+  onDelete,
 }: {
   entry: ExpressionEntry
   streamLabelOf: (id: number) => string
   pending: boolean
   onReview: (id: number, checked: ExpressionChecked) => void
+  onDelete: (entry: ExpressionEntry) => void
 }) {
   const rejected = entry.checked === -1
   return (
@@ -113,6 +125,11 @@ function ExpressionRow({
         >
           驳回
         </Button>
+        {/* 行内删除取 ghost：与表情包页同惯例，危险性由确认弹窗承担，
+            按钮本身不抢视线。 */}
+        <Button variant="ghost" size="sm" disabled={pending} onClick={() => onDelete(entry)}>
+          删除
+        </Button>
       </div>
       <p className="text-sm leading-relaxed text-muted-foreground">{entry.situation}</p>
     </li>
@@ -135,9 +152,11 @@ export function ExpressionsPage() {
   const [page, setPage] = useState(0)
   /** 复核写入后递增，触发列表重新拉取。 */
   const [refreshKey, setRefreshKey] = useState(0)
-  /** 正在写入复核状态的行 id；在飞期间禁用该行两个动作。 */
+  /** 正在写入的行 id（复核或删除）；在飞期间禁用该行全部动作。 */
   const [pendingId, setPendingId] = useState<number | null>(null)
   const [reviewError, setReviewError] = useState('')
+  /** 待确认删除的行；null 表示确认弹窗关闭。删除不可逆，必须过一道确认。 */
+  const [pendingDelete, setPendingDelete] = useState<ExpressionEntry | null>(null)
 
   const streamId = scope !== 'all' ? Number(scope) : null
   const checked = checkedFilter !== 'all' ? (Number(checkedFilter) as ExpressionChecked) : null
@@ -169,6 +188,21 @@ export function ExpressionsPage() {
     } catch (err: unknown) {
       if (err instanceof UnauthorizedError) handleUnauthorized(err)
       else setReviewError(`复核写入失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setPendingId(null)
+    }
+  }
+
+  const removeEntry = async (entry: ExpressionEntry) => {
+    setPendingDelete(null)
+    setPendingId(entry.id)
+    setReviewError('')
+    try {
+      await deleteExpression(entry.id)
+      setRefreshKey((key) => key + 1)
+    } catch (err: unknown) {
+      if (err instanceof UnauthorizedError) handleUnauthorized(err)
+      else setReviewError(`删除失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setPendingId(null)
     }
@@ -234,6 +268,7 @@ export function ExpressionsPage() {
                   streamLabelOf={streamLabelOf}
                   pending={pendingId === entry.id}
                   onReview={review}
+                  onDelete={setPendingDelete}
                 />
               ))}
             </ol>
@@ -242,6 +277,25 @@ export function ExpressionsPage() {
       ) : null}
 
       <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="删除这条表达方式"
+        description={
+          <>
+            <p className="font-medium">「{pendingDelete?.style}」</p>
+            <p className="mt-1">
+              删除不可逆。想只让它停止生效、以后也不被重新学回来，用「驳回」——
+              驳回保留这一行作为记号，删除则会让同样的说法日后可以被再次学到。
+            </p>
+          </>
+        }
+        confirmText="删除"
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) void removeEntry(pendingDelete)
+        }}
+      />
     </div>
   )
 }
