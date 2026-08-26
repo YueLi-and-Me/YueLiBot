@@ -1188,7 +1188,8 @@ def _list_jargon_rows(
         filters,
     ).fetchone()[0])
     rows = db.execute(
-        '''SELECT id, term, meaning, stream_id, status, hits, source, created_at
+        '''SELECT id, term, meaning, stream_id, status, hits, source, created_at,
+                  sightings, inferred_at_sightings
            FROM jargon
            WHERE status = ?
              AND (? IS NULL OR stream_id = ?)
@@ -1208,6 +1209,8 @@ def _list_jargon_rows(
             'hits': row['hits'],
             'source': row['source'],
             'createdAt': row['created_at'],
+            'sightings': row['sightings'],
+            'inferredAtSightings': row['inferred_at_sightings'],
         }
         for row in rows
     ]

@@ -8,7 +8,10 @@
  * 关键词输入采用提交式（回车或点按钮），避免逐键请求。
  *
  * 「在用」与「在学」分开表述，同表达方式页：召回已接入 planner 与 replyer，
- * 但词表只出不进，全部条目来自一次性历史迁移。
+ * 学习服务在后台累积证据并按阶梯阈值推断，但本页只如实展示、不设确认或
+ * 驳回入口——判定方法本身就是质量闸门。待定页签里区分「待判定」（尚未
+ * 攒够证据）与「判定为普通词」（推断过、群内用法与通用含义一致），行内
+ * 显示学习期出现次数。
  */
 import { Search, X } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
@@ -54,6 +57,17 @@ function JargonRow({ entry, streamLabelOf }: { entry: JargonEntry; streamLabelOf
         {/* hits 记的是查表命中，含被跨轮去重排除、被条数上限截掉、
             最终没进提示词的那些；它不等于「注进去过几次」。 */}
         <Chip label="命中" value={`${entry.hits} 次`} />
+        {/* sightings 是学习期证据累计（每批语料每词至多 +1），阶梯阈值
+            判据；与 hits 语义不同。 */}
+        <Chip label="出现" value={`${entry.sightings} 次`} />
+        {entry.status === 'pending' ? (
+          /* pending 且从未推断过是「待判定」候选；推断过仍是 pending，
+             说明三步比较认定它是普通词，回 pending 只存不用。 */
+          <Chip
+            label="判定"
+            value={entry.inferredAtSightings === 0 ? '待判定' : '判定为普通词'}
+          />
+        ) : null}
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{entry.source}</span>
       </div>
       {/* 释义普遍是长段落，默认收两行，完整内容悬停可见。 */}
@@ -171,7 +185,7 @@ export function JargonPage() {
       {!loading && !error && entries.length === 0 ? (
         <Empty>
           {status === 'pending'
-            ? '没有待定词条——历史迁移只导入了已确认词条。'
+            ? '没有待定词条——既没有等待判定的候选，也没有被判定为普通词的条目。'
             : '没有符合条件的词条。'}
         </Empty>
       ) : null}
