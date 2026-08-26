@@ -98,6 +98,10 @@ TEMPLATE_IDS = (
     'activity.next',
     'memory.profile',
     'emoji.filter',
+    'jargon.mine',
+    'jargon.meaning.context',
+    'jargon.meaning.bare',
+    'jargon.compare',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
@@ -201,6 +205,10 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'image.description': frozenset(),
     'emoji.description': frozenset(),
     'emoji.filter': frozenset(),
+    'jargon.mine': frozenset({'bot_name', 'corpus', 'max_candidates'}),
+    'jargon.meaning.context': frozenset({'term', 'context', 'previous_meaning'}),
+    'jargon.meaning.bare': frozenset({'term'}),
+    'jargon.compare': frozenset({'term', 'context_meaning', 'bare_meaning'}),
 }
 
 _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')

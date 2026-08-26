@@ -721,6 +721,24 @@ def main() -> None:
     from src.core.services.jargon_stats import JargonStatsService
     jargon_stats = JargonStatsService(db)
     lifecycle.register('jargon_stats', jargon_stats.startup, jargon_stats.shutdown)
+    # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
+    # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
+    from src.core.services.jargon_learn import JargonLearnService
+    if routers.memory.ready:
+        jargon_learn = JargonLearnService(
+            db,
+            app_state.chat.memory,
+            routers.memory,
+            temperature=cfg.generation.memory.temperature,
+            max_tokens=cfg.generation.memory.token_limit,
+            bot_name=cfg.bot.name,
+            bot_names=(cfg.bot.name, *cfg.bot.aliases, cfg.bot.user_nickname),
+        )
+        lifecycle.register('jargon_learn', jargon_learn.startup, jargon_learn.shutdown)
+    else:
+        # 没有 memory 路由时学习整条功能是关的，这句必须在启动时说出来：
+        # 静默关掉在外部看来与「正常但这段对话没什么可学的」完全一样。
+        logger.warning('jargon_learn_disabled', reason='memory 模型路由不可用')
     lifecycle.register(
         'emoji_maintenance',
         _emoji_maintenance,
