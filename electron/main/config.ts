@@ -34,7 +34,7 @@ import type {
  * 1.3.0 新增 [emoji] 与 [emoji.cleanup] 表情包库管理段；旧文件按 1.2.0 解析后
  * 重写即补齐两段及默认值。
  */
-const CONFIG_VERSION = '1.3.0'
+export const CONFIG_VERSION = '1.3.0'
 const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
@@ -137,7 +137,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     nudge: { enabled: true, peer_silence_minutes: 3, max_per_silence: 2 },
   },
   emoji: {
-    max_count: 0,
+    max_count: 1000,
     auto_evict: true,
     check_interval_minutes: 5,
     max_file_size_mb: 5,
@@ -991,17 +991,31 @@ const RETIRED_PERSONALITY_FIELDS: Record<string, string> = {
 }
 
 /**
- * 拒绝人格配置中已移除的字段，避免旧结构静默改变运行语义。
+ * 处理人格配置中已移除的字段。
  *
- * @param personality 人格配置记录。
- * @returns {void} 无返回值；不包含已移除字段时校验通过。
- * @throws Error 当记录包含任一已移除字段时抛出，并提示对应的新配置位置。
+ * 旧版本配置里残留的退休字段**就地剪除**，随后的整目录重写会把它们写没——
+ * 版本号驱动升级的全部意义就是用户不必手改 TOML。只有当配置已经声明为当前
+ * 版本却仍带着退休字段时才报错：那意味着有人在升级之后又手工加了回来，
+ * 静默剪除会让这次改动无声消失。
+ *
+ * - 现象：不区分版本一律抛错时，带退休字段的旧配置在升级入口就被拒，
+ *   重写永远跑不到，用户只能自己去删数组。
+ * - 原因：读取先于写入，而校验挂在读取上。
+ * - 后果：擅自改回无条件抛错，会让「升级配置」重新变成手工活。
+ *
+ * @param personality 人格配置记录，命中退休字段时**原地删除**。
+ * @param version 该配置文件声明的版本号。
+ * @returns {void} 无返回值。
+ * @throws Error 配置已是当前版本却仍包含退休字段时抛出。
  */
-function assertNoRetiredPersonalityFields(
+function pruneRetiredPersonalityFields(
   personality: Record<string, unknown>,
+  version: string,
 ): void {
   for (const [field, message] of Object.entries(RETIRED_PERSONALITY_FIELDS)) {
-    if (field in personality) throw new Error(message)
+    if (!(field in personality)) continue
+    if (version === CONFIG_VERSION) throw new Error(message)
+    delete personality[field]
   }
 }
 
@@ -1104,7 +1118,7 @@ function readSplitConfig(directory: string): YueliConfig {
   assertReferencesResolve(models, tasks, providers, modelsPath, providersPath)
 
   // bot.toml 同时承载身份、群聊、人格和会话参数；@ 必回属于用户选择，必须显式配置。
-  const { document: botDocument } = parseToml(botPath)
+  const { document: botDocument, version: botVersion } = parseToml(botPath)
   const bot = recordAt(botDocument, 'bot', botPath)
   const aliases = bot.aliases ?? DEFAULT_CONFIG.bot.aliases
   if (!Array.isArray(aliases) || !aliases.every((value) => typeof value === 'string')) {
@@ -1188,7 +1202,7 @@ function readSplitConfig(directory: string): YueliConfig {
     throw new Error(`${botPath} 的 group_chat.scene_refresh_messages 必须是非负整数`)
   }
   const personality = recordAt(botDocument, 'personality', botPath)
-  assertNoRetiredPersonalityFields(personality)
+  pruneRetiredPersonalityFields(personality, botVersion)
   const conversation = parseConversation(botDocument, botPath)
   const conversationAgent = parseConversationAgent(botDocument, botPath)
   const typing = parseTyping(botDocument, botPath)
@@ -1479,7 +1493,7 @@ function readLegacyConfig(path: string): YueliConfig {
     const value = parsed[section]
     if (value === undefined) continue
     if (!isRecord(value)) throw new Error(`旧配置 ${path} 的 [${section}] 必须是表`)
-    if (section === 'personality') assertNoRetiredPersonalityFields(value)
+    if (section === 'personality') pruneRetiredPersonalityFields(value, '')
     Object.assign(config[section], value)
   }
 
