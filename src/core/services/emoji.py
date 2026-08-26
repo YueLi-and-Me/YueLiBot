@@ -392,6 +392,21 @@ class EmojiLibrary:
         skipped = 0
         failed = 0
         for path in paths:
+            # 文件名就是内容哈希时直接跳过，不读内容也不过 PIL。
+            #
+            # - 现象：目录里全是已登记的表情时，扫描仍会把每个文件完整读一遍、
+            #   算一次 SHA-256、再用 PIL 打开验格式，然后才发现哈希已在库里丢弃。
+            #   真机 369 个文件（97 MB）为此花掉约 0.3 秒，占整个启动的可观份额。
+            # - 原因：命中判断放在 _inspect_import_candidate 之后，而那次 inspect
+            #   的唯一产物（content_hash）对这批文件是已知的——库写文件时就用
+            #   哈希做文件名。
+            # - 后果：跳过是否安全，取决于「文件名等于哈希」是否可信。可信：
+            #   构造 EmojiLibrary 时的 verify_integrity() 已经把每一行的文件重算过
+            #   一遍哈希并比对，不一致会直接阻止启动。名字对不上哈希的文件（用户
+            #   手工投放的）不满足这个条件，仍走完整 inspect。
+            if path.stem.casefold() in existing:
+                skipped += 1
+                continue
             try:
                 candidate = _inspect_import_candidate(path, root, self._max_file_size_bytes)
             except (OSError, ValueError) as exc:
