@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -67,14 +68,33 @@ class LifecycleManager:
                 不再启动。
         """
 
+        # 日志形态：开头一次性给出启动顺序，之后每个服务只在完成时打一行并带耗时。
+        #
+        # - 现象：早先每个服务打「正在启动」「已启动」两行，五个服务就是十行，
+        #   而它们大多是毫秒级，启动日志被这些成对的空话占满。
+        # - 原因：「正在启动」那行存在的唯一价值是卡死时指认元凶。
+        # - 后果：直接删掉它会让卡死无从定位——某个 startup 回调不返回时，后面
+        #   什么都不会打印。开头那行启动顺序补上了这个能力：最后一条「已启动」
+        #   的下一个服务就是卡住的那个，而且不必再为此付十行。
+        if not self._services:
+            return
+        logger.info(
+            "service_plan",
+            count=len(self._services),
+            order=" -> ".join(svc.name for svc in self._services),
+        )
         for svc in self._services:
-            logger.info("service_starting", name=svc.name)
+            started_at = time.perf_counter()
             try:
                 await svc.startup()
-                logger.info("service_started", name=svc.name)
             except Exception as exc:
                 logger.error("service_start_failed", name=svc.name, error=str(exc))
                 raise
+            logger.info(
+                "service_started",
+                name=svc.name,
+                elapsedMs=round((time.perf_counter() - started_at) * 1000),
+            )
 
     async def stop_all(self) -> None:
         """按注册逆序关闭全部服务。
