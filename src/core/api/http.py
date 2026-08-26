@@ -35,6 +35,8 @@ from src.core.common.clock import now as current_time
 from src.core.common.db.connection import get_db, run_in_thread
 from src.core.common.logger import get_logger
 from src.core.config.loader import get_config
+from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
+from src.core.memory.decay import retention
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import GATED, RECEIVED
@@ -1367,3 +1369,327 @@ async def expression_entries(
             detail=f'表达方式查询失败：{exc}',
         ) from exc
     return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}
+
+
+# --------------------------------------------------------------- 联想网络只读
+
+def _memory_payloads(
+    db: sqlite3.Connection,
+    refs: dict[int, tuple[str, int]],
+    now: int,
+) -> dict[int, dict]:
+    """按层批量取回节点指向的记忆正文与留存度。
+
+    指针表只存 ``(ref_kind, ref_id)``，正文分散在 facts / episodes / knowledge
+    三张表。这里按层各查一次而不是逐节点查，是因为节点数随边一起增长，逐节点
+    查会让整张图的加载退化成 O(节点数) 次往返。
+
+    留存度口径与联想层内部的节点打分保持一致：facts 走衰减曲线，episodes 与
+    knowledge 不衰减恒为 ``1.0``。三层都可能出现指针还在、被指向的行已经删掉的
+    情况，那种节点以 ``alive=False`` 如实返回，不静默丢弃——图上少一个点比画一个
+    灰点更难排查。
+
+    :param db: 当前库连接。
+    :param refs: ``{节点 ID: (ref_kind, ref_id)}``。
+    :param now: 当前毫秒时间戳，用于计算 facts 的留存度。
+    :return: ``{节点 ID: 节点字典}``，字段见 :func:`memory_graph` 的响应说明。
+    :raises sqlite3.Error: 查询失败。
+    副作用：只读。
+    """
+    by_kind: dict[str, dict[int, list[int]]] = {'fact': {}, 'episode': {}, 'knowledge': {}}
+    for node, (ref_kind, ref_id) in refs.items():
+        by_kind.setdefault(ref_kind, {}).setdefault(ref_id, []).append(node)
+
+    out: dict[int, dict] = {}
+
+    fact_ids = list(by_kind['fact'])
+    if fact_ids:
+        marks = ','.join('?' * len(fact_ids))
+        for row in db.execute(
+            f'SELECT id, person_id, kind, content, strength, half_life_hours, updated_at, '
+            f'hit_count, active FROM facts WHERE id IN ({marks})',
+            fact_ids,
+        ).fetchall():
+            keep = retention(
+                float(row['strength']), int(row['updated_at']),
+                float(row['half_life_hours']), now,
+            )
+            for node in by_kind['fact'][int(row['id'])]:
+                out[node] = {
+                    'text': row['content'],
+                    'label': row['kind'],
+                    'personId': row['person_id'],
+                    'retention': round(keep, 4),
+                    'updatedAt': row['updated_at'],
+                    'hits': row['hit_count'],
+                    # 事实被冻结时 active=0，但节点仍留在图上：遗忘不等于抹除。
+                    'alive': bool(row['active']),
+                }
+
+    episode_ids = list(by_kind['episode'])
+    if episode_ids:
+        marks = ','.join('?' * len(episode_ids))
+        for row in db.execute(
+            f'SELECT id, summary, kind, ended_at FROM episodes WHERE id IN ({marks})',
+            episode_ids,
+        ).fetchall():
+            for node in by_kind['episode'][int(row['id'])]:
+                out[node] = {
+                    'text': row['summary'],
+                    'label': row['kind'],
+                    'personId': None,
+                    'retention': 1.0,
+                    'updatedAt': row['ended_at'],
+                    'hits': None,
+                    'alive': True,
+                }
+
+    knowledge_ids = list(by_kind['knowledge'])
+    if knowledge_ids:
+        marks = ','.join('?' * len(knowledge_ids))
+        for row in db.execute(
+            f'SELECT id, content, source, created_at, hit_count FROM knowledge WHERE id IN ({marks})',
+            knowledge_ids,
+        ).fetchall():
+            for node in by_kind['knowledge'][int(row['id'])]:
+                out[node] = {
+                    'text': row['content'],
+                    'label': row['source'],
+                    'personId': None,
+                    'retention': 1.0,
+                    'updatedAt': row['created_at'],
+                    'hits': row['hit_count'],
+                    'alive': True,
+                }
+
+    for node, (ref_kind, ref_id) in refs.items():
+        if node in out:
+            continue
+        # 指针指向的行已经不在了。保留节点并标注，便于发现「谁删了记忆没清指针」。
+        out[node] = {
+            'text': f'（{ref_kind} #{ref_id} 已不存在）',
+            'label': '', 'personId': None, 'retention': 0.0,
+            'updatedAt': 0, 'hits': None, 'alive': False,
+        }
+    return out
+
+
+def _memory_graph_rows(
+    db: sqlite3.Connection,
+    limit: int,
+    include_frozen: bool,
+    now: int,
+) -> dict:
+    """读出联想网络的节点、边与统计，供观察面板绘图。
+
+    只返回**有边**的节点：孤立节点在图上是一堆无法解释的散点，而「这条记忆还没
+    和任何东西一起被点亮过」这件事由统计里的 ``isolated`` 计数表达更清楚。
+
+    节点超过 ``limit`` 时按度数降序截断，保留连接最密的核心；随后丢弃任一端点
+    被截断的边，避免出现指向图外的悬空线。截断与否由 ``stats.truncated`` 标注。
+
+    :param db: 当前库连接。
+    :param limit: 节点数上限。
+    :param include_frozen: 是否把已冻结（``active=0``）的边一并返回。
+    :param now: 当前毫秒时间戳。
+    :return: ``nodes`` / ``edges`` / ``stats`` 三段的字典。
+    :raises sqlite3.Error: 查询失败。
+    副作用：只读。
+    """
+    edge_rows = db.execute(
+        'SELECT id, source_id, target_id, strength, updated_at, active FROM memory_edges'
+    ).fetchall()
+
+    kept: list[dict] = []
+    frozen_total = 0
+    for row in edge_rows:
+        active = bool(row['active'])
+        if not active:
+            frozen_total += 1
+        if not active and not include_frozen:
+            continue
+        keep = retention(
+            float(row['strength']), int(row['updated_at']), EDGE_HALF_LIFE_HOURS, now,
+        )
+        kept.append({
+            'id': row['id'],
+            'source': row['source_id'],
+            'target': row['target_id'],
+            'strength': round(float(row['strength']), 4),
+            'retention': round(keep, 4),
+            'updatedAt': row['updated_at'],
+            'active': active,
+        })
+
+    degree: dict[int, int] = {}
+    for edge in kept:
+        degree[edge['source']] = degree.get(edge['source'], 0) + 1
+        degree[edge['target']] = degree.get(edge['target'], 0) + 1
+
+    ordered = sorted(degree, key=lambda node: (-degree[node], node))
+    selected = set(ordered[:limit])
+    truncated = len(ordered) > limit
+    if truncated:
+        kept = [e for e in kept if e['source'] in selected and e['target'] in selected]
+
+    refs: dict[int, tuple[str, int]] = {}
+    if selected:
+        marks = ','.join('?' * len(selected))
+        for row in db.execute(
+            f'SELECT id, ref_kind, ref_id FROM memory_nodes WHERE id IN ({marks})',
+            list(selected),
+        ).fetchall():
+            refs[int(row['id'])] = (str(row['ref_kind']), int(row['ref_id']))
+
+    payloads = _memory_payloads(db, refs, now)
+    nodes = [
+        {
+            'id': node,
+            'kind': refs[node][0],
+            'refId': refs[node][1],
+            'degree': degree.get(node, 0),
+            **payloads[node],
+        }
+        for node in sorted(refs)
+    ]
+
+    node_total = int(db.execute('SELECT COUNT(*) FROM memory_nodes').fetchone()[0])
+    edge_total = len(edge_rows)
+    spread_runs = int(db.execute(
+        "SELECT COUNT(*) FROM pipeline_events WHERE kind = 'memory_spread'"
+    ).fetchone()[0])
+    return {
+        'nodes': nodes,
+        'edges': kept,
+        'stats': {
+            'nodeTotal': node_total,
+            'edgeTotal': edge_total,
+            'activeEdges': edge_total - frozen_total,
+            'frozenEdges': frozen_total,
+            # 有节点却一条边都没有，等于还没和别的记忆一起被点亮过。
+            'isolated': node_total - len(degree),
+            # 扩散实际跑过几次。为 0 说明建边在跑但从没被读过，这条只能从账本看出来。
+            'spreadRuns': spread_runs,
+            'truncated': truncated,
+        },
+    }
+
+
+def _memory_spread_rows(
+    db: sqlite3.Connection,
+    ref_kind: str,
+    ref_id: int,
+    hops: int,
+    limit: int,
+    now: int,
+) -> list[dict]:
+    """从指定节点出发跑一次扩散，返回带正文的命中列表。
+
+    直接调用运行时的 :func:`~src.core.memory.association.spread`，不另写一份预览
+    实现：面板要回答的是「她真的会想起什么」，重写一遍就只能回答「我以为会想起
+    什么」。该函数已声明只读，不建边也不加强，因此面板反复点不会污染边权。
+
+    与真机的唯一差别是不传短期激活表——面板没有对话上下文，也就没有「刚才聊到
+    过」这回事；调用方须在界面上说明这一点。
+
+    :param db: 当前库连接。
+    :param ref_kind: 种子所在层。
+    :param ref_id: 种子在该层内的主键。
+    :param hops: 最多走几跳。
+    :param limit: 结果条数上限。
+    :param now: 当前毫秒时间戳。
+    :return: 按 score 降序的命中字典列表。
+    :raises ValueError: ``ref_kind`` 不在允许集合内，由 spread 内部抛出。
+    :raises sqlite3.Error: 查询失败。
+    副作用：只读。
+    """
+    hits = spread(db, [(ref_kind, ref_id, 1.0)], now, hops=hops, limit=limit, activation=None)
+    refs = {hit.node_id: (hit.ref_kind, hit.ref_id) for hit in hits}
+    payloads = _memory_payloads(db, refs, now)
+    return [
+        {
+            'id': hit.node_id,
+            'kind': hit.ref_kind,
+            'refId': hit.ref_id,
+            'score': round(hit.score, 4),
+            'hops': hit.hops,
+            **payloads[hit.node_id],
+        }
+        for hit in hits
+    ]
+
+
+@router.get('/api/memory/graph', dependencies=[Depends(_auth)])
+async def memory_graph(
+    limit: int = Query(default=200, ge=10, le=1000),
+    include_frozen: bool = Query(default=False, alias='includeFrozen'),
+) -> dict:
+    """读出整张联想网络，只读。
+
+    节点字段：``id`` 指针表主键、``kind`` 所在层、``refId`` 层内主键、``text``
+    正文、``label`` 分类（fact 取 kind，knowledge 取 source）、``personId``、
+    ``retention`` 当前留存度、``degree`` 度数、``hits`` 命中次数、``alive``
+    指向的记忆是否仍存在。边字段：``strength`` 存量强度与 ``retention`` 折算到
+    此刻的实际强度——两者分开给，是因为「这条边有多强」与「它多久没被用了」在
+    图上要用不同的视觉通道表达。
+
+    :param limit: 节点数上限，10 到 1000，默认 200；超出按度数降序截断。
+    :param include_frozen: 为真时把已冻结的边一并返回，用于观察被遗忘的连接。
+
+    :return: ``nodes`` / ``edges`` / ``stats`` 三段。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；查询失败时 500，
+        完整 traceback 以 ``memory_graph_failed`` 事件落日志。
+
+    副作用：
+        仅读取 memory_nodes / memory_edges 与三层记忆表，不建边也不加强。
+    """
+    db = _read_db_or_503()
+    try:
+        return await run_in_thread(
+            _memory_graph_rows, db, limit, include_frozen, current_time(),
+        )
+    except Exception as exc:
+        logger.exception('memory_graph_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'联想网络查询失败：{exc}',
+        ) from exc
+
+
+@router.get('/api/memory/spread', dependencies=[Depends(_auth)])
+async def memory_spread_preview(
+    kind: Literal['fact', 'episode', 'knowledge'] = Query(...),
+    ref_id: int = Query(..., alias='refId', ge=1),
+    hops: int = Query(default=HOPS, ge=1, le=3),
+    limit: int = Query(default=SPREAD_LIMIT, ge=1, le=20),
+) -> dict:
+    """以指定记忆为种子跑一次扩散预览，只读。
+
+    面板据此回答「从这里出发她会顺带想起什么」。走的是运行时同一份 spread
+    实现，因此结果与她真实的联想一致；唯一差别是没有短期激活加成（面板没有
+    对话上下文），界面上标注为「不含刚才聊到过的加成」。
+
+    :param kind: 种子所在层。
+    :param ref_id: 种子在该层内的主键。
+    :param hops: 最多走几跳，1 到 3，默认取运行时的 ``HOPS``。
+    :param limit: 结果条数上限，1 到 20，默认取运行时的 ``SPREAD_LIMIT``。
+
+    :return: ``hits`` 命中列表、``seed`` 种子标识与本次使用的 ``hops`` / ``limit``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；查询失败时 500，
+        完整 traceback 以 ``memory_spread_failed`` 事件落日志。
+
+    副作用：
+        只读，不建边也不加强边——建边只发生在真实召回里「被采用」之后。
+    """
+    db = _read_db_or_503()
+    try:
+        hits = await run_in_thread(
+            _memory_spread_rows, db, kind, ref_id, hops, limit, current_time(),
+        )
+    except Exception as exc:
+        logger.exception('memory_spread_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'扩散预览失败：{exc}',
+        ) from exc
+    return {'hits': hits, 'seed': {'kind': kind, 'refId': ref_id}, 'hops': hops, 'limit': limit}

@@ -6,7 +6,7 @@
  * 渲染加载态，未通过认证时整页替换为登录页，通过后才挂载布局壳与业务页面。
  * 被 main.tsx 挂载，是全部页面组件的唯一装配点。
  *
- * 五个业务页面全部走 React.lazy 动态导入：登录页保持静态引入保证首屏直出，
+ * 业务页面全部走 React.lazy 动态导入：登录页保持静态引入保证首屏直出，
  * 进入控制台后各页面按需加载，避免单 bundle 超过 500 kB 的构建警告。
  */
 import { MotionConfig } from 'motion/react'
@@ -38,6 +38,9 @@ const JargonPage = lazy(() =>
 )
 const ExpressionsPage = lazy(() =>
   import('@/features/expressions/ExpressionsPage').then((m) => ({ default: m.ExpressionsPage })),
+)
+const MemoryGraphPage = lazy(() =>
+  import('@/features/memory/MemoryGraphPage').then((m) => ({ default: m.MemoryGraphPage })),
 )
 
 /** 页面块加载中的占位：与门禁检查态一致的居中加载样式。 */
@@ -80,6 +83,7 @@ function AuthGate() {
           <Route path="persons/:personId" element={<PersonDetailPage />} />
           <Route path="jargon" element={<JargonPage />} />
           <Route path="expressions" element={<ExpressionsPage />} />
+          <Route path="memory" element={<MemoryGraphPage />} />
           <Route path="*" element={<ObservePage />} />
         </Route>
       </Routes>

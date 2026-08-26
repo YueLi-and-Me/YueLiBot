@@ -1,8 +1,9 @@
 /**
  * 应用侧栏：随主题切换的一体化品牌与导航容器。
  *
- * 自上而下为品牌区（渐变水母标识 +「月璃」）、主导航（会话观察/模型/人物/设置）、
- * 会话分区锚点组（仅会话观察页可见）、底部操作区（主题开关 + 登出）。
+ * 自上而下为品牌区（渐变水母标识 +「月璃」）、主导航（会话观察/模型与厂商/人物与
+ * 关系/黑话词表/表达方式/记忆联想网络/月璃设置）、会话分区锚点组（仅会话观察页
+ * 可见）、底部操作区（主题开关 + 登出）。
  * 导航激活态为浅青底 pill，通过 motion 的 `layoutId` 共享元素转场在导航项间
  * 滑动；窄屏时整体隐藏，由 AppShell 的顶部条替代。
  */
@@ -15,6 +16,7 @@ import {
   List,
   LogOut,
   MessageSquare,
+  Network,
   Quote,
   Settings,
   Terminal,
@@ -144,7 +146,8 @@ export function Sidebar() {
   const onSettings = location.pathname.startsWith('/settings')
   const onJargon = location.pathname.startsWith('/jargon')
   const onExpressions = location.pathname.startsWith('/expressions')
-  const onHome = !onPersons && !onModels && !onSettings && !onJargon && !onExpressions
+  const onMemory = location.pathname.startsWith('/memory')
+  const onHome = !onPersons && !onModels && !onSettings && !onJargon && !onExpressions && !onMemory
 
   return (
     <aside className="m-3 mr-0 hidden w-(--sidebar-width) flex-none flex-col rounded-2xl border border-sidebar-border bg-sidebar shadow-card lg:flex">
@@ -157,6 +160,7 @@ export function Sidebar() {
           <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
           <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
           <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
+          <NavLink to="/memory" active={onMemory} icon={<Network />} label="记忆联想网络" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
           {onHome ? (
             <div className="mt-1 border-t border-sidebar-border/60 pt-1">
@@ -197,6 +201,7 @@ export function MobileTopbar() {
   const onSettings = location.pathname.startsWith('/settings')
   const onJargon = location.pathname.startsWith('/jargon')
   const onExpressions = location.pathname.startsWith('/expressions')
+  const onMemory = location.pathname.startsWith('/memory')
 
   return (
     <div className="flex flex-none items-center gap-2 border-b border-sidebar-border bg-sidebar px-3 py-2 lg:hidden">
@@ -205,7 +210,7 @@ export function MobileTopbar() {
         <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           <NavLink
             to="/"
-            active={!onPersons && !onModels && !onSettings && !onJargon && !onExpressions}
+            active={!onPersons && !onModels && !onSettings && !onJargon && !onExpressions && !onMemory}
             icon={<Activity />}
             label="会话观察"
           />
@@ -213,6 +218,7 @@ export function MobileTopbar() {
           <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
           <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
           <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
+          <NavLink to="/memory" active={onMemory} icon={<Network />} label="记忆联想网络" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
         </nav>
       </LayoutGroup>

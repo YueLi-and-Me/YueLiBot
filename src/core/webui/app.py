@@ -26,12 +26,16 @@ def mount_webui(app: FastAPI) -> None:
     :return: ``None``。
 
     副作用：
-        构建产物存在时注册人物 SPA 路由和根静态挂载；产物不存在时注册构建提示
-        页面。路由注册顺序确保静态服务不会抢占后端 API。
+        构建产物存在时注册全部 SPA 入口路由和根静态挂载；产物不存在时注册构建
+        提示页面。路由注册顺序确保静态服务不会抢占后端 API。
     """
     if _WEBUI_DIST.is_dir():
         index_path = _WEBUI_DIST / 'index.html'
 
+        # 下面每条 SPA 入口都必须与前端路由表（webui/src/app/App.tsx 的 <Routes>）
+        # 一一对应。根挂载的 StaticFiles 只按文件名交付，前端路由在磁盘上没有对应
+        # 文件，漏注册的那条就只有页内点导航能进、直接敲地址或刷新一律 404；
+        # /jargon 与 /expressions 就是这样漏了一段时间。新增前端页面时同步补一条。
         @app.get('/models', include_in_schema=False)
         async def models_page() -> FileResponse:
             """返回模型与厂商工作台共用的 SPA 入口文件。"""
@@ -63,6 +67,21 @@ def mount_webui(app: FastAPI) -> None:
             """
 
             # person_id 由前端再向只读 API 查询；路由只负责交付同一份 SPA 入口。
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
+        @app.get('/jargon', include_in_schema=False)
+        async def jargon_page() -> FileResponse:
+            """返回黑话词表页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
+        @app.get('/expressions', include_in_schema=False)
+        async def expressions_page() -> FileResponse:
+            """返回表达方式页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
+        @app.get('/memory', include_in_schema=False)
+        async def memory_graph_page() -> FileResponse:
+            """返回记忆联想网络页共用的 SPA 入口文件。"""
             return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
         @app.get('/', include_in_schema=False)
