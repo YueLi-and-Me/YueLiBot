@@ -709,6 +709,32 @@ def main() -> None:
     lifecycle.register('chat', app_state.chat.startup, app_state.chat.shutdown)
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 
+    # 配置热重载的持有方更新：第 1 类字段的使用点都通过下面这些引用读取，
+    # 重载成功后统一换到新对象即生效（第 2/3 类的分类见 loader 的前缀表与
+    # 交付报告）。这里写私有属性是权宜——chat.py 等归记忆线，等它空出再改
+    # 造成公开 setter，届时本回调只换调用形式、语义不变。
+    def _on_config_reloaded(previous: object, fresh: object) -> None:
+        """把装配期创建的服务切到新配置对象上。
+
+        :param previous: 旧配置（回调签名要求，本回调不使用）。
+        :param fresh: 重载后的新配置。
+        副作用：原地重绑各持有方的配置引用，不重建任何服务。
+        """
+        app_state.group_chat_config = fresh.group_chat
+        app_state.chat._cfg = fresh
+        app_state.chat._image_describer._cfg = fresh
+        if app_state.tts is not None:
+            app_state.tts._cfg = fresh
+        app_state.awareness._cfg = fresh
+        if schedule is not None:
+            schedule._config = fresh.schedule
+        sensor._cfg = fresh
+        if getattr(sensor, '_vision', None) is not None:
+            sensor._vision._cfg = fresh
+
+    from src.core.config.loader import add_config_reload_listener
+    add_config_reload_listener(_on_config_reloaded)
+
     logger.info("backend_starting", port=port)
 
     from src.core.api.app import create_app

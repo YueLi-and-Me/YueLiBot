@@ -33,9 +33,10 @@ from src.core.agent.action_protocol import ActionDecisionEvent, GateInputFacts
 from src.core.agent.conversation_gate import GateRequest, decide_disposition, mentions_bot_name
 from src.core.agent.jargon import jargon_use_enabled, set_jargon_use
 from src.core.common.clock import now as current_time
+from src.core.common.console_layout import print_box
 from src.core.common.db.connection import get_db, run_in_thread
 from src.core.common.logger import get_logger
-from src.core.config.loader import get_config
+from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
 from src.core.memory.decay import retention
 from src.core.observe import events as trace
@@ -1884,3 +1885,39 @@ async def emoji_delete(content_hash: str) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return {'ok': True, 'removed': removed}
+
+
+@router.post('/system/config/reload', dependencies=[Depends(_auth), Depends(_require_loopback)])
+async def system_config_reload() -> dict:
+    """重读配置目录并热应用第 1 类字段；失败时保持原配置并完整报错。
+
+    与重启的区别：模型客户端、日志管道、可选服务装配等启动期形态（第 2 类）
+    不受影响，变更清单里会逐字段标注「需要重启才生效」；被拷进实例属性的
+    第 3 类同样只标注不生效。不做「失败就用旧配置继续跑」的静默兜底——
+    校验不过直接报错，进程保持原配置，日志与 WebUI 都能看到原因。
+
+    :return: ``ok`` 恒为真；``changedFields`` 为标注后的变更字段行，
+        空列表表示配置没有变化。
+
+    :raises fastapi.HTTPException: 配置读取或校验失败时 400，detail 带完整原因；
+        此时全局配置保持原状，本次重载没有生效。
+
+    副作用：
+        成功路径替换进程级配置单例并通知持有方（控制台信息框加
+        ``config_reloaded`` 日志事件）；失败路径以 ``config_reload_failed``
+        落完整 traceback。
+    """
+    try:
+        _, summary = await asyncio.to_thread(reload_config)
+    except Exception as exc:
+        logger.exception('config_reload_failed')
+        print_box('配置热重载失败', [
+            '已保持原配置继续运行，本次重载没有生效。',
+            f'原因：{exc}',
+        ])
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'配置重载失败，已保持原配置：{exc}',
+        ) from exc
+    print_box('配置热重载完成', summary if summary else ['没有字段发生变化。'])
+    return {'ok': True, 'changedFields': summary}
