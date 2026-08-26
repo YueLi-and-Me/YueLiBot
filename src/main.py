@@ -15,6 +15,7 @@ import asyncio
 import os
 import socket
 import sys
+import time
 
 import uvicorn
 
@@ -42,6 +43,13 @@ from src.core.prompts.registry import prompt_metadata
 
 
 DEFAULT_BACKEND_PORT = 7999
+
+# 初始化计时起点，由 main() 在解析完参数后置位。
+#
+# 只覆盖「解析参数之后到监听建立」这一段，不含解释器启动与模块导入的约 0.5 秒——
+# 那一段既不在本进程的控制范围内，也无法通过改代码缩短。就绪框里因此写「初始化」
+# 而不是「启动」，避免给出一个我们并没有测量的数字。
+_init_started_at: float | None = None
 
 
 class _LLMGenerator:
@@ -224,13 +232,16 @@ def _announce_webui_ready(port: int, token: str, runtime_path: Path) -> None:
         向标准输出写入包含 token 的信息框，不进日志文件与 WebUI 日志流。
     """
 
+    rows = [
+        f'地址：http://127.0.0.1:{port}',
+        f'登录 token：{token}',
+        f'token 每次启动重新生成，也可从 {runtime_path} 读取',
+    ]
+    if _init_started_at is not None:
+        rows.append(f'初始化耗时：{time.perf_counter() - _init_started_at:.2f} 秒')
     print_box(
         'WebUI 已就绪',
-        [
-            f'地址：http://127.0.0.1:{port}',
-            f'登录 token：{token}',
-            f'token 每次启动重新生成，也可从 {runtime_path} 读取',
-        ],
+        rows,
         # 路径和 64 位 token 都要保持单行，用户才能直接复制。
         width=112,
         # 含当前进程主凭据，不进 WebUI 日志流与 JSONL。
@@ -300,6 +311,9 @@ def main() -> None:
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args()
 
+    global _init_started_at
+    _init_started_at = time.perf_counter()
+
     # 先把数据目录暴露给依赖环境变量的后端组件，再加载配置和日志。
     os.environ["YUELI_DATA_DIR"] = args.data_dir
 
@@ -320,6 +334,9 @@ def main() -> None:
     cfg = load_config(Path(args.config_path))
     initialize_logging(cfg.log, data_dir / 'logs')
     logger = get_logger("main")
+    # 启动日志的开场白：没有它时第一行是模型路由框，读者不知道这份输出从哪开始，
+    # 也不知道正在起的是哪个 bot。
+    logger.info('startup_begin', bot=cfg.bot.name, dataDir=str(data_dir))
     _announce_model_routing(cfg)
 
     from src.core.prompts.registry import configure_prompts
