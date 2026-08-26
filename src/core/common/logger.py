@@ -325,6 +325,8 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
     'memory_fact': ('personId', 'memoryKind', 'content'),
     'mood_delta': ('turnId', 'favor', 'energy'),
     'promise_stashed': ('turnId', 'subject', 'at'),
+    # 选中的说法正文留在事件账本，控制台只看「从多少候选里选了几条、谁选的」。
+    'expression_select': ('turnId', 'source', 'count', 'pool', 'total', 'errorType', 'error'),
 }
 
 _TRACE_HASH_FIELDS = frozenset({'hash', 'promptHash', 'contentHash', 'fingerprint'})

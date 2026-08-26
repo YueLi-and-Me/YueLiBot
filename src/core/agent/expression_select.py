@@ -1,7 +1,11 @@
-"""按当前对话情境从 Bot 配置候选中挑选表达样本。
+"""按当前对话情境从 expressions 表候选池中挑选表达样本。
 
 本模块构造受限编号选择提示词，调用 `LlmProvider` 获取 JSON 对象，并严格把
-模型返回的编号映射回候选表达习惯；解析失败不会静默生成新文本或扩展候选集合。
+模型返回的编号映射回候选表达样本；解析失败不会静默生成新文本或扩展候选集合。
+
+选择提示词只向模型列出候选的**情境**描述，模型回答的是「我现在处在哪个情境」；
+说法示例（style）不进选择提示词，是选中之后才拼进注入文本的载荷——把 style
+一起给选择模型，它会按好听程度挑，那是另一个问题。
 """
 
 from __future__ import annotations
@@ -20,16 +24,19 @@ _SELECTION_KEY = 'selected'
 _MAX_SELECTION_CHARS = 256
 
 
-def candidate_count(candidates: Sequence[ExpressionSample]) -> int:
-    """返回表达习惯候选序列的元素数量。
+def _options_text(candidates: Sequence[ExpressionSample]) -> str:
+    """把候选池映射为从 1 开始编号的情境列表，供提示词与渲染参数共用。"""
 
-    :param candidates: 待统计的候选表达习惯序列。
+    return '\n'.join(
+        f'{index}. {sample.situation}'
+        for index, sample in enumerate(candidates, start=1)
+    )
 
-    :return: 候选元素数量；不会执行去重或内容校验。
 
-    :raises TypeError: 参数不支持 ``len`` 操作时抛出。
-    """
-    return len(candidates)
+def _history_text(history: Sequence[dict[str, str]]) -> str:
+    """序列化最近对话历史，供提示词与渲染参数共用。"""
+
+    return json.dumps(list(history), ensure_ascii=False)
 
 
 def build_selection_prompt(
@@ -38,29 +45,22 @@ def build_selection_prompt(
     history: Sequence[dict[str, str]],
     limit: int,
 ) -> str:
-    """组装受限表达选择提示词，并将候选映射为从 1 开始的编号。
+    """组装受限表达选择提示词，候选以从 1 开始的编号情境列出。
 
-    :param candidates: 按展示顺序排列的候选表达习惯文本。
+    :param candidates: 按展示顺序排列的候选表达样本；只有 situation 进入提示词。
     :param user_text: 当前用户消息，用于模型判断语境匹配度。
     :param history: 最近对话历史；每项应包含 ``role`` 和 ``content`` 字段。
     :param limit: 模型最多可以返回的候选数量；由调用方负责传入有效上限。
 
-    :return: 包含对话上下文、编号候选和输出上限约束的完整提示词。
+    :return: 包含对话上下文、编号情境和输出上限约束的完整提示词。
 
     :raises KeyError: 表达选择提示词未在提示词目录中注册时抛出。
     :raises TypeError: 历史消息或候选文本无法序列化、格式化时抛出。
     """
-    indexed: Dict[int, ExpressionSample] = {
-        index: sample for index, sample in enumerate(candidates, start=1)
-    }
-    options = '\n'.join(
-        f'{index}. {sample}' for index, sample in indexed.items()
-    )
-    context = json.dumps(list(history), ensure_ascii=False)
     return get_prompt('expression.select').render(
-        history=context,
+        history=_history_text(history),
         user_text=user_text,
-        options=options,
+        options=_options_text(candidates),
         limit=str(limit),
     )
 
@@ -70,13 +70,13 @@ def parse_selection(
     candidates: Sequence[ExpressionSample],
     limit: int,
 ) -> List[ExpressionSample]:
-    """严格解析模型返回的编号数组，并映射回原始候选文本。
+    """严格解析模型返回的编号数组，并映射回候选表达样本。
 
     :param raw: 模型返回的 JSON 文本，长度不得超过内部协议上限。
-    :param candidates: 与提示词编号顺序一致的候选表达习惯序列。
+    :param candidates: 与提示词编号顺序一致的候选表达样本序列。
     :param limit: 允许选择的最大数量；必须为非负整数。
 
-    :return: 按模型返回顺序排列的候选表达习惯列表。
+    :return: 按模型返回顺序排列的候选表达样本列表。
 
     :raises ValueError: 响应超长、JSON 结构不符、编号非整数、编号越界、编号重复或超过数量上限。
     :raises json.JSONDecodeError: 不直接向上抛出，解析错误会转换为 ``ValueError``。
@@ -118,60 +118,59 @@ def parse_selection(
 
 
 class ExpressionSelector:
-    """一次独立的挑选调用，输出受限于固定候选编号。"""
+    """一次独立的挑选调用，输出受限于固定候选编号。
+
+    候选池按会话、按轮变化，因此不再是构造期固定值，而是 ``select()`` 的入参；
+    选择器本身只持有模型调用参数，可跨轮复用。
+    """
 
     def __init__(
         self,
         provider: LlmProvider,
         temperature: float,
         max_tokens: int | None,
-        candidates: Sequence[ExpressionSample],
     ) -> None:
-        """创建一次独立的表达习惯选择器。
+        """创建表达选择器。
 
         :param provider: 提供流式文本生成能力的模型客户端。
         :param temperature: 传给模型的采样温度，具体范围由 provider 实现约束。
         :param max_tokens: 单次选择请求的最大输出 token 数；`None` 表示不额外指定。
-        :param candidates: 可供模型选择的候选表达，不能为空。
-        :raises ValueError: `candidates` 为空。
-        副作用：保存候选的不可变副本，不执行模型请求。
+        副作用：保存模型调用参数，不执行模型请求。
         """
-        if not candidates:
-            raise ValueError('表达选择候选不能为空')
         self._provider = provider
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._candidates = tuple(candidates)
 
     async def select(
         self,
         user_text: str,
         history: Sequence[dict[str, str]],
+        candidates: Sequence[ExpressionSample],
         limit: int = 4,
         signal: asyncio.Event | None = None,
     ) -> List[ExpressionSample]:
-        """请求模型从候选表达中选择不超过上限的样本。
+        """请求模型从候选池中选择不超过上限的表达样本。
 
-        :param user_text: 当前用户消息，用于判断表达习惯是否贴合语境。
+        :param user_text: 当前用户消息，用于判断表达样本是否贴合语境。
         :param history: 最近对话历史，每项包含 `role` 与 `content` 字段。
+        :param candidates: 本轮候选池；不能为空，由调用方在候选不足时跳过本轮选择。
         :param limit: 最多允许返回的候选数量，默认值为 4。
         :param signal: 可选取消事件；触发后由 provider 终止流式请求。
-        :return: 按模型选择顺序排列的候选表达列表。
-        :raises ValueError: 模型输出不是限定 JSON、编号越界、重复或超过 `limit`。
+        :return: 按模型选择顺序排列的候选表达样本列表。
+        :raises ValueError: 候选为空，或模型输出不是限定 JSON、编号越界、重复或超过 `limit`。
         :raises Exception: provider 的网络、鉴权或流式读取错误向调用方传播。
         副作用：发起一次模型请求并记录 `llm_request` 观测事件；不修改候选。
         :performance: 输出解析按候选数量线性构造索引，模型请求耗时占主要成本。
         """
-        # 提示词只携带候选编号，避免模型重新生成表达文本破坏候选约束。
-        prompt = build_selection_prompt(self._candidates, user_text, history, limit)
+        if not candidates:
+            raise ValueError('表达选择候选不能为空')
+        # 提示词只携带候选情境的编号，避免模型重新生成表达文本破坏候选约束。
+        prompt = build_selection_prompt(candidates, user_text, history, limit)
         render_params = {
             'expression.select': {
-                'history': json.dumps(list(history), ensure_ascii=False),
+                'history': _history_text(history),
                 'user_text': user_text,
-                'options': '\n'.join(
-                    f'{index}. {sample}'
-                    for index, sample in enumerate(self._candidates, start=1)
-                ),
+                'options': _options_text(candidates),
                 'limit': str(limit),
             },
         }
@@ -191,7 +190,7 @@ class ExpressionSelector:
         reasoning_length = result.reasoning_chars
         try:
             # 解析失败附带正文和推理长度，便于区分协议错误与模型输出过长。
-            return parse_selection(raw, self._candidates, limit)
+            return parse_selection(raw, candidates, limit)
         except ValueError as exc:
             raise ValueError(
                 f'{exc}（正文字符={len(raw)}，推理字符={reasoning_length}）'

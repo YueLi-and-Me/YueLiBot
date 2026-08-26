@@ -261,8 +261,6 @@ class PersonalityConfig(BaseModel):
     reply_style: str
     tone_probability: float = Field(ge=0.0, le=1.0)
     tone_variants: List[str]
-    expression_habits: List[str]
-    proactive_expression_habits: List[str]
 
     @model_validator(mode='before')
     @classmethod
@@ -271,7 +269,8 @@ class PersonalityConfig(BaseModel):
 
         :param value: Pydantic before 校验阶段的原始人格映射。
         :return: 不含废弃字段的原始值。
-        :raises ValueError: 发现 `identity`、`behavior`、`attention` 或 `boundaries`。
+        :raises ValueError: 发现 `identity`、`behavior`、`attention`、`boundaries`
+            或已退休的表达方式字段。
         副作用：不修改输入映射。
         """
         if not isinstance(value, dict):
@@ -281,6 +280,8 @@ class PersonalityConfig(BaseModel):
             ('behavior', 'personality.behavior 已取消：接话方式并进 reply_style。'),
             ('attention', 'personality.attention 已取消：接话方式并进 reply_style。'),
             ('boundaries', 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。'),
+            ('expression_habits', 'personality.expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。'),
+            ('proactive_expression_habits', 'personality.proactive_expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。'),
         )
         for field_name, message in migration_errors:
             if field_name in value:
@@ -309,12 +310,12 @@ class PersonalityConfig(BaseModel):
             raise ValueError('personality.birthday 不能晚于今天')
         return value
 
-    @field_validator('tone_variants', 'expression_habits', 'proactive_expression_habits')
+    @field_validator('tone_variants')
     @classmethod
     def _validate_text_lists(cls, value: List[str]) -> List[str]:
         """规范化人格文本列表并拒绝空条目。
 
-        :param value: 临时语调、表达习惯或主动表达习惯列表。
+        :param value: 临时语调列表。
         :return: 每项去除首尾空白后的新列表。
         :raises ValueError: 任一条目为空或只包含空白。
         副作用：不修改输入列表。
@@ -964,8 +965,6 @@ class Config(BaseModel):
         reply_style='',
         tone_probability=0.0,
         tone_variants=[],
-        expression_habits=[],
-        proactive_expression_habits=[],
     ))
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
