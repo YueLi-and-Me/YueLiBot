@@ -2,7 +2,9 @@
  * 表达方式的数据加载 hook。
  *
  * 对应后端 `/api/expressions` 只读接口：按会话过滤，使用次数升/降序，
- * offset 分页。这些表达来自历史迁移、尚未接入回复生成，页面负责如实标注。
+ * offset 分页。词表本身只出不进（全部来自历史迁移，运行时不新增），但已接入
+ * 回复生成并回写使用记录，因此 `lastUsedAt` 是页面区分「在用」与「在学」的
+ * 唯一依据——`useCount` 含迁移带来的历史值，单看它分不出这两者。
  */
 import { useEffect, useState } from 'react'
 
@@ -17,9 +19,12 @@ export interface ExpressionEntry {
   /** 具体的表达文本。 */
   style: string
   streamId: number | null
+  /** 累计被选中次数；含历史迁移带入的存量，不代表本部署用过。 */
   useCount: number
   source: string
   createdAt: number
+  /** 最近一次被选中的毫秒时间戳；从未被选中为 null。 */
+  lastUsedAt: number | null
 }
 
 /** 一组过滤、排序与分页条件。 */

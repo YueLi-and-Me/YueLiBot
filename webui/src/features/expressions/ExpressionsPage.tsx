@@ -1,9 +1,15 @@
 /**
- * 表达方式页：只读浏览历史迁移的表达方式。
+ * 表达方式页：只读浏览表达方式词表。
  *
- * 页面顶部明确标注「尚未接入生成」——这些 situation/style 对来自旧库迁移，
- * 目前没有任何运行时消费方，她说话仍走配置里的固定表达序列；界面不得
- * 暗示她已经在使用这些表达。列表按使用次数排序，一行一条。
+ * 「在用」与「在学」是两件事，页面必须分开表述，否则读者只能从 useCount
+ * 猜——而那个数含历史迁移带入的存量，猜不出来：
+ * - 在用：已接入回复生成（候选池加权抽样 → 选择模型挑一条 → 注入提示词），
+ *   选中会回写 use_count 与 last_used_at。行内「本机用过」徽标只在
+ *   last_used_at 非空时出现，它是本部署真实用过的唯一证据。
+ * - 在学：没有。全部条目来自一次性历史迁移脚本，运行时不存在 INSERT 路径，
+ *   词表规模不会增长。顶部提示条如实说明这一点，不得暗示她在自我积累。
+ *
+ * 列表按使用次数排序，一行一条。
  */
 import { Quote } from 'lucide-react'
 import { useState } from 'react'
@@ -23,7 +29,7 @@ import {
 } from '@/components/ui'
 import { useExpressions, type ExpressionEntry } from '@/hooks/use-expressions'
 import { useStreams } from '@/hooks/use-observability'
-import { streamLabel } from '@/lib/format'
+import { dateTime, streamLabel } from '@/lib/format'
 
 /** 页大小；一屏多一点为宜，太长要一直滚。后端路由 le=200，取值留足余量。 */
 const PAGE_SIZE = 20
@@ -47,6 +53,9 @@ function ExpressionRow({
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="text-[15px] font-semibold">「{entry.style}」</span>
         <Chip label="用过" value={`${entry.useCount} 次`} />
+        {entry.lastUsedAt !== null ? (
+          <Chip label="本机用过" value={dateTime(entry.lastUsedAt)} />
+        ) : null}
         {entry.streamId === null ? (
           <Chip label="范围" value="全局通用" />
         ) : (
@@ -96,7 +105,7 @@ export function ExpressionsPage() {
       <PageHeader
         eyebrow="YUELI · CONSOLE"
         title="表达方式"
-        subtitle="历史会话里出现过的说法与情境，按使用次数排序。"
+        subtitle="她说话时可选的说法与情境，按使用次数排序。"
       />
       <div
         role="note"
@@ -104,8 +113,9 @@ export function ExpressionsPage() {
       >
         <Quote className="mt-0.5 size-4 flex-none" aria-hidden="true" />
         <p>
-          这些表达来自历史数据迁移，<strong>尚未接入回复生成</strong>——她目前说话仍走配置里的固定表达序列。
-          本页只读浏览，不做任何修改。
+          这些表达<strong>已接入回复生成</strong>：每轮从当前会话的候选池加权抽样，交给选择模型挑一条注入提示词，
+          标着「本机用过」的就是真的被选中过的。但词表<strong>只出不进</strong>——全部条目来自一次性历史迁移，
+          她不会自己学出新的表达方式。本页只读浏览，不做任何修改。
         </p>
       </div>
       <div className="flex flex-wrap items-end gap-3">

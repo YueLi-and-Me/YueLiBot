@@ -1124,8 +1124,12 @@ async def person_detail(person_id: int) -> dict:
 
 
 # ------------------------------------------------------- 黑话与表达方式（只读浏览）
-# 以下两条路由只做 SELECT：词条由历史迁移落库（jargon 1000 条 confirmed、
-# expressions 3362 条），运行时消费走 agent/jargon.py 的查表命中，与本处无关。
+# 以下两条路由只做 SELECT。两张表当前都是「只出不进」：条目全部来自一次性历史
+# 迁移脚本，运行时只消费不新增——黑话的消费在 agent/jargon.py 的查表命中，表达
+# 方式的消费在 services/chat.py 的候选池抽样与选择模型，两条链路都会回写使用
+# 计数，但都不会 INSERT 新词条。表达方式行因此同时返回 use_count 与
+# last_used_at：前者是累计量（含迁移带来的历史值），只有后者能区分「这条在本
+# 部署真的被用过」和「这条只是迁移数据里频次高」。
 # SQL 为完全静态文本：全部筛选值一律参数绑定，可选条件用 ``? IS NULL``
 # 参数开关表达；LIKE 关键词先转义 %、_ 与 \，排序方向来自 Literal 枚举、
 # 只决定执行哪一条静态语句，杜绝任何外部输入进 SQL 文本。
@@ -1224,7 +1228,8 @@ def _list_expression_rows(
     :param use_desc: 为真按使用次数降序，否则升序。
     :param limit: 页大小。
     :param offset: 偏移量。
-    :return: ``(表达字典列表, 总数)``。
+    :return: ``(表达字典列表, 总数)``；每行含 ``useCount`` 累计次数与
+        ``lastUsedAt`` 最近一次被选中的毫秒时间戳（从未被选中时为 ``None``）。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
     """
     # ? IS NULL 参数开关：传 NULL 即关闭会话过滤，SQL 文本保持完全静态。
@@ -1235,7 +1240,8 @@ def _list_expression_rows(
     ).fetchone()[0])
     if use_desc:
         rows = db.execute(
-            '''SELECT id, situation, style, stream_id, use_count, source, created_at
+            '''SELECT id, situation, style, stream_id, use_count, source,
+                      created_at, last_used_at
                FROM expressions
                WHERE (? IS NULL OR stream_id = ?)
                ORDER BY use_count DESC, id DESC
@@ -1244,7 +1250,8 @@ def _list_expression_rows(
         ).fetchall()
     else:
         rows = db.execute(
-            '''SELECT id, situation, style, stream_id, use_count, source, created_at
+            '''SELECT id, situation, style, stream_id, use_count, source,
+                      created_at, last_used_at
                FROM expressions
                WHERE (? IS NULL OR stream_id = ?)
                ORDER BY use_count ASC, id ASC
@@ -1260,6 +1267,7 @@ def _list_expression_rows(
             'useCount': row['use_count'],
             'source': row['source'],
             'createdAt': row['created_at'],
+            'lastUsedAt': row['last_used_at'],
         }
         for row in rows
     ]
@@ -1390,10 +1398,11 @@ async def expression_entries(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    """分页浏览历史迁移的表达方式，只读。
+    """分页浏览表达方式词表，只读。
 
-    这些表达尚无运行时消费方（回复生成仍走配置里的固定序列），页面前端会
-    如实标注「尚未接入生成」；本路由同样只做展示查询。
+    表达方式已接入回复生成（候选池抽样 → 选择模型），但词表本身「只出不进」：
+    全部条目来自一次性历史迁移，没有任何运行时路径会新增。前端据此区分
+    「在用」与「在学」两件事，本路由只做展示查询。
 
     :param stream_id: 会话 ID 过滤；``None`` 表示不限。
     :param order: ``use_desc`` 按使用次数降序（默认），``use_asc`` 升序。

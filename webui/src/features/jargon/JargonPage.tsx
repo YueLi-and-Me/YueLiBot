@@ -1,13 +1,16 @@
 /**
- * 黑话词表页：只读浏览历史迁移的黑话词条。
+ * 黑话词表页：只读浏览黑话词条。
  *
  * 列表形态（一人一行同款理由：信息密度优先于卡片网格）。一眼要能看出
  * 「这条是全局的还是只在某个群成立」：词条行内用范围徽标区分全局与会话。
- * 默认只显示已确认词条；待定候选需显式切到「待定」页签——历史迁移目前
- * 只导入了已确认词条，待定为空属正常。关键词输入采用提交式（回车或点
- * 按钮），避免逐键请求。
+ * 默认只显示已确认词条；待定候选需显式切到「待定」页签——待定既来自迁移
+ * 时的低置信条目，也来自名字守卫把「疑似人名」批量降级的结果，因此不为空。
+ * 关键词输入采用提交式（回车或点按钮），避免逐键请求。
+ *
+ * 「在用」与「在学」分开表述，同表达方式页：召回已接入 planner 与 replyer，
+ * 但词表只出不进，全部条目来自一次性历史迁移。
  */
-import { Search, X } from 'lucide-react'
+import { BookMarked, Search, X } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -48,6 +51,8 @@ function JargonRow({ entry, streamLabelOf }: { entry: JargonEntry; streamLabelOf
           label="范围"
           value={entry.streamId === null ? '全局通用' : streamLabelOf(entry.streamId)}
         />
+        {/* hits 记的是查表命中，含被跨轮去重排除、被条数上限截掉、
+            最终没进提示词的那些；它不等于「注进去过几次」。 */}
         <Chip label="命中" value={`${entry.hits} 次`} />
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{entry.source}</span>
       </div>
@@ -105,8 +110,19 @@ export function JargonPage() {
       <PageHeader
         eyebrow="YUELI · CONSOLE"
         title="黑话词表"
-        subtitle="只有他们才懂的说法与含义；词条来自历史迁移，本页只读浏览。"
+        subtitle="只有他们才懂的说法与含义；本页只读浏览。"
       />
+      <div
+        role="note"
+        className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning"
+      >
+        <BookMarked className="mt-0.5 size-4 flex-none" aria-hidden="true" />
+        <p>
+          词表<strong>已接入</strong>：每轮扫他人消息命中的词条，把释义注进决策与回复的提示词。
+          但词表<strong>只出不进</strong>——全部条目来自一次性历史迁移，她不会自己学出新黑话。
+          「命中」计的是查表命中，含没能挤进提示词的那些。
+        </p>
+      </div>
       <div className="flex flex-wrap items-end gap-3">
         <SegmentedTabs
           tabs={[
