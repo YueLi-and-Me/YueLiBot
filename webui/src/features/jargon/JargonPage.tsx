@@ -10,7 +10,7 @@
  * 「在用」与「在学」分开表述，同表达方式页：召回已接入 planner 与 replyer，
  * 但词表只出不进，全部条目来自一次性历史迁移。
  */
-import { BookMarked, Search, X } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -112,17 +112,6 @@ export function JargonPage() {
         title="黑话词表"
         subtitle="只有他们才懂的说法与含义；本页只读浏览。"
       />
-      <div
-        role="note"
-        className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning"
-      >
-        <BookMarked className="mt-0.5 size-4 flex-none" aria-hidden="true" />
-        <p>
-          词表<strong>已接入</strong>：每轮扫他人消息命中的词条，把释义注进决策与回复的提示词。
-          但词表<strong>只出不进</strong>——全部条目来自一次性历史迁移，她不会自己学出新黑话。
-          「命中」计的是查表命中，含没能挤进提示词的那些。
-        </p>
-      </div>
       <div className="flex flex-wrap items-end gap-3">
         <SegmentedTabs
           tabs={[

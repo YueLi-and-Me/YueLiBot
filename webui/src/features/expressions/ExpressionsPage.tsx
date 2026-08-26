@@ -11,7 +11,6 @@
  *
  * 列表按使用次数排序，一行一条。
  */
-import { Quote } from 'lucide-react'
 import { useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -107,17 +106,6 @@ export function ExpressionsPage() {
         title="表达方式"
         subtitle="她说话时可选的说法与情境，按使用次数排序。"
       />
-      <div
-        role="note"
-        className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning"
-      >
-        <Quote className="mt-0.5 size-4 flex-none" aria-hidden="true" />
-        <p>
-          这些表达<strong>已接入回复生成</strong>：每轮从当前会话的候选池加权抽样，交给选择模型挑一条注入提示词，
-          标着「本机用过」的就是真的被选中过的。但词表<strong>只出不进</strong>——全部条目来自一次性历史迁移，
-          她不会自己学出新的表达方式。本页只读浏览，不做任何修改。
-        </p>
-      </div>
       <div className="flex flex-wrap items-end gap-3">
         <SegmentedTabs
           tabs={[
