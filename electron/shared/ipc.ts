@@ -435,6 +435,30 @@ export interface YueliConfig {
     follow_up: { enabled: boolean; peer_silence_minutes: number }
     nudge: { enabled: boolean; peer_silence_minutes: number; max_per_silence: number }
   }
+  /** 表情包库的容量、收集与淘汰参数。 */
+  emoji: {
+    /** 可发送表情最大条数；0 表示不限 */
+    max_count: number
+    /** 库满后是否自动淘汰最冷的条目 */
+    auto_evict: boolean
+    /** 两次库容量检查之间的最小间隔（分钟） */
+    check_interval_minutes: number
+    /** 收集时的单文件大小上限（MB）；0 表示不限 */
+    max_file_size_mb: number
+    /** 入库前是否调用视觉模型审查内容 */
+    content_filtration: boolean
+    /** 是否从聊天里自动收集表情包 */
+    collect_enabled: boolean
+    /** 孤儿文件清理任务节奏 */
+    cleanup: {
+      /** 是否定期清理孤儿文件 */
+      enabled: boolean
+      /** 两次清理检查之间的最小间隔（小时） */
+      check_interval_hours: number
+      /** 孤儿文件至少保留多少天 */
+      orphan_retention_days: number
+    }
+  }
   generation: {
     chat: { temperature: number; max_tokens: number }
     proactive: { enabled: boolean; temperature: number; max_tokens: number }

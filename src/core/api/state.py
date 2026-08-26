@@ -26,6 +26,7 @@ class _AppState:
         """
         self.chat: Any = None          # ChatService
         self.awareness: Any = None     # AwarenessService
+        self.emoji_library: Any = None # EmojiLibrary（管理页读写与缩略图来源）
         self.tts: Any = None           # TtsService
         self.routers: Any = None       # ModelRouters（八个任务的候选与熔断状态）
         self.registry: Any = None       # StreamRegistry（stream/person/identity 的唯一入口）

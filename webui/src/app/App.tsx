@@ -41,6 +41,8 @@ const ExpressionsPage = lazy(() =>
 )
 const MemoryGraphPage = lazy(() =>
   import('@/features/memory/MemoryGraphPage').then((m) => ({ default: m.MemoryGraphPage })),
+const EmojisPage = lazy(() =>
+  import('@/features/emojis/EmojisPage').then((m) => ({ default: m.EmojisPage })),
 )
 
 /** 页面块加载中的占位：与门禁检查态一致的居中加载样式。 */
@@ -84,6 +86,7 @@ function AuthGate() {
           <Route path="jargon" element={<JargonPage />} />
           <Route path="expressions" element={<ExpressionsPage />} />
           <Route path="memory" element={<MemoryGraphPage />} />
+          <Route path="emojis" element={<EmojisPage />} />
           <Route path="*" element={<ObservePage />} />
         </Route>
       </Routes>

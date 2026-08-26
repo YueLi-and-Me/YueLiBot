@@ -33,9 +33,9 @@ _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI = frozenset({0, 4, 9})
 # 现在协议词表里的名字必须逐字是平台表里的表情名，否则**导入期就炸**——
 # 「名字对但编号错」在结构上不再可能发生。
 #
-# 仍未验证的一点：QQ 客户端允许作为**表情回应**的编号是全部表情的一个子集，
-# 这几个是否都被 set_msg_emoji_like 接受没有实测过。但那条路失败是**响亮的**
-# ——协议端返回错误 → ActionError → 日志明确记一条。
+# 六个编号均已真机实测：2026-08-25 对同一测试消息逐个调用 set_msg_emoji_like，
+# 赞(76)/笑哭(182)/无奈(174)/爱心(66)/惊讶(0)/吃瓜(271) 全部被接受
+# （重复贴同一表情返回 65002「已经设置过该表情」，同样证明该编号有效）。
 REACTION_EMOJI_IDS: Dict[str, str] = {
     name: face_id_by_name(name) for name in REACTION_IDS
 }

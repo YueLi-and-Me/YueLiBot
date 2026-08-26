@@ -31,9 +31,11 @@ import type {
  * 轮询策略」。读到 1.0.0 会按旧形态解析并在下次保存时升级，不会拒绝启动。
  * 1.2.0 移除日程时刻表遗留字段（min_slots / max_slots / fallback_* / bedtime_*），
  * 它们已被活动时间线取代；旧文件按 1.1.0 解析后重写即自动清除。
+ * 1.3.0 新增 [emoji] 与 [emoji.cleanup] 表情包库管理段；旧文件按 1.2.0 解析后
+ * 重写即补齐两段及默认值。
  */
-const CONFIG_VERSION = '1.2.0'
-const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0'] as const
+const CONFIG_VERSION = '1.3.0'
+const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
@@ -135,6 +137,19 @@ export const DEFAULT_CONFIG: YueliConfig = {
     emoji_pick_seconds: 1.5,
     follow_up: { enabled: true, peer_silence_minutes: 1 },
     nudge: { enabled: true, peer_silence_minutes: 3, max_per_silence: 2 },
+  },
+  emoji: {
+    max_count: 0,
+    auto_evict: true,
+    check_interval_minutes: 5,
+    max_file_size_mb: 5,
+    content_filtration: false,
+    collect_enabled: true,
+    cleanup: {
+      enabled: true,
+      check_interval_hours: 6,
+      orphan_retention_days: 30,
+    },
   },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
@@ -852,6 +867,71 @@ function parseTyping(document: Record<string, unknown>, path: string): YueliConf
 }
 
 /**
+ * 从配置文档读取表情包库管理参数，并为缺失字段合并默认值。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 合并默认值后的表情包库配置。
+ * @throws Error 当段不是表、数值范围或嵌套段无效时抛出。
+ */
+function parseEmoji(document: Record<string, unknown>, path: string): YueliConfig['emoji'] {
+  const defaults = DEFAULT_CONFIG.emoji
+  if (document.emoji === undefined) return structuredClone(defaults)
+  const section = recordAt(document, 'emoji', path)
+  const sectionPath = `${path} 的 emoji`
+  const cleanup = section.cleanup === undefined
+    ? undefined
+    : recordAt(section, 'cleanup', sectionPath)
+  const maxCount = numberAtOr(section, 'max_count', defaults.max_count, sectionPath)
+  if (!Number.isInteger(maxCount) || maxCount < 0) {
+    throw new Error(`${sectionPath}.max_count 必须是非负整数，0 表示不限`)
+  }
+  const checkIntervalMinutes = numberAtOr(
+    section, 'check_interval_minutes', defaults.check_interval_minutes, sectionPath,
+  )
+  if (!Number.isInteger(checkIntervalMinutes) || checkIntervalMinutes < 1) {
+    throw new Error(`${sectionPath}.check_interval_minutes 必须是正整数`)
+  }
+  const cleanupHours = cleanup === undefined
+    ? defaults.cleanup.check_interval_hours
+    : numberAtOr(cleanup, 'check_interval_hours', defaults.cleanup.check_interval_hours, sectionPath)
+  if (cleanupHours <= 0) {
+    throw new Error(`${sectionPath}.cleanup.check_interval_hours 必须大于 0`)
+  }
+  const retentionDays = cleanup === undefined
+    ? defaults.cleanup.orphan_retention_days
+    : numberAtOr(
+      cleanup, 'orphan_retention_days', defaults.cleanup.orphan_retention_days, sectionPath,
+    )
+  if (!Number.isInteger(retentionDays) || retentionDays < 0) {
+    throw new Error(`${sectionPath}.cleanup.orphan_retention_days 必须是非负整数`)
+  }
+  return {
+    max_count: maxCount,
+    auto_evict: section.auto_evict === undefined
+      ? defaults.auto_evict
+      : booleanAt(section, 'auto_evict', sectionPath),
+    check_interval_minutes: checkIntervalMinutes,
+    max_file_size_mb: nonNegativeNumberAtOr(
+      section, 'max_file_size_mb', defaults.max_file_size_mb, sectionPath,
+    ),
+    content_filtration: section.content_filtration === undefined
+      ? defaults.content_filtration
+      : booleanAt(section, 'content_filtration', sectionPath),
+    collect_enabled: section.collect_enabled === undefined
+      ? defaults.collect_enabled
+      : booleanAt(section, 'collect_enabled', sectionPath),
+    cleanup: {
+      enabled: cleanup === undefined || cleanup.enabled === undefined
+        ? defaults.cleanup.enabled
+        : booleanAt(cleanup, 'enabled', sectionPath),
+      check_interval_hours: cleanupHours,
+      orphan_retention_days: retentionDays,
+    },
+  }
+}
+
+/**
  * 校验每日方向的备用主题和生成重试间隔。
  *
  * @param schedule 待校验的日程配置。
@@ -1113,6 +1193,7 @@ function readSplitConfig(directory: string): YueliConfig {
   const conversationAgent = parseConversationAgent(botDocument, botPath)
   const typing = parseTyping(botDocument, botPath)
   const schedule = parseSchedule(botDocument, botPath)
+  const emoji = parseEmoji(botDocument, botPath)
   const toneVariants = personality.tone_variants
   if (!Array.isArray(toneVariants) || !toneVariants.every((value) => typeof value === 'string')) {
     throw new Error(`${botPath} 的 personality.tone_variants 必须是字符串数组`)
@@ -1178,6 +1259,7 @@ function readSplitConfig(directory: string): YueliConfig {
     conversation,
     conversation_agent: conversationAgent,
     typing,
+    emoji,
     generation,
     api_providers: providers,
     models,
@@ -2031,6 +2113,28 @@ enabled = ${cfg.typing.nudge.enabled}
 peer_silence_minutes = ${cfg.typing.nudge.peer_silence_minutes}
 # 一次静默期内最多戳几次；戳多了比不戳难受
 max_per_silence = ${cfg.typing.nudge.max_per_silence}
+
+[emoji]
+# 可发送表情的最大条数；0 表示不限。超过后按「最少用、最久没用」淘汰
+max_count = ${cfg.emoji.max_count}
+# 库满后是否自动淘汰最冷的条目；关闭时只告警不删除
+auto_evict = ${cfg.emoji.auto_evict}
+# 两次库容量检查之间的最小间隔，单位分钟
+check_interval_minutes = ${cfg.emoji.check_interval_minutes}
+# 收集时的单文件大小上限，单位 MB；0 表示不限
+max_file_size_mb = ${cfg.emoji.max_file_size_mb}
+# 入库前是否调用视觉模型审查内容；开启但视觉模型不可用时会拒绝入库
+content_filtration = ${cfg.emoji.content_filtration}
+# 是否从聊天里自动收集表情包；关闭后入站图片只识别不入库
+collect_enabled = ${cfg.emoji.collect_enabled}
+
+[emoji.cleanup]
+# 是否定期清理目录里库里没有记录的孤儿文件
+enabled = ${cfg.emoji.cleanup.enabled}
+# 两次清理检查之间的最小间隔，单位小时
+check_interval_hours = ${cfg.emoji.cleanup.check_interval_hours}
+# 孤儿文件至少保留多少天；0 表示下次检查时立即清理
+orphan_retention_days = ${cfg.emoji.cleanup.orphan_retention_days}
 `
 }
 
@@ -2271,7 +2375,10 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
 
   // 已启用功能必须存在候选模型，否则配置表面启用但运行时永远不会执行。
   for (const [enabled, task] of [
-    [cfg.tts.enabled, 'tts'], [cfg.vision.enabled, 'vision'], [cfg.vector.enabled, 'embedding'],
+    [cfg.tts.enabled, 'tts'],
+    [cfg.vision.enabled, 'vision'],
+    [cfg.vector.enabled, 'embedding'],
+    [cfg.emoji.content_filtration, 'vision'],
   ] as const) {
     if (enabled && cfg.model_tasks[task].model_list.length === 0) {
       throw new Error(`启用了${TASK_DESCRIPTIONS[task]}，就要给它至少一个候选模型`)

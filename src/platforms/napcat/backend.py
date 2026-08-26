@@ -180,6 +180,7 @@ class BackendClient:
                 'emojiSources': list(event.emoji_sources),
                 'emojiSubTypes': list(event.emoji_sub_types),
                 'pokedMe': event.poked_me,
+                'emojiLikedMe': event.emoji_liked_me,
             },
         )
         response.raise_for_status()

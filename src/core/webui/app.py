@@ -41,6 +41,11 @@ def mount_webui(app: FastAPI) -> None:
             """返回模型与厂商工作台共用的 SPA 入口文件。"""
             return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
+        @app.get('/emojis', include_in_schema=False)
+        async def emojis_page() -> FileResponse:
+            """返回表情包管理页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
         @app.get('/settings', include_in_schema=False)
         async def settings_page() -> FileResponse:
             """返回月璃设置页共用的 SPA 入口文件。"""

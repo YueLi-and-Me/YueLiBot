@@ -25,6 +25,7 @@ from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReactio
 from .config import NapcatDocument
 from .events import (
     QqInboundEvent,
+    build_emoji_like_inbound_event,
     build_poke_inbound_event,
     classify_event,
     parse_inbound_event,
@@ -91,6 +92,10 @@ class NapcatRunner:
         self._display_names: Dict[tuple[str, str], str] = {}
         # 被引用消息 ID -> 已渲染的引用摘要，避免同一条消息被反复引用时重复查询。
         self._quote_previews: Dict[str, str] = {}
+        # 消息 ID -> 该消息是否 Bot 自己发的。表情回应通知不携带目标消息的发送者，
+        # 必须查一次协议端才能判断「回应是不是给她的」；同一条消息往往连着多个
+        # 回应，缓存避免反复查询。
+        self._own_message_ids: Dict[str, bool] = {}
 
     async def run(self) -> None:
         """建立 QQ 协议端和主体连接，并按错误类型维持或终止运行。
@@ -335,6 +340,51 @@ class NapcatRunner:
         if not isinstance(data, Mapping):
             return '', ''
         return _optional_text(data.get('nickname')), _optional_text(data.get('card'))
+
+    async def _reacted_message_is_mine(
+        self,
+        message_id: str,
+        self_id: str,
+    ) -> bool:
+        """判断被贴表情回应的那条消息是不是 Bot 自己发的。
+
+        协议端为群里的**所有**回应都推送 group_msg_emoji_like，通知里只有
+        目标消息 ID、没有发送者；不查一次就会把群里所有人的回应都当成给她的。
+        查询结果按消息 ID 缓存：同一条消息经常连着多个回应，逐次查询会放大
+        串行入站循环的往返次数。
+
+        :param message_id: 被回应消息的平台编号。
+        :param self_id: 机器人登录 QQ 号。
+        :return: 目标消息发送者是 Bot 时返回 True；查询失败一律按不是处理，
+            宁可漏一条回应，也不能把群里的回应错当成给她的。
+        副作用：调用一次 get_msg 并写入消息归属缓存。
+        """
+        cached = self._own_message_ids.get(message_id)
+        if cached is not None:
+            return cached
+        try:
+            response = await self._transport.call_action(
+                'get_msg', {'message_id': int(message_id)},
+            )
+        except (ActionError, asyncio.TimeoutError, ValueError) as exc:
+            logger.warning(
+                'QQ 表情回应目标消息查询失败，已跳过',
+                messageId=message_id,
+                error=str(exc),
+            )
+            return False
+        data = response.get('data')
+        sender = data.get('sender') if isinstance(data, Mapping) else None
+        sender_id = (
+            _optional_text(sender.get('user_id'))
+            if isinstance(sender, Mapping)
+            else ''
+        )
+        verdict = sender_id == self_id
+        self._own_message_ids[message_id] = verdict
+        while len(self._own_message_ids) > RESOLUTION_CACHE_LIMIT:
+            self._own_message_ids.pop(next(iter(self._own_message_ids)))
+        return verdict
 
     async def _resolve_quote_previews(
         self,
@@ -630,6 +680,56 @@ class NapcatRunner:
                     logger.error(
                         'QQ 戳一戳提交失败',
                         streamExternalId=poke_event.stream_external_id,
+                        error=str(exc),
+                    )
+                continue
+            if kind == 'emoji_like':
+                # 回应通知不带昵称与群名片，且不携带目标消息的发送者：先确认
+                # 被贴表情的是不是她的消息（协议端只推「群里有回应」，谁的都推），
+                # 再查发起者成员信息，两步与戳一戳同口径——查不到就只记日志不提交。
+                like_group_id = _optional_text(payload.get('group_id'))
+                like_user_id = _optional_text(payload.get('user_id'))
+                target_message_id = _optional_text(payload.get('message_id'))
+                if not target_message_id or not await self._reacted_message_is_mine(
+                    target_message_id, self_id,
+                ):
+                    logger.debug(
+                        '忽略给别人的消息贴的表情回应',
+                        groupId=like_group_id,
+                        targetMessageId=target_message_id,
+                    )
+                    continue
+                nickname, group_card = await self._query_member_identity(
+                    like_group_id, like_user_id,
+                )
+                if not nickname:
+                    logger.warning(
+                        'QQ 表情回应无法解析发起者，已跳过',
+                        groupId=like_group_id,
+                        senderId=like_user_id,
+                        targetMessageId=target_message_id,
+                    )
+                    continue
+                like_event = build_emoji_like_inbound_event(
+                    payload, self_name, nickname, group_card,
+                )
+                logger.info(
+                    '收到 QQ 表情回应',
+                    groupId=like_group_id,
+                    senderId=like_user_id,
+                    senderName=group_card or nickname,
+                    targetMessageId=target_message_id,
+                    isAdd=payload.get('is_add') is not False,
+                    likes=payload.get('likes'),
+                    text=like_event.text,
+                )
+                try:
+                    await self._backend.submit_inbound(like_event)
+                except (httpx.HTTPError, ValueError) as exc:
+                    # 与普通消息同口径：单条提交失败只丢这一条，不拆连接。
+                    logger.error(
+                        'QQ 表情回应提交失败',
+                        streamExternalId=like_event.stream_external_id,
                         error=str(exc),
                     )
                 continue

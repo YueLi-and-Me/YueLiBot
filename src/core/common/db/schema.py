@@ -255,6 +255,8 @@ CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_utterances(delivered_at, d
 
 -- ---------------------------------------------------------------- 表情包库
 -- 文件保存在运行数据目录并以内容哈希命名；启动时按 send_ref 重算哈希。
+-- use_count / last_used_at 记录「她自己发过几次」，与 seen_count（入站又见到）
+-- 分开：淘汰判据只读前者。
 CREATE TABLE IF NOT EXISTS emoji (
   hash          TEXT PRIMARY KEY,
   send_ref      TEXT    NOT NULL,
@@ -262,7 +264,17 @@ CREATE TABLE IF NOT EXISTS emoji (
   emotion_vec   BLOB,
   sub_type      INTEGER NOT NULL DEFAULT 1,
   seen_count    INTEGER NOT NULL DEFAULT 1,
+  use_count     INTEGER NOT NULL DEFAULT 0,
+  last_used_at  INTEGER,
   first_seen_at INTEGER NOT NULL
+);
+
+-- 封禁按内容哈希独立存在，不以 emoji 行为宿主：行被淘汰或文件被删之后
+-- 封禁必须仍然生效，同一张图不能因为删了一次就又进得来。
+CREATE TABLE IF NOT EXISTS emoji_banned (
+  hash      TEXT PRIMARY KEY,
+  banned_at INTEGER NOT NULL,
+  reason    TEXT
 );
 
 -- ---------------------------------------------------------------- 人格状态

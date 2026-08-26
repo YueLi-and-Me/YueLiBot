@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from .config import GroupAccessConfig, PrivateAccessConfig
+from .qq_faces import face_name
 from .segments import (
     emoji_source_urls,
     emoji_sub_types,
@@ -32,6 +33,9 @@ EventKind = Literal[
     # 有人戳了 Bot 自己。协议按 notice/notify/poke 推送，只有 target_id 指向
     # 登录账号时才归入本类；戳别人与 Bot 戳出去的回显都不算。
     'poke',
+    # 有人给群消息贴表情回应。协议按 notice/group_msg_emoji_like 推送，
+    # 目标是不是 Bot 自己发的消息由运行器查协议端确认，本类只表示「是回应通知」。
+    'emoji_like',
     'other',
 ]
 
@@ -59,6 +63,9 @@ class QqInboundEvent:
     # 本条是「有人戳了 Bot」而不是普通消息。戳一戳没有正文也没有 @，正文里
     # 没有任何可供门控识别的信号，因此把这件事作为独立事实提交给主体门控。
     poked_me: bool = False
+    # 本条是「有人给 Bot 发的消息贴了表情回应」。与戳一戳同口径：没有正文，
+    # 门控靠独立事实抬入 DELIBERATE；贴表情非常频繁，绝不 FORCE。
+    emoji_liked_me: bool = False
 
 
 def build_poke_inbound_event(
@@ -126,6 +133,101 @@ def _poke_action_text(payload: Mapping[str, Any]) -> str:
                 if text:
                     return text
     return '戳了戳'
+
+
+def is_emoji_like(payload: Mapping[str, Any]) -> bool:
+    """判断协议事件是否为「给群消息贴表情回应」的通知。
+
+    NapCat 把这类通知放在 post_type=notice、notice_type=group_msg_emoji_like
+    下：user_id 是贴表情的人，message_id 是被贴的那条消息，likes 是该消息
+    当前的全部回应条目，is_add 区分贴上（true）与取消（false）。目标消息
+    是不是 Bot 自己发的，本函数不判断，由运行器查协议端确认。
+
+    :param payload: 已解析的 OneBot 事件映射。
+    :return: notice_type 等于 group_msg_emoji_like 时返回 True。
+    """
+    return (
+        payload.get('post_type') == 'notice'
+        and payload.get('notice_type') == 'group_msg_emoji_like'
+    )
+
+
+def build_emoji_like_inbound_event(
+    payload: Mapping[str, Any],
+    bot_name: str,
+    sender_nickname: str,
+    sender_group_card: str,
+) -> QqInboundEvent:
+    """把一条「给 Bot 的消息贴表情回应」通知转换为可提交的入站事件。
+
+    回应通知在协议上不是消息：没有正文，也没有平台消息编号。因此正文由适配器
+    合成（编号经 face_name 翻成名称，未知编号如实保留占位），
+    external_message_id 留空——主体侧「不带编号的通道」是已支持的形态。
+    emoji_liked_me 置真，门控据此抬入 DELIBERATE；贴表情非常频繁，绝不 FORCE。
+
+    昵称与群名片必须由调用方先查询后传入，不能留空：主体的 set_group_card
+    把空串视为「清除名片」，用空值提交会把发起者已存的群名片抹掉。
+
+    :param payload: 已确认为表情回应且目标消息属于 Bot 的通知映射。
+    :param bot_name: 机器人显示名。
+    :param sender_nickname: 发起者账号昵称，不能为空。
+    :param sender_group_card: 发起者在本群的名片；私聊为空字符串。
+    :return: 可直接提交给主体入站接口的事件。
+    :raises ValueError: 发起者 QQ 号缺失，或昵称为空。
+    """
+    sender_id = _sender_external_id(payload)
+    if not sender_nickname.strip():
+        raise ValueError('表情回应发起者昵称不能为空，需先查询成员信息')
+    group_id = payload.get('group_id')
+    if group_id is not None:
+        stream_kind: Literal['direct', 'group'] = 'group'
+        stream_external_id = _required_identifier(group_id, 'group_id 不能为空')
+    else:
+        stream_kind = 'direct'
+        stream_external_id = sender_id
+    names = _emoji_like_face_names(payload)
+    # is_add 缺省按贴上处理：协议端真实事件恒带该字段，缺省只影响手工构造的测试数据。
+    added = payload.get('is_add') is not False
+    action = '表情回应' if added else '取消表情回应'
+    if names:
+        # 未知编号如实保留无名占位，不编名字；与 face 段入站渲染同口径。
+        rendered = '、'.join(f'[表情：{name}]' if name else '[表情]' for name in names)
+        text = f'[{action}：{rendered}]'
+    else:
+        text = f'[{action}]'
+    return QqInboundEvent(
+        stream_kind=stream_kind,
+        stream_external_id=stream_external_id,
+        sender_external_id=sender_id,
+        sender_nickname=sender_nickname,
+        sender_group_card=sender_group_card,
+        bot_name=bot_name,
+        text=text,
+        mentioned_me=False,
+        external_message_id='',
+        emoji_liked_me=True,
+    )
+
+
+def _emoji_like_face_names(payload: Mapping[str, Any]) -> list[str | None]:
+    """从回应通知的 likes 列表取出表情编号并翻成名称。
+
+    :param payload: OneBot 表情回应通知映射。
+    :return: 与 likes 顺序一致的名称列表；未知编号为 None，likes 缺失时
+        返回空列表。
+    """
+    likes = payload.get('likes')
+    if not isinstance(likes, list):
+        return []
+    names: list[str | None] = []
+    for item in likes:
+        if not isinstance(item, Mapping):
+            continue
+        face_id = _string_value(item.get('emoji_id'))
+        if not face_id:
+            continue
+        names.append(face_name(face_id))
+    return names
 
 
 def is_action_response(payload: Mapping[str, Any]) -> bool:
@@ -213,7 +315,7 @@ def classify_event(
     :param group_access: 群聊白名单策略模型。
 
     :return: 事件种类标识，包括 action 响应、心跳、请求、自身消息、拒绝消息、普通消息、
-        私聊输入状态、戳 Bot 的戳一戳和其他未处理类型。
+        私聊输入状态、戳 Bot 的戳一戳、给群消息贴的表情回应和其他未处理类型。
 
     :raises ValueError: 消息事件缺少必要的身份字段或字段无法规范化。
 
@@ -243,6 +345,16 @@ def classify_event(
             ):
                 return 'private_denied'
             return 'poke'
+        if is_emoji_like(payload):
+            # 表情回应只处理群聊形态，且同样受群白名单约束。
+            group_id = payload.get('group_id')
+            if group_id is None:
+                return 'other'
+            if not group_access.allows(
+                _required_identifier(group_id, 'group_id 不能为空'),
+            ):
+                return 'group_denied'
+            return 'emoji_like'
         if not is_input_status(payload):
             return 'other'
         # 输入状态只有私聊会推送，访问名单与私聊消息完全一致。

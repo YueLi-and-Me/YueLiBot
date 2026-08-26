@@ -10,6 +10,10 @@ import type { ObservabilityStream, TraceEntry } from '../../../electron/shared/i
 /** 事件协议名与观察面板中文名称；协议值保留英文，仅展示时查表。 */
 const TRACE_KIND_LABELS: Record<string, string> = {
   action_decision: '行动决策',
+  emoji_banned: '表情包封禁',
+  emoji_cleanup: '表情包孤儿清理',
+  emoji_evicted: '表情包淘汰',
+  emoji_registration_rejected: '表情包拒绝入库',
   emoji_selected: '选择表情包',
   emoji_selection_missed: '表情包未命中库',
   expression_select: '表达方式选择',
@@ -156,6 +160,7 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   desktop: '桌面',
   direct: '私聊',
   direct_question: '明确提问',
+  direct_emoji_like: '有人给她的消息贴了表情回应',
   directly_addressed: '直接叫到机器人',
   disabled: '未启用',
   drop: '拦截',
