@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from typing import Dict, List, Sequence, Tuple
 
 from src.core.memory.tokenize import words
@@ -135,7 +136,7 @@ def rebuild_stream_terms(
     db: sqlite3.Connection,
     stream_id: int,
     *,
-    now: int,
+    now: int | None = None,
     window_ms: int = 7 * 24 * 60 * 60 * 1000,
     limit: int = 500,
 ) -> int:
@@ -147,7 +148,7 @@ def rebuild_stream_terms(
 
     :param db: 进程级 SQLite 连接（与 MemoryStore 同一来源）。
     :param stream_id: 目标会话 ID。
-    :param now: 当前毫秒时间戳，窗口右端。
+    :param now: 当前毫秒时间戳，窗口右端；省略时取系统时钟。
     :param window_ms: 统计窗口长度，默认 7 天：太短会让夜聊话题独占榜单，
         太长则季节性梗下不去。
     :param limit: 落表条数上限。
@@ -157,10 +158,11 @@ def rebuild_stream_terms(
         删除并重写 ``high_frequency_terms`` 中该会话的全部行后提交；
         统计窗口内没有用户消息时会清空该会话的旧行。
     """
+    stamp = now if now is not None else int(time.time() * 1000)
     rows = db.execute(
         '''SELECT content FROM messages
            WHERE stream_id = ? AND role = 'user' AND created_at >= ?''',
-        (stream_id, now - window_ms),
+        (stream_id, stamp - window_ms),
     ).fetchall()
     ranked = collect_terms([str(row['content']) for row in rows], limit=limit)
     with db:
@@ -171,7 +173,7 @@ def rebuild_stream_terms(
                (stream_id, term, occurrence_count, message_count, rank, built_at)
                VALUES (?, ?, ?, ?, ?, ?)''',
             [
-                (stream_id, term, occurrence, message_count, index, now)
+                (stream_id, term, occurrence, message_count, index, stamp)
                 for index, (term, occurrence, message_count)
                 in enumerate(ranked, start=1)
             ],
