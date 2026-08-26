@@ -638,8 +638,9 @@ def main() -> None:
         """投放目录扫描不持有后台资源，关闭阶段无需处理。"""
 
     emoji_maintenance_stop = asyncio.Event()
+    emoji_maintenance_task: asyncio.Task[None] | None = None
 
-    async def _emoji_maintenance() -> None:
+    async def _emoji_maintenance_loop() -> None:
         """按配置节奏在后台检查库容量并清理孤儿文件。
 
         淘汰与清理都不进入收表情的入站热路径（决定三）：容量按
@@ -686,10 +687,29 @@ def main() -> None:
             except TimeoutError:
                 continue
 
+    async def _emoji_maintenance() -> None:
+        """把维护循环挂成后台任务并立即返回。
+
+        - 现象：把无限循环本身注册为 startup 钩子时，启动会永久停在
+          「服务正在启动 名称：emoji_maintenance」这一行。
+        - 原因：生命周期逐个 await 各服务的 startup 直到返回，循环永不返回。
+        - 后果：其后的 chat、感知等服务全部起不来，进程看似挂死。
+        """
+
+        nonlocal emoji_maintenance_task
+        emoji_maintenance_stop.clear()
+        emoji_maintenance_task = asyncio.create_task(
+            _emoji_maintenance_loop(), name='emoji-maintenance')
+
     async def _stop_emoji_maintenance() -> None:
-        """置位停止事件，让维护循环在下一个等待点退出。"""
+        """置位停止事件，等待维护循环在下一个等待点退出。"""
 
         emoji_maintenance_stop.set()
+        if emoji_maintenance_task is not None:
+            try:
+                await emoji_maintenance_task
+            except asyncio.CancelledError:
+                pass
 
     lifecycle.register(
         'emoji_auto_register',
