@@ -103,7 +103,15 @@ from src.core.config.schema import Config, ConversationConfig, TypingConfig
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_request
-from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, RecalledFact, StoredMessage
+from src.core.memory.store import (
+    EpisodeInput,
+    FactInput,
+    MemoryStore,
+    RecalledFact,
+    StoredMessage,
+    format_assistant_poke_action,
+    format_assistant_reaction_action,
+)
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
@@ -4576,7 +4584,7 @@ class ChatService:
             context.stream.id,
             None,
             'assistant',
-            f'[戳了戳 {target_name}]',
+            format_assistant_poke_action(target_name),
             current_time(),
         )
         self._mark_stage(context, REPLIED, '戳了一下', turn_id=turn)
@@ -4657,7 +4665,10 @@ class ChatService:
             context.stream.id,
             None,
             'assistant',
-            f'[给消息 {target_id} 贴了个「{outcome.decision.reaction}」]',
+            format_assistant_reaction_action(
+                target_id,
+                outcome.decision.reaction,
+            ),
             current_time(),
         )
         self._mark_stage(

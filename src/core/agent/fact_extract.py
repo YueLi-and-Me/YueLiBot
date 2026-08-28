@@ -34,15 +34,19 @@ import re
 import sqlite3
 
 from .history import strip_say_tags, strip_side_effect_tags
+from .profile import mark_dirty as mark_profiles_dirty
 
 from src.core.common.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
-from .profile import mark_dirty as mark_profiles_dirty
-
 from src.core.memory.association import link_together
 from src.core.memory.knowledge import add_knowledge
-from src.core.memory.store import FactInput, MemoryStore, StoredMessage
+from src.core.memory.store import (
+    FactInput,
+    MemoryStore,
+    StoredMessage,
+    is_assistant_action_message,
+)
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
@@ -169,8 +173,9 @@ def render_dialogue(
 ) -> str:
     """把消息批渲染成模型可读的逐行对话。
 
-    助手消息先剥副作用标签再剥 ``<say>`` 外壳，避免把内部协议喂给抽取模型——
-    它会把标签当成可以模仿的格式，输出里混进 XML 就无法按 JSON 解析。
+    助手动作伪消息只供聊天历史回看，在这里整条跳过；真实发言先剥副作用标签再剥
+    ``<say>`` 外壳，避免把内部协议喂给抽取模型——它会把标签当成可以模仿的格式，
+    输出里混进 XML 就无法按 JSON 解析。
 
     :param messages: 按 ID 正序排列的消息批。
     :param participants: 在场者，用于把 ``sender_person_id`` 还原成带编号的说话人。
@@ -183,6 +188,8 @@ def render_dialogue(
     lines: List[str] = []
     for message in messages:
         if message.role == 'assistant':
+            if is_assistant_action_message(message.content):
+                continue
             text = strip_say_tags(strip_side_effect_tags(message.content or ''))
             speaker = bot_name
         else:

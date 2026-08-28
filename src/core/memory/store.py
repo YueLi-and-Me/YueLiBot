@@ -34,6 +34,54 @@ _MESSAGE_QUERY_TERMS = 6
 # 超出上界时优先保留时间靠后的消息，与「最近提过的那次」这一检索意图一致。
 _MESSAGE_SCAN_LIMIT = 200
 
+# 助手动作伪消息既要进入普通历史供她回看，又不能被后台模型当成亲口说过的话。
+# 格式化与识别共用这些片段，避免写入方和消费方各维护一套字符串口径。
+_ASSISTANT_POKE_ACTION_PREFIX = '[戳了戳 '
+_ASSISTANT_REACTION_ACTION_PREFIX = '[给消息 '
+_ASSISTANT_REACTION_ACTION_SEPARATOR = ' 贴了个「'
+_ASSISTANT_REACTION_ACTION_SUFFIX = '」]'
+
+
+def format_assistant_poke_action(target_name: str) -> str:
+    """格式化一条成功戳一戳的助手动作历史。"""
+
+    return f'{_ASSISTANT_POKE_ACTION_PREFIX}{target_name}]'
+
+
+def format_assistant_reaction_action(target_message_id: int, reaction: str) -> str:
+    """格式化一条成功贴表情回应的助手动作历史。"""
+
+    return (
+        f'{_ASSISTANT_REACTION_ACTION_PREFIX}{target_message_id}'
+        f'{_ASSISTANT_REACTION_ACTION_SEPARATOR}{reaction}'
+        f'{_ASSISTANT_REACTION_ACTION_SUFFIX}'
+    )
+
+
+def is_assistant_action_message(content: str | None) -> bool:
+    """判断助手消息是否为本模块定义的动作历史，而非真实发言。
+
+    只识别两个写入函数产生的完整结构；普通的方括号发言、空括号和结构不完整的
+    文本都返回 ``False``，避免把她正常说出的 ``[...]`` 内容排除在学习与抽取之外。
+    """
+
+    text = (content or '').strip()
+    if text.startswith(_ASSISTANT_POKE_ACTION_PREFIX) and text.endswith(']'):
+        target_name = text[len(_ASSISTANT_POKE_ACTION_PREFIX):-1]
+        return bool(target_name.strip())
+    if not (
+        text.startswith(_ASSISTANT_REACTION_ACTION_PREFIX)
+        and text.endswith(_ASSISTANT_REACTION_ACTION_SUFFIX)
+    ):
+        return False
+    body = text[
+        len(_ASSISTANT_REACTION_ACTION_PREFIX):-len(_ASSISTANT_REACTION_ACTION_SUFFIX)
+    ]
+    target_message_id, separator, reaction = body.partition(
+        _ASSISTANT_REACTION_ACTION_SEPARATOR,
+    )
+    return bool(separator and target_message_id.isdecimal() and reaction.strip())
+
 
 @dataclass
 class StoredMessage:
@@ -844,6 +892,9 @@ class MemoryStore:
         """统计某条消息之后该 stream 又落库了多少条消息。
 
         场景观察据此节流：条数本身就是节流器，消息来得慢自然算得少。
+        计数有意包含助手动作伪消息：它们虽然不进入表达学习与事实抽取的模型正文，
+        仍是已经发生的历史事件。为这一小量偏差再维护按内容过滤的第二套游标口径，
+        会让摘要、观察与学习阈值互相牵制，因此统一按 messages 行数推进。
 
         :param stream_id: 目标 stream ID。
         :param since_id: 起点消息 ID（不含）；``0`` 表示统计全部。
