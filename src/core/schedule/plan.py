@@ -295,7 +295,10 @@ def asks_about_activity(text: str) -> bool:
 def describe_mood_behavior(mood: str) -> str:
     """把活动情绪落点转换成最小行为提示。"""
 
-    return f'你此刻的状态是「{mood}」。让它自然影响反应，具体表达仍服从你的人设。'
+    return (
+        f'你此刻的状态是「{mood}」。状态影响语气与反应速度即可，不要主动把它说出来；'
+        '除非对方问起，或者你确实要因此结束对话。'
+    )
 
 
 def _energy_behavior(state: PersonaState) -> str:
