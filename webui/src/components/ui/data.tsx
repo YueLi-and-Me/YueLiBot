@@ -117,10 +117,14 @@ interface PagerProps {
 }
 
 /**
- * 渲染列表翻页条：左侧总量与页码，右侧上一页 / 下一页按钮。
+ * 渲染列表翻页条：左侧总量与页码，右侧回到首页 / 上一页 / 下一页按钮。
  *
  * 三种形态按数据量退化：无数据时整条不渲染；只有一页时只留「共 N 条」，不显示
- * 「第 1 / 1 页」和两个恒禁用的按钮；多页时才是完整形态。
+ * 「第 1 / 1 页」和几个恒禁用的按钮；多页时才是完整形态。
+ *
+ * 「回到第一页」在翻了很多页之后单独有用：靠「上一页」退回去要点很多次。它同时
+ * 把窗口滚回顶部——翻页条在页尾，只换页不滚动会停在第一页的**底部**，看起来
+ * 像没生效。
  *
  * @param props.page 当前页码，0 起。
  * @param props.pageCount 总页数。
@@ -139,6 +143,17 @@ export function Pager({ page, pageCount, total, onChange, disabled = false }: Pa
       </span>
       {paged ? (
         <div className="flex gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={disabled || page <= 0}
+            onClick={() => {
+              onChange(0)
+              window.scrollTo({ top: 0, behavior: 'smooth' })
+            }}
+          >
+            回到第一页
+          </Button>
           <Button
             variant="secondary"
             size="sm"

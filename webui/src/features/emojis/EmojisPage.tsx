@@ -20,6 +20,7 @@ import {
   ErrorText,
   Loading,
   Metric,
+  Pager,
   Progress,
   toast,
 } from '@/components/ui'
@@ -202,26 +203,9 @@ export function EmojisPage() {
         </div>
       ) : null}
 
-      {total > 0 ? (
-        <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-          <span>
-            共 {total} 条 · 第 {page + 1} / {pageCount} 页
-          </span>
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" disabled={page === 0 || loading} onClick={() => setPage(page - 1)}>
-              上一页
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={page + 1 >= pageCount || loading}
-              onClick={() => setPage(page + 1)}
-            >
-              下一页
-            </Button>
-          </div>
-        </div>
-      ) : null}
+      {/* 这里原本自己抄了一份翻页条；换成共用 Pager 后行为一致，且「回到第一页」
+          与其余列表页保持同一个控件，不必两处各加一次。 */}
+      <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
 
       <ConfirmDialog
         open={pending !== null}
