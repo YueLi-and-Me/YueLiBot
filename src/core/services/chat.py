@@ -181,8 +181,8 @@ DIRECT_WAIT_TIMEOUT_S = 10.0
 #    - 原因：``_order_working_memory_for_batch`` 会把跨轮落库的上一条回复插到
 #      当前批之前；一旦它落在历史开头（工作记忆窗口或字符预算的裁剪边界正好
 #      切在这里），``normalize_history`` 会按「system 之后必须由 user 起头」的
-#      端点要求丢掉开头的 assistant，她刚说的那句就此消失。react / poke 更是
-#      从不写助手历史。
+#      端点要求丢掉开头的 assistant，她刚说的那句就此消失。react / poke 的动作
+#      历史也可能落在相同的裁剪边界上。
 #    - 后果：把这句提示改回「看上面历史最后一条」，她会在看不见自己发言的情况
 #      下对同一批消息重复表态。
 _CONTINUATION_NOTICE = (
@@ -4580,8 +4580,7 @@ class ChatService:
         :param gate_inputs: 第 1 层确定性输入事实。
         :param batch_gate: 本批门控结果。
 
-        :return: 供续跑轮引用的动作事实。戳一戳不写助手历史，这个动作在下一轮
-            的上下文里唯一的痕迹就是这句话。
+        :return: 供续跑轮引用的动作事实。
         :raises RuntimeError: 目标消息不在本批内，或发送者没有该平台身份。
         :raises DeliveryError: 平台驱动不支持戳一戳或调用失败。
         副作用：调用平台驱动并写入投递观察事件；失败追加 delivery_failed 事件再上抛。
@@ -4634,12 +4633,19 @@ class ChatService:
             streamId=receipt.stream_id,
             turnId=turn,
         )
-        self._mark_stage(context, REPLIED, '戳了一下', turn_id=turn)
-        return '你刚戳了 {} 一下'.format(
-            self._registry.stream_display_name(
-                target.context.person.id, context.stream.id,
-            )
+        target_name = self._registry.stream_display_name(
+            target.context.person.id, context.stream.id,
         )
+        # 只有平台确认成功后才登记自己的动作；失败投递不能伪造成已经戳过。
+        self.memory.append_message(
+            context.stream.id,
+            None,
+            'assistant',
+            f'[戳了戳 {target_name}]',
+            current_time(),
+        )
+        self._mark_stage(context, REPLIED, '戳了一下', turn_id=turn)
+        return f'你刚戳了 {target_name} 一下'
 
     async def _apply_reaction(
         self,
@@ -4652,9 +4658,8 @@ class ChatService:
     ) -> str:
         """投递一次表情回应，并按与回复相同的口径结算人格。
 
-        表情回应**不写助手历史**：她这一轮没有说任何话，往历史里塞一条伪造的
-        「消息」会污染后续提示词，让她以为自己讲过什么。这一轮的记录是
-        ``action_decision`` 事件本身。
+        表情回应虽然没有正文，也是一项已经发生的可见动作；成功后以动作事实写入
+        助手历史，避免后续回合看不见自己刚贴过表情而重复操作。
 
         人格结算沿用回复那一套权重，不为 react 单独发明一个更轻的系数：她确实
         参与了这一轮，而一轮只允许一个动作，再加一个互相牵制的常量换不来什么。
@@ -4666,8 +4671,7 @@ class ChatService:
         :param gate_inputs: 第 1 层确定性输入事实。
         :param batch_gate: 本批门控结果。
 
-        :return: 供续跑轮引用的动作事实。这一轮没有助手历史，下一轮能看见这个
-            动作的唯一途径就是这句话。
+        :return: 供续跑轮引用的动作事实。
         :raises RuntimeError: 目标消息没有平台编号，或非桌面 stream 未配置 broker。
         :raises DeliveryError: 平台驱动不支持表情回应或调用失败。
 
@@ -4712,6 +4716,14 @@ class ChatService:
             platform=receipt.platform,
             streamId=receipt.stream_id,
             turnId=turn,
+        )
+        # 动作事实只在平台确认成功后落库；目标使用稳定的消息主键，便于回看。
+        self.memory.append_message(
+            context.stream.id,
+            None,
+            'assistant',
+            f'[给消息 {target_id} 贴了个「{outcome.decision.reaction}」]',
+            current_time(),
         )
         self._mark_stage(
             context, REPLIED, f'贴了个「{outcome.decision.reaction}」', turn_id=turn,
@@ -4826,11 +4838,12 @@ class ChatService:
 
         :param context: 当前会话上下文。
         :param messages: 记忆服务返回的消息对象列表。
-        :param label_message_ids: 是否给每条用户消息加 ``[编号] `` 前缀。仅
+        :param label_message_ids: 是否给用户消息加 ``[编号] ``、给自己的消息加
+            ``[我] `` 前缀。仅
             Conversation Agent 上下文需要：动作头的 targets 是消息主键，主键
             不逐行可见时模型无法指认，会把 targets 写成人名或「最后一条」这类
-            描述，整轮按 illegal_action 失败。她自己的历史回复不加编号——本
-            回合只允许把批次内的用户消息作为目标，给助手行编号只会诱导越界。
+            描述，整轮按 illegal_action 失败。自己的历史回复用固定标记而不用编号
+            ——本回合只允许把批次内的用户消息作为目标，给助手行编号会诱导越界。
         :param flatten: 把她自己的发言也渲染成 ``user`` 角色，用显示名区分
             说话人，并在转角色前清掉历史协议与副作用标签。工具调用模式专用：
             那里动作由函数签名承载，助手行不再承担
@@ -4877,8 +4890,11 @@ class ChatService:
                     stamp = spoken_at.strftime('%m-%d %H:%M')
                     last_stamped_date = spoken_at.date()
                 content = f'{stamp} {content}'
-            if label_message_ids and message.role == 'user':
-                content = f'[{message.message_id}] {content}'
+            if label_message_ids:
+                if message.role == 'user':
+                    content = f'[{message.message_id}] {content}'
+                elif message.role == 'assistant':
+                    content = f'[我] {content}'
             history.append({'role': role, 'content': content})
         return history
 
