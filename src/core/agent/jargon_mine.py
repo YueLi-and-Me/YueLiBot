@@ -29,15 +29,16 @@
 
 from __future__ import annotations
 
-import json
-import sqlite3
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
+import json
+import sqlite3
 
 from src.core.agent.sub_agent import SubAgentCall, run_sub_agent
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
-from src.core.llm_models.protocol import LlmProvider
+from src.core.llm_models.openai import LlmError
+from src.core.llm_models.protocol import LlmProvider, ResponseValidator
 from src.core.memory.high_frequency import strip_machine_spans
 from src.core.memory.store import MemoryStore, StoredMessage
 from src.core.observe.events import emit
@@ -421,23 +422,28 @@ async def mine_batch(
     corpus_chars = sum(len(content.strip()) for _, content in user_messages)
     if provider is not None and corpus_chars >= MIN_USER_TEXT_CHARS:
         lines, by_line = render_corpus(batch, bot_name)
-        raw = await _call_model(
-            provider,
-            'jargon.mine',
-            {
-                'bot_name': bot_name,
-                'corpus': '\n'.join(lines),
-                'max_candidates': str(MAX_CANDIDATES_PER_BATCH),
-            },
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
         outcome.model_called = True
+        raw = ''
         try:
+            raw = await _call_model(
+                provider,
+                'jargon.mine',
+                {
+                    'bot_name': bot_name,
+                    'corpus': '\n'.join(lines),
+                    'max_candidates': str(MAX_CANDIDATES_PER_BATCH),
+                },
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_validator=_validate_candidates_response,
+            )
             picks = parse_candidates(raw)
-        except ValueError as exc:
+        except (LlmError, ValueError) as exc:
+            if isinstance(exc, LlmError) and exc.kind != 'format':
+                raise
             # 解析失败带完整信息落日志并放弃本批（含子串命中），不静默当作
-            # 「学到 0 条」；游标不动，下轮重跑同一批。
+            # 「学到 0 条」。路由层把所有候选都判为格式不合格时也走同一
+            # 失败语义；游标不动，下轮重跑同一批。
             logger.warning(
                 'jargon_mine_parse_failed',
                 streamId=stream_id,
@@ -542,6 +548,7 @@ async def _call_model(
     *,
     temperature: float,
     max_tokens: Optional[int],
+    response_validator: ResponseValidator | None = None,
 ) -> str:
     """渲染一份学习提示词并执行一次子代理调用，返回模型正文。"""
 
@@ -553,6 +560,7 @@ async def _call_model(
         temperature=temperature,
         max_tokens=max_tokens,
         response_format={'type': 'json_object'},
+        response_validator=response_validator,
         render_params={template_id: values},
         trace_extra=prompt_metadata(template_id, (template_id,)),
     ))
@@ -610,6 +618,30 @@ def _parse_verdict(raw: str) -> bool:
     if not isinstance(same, bool):
         raise ValueError(f'same 必须是布尔值，收到 {payload!r}')
     return same
+
+
+def _validate_candidates_response(raw: str) -> None:
+    """验证候选提取完整响应，供模型路由在交付正文前切换不合格候选。"""
+
+    parse_candidates(raw)
+
+
+def _validate_context_meaning_response(raw: str) -> None:
+    """验证带上下文含义响应，允许明确声明信息不足。"""
+
+    _parse_meaning(raw, allow_insufficient=True)
+
+
+def _validate_bare_meaning_response(raw: str) -> None:
+    """验证通用词义响应，不接受信息不足分支。"""
+
+    _parse_meaning(raw, allow_insufficient=False)
+
+
+def _validate_verdict_response(raw: str) -> None:
+    """验证含义比较结论响应。"""
+
+    _parse_verdict(raw)
 
 
 def _build_evidence_context(
@@ -787,14 +819,18 @@ async def infer_term(
     previous_block = (
         f'（此前记录过的释义，仅供参考、可以推翻：{previous}）' if previous else ''
     )
-    raw_context = await _call_model(
-        provider, 'jargon.meaning.context',
-        {'term': term, 'context': context, 'previous_meaning': previous_block},
-        temperature=temperature, max_tokens=max_tokens,
-    )
+    raw_context = ''
     try:
+        raw_context = await _call_model(
+            provider, 'jargon.meaning.context',
+            {'term': term, 'context': context, 'previous_meaning': previous_block},
+            temperature=temperature, max_tokens=max_tokens,
+            response_validator=_validate_context_meaning_response,
+        )
         context_meaning = _parse_meaning(raw_context, allow_insufficient=True)
-    except ValueError as exc:
+    except (LlmError, ValueError) as exc:
+        if isinstance(exc, LlmError) and exc.kind != 'format':
+            raise
         logger.warning(
             'jargon_infer_parse_failed', term=term, step='context',
             error=str(exc), textChars=len(raw_context))
@@ -810,31 +846,39 @@ async def infer_term(
         _emit_inference(term, stream_id, sightings, 'insufficient', '', '')
         return 'insufficient'
 
-    raw_bare = await _call_model(
-        provider, 'jargon.meaning.bare',
-        {'term': term},
-        temperature=temperature, max_tokens=max_tokens,
-    )
+    raw_bare = ''
     try:
+        raw_bare = await _call_model(
+            provider, 'jargon.meaning.bare',
+            {'term': term},
+            temperature=temperature, max_tokens=max_tokens,
+            response_validator=_validate_bare_meaning_response,
+        )
         bare_meaning = _parse_meaning(raw_bare, allow_insufficient=False)
-    except ValueError as exc:
+    except (LlmError, ValueError) as exc:
+        if isinstance(exc, LlmError) and exc.kind != 'format':
+            raise
         logger.warning(
             'jargon_infer_parse_failed', term=term, step='bare',
             error=str(exc), textChars=len(raw_bare))
         return 'parse_failed'
 
-    raw_verdict = await _call_model(
-        provider, 'jargon.compare',
-        {
-            'term': term,
-            'context_meaning': context_meaning,
-            'bare_meaning': bare_meaning,
-        },
-        temperature=temperature, max_tokens=max_tokens,
-    )
+    raw_verdict = ''
     try:
+        raw_verdict = await _call_model(
+            provider, 'jargon.compare',
+            {
+                'term': term,
+                'context_meaning': context_meaning,
+                'bare_meaning': bare_meaning,
+            },
+            temperature=temperature, max_tokens=max_tokens,
+            response_validator=_validate_verdict_response,
+        )
         same = _parse_verdict(raw_verdict)
-    except ValueError as exc:
+    except (LlmError, ValueError) as exc:
+        if isinstance(exc, LlmError) and exc.kind != 'format':
+            raise
         logger.warning(
             'jargon_infer_parse_failed', term=term, step='compare',
             error=str(exc), textChars=len(raw_verdict))
