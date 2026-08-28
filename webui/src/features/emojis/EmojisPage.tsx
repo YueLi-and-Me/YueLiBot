@@ -21,6 +21,7 @@ import {
   Loading,
   Metric,
   Pager,
+  SegmentedTabs,
   Progress,
   toast,
 } from '@/components/ui'
@@ -137,6 +138,8 @@ interface PendingAction {
 export function EmojisPage() {
   const { handleUnauthorized } = useAuth()
   const [page, setPage] = useState(0)
+  /** 封禁筛选：all 不限 / banned 只看已封禁 / active 只看未封禁。 */
+  const [scope, setScope] = useState<'all' | 'banned' | 'active'>('all')
   const [refreshKey, setRefreshKey] = useState(0)
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [busy, setBusy] = useState(false)
@@ -144,6 +147,7 @@ export function EmojisPage() {
   const { entries, total, stats, loading, error } = useEmojis({
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
+    banned: scope === 'all' ? null : scope === 'banned',
     refreshKey,
   })
 
@@ -180,12 +184,26 @@ export function EmojisPage() {
         subtitle="她能发出去的表情都在这里；列表顺序就是真会先被淘汰的顺序。"
       />
       {stats ? <StatsOverview stats={stats} /> : null}
+      <SegmentedTabs
+        tabs={[
+          { value: 'all', label: '全部' },
+          { value: 'active', label: '未封禁' },
+          { value: 'banned', label: `已封禁${stats ? ` (${stats.bannedInLibrary})` : ''}` },
+        ]}
+        value={scope}
+        onChange={(next) => {
+          setScope(next)
+          setPage(0)
+        }}
+      />
       {error ? <ErrorText>{error}</ErrorText> : null}
       {loading ? <Loading>正在读取表情包库…</Loading> : null}
       {!loading && !error && entries.length === 0 ? (
         <Empty>
           <ImageOff className="mx-auto mb-2 size-8 text-muted-foreground" aria-hidden="true" />
-          库里还没有表情包。
+          {scope === 'banned' ? '还没有封禁过表情包。'
+            : scope === 'active' ? '库里的表情包全部被封禁了。'
+            : '库里还没有表情包。'}
         </Empty>
       ) : null}
       {entries.length > 0 ? (
@@ -241,12 +259,25 @@ export function EmojisPage() {
  * @returns 指标卡；maxCount 为 0 时不渲染容量进度条。
  */
 function StatsOverview({ stats }: { stats: EmojiStats }) {
-  const capacityPercent = stats.maxCount > 0 ? Math.min(100, (stats.count / stats.maxCount) * 100) : 0
+  // 容量按 countedCount 算：已封禁的记录不占名额（服务端 evict_to_limit 同口径），
+  // 用 count 会让容量条比真实占用虚高，看着快满了其实还早。
+  const capacityPercent =
+    stats.maxCount > 0 ? Math.min(100, (stats.countedCount / stats.maxCount) * 100) : 0
   return (
     <Card>
       <CardBody className="grid grid-cols-2 gap-x-6 gap-y-1 md:grid-cols-4">
-        <Metric label="库内记录" value={stats.count} detail={stats.maxCount > 0 ? `上限 ${stats.maxCount}` : '不限上限'} />
-        <Metric label="封禁哈希" value={stats.bannedCount} detail="独立于记录存在" />
+        <Metric
+          label="库内记录"
+          value={stats.count}
+          detail={stats.bannedInLibrary > 0 ? `其中 ${stats.bannedInLibrary} 条已封禁，不占容量` : '全部计入容量'}
+        />
+        <Metric
+          label="封禁哈希"
+          value={stats.bannedCount}
+          detail={stats.bannedCount > stats.bannedInLibrary
+            ? `${stats.bannedCount - stats.bannedInLibrary} 条对应的图已不在库里`
+            : '独立于记录存在'}
+        />
         <Metric label="目录占用" value={formatBytes(stats.directoryBytes)} detail={`${stats.fileCount} 个文件`} />
         <Metric
           label="孤儿文件"
@@ -256,8 +287,8 @@ function StatsOverview({ stats }: { stats: EmojiStats }) {
         {stats.maxCount > 0 ? (
           <div className="col-span-2 md:col-span-4">
             <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-              <span>库容量</span>
-              <span className="font-mono">{stats.count} / {stats.maxCount}</span>
+              <span>库容量{stats.bannedInLibrary > 0 ? '（不含已封禁）' : ''}</span>
+              <span className="font-mono">{stats.countedCount} / {stats.maxCount}</span>
             </div>
             <Progress value={capacityPercent} max={100} label="表情包库容量" />
           </div>

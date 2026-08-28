@@ -1990,6 +1990,7 @@ class EmojiBanBody(BaseModel):
 async def emoji_entries(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    banned: bool | None = Query(default=None),
 ) -> dict:
     """分页浏览表情包库，附带库容量总览。
 
@@ -1998,8 +1999,10 @@ async def emoji_entries(
 
     :param limit: 页大小，1 到 200，默认 50。
     :param offset: 偏移量，从 0 起。
-
-    :return: entries 表情包记录列表、total 总数与 stats 容量总览。
+    :param banned: ``true`` 只看已封禁、``false`` 只看未封禁、省略则不筛选。
+    :return: entries 表情包记录列表、total **当前筛选下**的条数与 stats 容量
+        总览。``total`` 跟着筛选走（否则翻页会翻出空白页），而 stats 里的数
+        始终是全库口径。
     :raises fastapi.HTTPException: 服务未初始化 503；查询失败 500。
 
     副作用：
@@ -2007,7 +2010,8 @@ async def emoji_entries(
     """
     library = _emoji_library_or_503()
     try:
-        entries = await run_in_thread(library.page, limit, offset)
+        entries = await run_in_thread(library.page, limit, offset, banned)
+        total = await run_in_thread(library.count_entries, banned)
         stats = await run_in_thread(library.stats)
     except Exception as exc:
         logger.exception('emoji_query_failed')
@@ -2017,7 +2021,7 @@ async def emoji_entries(
         ) from exc
     return {
         'entries': entries,
-        'total': stats['count'],
+        'total': total,
         'stats': stats,
         'limit': limit,
         'offset': offset,

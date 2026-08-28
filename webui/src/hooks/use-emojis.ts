@@ -24,8 +24,14 @@ export interface EmojiEntry {
 
 /** 库容量与磁盘占用总览。 */
 export interface EmojiStats {
+  /** emoji 行总数，含已封禁的。 */
   count: number
+  /** 封禁表的行数；封禁独立于 emoji 行存在，可能大于 bannedInLibrary。 */
   bannedCount: number
+  /** 既在库里、又被封禁的条数。 */
+  bannedInLibrary: number
+  /** 计入容量上限的条数（count 减去已封禁的）；容量条用这个数。 */
+  countedCount: number
   maxCount: number
   fileCount: number
   directoryBytes: number
@@ -37,6 +43,8 @@ export interface EmojiStats {
 export interface EmojiQuery {
   limit: number
   offset: number
+  /** 封禁筛选：true 只看已封禁，false 只看未封禁，null 不筛选。 */
+  banned: boolean | null
   /** 写操作后自增，触发重新拉取。 */
   refreshKey: number
 }
@@ -64,7 +72,7 @@ export function useEmojis(query: EmojiQuery): EmojisState {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const { limit, offset, refreshKey } = query
+  const { limit, offset, banned, refreshKey } = query
 
   useEffect(() => {
     let cancelled = false
@@ -73,6 +81,7 @@ export function useEmojis(query: EmojiQuery): EmojisState {
       limit: String(limit),
       offset: String(offset),
     })
+    if (banned !== null) params.set('banned', String(banned))
     apiFetch<{ entries: EmojiEntry[]; total: number; stats: EmojiStats }>(
       `/api/emojis?${params.toString()}`,
     )
@@ -94,7 +103,7 @@ export function useEmojis(query: EmojiQuery): EmojisState {
     return () => {
       cancelled = true
     }
-  }, [limit, offset, refreshKey, handleUnauthorized])
+  }, [limit, offset, banned, refreshKey, handleUnauthorized])
 
   return { entries, total, stats, loading, error }
 }

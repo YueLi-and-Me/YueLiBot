@@ -673,11 +673,19 @@ class EmojiLibrary:
         logger.info('emoji_removed', hash=normalized)
         return True
 
-    def page(self, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+    def page(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        banned_only: bool | None = None,
+    ) -> list[dict[str, Any]]:
         """读取一页表情包记录供管理页展示。
 
         :param limit: 页大小，必须大于零。
         :param offset: 起始偏移，必须非负。
+        :param banned_only: ``True`` 只取已封禁、``False`` 只取未封禁、
+            ``None``（默认）不筛选。封禁记录独立于 emoji 行存在，因此筛选按
+            两表的哈希交集判断，而不是 emoji 表上的某一列。
         :return: 按「最少用、最久没用」顺序排列的记录字典列表，与淘汰排序
             同口径，页面看到的先后就是真会先被淘汰的先后。
         :raises ValueError: 分页参数非法。
@@ -693,7 +701,8 @@ class EmojiLibrary:
         }
         rows = self._db.execute(
             'SELECT hash, send_ref, emotion_tags, sub_type, seen_count, use_count, last_used_at '
-            'FROM emoji ORDER BY use_count ASC, last_used_at ASC, first_seen_at ASC, hash ASC '
+            f'FROM emoji WHERE {_banned_predicate(banned_only)} '
+            'ORDER BY use_count ASC, last_used_at ASC, first_seen_at ASC, hash ASC '
             'LIMIT ? OFFSET ?',
             (limit, offset),
         ).fetchall()
@@ -734,10 +743,28 @@ class EmojiLibrary:
             return None
         return path
 
+    def count_entries(self, banned_only: bool | None = None) -> int:
+        """按封禁筛选统计 emoji 行数，供列表分页的总数使用。
+
+        :param banned_only: 与 :meth:`page` 同义的筛选开关。
+        :return: 符合筛选的记录条数。
+        """
+
+        return int(self._db.execute(
+            f'SELECT COUNT(*) FROM emoji WHERE {_banned_predicate(banned_only)}'
+        ).fetchone()[0])
+
     def stats(self) -> dict[str, Any]:
         """汇总库容量与磁盘占用，供管理页总览与维护事件使用。
 
-        :return: 记录数、封禁数、目录文件数与字节数的字典。
+        :return: 记录数、封禁数、计入上限的记录数、目录文件数与字节数的字典。
+
+        ``count`` 是 emoji 行总数，``countedCount`` 才是拿去和 ``maxCount``
+        比的数——已封禁的记录不占容量（见 :meth:`evict_to_limit`）。两者都要
+        给出：容量条要用后者，而「库里一共存着多少条」仍然是前者。
+        ``bannedCount`` 数的是封禁表的行，它可能大于 ``bannedInLibrary``——
+        封禁独立于 emoji 行存在，被封的图可以早已不在库里。
+
         副作用：只读数据库与目录元数据，不读取图片内容。
         """
 
@@ -745,6 +772,7 @@ class EmojiLibrary:
         banned_count = self._db.execute(
             'SELECT COUNT(*) FROM emoji_banned'
         ).fetchone()[0]
+        banned_in_library = self.count_entries(banned_only=True)
         orphans = self.scan_orphans()
         files = [
             path for path in self._directory.rglob('*')
@@ -754,6 +782,8 @@ class EmojiLibrary:
         return {
             'count': int(count),
             'bannedCount': int(banned_count),
+            'bannedInLibrary': int(banned_in_library),
+            'countedCount': int(count) - int(banned_in_library),
             'maxCount': int(self._config.max_count),
             'fileCount': len(files),
             'directoryBytes': directory_bytes,
@@ -834,6 +864,14 @@ class EmojiLibrary:
         一句 SQL 取最冷条目——最少用、且最久没用的先走。可解释、可回放、
         零模型调用。
 
+        决定二：已封禁的记录既不计入容量、也不会被淘汰。封禁的语义是「永远
+        别发这张」，那一行留着只为了在界面上看得见这个判断；让它占容量等于
+        用「拉黑」换掉一个可用名额。
+
+        两件事必须同时做，缺一会死循环：只把封禁行排除出**计数**、却仍允许
+        它们进入淘汰候选，那么被封的行往往 ``use_count = 0`` 排在最前，会被
+        一条条删掉而计数纹丝不动，直到封禁行删光才轮到真正该淘汰的。
+
         :param max_count: 目标容量上限；0 或负值表示不设限，直接返回空列表。
         :return: 被淘汰的记录列表；未超限时为空列表。
         副作用：删除 emoji 行并尝试删除对应文件；文件删除失败由孤儿清理兜底。
@@ -841,13 +879,16 @@ class EmojiLibrary:
 
         if max_count < 1:
             return []
+        unbanned = _banned_predicate(banned_only=False)
         evicted: list[EmojiEvictionRecord] = []
         while True:
-            count = self._db.execute('SELECT COUNT(*) FROM emoji').fetchone()[0]
+            count = self._db.execute(
+                f'SELECT COUNT(*) FROM emoji WHERE {unbanned}').fetchone()[0]
             if count <= max_count:
                 break
             row = self._db.execute(
                 'SELECT hash, send_ref, use_count, last_used_at FROM emoji '
+                f'WHERE {unbanned} '
                 'ORDER BY use_count ASC, last_used_at ASC, first_seen_at ASC, hash ASC '
                 'LIMIT 1',
             ).fetchone()
@@ -1028,6 +1069,27 @@ def _delete_emoji_file(path: Path, directory: Path) -> int:
     except OSError as exc:
         logger.warning('emoji_file_remove_failed', path=str(path), error=str(exc))
         return 0
+
+
+def _banned_predicate(banned_only: bool | None) -> str:
+    """按封禁筛选生成 WHERE 子句片段，供 emoji 表的查询拼接。
+
+    返回的是**固定字面量**，不含任何调用方数据，拼进 SQL 文本没有注入面；
+    参数化做不到这件事——要变的是子句结构而不是值。
+
+    哈希两侧都套 ``LOWER``：封禁表的键由 ``_normalize_hash`` 归一化过，而
+    emoji 表的 hash 是入库时原样写的，直接比较会漏掉大小写不同的行。表只有
+    千级，放弃索引换取判定正确是划算的。
+
+    :param banned_only: ``True`` 只要已封禁、``False`` 只要未封禁、``None``
+        不筛选。
+    :return: 可直接放在 ``WHERE`` 之后的布尔表达式。
+    """
+
+    if banned_only is None:
+        return '1 = 1'
+    op = 'IN' if banned_only else 'NOT IN'
+    return f'LOWER(hash) {op} (SELECT LOWER(hash) FROM emoji_banned)'
 
 
 def _normalize_hash(content_hash: str) -> str:
