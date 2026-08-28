@@ -40,6 +40,8 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # 占位符保持稳定：描述成功时替换 [图片]，失败时原样保留。
 IMAGE_PLACEHOLDER = '[图片]'
 EMOJI_PLACEHOLDER = '[表情包]'
+# 入站历史只展示足以传达情绪的前两个标签，完整标签仍保留在描述对象与 emoji 表中。
+INBOUND_EMOJI_TAG_LIMIT = 2
 # QQ 图片 CDN 的防盗链要求：缺少 Referer 时返回 400「download url has expired」，
 # 实际链接并未过期；必须带上浏览器 UA 与同域 Referer 才能下载。
 _BROWSER_USER_AGENT = (
@@ -120,7 +122,13 @@ def merge_emoji_descriptions(
             break
         replacement = EMOJI_PLACEHOLDER
         if description is not None:
-            replacement = f'[表情包：{description.emotion_tags}]'
+            rendered_tags = [
+                tag.strip()
+                for tag in description.emotion_tags.split(',')
+                if tag.strip()
+            ][:INBOUND_EMOJI_TAG_LIMIT]
+            if rendered_tags:
+                replacement = f'[表情包：{",".join(rendered_tags)}]'
         merged = merged[:index] + replacement + merged[index + len(EMOJI_PLACEHOLDER):]
         position = index + len(replacement)
     return merged
