@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 import asyncio
 
-from src.core.llm_models.protocol import LlmProvider
+from src.core.llm_models.protocol import LlmProvider, ResponseValidator
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.observe import events as trace
 
@@ -53,6 +53,8 @@ class SubAgentCall:
     :ivar temperature: 采样温度，默认 ``0.85``。
     :ivar max_tokens: 最大输出 token 数，``None`` 表示不额外限制。
     :ivar response_format: 可选结构化输出格式。
+    :ivar response_validator: 可选完整正文校验器；用于让模型路由在格式或业务协议
+        不合格时切换候选，而不是把坏正文交给调用方。
     :ivar signal: 可选的取消事件，原样传给 provider。
     :ivar render_params: 提示词渲染参数，进入失败快照与观察面板。
     :ivar trace_extra: 追加到 ``llm_request`` 事件的额外字段，通常放置
@@ -65,6 +67,7 @@ class SubAgentCall:
     temperature: float = 0.85
     max_tokens: int | None = None
     response_format: _ResponseFormat | None = None
+    response_validator: ResponseValidator | None = None
     signal: asyncio.Event | None = None
     render_params: _RenderParams | None = None
     trace_extra: Dict[str, Any] = field(default_factory=dict)
@@ -93,8 +96,8 @@ async def run_sub_agent(call: SubAgentCall) -> SubAgentResult:
     :raises ValueError: 任务名为空或消息列表为空。
     :raises Exception: provider 的网络、鉴权、协议或取消错误原样向调用方传播，
         由调用方决定记录快照、降级或中断。
-    副作用：登记 ``llm_request`` 观测事件、绑定渲染参数并消费模型流；不解析输出、
-        不写数据库。
+    副作用：登记 ``llm_request`` 观测事件、绑定渲染参数并消费模型流；可执行调用方
+        提供的完整正文校验器，不做任务语义推断、不写数据库。
     :performance: 文本按增量拼接，空间开销与输出长度线性相关。
     """
     task = call.task.strip()
@@ -124,6 +127,7 @@ async def run_sub_agent(call: SubAgentCall) -> SubAgentResult:
         temperature=call.temperature,
         max_tokens=call.max_tokens,
         response_format=call.response_format,
+        response_validator=call.response_validator,
         signal=call.signal,
     ):
         text = chunk.get('text')

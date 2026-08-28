@@ -18,6 +18,7 @@ import re
 
 import httpx
 
+from .protocol import ResponseValidator
 from .snapshot import current_candidate, record_provider_request
 
 from src.core.common.logger import get_logger
@@ -31,7 +32,7 @@ class LlmError(Exception):
     """表示模型请求失败及其可供路由层判断的错误类别。
 
     :ivar kind: 错误类别，例如 `auth`、`billing`、`quota`、`network`、`timeout`
-        或 `aborted`。
+        、`format` 或 `aborted`。
     :ivar detail: 可选的原始错误详情，默认值为空字符串。
     """
 
@@ -44,7 +45,7 @@ class LlmError(Exception):
         副作用：初始化异常属性，不执行网络操作。
         """
         super().__init__(message)
-        self.kind = kind   # auth | billing | quota | model | network | timeout | blocked | aborted | unknown
+        self.kind = kind   # auth | billing | quota | model | network | timeout | blocked | format | aborted | unknown
         self.detail = detail
 
 
@@ -61,6 +62,7 @@ LLM_ERROR_HINTS: dict[str, str] = {
     'network': '网络不通：连不上服务商，先看代理和 base_url',
     'timeout': '等首字超时：服务商在窗口内一个字都没返回',
     'blocked': '内容被拦截：服务商的安全策略拒了这次请求',
+    'format': '结构化输出不合格：当前模型没有遵守任务要求的 JSON 协议',
     'aborted': '调用被主动中断',
     'unknown': '未归类的失败，看底层错误原文',
 }
@@ -384,6 +386,7 @@ class OpenAiChatProvider:
                      signal: asyncio.Event | None = None,
                      response_format: dict[str, str] | None = None,
                      tools: list[dict] | None = None,
+                     response_validator: ResponseValidator | None = None,
                      ) -> AsyncIterator[dict]:
         """发起流式请求，并仅在尚未输出内容时重试可恢复错误。
 
@@ -398,6 +401,8 @@ class OpenAiChatProvider:
         :param tools: 可选的 OpenAI 工具声明列表。提供后模型可以返回工具调用，
             拼装完成的调用作为单个 ``{'tool_calls': [...]}`` 增量在流末尾产出，
             调用方不必自己处理分片。
+        :param response_validator: 可选完整正文校验器。提供后先缓冲完整正文并校验，
+            校验通过才向上游产生增量，避免坏结果阻断候选切换。
 
         :yield: 解析后的增量字典，顺序与服务端流式响应一致。
 
@@ -427,14 +432,39 @@ class OpenAiChatProvider:
                 # 路由层可能在动作已定或任务截止时提前关闭本层；显式持有内部
                 # 单次请求流，确保关闭能一路传到 httpx 响应。
                 policy_guard = _StreamPolicyNoticeGuard()
+                buffered_chunks: list[dict] = []
+                buffered_text: list[str] = []
                 async with aclosing(chunks) as request_stream:
                     async for chunk in request_stream:
                         for guarded_chunk in policy_guard.push(chunk):
+                            if response_validator is None:
+                                yielded_content = True
+                                yield guarded_chunk
+                            else:
+                                buffered_chunks.append(guarded_chunk)
+                                text = guarded_chunk.get('text')
+                                if isinstance(text, str):
+                                    buffered_text.append(text)
+                    for guarded_chunk in policy_guard.flush():
+                        if response_validator is None:
                             yielded_content = True
                             yield guarded_chunk
-                    for guarded_chunk in policy_guard.flush():
+                        else:
+                            buffered_chunks.append(guarded_chunk)
+                            text = guarded_chunk.get('text')
+                            if isinstance(text, str):
+                                buffered_text.append(text)
+                if response_validator is not None:
+                    try:
+                        response_validator(''.join(buffered_text))
+                    except ValueError as exc:
+                        raise LlmError(
+                            'format',
+                            f'结构化输出校验失败：{exc}',
+                        ) from exc
+                    for buffered_chunk in buffered_chunks:
                         yielded_content = True
-                        yield guarded_chunk
+                        yield buffered_chunk
                 return
             except LlmError as exc:
                 retryable = exc.kind in ('network', 'quota')

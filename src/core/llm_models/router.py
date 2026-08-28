@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import aclosing
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Sequence, TypeVar
 import asyncio
+import json
 import random
 import time
 
@@ -22,6 +23,7 @@ from src.core.llm_models.openai import (
     error_hint,
     resolve_base_url,
 )
+from src.core.llm_models.protocol import ResponseValidator
 from src.core.llm_models.snapshot import (
     current_render_params,
     dump_exchange,
@@ -338,6 +340,7 @@ class ModelRouter:
                      response_format: Dict[str, str] | None = None,
                      tools: List[dict] | None = None,
                      require_text: bool = False,
+                     response_validator: ResponseValidator | None = None,
                      ) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到一个候选产生首个可用输出增量。
 
@@ -352,6 +355,8 @@ class ModelRouter:
         :param response_format: 可选响应格式配置。
         :param tools: 可选的工具声明列表，透传给候选 provider。
         :param require_text: 是否要求候选至少产生一段非空正文；视觉描述应启用。
+        :param response_validator: 可选完整正文校验器。结构化请求会先缓冲候选的完整
+            输出，校验失败时不向调用方吐出坏正文，而是继续尝试下一候选。
 
         :yield: 底层 provider 返回的增量字典，顺序与实际模型流一致。
 
@@ -387,6 +392,7 @@ class ModelRouter:
                 max_tokens=max_tokens,
                 signal=signal,
                 response_format=response_format,
+                response_validator=response_validator,
                 tools=tools,
                 require_text=require_text,
                 exchange=exchange,
@@ -410,6 +416,7 @@ class ModelRouter:
                                  max_tokens: int | None,
                                  signal: asyncio.Event | None,
                                  response_format: Dict[str, str] | None,
+                                 response_validator: ResponseValidator | None,
                                  tools: List[dict] | None,
                                  require_text: bool,
                                  exchange: '_ExchangeRecord',
@@ -467,6 +474,7 @@ class ModelRouter:
                     started = time.monotonic()
                     initial_chunks: list[dict] = []
                     initial_reasoning = ''
+                    should_validate = response_format is not None or response_validator is not None
                     try:
                         # 任务级首字窗口包含下层内部重试。视觉描述要求真正的正文，
                         # 不能让 reasoning 增量或空流被当作候选成功而阻断故障切换。
@@ -481,14 +489,14 @@ class ModelRouter:
                                 if not require_text or (isinstance(text, str) and text):
                                     break
                     except StopAsyncIteration:
-                        if not require_text:
+                        if not require_text and not should_validate:
                             # 非文本任务或兼容接口可能合法地返回空流，维持既有语义；
                             # 只有调用方显式要求正文时才把空流作为候选失败。
                             self._health.recover(candidate.provider)
                             return
                         raise LlmError(
-                            'model',
-                            '模型流已结束，但没有返回正文',
+                            'format' if should_validate else 'model',
+                            '结构化输出为空' if should_validate else '模型流已结束，但没有返回正文',
                             initial_reasoning[-400:],
                         )
                     except TimeoutError as exc:
@@ -514,12 +522,39 @@ class ModelRouter:
                             provider=candidate.provider,
                             elapsedMs=elapsed_ms,
                         )
-                    for initial_chunk in initial_chunks:
-                        yielded = True
-                        yield initial_chunk
-                    async for chunk in iterator:
-                        yielded = True
-                        yield chunk
+                    if should_validate:
+                        # 一次性子任务本来就会聚合完整正文。这里在路由层先缓冲，才能
+                        # 在任何内容交给调用方之前发现坏 JSON，并安全切到下一个候选。
+                        buffered_chunks = list(initial_chunks)
+                        async for chunk in iterator:
+                            buffered_chunks.append(chunk)
+                        text = ''.join(
+                            str(chunk['text'])
+                            for chunk in buffered_chunks
+                            if isinstance(chunk.get('text'), str)
+                        )
+                        try:
+                            if response_format == {'type': 'json_object'}:
+                                payload = json.loads(text.strip())
+                                if not isinstance(payload, dict):
+                                    raise ValueError('结构化输出必须是 JSON 对象')
+                            if response_validator is not None:
+                                response_validator(text)
+                        except (json.JSONDecodeError, ValueError) as exc:
+                            raise LlmError(
+                                'format',
+                                f'结构化输出校验失败：{exc}',
+                            ) from exc
+                        for chunk in buffered_chunks:
+                            yielded = True
+                            yield chunk
+                    else:
+                        for initial_chunk in initial_chunks:
+                            yielded = True
+                            yield initial_chunk
+                        async for chunk in iterator:
+                            yielded = True
+                            yield chunk
                     self._health.recover(candidate.provider)
                     return
             except LlmError as exc:
@@ -534,7 +569,10 @@ class ModelRouter:
                 if yielded or exc.kind == 'aborted':
                     raise
                 last_error = exc
-                self._health.penalize(candidate.provider)
+                # 结构化格式不合格只说明当前模型与本任务协议不匹配，不应让同厂商
+                # 其它模型和任务一起进入网络故障冷却。
+                if exc.kind != 'format':
+                    self._health.penalize(candidate.provider)
                 logger.warning(
                     'model_switch',
                     task=self.task,
