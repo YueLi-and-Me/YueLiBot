@@ -454,7 +454,6 @@ def main() -> None:
         vision_provider = routers.vision
         logger.info("vision_model_ready", model=vision_provider.model,
                     candidates=len(vision_provider.candidates))
-    image_describer = ChatImageDescriber(cfg, vision_provider)
     # 内容过滤只在配置开启时装配（决定五：走既有 vision 槽，不开新槽）；
     # 过滤关闭时该对象为 None，入库路径零模型调用。
     emoji_content_filter = (
@@ -476,6 +475,11 @@ def main() -> None:
     verified_emoji_count = emoji_library.verify_integrity()
     logger.info('emoji_library_ready', count=verified_emoji_count)
     app_state.emoji_library = emoji_library
+    image_describer = ChatImageDescriber(
+        cfg,
+        vision_provider,
+        emoji_tag_lookup=emoji_library.emotion_tags_for_hash,
+    )
 
     async def _push_event(
         channel: str,

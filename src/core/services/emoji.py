@@ -327,6 +327,25 @@ class EmojiLibrary:
         row = self._db.execute('SELECT 1 FROM emoji LIMIT 1').fetchone()
         return row is not None
 
+    def emotion_tags_for_hash(self, content_hash: str) -> str | None:
+        """按内容哈希读取可直接复用的入站表情包标签。
+
+        :param content_hash: 图片内容的 SHA-256 十六进制字符串。
+        :return: 数据库中非空的 ``emotion_tags``；未登记或标签为空时返回 ``None``。
+        :raises ValueError: 内容哈希格式不合法。
+        :raises sqlite3.Error: 查询表情包表失败。
+        副作用：只读 emoji 表，不修改标签、计数或文件。
+        """
+        normalized = _normalize_hash(content_hash)
+        row = self._db.execute(
+            'SELECT emotion_tags FROM emoji WHERE hash = ?',
+            (normalized,),
+        ).fetchone()
+        if row is None:
+            return None
+        tags = str(row[0]).strip()
+        return tags or None
+
     def frequent_tags(self, limit: int = 12) -> tuple[str, ...]:
         """统计覆盖表情最多的情绪标签，供提示词锚定 emotion 词表。
 
