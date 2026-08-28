@@ -131,3 +131,56 @@ export async function setExpressionChecked(
 export async function deleteExpression(id: number): Promise<{ id: number }> {
   return apiMutate(`/api/expressions/${id}`, 'DELETE')
 }
+
+/** 候选数跌破下限的会话；批量删除后由后端回报。 */
+export interface LowPool {
+  streamId: number
+  /** 删除后该会话剩余的候选条数。 */
+  candidates: number
+}
+
+/** 批量删除的结果。 */
+export interface BatchDeleteResult {
+  deleted: number
+  requested: number
+  /** 删除后候选池跌破下限的会话；为空表示没有会话受损。 */
+  lowPools: LowPool[]
+}
+
+/** 单次请求的 ID 上限，与后端 `ExpressionBatchDeleteBody` 的 max_length 同值。 */
+const BATCH_DELETE_CHUNK = 200
+
+/**
+ * 批量删除表达方式，超过单次上限时自动分批。
+ *
+ * 语义与逐条删除一致，只是省去往返。请求里不存在的 ID 静默跳过，因此
+ * `deleted` 可能小于 `requested`——并发删除下这属正常，不作为错误。
+ *
+ * 分批是必需的而非优化：页面的选择集跨页累积、没有上限，一次选过 200 条就会
+ * 撞上后端的 `max_length` 校验并返回 422，使用者只会看到一句无从下手的报错。
+ * 分批之间不是一个事务，中途失败会留下已删的部分——这对删除是可接受的（删除
+ * 本身幂等，重试只会跳过已不存在的 ID），比整批拒绝好用。
+ *
+ * 返回的 `lowPools` 是删除的真实后果：候选数低于下限的会话，其表达注入会
+ * 直接停摆。调用方必须把它显示出来，不能吞掉。多批时同一会话按**最后一次**
+ * 回报为准：候选数只减不增，末批的数字才是删完后的终态。
+ *
+ * @param ids 待删除的行 ID 列表；不限长度，内部按 200 一批发出。
+ * @returns 实际删除数、请求数与受损会话列表。
+ * @throws UnauthorizedError 会话失效时抛出；其余错误原样传播，由调用方展示。
+ */
+export async function deleteExpressions(ids: number[]): Promise<BatchDeleteResult> {
+  let deleted = 0
+  const pools = new Map<number, LowPool>()
+  for (let start = 0; start < ids.length; start += BATCH_DELETE_CHUNK) {
+    const chunk = ids.slice(start, start + BATCH_DELETE_CHUNK)
+    const result = await apiMutate<BatchDeleteResult>(
+      '/api/expressions/batch-delete',
+      'POST',
+      { ids: chunk },
+    )
+    deleted += result.deleted
+    result.lowPools.forEach((pool) => pools.set(pool.streamId, pool))
+  }
+  return { deleted, requested: ids.length, lowPools: [...pools.values()] }
+}

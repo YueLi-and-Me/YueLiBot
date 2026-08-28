@@ -16,6 +16,9 @@
  * - 驳回（checked=-1）：退出候选池但保留行，整行置灰加删除线标示「不再生效」。
  *   这一行同时是「判过了」的记号，学习器再学到同样的说法会被唯一约束挡住；
  * - 删除：不可逆地移除，同样的说法日后可以被重新学到。清理迁移存量走这条。
+ *   行首勾选框喂的是批量删除，选择集跨页保留、筛选变化时清空；批量删除后端
+ *   会回报候选数跌破起用下限的会话，那些会话的表达注入会直接停摆，页面必须
+ *   如实报出来而不是替人拦下删除。
  *
  * 人工复核不是使用的前置条件（未复核照常进候选池），它的职责是剔除与保护。
  * 复核状态可筛选，用于从几千条里找出待处理的。
@@ -30,6 +33,7 @@ import {
   ConfirmDialog,
   Card,
   CardBody,
+  Checkbox,
   Chip,
   Empty,
   ErrorText,
@@ -42,10 +46,12 @@ import {
 } from '@/components/ui'
 import {
   deleteExpression,
+  deleteExpressions,
   setExpressionChecked,
   useExpressions,
   type ExpressionChecked,
   type ExpressionEntry,
+  type LowPool,
 } from '@/hooks/use-expressions'
 import { useAuth } from '@/hooks/use-auth'
 import { useStreams } from '@/hooks/use-observability'
@@ -67,22 +73,28 @@ const CHECKED_LABEL: Record<string, string> = {
  * @param props.entry 表达数据。
  * @param props.streamLabelOf 按 streamId 取会话标签的函数。
  * @param props.pending 该行是否有写入在飞（复核或删除）。
+ * @param props.selected 该行是否已被勾选进批量删除的选择集。
  * @param props.onReview 点击确认/驳回时的回调。
  * @param props.onDelete 点击删除时的回调；由调用方弹确认框，本组件只发起。
+ * @param props.onToggleSelect 勾选框切换时的回调，参数为行 ID。
  * @returns 一行表达元素。
  */
 function ExpressionRow({
   entry,
   streamLabelOf,
   pending,
+  selected,
   onReview,
   onDelete,
+  onToggleSelect,
 }: {
   entry: ExpressionEntry
   streamLabelOf: (id: number) => string
   pending: boolean
+  selected: boolean
   onReview: (id: number, checked: ExpressionChecked) => void
   onDelete: (entry: ExpressionEntry) => void
+  onToggleSelect: (id: number) => void
 }) {
   const rejected = entry.checked === -1
   return (
@@ -93,6 +105,12 @@ function ExpressionRow({
       )}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {/* 勾选框在行首，只喂批量删除；行内确认/驳回/删除与选择集互不影响。 */}
+        <Checkbox
+          checked={selected}
+          onChange={() => onToggleSelect(entry.id)}
+          disabled={pending}
+        />
         <span
           className={cn('text-[15px] font-semibold', rejected && 'line-through')}
         >
@@ -157,6 +175,16 @@ export function ExpressionsPage() {
   const [reviewError, setReviewError] = useState('')
   /** 待确认删除的行；null 表示确认弹窗关闭。删除不可逆，必须过一道确认。 */
   const [pendingDelete, setPendingDelete] = useState<ExpressionEntry | null>(null)
+  /** 已勾选待批量删除的行 ID。跨页保留（可翻几页攒一批再删），筛选变化时清空
+      ——换了筛选条件后选择集里剩什么已经看不见了，留着等于埋雷。 */
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  /** 批量删除确认弹窗开关。 */
+  const [batchConfirm, setBatchConfirm] = useState(false)
+  /** 批量删除在飞；期间禁用整个工具栏。 */
+  const [batchPending, setBatchPending] = useState(false)
+  /** 上一次批量删除后候选数跌破下限的会话，由后端回报。非空说明那些会话的
+      表达注入已经停摆，必须持续显示到下一次删除为止。 */
+  const [lowPools, setLowPools] = useState<LowPool[]>([])
 
   const streamId = scope !== 'all' ? Number(scope) : null
   const checked = checkedFilter !== 'all' ? (Number(checkedFilter) as ExpressionChecked) : null
@@ -177,6 +205,7 @@ export function ExpressionsPage() {
   const changeFilter = (apply: () => void) => {
     apply()
     setPage(0)
+    setSelected(new Set())
   }
 
   const review = async (id: number, next: ExpressionChecked) => {
@@ -205,6 +234,47 @@ export function ExpressionsPage() {
       else setReviewError(`删除失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setPendingId(null)
+    }
+  }
+
+  const toggleSelect = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const pageIds = entries.map((entry) => entry.id)
+  const pageAllSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
+
+  const toggleSelectPage = () => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (pageAllSelected) pageIds.forEach((id) => next.delete(id))
+      else pageIds.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
+  const removeSelected = async () => {
+    setBatchConfirm(false)
+    setBatchPending(true)
+    setReviewError('')
+    try {
+      const result = await deleteExpressions([...selected])
+      setSelected(new Set())
+      setLowPools(result.lowPools)
+      // 删完当前页可能整页落空，把页码夹回新的末页，避免停在空白分页上。
+      const nextPageCount = Math.max(1, Math.ceil((total - result.deleted) / PAGE_SIZE))
+      setPage((current) => Math.min(current, nextPageCount - 1))
+      setRefreshKey((key) => key + 1)
+    } catch (err: unknown) {
+      if (err instanceof UnauthorizedError) handleUnauthorized(err)
+      else setReviewError(`批量删除失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBatchPending(false)
     }
   }
 
@@ -255,25 +325,65 @@ export function ExpressionsPage() {
       {streamsError ? <ErrorText>{streamsError}</ErrorText> : null}
       {error ? <ErrorText>{error}</ErrorText> : null}
       {reviewError ? <ErrorText>{reviewError}</ErrorText> : null}
+      {lowPools.map((pool) => (
+        <ErrorText key={pool.streamId}>
+          {streamLabelOf(pool.streamId)} 删除后只剩 {pool.candidates} 条候选，已低于起用下限：
+          该会话的表达注入现在直接停摆，补回下限之前她不会再按表达习惯说话。
+        </ErrorText>
+      ))}
       {loading ? <Loading>正在读取表达方式…</Loading> : null}
       {!loading && !error && entries.length === 0 ? <Empty>没有符合条件的表达方式。</Empty> : null}
       {entries.length > 0 ? (
-        <Card>
-          <CardBody className="p-0">
-            <ol>
-              {entries.map((entry) => (
-                <ExpressionRow
-                  key={entry.id}
-                  entry={entry}
-                  streamLabelOf={streamLabelOf}
-                  pending={pendingId === entry.id}
-                  onReview={review}
-                  onDelete={setPendingDelete}
-                />
-              ))}
-            </ol>
-          </CardBody>
-        </Card>
+        <>
+          <div className="flex flex-wrap items-center gap-3">
+            <Checkbox
+              checked={pageAllSelected}
+              onChange={toggleSelectPage}
+              disabled={batchPending}
+              label="全选本页"
+            />
+            <span className="text-sm text-muted-foreground">
+              {selected.size > 0 ? `已选 ${selected.size} 条（可翻页继续选）` : '未选中任何条目'}
+            </span>
+            {selected.size > 0 ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={batchPending}
+                onClick={() => setSelected(new Set())}
+              >
+                清除选择
+              </Button>
+            ) : null}
+            <Button
+              variant="danger-outline"
+              size="sm"
+              className="ml-auto"
+              disabled={batchPending || selected.size === 0}
+              onClick={() => setBatchConfirm(true)}
+            >
+              {batchPending ? '删除中…' : `批量删除 ${selected.size} 条`}
+            </Button>
+          </div>
+          <Card>
+            <CardBody className="p-0">
+              <ol>
+                {entries.map((entry) => (
+                  <ExpressionRow
+                    key={entry.id}
+                    entry={entry}
+                    streamLabelOf={streamLabelOf}
+                    pending={pendingId === entry.id || batchPending}
+                    selected={selected.has(entry.id)}
+                    onReview={review}
+                    onDelete={setPendingDelete}
+                    onToggleSelect={toggleSelect}
+                  />
+                ))}
+              </ol>
+            </CardBody>
+          </Card>
+        </>
       ) : null}
 
       <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
@@ -295,6 +405,22 @@ export function ExpressionsPage() {
         onConfirm={() => {
           if (pendingDelete) void removeEntry(pendingDelete)
         }}
+      />
+
+      <ConfirmDialog
+        open={batchConfirm}
+        title={`删除选中的 ${selected.size} 条表达方式`}
+        description={
+          <>
+            <p>删除不可逆，且同样的说法日后可以被重新学到。要让某条永久停止生效请改用「驳回」。</p>
+            <p className="mt-1">
+              候选数跌破起用下限的会话会直接停止注入表达，删除后若发生会在页面上报出来。
+            </p>
+          </>
+        }
+        confirmText={`删除 ${selected.size} 条`}
+        onCancel={() => setBatchConfirm(false)}
+        onConfirm={() => void removeSelected()}
       />
     </div>
   )

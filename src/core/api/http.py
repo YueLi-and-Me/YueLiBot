@@ -31,6 +31,7 @@ from .state import app_state   # 全局服务状态
 
 from src.core.agent.action_protocol import ActionDecisionEvent, GateInputFacts
 from src.core.agent.conversation_gate import GateRequest, decide_disposition, mentions_bot_name
+from src.core.agent.expression import MIN_POOL_CANDIDATES
 from src.core.agent.jargon import jargon_use_enabled, set_jargon_use
 from src.core.common.clock import now as current_time
 from src.core.common.console_layout import print_box
@@ -1554,6 +1555,93 @@ async def expression_delete(expression_id: int) -> dict:
             detail='表达方式不存在',
         )
     return {'id': expression_id}
+
+
+class ExpressionBatchDeleteBody(BaseModel):
+    """批量删除表达方式的请求体。"""
+
+    ids: List[int] = Field(min_length=1, max_length=200)
+
+
+def _delete_expressions(
+    db: sqlite3.Connection,
+    ids: List[int],
+) -> tuple[int, list[dict]]:
+    """同步批量删除表达方式，并回报因此跌破下限的会话候选池。
+
+    受影响的会话必须在删除**之前**取，删完再查就丢了：整条会话的表达被删光
+    时它在 expressions 里不再有行，事后的 ``GROUP BY stream_id`` 根本不会出现
+    这个会话，而候选池归零恰恰是最需要报出来的一种。
+
+    候选池只做如实回报、不做拦截。跌破 :data:`MIN_POOL_CANDIDATES` 时
+    ``fetch_expression_pool`` 直接返回空池，表达注入静默停摆——这件事必须让
+    人在界面上立刻看见，而不是由后端替人把删除拦下来。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param ids: 待删除的行 ID 列表；不存在的 ID 静默跳过，只计入实际删除数。
+    :return: ``(实际删除行数, 低于下限的候选池列表)``；列表元素含 ``streamId``
+        与删除后剩余的 ``candidates``，无一跌破时为空列表。
+    :raises sqlite3.Error: 删除失败时抛出，由路由层转换。
+    副作用：从 expressions 表删除若干行并提交。
+    """
+    # 占位符由 '?' 拼成、数量取自列表长度，参数仍走绑定，不存在注入面。
+    marks = ','.join('?' * len(ids))
+    affected = [
+        int(row[0])
+        for row in db.execute(
+            f'SELECT DISTINCT stream_id FROM expressions'
+            f' WHERE id IN ({marks}) AND stream_id IS NOT NULL',
+            ids,
+        )
+    ]
+    cursor = db.execute(f'DELETE FROM expressions WHERE id IN ({marks})', ids)
+    db.commit()
+    low_pools = []
+    for stream_id in affected:
+        candidates = int(db.execute(
+            'SELECT COUNT(*) FROM expressions WHERE stream_id = ? AND checked != -1',
+            (stream_id,),
+        ).fetchone()[0])
+        if candidates < MIN_POOL_CANDIDATES:
+            low_pools.append({'streamId': stream_id, 'candidates': candidates})
+    return cursor.rowcount, low_pools
+
+
+@router.post('/api/expressions/batch-delete', dependencies=[Depends(_auth)])
+async def expression_batch_delete(body: ExpressionBatchDeleteBody) -> dict:
+    """批量删除表达方式，一次事务删完并回报候选池风险。
+
+    与逐条删除同语义，只是省去反复往返：删除不可逆，同样的说法日后可以被重新
+    学到；要让某条永久停止生效用「驳回」。
+
+    单次上限 200 条，与列表路由的 ``limit`` 上限同值。界面的选择集跨页累积、
+    没有条数上限，因此由前端按这个值分批发出；上限留在这里是为了给单次请求的
+    SQL 占位符数量和事务时长封顶，不作为业务约束。
+
+    :param body: 含 ``ids`` 的请求体；ID 不存在时静默跳过，不报 404——批量场景
+        下并发删除造成的部分失效属正常，整批因此回滚反而更难用。
+    :return: ``deleted`` 实际删除行数、``requested`` 请求条数，以及 ``lowPools``
+        删除后候选数跌破下限的会话（含 ``streamId`` 与剩余 ``candidates``）。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；删除失败时 500，完整
+        traceback 以 ``expression_batch_delete_failed`` 事件落日志。
+    副作用：从 expressions 表删除若干行；候选池下一次取池即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        deleted, low_pools = await run_in_thread(_delete_expressions, db, body.ids)
+    except Exception as exc:
+        logger.exception('expression_batch_delete_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'表达方式批量删除失败：{exc}',
+        ) from exc
+    logger.info(
+        'expression_batch_deleted',
+        deleted=deleted,
+        requested=len(body.ids),
+        lowPools=len(low_pools),
+    )
+    return {'deleted': deleted, 'requested': len(body.ids), 'lowPools': low_pools}
 
 
 # --------------------------------------------------------------- 联想网络只读
