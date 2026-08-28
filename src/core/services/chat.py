@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from html import escape
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Sequence
 
 import asyncio
 import inspect
@@ -53,6 +54,7 @@ from src.core.agent.conversation_gate import (
     GateRequest,
     GateResult,
     ONGOING_TOPIC_MESSAGE_SPAN,
+    POKE_FLOOD_WINDOW_MS,
     decide_disposition,
     mentions_bot_name,
 )
@@ -469,6 +471,9 @@ class ChatService:
         # 已经放弃自然跟进的群 stream。她在群聊里选择 silent 即加入，成功回复即移出；
         # 门控据此关闭自然回应窗口，让「说够了没有」由她自己的动作决定而不是回复计数。
         self._follow_up_declined: set[int] = set()
+        # 同一 stream 最近 60 秒的 poke 到达时间。只登记协议明确标记的 poked_me，
+        # 普通消息与适配器合成正文都不能影响该计数；重启后清空符合短窗口语义。
+        self._poke_arrivals: Dict[int, Deque[int]] = {}
         # 决策与表达是否分成两次模型调用。三个条件缺一不可：配置打开、两级各自
         # 的 provider 都在。配置打开但 provider 缺位时保持单次调用，而不是让回合
         # 在运行期才失败——那会表现为她突然不说话，现场极难定位。
@@ -3666,6 +3671,21 @@ class ChatService:
             if person_id not in ids:
                 ids.append(person_id)
         return ids
+
+    def record_poke_arrival(self, stream_id: int, arrived_at: int) -> int:
+        """登记一次 poke 到达并返回当前 60 秒窗口内的次数。
+
+        :param stream_id: poke 所属的稳定 stream 主键。
+        :param arrived_at: 本次入站的 Unix 毫秒时间戳。
+        :return: 清理过期项并包含本次到达后的窗口计数。
+        副作用：更新进程内短窗口队列；不写消息、事件或配置。
+        """
+        arrivals = self._poke_arrivals.setdefault(stream_id, deque())
+        window_start = arrived_at - POKE_FLOOD_WINDOW_MS
+        while arrivals and arrivals[0] < window_start:
+            arrivals.popleft()
+        arrivals.append(arrived_at)
+        return len(arrivals)
 
     def _emoji_available(self, context: ConversationContext) -> bool:
         """判断当前 QQ stream 是否仍有表情包库和窗口发送额度。"""
