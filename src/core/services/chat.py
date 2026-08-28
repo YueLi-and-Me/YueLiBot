@@ -187,8 +187,8 @@ DIRECT_WAIT_TIMEOUT_S = 10.0
 #      下对同一批消息重复表态。
 _CONTINUATION_NOTICE = (
     '[本回合续跑] {recap}。这件事不一定出现在上面的历史里，以这句为准；'
-    '上面那几条是你还没有回应过的新消息。'
-    '确实还有要补的、或者有人接上了新的话，就继续；'
+    '这里只判断刚才那件事是否还有没说完的。'
+    '确实还有要补的就继续；'
     '已经说完了就用 silent 收束这一轮，'
     '不要把刚说过的意思换个说法再说一遍。'
 )
@@ -4107,9 +4107,9 @@ class ChatService:
     ) -> None:
         """把一个回合作为**系统驱动的循环**跑完，而不是一次性调用。
 
-        产出可见产物不等于回合结束：她说完一句之后，真人还会再看一眼群里，确认
-        自己是不是说完了、有没有人接上。因此 reply / react / poke / speak 之后
-        重建上下文（此时历史里已经有她刚说的那句）再问一次，直到她自己表态收束。
+        每一轮都可能产出可见产物；循环上限只负责防失控，是否有条件进入下一轮由
+        回合状态决定。当前没有新消息时不做无信息增量的额外往返；有新消息时也不能
+        沿用旧快照续跑，而要结束本回合并交给下一次 ``_tick``。
 
         收束由她决定，不由动作类型决定：
         - ``declined``（silent）：她表示这轮做完了，退出循环；
@@ -4120,11 +4120,12 @@ class ChatService:
         ``MAX_TURN_ROUNDS`` 只是防失控的保险。撞上限说明她连续 10 轮都没有表示
         说完，那是异常而不是正常收束，因此留一条明确记录而不是静默结束。
 
-        续跑轮消费的是**她生成期间新到的消息**，原批次不再累加：那一批她上一轮
-        已经接过了。她上一轮做了什么由 ``_RoundResult.recap`` 显式带给下一轮，
-        不依赖历史里那份副本是否幸存，原因见 ``_CONTINUATION_NOTICE``。
+        续跑只允许补完原批次，绝不消费她生成期间新到的消息。开始下一轮前一旦发现
+        该 stream 已有新消息，本回合立即结束；消息仍留在缓冲区，随后由 ``_tick``
+        按正常批边界开启新回合。续跑提示保留显式动作摘要，不依赖历史里那份副本
+        是否幸存，原因见 ``_CONTINUATION_NOTICE``。
 
-        :param batch: 首轮的消息批次；续跑各轮换成新到的那一批。
+        :param batch: 本回合的原始消息批次；续跑各轮仍只处理这一批。
         :param allow_wait: 首轮是否还能「先等等」；同一批只允许等一次，因此
             续跑各轮一律不再给 wait。
         副作用：每轮一次模型往返与一次可见产物投递；上下文与 sink 逐轮重建。
@@ -4140,40 +4141,16 @@ class ChatService:
                 exhausted = False
                 break
             if round_index > 0:
-                # 并入她生成期间到达的新消息。**没有新消息就不再续跑**：这一轮
-                # 唯一能变的就是「群里又说了什么」，什么都没变时再问一次模型，
-                # 产出只可能是「我说完了」，不值一次往返。
+                # 新消息属于新的事实快照，必须由下一次 _tick 另开回合处理。这里既不
+                # 抽走缓冲，也不把新旧候选拼在一起，避免模型沿用旧判断回答新问题。
                 pending = self._buffers.get(context.stream.id)
-                if not pending:
+                if pending:
                     exhausted = False
                     break
-                arrived = list(pending)
-                del pending[:]
-                self._buffers.pop(context.stream.id, None)
-                # 候选块只放新到的消息：原批次她上一轮已经接过了，累加进来会让她
-                # 对着已回复过的句子再答一次，也会把她自己那条回复挤出历史。
-                batch = await self._materialize_batch_images(arrived)
-                trimmed = '\n'.join(message.text for message in batch)
-                # 重建上下文与 sink：历史里已经多了她上一轮说的话，sink 的分句与
-                # 副作用是单轮状态，复用会把上一轮的正文再发一次。
-                now = current_time()
-                prepared = self._prepare_turn_context(
-                    context,
-                    trimmed,
-                    now,
-                    prepared.platform_bot_name,
-                    user_message_id_watermark=batch[-1].message_id,
-                    batch_message_ids=tuple(
-                        message.message_id for message in batch
-                    ),
-                )
-                sink = _TurnSink(
-                    context=context,
-                    cancel_event=cancel_event,
-                    turn=turn,
-                    now=now,
-                    source_text=trimmed,
-                )
+                # 没有新事实时保持既有收束行为，不为一句必然的「我说完了」再付一次
+                # 模型往返；这也避免只会重复 reply 的提供方跑满循环上限。
+                exhausted = False
+                break
             result = await self._run_conversation_round(
                 context,
                 batch,
