@@ -91,6 +91,31 @@
               "label": "窗口内最大回复次数",
               "min": 0,
               "help": "非必回消息在时间窗口内允许的最大回复次数；0 表示不限制。"
+            },
+            {
+              "key": "reactions_enabled",
+              "type": "boolean",
+              "label": "允许贴表情回应",
+              "help": "开启后她可以在别人的消息上点一个 QQ 表情，不发新消息。关闭后 react 不进入动作集。"
+            },
+            {
+              "key": "pokes_enabled",
+              "type": "boolean",
+              "label": "允许戳一戳",
+              "help": "戳一戳会给对方推送提醒，比贴表情吵得多，默认关闭。"
+            },
+            {
+              "key": "self_started_topics",
+              "type": "boolean",
+              "label": "允许主动起话头",
+              "help": "开启后她可以说一句不接任何人的话；受同一条回复频率闸门约束，不会额外增加开口次数。"
+            },
+            {
+              "key": "scene_refresh_messages",
+              "type": "integer",
+              "label": "场景画像刷新间隔（消息条数）",
+              "min": 0,
+              "help": "群里每积累这么多条新消息就在后台重算一次场景画像；0 表示关闭观察，系统提示词里不再有场景块。"
             }
           ]
         },
@@ -336,6 +361,13 @@
               "min": 0,
               "max": 100,
               "help": "reply_necessity 模式的评分阈值，0~100。"
+            },
+            {
+              "key": "max_cognitive_rounds",
+              "type": "integer",
+              "label": "单回合最大认知轮次",
+              "min": 1,
+              "help": "一个回合内允许的认知轮次上限；每一轮都可能发起一次模型调用。"
             }
           ]
         },

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pydantic import BaseModel
 from typing import Any, Dict, List
 
 import json
@@ -50,7 +51,77 @@ def load_schema() -> Dict[str, Any]:
     if _schema is None:
         _schema = json.loads(_SCHEMA_PATH.read_text(encoding='utf-8'))
         _require_task_entries_match_config(_schema)
+        _require_sections_match_models(_schema)
     return _schema
+
+
+def _section_model(document: type[BaseModel], key: str) -> type[BaseModel] | None:
+    """按 schema 的段名解析出它对应的配置模型。
+
+    段名允许带点（``typing.nudge``），对应模型上的逐层字段。
+
+    :param document: 该配置文件的顶层文档模型。
+    :param key: schema 里的段名。
+    :return: 对应的模型类；路径走不通或终点不是模型时返回 ``None``。
+    """
+    current: Any = document
+    for part in key.split('.'):
+        fields = getattr(current, 'model_fields', None)
+        if not fields or part not in fields:
+            return None
+        current = fields[part].annotation
+    return current if isinstance(current, type) and issubclass(current, BaseModel) else None
+
+
+def _require_sections_match_models(schema: Dict[str, Any]) -> None:
+    """校验每个配置段声明的字段与其配置模型完全一致。
+
+    与 :func:`_require_task_entries_match_config` 是同一个故障的两个面：写盘只
+    认 schema 里列出的键，schema 漏一个字段，那个字段就会在保存后从文件里消失、
+    下次读取时回落到模型默认值。
+
+    - 现象：在设置页保存一次，``group_chat.reactions_enabled`` 从 false 变回
+      true——贴表情被重新打开，而使用者并没有动过这个开关。
+    - 原因：schema 的 ``group_chat`` 只声明了 10 个字段里的 6 个；原先的校验
+      只覆盖 models.toml 的两个段，别的文件直接跳过。
+    - 后果：默认值为 false 的字段（如 ``pokes_enabled``）丢了也看不出来，正好
+      和默认值相同；只有默认值为 true 的字段会暴露，因此这类缺口能潜伏很久。
+
+    子模型字段不计入父段：它们在 schema 里以带点的段名（``typing.nudge``）单独
+    声明，重复计入会把正确的 schema 判成缺字段。
+
+    :param schema: 已解析的 schema 字典。
+    :raises ValueError: 任一段的字段清单与模型不一致。
+    """
+    documents: Dict[str, type[BaseModel]] = {
+        'bot.toml': BotDocument,
+        'features.toml': FeatureDocument,
+        'napcat.toml': NapcatDocument,
+    }
+    for file_item in schema.get('files', []):
+        document = documents.get(file_item.get('file', ''))
+        if document is None:
+            continue
+        for section in file_item.get('sections', []):
+            key = section.get('key', '')
+            model = _section_model(document, key)
+            if model is None:
+                continue
+            expected = {
+                name
+                for name, field in model.model_fields.items()
+                if not (isinstance(field.annotation, type)
+                        and issubclass(field.annotation, BaseModel))
+            }
+            declared = {entry.get('key') for entry in section.get('fields', [])}
+            if declared != expected:
+                missing = sorted(expected - declared)
+                extra = sorted(declared - expected)
+                raise ValueError(
+                    f'settings_schema.json 的 {file_item["file"]} [{key}] 与配置模型不一致：'
+                    f'缺少 {missing}，多出 {extra}。'
+                    '设置页按这份清单写盘，缺的字段会在保存后被改回默认值。'
+                )
 
 
 def _require_task_entries_match_config(schema: Dict[str, Any]) -> None:
