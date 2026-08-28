@@ -33,12 +33,30 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 
     副作用：
         首次调用创建连接、启用 ``sqlite3.Row`` 行工厂并保存模块级连接引用。
+        连接禁用语句缓存（``cached_statements=0``）——这条连接会被线程池并发
+        使用，缓存的 statement 被多线程复用会串结果，理由见下方注释。
     """
     global _db
     if _db is not None:
         return _db
 
-    db = sqlite3.connect(str(path), check_same_thread=False)
+    # [关键] cached_statements=0 不是性能取舍，是正确性要求。
+    #
+    # 这条连接被 run_in_thread 丢进线程池，多个请求会真正并发地用它。
+    # - 现象：并发访问下 ``execute(...).fetchone()`` 会返回别的线程那一行、返回
+    #   None，或抛 ``InterfaceError: bad parameter or other API misuse``。表现在
+    #   界面上就是随机的 404/500——同一个键单独请求永远是好的，一批一起请求就有
+    #   几条坏掉（实测 8 线程 × 60 次查询：72 次 None、67 次 InterfaceError）。
+    # - 原因：不在 SQLite 层。``sqlite3.threadsafety == 3`` 说明 SQLite 编译在
+    #   serialized 模式，跨线程共享连接本身是安全的。坏的是 Python 的语句缓存：
+    #   ``execute`` 按 SQL 文本复用同一个 statement 对象，两个线程先后往同一个
+    #   statement 绑参数再 step，绑定与结果集就串了。
+    # - 后果：禁用缓存后同样的压测 480/480 全部正常。改回默认值等于把这类随机
+    #   错误放回来，而它极难复现——单请求永远重现不了。
+    #
+    # 代价是每次调用重新 prepare 语句；本项目的查询都是小语句、量级也小，这点
+    # 开销远小于「结果偶尔是错的」。
+    db = sqlite3.connect(str(path), check_same_thread=False, cached_statements=0)
     db.row_factory = sqlite3.Row   # 让 fetchone/fetchall 返回 dict-like 对象
     _db = db
     return db
