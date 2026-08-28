@@ -499,11 +499,17 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     # 文本称呼只读取 bot.toml；协议登录昵称仅用于上下文展示，不能旁路配置触发回合。
     bot_names = app_state.chat.bot_names()
     asleep = app_state.chat.current_sleep().asleep
-    # 名称匹配只在群聊门控中有意义；直接对话不读取名称，避免空名称配置报错。
+    # poke 正文由适配器合成，里面的 Bot 名字不是用户说出的点名信号，不能参与匹配。
+    # 名称匹配也只在群聊门控中有意义；直接对话不读取名称，避免空名称配置报错。
     name_mentioned = (
         mentions_bot_name(body.text, bot_names)
-        if context.stream.kind == 'group'
+        if context.stream.kind == 'group' and not body.poked_me
         else False
+    )
+    pokes_in_window = (
+        app_state.chat.record_poke_arrival(context.stream.id, now)
+        if body.poked_me
+        else 0
     )
     gate_result = decide_disposition(GateRequest(
         stream_kind=context.stream.kind,
@@ -516,6 +522,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
         current_topic_available=current_topic_available,
         poked_me=body.poked_me,
+        pokes_in_window=pokes_in_window,
         emoji_liked_me=body.emoji_liked_me,
         # 入口与批次两个门控必须读同一份跟进事实，否则 reply_gate 审计事件报告的
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
@@ -543,6 +550,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         asleep=asleep,
         mentionedMe=body.mentioned_me,
         nameMentioned=name_mentioned,
+        pokedMe=body.poked_me,
+        pokesInWindow=pokes_in_window,
         repliesInWindow=reply_count,
         maxRepliesInWindow=group_chat.max_replies_in_window,
         naturalReplyElapsedMs=last_bot_reply_elapsed_ms,

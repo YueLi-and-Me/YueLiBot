@@ -1,9 +1,9 @@
 """把聊天图片来源解析为中文客观描述，并缓存已识别结果。
 
-服务在后台任务中按来源下载聊天图片并调用视觉模型；同一份图片按 SHA-256
-复用描述，避免重复调用。下载、解码或模型调用失败时统一返回 ``None``，由
-调用方保留 ``[图片]`` 占位符，不得猜测图片内容。同步入站路径只传来源引用，
-不在这里完成任何下载或模型调用。
+服务在后台任务中按来源下载聊天图片；表情包先按 SHA-256 查询已有标签，未命中
+才调用视觉模型，同一份普通图片也按内容哈希复用进程内描述。下载、解码或模型
+调用失败时统一返回 ``None``，由调用方保留占位符，不得猜测图片内容。同步入站
+路径只传来源引用，不在这里完成任何下载或模型调用。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Protocol, Sequence
+from typing import Any, AsyncIterator, Callable, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
 import asyncio
 import base64
@@ -40,6 +40,8 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # 占位符保持稳定：描述成功时替换 [图片]，失败时原样保留。
 IMAGE_PLACEHOLDER = '[图片]'
 EMOJI_PLACEHOLDER = '[表情包]'
+# 入站历史只展示足以传达情绪的前两个标签，完整标签仍保留在描述对象与 emoji 表中。
+INBOUND_EMOJI_TAG_LIMIT = 2
 # QQ 图片 CDN 的防盗链要求：缺少 Referer 时返回 400「download url has expired」，
 # 实际链接并未过期；必须带上浏览器 UA 与同域 Referer 才能下载。
 _BROWSER_USER_AGENT = (
@@ -120,7 +122,13 @@ def merge_emoji_descriptions(
             break
         replacement = EMOJI_PLACEHOLDER
         if description is not None:
-            replacement = f'[表情包：{description.emotion_tags}]'
+            rendered_tags = [
+                tag.strip()
+                for tag in description.emotion_tags.split(',')
+                if tag.strip()
+            ][:INBOUND_EMOJI_TAG_LIMIT]
+            if rendered_tags:
+                replacement = f'[表情包：{",".join(rendered_tags)}]'
         merged = merged[:index] + replacement + merged[index + len(EMOJI_PLACEHOLDER):]
         position = index + len(replacement)
     return merged
@@ -133,15 +141,20 @@ class ChatImageDescriber:
         self,
         cfg: Config,
         provider: ImageDescriptionProvider | None,
+        emoji_tag_lookup: Callable[[str], str | None] | None = None,
     ) -> None:
         """绑定视觉模型配置与提供者。
 
         :param cfg: 提供视觉开关和生成参数的运行时配置。
-        :param provider: 可选的视觉模型提供者；为 ``None`` 时所有描述返回 ``None``。
+        :param provider: 可选的视觉模型提供者；为 ``None`` 时普通图片和未命中
+            标签库的表情包不产生描述。
+        :param emoji_tag_lookup: 按内容哈希读取既有表情标签的只读函数；命中时
+            表情包描述不调用视觉模型。
         副作用：只保存配置和空缓存，不建立网络连接。
         """
         self._cfg = cfg
         self._provider = provider
+        self._emoji_tag_lookup = emoji_tag_lookup
         # 视觉 Router 自己负责首字超时与候选切换；图片服务的总截止如果更短，
         # 会在 Router 形成 timeout 记录之前直接取消请求，使配置中的首字窗口失效。
         # 总截止至少覆盖一个完整首字窗口，再给短描述留出固定收尾时间。
@@ -307,12 +320,19 @@ class ChatImageDescriber:
 
         :param sources: 与正文 ``[表情包]`` 顺序一致的图片来源。
         :return: 成功项包含内容哈希、规范标签和原始字节；任一步骤失败为 ``None``。
-        副作用：下载来源并调用视觉模型；不写入表情包库。
+        副作用：下载来源；标签库未命中时调用视觉模型，不写入表情包库。
         """
 
-        if not sources or not self._cfg.vision.chat_image_enabled or self._provider is None:
+        if not sources:
             return [None for _ in sources]
-        if self._protocol_error:
+        if (
+            self._emoji_tag_lookup is None
+            and (
+                not self._cfg.vision.chat_image_enabled
+                or self._provider is None
+                or self._protocol_error
+            )
+        ):
             return [None for _ in sources]
 
         async def _describe_one(
@@ -333,6 +353,29 @@ class ChatImageDescriber:
                     return None
                 digest = hashlib.sha256(image_bytes).hexdigest()
                 media_type = _guess_media_type(image_bytes)
+                known_tags = (
+                    self._emoji_tag_lookup(digest)
+                    if self._emoji_tag_lookup is not None
+                    else None
+                )
+                if known_tags:
+                    trace.emit(
+                        'emoji_description_reused',
+                        hash=digest,
+                        source='emoji_table',
+                    )
+                    return DescribedEmoji(
+                        content_hash=digest,
+                        emotion_tags=known_tags,
+                        image_bytes=image_bytes,
+                        media_type=media_type,
+                    )
+                if (
+                    not self._cfg.vision.chat_image_enabled
+                    or self._provider is None
+                    or self._protocol_error
+                ):
+                    return None
                 raw_tags = await self._describe_with_prompt(
                     image_bytes,
                     media_type,

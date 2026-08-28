@@ -74,7 +74,7 @@ from .sub_agent import SubAgentCall, run_sub_agent
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.llm_models.protocol import LlmProvider
-from src.core.memory.store import MemoryStore
+from src.core.memory.store import MemoryStore, is_assistant_action_message
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
@@ -454,10 +454,13 @@ async def run_learning(
     batch = store.messages_after(stream_id, cursor, batch_messages)
     if not batch:
         return None
-    # 本批她一句话都没说时没什么可学（style 必须锚定她亲口说过的说法）。
-    # 游标照常推进：这不是失败，重跑同一批也不会多出她的发言。
+    # 本批她一句话都没说时没什么可学（style 必须锚定她亲口说过的说法）。助手
+    # 动作伪消息只供后续回合回看，不是她说出口的语料；游标仍照常推进。
     she_spoke = any(
-        message.role == 'assistant' and (message.content or '').strip() for message in batch
+        message.role == 'assistant'
+        and (message.content or '').strip()
+        and not is_assistant_action_message(message.content)
+        for message in batch
     )
     if she_spoke:
         pairs = await learn_expressions(

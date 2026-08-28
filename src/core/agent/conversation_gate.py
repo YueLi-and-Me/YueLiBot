@@ -28,6 +28,7 @@ from src.core.platform_io.types import StreamKind
 # DROP 原因：全部是确定、无语义争议的硬过滤，不承载「她大概不想说」。
 DROP_GATE_CODES: frozenset[str] = frozenset({
     'self_message',             # Bot 自己发的消息
+    'poke_flood',               # 同一 stream 在短窗口内被连续戳动
     'asleep',                   # 休眠
     'rate_limited',             # 频率窗口硬上限
     'attention_filtered',       # 无任何注意力信号，不值得进入意识
@@ -74,6 +75,11 @@ NATURAL_REPLY_WINDOW_MS = 90_000
 # - 群温吞时三分钟才两句，话题一点没变，只有条数接得住。
 ONGOING_TOPIC_MESSAGE_SPAN = 6
 
+# 戳一戳洪泛只使用这一组窗口与次数：同一 stream 的第 4 次及以后直接丢弃。
+# 它不复用回复频率窗口，因为两者统计的事件、时间尺度和用户意图都不同。
+POKE_FLOOD_WINDOW_MS = 60_000
+POKE_FLOOD_LIMIT = 4
+
 _DISPOSITION_CODE_SETS: dict[GateDisposition, frozenset[str]] = {
     'drop': DROP_GATE_CODES,
     'force': FORCE_GATE_CODES,
@@ -101,6 +107,8 @@ class GateRequest:
     # 戳一戳不带任何内容，强制回复会被连戳刷屏，而她的动作集里本来就有 poke，
     # 可以戳回去。因此只抬入 DELIBERATE，接不接由她自己决定。
     poked_me: bool = False
+    # 同一 stream 在洪泛窗口内的 poke 到达数，包含当前这一次；普通消息恒为 0。
+    pokes_in_window: int = 0
     # 本批是否包含「有人给 Bot 的消息贴了表情回应」。与戳一戳同口径只抬入
     # DELIBERATE：它是明确的社交反馈，但群里贴表情非常频繁，FORCE 会被刷屏；
     # 她自己的动作集里有 react，接不接由她自己决定。
@@ -124,6 +132,8 @@ class GateRequest:
         """拒绝负计数、零窗口上限与负回复间隔，防止频率比较被错误输入翻转。"""
         if self.replies_in_window < 0:
             raise ValueError('窗口内回复数不能为负')
+        if self.pokes_in_window < 0:
+            raise ValueError('窗口内戳一戳次数不能为负')
         if self.max_replies_in_window < 1:
             raise ValueError('窗口回复上限必须大于 0')
         if self.last_bot_reply_elapsed_ms is not None and self.last_bot_reply_elapsed_ms < 0:
@@ -186,12 +196,13 @@ def decide_disposition(request: GateRequest) -> GateResult:
 
     优先级从高到低：
     1. Bot 自己的消息直接 DROP，永不回环；
-    2. 用户发起的 QQ 私聊与桌面交互是明确问答契约，FORCE 且不允许 silent；
-    3. 群聊真实 @ 且 @必回开启时 FORCE（先于休眠与频率硬限）；
-    4. 休眠 DROP；
-    5. 频率窗口硬上限 DROP，但**只在没有任何直接点名信号时生效**：@、名字/别名、
+    2. 同一 stream 的 poke 达到洪泛上限时直接 DROP；
+    3. 用户发起的 QQ 私聊与桌面交互是明确问答契约，FORCE 且不允许 silent；
+    4. 群聊真实 @ 且 @必回开启时 FORCE（先于休眠与频率硬限）；
+    5. 休眠 DROP；
+    6. 频率窗口硬上限 DROP，但**只在没有任何直接点名信号时生效**：@、名字/别名、
        被戳、回复她的消息都不受该上限约束；
-    6. 任一便宜注意力信号命中则 DELIBERATE，全部未命中则按注意力过滤 DROP。
+    7. 任一便宜注意力信号命中则 DELIBERATE，全部未命中则按注意力过滤 DROP。
 
     :param request: 已按事实填充的门控输入。
     :return: 携带门控态与原因码的 GateResult。
@@ -199,6 +210,8 @@ def decide_disposition(request: GateRequest) -> GateResult:
     """
     if request.is_self_message:
         return GateResult('drop', ('self_message',))
+    if request.poked_me and request.pokes_in_window >= POKE_FLOOD_LIMIT:
+        return GateResult('drop', ('poke_flood',))
     if request.stream_kind in ('desktop', 'direct'):
         return GateResult('force', ('direct_conversation',))
     if request.mentioned_me and request.at_mention_must_reply:
