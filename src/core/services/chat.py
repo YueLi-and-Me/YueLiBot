@@ -168,30 +168,6 @@ MAX_TURN_ROUNDS = 10
 # 同时不至于让每句被等待的话都拖太久。
 DIRECT_WAIT_TIMEOUT_S = 10.0
 
-# 续跑轮插入在候选块与输出要求之间的提示模板，``recap`` 由回合循环填入她这一轮
-# 实际做过的事。两件事必须同时说清，缺任意一件续跑轮都会跑偏：
-#
-# 1. **她这一轮已经动过手了**。回合循环的收束靠她自己表态，不知道自己动过手就
-#    只会把刚说的话换个说法再说一遍——缺这条提示时同一批消息会被连续产出十次
-#    可见产物。
-# 2. **做了什么以这句为准，不依赖历史里那份副本**。
-#    - 现象：续跑轮的历史里可能一条真实消息都没有，只剩当前候选块。
-#    - 原因：``_order_working_memory_for_batch`` 会把跨轮落库的上一条回复插到
-#      当前批之前；一旦它落在历史开头（工作记忆窗口或字符预算的裁剪边界正好
-#      切在这里），``normalize_history`` 会按「system 之后必须由 user 起头」的
-#      端点要求丢掉开头的 assistant，她刚说的那句就此消失。react / poke 的动作
-#      历史也可能落在相同的裁剪边界上。
-#    - 后果：把这句提示改回「看上面历史最后一条」，她会在看不见自己发言的情况
-#      下对同一批消息重复表态。
-_CONTINUATION_NOTICE = (
-    '[本回合续跑] {recap}。这件事不一定出现在上面的历史里，以这句为准；'
-    '这里只判断刚才那件事是否还有没说完的。'
-    '确实还有要补的就继续；'
-    '已经说完了就用 silent 收束这一轮，'
-    '不要把刚说过的意思换个说法再说一遍。'
-)
-
-
 # 群历史首次回填时用于播种游标的历史条数与时间容差。
 _BACKFILL_SEED_EVENT_LIMIT = 500
 _BACKFILL_SEED_MESSAGE_LIMIT = 80
@@ -319,13 +295,11 @@ class _BatchGate:
 
 @dataclass(frozen=True)
 class _RoundResult:
-    """回合内一轮的收束原因，以及供下一轮续跑提示引用的动作事实。"""
+    """回合内一轮的收束原因。"""
 
-    # acted：产出了可见产物，还该再看一眼；declined：她表示这轮做完了；
+    # acted：产出了可见产物；declined：她表示这轮做完了；
     # paused：批次退回缓冲等下文；failed：模型或协议失败。
     reason: str
-    # 她这一轮做了什么的第一人称陈述；只有 acted 非空，其余分支没有可见产物。
-    recap: str = ''
 
 
 @dataclass(frozen=True)
@@ -3847,20 +3821,17 @@ class ChatService:
         self,
         frame: DecisionFrame,
         messages: list[dict],
-        continuation_recap: str = '',
         protocol_text: str | None = None,
     ) -> list[dict]:
         """把已渲染消息整理为 Conversation Agent 实际提交的上下文。
 
         XML 模式下，助手历史去掉 ``<say>`` 外壳，再在真实用户消息前插入
         reply/silent few-shot，并把输出要求并进末条用户消息。工具模式下不再做
-        任何角色重排或合并：system 之后的时间、画像、历史与续跑提示全部保持
-        独立 user item，工具/回复协议作为最后一项。
+        任何角色重排或合并：system 之后的时间、画像与历史保持独立 user item，
+        工具/回复协议作为最后一项。
 
         :param frame: 本回合固定快照，提供动作空间与可选消息。
         :param messages: ``_render_prepared_context`` 产出的系统与历史消息。
-        :param continuation_recap: 续跑轮里她上一轮做了什么；非空时按
-            ``_CONTINUATION_NOTICE`` 渲染成提示，插在候选块与输出指令之间。
         :param protocol_text: 工具模式必需的末轮协议；XML 模式已在 system 内，
             因此忽略该参数。
         :return: 按当前协议模式整理完成的新消息列表。
@@ -3880,11 +3851,6 @@ class ChatService:
                     f'工具调用的 item 流只能包含 user 上下文，收到：{invalid_roles}'
                 )
             flattened = [dict(item) for item in messages]
-            if continuation_recap:
-                flattened.append({
-                    'role': 'user',
-                    'content': _CONTINUATION_NOTICE.format(recap=continuation_recap),
-                })
             flattened.append({
                 'role': 'user',
                 'content': protocol_text.rstrip(),
@@ -3919,13 +3885,8 @@ class ChatService:
             history[last_user_index],
         ]
         last_user_index = len(history) - 1
-        # 续跑提示并进候选块所在的这条 user 消息，而不是再追加一条：输出要求必须
-        # 留在整个序列的最末，它是生成侧最近的约束，被别的文字挤开之后动作头就
-        # 不再是模型最先要交代的东西。
-        continuation = (
-            _CONTINUATION_NOTICE.format(recap=continuation_recap) + '\n\n'
-            if continuation_recap else ''
-        )
+        # 输出要求并进候选块所在的这条 user 消息，而不是再追加一条：它必须留在
+        # 整个序列的最末，才能成为生成侧最近、最先需要满足的约束。
         output_rule = (
             '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
             '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 '
@@ -3935,9 +3896,8 @@ class ChatService:
             **history[last_user_index],
             'content': (
                 f"{history[last_user_index]['content']}\n\n"
-                f'{continuation}'
                 f'{output_rule}'
-            ).rstrip() if (continuation or output_rule) else history[last_user_index]['content'],
+            ).rstrip(),
         }
         return [
             messages[0],
@@ -4126,8 +4086,6 @@ class ChatService:
         # 都是「这个回合发生过什么」的账，逐轮各记一遍会让多轮回合把人格推动几倍。
         acted = False
         exhausted = True
-        # 上一轮的动作事实；首轮为空，此后每轮由 _RoundResult 带过来。
-        recap = ''
         for round_index in range(MAX_TURN_ROUNDS):
             if cancel_event.is_set():
                 exhausted = False
@@ -4149,13 +4107,11 @@ class ChatService:
                 sender,
                 render_params,
                 allow_wait=allow_wait and round_index == 0,
-                continuation_recap=recap,
             )
             acted = acted or result.reason == 'acted'
             if result.reason != 'acted':
                 exhausted = False
                 break
-            recap = result.recap
         if exhausted:
             logger.warning(
                 'conversation_turn_rounds_exhausted',
@@ -4206,7 +4162,6 @@ class ChatService:
         sender: Dict[str, str],
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
-        continuation_recap: str = '',
     ) -> _RoundResult:
         """执行**一轮** Conversation Agent 调用并处理其结果。
 
@@ -4214,12 +4169,7 @@ class ChatService:
         消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
         流出任何正文，按失败状态呈现。
 
-        :param continuation_recap: 上一轮她做了什么的第一人称陈述；非空即表示
-            本轮是回合内的续跑轮，据此在候选块与输出要求之间插入续跑提示。她的
-            上一句话在历史里可能已被裁掉，因此这个事实必须由调用方带进来，不能
-            让她去历史里找（详见 ``_CONTINUATION_NOTICE``）。
-        :return: 本轮的收束原因与动作事实，由 ``_run_conversation_turn`` 据此决定
-            继续还是退出循环，并把动作事实转交下一轮。
+        :return: 本轮的收束原因，由 ``_run_conversation_turn`` 据此结算回合。
         """
         frame = self._agent_frame(
             context,
@@ -4253,7 +4203,6 @@ class ChatService:
         messages = self._render_agent_messages(
             frame,
             rendered,
-            continuation_recap=continuation_recap,
             protocol_text=protocol_text,
         )
         self._mark_stage(context, GENERATING, turn_id=turn)
@@ -4301,7 +4250,6 @@ class ChatService:
             messages = self._render_agent_messages(
                 frame,
                 replyer_context,
-                continuation_recap=continuation_recap,
                 protocol_text=replyer_protocol,
             )
             trace.emit(
@@ -4421,15 +4369,15 @@ class ChatService:
             self._hold_batch_for_wait(context, batch, turn, outcome)
             return _RoundResult('paused')
         if outcome.decision.action == 'poke':
-            recap = await self._apply_poke(
+            await self._apply_poke(
                 context, batch, turn, outcome, frame, gate_inputs, batch_gate,
             )
-            return _RoundResult('acted', recap)
+            return _RoundResult('acted')
         if outcome.decision.action == 'react':
-            recap = await self._apply_reaction(
+            await self._apply_reaction(
                 context, turn, outcome, frame, gate_inputs, batch_gate,
             )
-            return _RoundResult('acted', recap)
+            return _RoundResult('acted')
         # speak 与 reply 的产物形态完全相同（正文 + 可选表情包），区别只在有没有
         # 目标消息，因此共用下面这条持久化与投递路径；_quote_target 对空目标返回
         # None，speak 自然不会挂引用。
@@ -4491,7 +4439,7 @@ class ChatService:
         # 她刚开过口，对话仍在她这边：重新敞开自然回应窗口，让紧接着说的话
         # 不必再经过回复必要性评分就能进入她的视野。
         self._follow_up_declined.discard(context.stream.id)
-        return _RoundResult('acted', _spoken_recap(sink.segments, sink.emoji_items))
+        return _RoundResult('acted')
 
     def _hold_batch_for_wait(
         self,
@@ -4551,7 +4499,7 @@ class ChatService:
         frame: DecisionFrame,
         gate_inputs: GateInputFacts,
         batch_gate: _BatchGate,
-    ) -> str:
+    ) -> None:
         """戳一戳目标消息的发送者。
 
         目标沿用消息编号而不是新开一个「人物编号」目标空间：跨人物选目标那件事
@@ -4566,7 +4514,8 @@ class ChatService:
         :param gate_inputs: 第 1 层确定性输入事实。
         :param batch_gate: 本批门控结果。
 
-        :return: 供续跑轮引用的动作事实。
+        :return: 无返回值。此方法只负责投递与落动作历史；原返回字符串只服务于
+            已删除的跨轮摘要，保留它会制造不存在的消费契约。
         :raises RuntimeError: 目标消息不在本批内，或发送者没有该平台身份。
         :raises DeliveryError: 平台驱动不支持戳一戳或调用失败。
         副作用：调用平台驱动并写入投递观察事件；失败追加 delivery_failed 事件再上抛。
@@ -4631,7 +4580,6 @@ class ChatService:
             current_time(),
         )
         self._mark_stage(context, REPLIED, '戳了一下', turn_id=turn)
-        return f'你刚戳了 {target_name} 一下'
 
     async def _apply_reaction(
         self,
@@ -4641,7 +4589,7 @@ class ChatService:
         frame: DecisionFrame,
         gate_inputs: GateInputFacts,
         batch_gate: _BatchGate,
-    ) -> str:
+    ) -> None:
         """投递一次表情回应，并按与回复相同的口径结算人格。
 
         表情回应虽然没有正文，也是一项已经发生的可见动作；成功后以动作事实写入
@@ -4657,7 +4605,8 @@ class ChatService:
         :param gate_inputs: 第 1 层确定性输入事实。
         :param batch_gate: 本批门控结果。
 
-        :return: 供续跑轮引用的动作事实。
+        :return: 无返回值。此方法只负责投递、人格结算与落动作历史；原返回字符串
+            只服务于已删除的跨轮摘要，保留它会制造不存在的消费契约。
         :raises RuntimeError: 目标消息没有平台编号，或非桌面 stream 未配置 broker。
         :raises DeliveryError: 平台驱动不支持表情回应或调用失败。
 
@@ -4714,7 +4663,6 @@ class ChatService:
         self._mark_stage(
             context, REPLIED, f'贴了个「{outcome.decision.reaction}」', turn_id=turn,
         )
-        return f'你刚给消息 [{target_id}] 贴了个「{outcome.decision.reaction}」'
 
     async def _handle_live_drop(
         self,
@@ -5581,22 +5529,6 @@ def _emoji_history_markup(items: list[tuple[str, str, int]]) -> str:
         f'<emoji emotion="{escape(emotion, quote=True)}"/>'
         for emotion, _reference, _sub_type in items
     )
-
-
-def _spoken_recap(segments: list[str], emoji_items: list[tuple[str, str, int]]) -> str:
-    """把一轮回复的可见产物写成她自己的第一人称陈述，供续跑轮引用。
-
-    :param segments: 本轮实际投递的分句正文。
-    :param emoji_items: 本轮实际命中的表情包条目。
-    :return: 形如「你刚说了：「……」」的陈述；只发了表情包时如实只说表情包。
-    """
-
-    spoken = ' '.join(segment.strip() for segment in segments if segment.strip())
-    if spoken and emoji_items:
-        return f'你刚说了：「{spoken}」，还发了个表情包'
-    if spoken:
-        return f'你刚说了：「{spoken}」'
-    return '你刚发了个表情包'
 
 
 def _plan_to_dict(plan: DayPlan | None) -> dict | None:
