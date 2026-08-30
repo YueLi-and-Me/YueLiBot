@@ -3,13 +3,11 @@
 职责：
 1. 登记动作（封闭动作枚举）与外部工具，重名直接拒绝——工具名是模型可见的
    协议面，冲突必须当场暴露而不是静默覆盖；
-2. 按回合帧生成模型可见的工具声明：动作声明与 ``src.core.agent.tool_schema``
+2. 认知动作绑定工具执行器：终局动作的执行继续走 ConversationAgent 的动作头
+   结算，认知动作统一经 ToolExecutor 执行；
+3. 按回合帧生成模型可见的工具声明：动作声明与 ``src.core.agent.tool_schema``
    同源生成，外部工具声明由 ToolSpec 派生并按帧能力过滤；
-3. 按工具名解析登记项，供执行阶段区分动作路径与工具路径。
-
-动作工具的执行不在本模块：动作路径继续走 ConversationAgent 的动作头结算，
-认知动作执行器的迁移与多工具执行语义属于后续批次；本模块当前只统一「声明从
-哪里来」，执行路径原样保留。
+4. 按工具名解析登记项，供执行阶段区分动作路径与工具路径。
 
 依赖：``src.core.agent.action_protocol``（动作枚举与回合帧）、
 ``src.core.agent.tool_schema``（动作声明同源生成）、``spec`` 与
@@ -71,6 +69,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         """创建一个尚未登记任何条目的空注册表。"""
         self._action_names: Dict[str, None] = {}
+        self._action_executors: Dict[str, ToolExecutor] = {}
         self._tools: Dict[str, RegisteredTool] = {}
 
     def register_action(self, action: ConversationAction) -> None:
@@ -83,6 +82,25 @@ class ToolRegistry:
         name = str(action).strip()
         self._reject_duplicate(name)
         self._action_names[name] = None
+
+    def bind_action_executor(self, action: ConversationAction, executor: ToolExecutor) -> None:
+        """给一个已登记的认知动作绑定工具执行器。
+
+        终局动作的执行继续走动作头结算路径，不允许绑定执行器；认知动作必须
+        绑定，执行阶段解析不到执行器时按装配错误处理，不做任何降级。
+
+        :param action: 动作枚举值，必须已登记且属于认知动作。
+        :param executor: 按统一工具协议执行的检索实现。
+        :raises ValueError: 动作未登记、不是认知动作或已绑定执行器。
+        """
+        name = str(action).strip()
+        if name not in self._action_names:
+            raise ValueError(f'动作 {name} 未登记，无法绑定执行器')
+        if action not in COGNITIVE_ACTIONS:
+            raise ValueError(f'终局动作 {name} 不允许绑定执行器')
+        if name in self._action_executors:
+            raise ValueError(f'认知动作 {name} 已绑定执行器，不允许重复绑定')
+        self._action_executors[name] = executor
 
     def register_tool(self, spec: ToolSpec, executor: ToolExecutor) -> None:
         """登记一条外部工具。
@@ -103,7 +121,11 @@ class ToolRegistry:
         """
         name = tool_name.strip()
         if name in self._action_names:
-            return ResolvedTool(kind='action', name=name)
+            return ResolvedTool(
+                kind='action',
+                name=name,
+                executor=self._action_executors.get(name),
+            )
         registered = self._tools.get(name)
         if registered is not None:
             return ResolvedTool(

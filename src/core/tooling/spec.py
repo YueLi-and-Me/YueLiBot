@@ -130,6 +130,8 @@ class ToolContext:
 
     :ivar stream_id: 当前会话分区编号。
     :ivar stream_kind: 会话类型；工具可用此字段自行区分群聊与私聊语义。
+    :ivar person_ids: 检索范围覆盖的人物编号；认知工具据此限定事实检索的
+        在场者范围，与回合固定快照同一性质：范围在回合开始时定死。
     :ivar frame: 本回合固定快照；含水位、可选消息与平台能力，工具只读不写。
     :ivar turn_id: 回合编号。
     :ivar snapshot_id: 回合快照标识。
@@ -142,6 +144,7 @@ class ToolContext:
     frame: DecisionFrame
     turn_id: int
     snapshot_id: str
+    person_ids: tuple[int, ...] = ()
     clock: Callable[[], int] = current_time
 
     def __post_init__(self) -> None:
