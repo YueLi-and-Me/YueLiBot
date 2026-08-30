@@ -93,7 +93,7 @@ class NapcatRunner:
         # 被引用消息 ID -> 已渲染的引用摘要，避免同一条消息被反复引用时重复查询。
         self._quote_previews: Dict[str, str] = {}
         # 消息 ID -> 该消息是否 Bot 自己发的。表情回应通知不携带目标消息的发送者，
-        # 必须查一次协议端才能判断「回应是不是给她的」；同一条消息往往连着多个
+        # 必须查一次协议端才能判断「回应是不是给 Bot 的」；同一条消息往往连着多个
         # 回应，缓存避免反复查询。
         self._own_message_ids: Dict[str, bool] = {}
 
@@ -111,64 +111,70 @@ class NapcatRunner:
             return
 
         retry_count = 0
-        while True:
-            try:
-                # 先确认协议端实际登录身份，再建立主体连接，避免向错误账号发送消息。
-                self_id = await self._transport.connect()
-                self_name = self._transport.self_name
-                _check_self_qq_matches(self._config.napcat.self_qq, self_id)
-                await self._backend.connect()
-                await self._backend.link_owner_identity(self._config.owner.qq)
-                # 只回填观察上下文，不触发回复；失败不阻断连接建立。
-                await self._backfill_recent_group_history(self_id, self_name)
-                self._connected_once = True
-                logger.info(
-                    'QQ 适配器已连接',
-                    protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
-                    selfId=self_id,
-                    selfName=self_name,
-                    backendPort=self._backend_port,
-                    retryCount=retry_count,
-                )
-                retry_count = 0
-                await self._serve_connected(self_id, self_name)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await self._backend.close()
-                await self._transport.close()
-                if not _is_retryable(exc):
-                    logger.error(
-                        'QQ 适配器启动失败，停止重试',
+        # finally 兜底：Ctrl+C 走 CancelledError 时此前不关闭连接（幂等，与
+        # except 分支里的重复关闭不冲突）。
+        try:
+            while True:
+                try:
+                    # 先确认协议端实际登录身份，再建立主体连接，避免向错误账号发送消息。
+                    self_id = await self._transport.connect()
+                    self_name = self._transport.self_name
+                    _check_self_qq_matches(self._config.napcat.self_qq, self_id)
+                    await self._backend.connect()
+                    await self._backend.link_owner_identity(self._config.owner.qq)
+                    # 只回填观察上下文，不触发回复；失败不阻断连接建立。
+                    await self._backfill_recent_group_history(self_id, self_name)
+                    self._connected_once = True
+                    logger.info(
+                        'QQ 适配器已连接',
                         protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
-                        error=str(exc),
+                        selfId=self_id,
+                        selfName=self_name,
+                        backendPort=self._backend_port,
+                        retryCount=retry_count,
                     )
-                    raise RuntimeError(f'QQ 适配器启动失败，已停止重试：{exc}') from exc
+                    retry_count = 0
+                    await self._serve_connected(self_id, self_name)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await self._backend.close()
+                    await self._transport.close()
+                    if not _is_retryable(exc):
+                        logger.error(
+                            'QQ 适配器启动失败，停止重试',
+                            protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
+                            error=str(exc),
+                        )
+                        raise RuntimeError(f'QQ 适配器启动失败，已停止重试：{exc}') from exc
 
-                # 可恢复故障使用退避重试；仅首次失败记录完整警告，后续降低日志级别。
-                retry_count += 1
-                delay = _retry_delay(
-                    self._config.napcat.reconnect_interval_sec,
-                    retry_count,
-                )
-                phase = '重连' if self._connected_once else '首次连接'
-                log_fields = {
-                    'protocol': f'{self._config.napcat.host}:{self._config.napcat.port}',
-                    'intervalSec': delay,
-                    'retryCount': retry_count,
-                    'error': str(exc),
-                }
-                if retry_count == 1:
-                    logger.warning(
-                        f'QQ 协议端{phase}暂不可用，准备重试；请确认协议端已启动且连接已启用',
-                        **log_fields,
+                    # 可恢复故障使用退避重试；仅首次失败记录完整警告，后续降低日志级别。
+                    retry_count += 1
+                    delay = _retry_delay(
+                        self._config.napcat.reconnect_interval_sec,
+                        retry_count,
                     )
-                else:
-                    logger.debug(
-                        f'QQ 协议端{phase}仍不可用，继续重试',
-                        **log_fields,
-                    )
-                await asyncio.sleep(delay)
+                    phase = '重连' if self._connected_once else '首次连接'
+                    log_fields = {
+                        'protocol': f'{self._config.napcat.host}:{self._config.napcat.port}',
+                        'intervalSec': delay,
+                        'retryCount': retry_count,
+                        'error': str(exc),
+                    }
+                    if retry_count == 1:
+                        logger.warning(
+                            f'QQ 协议端{phase}暂不可用，准备重试；请确认协议端已启动且连接已启用',
+                            **log_fields,
+                        )
+                    else:
+                        logger.debug(
+                            f'QQ 协议端{phase}仍不可用，继续重试',
+                            **log_fields,
+                        )
+                    await asyncio.sleep(delay)
+        finally:
+            await self._backend.close()
+            await self._transport.close()
 
     async def _serve_connected(self, self_id: str, self_name: str) -> None:
         """并发运行协议入站和主体出站两个消费者。
@@ -348,15 +354,15 @@ class NapcatRunner:
     ) -> bool:
         """判断被贴表情回应的那条消息是不是 Bot 自己发的。
 
-        协议端为群里的**所有**回应都推送 group_msg_emoji_like，通知里只有
-        目标消息 ID、没有发送者；不查一次就会把群里所有人的回应都当成给她的。
+        协议端为群里所有回应都推送 group_msg_emoji_like，通知里只有
+        目标消息 ID、没有发送者；不查询一次就会把群里所有人的回应都当成给 Bot 的。
         查询结果按消息 ID 缓存：同一条消息经常连着多个回应，逐次查询会放大
         串行入站循环的往返次数。
 
         :param message_id: 被回应消息的平台编号。
         :param self_id: 机器人登录 QQ 号。
         :return: 目标消息发送者是 Bot 时返回 True；查询失败一律按不是处理，
-            宁可漏一条回应，也不能把群里的回应错当成给她的。
+            漏一条回应的代价低于把群里回应错记为给 Bot 的。
         副作用：调用一次 get_msg 并写入消息归属缓存。
         """
         cached = self._own_message_ids.get(message_id)
@@ -399,7 +405,7 @@ class NapcatRunner:
         答非所问；引用同时又是触发必回的强信号，所以这类盲回占比很高。
 
         :param raw_segments: 该消息的消息段列表。
-        :param self_id: 机器人登录 QQ 号，用于识别引用的是她自己的消息。
+        :param self_id: 机器人登录 QQ 号，用于识别引用的是 Bot 自己的消息。
         :param self_name: 机器人显示名，用于渲染引用自身消息的摘要。
         :return: 被引用消息 ID 到摘要文本的映射；还原失败的 ID 不出现在映射里。
         副作用：对未缓存的被引用消息调用一次 ``get_msg``，并写入摘要缓存。
@@ -647,10 +653,10 @@ class NapcatRunner:
                     )
                 continue
             if kind == 'poke':
-                # 通知不带昵称与群名片，必须先查一次成员信息再提交：主体的
-                # set_group_card 把空串视为「清除名片」，用空值提交会把发起者
-                # 已存的群名片抹掉。查不到就只记日志不提交——宁可这一戳不进意识，
-                # 也不能拿空名字污染人物档案。
+                # 通知不带昵称与群名片，必须先查询一次成员信息再提交：主体的
+                # set_group_card 将空串视为「清除名片」，以空值提交会清除发起者
+                # 已存的群名片。查询失败时仅记日志不提交：放弃本次入站，
+                # 不以空名字写入人物档案。
                 poke_group_id = _optional_text(payload.get('group_id'))
                 poke_user_id = _optional_text(payload.get('user_id'))
                 nickname, group_card = await self._query_member_identity(
@@ -685,7 +691,7 @@ class NapcatRunner:
                 continue
             if kind == 'emoji_like':
                 # 回应通知不带昵称与群名片，且不携带目标消息的发送者：先确认
-                # 被贴表情的是不是她的消息（协议端只推「群里有回应」，谁的都推），
+                # 被贴表情的是不是 Bot 的消息（协议端只推「群里有回应」，谁的都推），
                 # 再查发起者成员信息，两步与戳一戳同口径——查不到就只记日志不提交。
                 like_group_id = _optional_text(payload.get('group_id'))
                 like_user_id = _optional_text(payload.get('user_id'))
@@ -826,7 +832,7 @@ class NapcatRunner:
                 delays = _batch_delays_seconds(outbound)
                 for index, message_segments in enumerate(message_batches):
                     # 打字节奏由主体按人格配置算好，适配器只负责照做；首项恒为 0，
-                    # 因为模型生成本身已经占了十几秒，她在对方视角里早就在打字了。
+                    # 因为模型生成本身已经占了十几秒，Bot 在对方视角里早就在打字了。
                     #
                     # 等待发生在出站消费循环内，会顺带推迟其它 stream 的这一轮
                     # 投递。选择阻塞而不是并发发送，是为了保住同一 stream 内的
