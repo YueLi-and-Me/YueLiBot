@@ -54,7 +54,7 @@ from src.core.agent.conversation_gate import (
     GateRequest,
     GateResult,
     ONGOING_TOPIC_MESSAGE_SPAN,
-    POKE_FLOOD_WINDOW_MS,
+    POKE_SIGNAL_WINDOW_MS,
     decide_disposition,
     mentions_bot_name,
 )
@@ -148,6 +148,7 @@ from src.core.prompts.registry import (
     prompt_metadata,
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
+from src.core.tooling.registry import build_builtin_action_registry
 
 logger = get_logger(__name__)
 
@@ -183,10 +184,9 @@ SCENE_WINDOW_MESSAGES = 60
 # 控制流时意外失控。当前路径永远不会撞到它，详见 ``_run_conversation_turn``。
 MAX_TURN_ROUNDS = 10
 
-# 私聊等待的下文超时。群聊可以「等着等着就算了」（没有下文就一直沉默），私聊
-# 对面是一个在等回应的具体的人，超时后必须把这半句话接住，否则等待动作会把
-# 私聊变成永久已读不回。取值覆盖人与人连发两条消息的常见间隔（两到五秒），
-# 同时不至于让每句被等待的话都拖太久。
+# 私聊等待的下文超时。群聊在无下文时保持沉默；私聊对方正在等待回应，
+# 超时后必须回应，否则等待会变成永久已读不回。取值覆盖连发两条消息的常见
+# 间隔（两到五秒），同时避免单句等待时间过长。
 DIRECT_WAIT_TIMEOUT_S = 10.0
 
 # 群历史首次回填时用于播种游标的历史条数与时间容差。
@@ -282,6 +282,10 @@ class _BufferedMessage:
     accepted_at: int
     # 后台图片描述任务；结果为补齐描述后的完整正文，回合构建前必须等待。
     image_description_task: asyncio.Task[str] | None = None
+    # 入口门控判定过的戳一戳事实，批次门控据此读同一份事实：不重算信号窗口，
+    # 也不拿适配器合成的正文做名字匹配。
+    poked_me: bool = False
+    pokes_in_window: int = 0
 
 
 @dataclass
@@ -369,7 +373,7 @@ class _BatchGate:
 class _RoundResult:
     """回合内一轮的收束原因。"""
 
-    # acted：产出了可见产物；declined：她表示这轮做完了；
+    # acted：产出了可见产物；declined：Bot 表示这轮做完了；
     # paused：批次退回缓冲等下文；failed：模型或协议失败。
     reason: str
 
@@ -455,7 +459,7 @@ class ChatService:
         self._vector = vector or VectorService(None, None)
         self._cfg = cfg
         self._bot_display_name = cfg.bot.name
-        # 黑话召回的服务级状态：她自己的名字与别名（含对用户的称呼）永不作为
+        # 黑话召回的服务级状态：Bot 自己的名字与别名（含对用户的称呼）永不作为
         # 黑话注入；已注入集合做跨轮去重，进程内、重启即消失。
         self._jargon_protected_names: tuple[str, ...] = (
             cfg.bot.name, *cfg.bot.aliases, cfg.bot.user_nickname,
@@ -468,7 +472,7 @@ class ChatService:
         self._summarize_trigger_messages = conversation.summarize_trigger_messages
         self._summarize_batch_messages = conversation.summarize_batch_messages
         # 事实抽取与摘要同形态但各走各的游标：摘要用 episode_id 表达「已消费」，
-        # 抽取用 meta 里的独立游标，两者共用同一判据会互相吃掉输入且不报错。
+        # 抽取用 meta 里的独立游标，共用同一判据会相互消费对方的输入且不报错。
         self._memory_provider = memory_provider
         if memory_provider is None:
             # 没有 memory 路由时抽取整条功能是关的。这句必须在启动时说出来：
@@ -509,22 +513,22 @@ class ChatService:
         self._scene_refresh_messages = cfg.group_chat.scene_refresh_messages
         # 同一 stream 同时只跑一个观察任务；观察比对话慢得多，重入只会互相盖写。
         self._observing: set[int] = set()
-        # stream_id -> 进入等待时的缓冲长度。她选择「先等等」之后，本批消息被放回
+        # stream_id -> 进入等待时的缓冲长度。Bot 选择「先等等」之后，本批消息被放回
         # 缓冲；在缓冲长度没有变化（也就是没有任何新消息进来）之前不再重开回合，
         # 否则轮询周期一到就会把同一批重新问一遍模型。
         self._waiting: dict[int, _WaitHold] = {}
         self._speak_enabled = cfg.group_chat.self_started_topics
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
-        # 已经放弃自然跟进的群 stream。她在群聊里选择 silent 即加入，成功回复即移出；
-        # 门控据此关闭自然回应窗口，让「说够了没有」由她自己的动作决定而不是回复计数。
+        # 已经放弃自然跟进的群 stream。Bot 在群聊里选择 silent 即加入，成功回复即移出；
+        # 门控据此关闭自然回应窗口，让「说够了没有」由 Bot 自己的动作决定而不是回复计数。
         self._follow_up_declined: set[int] = set()
         # 同一 stream 最近 60 秒的 poke 到达时间。只登记协议明确标记的 poked_me，
         # 普通消息与适配器合成正文都不能影响该计数；重启后清空符合短窗口语义。
         self._poke_arrivals: Dict[int, Deque[int]] = {}
         # 决策与表达是否分成两次模型调用。三个条件缺一不可：配置打开、两级各自
         # 的 provider 都在。配置打开但 provider 缺位时保持单次调用，而不是让回合
-        # 在运行期才失败——那会表现为她突然不说话，现场极难定位。
+        # 在运行期才失败——那会表现为 Bot 突然不说话，现场极难定位。
         self._split_replyer = (
             conversation_agent_cfg.split_replyer
             and planner_provider is not None
@@ -536,6 +540,9 @@ class ChatService:
         # 拆分后决策走 planner 槽、表达走 replyer 槽；两个槽留空即继承 chat，
         # 因此不配模型也能打开开关，只是两级用同一个模型、延迟收益为零。
         decision_provider = planner_provider if self._split_replyer else chat_provider
+        # 工具注册表按进程装配一次：动作登记与会话无关，声明按回合帧动态生成，
+        # 注册表只负责统一命名空间与声明入口，不持有任何会话状态。
+        self._tool_registry = build_builtin_action_registry()
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
@@ -554,6 +561,7 @@ class ChatService:
                 replyer_temperature=self._replyer_temperature,
                 replyer_max_tokens=self._replyer_max_tokens,
                 tool_calling=self._tool_calling,
+                tool_registry=self._tool_registry,
             )
             if decision_provider is not None and conversation_agent_cfg.mode != 'off'
             else None
@@ -605,7 +613,7 @@ class ChatService:
                 RecallAction(self.memory, self._registry.stream_display_name, db),
                 InspectAction(self.memory, self._registry.stream_display_name),
                 # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；
-                # 执行器缺这一条就会在她真的选中时撞 KeyError，装配必须同步。
+                # 执行器缺这一条就会在 Bot 真的选中时撞 KeyError，装配必须同步。
                 ConsultAction(db, embed_query=self._vector.embed_query),
             ])
             if self._cognitive_rounds > 0
@@ -823,8 +831,22 @@ class ChatService:
                 await asyncio.wait_for(task, timeout=5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 task.cancel()
+        # interrupt 只置取消事件；provider 在 SSE 行边界检查取消信号，被中断的
+        # 回合正常远小于 1 秒就能收尾。先快照在飞任务再统一 interrupt，然后有界
+        # 等待它们收尾，3 秒只是防止事件循环拆除时任务被直接销毁的兜底。
+        inflight_tasks = [
+            inflight.task
+            for inflight in tuple(self._inflight.values())
+            if not inflight.task.done()
+        ]
         for stream_id in tuple(self._inflight):
             self.interrupt(stream_id)
+        if inflight_tasks:
+            _, pending = await asyncio.wait(inflight_tasks, timeout=3)
+            for pending_task in pending:
+                pending_task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
     async def _poll_loop(self) -> None:
         """在消息到达时处理缓冲区，并用固定间隔心跳兜底。"""
@@ -859,10 +881,9 @@ class ChatService:
                 len(buffered),
             )
             batch = buffered[:boundary]
-            # 等待中的 stream 只被新消息唤醒：她要等的就是「对方把话说完」，
-            # 没有下文就一直等着——这与真人「等着等着就算了」是同一个行为，
-            # 而不是卡住：任何一条新消息都会解除等待并强制她表态。
-            # 私聊例外：对面是一个在等回应的人，等到超时就必须把这半句话接住，
+            # 等待中的 stream 只被新消息唤醒：无下文时保持等待是设计行为而非
+            # 停滞，任何一条新消息都会解除等待并要求 Bot 表态。
+            # 私聊例外：对面是一个在等回应的人，等到超时就必须对这半句话表态，
             # 否则 wait 会把私聊变成永久已读不回。
             waiting_at = self._waiting.get(stream_id)
             if waiting_at is not None and len(buffered) <= waiting_at.watermark:
@@ -943,6 +964,8 @@ class ChatService:
             previous_message_at=previous_message_at,
             accepted_at=accepted_at,
             image_description_task=image_task,
+            poked_me=inbound.poked_me,
+            pokes_in_window=inbound.pokes_in_window,
         ))
         self._wake.set()
 
@@ -1080,6 +1103,12 @@ class ChatService:
         if any(message.context.stream.id != stream_id for message in batch):
             raise ValueError('同一回复批次只能包含一个 stream')
         trimmed = '\n'.join(message.text for message in batch)
+        # 戳一戳的正文由适配器合成（形如「[揉了揉月璃]」），其中的 Bot 名字不是任何人
+        # 说出的点名信号。名字匹配必须排除这些行，否则入口门控刚排除掉的合成点名会在
+        # 批次门控原样复活，审计事件报告的门控态也会与入口对不上。
+        name_match_text = '\n'.join(
+            message.text for message in batch if not message.poked_me
+        )
         inbound = InboundMessage(
             text=trimmed,
             context=context,
@@ -1087,6 +1116,12 @@ class ChatService:
             bot_name=next(
                 (message.bot_name for message in reversed(batch) if message.bot_name is not None),
                 None,
+            ),
+            poked_me=any(message.poked_me for message in batch),
+            # 入口对每一次到达各记一次；批次里取最大值即「这一批最靠后的那次戳在
+            # 窗口里排第几」，与入口对同一条消息的判定完全一致。
+            pokes_in_window=max(
+                (message.pokes_in_window for message in batch), default=0,
             ),
         )
 
@@ -1195,6 +1230,9 @@ class ChatService:
                     trimmed,
                     inbound.mentioned_me,
                     candidate_count=len(materialized_batch),
+                    poked_me=inbound.poked_me,
+                    pokes_in_window=inbound.pokes_in_window,
+                    name_match_text=name_match_text,
                 )
                 if batch_gate.result.reason_codes[0] in (
                     'frequency_wait',
@@ -1376,7 +1414,7 @@ class ChatService:
                     context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn,
                 )
                 self._arm_direct_follow_up(context)
-                # 她刚开过口，对话仍在她这边：与 Agent 路径同口径重新敞开自然回应窗口。
+                # Bot 刚开过口，对话仍在 Bot 这边：与 Agent 路径同口径重新敞开自然回应窗口。
                 self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
                 asyncio.create_task(self._maybe_extract_facts(context.stream.id))
@@ -1462,7 +1500,7 @@ class ChatService:
         return turn
 
     def claim_stream(self, stream_id: int, source: str) -> bool:
-        """尝试为一个驱动源占用 stream，只在**跨源**抢占失败时记录竞争。
+        """尝试为一个驱动源占用 stream，只在跨源抢占失败时记录竞争。
 
         :param stream_id: 待占用的会话流主键。
         :param source: 驱动源标识，当前为 ``reply`` 或 ``proactive``。
@@ -1476,7 +1514,7 @@ class ChatService:
         # 同源抢占失败不是竞争，是系统循环按设计在等：回合在飞时缓冲区仍有消息，
         # _tick 每 CHAT_POLL_INTERVAL_S（0.1 秒）就会再试一次。
         # - 现象：改动前这里无条件发事件，真机 30 小时产出 14153 条 turn_competition，
-        #   占全部控制台输出的 80%，且 activeSource 与 blockedSource **无一例外相同**。
+        #   占全部控制台输出的 80%，且 activeSource 与 blockedSource 无一例外相同。
         # - 原因：轮询循环的每一次空转都被当成了一次值得上报的竞争。
         # - 后果：真正有价值的跨源竞争（reply 与 proactive 抢同一个 stream）被淹没在
         #   同源噪声里，30 小时内一条都没能被看见。
@@ -1560,7 +1598,7 @@ class ChatService:
             ))
             self._track_background_task(task)
         self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
-        # 只观察不回复的群消息同样推进场景：她对群里的理解不该只在自己开口时才更新。
+        # 只观察不回复的群消息同样推进场景：Bot 对群里的理解不该只在自己开口时才更新。
         self._schedule_scene_observation(context)
         return message_id
 
@@ -1626,7 +1664,7 @@ class ChatService:
 
         优先使用 pipeline_events 中仍可追溯的外部消息 ID；旧事件没有该字段时，
         再用 ``messages`` 表最近用户消息的正文与时间窗匹配历史条目。两类数据
-        都无法确认边界时返回 ``0``，此时仍按原逻辑逐条查重。
+        均无法确认边界时返回 ``0``，此时仍按原逻辑逐条查重。
 
         :param stream_id: 目标群 stream ID。
         :param messages: 按时间升序排列的待回填消息。
@@ -1960,12 +1998,12 @@ class ChatService:
     async def note_peer_typing(self, context: ConversationContext) -> bool:
         """收到「对方正在输入」通知，让行动核心决定是否值得据此追问。
 
-        协议端在对方打字期间反复推送该通知，绝大多数时候她都不该有反应——正常
-        一来一回的对话里看到对方打字就开口，是监控不是聊天。只有一种情形值得
-        交给行动核心考虑：**她说完话之后对方长时间没回，直到现在才看见对方开始
-        打字**。满足时间条件只会创建一次 ``reply / silent`` 决策机会，不代表必发。
+        协议端在对方打字期间反复推送该通知，多数情况下不应响应：正常对话中对输入
+        状态做出反应属于监控行为。唯一需要交给行动核心评估的情形：Bot 发言后
+        对方长时间未回复，此刻才出现输入状态。满足时间条件仅创建一次
+        ``reply / silent`` 决策机会，不保证发送。
 
-        晾了多久、之前已经追问过几次会先与历史一起交给独立的情景分析 Agent；
+        静默持续时长与此前已追问次数会先与历史一起交给独立的情景分析 Agent；
         Conversation Agent 再结合该画像选择动作。它选择 ``silent`` 时不产生消息，
         也不消耗本段静默的追问次数。
 
@@ -1974,7 +2012,7 @@ class ChatService:
         副作用：命中条件时调用 Conversation Agent；仅在其选择 ``reply`` 后投递。
         """
         stream_id = context.stream.id
-        # 群聊不推送输入状态；即使将来推送，群里盯着某人打字也不合适。
+        # 群聊不推送输入状态；即使将来推送，持续关注某个成员的输入状态也不合适。
         if context.stream.kind != 'direct':
             return False
         nudge = self._cfg.typing.nudge
@@ -2248,7 +2286,7 @@ class ChatService:
             '这不是必须发言的通知。请结合上面的完整对话判断：只有话题明显未完、'
             '对方仍需要回应或支持、先前约定需要续上，或者此刻追问在你们的关系里'
             '确实自然时才选 reply；话题已经自然结束、只是礼貌收尾、没有新价值、'
-            '继续追问会打扰时选 silent。不要为了到点而硬找一句话。',
+            '继续追问会打扰时选 silent。不要因为时间到了就勉强找一句话说。',
         ))
 
         def add_follow_up_context(rendered: list[dict]) -> list[dict]:
@@ -2507,12 +2545,12 @@ class ChatService:
 
     @staticmethod
     def _typing_situation(silence_ms: int, nudges: int) -> str:
-        """把等待时长与已催次数渲染成她的主观感受。
+        """把等待时长与已催次数渲染成 Bot 的主观感受。
 
-        情境写成她看到的事实而不是系统报告：模型据此自行选择语气，代码不规定
+        情境写成 Bot 看到的事实而不是系统报告：模型据此自行选择语气，代码不规定
         这次该催还是该缓和。
 
-        :param silence_ms: 她上次发言至今的静默毫秒数。
+        :param silence_ms: Bot 上次发言至今的静默毫秒数。
         :param nudges: 本次静默期内已经催过的次数。
         :return: 交给主动消息模型的情境文本。
         """
@@ -2763,10 +2801,9 @@ class ChatService:
     def list_person_profiles(self) -> List[Dict[str, Any]]:
         """列出人物画像索引，附带列表页排序所需的关系与事实计数。
 
-        关系与计数直接并进本列表，而不是另开一条汇总路由：``/api/persons`` 已经是
-        人物列表的唯一入口，再加一条「同样的列表 + 三个字段」的端点就是同一资源的
-        两份真相。逐人取数复用 :meth:`Persona.inspect` 与 :meth:`MemoryStore.fact_count`，
-        不另写统计 SQL——「这个人有多少条事实」只能有一个口径。两者分别命中
+        关系与计数直接并入本列表，不另开汇总路由：``/api/persons`` 已是人物列表的
+        唯一入口。逐人取数复用 :meth:`Persona.inspect` 与 :meth:`MemoryStore.fact_count`，
+        不另写统计 SQL。两者分别命中
         ``persona_bond`` 主键与 ``idx_facts_person_active``，都是索引查找。
 
         :return: 每个人物的身份与会话归属摘要，附 ``intimacy``、``factCount``
@@ -2778,7 +2815,7 @@ class ChatService:
         profiles: List[Dict[str, Any]] = []
         for person in self._registry.list_persons():
             summary = self._person_summary(person)
-            # inspect 而非 get：列表是只读视图，不该因为「看了一眼」就给谁建关系记录。
+            # inspect 而非 get：列表是只读视图，不因读取而创建关系记录。
             state = self.persona.inspect(person.id)
             summary.update({
                 'intimacy': state.intimacy,
@@ -3008,8 +3045,8 @@ class ChatService:
         """分配单调递增的回合 ID，跨重启不与历史回合撞号。
 
         计数器本身仍在进程内，但起点由构造时的 :func:`max_turn_id` 从事件账本播种，
-        因此新回合的编号一定大于账本里现存的任何一个。**观察面板按 turnId 聚合，
-        这个不撞号是它成立的前提。**
+        因此新回合的编号一定大于账本里现存的任何一个。观察面板按 turnId 聚合，
+        编号不重复是该聚合成立的前提。
 
         :return: 新分配的正整数回合 ID。
 
@@ -3036,7 +3073,7 @@ class ChatService:
 
         :param relationship_enabled: 是否注入 owner 专属关系信号（称呼偏好与关系）。
             非 owner（如群聊中的其他成员）必须传 ``False``；否则「对方希望你称呼 X /
-            把对方当 Y 看待」会把 owner 的关系错误地套到每一个说话人身上（她会对
+            把对方当 Y 看待」会把 owner 的关系错误地套到每一个说话人身上（Bot 会对
             群里所有人叫「哥哥」）。
         :return: 包含角色名、别名、用户称呼、关系、生日、人设和回复风格的字典。
         """
@@ -3276,9 +3313,9 @@ class ChatService:
                 and context.person.kind == 'owner'
                 and self._activity is not None):
             activity = self._activity()
-        # 黑话只扫他人消息：user 行都是别人说的（她自己的发言是 assistant 行），
-        # 本轮批次原文压轴——它是这轮最新的「别人在说什么」。用原始 content
-        # 而不是渲染后的历史，渲染行带时间戳与发言人前缀，不是人打的字。
+        # 黑话只扫他人消息：user 行都是别人说的（Bot 自己的发言是 assistant 行），
+        # 本轮批次原文放在最后——它是本轮最新的他人发言。使用原始 content
+        # 而非渲染后的历史：渲染行带时间戳与发言人前缀，并非原始输入。
         jargon_scan_texts = [
             message.content for message in wm if message.role == 'user'
         ] + [query]
@@ -3370,7 +3407,7 @@ class ChatService:
             **prompt_kwargs,
         }
         if self._tool_calling and protocol_text is not None:
-            # 工具模式的运行时背景不再塞进一个大 system：时间、画像、记忆等
+            # 工具模式的运行时背景不并入单个 system：时间、画像、记忆等
             # 各自保留 item 边界，历史也不做角色合并。协议由
             # _render_agent_messages 放在整个序列末尾，确保它始终是最近的约束。
             system, context_items = build_itemized_system_prompt(**shared_context)
@@ -3453,13 +3490,25 @@ class ChatService:
         batch_text: str,
         mentioned_me: bool,
         candidate_count: int = 1,
+        *,
+        poked_me: bool = False,
+        pokes_in_window: int = 0,
+        name_match_text: str | None = None,
     ) -> _BatchGate:
         """按本批合并事实重算三态门控；只读取确定性输入，不调用模型。
+
+        戳一戳的三项事实全部由入口门控算好后随消息传入，本方法不重算：窗口计数
+        在入口按每次到达登记，重算等于重复记账；合成正文的名字匹配已在入口排除，
+        重算会使被排除的合成点名重新命中。
 
         :param context: 本批消息的会话上下文。
         :param batch_text: 合并后的本批正文。
         :param mentioned_me: 本批是否包含协议 @。
         :param candidate_count: 本批候选消息数；扩展触发模式用它累计频率预算。
+        :param poked_me: 本批是否包含入口判定为有效信号的戳一戳。
+        :param pokes_in_window: 本批戳一戳在入口信号窗口内的到达序号；无戳一戳时为 0。
+        :param name_match_text: 参与名字匹配的正文；``None`` 表示与 ``batch_text``
+            相同。批次含戳一戳时由调用方剔除合成正文后传入。
         :return: 门控结果与全部判定输入事实。
         """
         asleep = self.current_sleep().asleep
@@ -3479,7 +3528,10 @@ class ChatService:
                     context.stream.id, last_bot_reply_at,
                 )
         name_mentioned = (
-            mentions_bot_name(batch_text, self._bot_names)
+            mentions_bot_name(
+                batch_text if name_match_text is None else name_match_text,
+                self._bot_names,
+            )
             if context.stream.kind == 'group'
             else False
         )
@@ -3493,6 +3545,8 @@ class ChatService:
             max_replies_in_window=self._cfg.group_chat.max_replies_in_window,
             last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
             current_topic_available=current_topic_available,
+            poked_me=poked_me,
+            pokes_in_window=pokes_in_window,
             follow_up_declined=self.follow_up_declined(context.stream.id),
         ))
         plain_group_drop = (
@@ -3653,11 +3707,11 @@ class ChatService:
 
         :param cognitive_rounds: 本回合的认知轮次预算；只影响首轮动作集，
             后续各轮由 ConversationAgent 按剩余预算重算。shadow 通道传 0：
-            它的用途是观察决策口径，不该为此额外付若干次模型往返。
-        :param allow_wait: 本批是否还能「先等等」；已经等过一次的批次传 False，
-            此时 wait 不在动作集里，她必须表态。
+            仅观察决策口径，不产生额外模型往返。
+        :param allow_wait: 本批是否还能等待；已经等过一次的批次传 False，
+            此时 wait 不在动作集里，Bot 必须表态。
 
-        speak（起一个不接任何人的话头）按配置开关进入动作集：它不需要独立触发，
+        speak（主动发起一个不回应任何人的话题）按配置开关进入动作集：它不需要独立触发，
         只是在已有候选里多一个选项，因此与 reply 共用同一条频率闸门。
         """
         react_enabled = self._react_available(context)
@@ -3688,7 +3742,7 @@ class ChatService:
     def _cognitive_scope(self, frame: DecisionFrame, stream_id: int) -> CognitiveScope:
         """按本回合水位冻结认知检索的会话与人物范围。
 
-        范围在回合开始时定死：水位之后新到的发言者不进入检索范围，使她这一回合
+        范围在回合开始时定死：水位之后新到的发言者不进入检索范围，使 Bot 这一回合
         「能想起谁的事」不随批次外消息漂移。
 
         :param frame: 本回合固定快照。
@@ -3706,7 +3760,7 @@ class ChatService:
         """给出本轮「在场者」的人物主键，供画像注入取数。
 
         口径与认知检索的 ``CognitiveScope`` 保持一致——最近开口过的人，加上当前
-        这一位。两处若各定各的「在场」，同一轮里她检索得到的人和她有印象的人会
+        这一位。两处若各定各的「在场」，同一轮里 Bot 检索得到的人和 Bot 有印象的人会
         对不上，而这种错位在输出上完全看不出来。
 
         :param context: 当前会话上下文。
@@ -3722,7 +3776,7 @@ class ChatService:
         return ids
 
     def record_poke_arrival(self, stream_id: int, arrived_at: int) -> int:
-        """登记一次 poke 到达并返回当前 60 秒窗口内的次数。
+        """登记一次 poke 到达并返回当前信号窗口内的次数。
 
         :param stream_id: poke 所属的稳定 stream 主键。
         :param arrived_at: 本次入站的 Unix 毫秒时间戳。
@@ -3730,7 +3784,7 @@ class ChatService:
         副作用：更新进程内短窗口队列；不写消息、事件或配置。
         """
         arrivals = self._poke_arrivals.setdefault(stream_id, deque())
-        window_start = arrived_at - POKE_FLOOD_WINDOW_MS
+        window_start = arrived_at - POKE_SIGNAL_WINDOW_MS
         while arrivals and arrivals[0] < window_start:
             arrivals.popleft()
         arrivals.append(arrived_at)
@@ -3767,16 +3821,15 @@ class ChatService:
     def _react_available(self, context: ConversationContext) -> bool:
         """判断当前 stream 能否执行 QQ 表情回应。
 
-        三个条件缺一不可：平台是 QQ（只有它有这个协议动作）、会话是群聊（私聊
-        两个人贴表情没有「让别人看见我在回应谁」的意义）、以及配置显式开启。
+        三个条件缺一不可：平台是 QQ（只有它有这个协议动作）、会话是群聊（表情回应
+        的可见性只在群聊有意义）、以及配置显式开启。
 
         开关的取值语义见 ``GroupChatConfig.reactions_enabled``：语义反应名到 QQ
         表情编号的映射（``napcat/segments.py`` 的 ``REACTION_EMOJI_IDS``）已按
-        协议端表情编号表逐条核对，「名字对了编号错了」这类不报错的错已排除。
+        协议端表情编号表逐条核对，排除了名称正确但编号错误且不报错的情况。
 
-        **不设独立频率预算**：她要贴表情，先得拿到这一轮候选机会，那已经受门控
-        与 ``max_replies_in_window`` 约束；再加一个窗口常量只会多一组互相牵制的
-        数字，而贴表情本身比发言轻得多。
+        不设独立频率预算：贴表情的前提是本轮已取得候选机会，已受门控与
+        ``max_replies_in_window`` 约束；额外窗口常量会引入互相牵制的参数。
 
         :param context: 当前会话上下文。
         :return: 允许 react 进入动作集时返回 ``True``。
@@ -3790,8 +3843,8 @@ class ChatService:
     def _poke_available(self, context: ConversationContext) -> bool:
         """判断当前 stream 能否戳一戳。
 
-        条件与表情回应同构（QQ + 群聊 + 配置开关），但**默认关闭**：贴表情是
-        安静的，戳一戳会给对方推送提醒，扰动量级完全不同，该由使用者主动打开。
+        条件与表情回应同构（QQ + 群聊 + 配置开关），但默认关闭：表情回应无推送，
+        戳一戳会给对方推送提醒，扰动量级不同，须由使用者主动打开。
 
         :param context: 当前会话上下文。
         :return: 允许 poke 进入动作集时返回 ``True``。
@@ -3859,7 +3912,7 @@ class ChatService:
 
         可选消息必须连同原文一起写进协议：消息 ID 是数据库主键，在对话历史里
         没有任何可见锚点，只给一串孤立数字时模型会把 targets 填成「凌白最后
-        一条」这类描述，整轮按 illegal_action 失败、用户侧表现为她不回话。
+        一条」这类描述，整轮按 illegal_action 失败、用户侧表现为 Bot 不回话。
 
         :param frame: 本回合固定快照，提供动作空间、可选消息与平台能力。
         :param batch: 与 ``frame.selectable_message_ids`` 同源的批次消息；
@@ -4143,24 +4196,24 @@ class ChatService:
         """执行一个对话回合，正常路径只运行第一轮。
 
         多轮回合已经停用，一个回合至多产出一次可见产物。原因是模型生成期间到达的
-        新消息必须另开回合取得新快照；没有新消息时再问一次，只会得到一句必然的
-        「我说完了」，没有值得支付的模型往返。第一轮完成后因此无条件收束。
+        新消息必须另开回合取得新快照；没有新消息时再问一次只会得到确定的收束
+        答复，不值得一次模型往返。第一轮完成后因此无条件收束。
 
         ``MAX_TURN_ROUNDS`` 仅保留为防御上限，防止以后调整控制流时意外失控；当前
         正常路径永远不会进入第二轮，也不会撞到上限。
 
         第一轮的结果决定本回合副作用：
-        - ``declined``（silent）：她表示这轮做完了，退出循环；
+        - ``declined``（silent）：Bot 结束本轮，退出循环；
         - ``paused``（wait）：批次已退回缓冲等下文，退出循环；
         - ``failed``：模型或协议失败，退出循环；
         - ``acted``：已经产出可见产物，随后无条件收束。
 
         :param batch: 本回合的原始消息批次。
-        :param allow_wait: 本回合是否还能「先等等」；同一批只允许等一次。
+        :param allow_wait: 本回合是否还能等待；同一批只允许等一次。
         副作用：至多一次模型往返与一次可见产物投递；回合结束后结算后台副作用。
         """
         # 回合级副作用只在整个循环收束后结算一次。人格结算、摘要触发、场景观察
-        # 都是「这个回合发生过什么」的账，逐轮各记一遍会让多轮回合把人格推动几倍。
+        # 都按整个回合记账，逐轮各记一遍会使多轮回合重复推进人格。
         acted = False
         exhausted = True
         for round_index in range(MAX_TURN_ROUNDS):
@@ -4240,7 +4293,7 @@ class ChatService:
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
     ) -> _RoundResult:
-        """执行**一轮** Conversation Agent 调用并处理其结果。
+        """执行一轮 Conversation Agent 调用并处理其结果。
 
         silent 只写行动决策事件，不产生任何用户可见输出；reply 复用既有 sink
         消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
@@ -4261,8 +4314,8 @@ class ChatService:
         if self._split_replyer:
             # 拆分后决策这一次不做表达增强：向量排序与表达样本挑选都只影响
             # 「话怎么说」，而这一次调用不写正文。挪到回复生成那一侧还顺带
-            # 省掉一整类浪费——她选择 silent 时，表达选择那次模型调用根本
-            # 不会发生，而合并调用时那笔钱是无论如何都要先付的。
+            # 省掉一整类浪费——Bot 选择 silent 时，表达选择那次模型调用根本
+            # 不会发生，而合并调用时该成本无论如何都会先发生。
             rendered = self._render_prepared_context(
                 prepared,
                 render_params=render_params,
@@ -4357,7 +4410,7 @@ class ChatService:
         def on_round(round_outcome: AgentOutcome) -> None:
             """把认知轮显示到控制台。
 
-            认知轮不产生任何用户可见产物，不渲染的话终端上只会看到「她沉默了
+            认知轮不产生任何用户可见产物，不渲染的话终端上只会看到「Bot 沉默了
             十几秒然后说了句话」，中间查了什么完全不可见。
             """
             assert round_outcome.decision is not None
@@ -4396,9 +4449,9 @@ class ChatService:
         )
         raw_text = ''.join(assistant_raw)
         trace.emit('llm_final', turnId=turn, text=raw_text)
-        # 终局动作一律先在控制台留一行「她决定做什么、为什么」。此前只有 reply 会
+        # 终局动作一律先在控制台留一行「Bot 决定做什么、为什么」。此前只有 reply 会
         # 通过 render_turn 露面，silent / wait / react / poke 全是空白——终端上看不出
-        # 她到底是在思考、在等、还是根本没被叫醒。
+        # Bot 到底是在思考、在等、还是根本没被叫醒。
         if outcome.decision is not None:
             render_action_decision(
                 turn=turn,
@@ -4411,8 +4464,8 @@ class ChatService:
         if outcome.event_status == 'silent_by_choice':
             assert outcome.decision is not None
             if context.stream.kind == 'group':
-                # 她看过这一轮并决定不接，自然回应窗口就此关闭；后续普通群消息
-                # 重新回到攒批判断，直到真信号或她自己再次开口把窗口打开。
+                # Bot 看过这一轮并决定不接，自然回应窗口就此关闭；后续普通群消息
+                # 重新回到攒批判断，直到真信号或 Bot 自己再次开口把窗口打开。
                 # wait 与 react 不置位：前者是「话还没说完」，后者仍是参与。
                 self._follow_up_declined.add(context.stream.id)
             # silent 只写行动决策事件：不产生助手历史、TTS、事实或观察事件。
@@ -4513,8 +4566,8 @@ class ChatService:
             context, REPLIED, f'{len(raw_text)} 字', turn_id=turn,
         )
         self._arm_direct_follow_up(context)
-        # 她刚开过口，对话仍在她这边：重新敞开自然回应窗口，让紧接着说的话
-        # 不必再经过回复必要性评分就能进入她的视野。
+        # Bot 刚开过口，对话仍在 Bot 这边：重新敞开自然回应窗口，让紧接着说的话
+        # 不必再经过回复必要性评分就能进入 Bot 的视野。
         self._follow_up_declined.discard(context.stream.id)
         return _RoundResult('acted')
 
@@ -4527,25 +4580,24 @@ class ChatService:
     ) -> None:
         """把本批消息放回缓冲，等对方把话说完再决定。
 
-        wait 与 silent 的区别是**这批消息算不算处理过**：silent 是「我决定不接
-        这茬」，批次就此消费；wait 是「话还没说完，我先不表态」，批次退回缓冲，
-        下次与新到的消息合并成更大的一批重新判断，她那时能同时接住前因后果。
+        wait 与 silent 的区别是这批消息是否已消费：silent 表示不回应这批消息，
+        批次就此消费；wait 表示话未说完、暂不表态，批次退回缓冲，下次与新到的
+        消息合并成更大一批重新判断，届时 Bot 可同时看到前后文。
 
-        三件事必须一起做，少一件都会让等待失效：
+        三件事必须一起做，缺一则等待失效：
 
-        1. **批次放回缓冲头部**——放头部而不是尾部，因为后到的消息本来就更晚，
-           这样合并后仍是时间正序（与 `_tick` 异常回滚路径同一个写法）。
-        2. **累计器加回去**——扩展触发口径在拿到候选时清零了累计，不加回去的话
-           这批退回后再也攒不够条数，她将永远不再看到它们。
-        3. **标记等待**——`_tick` 据此在没有新消息之前不再重开回合，否则轮询
-           周期一到就会把同一批重新问一遍模型。
+        1. 批次放回缓冲头部：后到的消息本来更晚，放头部使合并后仍为时间正序
+           （与 `_tick` 异常回滚路径同一写法）。
+        2. 累计器加回去：扩展触发口径在拿到候选时清零了累计，不加回去则这批
+           退回后无法再达到触发条数，Bot 不再看到它们。
+        3. 标记等待：`_tick` 据此在没有新消息之前不重开回合，否则轮询周期
+           一到就会把同一批重新提交模型。
 
-        没有新消息就一直等下去，这是群聊有意的语义：她在等一句没有来的话，那就
-        一直没有回应，和真人「等着等着就算了」是同一个行为。任何一条新消息都会
-        解除等待，并且那一轮 wait 已不在动作集里，她必须表态。私聊不能沿用这条
-        语义——对面是一个在等回应的具体的人——因此等待持有开始时刻，超过
-        ``DIRECT_WAIT_TIMEOUT_S`` 仍无下文时，``_tick`` 会强制重开回合，那一轮
-        同样没有 wait，她必须把半句话接住。
+        群聊中无新消息则一直等待，这是有意语义：等待中的批次在无下文时保持
+        无回应。任何一条新消息都会解除等待，且该轮 wait 已不在动作集里，Bot
+        必须表态。私聊不沿用该语义：对方在等待回应，因此等待持有开始时刻，
+        超过 ``DIRECT_WAIT_TIMEOUT_S`` 仍无下文时，``_tick`` 强制重开回合，
+        该轮同样没有 wait，Bot 必须表态。
 
         :param context: 当前会话上下文。
         :param batch: 本轮取走但决定不消费的消息批次。
@@ -4579,9 +4631,9 @@ class ChatService:
     ) -> None:
         """戳一戳目标消息的发送者。
 
-        目标沿用消息编号而不是新开一个「人物编号」目标空间：跨人物选目标那件事
-        还没有解决（人物归属要连带重绑关系与事实），再引入一套目标空间只会让
-        同一个未解问题多一个入口。发送者由消息反查。
+        目标沿用消息编号而不引入「人物编号」目标空间：跨人物选目标依赖的人物
+        归属尚未解决（需连带重绑关系与事实），新增目标空间会扩大该未解问题的
+        影响面。发送者由消息反查。
 
         :param context: 当前会话上下文。
         :param batch: 本回合批次，用于把目标消息反查回发送者。
@@ -4670,10 +4722,10 @@ class ChatService:
         """投递一次表情回应，并按与回复相同的口径结算人格。
 
         表情回应虽然没有正文，也是一项已经发生的可见动作；成功后以动作事实写入
-        助手历史，避免后续回合看不见自己刚贴过表情而重复操作。
+        助手历史，避免后续回合因看不到该动作而重复操作。
 
-        人格结算沿用回复那一套权重，不为 react 单独发明一个更轻的系数：她确实
-        参与了这一轮，而一轮只允许一个动作，再加一个互相牵制的常量换不来什么。
+        人格结算沿用回复的权重，不为 react 单设更轻的系数：一轮只允许一个动作，
+        react 已构成实际参与；额外常量会引入互相牵制的参数。
 
         :param context: 当前会话上下文。
         :param turn: 对话回合 ID。
@@ -4699,7 +4751,7 @@ class ChatService:
             external_id = self.memory.external_message_id(context.stream.id, target_id)
             if not external_id:
                 # 内部 ID 发不出去。历史消息没有回填平台编号时无法回应，如实失败，
-                # 不退化成「改成发条消息」——那是替她改主意。
+                # 不退化成「改成发条消息」——那是替 Bot 改主意。
                 raise RuntimeError(
                     f'消息 {target_id} 没有平台编号，无法贴表情回应'
                 )
@@ -4789,15 +4841,15 @@ class ChatService:
         return self._bot_names
 
     def topic_still_hers(self, stream_id: int, last_bot_reply_at: int) -> bool:
-        """判断她上次开口之后群里聊过的话是否还没走远。
+        """判断 Bot 上次开口之后群里聊过的话是否还没走远。
 
-        用消息距离而不是时间：群热时几秒能刷十几条、话题早换了，群温吞时三分钟
-        才两句、话题一点没变。时限口径由 natural_reply_window 单独承担，两者
+        用消息距离而不是时间：活跃群聊数秒内可产生十余条消息且话题切换快，冷清群聊
+        数分钟仅数条消息且话题稳定。时限口径由 natural_reply_window 单独承担，两者
         在门控里取并集。
 
         :param stream_id: 目标群 stream ID。
-        :param last_bot_reply_at: 她上一条回复的落库毫秒时间戳。
-        :return: 从该时刻起（含她那条）累计消息不超过 ONGOING_TOPIC_MESSAGE_SPAN
+        :param last_bot_reply_at: Bot 上一条回复的落库毫秒时间戳。
+        :return: 从该时刻起（含 Bot 那条）累计消息不超过 ONGOING_TOPIC_MESSAGE_SPAN
             条时返回 True。
         :raises sqlite3.Error: 统计消息表失败时由记忆层抛出。
         副作用：只读 messages 表。
@@ -4806,13 +4858,13 @@ class ChatService:
         return spanned <= ONGOING_TOPIC_MESSAGE_SPAN
 
     def follow_up_declined(self, stream_id: int) -> bool:
-        """返回她是否已在这个群的上一次跟进机会里主动选择了沉默。
+        """返回 Bot 是否已在这个群的上一次跟进机会里主动选择了沉默。
 
         入口门控与批次门控必须读同一份事实，否则 reply_gate 审计事件会报告一个
         与实际生效判定不同的门控态，现场排查时无法据此还原真实路径。
 
         :param stream_id: 目标 stream ID。
-        :return: 她放弃过且此后没有再开口时返回 True。
+        :return: Bot 放弃过且此后没有再开口时返回 True。
         """
         return stream_id in self._follow_up_declined
 
@@ -4844,11 +4896,11 @@ class ChatService:
     ) -> list[dict]:
         """将记忆消息转换为模型历史，补充发言时刻，并在群聊中补充发送者显示名。
 
-        用户消息带 ``HH:MM`` 前缀（跨天时带 ``MM-DD HH:MM``），让「这条是刚说的
-        还是十分钟前说的」「两个人之间隔了多久」成为她能直接读到的事实，而不必由
-        门控常量代为判断。传统角色模式下她自己的历史回复不加时刻：assistant 行
-        仍是输出范例，行首前缀可能被模仿进动作头。扁平模式没有这种格式示范职责，
-        因而每一方都带时间与说话人，落库顺序就是可直接阅读的事件顺序。
+        用户消息带 ``HH:MM`` 前缀（跨天时带 ``MM-DD HH:MM``），使消息的发言时刻
+        与消息间隔成为 Bot 可直接读取的信息。传统角色模式下 Bot 自己的历史回复
+        不加时刻：assistant 行仍是输出范例，行首前缀可能被模仿进动作头。扁平模式
+        没有这种格式示范职责，因而每一方都带时间与说话人，落库顺序就是可直接
+        阅读的事件顺序。
 
         :param context: 当前会话上下文。
         :param messages: 记忆服务返回的消息对象列表。
@@ -4856,15 +4908,14 @@ class ChatService:
             ``[我] `` 前缀。仅
             Conversation Agent 上下文需要：动作头的 targets 是消息主键，主键
             不逐行可见时模型无法指认，会把 targets 写成人名或「最后一条」这类
-            描述，整轮按 illegal_action 失败。自己的历史回复用固定标记而不用编号
-            ——本回合只允许把批次内的用户消息作为目标，给助手行编号会诱导越界。
-        :param flatten: 把她自己的发言也渲染成 ``user`` 角色，用显示名区分
+            描述，整轮按 illegal_action 失败。自己的历史回复用固定标记而不用编号：
+            本回合只允许把批次内的用户消息作为目标，给助手行编号会诱导越界。
+        :param flatten: 把 Bot 自己的发言也渲染成 ``user`` 角色，用显示名区分
             说话人，并在转角色前清掉历史协议与副作用标签。工具调用模式专用：
-            那里动作由函数签名承载，助手行不再承担
-            「这是你的输出格式」的示范作用，而拍平能一次性拆掉一整条脆弱链路
-            ——角色必须交替这条端点要求，逼出了「把跨轮落库的回复重排到批次
-            之前」，重排又可能把它顶到开头被 ``normalize_history`` 丢掉。拍平
-            之后不存在开头 assistant，也就没有那个丢法。
+            那里动作由函数签名承载，助手行不再承担输出格式示范作用。拍平消除了
+            「角色必须交替」约束带来的重排需求：重排可能使助手行位于开头而被
+            ``normalize_history`` 丢弃；拍平后不存在开头 assistant 行，
+            该问题不再出现。
 
         :return: 仅含 ``role`` 和 ``content`` 的模型消息列表；原始记忆对象不被修改。
 
@@ -4896,7 +4947,7 @@ class ChatService:
             if message.role == 'user' or (flatten and message.role == 'assistant'):
                 spoken_at = datetime.fromtimestamp(message.created_at / 1000)
                 # 跨天才带日期：工作记忆可能横跨若干天，但同一天内逐行重复日期
-                # 只会挤占上下文；系统提示词已经给出「现在是几点」，她据此就能算出
+                # 只会挤占上下文；系统提示词已经给出「现在是几点」，Bot 据此就能算出
                 # 每条消息离现在多久、彼此间隔多长。
                 if last_stamped_date == spoken_at.date():
                     stamp = spoken_at.strftime('%H:%M')
@@ -5123,13 +5174,12 @@ class ChatService:
     ) -> str | None:
         """判断这一轮回复是否需要挂引用，并给出被引用消息的平台编号。
 
-        群里消息滚动快，而她一轮生成要十几秒，回复落地时目标常常已经被后面的
-        消息冲开，旁观者看不出她在接哪一句。因此判据只有一条：目标消息之后本
-        stream 已经出现更新的消息，就挂引用。私聊只有两个人，任何时候都不会认错
-        对象，一律不引用。
+        群聊消息滚动快，一轮生成期间会有新消息落在目标之后，回复落地时旁观者
+        无法确定回应对象。因此判据只有一条：目标消息之后本 stream 已经出现
+        更新的消息，就挂引用。私聊只有两方，不存在指认歧义，一律不引用。
 
-        引用与否不进模型的动作头：目标已经由模型选定，引用只是这个选择在平台上的
-        呈现方式，属于代码强制的可读性边界，多给模型一个字段只会多一种写错的方式。
+        引用与否不进模型的动作头：目标由模型选定，引用是该选择在平台上的呈现
+        方式，由代码强制；增加模型可见字段会增加出错面。
 
         :param context: 目标会话上下文。
         :param target_message_ids: 决策选中的目标消息内部 ID；为空表示无目标。
@@ -5141,7 +5191,7 @@ class ChatService:
         if not self.memory.has_user_messages_after(context.stream.id, target_id):
             return None
         # 平台编号缺失说明这条消息早于编号落库改动，或来自不带编号的通道，
-        # 此时只能不引用；不能拿内部 ID 冒充平台编号发出去。
+        # 此时只能不引用；不得以内部 ID 冒充平台编号投递。
         return self.memory.external_message_id(context.stream.id, target_id)
 
     async def _dispatch_outbound(
@@ -5207,7 +5257,7 @@ class ChatService:
         :param segments: 已按打字习惯切分的气泡文本。
         :param emoji_count: 排在文字之后的表情包张数。
         :return: 与「每条文字一批、每张表情包一批」逐项对齐的毫秒停顿；首项恒为
-            0，因为模型生成本身已经占用了十几秒，她在对方视角里早就在打字了。
+            0，因为模型生成本身已经占用了十几秒，Bot 在对方视角里早就在打字了。
         """
         typing = self._cfg.typing
         text_delays = [
@@ -5255,12 +5305,11 @@ class ChatService:
     def _schedule_scene_observation(self, context: ConversationContext) -> None:
         """按新增消息条数决定要不要在后台重算场景画像。
 
-        观察**不进对话的等待路径**：它是独立的后台任务，算完写进 meta 表，供之后
-        若干轮直接读。这样她的首字延迟一点不受影响，代价只是画像会稍微旧一点。
+        观察不进对话的等待路径：作为后台任务完成后写入 meta 表，供后续若干轮读取，
+        不影响首字延迟；代价是画像存在时延。
 
-        节流只靠「自上次观察以来新增了多少条」一个数：消息来得慢就自然算得少，
-        来得快才算得勤。**不再叠一个最小时间间隔**——两个互相牵制的节流常量正是
-        本项目吃过亏的形态。
+        节流只依据自上次观察以来的新增消息数，不叠加最小时间间隔，
+        避免两个互相牵制的节流常量。
 
         :param context: 当前会话上下文；非群聊或观察关闭时直接返回。
         副作用：可能创建一个后台任务；同一 stream 已有观察在跑时跳过。
@@ -5291,7 +5340,7 @@ class ChatService:
         :param context: 目标群聊上下文。
         :return: 便于后台任务追踪的说明字符串。
         副作用：一次模型调用与一次 meta 表写入；无论成败都释放并发标记。
-            观察失败**只记日志、保留旧画像**——它是附加背景，绝不能影响对话。
+            观察失败只记日志并保留旧画像：它是附加背景，不影响对话。
         """
         stream_id = context.stream.id
         try:
@@ -5529,13 +5578,13 @@ class ChatService:
     def _extraction_participants(self, batch: Sequence[StoredMessage]) -> list[Participant]:
         """从待抽取的这批消息里解析出在场者名单。
 
-        **必须按批解析，不能用「最近发言的人」**：抽取游标从 0 起步，第一批取的是
-        这个会话最老的十几条消息，而那时候说话的人未必还在最近发言名单里。名单对不上
-        的后果不是报错，是模型抽出的事实全部按「归属不明」被丢弃——静默地什么都不写。
+        必须按批解析，不能用最近发言名单：抽取游标从 0 起步，第一批取的是这个
+        会话最早的消息，当时的发言者未必在最近发言名单中。名单不匹配不会报错，
+        模型抽出的事实会全部按归属不明丢弃，静默失败。
 
         :param batch: 本次交给模型的消息批，按 ID 正序。
         :return: 至多 :data:`_EXTRACTION_PARTICIPANT_LIMIT` 个在场者，按批内首次发言
-            顺序排列；解析不出平台身份的人会被跳过——归属只认编号，昵称不作数。
+            顺序排列；解析不出平台身份的人会被跳过——归属仅依据编号，昵称不参与判定。
         副作用：只读 identities，不写任何表。
         """
 

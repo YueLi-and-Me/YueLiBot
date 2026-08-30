@@ -87,6 +87,11 @@ class InboundMessage:
     image_sources: tuple[str, ...] = ()
     emoji_sources: tuple[str, ...] = ()
     emoji_sub_types: tuple[int, ...] = ()
+    # 入口门控判定过的戳一戳事实，随消息传到批次门控。两层门控必须读同一份事实：
+    # 戳一戳的正文由适配器合成，其中的 Bot 名字不得参与名字匹配，窗口计数也只在
+    # 入口登记一次，批次侧重算等于重复记账。
+    poked_me: bool = False
+    pokes_in_window: int = 0
 
     def __post_init__(self) -> None:
         """校验表情包来源与协议子类型逐项对齐。"""
@@ -109,7 +114,7 @@ class OutboundMessage:
     # 散落到各平台适配器里各算一套。
     batch_delays_ms: tuple[int, ...] = ()
     # 第一条气泡要引用的平台消息编号；为空表示不引用。
-    # 群里消息滚动快、她生成又要十几秒，不带指向的回复落地时已经被别的话题冲开，
+    # 群里消息滚动快、Bot 生成又要十几秒，不带指向的回复落地时已经被别的话题冲开，
     # 旁观者看不出在回谁。引用与否由投递层按「目标之后是否已有人插话」判定，
     # 不进入模型的动作头，避免多一个可写错的协议字段。
     quote_external_message_id: str | None = None

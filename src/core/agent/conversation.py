@@ -4,27 +4,26 @@
 一次模型输出，解析器在动作头（<decision>）完整且通过回合帧校验之前，不向调用方
 放出任何正文事件。
 
-- 选到**终局动作**（reply / silent / react）时回合结束：单模型 reply 的正文与副作用
+- 选到终局动作（reply / silent / react）时回合结束：单模型 reply 的正文与副作用
   事件逐批流出；拆分 replyer 的产物通过整轮协议校验后统一放出；silent 与 react
   不产生任何用户可见内容。
-- 选到**认知动作**（recall / inspect / consult）时本轮结束、回合继续：执行检索、把观察结果
-  追加进消息序列，再发起下一轮。认知轮**不放出任何事件**，用户侧完全不可见。
+- 选到认知动作（recall / inspect / consult）时本轮结束、回合继续：执行检索、把观察结果
+  追加进消息序列，再发起下一轮。认知轮不放出任何事件，用户侧不可见。
 
-轮次预算不靠异常兜底表达，而是靠动作空间：调用方给出的动作集是权威的，本模块只在
-预算耗尽时从中**减去**认知动作，模型再选就撞上既有的动作空间校验，记为
-``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径**，也不在这里重算
-动作空间——那份判据只有 ``action_protocol.available_actions`` 一处。
+轮次预算通过动作空间表达：调用方给出的动作集是权威的，本模块只在预算耗尽时
+从中减去认知动作，模型再选认知动作即触发既有的动作空间校验，记为
+``illegal_action``。不存在「预算耗尽自动 reply」的降级路径，也不在本模块重算
+动作空间——该判据只有 ``action_protocol.available_actions`` 一处。
 
-失败语义（event_status 与自主沉默绝不允许混淆）：
+失败语义（event_status 与自主沉默是互斥的两类状态）：
 - 正文先于动作头 / 缺失动作头 → parse_error；
 - 动作头违反协议或回合帧（非法枚举、自由理由码、目标越界、引用能力缺失、
   FORCE 禁默、认知动作缺 query、动作头之后没有正文）→ illegal_action；
 - LlmError(kind=timeout) → timeout，其余 LlmError 与未知异常 → provider_error；
 - LlmError(kind=aborted) 原样上抛且不写行动决策事件：用户主动中断不属于
   八种行动事件状态，由调用方沿用既有中断语义处理；
-- 认知动作**执行**本身失败（数据库错误等）原样上抛，不转成模型失败状态：
-  那是本机故障不是模型协议问题，混进 provider_error 只会让真正的 bug 被当成
-  服务商抖动忽略掉。
+- 认知动作执行本身失败（数据库错误等）原样上抛，不转成模型失败状态：
+  那是本机故障而非模型协议问题，混入 provider_error 会被当作服务商波动忽略。
 
 依赖：action_protocol（协议与校验）、cognition（认知动作执行）、parser（流式解析）、
 llm_models 协议与 LlmError、observe.events（行动决策事件落账）；被
@@ -73,17 +72,18 @@ from .parser import (
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.observe import events as trace
+from src.core.tooling.registry import ToolRegistry
 
 
 # 每一轮都追加在末条消息之后的输出起点指令。系统提示词末尾的协议离生成位置较远，
-# 紧贴生成位置再说一次可显著压低模型退回「先 <say>」旧习惯的概率；这与
+# 在生成位置附近重复该指令可降低模型先输出 <say> 的概率；这与
 # ChatService 给首轮末条用户消息追加的指令是同一条约束，只是作用在后续轮次。
 _OUTPUT_REQUIREMENT = (
     '[输出要求] 你下一条回复必须先输出 <decision> 动作标签；'
     '正文只能放在其后的 <say> 里，禁止在 <decision> 之前输出 <say>、普通文字或解释。'
 )
-# 认知轮次用尽时追加的收束指令。它只是把动作空间里已经成立的事实说给模型听，
-# 真正的约束在 available_actions；两处口径必须一致，改一处要同步改另一处。
+# 认知轮次用尽时追加的收束指令。它仅复述动作空间的既有约束，实际约束在
+# available_actions；两处口径必须一致，修改时须同步。
 _FINAL_ROUND_NOTICE = (
     '你已经用完这一轮可以查东西的次数，接下来必须直接给出最终动作，不能再检索。'
 )
@@ -125,10 +125,8 @@ class AgentOutcome:
 def _parse_id_list(raw: str | None) -> tuple[int, ...]:
     """把逗号分隔的目标 ID 原文解析为整数元组。
 
-    提示词只要求写单个编号（多目标是历史上最主要的格式偏离来源），但解析侧
-    仍接受多个合法编号：多写一个仍在可选集内的编号是一次真实且可审计的选择，
-    把它改判为协议失败只会平白丢掉一整轮回复。格式面靠提示词收窄，不靠新增
-    拒绝规则。
+    提示词只要求写单个编号，解析侧仍接受多个合法编号：改判为协议失败会整轮
+    丢弃合法回复。格式面由提示词收窄，不新增拒绝规则。
 
     :param raw: 动作头 targets 属性原文；None 表示未携带。
     :return: 已去除空项的整数元组。
@@ -190,8 +188,8 @@ class ConversationAgent:
 
     可见正文永远从一条已经通过校验的动作头派生，这一条不受调用次数影响：
 
-    - **未注入 replyer**：同一次模型调用内先出动作头再发声，与拆分前逐字相同。
-    - **注入 replyer**：动作头一解析完就结束决策流，正文改由第二次调用产出。
+- 未注入 replyer：同一次模型调用内先出动作头再发声，与拆分前逐字相同。
+- 注入 replyer：动作头一解析完就结束决策流，正文改由第二次调用产出。
       决策模型此后写的任何字都不解析、不流出——它的职责到动作头为止。
 
     ReAct 回环只在动作头层面展开：认知动作不产出可见内容，因此不影响上述不变量。
@@ -209,6 +207,7 @@ class ConversationAgent:
         replyer_temperature: float | None = None,
         replyer_max_tokens: int | None = None,
         tool_calling: bool = False,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         """保存模型提供方与采样参数。
 
@@ -219,11 +218,14 @@ class ConversationAgent:
         :param replyer: 可选的回复生成模型。注入后决策与表达分离：本 Agent 只从
             决策流里取动作头，正文由它产出。省略即保持单次调用的既有行为。
         :param replyer_temperature: 回复生成的采样温度；省略时沿用决策那一档。
-            两级分开是因为它们要的东西相反——决策要判断稳定，表达要自然。
+            两级分开取值：决策要求输出稳定，表达要求自然。
         :param replyer_max_tokens: 回复生成的输出上限；省略时沿用决策那一档。
         :param tool_calling: 决策层是否改用工具调用表达动作。为真时动作空间以
             函数签名下发、决策以 ``tool_calls`` 回来，不再解析 XML 动作头。
-            它**必须与 ``replyer`` 一起启用**：工具调用只产出决策，没有正文来源。
+            必须与 ``replyer`` 一起启用：工具调用只产出决策，没有正文来源。
+        :param tool_registry: 可选的工具注册表。注入后工具调用模式的声明改由
+            注册表生成；省略时退回直接生成，两者输出逐字一致——动作声明的
+            判据只有 ``tool_schema`` 一份，注册表只是它的统一入口。
         :raises ValueError: 启用工具调用却没有注入回复生成模型。
         """
         if tool_calling and replyer is None:
@@ -239,6 +241,7 @@ class ConversationAgent:
             max_tokens if replyer_max_tokens is None else replyer_max_tokens
         )
         self._tool_calling = tool_calling
+        self._tool_registry = tool_registry
 
     async def run(
         self,
@@ -277,12 +280,11 @@ class ConversationAgent:
         :param cognitive_scope: 认知检索的会话与人物范围；省略时同样退化为单轮。
         :param cognitive_rounds: 本回合最多允许几次认知动作；0 表示关闭 ReAct。
         :param on_events: 动作头校验通过后逐批接收正文与副作用事件的回调；
-            省略时事件聚合到返回结果中，适合测试与重放。**认知轮不会调用它。**
+            省略时事件聚合到返回结果中，适合测试与重放。认知轮不会调用它。
         :param on_chunk: 可选的原生分片回调，供调用方转发流式观测事件。
-        :param on_round: 可选的逐轮回调，每个**认知轮**结束后以该轮结果调用一次；
-            终局轮不调用（调用方本来就拿得到返回值）。它的用途是让调用方把中间
-            过程展示出来——认知轮不产生任何用户可见产物，没有这个钩子就只能从
-            事件账本里事后翻，终端上完全看不到她查过什么。
+        :param on_round: 可选的逐轮回调，每个认知轮结束后以该轮结果调用一次；
+            终局轮不调用（调用方可直接取得返回值）。用于向调用方展示认知轮的
+            中间过程；认知轮不产生任何用户可见产物。
         :param replyer_messages: 按动作头组装回复生成消息序列的异步回调。提示词、
             人格与历史都属于调用方，Agent 不自行拼装；组装本身可能包含向量检索与
             表达选择这类模型往返，因此是异步的。省略它（或未注入 replyer）即退回
@@ -306,8 +308,8 @@ class ConversationAgent:
         round_index = 0
         while True:
             # 调用方给的动作集是权威的：它已经按 stream、门控态、平台能力与初始
-            # 预算算过一次。Agent 唯一多知道的事情是「还剩几轮」，因此这里只做减法，
-            # 绝不重算——重算等于把动作空间判据抄第二份，两份迟早会不一致。
+            # 预算算过一次。Agent 唯一多知道的是剩余轮数，因此这里只做减法，
+            # 不重算：重算会产生第二份动作空间判据，两份会不一致。
             round_frame = (
                 frame
                 if rounds_left > 0
@@ -443,7 +445,16 @@ class ConversationAgent:
             # 会把连接按不确定的时机挂着，而认知动作让提前结束从罕见变成常态。
             # 工具声明按本轮动作集生成：动作空间已经被剩余预算收窄过，
             # 声明一个本回合非法的工具等于主动制造 illegal_action。
-            tools = build_tool_definitions(frame) if self._tool_calling else None
+            # 声明来源已收编进注册表；未注入注册表时退回直接生成。两条路径
+            # 共用 tool_schema 同一份判据，输出必须逐字一致，不允许各算一套。
+            if self._tool_calling:
+                tools = (
+                    self._tool_registry.build_tool_definitions(frame)
+                    if self._tool_registry is not None
+                    else build_tool_definitions(frame)
+                )
+            else:
+                tools = None
             async with aclosing(
                 self._provider.stream(
                     messages=messages,
@@ -464,7 +475,7 @@ class ConversationAgent:
                     tool_calls = chunk.get('tool_calls')
                     if tool_calls and head is None:
                         # 工具调用在流末尾一次性到达，且本身就是终局决策：
-                        # 只认第一个，多选属于模型噪声，与重复动作头同款处理。
+                        # 只认第一个，多选属于模型噪声，与重复动作头同样处理。
                         call = tool_calls[0]
                         head = decision_head_from_tool_call(
                             call['name'], call['arguments'], frame,
@@ -484,9 +495,9 @@ class ConversationAgent:
                     if not text:
                         continue
                     if self._tool_calling:
-                        # 工具模式只有函数调用这一种动作表达。接受旧 XML 等于保留
-                        # 一条隐式 fallback：提示词看似切换成功，模型没调工具时却
-                        # 仍被当成合法决策，现场无法分辨能力缺失与正常动作。
+                        # 工具模式只接受函数调用这一种动作表达。接受旧 XML 会在
+                        # 模型未调工具时仍把正文判为合法决策，无法区分协议失效
+                        # 与正常动作。
                         status = 'parse_error'
                         detail = '工具调用模式收到正文，模型没有通过工具选择动作'
                         return finish()
@@ -504,8 +515,8 @@ class ConversationAgent:
                                     return finish()
                                 if split_reply and head.action in SPEAKING_ACTIONS:
                                     # 决策模型的职责到此为止。它此后写的正文一律
-                                    # 丢弃：两个模型各写一份正文，流出哪一份都会
-                                    # 让「谁说的话」变成运气问题。
+                                    # 丢弃：两份正文来源并存时，无法确定实际流出
+                                    # 的是哪一份。
                                     planned_head = head
                                     break
                                 continue
@@ -637,7 +648,7 @@ class ConversationAgent:
         标签外没有裸正文时才统一放出，避免后段协议错误发生前已经发送台词、TTS
         或写入记忆。
 
-        回复生成模型**不允许再出动作头**：动作已经定了，它只负责把话说出来。
+        回复生成模型不允许再出动作头：动作已定，其职责仅为产出正文。
         出现的动作头一律忽略，不覆盖已通过校验的决策。
 
         :param messages: 调用方组装好的回复生成消息序列。
@@ -696,8 +707,8 @@ class ConversationAgent:
     def _parse_head(self, event: DecisionEvent, frame: DecisionFrame) -> DecisionHead:
         """把解析器动作头转换为已通过帧校验的 DecisionHead。
 
-        认知动作不要求 reasons：理由码是给「回不回」做审计的封闭枚举，认知动作的
-        审计信息是它的 query。因此这里先看动作类别再决定要不要强制解析 reasons，
+        认知动作不要求 reasons：理由码是回复决策的审计封闭枚举，认知动作的
+        审计信息是它的 query。因此先看动作类别再决定要不要强制解析 reasons，
         否则模型只写 ``<decision action="recall" query="…"/>`` 会被误判为协议失败。
 
         :param event: 解析器产出的动作头原始属性。
@@ -740,8 +751,8 @@ def _observation_messages(
     """把一次认知动作及其观察渲染为下一轮可读的消息。
 
     XML 角色模式保留 assistant 动作头与 user 结果两条消息。工具模式已经由函数
-    调用表达动作，不应再回灌一份 XML；它把调用与结果折叠成一个 user item，
-    既保留「刚查过什么」，也不重新引入 assistant 角色与第二套协议。
+    调用表达动作，不再回灌一份 XML：把调用与结果折叠成一个 user item，
+    保留最近一次检索内容，且不重新引入 assistant 角色与第二套协议。
 
     :param action: 已执行的认知动作名。
     :param query: 该动作的检索词。
