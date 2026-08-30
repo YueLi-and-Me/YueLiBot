@@ -113,7 +113,9 @@ async def summarize(
     :param max_tokens: 摘要输出的最大 token 数；`None` 表示由 provider 决定。
     :param character_name: Bot 名称。
     :param character_personality: Bot 人格文本。
-    :return: 成功解析的 :class:`Episode`；对话过短、模型调用失败或输出无效时返回 `None`。
+    :return: 成功解析的 :class:`Episode`；对话过短或模型输出不是合法摘要 JSON 时
+        返回 `None`。模型调用失败不再折叠成 `None`，而是原样上抛。
+    :raises LlmError: 模型候选全部失败时由路由层抛出，交调用方计数与留痕。
     副作用：发起一次流式模型请求并记录 `llm_request` 观测事件，不写入数据库。
     :performance: 请求内容长度与消息总文本长度成正比，模型网络耗时占主要成本。
     """
@@ -135,25 +137,31 @@ async def summarize(
         },
         {'role': 'user', 'content': f'要整理的对话：\n{body}'},
     ]
-    try:
-        # 摘要请求只传清洗后的对话正文，不把原始协议标签交给模型。
-        trace.emit(
-            'llm_request',
-            messages=request_messages,
-            temperature=temperature,
-            maxTokens=max_tokens,
-            renderParams=render_params,
-            **prompt_metadata('summary', ('summary',)),
-        )
-        bind_render_params(render_params)
-        async for chunk in provider.stream(
-            messages=request_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        ):
-            if chunk.get('text'):
-                raw += chunk['text']
-    except Exception:
-        return None
+    # 模型与观测的失败一律上抛，由调用方 :meth:`ChatService._maybe_summarize` 统一
+    # 计数、留痕并决定是否放弃这一批。
+    #
+    # - 现象：一段对话被服务商内容策略拒绝后，日志里只有路由层的 model_switch，
+    #   没有任何一条摘要失败记录，外部无法区分「队列卡死」与「这段没什么可记的」。
+    # - 原因：这里原本用 ``except Exception: return None`` 把任何失败都折叠成
+    #   「没有摘要」，与「模型输出不是合法 JSON」共用同一个返回值。
+    # - 后果：真实错因（blocked / auth / timeout）在抵达调用方之前就被销毁，
+    #   调用方既没法按错因分流，也没法把原因写进日志。
+    # 摘要请求只传清洗后的对话正文，不把原始协议标签交给模型。
+    trace.emit(
+        'llm_request',
+        messages=request_messages,
+        temperature=temperature,
+        maxTokens=max_tokens,
+        renderParams=render_params,
+        **prompt_metadata('summary', ('summary',)),
+    )
+    bind_render_params(render_params)
+    async for chunk in provider.stream(
+        messages=request_messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    ):
+        if chunk.get('text'):
+            raw += chunk['text']
     # 统一由 parse_episode 校验 JSON 结构、摘要正文和召回线索。
     return parse_episode(raw)
