@@ -19,11 +19,11 @@ from src.core.llm_models.router import ModelRouter
 
 logger = get_logger(__name__)
 
-# 单次请求的文本条数上限。**这是服务端硬限制，不是调优值**：
+# 单次请求的文本条数上限。这是服务端硬限制，不是调优值：
 # - 现象：批量回填时 provider 返回 400，正文写着
 #   `batch size is invalid, it should not be larger than 20`；小批次同样的请求 200。
 # - 原因：兼容模式的 embeddings 端点对 input 条数设了 20 的上限，96 条一律拒收。
-# - 后果：长期无人发现，是因为 facts 表一直只有个位数条目，凑不满一个大批次；
+# - 后果：长期无人发现，是因为 facts 表一直只有个位数条目，不足以构成一个大批次；
 #   2026-08-24 迁入 22375 条知识后才第一次触发，当时 22368 条全部留 NULL。
 #   调大这个值会让整个向量层静默退回 BM25——失败只记 warning，不中断调用方。
 _BATCH = 20

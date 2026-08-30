@@ -1,17 +1,16 @@
 """把一段已经发生的对话抽成结构化的人物事实，供长期记忆写入。
 
-本模块是记忆写入的**独立一级**，不参与回复生成。它存在的理由来自真机实测：
-让正在说话的对话模型顺手打 ``<memory>`` 标签，192 次调用产出 0 条，因为那个模型
-既看不到 ``facts`` 表（无从判断「已经记过」），又背着协议里「通常一个都不写」的总闸。
-形态照搬同一个代码库里已经跑通的 :func:`src.core.agent.summarize.summarize`——
-回合之后的后台任务、独立模型任务槽、按阈值触发、失败只丢该批。
+本模块是记忆写入的独立一级，不参与回复生成。不采用对话模型在生成时输出
+``<memory>`` 标签的方案：实测 192 次调用产出 0 条——该模型无法读取 ``facts``
+表判断重复，且受输出协议约束。本模块为回合后的后台任务：独立模型任务槽、
+按阈值触发、失败仅丢弃该批。
 
 核心职责与对外接口：
 
 - :func:`read_cursor` / :func:`advance_cursor`：抽取自己的进度游标，存在 ``meta``
   键值表里，与摘要的 ``episode_id`` 队列完全解耦。
 - :func:`render_dialogue` / :func:`render_participants` / :func:`render_known_facts`：
-  组装模型输入；「已经记住的」清单是本模块成立的关键，见 :func:`render_known_facts`。
+  组装模型输入；既有事实清单用于查重，见 :func:`render_known_facts`。
 - :func:`parse_extraction`：严格校验模型输出，非法即整批丢弃；同一次往返
   同时给出人物事实与知识候选。
 - :func:`extract_facts`：一次模型往返。
@@ -50,18 +49,18 @@ from src.core.memory.store import (
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
-# 游标存在 meta 键值表里：抽取不新建表、不加列、不占迁移号（v13 归精力线、v14 归生活线）。
+# 游标存在 meta 键值表里：抽取不新建表、不加列、不占迁移号。
 CURSOR_KEY = 'fact_extract_cursor'
-# 「已经记住的」清单的总条数上限。超过这个量提示词开销显著上升，而模型对长清单的
-# 遵守度反而下降；每人取前几条已经足够挡住重复。
+# 既有事实清单的总条数上限。超过该量提示词开销显著上升，且模型对长清单的
+# 遵守度下降；每人取前几条足以拦住重复写入。
 KNOWN_FACT_LIMIT = 30
-# 单个在场者取多少条既有事实进清单。群聊在场者可能十几个，逐人不设限会撑爆上限。
+# 单个在场者取多少条既有事实进清单。群聊在场者可能十几个，逐人不设限会超出总上限。
 KNOWN_FACT_PER_PERSON = 6
 # 模型未给出 kind 时的兜底类别，与 FactInput 的默认值一致。
 DEFAULT_KIND = '未分类'
-# 知识层的来源标识，与迁移进来的历史知识区分开，便于事后核对哪些是她自己学到的。
+# 知识层的来源标识，与迁移进来的历史知识区分开，便于核对哪些是本机学到的。
 KNOWLEDGE_SOURCE = 'fact_extract'
-# 对话正文短于此长度时不发起模型请求：抽不出东西，纯浪费一次往返。
+# 对话正文短于此长度时不发起模型请求：无可抽取内容。
 MIN_DIALOGUE_CHARS = 40
 
 
@@ -145,9 +144,8 @@ def render_known_facts(
 ) -> str:
     """渲染在场者已经被记住的事实清单。
 
-    **这是本模块成立的关键。** 诊断记录里那条「已经记过的内容都不要写」之所以让
-    对话模型彻底沉默，是因为它无从验证什么算已经记过；抽取是后台任务，可以先查表，
-    于是同一条禁令从不可验证的自我审查变成了可逐条比对的清单。
+    既有事实清单供模型逐条比对以避免重复写入。仅靠提示词禁令无法验证
+    「已经记过」；抽取是后台任务，可以先查表生成可比对的清单。
 
     :param store: 记忆存储实例。
     :param participants: 本批对话的在场者。
@@ -174,12 +172,12 @@ def render_dialogue(
     """把消息批渲染成模型可读的逐行对话。
 
     助手动作伪消息只供聊天历史回看，在这里整条跳过；真实发言先剥副作用标签再剥
-    ``<say>`` 外壳，避免把内部协议喂给抽取模型——它会把标签当成可以模仿的格式，
-    输出里混进 XML 就无法按 JSON 解析。
+    ``<say>`` 外壳，避免内部协议进入抽取模型输入：标签可能被模仿并混入输出，
+    破坏 JSON 解析。
 
     :param messages: 按 ID 正序排列的消息批。
     :param participants: 在场者，用于把 ``sender_person_id`` 还原成带编号的说话人。
-    :param bot_name: Bot 展示名，用于标注她自己的发言。
+    :param bot_name: Bot 展示名，用于标注 Bot 自己的发言。
     :return: 每行 ``说话人：内容`` 的文本；有效内容为空时返回空字符串。
     副作用：不修改输入消息。
     """
@@ -196,7 +194,7 @@ def render_dialogue(
             text = (message.content or '').strip()
             person = by_person.get(message.sender_person_id or -1)
             speaker = f'[{person.external_id}] {person.display_name}' if person else '某人'
-        # 一条消息压成一行：她的多气泡回复经 strip_say_tags 后是换行分隔的，
+        # 一条消息压成一行：Bot 的多气泡回复经 strip_say_tags 后是换行分隔的，
         # 直接输出会产生没有说话人前缀的续行，抽取模型无从判断那句是谁说的。
         text = ' '.join(part for part in text.splitlines() if part.strip()).strip()
         if text:
@@ -208,8 +206,8 @@ def render_dialogue(
 class Extraction:
     """一次抽取的完整产出：人物事实与知识候选。
 
-    两者由同一次模型往返产出，而不是各跑一次——同一段对话读两遍是纯粹的浪费，
-    而且两次读的结果可能互相矛盾。
+    两者由同一次模型往返产出，不各跑一次：同一段对话读两遍开销翻倍，
+    且两次读的结果可能互相矛盾。
 
     :ivar facts: 关于具体某个人的稳定事实，写入 L2 ``facts``。
     :ivar knowledge: 与人无关的客观信息，写入 L3 ``knowledge``。
@@ -222,8 +220,8 @@ class Extraction:
 def parse_extraction(raw: str) -> Optional[Extraction]:
     """从模型输出中提取并校验事实与知识候选。
 
-    契约是一个对象而非裸数组：知识候选没有归属也没有类别，硬塞进事实数组只能靠
-    判别字段区分，那会让「缺字段」既可能是知识也可能是坏数据，无法整批判废。
+    契约是一个对象而非裸数组：知识候选没有归属也没有类别，并入事实数组只能靠
+    判别字段区分，缺字段的含义会无法判定，无法整批判废。
 
     :param raw: 可能带 Markdown 代码围栏或额外说明的模型输出。
     :return: 校验通过的产出（两个列表都空是合法结果，表示这批没什么可记的）；
@@ -281,8 +279,8 @@ def parse_extraction(raw: str) -> Optional[Extraction]:
 
     knowledge: List[str] = []
     for item in raw_knowledge:
-        # 知识条目只有正文。非字符串或空串**单条跳过**而不是整批丢弃：知识是旁路
-        # 产物，不该因为它的一条脏数据牵连本批的事实写入。
+        # 知识条目只有正文。非字符串或空串单条跳过而不是整批丢弃：知识是旁路
+        # 产物，不因一条脏数据牵连本批的事实写入。
         if isinstance(item, str) and item.strip():
             knowledge.append(item.strip())
     return Extraction(facts=facts, knowledge=knowledge)
@@ -377,15 +375,14 @@ def persist_facts(
     for fact in facts:
         person = by_external.get(fact.person_ref)
         if person is None:
-            # 归属不明整条丢弃，不猜。记错人比不记更糟：它会被反复召回，
-            # 而且没有任何人会发现——不设兜底是刻意的。
+            # 归属不明整条丢弃，不做推断：记错归属的事实会被反复召回且无从发现，
+            # 因此不设兜底。
             trace.emit('memory_fact_dropped', reason='unknown_person', personRef=fact.person_ref)
             continue
         fact_id = store.add_fact(person.person_id, FactInput(content=fact.content, kind=fact.kind), now)
         if fact_id:
-            # 写入成功必须发事件：`<memory>` 标签那条旧写入路径连同它的 memory_fact
-            # 事件一起删掉了，本处是这个事件此后唯一的生产者。少了它，控制台与
-            # WebUI 都看不见事实写入，★W1-1「facts 新增并伴随写入事件」也无从验证。
+            # 写入成功必须发事件：本处是 memory_fact 事件唯一的生产者，缺少它时
+            # 控制台与 WebUI 均不可见事实写入，写入结果也无从验证。
             trace.emit(
                 'memory_fact',
                 factId=fact_id,
@@ -412,7 +409,7 @@ def persist_knowledge(
     都由 :func:`~src.core.memory.knowledge.add_knowledge` 承担，本函数不再叠一层。
 
     :param db: 当前库连接；与 ``lookup_jargon`` 同惯例直接收连接，
-        不从 ``MemoryStore`` 扒私有属性。
+        不访问 ``MemoryStore`` 私有属性。
     :param candidates: :func:`parse_extraction` 校验过的知识正文列表。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :return: 新建或命中的知识行 ID 列表。
@@ -449,8 +446,8 @@ async def run_extraction(
 ) -> Optional[List[int]]:
     """检查触发条件并完成一次抽取。
 
-    调用方（``ChatService``）在回合收尾处调用，**不要放进回复的关键路径**：
-    它是后台任务，失败不阻塞任何回合。同一 stream 的并发去重由调用方负责，
+    调用方（``ChatService``）在回合收尾处调用；属后台任务，不放在回复关键
+    路径上，失败不阻塞回合。同一 stream 的并发去重由调用方负责，
     形态与 ``_maybe_summarize`` 的内存集合一致。
 
     :param store: 记忆存储实例。
@@ -486,14 +483,14 @@ async def run_extraction(
         max_tokens=max_tokens,
     )
     if extraction is None:
-        # 解析失败或模型故障：不推进游标，下次重跑同一批。宁可重复抽一次，
-        # 也不要因为一次故障永久跳过这段对话。
+        # 解析失败或模型故障：不推进游标，下次重跑同一批，重复抽取优于永久
+        # 跳过该段对话。
         trace.emit('memory_extract_failed', streamId=stream_id, cursor=cursor)
         return None
     written = persist_facts(store, extraction.facts, participants, db, now)
     knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
-    # 同批产出的事实与知识描述的是同一段时间里发生的事，这是最强的一类关联，
-    # 也是联想层两种建边时机中的第一种（另一种是「一起被召回并被采用」，在认知动作那侧）。
+    # 同批产出的事实与知识描述同一段时间内发生的事，是联想层两种建边时机中的
+    # 第一种（另一种是「一起被召回并被采用」，在认知动作那侧）。
     linked = link_together(
         db,
         [('fact', fact_id) for fact_id in written] + [('knowledge', kid) for kid in knowledge_ids],

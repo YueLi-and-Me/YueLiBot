@@ -1,18 +1,16 @@
-"""人物画像派生层（W5）：把散落的事实与情节收敛成「她对这个人的印象」。
+"""人物画像派生层：把散落的事实与情节收敛成「Bot 对这个人的印象」。
 
-**画像是派生缓存，不是第三份真相。** 这一条是本模块存在的前提：总纲第八节原本
-写着「PersonInfo 宽表不做」，理由是人物印象已由 ``facts`` 与 ``persona_bond``
-分别承担，再加一张就是三份重复真相。2026-08-23 的裁决翻转了那一条，但保留了
-原来的理由——解法必须满足：画像里的每一句都能追溯到某条 fact 或 episode，
-整张 ``person_profile`` 删掉不丢任何信息，重建即可。
+画像是派生缓存，不是独立的事实来源。成立前提：画像中的每一句都能追溯到
+具体的 fact 或 episode 记录；整张 ``person_profile`` 表删除不丢失任何信息，
+可随时由本地证据重建。
 
 因此本模块：
 
-- 只**读** ``facts`` / ``episodes`` / ``persona_bond``，从不把画像当作输入再喂给自己；
-- 生成走独立的 ``memory`` 模型槽，在后台批量进行，**绝不在回合关键路径上**；
+- 只读 ``facts`` / ``episodes`` / ``persona_bond``，不把画像作为输入参与生成；
+- 生成走独立的 ``memory`` 模型槽，在后台批量进行，不在回合关键路径上；
 - 脏位由事实抽取那一侧置位（:func:`mark_dirty`），本模块只消费。
 
-对外暴露 :func:`mark_dirty`（W1 调用）、:func:`dirty_person_ids` /
+对外暴露 :func:`mark_dirty`（由事实抽取调用）、:func:`dirty_person_ids` /
 :func:`render_evidence` / :func:`refresh_profiles`（后台刷新）与
 :func:`profiles_for_injection`（提示词组装）。
 """
@@ -30,10 +28,9 @@ from src.core.llm_models.snapshot import bind_render_params
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
-# 画像正文的字数上限。**本模块唯一的常量**：它能单独观察效果（看注入了多长），
-# 不与任何其它取值互相牵制。超过这个长度的画像会挤占在场者事实的注入预算。
+# 画像正文的字数上限。超长画像会挤占在场者事实的注入预算。
 PROFILE_MAX_CHARS = 120
-# 单次后台刷新最多处理多少人。刷新是模型调用，一轮包圆会让后台任务长期占着模型槽。
+# 单次后台刷新最多处理多少人。刷新是模型调用，单轮处理全部待刷新项会让后台任务长期占用模型槽。
 REFRESH_BATCH_LIMIT = 3
 # 组装提示词时最多注入几份画像。群聊在场者可能十几个，全注入会淹没当前对话。
 INJECT_LIMIT = 3
@@ -58,8 +55,8 @@ class ProfileEvidence:
     def is_empty(self) -> bool:
         """判断是否没有任何本地证据。
 
-        :return: 事实与情节都为空时返回 ``True``——此时不该生成画像，
-            凭空写出来的句子无法追溯到任何来源。
+        :return: 事实与情节都为空时返回 ``True``。此时不生成画像：
+            画像句子必须能追溯到具体来源。
         """
         return not self.facts and not self.episodes
 
@@ -67,7 +64,7 @@ class ProfileEvidence:
 def mark_dirty(db: sqlite3.Connection, person_ids: Sequence[int], now: Optional[int] = None) -> int:
     """把这些人的画像标记为待刷新。
 
-    由事实抽取在写入新事实后调用（规格：脏位由 W1 侧置位，本模块只消费）。
+    由事实抽取在写入新事实后调用（脏位由事实抽取侧置位，本模块只消费）。
     行不存在时插入一条空画像并置脏，这样「从没有过画像的人」与「画像过期的人」
     在后台任务看来是同一种待办，不需要第二条代码路径。
 
@@ -112,8 +109,8 @@ def dirty_person_ids(db: sqlite3.Connection, limit: int = REFRESH_BATCH_LIMIT) -
 def render_evidence(db: sqlite3.Connection, person_id: int) -> ProfileEvidence:
     """读取一个人的画像证据。
 
-    只取本地已有的事实与情节。**不读 ``person_profile`` 自身**——把上一版画像
-    当输入会让内容逐轮漂移，几轮之后就再也追溯不到具体证据了。
+    只取本地已有的事实与情节，不读 ``person_profile`` 自身：以旧版画像为输入
+    会使内容逐轮漂移，偏离可追溯的证据。
 
     :param db: 当前库连接。
     :param person_id: 目标人物主键。
@@ -176,7 +173,7 @@ async def generate_profile(
     副作用：发起一次流式模型请求并记录 ``llm_request`` 观测事件，不写库。
     """
     if evidence.is_empty():
-        # 没有证据就不发请求：模型在空材料上只会编，而编出来的句子追溯不到任何来源。
+        # 没有证据就不发请求：模型在空材料上只会生成无依据内容，且无法追溯到任何来源。
         return None
     render_params = {'memory.profile': {'bot_name': bot_name, 'max_chars': str(PROFILE_MAX_CHARS)}}
     request_messages = [
@@ -225,8 +222,8 @@ def write_profile(
 
     :param db: 当前库连接。
     :param person_id: 目标人物主键。
-    :param summary: 画像正文；允许为空串，表示「证据不足，暂时没有印象」。
-    :param evidence_count: 本次用到的事实与情节条数，便于事后核对画像的依据厚度。
+    :param summary: 画像正文；允许为空串，表示证据不足、暂无印象。
+    :param evidence_count: 本次用到的事实与情节条数，便于核对画像的证据条数。
     :param now: 当前毫秒时间戳。
     :raises sqlite3.Error: 写入或提交失败。
     副作用：写入 ``person_profile`` 并提交事务。
@@ -254,12 +251,12 @@ async def refresh_profiles(
 ) -> int:
     """批量刷新待更新的人物画像。
 
-    **绝不在回合关键路径上调用**：与摘要、事实抽取同一条纪律，由回合收尾派生的
+    不在回合关键路径上调用：与摘要、事实抽取同一纪律，由回合收尾派生的
     后台任务驱动，任何失败都不阻塞回复。
 
-    迁移进来的种子行（``evidence_count = 0``）与普通过期行走**同一条路径**：
-    本地证据重算后整条覆盖，不做新旧合并——那 12 条种子来自 2025-07 的旧库，
-    没有任何本地证据支撑，合并逻辑的复杂度远大于它的价值。
+    迁移进来的种子行（``evidence_count = 0``）与普通过期行走同一条路径：
+    本地证据重算后整条覆盖，不做新旧合并。种子行来自 2025-07 的旧库，没有
+    本地证据支撑，合并逻辑的复杂度高于其价值。
 
     :param db: 当前库连接。
     :param provider: ``memory`` 任务槽的模型客户端。
@@ -297,8 +294,8 @@ def profiles_for_injection(
 ) -> List[tuple[int, str]]:
     """取在场者中最该注入的几份画像。
 
-    在场者多于上限时按 ``persona_bond.intimacy`` 降序取前几个——她对谁印象更深，
-    谁的画像就更该出现在这一轮的上下文里。
+    在场者多于上限时按 ``persona_bond.intimacy`` 降序取前几个：亲密度更高者的
+    画像优先进入本轮上下文。
 
     :param db: 当前库连接。
     :param person_ids: 本轮在场者的人物主键。

@@ -1,30 +1,26 @@
 """黑话学习的纯逻辑层：提取候选、累积证据、按阶梯阈值做三步推断。
 
 本模块与 :mod:`src.core.services.jargon_learn` 分工：服务层负责调度与游标，
-本层只做单批语料与单条词条的操作，可独立单测。整体方案是「证据累积 +
-阶梯推断」：
+本层只做单批语料与单条词条的操作，可独立单测。
 
-- **提取**：模型从一批带行号的语料里挑「脱离这个群就看不懂的短词」。候选不
-  从 ``high_frequency_terms`` 取——那是分词产物，挑不出「典中典」这类短语，
-  而且黑话常常是中频词，按频次排序的表天然漏它们。
-- **证据**：词条每在一批语料里出现（模型挑中，或库内词条的子串命中）就
+- 提取：模型从一批带行号的语料里挑选候选词条。候选不从 ``high_frequency_terms``
+  取——那是分词产物，挑不出「典中典」这类短语；黑话常为中频词，按频次排序
+  会系统性遗漏它们。
+- 证据：词条每在一批语料里出现（模型挑中，或库内词条的子串命中）计
   ``sightings += 1``，每批每词至多一次。子串命中与
   :func:`src.core.agent.jargon.lookup_jargon` 同口径：归一化（去空白、转小写）
-  后纯子串包含，机器段先剥离。这一路让存量词条也能攒证据——「码」这种词
-  模型永远不会挑（它挑看不懂的词），没有子串命中它就永远到不了阈值、
-  永远不会被重判、永远继续注入。
-- **推断**：``sightings`` 到 4 / 8 / 25 / 100 各判一次，每次三步——带上下文
-  推断含义、只看词推断含义、比较两次结果。两段含义一致说明群内用法与通用
-  含义相同，是普通词；有差异才是黑话。拆成两次独立推断再比较，判据变成
-  两段文本的语义距离，模型没有讨好的余地。到 100 锁定不再推断。
+  后纯子串包含，机器段先剥离。常用词（如「码」）不会被提取模型选中，依赖该
+  路径积累证据；缺少它时这些词条无法达到阈值、无法被重新判定。
+- 推断：``sightings`` 到 4 / 8 / 25 / 100 各判一次，每次三步——带上下文推断
+  含义、只看词推断含义、比较两次结果。两段含义一致判为普通词，有差异判为
+  黑话；分两次独立推断再比较，结论不依赖单一提示表述。到 100 锁定不再推断。
 
 落库纪律：新词一律 ``status='pending'``、``meaning=''``，推断判为黑话才
-``confirmed``；判为普通词回到 ``pending`` 但保留原 ``meaning`` 不覆盖（那条
-释义可能是更早、证据更足时推断出来的）。全程没有人工审核——质量闸门是
-证据数量与判定方法本身。
+``confirmed``；判为普通词回到 ``pending`` 且保留原 ``meaning`` 不覆盖。无
+人工审核环节，质量控制依赖证据阈值与比较判定。
 
-学习写入不碰 :mod:`src.core.agent.jargon` 的匹配与打分口径，也不碰
-:mod:`src.core.memory.high_frequency`；本模块是它们的使用者，不是维护者。
+学习写入不修改 :mod:`src.core.agent.jargon` 的匹配与打分口径，也不修改
+:mod:`src.core.memory.high_frequency`；本模块是二者的使用者。
 """
 
 from __future__ import annotations
@@ -47,39 +43,37 @@ from src.core.prompts.registry import get_prompt, prompt_metadata
 logger = get_logger(__name__)
 
 # 学习游标的 meta 键。独立于摘要队列与事实抽取的判据：消息一旦被摘要归档
-# 就从那些队列里消失，共用判据会让两个消费者互相吃掉输入且不报错。
+# 就从那些队列里消失，共用判据会让两个消费者相互消费对方的输入且不报错。
 CURSOR_KEY = 'jargon_learn_cursor'
 
-# 学习侧写入 jargon.source 的固定标识。必须与历史迁移的「历史迁移:M-3」明显
-# 不同，按 source 分组统计时一眼分开学到的与搬来的。
+# 学习侧写入 jargon.source 的固定标识。须与历史迁移的「历史迁移:M-3」明显
+# 不同，便于按 source 区分学习产物与迁移数据。
 LEARN_SOURCE = '在线学习'
 
-# 阶梯阈值：出现次数到每一档各推断一次。第一档 4 挡掉低频噪声词——一次模型
-# 调用都不花；之后每档都用更多证据重判一次，释义越来越准；100 视为证据饱和，
-# 锁定不再推断。
+# 阶梯阈值：出现次数到每一档各推断一次。第一档过滤低频噪声词，不产生模型
+# 调用；之后每档以更多证据重判一次；100 视为证据饱和，锁定不再推断。
 SIGHTING_LADDER: Tuple[int, ...] = (4, 8, 25, 100)
 COMPLETE_SIGHTINGS = 100
 
-# 单批候选上限。提取提示词的输出预算上界，也是防止模型倾倒整段对话的护栏。
+# 单批候选上限，即提取提示词的输出预算上界。
 MAX_CANDIDATES_PER_BATCH = 30
 
-# 每条词条保留的证据消息 id 上限。证据只是审计线索与推断时的上下文索引，
-# 无限增长只会让 JSON 列越滚越大；保留最近若干条已足够复现上下文。
+# 每条词条保留的证据消息 id 上限。证据是审计线索与推断时的上下文索引，
+# 保留最近若干条足以复现上下文。
 MAX_EVIDENCE_IDS = 24
 
 # 推断第①步取上下文时，每条证据消息向前后各带几条相邻消息、引用多少条证据、
-# 以及整段上下文的行数上限。相邻消息让模型看到「谁在问、谁在答」；她的回复
-# 会出现在这里，按约定标注「她自己说的，不采信」。
+# 以及整段上下文的行数上限。相邻消息提供证据所在的会话语境；Bot 自身的回复
+# 也在此列，按 :func:`_speaker_label` 的约定标注为不采信。
 EVIDENCE_CONTEXT_NEIGHBORS = 2
 EVIDENCE_CONTEXT_MESSAGES = 6
 EVIDENCE_CONTEXT_LINES = 12
 
 # 一批语料里他人消息的正文总长低于该值时不发起提取模型调用，只做子串命中：
-# 太短的批次挑不出东西，纯浪费一次往返。
+# 正文过短的批次无可提取内容。
 MIN_USER_TEXT_CHARS = 120
 
-# 模型响应长度上限（字符）。超长说明模型夹带了正文或推理，直接判解析失败，
-# 防止占用解析与日志空间。
+# 模型响应长度上限（字符）。超长视为异常输出，判解析失败。
 MAX_RESPONSE_CHARS = 4000
 
 
@@ -92,8 +86,8 @@ def _learn_switch_key(stream_id: int) -> str:
 def jargon_learn_enabled(db: sqlite3.Connection, stream_id: int) -> bool:
     """读取会话级的黑话 learn 开关，缺省开。
 
-    键位在 :func:`src.core.agent.jargon.jargon_use_enabled` 的 docstring 里
-    预留：学习侧出现时按同名约定接上，读取方就在这里。
+    键位 ``jargon:learn:{stream_id}`` 预留，与
+    :func:`src.core.agent.jargon.jargon_use_enabled` 的 use 键同一约定。
 
     :param db: 进程级 SQLite 连接。
     :param stream_id: 会话 ID。
@@ -125,7 +119,7 @@ def _normalize_text(text: str) -> str:
 
 
 def _speaker_label(role: str, sender_person_id: Optional[int], bot_name: str) -> str:
-    """给语料行生成发言人标签；她自己的发言带不可采信标记。"""
+    """给语料行生成发言人标签；Bot 自身的发言带不可采信标记。"""
 
     if role == 'assistant':
         return f'{bot_name}（她自己说的，不采信）'
@@ -138,9 +132,9 @@ def render_corpus(
 ) -> Tuple[List[str], Dict[int, StoredMessage]]:
     """把一批消息渲染成带行号的语料行。
 
-    :param batch: 按 ID 正序的消息批次，两种角色的消息都渲染——她的发言
-        带标记进语料，供提取与证据上下文辨认「这是她自己说的」。
-    :param bot_name: bot 展示名，用于标记她自己的行。
+    :param batch: 按 ID 正序的消息批次，两种角色的消息都渲染；Bot 的发言
+        带标记进语料，供提取与证据上下文识别其来源。
+    :param bot_name: bot 展示名，用于标记 Bot 自身的行。
     :return: ``(语料行列表, 行号到消息的映射)``，行号从 1 起。
     副作用：无。
     """
@@ -217,8 +211,8 @@ class MineOutcome:
 def _load_known_names(db: sqlite3.Connection, bot_names: Sequence[str]) -> Set[str]:
     """汇总全部已知人名：平台显示名、各群名片与 bot 名字族。
 
-    判据与 ``scripts/jargon_guard_names.py`` 一致——词条面与已知人名精确
-    撞名的直接丢弃不入库（存量是「降级不删除」，新学的还没入库，不收更干净）。
+    判据与 ``scripts/jargon_guard_names.py`` 一致：词条面与已知人名精确撞名的
+    候选不入库；存量词条由 :func:`lock_name_collisions` 处理。
 
     :param db: 进程级 SQLite 连接。
     :param bot_names: bot 主名、别名与对用户的称呼。
@@ -266,7 +260,7 @@ def _validate_pick(
 
     过滤规则逐条给理由：空词条、撞已知人名、含 bot 名字族、纯标点数字、
     永不匹配的单 ASCII 字符、行号越界、上下文为空。含 bot 名只查 ≥2 字的
-    名字——单字别名做子串包含会把大量无辜候选误杀。
+    名字：单字别名做子串包含会产生大量误报。
     """
 
     key = _normalize_key(term)
@@ -314,8 +308,8 @@ def _scan_known_terms(
     """子串扫描库内词条在本批他人消息里的命中。
 
     每行词条本批命中只记一次，证据取第一条包含它的消息。不滤 status：
-    pending 词条攒证据与 confirmed 同等重要——判定为普通词的条目后面
-    证据再涨还会重判。
+    pending 词条积累证据与 confirmed 同等对待，判定为普通词的条目在证据
+    继续增长后会被重新判定。
 
     :param rows: :func:`_load_scope_rows` 的词条行。
     :param user_messages: ``(消息 id, 原文)`` 序列，只含他人消息。
@@ -348,8 +342,8 @@ def _merge_evidence(raw: Optional[str], message_id: int) -> str:
     :param raw: 库里原样的 evidence_ids 文本；``None`` 或空串按空表处理。
     :param message_id: 新证据消息 id。
     :return: 序列化后的 JSON 数组文本。
-    :raises ValueError: 库内既有值不是整数数组时抛出——那是损坏数据，
-        让本批失败也不要静默吞掉。
+    :raises ValueError: 库内既有值不是整数数组（损坏数据）时抛出，
+        本批失败而不静默忽略。
     副作用：无。
     """
 
@@ -363,7 +357,7 @@ def _merge_evidence(raw: Optional[str], message_id: int) -> str:
 
 
 def _read_evidence_ids(raw: Optional[str]) -> List[int]:
-    """读出 evidence_ids 列的 id 数组；损坏值抛错不吞。"""
+    """读出 evidence_ids 列的 id 数组；损坏值抛 :exc:`ValueError`，不静默忽略。"""
 
     if raw is None or raw == '':
         return []
@@ -387,7 +381,7 @@ async def mine_batch(
 ) -> MineOutcome:
     """对一批语料完成「提取 + 子串命中 + 落库」。
 
-    提取模型解析失败时**整批不落库**并置 ``failed=True``——子串命中也不写，
+    提取模型解析失败时整批不落库并置 ``failed=True``，子串命中也不写：
     否则游标回退重跑同一批时会把同一段证据记两次。调用方（服务层）据此
     不推进游标，下轮重试同一批。
 
@@ -441,9 +435,9 @@ async def mine_batch(
         except (LlmError, ValueError) as exc:
             if isinstance(exc, LlmError) and exc.kind != 'format':
                 raise
-            # 解析失败带完整信息落日志并放弃本批（含子串命中），不静默当作
-            # 「学到 0 条」。路由层把所有候选都判为格式不合格时也走同一
-            # 失败语义；游标不动，下轮重跑同一批。
+            # 解析失败带完整信息落日志并放弃本批（含子串命中），游标不动，
+            # 下轮重跑同一批。路由层把所有候选都判为格式不合格时走同一
+            # 失败语义。
             logger.warning(
                 'jargon_mine_parse_failed',
                 streamId=stream_id,
@@ -649,12 +643,12 @@ def _build_evidence_context(
     evidence_ids: Sequence[int],
     bot_name: str,
 ) -> str:
-    """按证据消息 id 取上下文：每条证据带前后相邻消息，她的发言打标。
+    """按证据消息 id 取上下文：每条证据带前后相邻消息，Bot 的发言打标。
 
-    只取最近的 :data:`EVIDENCE_CONTEXT_MESSAGES` 条证据，避免陈年证据把
-    上下文撑爆。全局词条的证据可能散在多个会话，相邻消息按各自证据所属的
-    会话取，不跨会话拼上下文。她的发言按约定标注「她自己说的，不采信」——
-    她可能本来就把这个词理解错了，拿她的错误理解去推断含义只会自我强化。
+    只取最近的 :data:`EVIDENCE_CONTEXT_MESSAGES` 条证据，限制上下文长度。
+    全局词条的证据可能散在多个会话，相邻消息按各自证据所属的会话取，不跨
+    会话拼上下文。Bot 的发言标注为不采信（见 :func:`_speaker_label`），
+    避免以 Bot 的既有理解参与含义推断。
 
     :param db: 进程级 SQLite 连接。
     :param evidence_ids: 证据消息 id 序列（时间正序）。
@@ -699,22 +693,19 @@ def lock_name_collisions(
 ) -> int:
     """把与已知人名撞名的存量词条降级并永久锁定，返回处理条数。
 
-    提取侧的名字守卫只拦新学的词条，拦不住迁移带进来的存量。存量里恰好有一批
-    人名——``scripts/jargon_guard_names.py`` 当初把它们从 confirmed 降成
-    pending，但**降级本身不阻止重新推断**：它们照样会随出现次数攒够阶梯阈值，
-    而三步推断认不出「这是个人名」（群里叫她「小璃」时的上下文含义与字面含义
-    确实不同），于是又被判成黑话转回 confirmed。真机首轮就复现了这一幕。
+    提取侧的名字守卫只拦新学的词条，不覆盖迁移带进来的存量。降级本身不阻止
+    重新推断：词条仍会随出现次数达到阶梯阈值，而三步推断无法识别人名（群内
+    称呼与字面含义的上下文差异真实存在），会被再次判定为黑话转回 confirmed。
 
-    - 现象：``jargon_guard_names.py`` 降级过的名字在学习服务跑起来后陆续转回
-      confirmed，那道人工守卫等于被逐条撤销。
-    - 原因：守卫写在提取路径上，而存量走的是推断路径，两条路径此前不共享判据。
-    - 后果：不锁定就只能靠反复跑守卫脚本对抗后台任务；注入侧的
-      ``protected_names`` 是最后一道防线，它只保证「不进提示词」，
-      挡不住词表与 WebUI 上把人名显示成已确认黑话。
+    - 现象：``scripts/jargon_guard_names.py`` 降级过的名字在学习服务运行后
+      陆续转回 confirmed。
+    - 原因：守卫写在提取路径上，存量走的是推断路径，两条路径此前不共享判据。
+    - 后果：不锁定则只能反复运行守卫脚本；注入侧的 ``protected_names`` 只
+      保证不进提示词，词表与 WebUI 仍会把人名显示为已确认黑话。
 
-    锁定手段复用阶梯机制本身：把 ``inferred_at_sightings`` 推到
+    锁定手段复用阶梯机制：把 ``inferred_at_sightings`` 推到
     :data:`COMPLETE_SIGHTINGS`，:func:`select_inference_targets` 的
-    ``inferred_at_sightings < 100`` 条件自然把它们排除，不必再加一层过滤。
+    ``inferred_at_sightings < 100`` 条件即把它们排除，不另加过滤层。
 
     :param db: 进程级 SQLite 连接。
     :param bot_names: bot 主名、别名与对用户的称呼，与提取侧同源。
@@ -756,8 +747,7 @@ def select_inference_targets(
 
     判据是「存在阈值 t 满足 ``inferred_at_sightings < t ≤ sightings``」，
     展开成四档的静态 SQL。100 档即锁定档：``inferred_at_sightings >= 100``
-    的词条直接排除。排序证据多的在前——存量里的高频误报会最先攒够证据，
-    也最先被重判、最先降级。
+    的词条直接排除。按证据数降序排序，证据最多的词条最先被重判。
 
     :param db: 进程级 SQLite 连接。
     :param limit: 最多返回的词条数（节流上限，见服务层）。
@@ -793,8 +783,8 @@ async def infer_term(
     """对一个词条执行三步推断并写回，返回判定结果标签。
 
     三步：①带上下文推断群内含义（信息不足则短路）；②只看词推断通用含义；
-    ③比较两段含义。任一步解析失败都不写库——写回只在三步全部成功（或①
-    明确声明信息不足）时发生，半截结果落库等于把未知当已知。
+    ③比较两段含义。任一步解析失败都不写库，写回仅在三步全部成功（或①明确
+    声明信息不足）时发生。
 
     :param db: 进程级 SQLite 连接。
     :param provider: 学习任务的模型客户端。
@@ -837,7 +827,7 @@ async def infer_term(
         return 'parse_failed'
     if context_meaning is None:
         # 信息不足：立即结束本次推断，不做②③，但要把 inferred_at_sightings
-        # 推到当前值——否则同一个阈值会被反复尝试，白烧模型调用。
+        # 推到当前值，否则同一阈值会被反复尝试，浪费模型调用。
         with db:
             db.execute(
                 'UPDATE jargon SET inferred_at_sightings = ? WHERE id = ?',
@@ -885,8 +875,8 @@ async def infer_term(
         return 'parse_failed'
 
     if same:
-        # 普通词：回 pending，保留上一次的 meaning 不覆盖——那条释义可能是
-        # 更早、证据更足时推断出来的，后面证据再涨还会重判。
+        # 普通词：回 pending，保留上一次的 meaning 不覆盖。此前释义可能来自
+        # 更早、证据更足的推断，证据继续增长后仍会重判。
         with db:
             db.execute(
                 '''UPDATE jargon

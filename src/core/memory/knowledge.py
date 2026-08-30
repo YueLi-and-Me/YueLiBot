@@ -1,12 +1,12 @@
 """知识层（L3）的索引维护与向量重算读写。
 
-knowledge 不是「她的记忆」而是「她知道的事」：没有衰减，不参与遗忘曲线。
+knowledge 不是「Bot 的记忆」而是「Bot 知道的事」：没有衰减，不参与遗忘曲线。
 本模块的写侧服务于两件事——
 
 - 全文索引补齐：``knowledge_fts`` 是 ``content=''`` 的外部内容表，``rowid``
   必须与 ``knowledge.id`` 显式对齐（这个项目在 ``facts_fts`` 上踩过一次：
   对不齐会让检索结果指向错误的行，而且行数看起来完全正常）；
-- 向量重算：待办集合就是 ``embedding IS NULL``，天然断点续跑，不需要游标表。
+- 向量重算：待办集合就是 ``embedding IS NULL``，无需游标表即可断点续跑。
 
 检索侧（``search_knowledge`` / ``related_concepts`` / ``touch_knowledge``）
 在同模块的检索一节。
@@ -73,11 +73,11 @@ def add_knowledge(
     source: str,
     now: int,
 ) -> int:
-    """写入一条知识并**同步建好全文索引**，返回其主键。
+    """写入一条知识并同步建好全文索引，返回其主键。
 
     索引必须当场建，不能留给离线重算：``search_knowledge`` 是
     ``knowledge_fts JOIN knowledge`` 的形态，没有 FTS 行的知识不是排名靠后，
-    而是**整行检索不到**。写进去却查不出来比不写更糟——表面上功能正常。
+    而是整行检索不到，且该缺失不易察觉。
 
     向量则相反，留给 ``scripts/knowledge_reindex.py`` 异步补：缺向量只是退回
     BM25 打分（见 :func:`search_knowledge`），词面仍能命中，不影响可见性。
@@ -157,7 +157,7 @@ class KnowledgeHit:
     :ivar id: ``knowledge`` 表主键。
     :ivar content: 知识正文。
     :ivar score: 排序分数；词面与向量融合后的相关度。知识没有衰减（它不是
-        「她的记忆」而是「她知道的事」），``retention`` 项恒取 1。
+        「Bot 的记忆」而是「Bot 知道的事」），``retention`` 项恒取 1。
     """
 
     id: int
@@ -261,8 +261,8 @@ def related_concepts(db: sqlite3.Connection, concept: str, limit: int) -> list[s
 def touch_knowledge(db: sqlite3.Connection, ids: Sequence[int], now: int) -> None:
     """记录一批知识被命中：``hit_count`` 加一、``last_hit_at`` 更新。
 
-    只落数据供后续检索调优，**不参与本轮打分**——知识没有衰减曲线可改写，
-    计数纯粹是观测。与 facts 的命中回补不同源：那边的写回驱动遗忘曲线，
+    只落数据供后续检索调优，不参与本轮打分：知识没有衰减曲线可改写，
+    计数仅用于观测。与 facts 的命中回补不同源：那边的写回驱动遗忘曲线，
     这边只是账本。
 
     :param db: 当前库连接。

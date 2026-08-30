@@ -108,7 +108,7 @@ def build_poke_inbound_event(
         sender_group_card=sender_group_card,
         bot_name=bot_name,
         # raw_info 是协议端可选携带的展示片段（"戳了戳" / 自定义后缀）；缺失时
-        # 退回统一措辞，正文始终写明动作对象，避免她读成「谁戳了谁」。
+        # 退回统一措辞，正文始终写明动作对象，避免 Bot 读成「谁戳了谁」。
         text=f'[{_poke_action_text(payload)}{bot_name}]',
         mentioned_me=False,
         external_message_id='',
