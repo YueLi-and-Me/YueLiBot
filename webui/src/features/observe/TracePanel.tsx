@@ -35,6 +35,7 @@ const KIND_OPTIONS = [
   { value: 'observation', label: '旁听消息' },
   { value: 'reply_gate', label: '回复门控判定' },
   { value: 'action_decision', label: '行动决策' },
+  { value: 'tool_execution', label: '工具执行' },
   { value: 'llm_request', label: '请求模型' },
   { value: 'llm_final', label: '模型输出完成' },
   { value: 'llm_error', label: '模型调用失败' },
@@ -401,6 +402,16 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
           return (
             <div key={key} className="flex flex-wrap gap-1.5">
               <Chip label="错误" value={`${displayValue(entry.errorKind)} · ${text(entry.message)}`} />
+            </div>
+          )
+        }
+        if (entry.kind === 'tool_execution') {
+          return (
+            <div key={key} className="flex flex-wrap gap-1.5">
+              <Chip
+                label="工具"
+                value={`${text(entry.toolName)} · ${text(entry.eventStatus)} · ${displayValue(entry.durationMs)}ms`}
+              />
             </div>
           )
         }
