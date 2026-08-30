@@ -1580,7 +1580,7 @@ def _delete_expressions(
 
     受影响的会话必须在删除**之前**取，删完再查就丢了：整条会话的表达被删光
     时它在 expressions 里不再有行，事后的 ``GROUP BY stream_id`` 根本不会出现
-    这个会话，而候选池归零恰恰是最需要报出来的一种。
+    这个会话，而候选池归零正是最需要报出来的一种。
 
     候选池只做如实回报、不做拦截。跌破 :data:`MIN_POOL_CANDIDATES` 时
     ``fetch_expression_pool`` 直接返回空池，表达注入静默停摆——这件事必须让
@@ -1608,7 +1608,7 @@ def _delete_expressions(
     low_pools = []
     for stream_id in affected:
         candidates = int(db.execute(
-            'SELECT COUNT(*) FROM expressions WHERE stream_id = ? AND checked != -1',
+            'SELECT COUNT(*) FROM expressions WHERE stream_id = ? AND checked = 1',
             (stream_id,),
         ).fetchone()[0])
         if candidates < MIN_POOL_CANDIDATES:
