@@ -62,10 +62,11 @@ from src.core.agent.expression import ExpressionSample, fetch_expression_pool, r
 from src.core.agent.expression_learn import (
     BATCH_MESSAGES as EXPRESSION_LEARN_BATCH,
     TRIGGER_MESSAGES as EXPRESSION_LEARN_TRIGGER,
+    advance_cursor as advance_expression_learn_cursor,
     read_cursor as read_expression_learn_cursor,
     run_learning,
 )
-from src.core.agent.fact_extract import Participant, read_cursor, run_extraction
+from src.core.agent.fact_extract import Participant, advance_cursor, read_cursor, run_extraction
 from src.core.agent.jargon import InjectedTerms, lookup_jargon
 from src.core.agent.profile import profiles_for_injection, refresh_profiles
 from src.core.agent.expression_select import ExpressionSelector
@@ -109,6 +110,7 @@ from src.core.memory.store import (
     MemoryStore,
     RecalledFact,
     StoredMessage,
+    UNSUMMARIZED_KIND,
     format_assistant_poke_action,
     format_assistant_reaction_action,
 )
@@ -154,9 +156,20 @@ CHAT_POLL_INTERVAL_S = 0.1
 # 部分 Gemini 兼容网关会把 system 单独提取；保留一条固定的非 system 指令，
 # 既满足其 contents 非空约束，也不把触发情境伪装成用户提出的新问题。
 PROACTIVE_TRIGGER_MESSAGE = '请按上面的要求开始。'
-# 一次事实抽取最多带多少个在场者进提示词。群里挂着几百号人，全带既撑爆名单又拖慢
-# 身份解析；没在近期说过话的人，这批对话里也不会有关于他的事实。
+# 一次事实抽取最多带多少个在场者进提示词。群聊在场者可能数百人，全量会超出
+# 名单并拖慢身份解析；近期未发言者在本批对话中也不会有相关事实。
 _EXTRACTION_PARTICIPANT_LIMIT = 12
+
+# 同一批后台任务输入连续失败多少次之后放弃这一批。
+#
+# - 现象：一段对话被服务商内容策略拒绝后，摘要在之后的每个回合重跑同一批 46 条
+#   消息、每次都被拒，情节记忆停止产出，队列积压持续增长。
+# - 原因：摘要、事实抽取、表达学习的队列游标都只在成功后推进，失败重跑同一批。
+#   这对瞬时故障是对的，对确定性失败则是死锁——同样的输入永远得到同样的拒绝。
+# - 后果：不设上限就没有出口，一条消息足以让整条记忆线永久停摆，并且每个回合
+#   多付一次模型调用。取 3 是因为瞬时故障几乎不会连着三个回合复现，而确定性
+#   失败第一次就会把额度用满。
+_BACKGROUND_BATCH_RETRY_LIMIT = 3
 
 # 对齐群聊既有回复窗口，在同一窗口内最多发送一张表情包。
 EMOJI_MAX_PER_REPLY_WINDOW = 1
@@ -193,6 +206,57 @@ _HINTS: dict[str, str] = {
     'timeout': '模型迟迟不出字，可能在排队；换个模型或调大首字超时',
     'blocked': '这句被内容审核拦了，换个说法',
 }
+
+
+class _BatchFailureTracker:
+    """按会话记录「同一批输入」连续失败的次数。
+
+    后台队列以批为单位推进，批次由其首条消息 ID 标识：队列没前进时，下一轮取到
+    的仍是同一批、首条 ID 不变；队列一旦前进，计数自然从头开始，因此不需要额外
+    的失效逻辑。
+
+    :ivar _limit: 判定这一批无法处理所需的连续失败次数。
+    :ivar _state: 会话 ID 到 ``(批次首条消息 ID, 连续失败次数)`` 的映射。
+    """
+
+    def __init__(self, limit: int) -> None:
+        """创建一个尚未记录任何失败的计数器。
+
+        :param limit: 连续失败达到该次数即视为这一批无法处理。
+        """
+        self._limit = limit
+        self._state: dict[int, tuple[int, int]] = {}
+
+    def record(self, stream_id: int, head_id: int) -> int:
+        """记一次失败，返回这一批已连续失败的次数。
+
+        :param stream_id: 失败所属的会话 ID。
+        :param head_id: 本批首条消息的 ID，用于识别是否仍是同一批。
+        :return: 含本次在内的连续失败次数；批次头变化时从 1 重新计。
+        副作用：更新内部计数表。
+        """
+        previous_head, count = self._state.get(stream_id, (0, 0))
+        count = count + 1 if previous_head == head_id else 1
+        self._state[stream_id] = (head_id, count)
+        return count
+
+    def exhausted(self, count: int) -> bool:
+        """判断连续失败次数是否已达放弃这一批的门槛。
+
+        :param count: :meth:`record` 返回的连续失败次数。
+        :return: 达到或超过上限时为 ``True``。
+        副作用：无。
+        """
+        return count >= self._limit
+
+    def clear(self, stream_id: int) -> None:
+        """在该会话的队列成功前进后清除计数。
+
+        :param stream_id: 已推进队列的会话 ID。
+        :return: 无返回值。
+        副作用：删除该会话的计数记录。
+        """
+        self._state.pop(stream_id, None)
 
 
 @dataclass
@@ -414,9 +478,13 @@ class ChatService:
         self._fact_extract_trigger = conversation.fact_extract_trigger_messages
         self._fact_extract_batch = conversation.fact_extract_batch_messages
         self._extracting: set[int] = set()
+        # 抽取与学习各自的连续失败计数，用于给确定性失败一个出口；两个任务游标
+        # 独立，计数也必须独立，否则一边的失败会误清另一边的进度。
+        self._extract_failures = _BatchFailureTracker(_BACKGROUND_BATCH_RETRY_LIMIT)
         # 表达学习的在飞守卫，与抽取同形态但互不相干：两个任务各走各的游标，
         # 同一会话同一时刻各只允许一个在飞。
         self._learning_expressions: set[int] = set()
+        self._expression_failures = _BatchFailureTracker(_BACKGROUND_BATCH_RETRY_LIMIT)
         # 画像刷新不按会话分派，全局一把闸：它读的是本地事实，与当前是哪条会话无关。
         self._refreshing_profiles = False
         self._session_gap_ms = conversation.session_gap_minutes * 60_000
@@ -561,6 +629,7 @@ class ChatService:
         self._wake = asyncio.Event()
         self._sessions: dict[int, _SessionState] = {}
         self._summarizing: set[int] = set()
+        self._summary_failures = _BatchFailureTracker(_BACKGROUND_BATCH_RETRY_LIMIT)
         self._active_turns: dict[int, int] = {}
         # 每个 stream 在当前静默期内已经因输入状态催过几次；对方一发消息就清零。
         self._typing_nudges: dict[int, int] = {}
@@ -5278,6 +5347,42 @@ class ChatService:
             lines.append(f'{speaker}: {strip_say_tags(message.content)}')
         return lines
 
+    def _batch_failed(
+        self,
+        tracker: _BatchFailureTracker,
+        event: str,
+        stream_id: int,
+        head_id: int,
+        size: int,
+        reason: str,
+    ) -> bool:
+        """记录一次后台批处理失败，返回这一批是否已用尽重试次数。
+
+        计数与留痕合在一处，是因为三个后台队列的失败处理必须口径一致：失败一定
+        进日志（否则「队列停摆」与「这段没什么可记的」在外部完全一样），达到上限
+        一定返回 ``True`` 让调用方推进队列。跳过动作本身由调用方执行——三个队列
+        的推进方式不同（摘要写归档情节，抽取与学习推游标）。
+
+        :param tracker: 该任务的连续失败计数器。
+        :param event: 日志事件名，如 ``summary_failed``。
+        :param stream_id: 失败所属的会话 ID。
+        :param head_id: 本批首条消息的 ID。
+        :param size: 本批消息条数，进日志用于判断是否整批卡住。
+        :param reason: 失败原因原文。
+        :return: 连续失败已达上限、调用方应跳过这一批时为 ``True``。
+        副作用：更新计数器并写一条 warning 日志。
+        """
+        failures = tracker.record(stream_id, head_id)
+        logger.warning(
+            event,
+            streamId=stream_id,
+            headMessageId=head_id,
+            messages=size,
+            failures=failures,
+            reason=reason,
+        )
+        return tracker.exhausted(failures)
+
     async def _maybe_summarize(self, stream_id: int) -> None:
         """在待摘要消息达到阈值时异步生成并保存 episode。
 
@@ -5285,7 +5390,8 @@ class ChatService:
 
         副作用：
             读取待摘要消息、调用摘要模型并写入 episode；同一 stream 同时只允许
-            一个摘要任务。摘要异常不会影响已完成的对话回合。
+            一个摘要任务。摘要异常不会影响已完成的对话回合；同一批连续失败到
+            :data:`_BACKGROUND_BATCH_RETRY_LIMIT` 次后归档该批以放行队列。
         """
 
         if stream_id in self._summarizing or not self._summary_provider:
@@ -5293,6 +5399,8 @@ class ChatService:
         if self.memory.pending_count(stream_id) < self._summarize_trigger_messages:
             return
         self._summarizing.add(stream_id)
+        # 取批可能自己抛错，失败处理要读它，因此先给一个空批。
+        batch: List[Dict[str, Any]] = []
         try:
             # 单个 stream 使用内存集合去重，避免连续回复重复启动摘要任务。
             batch = self.memory.oldest_pending(
@@ -5312,6 +5420,9 @@ class ChatService:
                 character_personality=self._summary_personality,
             )
             if not episode:
+                # 模型没抛异常但也没给出合法摘要 JSON。这与抛异常同属「这一批没能
+                # 处理」，必须一并计数：只计异常会让格式性失败继续无声地卡住队列。
+                self._handle_summary_failure(stream_id, batch, '模型未返回合法的摘要 JSON')
                 return
             # episode 写入后由 MemoryStore 标记对应消息已处理，下一轮从队列继续。
             self.memory.add_episode(
@@ -5324,18 +5435,77 @@ class ChatService:
                     message_ids=[message['id'] for message in batch],
                 ),
             )
-        except Exception:
-            # 摘要是后台附加任务，失败不能回滚已完成的对话或阻断下一轮。
-            pass
+            self._summary_failures.clear(stream_id)
+        except Exception as exc:
+            # 摘要是后台附加任务，失败不能回滚已完成的对话或阻断下一轮；但计数与
+            # 留痕不能省，否则确定性失败会把队列永久钉死在这一批。
+            self._handle_summary_failure(stream_id, batch, f'{type(exc).__name__}：{exc}')
         finally:
             self._summarizing.discard(stream_id)
+
+    def _handle_summary_failure(
+        self,
+        stream_id: int,
+        batch: List[Dict[str, Any]],
+        reason: str,
+    ) -> None:
+        """记录一次摘要失败；同一批连续失败到上限时归档它，放行待摘要队列。
+
+        归档写的是一条 :data:`UNSUMMARIZED_KIND` 占位情节：它不带召回线索，也被
+        ``recent_episodes`` 排除，因此不会进入工作记忆，只用来占住 ``episode_id``
+        让队列前进；代价是丢弃该段的情节记忆，但不归档会阻塞其后全部批次。
+
+        :param stream_id: 失败所属的会话 ID。
+        :param batch: 本次送去摘要的消息批，按 ID 正序；为空表示批次都没取到，
+            此时只记日志，没有可归档的对象。
+        :param reason: 失败原因原文，同时写入日志与占位情节正文。
+        :return: 无返回值。
+        副作用：写日志；达到重试上限时写入占位情节并归档该批消息。
+        """
+        if not batch:
+            logger.warning('summary_failed', streamId=stream_id, reason=reason)
+            return
+        if not self._batch_failed(
+            self._summary_failures,
+            'summary_failed',
+            stream_id,
+            batch[0]['id'],
+            len(batch),
+            reason,
+        ):
+            return
+        try:
+            self.memory.add_episode(
+                stream_id,
+                EpisodeInput(
+                    summary=f'这一批对话未能生成摘要：{reason}',
+                    cues=[],
+                    started_at=batch[0]['created_at'],
+                    ended_at=batch[-1]['created_at'],
+                    message_ids=[message['id'] for message in batch],
+                    kind=UNSUMMARIZED_KIND,
+                ),
+            )
+        except sqlite3.Error as exc:
+            # 占位归档写不进去时不再上抛：调用方多半正处在上一个失败的处理路径上，
+            # 异常逃逸只会变成一条无主的 Task exception，反而盖住真正的原因。
+            logger.error('summary_skip_failed', streamId=stream_id, error=str(exc))
+            return
+        self._summary_failures.clear(stream_id)
+        logger.error(
+            'summary_batch_skipped',
+            streamId=stream_id,
+            headMessageId=batch[0]['id'],
+            messages=len(batch),
+            reason=reason,
+        )
 
     async def _maybe_refresh_profiles(self) -> None:
         """在回合之外批量刷新过期的人物画像。
 
-        与摘要、事实抽取同一条纪律：后台任务、失败不阻塞回合。刷新的输入是本地
-        已有的事实与情节，因此**不依赖当前会话**，不按 stream 分派——同一时刻只
-        允许一轮在跑，避免几条会话同时收尾时把 memory 模型槽打满。
+        与摘要、事实抽取同一纪律：后台任务、失败不阻塞回合。刷新的输入是本地
+        已有的事实与情节，不依赖当前会话，不按 stream 分派；同一时刻只
+        允许一轮在跑，避免几条会话同时收尾时占满 memory 模型槽。
 
         副作用：可能发起多次模型请求并写入 ``person_profile``。
         """
@@ -5387,6 +5557,57 @@ class ChatService:
             ))
         return people
 
+    def _skip_stuck_batch(
+        self,
+        tracker: _BatchFailureTracker,
+        task: str,
+        stream_id: int,
+        batch: Sequence[StoredMessage],
+        reason: str,
+        advance: Callable[[MemoryStore, int, int], None],
+    ) -> None:
+        """记录一次游标型后台任务的失败；同一批失败到上限时把游标推过这一批。
+
+        与 :meth:`_handle_summary_failure` 对应：摘要靠写归档情节推进队列，抽取与
+        学习靠推进各自的 ``meta`` 游标，除此之外两条路径的纪律完全一致。
+
+        :param tracker: 该任务的连续失败计数器。
+        :param task: 任务名，用于拼日志事件名（``fact_extract`` / ``expression_learn``）。
+        :param stream_id: 失败所属的会话 ID。
+        :param batch: 本次处理的消息批，按 ID 正序；为空表示批次都没取到，此时只记日志。
+        :param reason: 失败原因原文。
+        :param advance: 该任务的游标推进函数，接收 ``(store, stream_id, 末条消息 ID)``。
+        :return: 无返回值。
+        副作用：写日志；达到重试上限时写 ``meta`` 表推进游标。
+        """
+        if not batch:
+            logger.warning(f'{task}_failed', streamId=stream_id, reason=reason)
+            return
+        if not self._batch_failed(
+            tracker,
+            f'{task}_failed',
+            stream_id,
+            batch[0].message_id,
+            len(batch),
+            reason,
+        ):
+            return
+        try:
+            advance(self.memory, stream_id, batch[-1].message_id)
+        except sqlite3.Error as exc:
+            # 与摘要占位归档同一条理由：调用方正处在上一个失败的处理路径上，
+            # 异常逃逸只会变成一条无主的 Task exception，盖住真正的原因。
+            logger.error(f'{task}_skip_failed', streamId=stream_id, error=str(exc))
+            return
+        tracker.clear(stream_id)
+        logger.error(
+            f'{task}_batch_skipped',
+            streamId=stream_id,
+            headMessageId=batch[0].message_id,
+            messages=len(batch),
+            reason=reason,
+        )
+
     async def _maybe_extract_facts(self, stream_id: int) -> None:
         """在待抽取消息达到阈值时后台抽取人物事实并写入长期记忆。
 
@@ -5401,18 +5622,19 @@ class ChatService:
         if stream_id in self._extracting or self._memory_provider is None:
             return
         self._extracting.add(stream_id)
+        # 失败处理要读这一批的首尾 ID，取批本身也可能抛错，因此先给一个空批。
+        batch: List[StoredMessage] = []
         try:
             # 先按同一口径取出这一批，用它的发言人解析在场者；run_extraction 内部会
             # 再读一次同样的批次。多一次只读查询换取「名单与批次必然对齐」。
             cursor = read_cursor(self.memory, stream_id)
             if self.memory.message_count_after(stream_id, cursor) < self._fact_extract_trigger:
                 return
-            participants = self._extraction_participants(
-                self.memory.messages_after(stream_id, cursor, self._fact_extract_batch)
-            )
+            batch = self.memory.messages_after(stream_id, cursor, self._fact_extract_batch)
+            participants = self._extraction_participants(batch)
             if not participants:
                 return
-            await run_extraction(
+            written = await run_extraction(
                 self.memory,
                 self._memory_provider,
                 self._db,
@@ -5424,10 +5646,30 @@ class ChatService:
                 temperature=self._memory_temperature,
                 max_tokens=self._memory_max_tokens,
             )
+            if written is None:
+                self._skip_stuck_batch(
+                    self._extract_failures,
+                    'fact_extract',
+                    stream_id,
+                    batch,
+                    '模型未返回合法的事实抽取 JSON',
+                    advance_cursor,
+                )
+                return
+            self._extract_failures.clear(stream_id)
         except Exception as exc:
             # 抽取是旁路设施：任何失败都不该回滚已完成的回合。游标只在成功时推进，
-            # 所以这一批下次会重跑，不存在「因为一次异常永久跳过这段对话」。
-            logger.warning('fact_extract_failed', streamId=stream_id, error=str(exc))
+            # 这一批下次会重跑；但确定性失败（例如整批被服务商内容策略拒绝）每次
+            # 重跑都会原样复现，所以连续失败到上限就把游标推过这一批——宁可丢掉
+            # 这一段的事实，也不能让它挡住其后的全部对话。
+            self._skip_stuck_batch(
+                self._extract_failures,
+                'fact_extract',
+                stream_id,
+                batch,
+                f'{type(exc).__name__}：{exc}',
+                advance_cursor,
+            )
         finally:
             self._extracting.discard(stream_id)
 
@@ -5447,16 +5689,17 @@ class ChatService:
         if stream_id in self._learning_expressions or self._memory_provider is None:
             return
         self._learning_expressions.add(stream_id)
+        # 失败处理要读这一批的首尾 ID，取批本身也可能抛错，因此先给一个空批。
+        batch: List[StoredMessage] = []
         try:
             # 先按同一口径取出这一批，用它的发言人解析在场者（名单只用于把对话
             # 渲染成带名字的行）；run_learning 内部会再读一次同样的批次。
             cursor = read_expression_learn_cursor(self.memory, stream_id)
             if self.memory.message_count_after(stream_id, cursor) < EXPRESSION_LEARN_TRIGGER:
                 return
-            participants = self._extraction_participants(
-                self.memory.messages_after(stream_id, cursor, EXPRESSION_LEARN_BATCH)
-            )
-            await run_learning(
+            batch = self.memory.messages_after(stream_id, cursor, EXPRESSION_LEARN_BATCH)
+            participants = self._extraction_participants(batch)
+            report = await run_learning(
                 self.memory,
                 self._memory_provider,
                 self._db,
@@ -5466,10 +5709,29 @@ class ChatService:
                 temperature=self._memory_temperature,
                 max_tokens=self._memory_max_tokens,
             )
+            if report is None:
+                self._skip_stuck_batch(
+                    self._expression_failures,
+                    'expression_learn',
+                    stream_id,
+                    batch,
+                    '模型未返回合法的表达学习 JSON',
+                    advance_expression_learn_cursor,
+                )
+                return
+            self._expression_failures.clear(stream_id)
         except Exception as exc:
             # 学习是旁路设施：任何失败都不该回滚已完成的回合。游标只在整批成功时
-            # 推进，这一批下次会重跑。
-            logger.warning('expression_learn_failed', streamId=stream_id, error=str(exc))
+            # 推进，这一批下次会重跑；与事实抽取同一条纪律，连续失败到上限就跳过
+            # 这一批，避免一段处理不了的对话永久卡住学习队列。
+            self._skip_stuck_batch(
+                self._expression_failures,
+                'expression_learn',
+                stream_id,
+                batch,
+                f'{type(exc).__name__}：{exc}',
+                advance_expression_learn_cursor,
+            )
         finally:
             self._learning_expressions.discard(stream_id)
 

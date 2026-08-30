@@ -34,7 +34,7 @@ _MESSAGE_QUERY_TERMS = 6
 # 超出上界时优先保留时间靠后的消息，与「最近提过的那次」这一检索意图一致。
 _MESSAGE_SCAN_LIMIT = 200
 
-# 助手动作伪消息既要进入普通历史供她回看，又不能被后台模型当成亲口说过的话。
+# 助手动作伪消息既要进入普通历史供 Bot 回看，又不能被后台模型当成亲口说过的话。
 # 格式化与识别共用这些片段，避免写入方和消费方各维护一套字符串口径。
 _ASSISTANT_POKE_ACTION_PREFIX = '[戳了戳 '
 _ASSISTANT_REACTION_ACTION_PREFIX = '[给消息 '
@@ -62,7 +62,7 @@ def is_assistant_action_message(content: str | None) -> bool:
     """判断助手消息是否为本模块定义的动作历史，而非真实发言。
 
     只识别两个写入函数产生的完整结构；普通的方括号发言、空括号和结构不完整的
-    文本都返回 ``False``，避免把她正常说出的 ``[...]`` 内容排除在学习与抽取之外。
+    文本都返回 ``False``，避免把 Bot 正常说出的 ``[...]`` 内容排除在学习与抽取之外。
     """
 
     text = (content or '').strip()
@@ -155,6 +155,15 @@ class StoredFact(RecalledFact):
 
     due_at: int = 0
     frozen: bool = False
+
+
+# 归档占位情节的 kind。摘要模型对某一批消息确定性失败（例如被内容策略拒绝）时，
+# 用它占住归档位让待摘要队列继续前进，否则同一批会被无限重投。
+#
+# 占位情节不写 cues，因此 recall_episodes 的 FTS 路径检索不到它；只有
+# recent_episodes 按时间倒序取，必须显式排除，否则占位文本会当作真实情节
+# 进入工作记忆上下文。all_episodes 不排除，让它在 WebUI 里可见。
+UNSUMMARIZED_KIND = 'unsummarized'
 
 
 @dataclass
@@ -359,8 +368,8 @@ class MemoryStore:
         """判断指定消息之后该 stream 是否还有别人发的消息。
 
         出站引用据此判断「这条回复落地时是否已经被别的发言冲开」：目标之后还有
-        别人说话，说明旁观者已经看不出她在回哪一条，需要挂引用点明。只看
-        ``role='user'``：她自己这一轮的回复正文在投递前就已落库，算进来会让判据
+        别人说话，说明旁观者已经看不出 Bot 在回哪一条，需要挂引用点明。只看
+        ``role='user'``：Bot 自己这一轮的回复正文在投递前就已落库，算进来会让判据
         恒真。
 
         :param stream_id: 目标 stream ID。
@@ -408,7 +417,7 @@ class MemoryStore:
         """返回指定 stream 最近一条用户消息的落库时间。
 
         与 ``last_assistant_reply_at`` 配对使用，调用方比较两者先后即可判断
-        「她说完之后对方是否回过话」，不必再拉一遍完整历史。
+        「Bot 说完之后对方是否回过话」，不必再拉一遍完整历史。
 
         :param stream_id: 目标 stream ID。
         :return: 最近用户消息的最大 ``created_at``；没有用户消息时返回 ``None``。
@@ -568,15 +577,18 @@ class MemoryStore:
     def recent_episodes(self, stream_id: int, limit: int = 4) -> list[RecalledEpisode]:
         """读取指定 stream 最近结束的情节摘要。
 
+        摘要失败留下的 ``UNSUMMARIZED_KIND`` 占位情节不参与召回：它只用于推进
+        归档队列，正文是诊断信息而非对话内容，进入上下文只会污染工作记忆。
+
         :param stream_id: 目标 stream ID。
         :param limit: 最多返回的情节数，默认值为 4。
-        :return: 按结束时间倒序排列的情节列表，分数固定为 1.0。
+        :return: 按结束时间倒序排列的情节列表，分数固定为 1.0；不含占位情节。
         副作用：只读 episodes 表。
         """
         rows = self._db.execute(
             '''SELECT id, summary, kind, ended_at FROM episodes
-               WHERE stream_id = ? ORDER BY ended_at DESC LIMIT ?''',
-            (stream_id, limit)
+               WHERE stream_id = ? AND kind != ? ORDER BY ended_at DESC LIMIT ?''',
+            (stream_id, UNSUMMARIZED_KIND, limit)
         ).fetchall()
         return [RecalledEpisode(id=r[0], summary=r[1], kind=r[2], ended_at=r[3], score=1.0)
                 for r in rows]
@@ -776,7 +788,7 @@ class MemoryStore:
         for r in rows:
             ret = retention(r[3], r[4], r[5], now)
             relevance = relevance_from_bm25(r[7])
-            # 【关键】只有两侧向量都存在时才融合相关度，缺失任一向量则保留 BM25 结果。
+            # 只有两侧向量都存在时才融合相关度，缺失任一向量则保留 BM25 结果。
             #
             # 原因：
             # 1. BM25 对专名、数字和代码关键字的精确匹配不可由语义相似度完全替代。
@@ -836,10 +848,10 @@ class MemoryStore:
 
         与 :meth:`recall_facts` 的两点差别都是有意的：
 
-        1. **一次查询覆盖多人**。群聊里在场者可能有十几个，逐人调用会把一次
+        1. 一次查询覆盖多人。群聊里在场者可能有十几个，逐人调用会把一次
            检索放大成十几次 FTS 查询。
-        2. **不回补强度**。决策期的主动检索若参与遗忘曲线，她「想了一下」这个
-           动作本身就会改写记忆权重，同一条事实被反复 recall 就再也不会衰减。
+        2. 不回补强度。决策期的主动检索若参与遗忘曲线，检索动作本身会改写
+           记忆权重，同一条事实被反复 recall 后不再衰减。
            写回只应发生在真实使用（回复里确实用上了）时，不在检索时。
 
         :param person_ids: 检索范围内的人物 ID 序列；为空时直接返回空列表。
@@ -913,7 +925,7 @@ class MemoryStore:
 
         与 :meth:`working_memory` / :meth:`oldest_pending` 的差别是有意的：那两个都按
         ``episode_id IS NULL`` 判定「待处理」，消息一旦被摘要归档就此不可见。事实抽取是
-        第二个独立的消费者，若共用同一判据，两者会互相吃掉输入且不报错——因此它按自己的
+        第二个独立的消费者，若共用同一判据，两者会相互消费对方的输入且不报错——因此它按自己的
         游标取消息，与摘要队列完全解耦。
 
         :param stream_id: 目标 stream ID。
@@ -947,8 +959,8 @@ class MemoryStore:
     ) -> list[int]:
         """列出该 stream 最近开口过的人物 ID，供认知检索确定「在场者」范围。
 
-        群聊里她可能被问到第三个人的事，把事实检索范围收窄成「本批发言者」会让
-        recall 在最需要的场景下空手而归；反过来放开到全库又跨越了会话隐私边界。
+        群聊里 Bot 可能被问到第三个人的事，把事实检索范围收窄成「本批发言者」会让
+        recall 在最需要的场景下召回为空；反过来放开到全库又跨越了会话隐私边界。
         取「本 stream 最近若干条消息的发言者」是两者之间唯一有事实依据的口径。
 
         :param stream_id: 目标 stream ID。
@@ -991,13 +1003,13 @@ class MemoryStore:
         before_id: int,
         limit: int = 6,
     ) -> list[StoredMessage]:
-        """在指定 stream 的历史消息里按词命中检索，供认知动作翻更早的聊天。
+        """在指定 stream 的历史消息里按词命中检索，供认知动作检索更早的聊天。
 
-        **不建 FTS 索引是有意的**：messages 没有 FTS 表，新建一张要连带触发器与
-        迁移，而 facts_fts 的 rowid 对齐已经踩过一次雷（迁移必须显式搬 id）。
+        不建 FTS 索引是有意的：messages 没有 FTS 表，新建一张要连带触发器与
+        迁移，而 facts_fts 的 rowid 对齐问题在迁移中已出现过（迁移必须显式搬 id）。
         这里改用「分词 → LIKE 预筛 → Python 侧按命中词数打分」，预筛有硬上界
         ``_MESSAGE_SCAN_LIMIT``，代价可控且行为可单测。命中词数相同时按时间靠后优先，
-        因为「最近提过的那次」几乎总是她要找的那次。
+        最近提及的那次几乎总是检索目标。
 
         :param stream_id: 目标 stream ID。
         :param query: 待检索的自然语言文本。
