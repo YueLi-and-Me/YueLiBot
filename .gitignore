@@ -26,6 +26,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .uv-cache/
+/.tmp/
 
 # pytest --basetemp 落在仓库内时留下的目录；Windows 的 ACL 让它们事后删不掉
 .pytest-tmp-*/
