@@ -42,7 +42,6 @@ from src.core.agent.action_protocol import (
     available_actions,
 )
 from src.core.agent.cognition import (
-    CognitiveExecutor,
     CognitiveScope,
     InspectAction,
     ConsultAction,
@@ -148,6 +147,7 @@ from src.core.prompts.registry import (
     prompt_metadata,
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
+from src.core.tooling.cognitive import CognitiveToolExecutor
 from src.core.tooling.registry import build_builtin_action_registry
 
 logger = get_logger(__name__)
@@ -608,17 +608,29 @@ class ChatService:
         )
         # 同一个情景分析 Agent 同时服务群聊周期画像和私聊即时决策；刷新条数只控制
         # 群聊后台调度，不决定 Agent 是否存在。它与 reply / silent 决策 Agent 分离。
-        self._cognitive_executor = (
-            CognitiveExecutor([
-                RecallAction(self.memory, self._registry.stream_display_name, db),
-                InspectAction(self.memory, self._registry.stream_display_name),
-                # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；
-                # 执行器缺这一条就会在 Bot 真的选中时撞 KeyError，装配必须同步。
-                ConsultAction(db, embed_query=self._vector.embed_query),
-            ])
-            if self._cognitive_rounds > 0
-            else None
-        )
+        # 认知动作只在 ReAct 开启时绑定执行器：轮次预算为 0 时执行器永远不会被
+        # 调用，绑定它只会让「关闭即回退到单轮」这条性质多一处需要复核的地方。
+        # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；执行器缺
+        # 这一条就会在 Bot 真的选中时撞 KeyError，装配必须同步。
+        if self._cognitive_rounds > 0:
+            self._tool_registry.bind_action_executor(
+                'recall',
+                CognitiveToolExecutor(
+                    RecallAction(self.memory, self._registry.stream_display_name, db)
+                ),
+            )
+            self._tool_registry.bind_action_executor(
+                'inspect',
+                CognitiveToolExecutor(
+                    InspectAction(self.memory, self._registry.stream_display_name)
+                ),
+            )
+            self._tool_registry.bind_action_executor(
+                'consult',
+                CognitiveToolExecutor(
+                    ConsultAction(db, embed_query=self._vector.embed_query)
+                ),
+            )
         self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
         self.persona.snapshot_daily(self._desktop_context.person.id)
@@ -4432,12 +4444,11 @@ class ChatService:
             model_task='chat.conversation',
             provider_name=getattr(self._chat_provider, 'provider', ''),
             model_name=getattr(self._chat_provider, 'model', ''),
-            cognitive_executor=self._cognitive_executor,
             # 关闭 ReAct 时连范围都不算：那是一次真实的数据库查询，
             # 为一个永远不会被消费的字段付账没有意义。
             cognitive_scope=(
                 self._cognitive_scope(frame, context.stream.id)
-                if self._cognitive_executor is not None
+                if self._cognitive_rounds > 0
                 else None
             ),
             cognitive_rounds=self._cognitive_rounds,

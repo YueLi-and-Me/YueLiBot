@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, List, cast
+from typing import Any, Awaitable, Callable, List, Sequence, cast
 
 import asyncio
 import time
@@ -55,8 +55,7 @@ from .action_protocol import (
 from .tool_schema import build_tool_definitions, decision_head_from_tool_call
 from .cognition import (
     OBSERVATION_EVENT_MAX_CHARS,
-    CognitiveExecutor,
-    CognitiveRequest,
+    OBSERVATION_MAX_CHARS,
     CognitiveScope,
 )
 from .parser import (
@@ -73,6 +72,7 @@ from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.observe import events as trace
 from src.core.tooling.registry import ToolRegistry
+from src.core.tooling.spec import ToolContext, ToolInvocation
 
 
 # 每一轮都追加在末条消息之后的输出起点指令。系统提示词末尾的协议离生成位置较远，
@@ -101,6 +101,111 @@ def _truncate(text: str, limit: int) -> str:
     return f'{text[:limit]}…'
 
 
+
+
+
+def _clip_total(text: str, limit: int) -> str:
+    """按总预算截断回灌文本，并显式标注截断。
+
+    多条工具观察共享同一预算：整段拼接后一次性截断，而不是逐条各自截断——
+    逐条截断会让先执行的工具占满全部预算，后面的观察一句都进不来。
+
+    :param text: 待截断的完整文本。
+    :param limit: 总字符预算。
+    :return: 未超限时原样返回，超限时返回截断后标注的文本。
+    """
+    if len(text) <= limit:
+        return text
+    return f'{text[:limit]}…（已截断）'
+
+
+def _merge_observation_text(
+    steps: Sequence[tuple[ConversationAction, str, str]],
+    terminal_observation: str = '',
+) -> str:
+    """把一轮执行的认知工具观察合并为单段文本，供事件账本使用。
+
+    按执行顺序逐条拼接「动作名 + 检索词 + 结果」；预算截断发生在回灌消息的
+    渲染处（_observation_messages），这里只拼文本不截断，账本字段的截断由
+    finish 按 OBSERVATION_EVENT_MAX_CHARS 统一处理。
+
+    :param steps: 按执行顺序排列的（动作名、检索词、观察正文）明细。
+    :param terminal_observation: 可选；认知工具之后跟随 silent 等终局动作时，
+        终局结算携带的观察文本一并并入。
+    :return: 拼接后的单段观察文本；无任何内容时为空串。
+    """
+    blocks = [
+        f'{action}：{query}\n{observation}'
+        for action, query, observation in steps
+    ]
+    if terminal_observation.strip():
+        blocks.append(terminal_observation.strip())
+    return '\n\n'.join(blocks)
+
+
+def _emit_tool_execution(
+    call: dict[str, Any],
+    frame: DecisionFrame,
+    round_index: int,
+    *,
+    event_status: str,
+    duration_ms: int,
+    observation: str = '',
+) -> None:
+    """把一次已执行认知工具的账目写进观察账本。
+
+    与 action_decision 同口径挂回合编号：同一轮执行多个工具时，roundIndex
+    相同的多条本事件构成一条完整链路。
+
+    :param call: 模型侧的工具调用原文，name 与 arguments 直接落账。
+    :param frame: 本回合固定快照。
+    :param round_index: 轮次序号。
+    :param event_status: committed / failed；截断的调用走 discarded 专用函数。
+    :param duration_ms: 执行耗时。
+    :param observation: 观察摘要，按账本上限截断。
+    """
+    trace.emit(
+        'tool_execution',
+        turnId=frame.turn_id,
+        snapshotId=frame.snapshot_id,
+        roundIndex=round_index,
+        toolName=call.get('name', ''),
+        toolKind='cognitive',
+        arguments=call.get('arguments', ''),
+        durationMs=duration_ms,
+        eventStatus=event_status,
+        observation=_truncate(observation, OBSERVATION_EVENT_MAX_CHARS),
+    )
+
+
+def _emit_discarded_tool_call(
+    call: dict[str, Any],
+    frame: DecisionFrame,
+    round_index: int,
+) -> None:
+    """给终局动作之后被截断的工具调用记一条轻量审计事件。
+
+    截断的调用不执行、不计为错误：它只说明「模型在终局动作后面多选了」，
+    与协议越界是两回事，账本上必须分得开。
+
+    :param call: 被截断的工具调用原文。
+    :param frame: 本回合固定快照。
+    :param round_index: 轮次序号。
+    """
+    trace.emit(
+        'tool_execution',
+        turnId=frame.turn_id,
+        snapshotId=frame.snapshot_id,
+        roundIndex=round_index,
+        toolName=call.get('name', ''),
+        toolKind='',
+        arguments=call.get('arguments', ''),
+        durationMs=0,
+        eventStatus='discarded',
+        observation='',
+    )
+
+
 @dataclass(frozen=True)
 class AgentOutcome:
     """一次 Conversation Agent 调用的完整结果。
@@ -111,6 +216,8 @@ class AgentOutcome:
 
     :ivar observation: 认知轮的观察正文；非认知轮为空串。
     :ivar cognitive_rounds_used: 本回合实际用掉的认知轮次数，供调用方记账与观察。
+    :ivar cognitive_steps: 本轮实际执行的认知工具明细（动作名、检索词、观察正文），
+        按执行顺序排列；一轮响应允许执行多个认知工具，调用方按条数扣减预算。
     """
 
     decision: ConversationDecision | None
@@ -120,6 +227,7 @@ class AgentOutcome:
     body_events: tuple[ParseEvent, ...] = ()
     observation: str = ""
     cognitive_rounds_used: int = 0
+    cognitive_steps: tuple[tuple[ConversationAction, str, str], ...] = ()
 
 
 def _parse_id_list(raw: str | None) -> tuple[int, ...]:
@@ -254,7 +362,6 @@ class ConversationAgent:
         model_task: str = "chat.conversation",
         provider_name: str = "",
         model_name: str = "",
-        cognitive_executor: CognitiveExecutor | None = None,
         cognitive_scope: CognitiveScope | None = None,
         cognitive_rounds: int = 0,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None = None,
@@ -275,10 +382,10 @@ class ConversationAgent:
         :param model_task: 第 4 层模型任务标识。
         :param provider_name: 第 4 层提供方标识。
         :param model_name: 第 4 层模型标识。
-        :param cognitive_executor: 认知动作执行器；省略时退化为单轮，行为与
-            引入 ReAct 之前逐字相同。
-        :param cognitive_scope: 认知检索的会话与人物范围；省略时同样退化为单轮。
+        :param cognitive_scope: 认知检索的会话与人物范围；省略时退化为单轮，
+            行为与引入 ReAct 之前逐字相同。
         :param cognitive_rounds: 本回合最多允许几次认知动作；0 表示关闭 ReAct。
+            一轮响应执行多个认知工具时按工具条数扣减。
         :param on_events: 动作头校验通过后逐批接收正文与副作用事件的回调；
             省略时事件聚合到返回结果中，适合测试与重放。认知轮不会调用它。
         :param on_chunk: 可选的原生分片回调，供调用方转发流式观测事件。
@@ -298,11 +405,7 @@ class ConversationAgent:
 
         副作用：每轮写入一条 action_decision 观察事件；模型调用次数等于实际轮数。
         """
-        react_enabled = (
-            cognitive_executor is not None
-            and cognitive_scope is not None
-            and cognitive_rounds > 0
-        )
+        react_enabled = cognitive_scope is not None and cognitive_rounds > 0
         rounds_left = cognitive_rounds if react_enabled else 0
         working_messages = list(messages)
         round_index = 0
@@ -328,7 +431,7 @@ class ConversationAgent:
                 model_task=model_task,
                 provider_name=provider_name,
                 model_name=model_name,
-                cognitive_executor=cognitive_executor,
+                rounds_left=rounds_left,
                 cognitive_scope=cognitive_scope,
                 on_events=on_events,
                 on_chunk=on_chunk,
@@ -337,16 +440,17 @@ class ConversationAgent:
             )
             if outcome.event_status != 'cognitive_step':
                 return outcome
-            assert outcome.decision is not None and outcome.decision.query is not None
+            assert outcome.decision is not None
             if on_round is not None:
                 on_round(outcome)
-            rounds_left -= 1
+            # 一轮响应可以执行多个认知工具：预算按工具条数扣减，不做任何
+            # 借支；扣减后为负的情况已在 _run_round 内按「预算耗尽未给出
+            # 终局动作」记 illegal_action，不会走到这里。
+            rounds_left -= len(outcome.cognitive_steps)
             round_index += 1
             working_messages.extend(
                 _observation_messages(
-                    outcome.decision.action,
-                    outcome.decision.query,
-                    outcome.observation,
+                    outcome.cognitive_steps,
                     final_round=rounds_left <= 0,
                     flattened=self._tool_calling,
                 )
@@ -365,14 +469,14 @@ class ConversationAgent:
         model_task: str,
         provider_name: str,
         model_name: str,
-        cognitive_executor: CognitiveExecutor | None,
+        rounds_left: int,
         cognitive_scope: CognitiveScope | None,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
         on_chunk: Callable[[dict[str, Any]], None] | None,
         replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None,
         signal: asyncio.Event | None,
     ) -> AgentOutcome:
-        """执行一次模型调用，并在选到认知动作时就地完成检索。
+        """执行一次模型调用，并在选到认知工具时就地完成检索。
 
         检索放在本轮之内而不是交回 run()，是为了让事件的 ``latency_ms`` 覆盖
         「模型想 + 实际查」的完整耗时，也让观察摘要能与它所属的那一轮写进同一条事件。
@@ -381,7 +485,9 @@ class ConversationAgent:
         :param messages: 本轮实际提交模型的消息序列。
         :param round_index: 轮次序号，从 0 开始。
         :param cognitive_rounds_used: 进入本轮之前已用掉的认知轮次数。
-        :return: 本轮结果；认知动作返回 ``cognitive_step`` 并带上观察正文。
+        :param rounds_left: 进入本轮时的剩余认知预算；一轮响应执行多个认知工具
+            后若预算为负且未给出终局动作，按协议错误记账。
+        :return: 本轮结果；认知工具返回 ``cognitive_step`` 并带上观察正文。
         """
         started = time.monotonic()
         parser = ResponseParser()
@@ -398,6 +504,10 @@ class ConversationAgent:
         status: EventStatus = "committed"
         detail = ""
         observation = ""
+        # 本轮已执行的认知工具明细；一轮响应可以含多个认知工具，按执行顺序排列。
+        steps: list[tuple[ConversationAction, str, str]] = []
+        # 认知工具的本机故障标记：只用于让异常原样穿过外层分类器，不参与账本。
+        tool_crash: BaseException | None = None
 
         async def release(events: list[ParseEvent]) -> None:
             """放出已通过动作头校验的事件；无回调时仅聚合到结果。"""
@@ -437,6 +547,7 @@ class ConversationAgent:
                 body_events=tuple(body_events),
                 observation=observation,
                 cognitive_rounds_used=cognitive_rounds_used,
+                cognitive_steps=tuple(steps),
             )
 
         try:
@@ -474,22 +585,87 @@ class ConversationAgent:
                         on_chunk(chunk)
                     tool_calls = chunk.get('tool_calls')
                     if tool_calls and head is None:
-                        # 工具调用在流末尾一次性到达，且本身就是终局决策：
-                        # 只认第一个，多选属于模型噪声，与重复动作头同样处理。
-                        call = tool_calls[0]
-                        head = decision_head_from_tool_call(
-                            call['name'], call['arguments'], frame,
-                        )
-                        settled = await self._settle_head(
-                            head, frame, cognitive_executor, cognitive_scope,
-                        )
-                        if settled is not None:
-                            status, decision, observation = settled
+                        # 一轮响应允许选择多个工具：按返回顺序逐个结算。
+                        # 认知工具执行后把观察回灌，终局动作至多一个且必须排在
+                        # 最后，出现即截断其后调用——截断的调用不执行、不计为
+                        # 错误，只记 discarded 轻量事件用于审计。
+                        terminal_seen = False
+                        last_cognitive_decision: ConversationDecision | None = None
+                        for call in tool_calls:
+                            if terminal_seen:
+                                _emit_discarded_tool_call(call, frame, round_index)
+                                continue
+                            call_head = decision_head_from_tool_call(
+                                call['name'], call['arguments'], frame,
+                            )
+                            tool_started_at = time.monotonic()
+                            try:
+                                settled = await self._settle_head(
+                                    call_head, frame, cognitive_scope,
+                                )
+                            except Exception as tool_exc:
+                                _emit_tool_execution(
+                                    call, frame, round_index,
+                                    event_status='failed',
+                                    duration_ms=int((time.monotonic() - tool_started_at) * 1000),
+                                )
+                                # 内置认知工具的本机故障原样上抛：它会被外层
+                                # 异常分类捕获，这里用标记让它原样穿过，不转成
+                                # 模型失败——本机 bug 混进 provider_error 会被
+                                # 当成服务商抖动忽略掉。
+                                tool_crash = tool_exc
+                                raise
+                            tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
+                            if settled is not None:
+                                step_status, step_decision, step_observation = settled
+                                if call_head.action in COGNITIVE_ACTIONS:
+                                    _emit_tool_execution(
+                                        call, frame, round_index,
+                                        event_status='committed',
+                                        duration_ms=tool_duration_ms,
+                                        observation=step_observation,
+                                    )
+                                    steps.append(
+                                        (
+                                            call_head.action,
+                                            step_decision.query or '',
+                                            step_observation,
+                                        )
+                                    )
+                                    last_cognitive_decision = step_decision
+                                    continue
+                                # silent 也是终局动作：置位后循环继续，剩余调用
+                                # 全部按截断记账。
+                                terminal_seen = True
+                                status, decision, observation = step_status, step_decision, step_observation
+                                observation = _merge_observation_text(steps, observation)
+                                continue
+                            # reply / react / poke / wait / speak：终局动作。
+                            terminal_seen = True
+                            head = call_head
+                            if head.action in SPEAKING_ACTIONS:
+                                # 工具调用只携带动作头；只有真正需要正文的动作才交给
+                                # replyer。react / poke / wait 已经是完整终局动作。
+                                planned_head = head
+                            # 置位后循环继续，剩余调用全部按截断记账。
+                        if not terminal_seen:
+                            # 整个响应都是认知工具：预算按条数扣减，超支即协议
+                            # 错误，不存在「预算耗尽就降级成别的动作」的路径。
+                            assert steps and last_cognitive_decision is not None
+                            if rounds_left - len(steps) < 0:
+                                status = 'illegal_action'
+                                detail = (
+                                    f'预算耗尽未给出终局动作：本轮执行了 {len(steps)} 个'
+                                    f'认知工具，剩余预算 {rounds_left}'
+                                )
+                                return finish()
+                            status = 'cognitive_step'
+                            decision = last_cognitive_decision
+                            observation = _merge_observation_text(steps)
                             return finish()
-                        if head.action in SPEAKING_ACTIONS:
-                            # 工具调用只携带动作头；只有真正需要正文的动作才交给
-                            # replyer。react / poke / wait 已经是完整终局动作。
-                            planned_head = head
+                        if head is None:
+                            # silent 终局已结算，其余调用已按截断记账。
+                            return finish()
                         break
                     text = chunk.get('text')
                     if not text:
@@ -506,12 +682,18 @@ class ConversationAgent:
                             if isinstance(event, DecisionEvent):
                                 head = self._parse_head(event, frame)
                                 settled = await self._settle_head(
-                                    head, frame, cognitive_executor, cognitive_scope,
+                                    head, frame, cognitive_scope,
                                 )
                                 if settled is not None:
                                     # 认知动作与静默都只有动作头：立即返回，其后
                                     # 若还有正文一律不解析、不流出、不计入。
                                     status, decision, observation = settled
+                                    if status == 'cognitive_step':
+                                        # XML 路径一轮只有一个动作头，认知明细
+                                        # 恒为单条；与工具路径共用同一份记账。
+                                        steps.append(
+                                            (head.action, decision.query or '', observation)
+                                        )
                                     return finish()
                                 if split_reply and head.action in SPEAKING_ACTIONS:
                                     # 决策模型的职责到此为止。它此后写的正文一律
@@ -584,6 +766,9 @@ class ConversationAgent:
             detail = str(exc)
             return finish()
         except Exception as exc:
+            if tool_crash is not None and exc is tool_crash:
+                # 认知工具的本机故障原样上抛：见 tool_crash 声明处的说明。
+                raise
             status = 'provider_error'
             detail = f'{type(exc).__name__}：{exc}'
             return finish()
@@ -593,40 +778,51 @@ class ConversationAgent:
         self,
         head: DecisionHead,
         frame: DecisionFrame,
-        cognitive_executor: CognitiveExecutor | None,
         cognitive_scope: CognitiveScope | None,
     ) -> tuple[EventStatus, ConversationDecision, str] | None:
         """结算不产出正文的那两类动作头。
 
-        认知动作就地完成检索、静默直接定案；两者都在动作头处终止本轮，其后
-        不可能再有可见产物。抽出来是因为 XML 动作头与工具调用是同一套语义的
-        两种表达，判据只能有一份。
+        认知工具经注册表统一执行、静默直接定案；两者都在动作头处终止本轮，
+        其后不可能再有可见产物。抽出来是因为 XML 动作头与工具调用是同一套
+        语义的两种表达，判据只能有一份。
 
         :param head: 已通过帧校验的动作头。
         :param frame: 本回合固定快照。
-        :param cognitive_executor: 认知动作执行器；选到认知动作时必须存在。
         :param cognitive_scope: 认知检索范围；选到认知动作时必须存在。
         :return: ``(状态, 决策, 观察正文)``；发言类动作返回 ``None``，表示调用方
             还要继续取正文。
-        :raises Exception: 认知动作执行失败原样上抛——那是本机故障，不转成模型
+        :raises Exception: 认知工具执行失败原样上抛——那是本机故障，不转成模型
             失败状态。
         """
         if head.action in COGNITIVE_ACTIONS:
             decision = head.to_decision('')
-            assert cognitive_executor is not None
             assert cognitive_scope is not None
             assert decision.query is not None
-            result = await cognitive_executor.execute(
-                CognitiveRequest(
-                    action=decision.action,
-                    query=decision.query,
+            assert self._tool_registry is not None, '认知执行必须注入工具注册表'
+            resolved = self._tool_registry.resolve(decision.action)
+            if resolved is None or resolved.executor is None:
+                # 动作空间与注册表不同步属于装配错误，不允许降级成任何
+                # 其它动作或模型失败。
+                raise KeyError(f'认知动作 {decision.action} 未在注册表绑定执行器')
+            result = await resolved.executor.execute(
+                ToolInvocation(
+                    tool_name=decision.action,
+                    arguments={'query': decision.query},
+                ),
+                ToolContext(
                     stream_id=cognitive_scope.stream_id,
                     stream_kind=frame.stream_kind,
+                    frame=frame,
+                    turn_id=frame.turn_id,
+                    snapshot_id=frame.snapshot_id,
                     person_ids=cognitive_scope.person_ids,
-                    message_watermark=frame.message_watermark,
-                )
+                ),
             )
-            return 'cognitive_step', decision, result.text
+            if not result.success:
+                raise RuntimeError(
+                    f'{decision.action} 执行失败：{result.error_message}'
+                )
+            return 'cognitive_step', decision, result.observation
         if head.action == 'silent':
             return 'silent_by_choice', head.to_decision(''), ''
         return None
@@ -741,37 +937,34 @@ class ConversationAgent:
 
 
 def _observation_messages(
-    action: ConversationAction,
-    query: str,
-    observation: str,
+    steps: Sequence[tuple[ConversationAction, str, str]],
     *,
     final_round: bool,
     flattened: bool = False,
 ) -> list[dict[str, str]]:
-    """把一次认知动作及其观察渲染为下一轮可读的消息。
+    """把一轮执行的认知工具及其观察渲染为下一轮可读的消息。
 
-    XML 角色模式保留 assistant 动作头与 user 结果两条消息。工具模式已经由函数
-    调用表达动作，不再回灌一份 XML：把调用与结果折叠成一个 user item，
-    保留最近一次检索内容，且不重新引入 assistant 角色与第二套协议。
+    一条工具一块，保持因果清晰；多块共享 OBSERVATION_MAX_CHARS 总预算，
+    超出部分在最后一块截断并显式标注。XML 角色模式保留 assistant 动作头与
+    user 结果两条消息；工具模式已经由函数调用表达动作，不再回灌 XML：
+    把调用与结果折叠成一个 user item，不重新引入 assistant 角色与第二套协议。
 
-    :param action: 已执行的认知动作名。
-    :param query: 该动作的检索词。
-    :param observation: 检索结果正文；无命中时也是明确的「没找到」而非空串。
+    :param steps: 按执行顺序排列的（动作名、检索词、观察正文）明细；
+        XML 路径解析器只认第一个动作头，因此恒为单条。
     :param final_round: 下一轮是否已经没有认知机会；为真时追加收束指令。
     :param flattened: 是否使用工具模式的单 item 回灌。
     :return: 追加到消息序列尾部的一条或两条消息。
     """
     notice = f'\n\n{_FINAL_ROUND_NOTICE}' if final_round else ''
     if flattened:
-        return [{
-            'role': 'user',
-            'content': (
-                '[已完成的工具调用]\n'
-                f'动作：{action}\n'
-                f'查询：{query}\n\n'
-                f'[工具返回]\n{observation}{notice}'
-            ),
-        }]
+        blocks = [
+            f'[已完成的工具调用]\n动作：{action}\n查询：{query}\n\n'
+            f'[工具返回]\n{observation}'
+            for action, query, observation in steps
+        ]
+        content = _clip_total('\n\n'.join(blocks), OBSERVATION_MAX_CHARS) + notice
+        return [{'role': 'user', 'content': content}]
+    action, query, observation = steps[0]
     return [
         {
             'role': 'assistant',

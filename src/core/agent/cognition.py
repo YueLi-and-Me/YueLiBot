@@ -1,9 +1,9 @@
-"""认知动作的定义、内置实现与执行器。
+"""认知动作的定义与内置实现。
 
-认知动作是 ReAct 回环中的非终局动作：不产生用户可见产物，将检索结果渲染为
+认知动作是 ReAct 回环中的非终局工具：不产生用户可见产物，将检索结果渲染为
 观察文本回灌给模型，由模型在下一轮决定终局动作。轮次预算与动作空间收窄分别
 由 ``ConversationAgent`` 的循环与 ``action_protocol.available_actions`` 负责，
-本模块不处理。
+本模块不处理；按名分发的职责已并入工具注册表，本模块只保留检索实现。
 
 内置动作：
 
@@ -13,8 +13,8 @@
   主动查询时出现。
 
 依赖：``src.core.memory.store``、``src.core.memory.knowledge`` 的只读检索接口与
-``src.core.platform_io.types``；被 ``src.core.services.chat`` 组装后供
-``ConversationAgent`` 使用，不反向依赖聊天服务或模型层。
+``src.core.platform_io.types``；三个实现由 ``src.core.services.chat`` 包装成
+工具执行器绑定进注册表，不反向依赖聊天服务或模型层。
 """
 
 from __future__ import annotations
@@ -386,47 +386,3 @@ class ConsultAction:
             lines.append(f'- {_clip(hit.content, _ITEM_MAX_CHARS)}')
         touch_knowledge(self._db, [hit.id for hit in hits], current_time())
         return CognitiveObservation(text='\n'.join(lines), hit_count=len(hits))
-
-
-class CognitiveExecutor:
-    """按动作名分发认知动作，并统一施加观察长度上限。
-
-    只做分发和截断两件事。可用性判断（哪个动作这一轮能选）在
-    ``available_actions``，轮次预算在 ``ConversationAgent`` 的循环里，
-    本类不重复表达任何一处。
-    """
-
-    def __init__(self, actions: Sequence[CognitiveAction]) -> None:
-        """按动作名建立分发表。
-
-        :param actions: 已构造的认知动作序列。
-        :raises ValueError: 动作序列为空或存在重名。
-        """
-        if not actions:
-            raise ValueError('认知执行器至少需要一个动作')
-        table: Dict[str, CognitiveAction] = {}
-        for action in actions:
-            if action.name in table:
-                raise ValueError(f'认知动作重名：{action.name}')
-            table[action.name] = action
-        self._actions = table
-
-    @property
-    def action_names(self) -> tuple[str, ...]:
-        """返回已注册的动作名，按注册顺序排列。"""
-        return tuple(self._actions)
-
-    async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
-        """执行一次认知动作并按上限截断观察正文。
-
-        :param request: 待执行的认知动作请求。
-        :return: 正文已按 ``OBSERVATION_MAX_CHARS`` 截断的观察。
-        :raises KeyError: 动作名未注册；这代表动作空间与执行器不同步，
-            属于装配错误而非模型错误，不应被当作协议失败吞掉。
-        """
-        action = self._actions[request.action]
-        observation = await action.execute(request)
-        clipped = _clip(observation.text, OBSERVATION_MAX_CHARS)
-        if clipped == observation.text:
-            return observation
-        return CognitiveObservation(text=clipped, hit_count=observation.hit_count)
