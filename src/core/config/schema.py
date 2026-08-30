@@ -95,32 +95,32 @@ class GroupChatConfig(BaseModel):
     persona_weight: float = Field(default=0.05, ge=0.0, le=1.0)
     reply_window_minutes: int = Field(default=10, ge=1)
     max_replies_in_window: int = Field(default=3, ge=0)
-    # 是否允许她给别人的消息贴 QQ 表情回应（react 动作）。
+    # 是否允许 Bot 给别人的消息贴 QQ 表情回应（react 动作）。
     #
     # 默认开启：语义反应名到 QQ 表情编号的映射（napcat/segments.py 的
     # REACTION_EMOJI_IDS）左列逐字取自 QQ 自己的表情名，已按协议端表情编号表逐条
     # 核对，「名字对了编号错了」这类不报错的错已经排除。剩余未知只有「某个编号是否
     # 被 set_msg_emoji_like 接受」，而那条路失败是响亮的（协议端报错并落日志）。
     #
-    # 不额外给表情回应设频率预算：她要能贴表情，先得拿到这一轮候选机会，而那已经
+    # 不额外给表情回应设频率预算：Bot 要能贴表情，先得拿到这一轮候选机会，而那已经
     # 受门控与 max_replies_in_window 约束；再加一个互相牵制的窗口常量只会让行为
     # 更难推理。
     reactions_enabled: bool = True
-    # 是否允许她戳一戳群里的某个人（poke 动作）。
+    # 是否允许 Bot 戳一戳群里的某个人（poke 动作）。
     #
     # 与表情回应分开且**默认关闭**：贴表情是安静的，戳一戳会给对方推送提醒，
     # 扰动量级完全不同。合成一个开关就没法只开安静的那个。
     pokes_enabled: bool = False
-    # 是否允许她起一个**不接任何人**的话头（speak 动作）。
+    # 是否允许 Bot 主动发起一个**不回应任何人**的话题（speak 动作）。
     #
-    # 它与 reply 的区别只在有没有目标：reply 是接某条消息，speak 是她自己想说点
+    # 它与 reply 的区别只在有没有目标：reply 是回应某条消息，speak 是 Bot 自己想说点
     # 什么。**不需要独立的触发机制**——扩展触发口径（frequency / reply_necessity）
-    # 本来就会在「群里热闹但没人理她」时给出候选，speak 只是让那个候选里多一个
-    # 选项，因此它天然受同一条频率闸门约束，不会另外增加她开口的次数。
+    # 本来就会在「群里热闹但没人理 Bot」时给出候选，speak 只是让那个候选里多一个
+    # 选项，因此它天然受同一条频率闸门约束，不会另外增加 Bot 开口的次数。
     self_started_topics: bool = True
     # 群里每积累这么多条新消息，就在后台重算一次场景画像（在聊什么、什么气氛）。
     #
-    # 观察跑在对话之外，不占她开口前的等待；这个数只决定画像有多新。给 0 关闭观察，
+    # 观察跑在对话之外，不占 Bot 开口前的等待；这个数只决定画像有多新。给 0 关闭观察，
     # 系统提示词里就没有场景块，行为与引入观察 Agent 之前一致。
     #
     # 不再给它配第二个「最小间隔」常量：条数本身已经是节流器——消息来得慢就自然
@@ -143,7 +143,7 @@ class ConversationAgentConfig(BaseModel):
     消息条数尺度。两种扩展模式都不会让纯沉默自动触发，也不会绕过休眠、
     频率硬上限等确定性边界。
 
-    ``max_cognitive_rounds`` 控制 ReAct 回环：一个回合内她最多可以先做几次
+    ``max_cognitive_rounds`` 控制 ReAct 回环：一个回合内 Bot 最多可以先做几次
     认知动作（recall / inspect）再给出终局动作。**每一次都是一次完整的模型
     往返，直接加在首字延迟上**，因此上界很小；置 0 即关闭回环、退回单轮，
     与引入 ReAct 之前的行为逐字相同，是零风险回退开关。
@@ -160,7 +160,7 @@ class ConversationAgentConfig(BaseModel):
     # 代价是发言动作多一次往返，首字延迟明显上升；换来的是两级各配各的模型，
     # 决策那一级换快模型才是压延迟的正路（model_tasks.planner，留空继承 chat）。
     # 两处抵消了一部分代价：决策流在动作头解析完就断，决策模型不会把正文生成完；
-    # 表达选择挪到了回复生成那一侧，她选择 silent 时那次模型调用根本不会发生。
+    # 表达选择挪到了回复生成那一侧，Bot 选择 silent 时那次模型调用根本不会发生。
     # silent / wait / react / poke 都在决策那一次就结束，不付第二次往返。
     split_replyer: bool = True
     # 决策层是否改用工具调用表达动作，而不是 XML 动作头。动作枚举、目标取值与
@@ -173,16 +173,16 @@ class ConversationAgentConfig(BaseModel):
 class TypingNudgeConfig(BaseModel):
     """久等之后看见对方打字时的可选跟进决策开关与阈值。
 
-    只在私聊生效：协议端只为私聊推送输入状态，群里盯着某个人的输入框也不合适。
+    只在私聊生效：协议端只为私聊推送输入状态，群聊中持续关注某个成员的输入状态并不合适。
     时间与输入状态只负责创建机会，Conversation Agent 仍会结合历史在 ``reply``
     与 ``silent`` 之间选择，因此不会把所有达到阈值的会话都变成追问。
     """
 
     # 是否允许据输入状态催促；关闭后输入状态通知只被记录后丢弃。
     enabled: bool = True
-    # 她上次发言后对方至少静默这么久才考虑催，单位为分钟。取值需大于 0。
+    # Bot 上次发言后对方至少静默这么久才考虑催，单位为分钟。取值需大于 0。
     peer_silence_minutes: float = Field(default=3.0, gt=0.0)
-    # 同一段静默里最多催几次；催得再多就从「等急了」变成缠人。0 等同于关闭。
+    # 同一段静默里最多催几次；次数过多会从提醒演变为打扰。0 等同于关闭。
     max_per_silence: int = Field(default=2, ge=0)
 
 
@@ -200,7 +200,7 @@ class SilenceFollowUpConfig(BaseModel):
 
 
 class TypingConfig(BaseModel):
-    """她把一段话打出来的节奏：分几条气泡、每条之间隔多久。
+    """Bot 把一段话打出来的节奏：分几条气泡、每条之间隔多久。
 
     模型按语义写 ``<say>``，一个 ``<say>`` 常常仍是完整的一长句；这里的参数决定
     它再被切成几条、以及每条发出前停顿多久，使多条消息呈现真人的打字节奏而不是
@@ -393,7 +393,7 @@ class EmojiConfig(BaseModel):
 
     # 可发送表情的最大条数；0 表示不限。超过后由后台维护任务按淘汰顺序
     # 收回到该值为止。默认 1000：真机实测每张平均约 325 KB，1000 张对应
-    # 约 320 MB 磁盘占用，是「够她挑」与「不吃满磁盘」之间的取值。
+    # 约 320 MB 磁盘占用，是「够 Bot 挑」与「不吃满磁盘」之间的取值。
     max_count: int = Field(default=1000, ge=0)
     # 库满后是否自动淘汰最冷的条目；关闭时只记录超限告警，不删除任何记录。
     auto_evict: bool = True
@@ -408,6 +408,18 @@ class EmojiConfig(BaseModel):
     collect_enabled: bool = True
     # 孤儿文件清理任务的独立节奏配置。
     cleanup: EmojiCleanupConfig = Field(default_factory=EmojiCleanupConfig)
+
+
+class DesktopPetConfig(BaseModel):
+    """桌宠外壳的总开关：桌面窗口、前台感知与桌面主动搭话的入口。
+
+    关闭时 Electron 不创建桌宠窗口、不采集前台窗口与键鼠活动，只保留托盘
+    与 Python 后端（QQ 适配器与 WebUI 不受影响）；Python 侧的桌面主动搭话
+    因唯一出口消失而一并停用。开关在启动时读取，改动需重启应用生效。
+    """
+
+    # 是否启用桌宠外壳。默认关闭：纯后端部署不应为不存在的窗口跑感知。
+    enabled: bool = False
 
 
 class GenerationTaskConfig(BaseModel):
@@ -725,7 +737,7 @@ class ModelDefinitionConfig(BaseModel):
 class TaskRoutingConfig(BaseModel):
     """一个任务的候选模型与轮询策略。
 
-    model_list 排第一的是主力，其余是它挂掉之后依次顶上的备用。
+    model_list 排第一的是主力，其余为主模型故障后依次启用的备用。
     sequential = 永远优先第一条；random = 每次随机起点，把流量摊到多家。
     balance = 在健康候选之间逐轮轮询，稳定地分摊请求。
     """
@@ -772,7 +784,7 @@ class ModelTaskConfig(BaseModel):
     `extra='forbid'` 确保拼写错误的任务段在加载期直接失败，不会意外继承 chat 配置。
     """
 
-    # 段名写错必须炸在加载期。留空继承 chat 是合法语义，段名打错不是——
+    # 段名写错必须在加载期报错。留空继承 chat 是合法语义，段名打错不是——
     # 没有这一条，[model_tasks.summry] 会静默变成「跟 chat 一样」。
     model_config = ConfigDict(extra='forbid')
 
@@ -789,7 +801,7 @@ class ModelTaskConfig(BaseModel):
     # 情景分析：把一段历史概括成「此刻是什么情况」。它原来借用摘要那一档，
     # 但这件事已经从群聊后台画像扩展到私聊即时决策，在关键路径上，值得单开。
     # 也因此它是少数**延迟与判断质量都要**的槽：输出直接喂给决策层，读错了当前局面，
-    # 整个回合的走向就跟着错，而它又卡在她开口之前。
+    # 整个回合的走向就跟着错，而它又卡在 Bot 开口之前。
     scene: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     # 记忆抽取：回合结束后回看一段对话，判断有没有值得长期记住的事实。
     #
@@ -799,8 +811,8 @@ class ModelTaskConfig(BaseModel):
     # - 它要判断哪条算稳定事实、这条属于谁、哪些是与人无关的知识，全是判断题；
     # - 归属判断错了的后果是永久且无人察觉的：错事实会被反复召回、进提示词、
     #   喂给画像层、再长出联想边（见 agent/fact_extract.py 里「记错人比不记更糟」）。
-    # 对比回复生成——那里写砸一句话是当场可见、转瞬即逝的。按「错了的代价」排，
-    # 这一档的判断质量要求不低于回复生成，省钱要省在别处。
+    # 对比回复生成——那里的错误当场可见且转瞬即逝。按错误代价排序，
+    # 这一档的判断质量要求不低于回复生成，成本应从其他维度节省。
     memory: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
@@ -814,7 +826,7 @@ class ModelCandidate(BaseModel):
 
     # 配置内部模型名，出现在日志里，方便对照 models.toml
     name: str
-    # 引用的厂商名。熔断按厂商记——一个厂商挂了，它下面所有模型都别再撞。
+    # 引用的厂商名。熔断按厂商记——一个厂商故障时，其下所有模型不再尝试。
     provider: str
     kind: str = ''
     base_url: str = ''
@@ -907,6 +919,7 @@ class BotDocument(BaseModel):
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
     typing: TypingConfig = Field(default_factory=TypingConfig)
     emoji: EmojiConfig = Field(default_factory=EmojiConfig)
+    desktop_pet: DesktopPetConfig = Field(default_factory=DesktopPetConfig)
 
     @model_validator(mode='before')
     @classmethod
@@ -971,6 +984,7 @@ class Config(BaseModel):
     conversation_agent: ConversationAgentConfig = Field(default_factory=ConversationAgentConfig)
     typing: TypingConfig = Field(default_factory=TypingConfig)
     emoji: EmojiConfig = Field(default_factory=EmojiConfig)
+    desktop_pet: DesktopPetConfig = Field(default_factory=DesktopPetConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     # 八类任务的候选模型与轮询策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)

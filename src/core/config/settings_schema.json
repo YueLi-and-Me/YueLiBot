@@ -4,7 +4,7 @@
     {
       "file": "bot.toml",
       "label": "Bot 与人格",
-      "description": "Bot 身份、群聊回复策略、日程、人格与对话记忆参数。",
+      "description": "Bot 身份、群聊回复策略、日程、人格与对话记忆参数；文件由 WebUI 保存时整体重写。",
       "sections": [
         {
           "kind": "object",
@@ -102,13 +102,13 @@
               "key": "pokes_enabled",
               "type": "boolean",
               "label": "允许戳一戳",
-              "help": "戳一戳会给对方推送提醒，比贴表情吵得多，默认关闭。"
+              "help": "开启后她可以戳一戳群里某个人；戳一戳会给对方推送提醒，扰动比表情回应大，默认关闭。"
             },
             {
               "key": "self_started_topics",
               "type": "boolean",
               "label": "允许主动起话头",
-              "help": "开启后她可以说一句不接任何人的话；受同一条回复频率闸门约束，不会额外增加开口次数。"
+              "help": "开启后她可以在没有可回应消息时主动发起话题；受同一条回复频率闸门约束，不会额外增加开口次数。"
             },
             {
               "key": "scene_refresh_messages",
@@ -225,7 +225,7 @@
               "label": "事实抽取触发消息数",
               "min": 8,
               "max": 500,
-              "help": "累计多少条消息后回看一次并抽取长期事实；比摘要更密，因为事实的时效性更强"
+              "help": "累计多少条消息后回看一次并抽取长期事实；比摘要更密，因为事实的时效性更强。"
             },
             {
               "key": "fact_extract_batch_messages",
@@ -233,7 +233,7 @@
               "label": "单次抽取消息数",
               "min": 4,
               "max": 200,
-              "help": "每次抽取回看的最旧消息条数，必须小于触发消息数"
+              "help": "每次抽取回看的最旧消息条数，必须小于触发消息数。"
             },
             {
               "key": "session_gap_minutes",
@@ -472,13 +472,97 @@
               "help": "只统计行动核心实际选择 reply 并成功投递的次数；选择 silent 不消耗次数。默认上限为 2。"
             }
           ]
+        },
+        {
+          "kind": "object",
+          "key": "emoji",
+          "label": "表情包库",
+          "description": "表情包库的容量、收集与淘汰参数。",
+          "fields": [
+            {
+              "key": "max_count",
+              "type": "number",
+              "label": "库容量上限",
+              "help": "可发送表情的最大条数；0 表示不限。超过后由后台维护任务按「最少用、最久没用」收回到该值为止。"
+            },
+            {
+              "key": "auto_evict",
+              "type": "boolean",
+              "label": "自动淘汰",
+              "help": "库满后是否自动淘汰最冷的条目；关闭时只记录超限告警，不删除任何记录。"
+            },
+            {
+              "key": "check_interval_minutes",
+              "type": "number",
+              "label": "检查间隔（分钟）",
+              "help": "两次库容量检查之间的最小间隔，单位分钟；必须大于 0。"
+            },
+            {
+              "key": "max_file_size_mb",
+              "type": "number",
+              "label": "单文件上限（MB）",
+              "help": "收集时的单文件大小上限，单位 MB；0 表示不限。"
+            },
+            {
+              "key": "content_filtration",
+              "type": "boolean",
+              "label": "入库审查",
+              "help": "入库前是否调用视觉模型审查内容；关闭时零模型调用，开启但视觉模型不可用时拒绝入库并告警。"
+            },
+            {
+              "key": "collect_enabled",
+              "type": "boolean",
+              "label": "自动收集",
+              "help": "是否从聊天里自动收集表情包；关闭后入站图片只识别不入库。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "emoji.cleanup",
+          "label": "孤儿文件清理",
+          "description": "清理目录里库里没有记录的孤儿文件；只控制后台任务的节奏与保留期。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用清理",
+              "help": "是否定期清理目录里库里没有记录的孤儿文件；关闭后孤儿文件只会被巡检报告，不会被删除。"
+            },
+            {
+              "key": "check_interval_hours",
+              "type": "number",
+              "label": "检查间隔（小时）",
+              "help": "两次孤儿清理检查之间的最小间隔，单位小时；必须大于 0。"
+            },
+            {
+              "key": "orphan_retention_days",
+              "type": "number",
+              "label": "保留天数",
+              "help": "孤儿文件至少保留多少天；0 表示下次检查时立即清理。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
+          "key": "desktop_pet",
+          "label": "桌宠",
+          "description": "桌宠外壳总开关：桌面窗口、前台感知与桌面主动搭话；关闭后只保留托盘和后端。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用桌宠",
+              "help": "开启后启动时创建桌宠窗口并采集前台窗口与键鼠活动；关闭后只保留托盘和后端（QQ 与 WebUI 不受影响），桌面主动搭话一并停用。改动需重启应用生效。"
+            }
+          ]
         }
       ]
     },
     {
       "file": "features.toml",
       "label": "功能开关",
-      "description": "语音合成、屏幕视觉、感知出口、向量召回、日志与代理等运行参数。",
+      "description": "语音合成、屏幕视觉、感知出口、向量召回、日志与代理等运行参数；文件由 WebUI 保存时整体重写。",
       "sections": [
         {
           "kind": "object",
@@ -956,7 +1040,7 @@
                   "label": "黑名单（名单外都回）"
                 }
               ],
-              "help": "默认白名单：配错时是朋友没收到回复，而不是任何人都能消耗模型额度。"
+              "help": "whitelist 只处理名单内的私聊，blacklist 名单内的不处理；默认白名单，配错的表现是朋友没收到回复，而不是陌生人消耗模型额度。"
             },
             {
               "key": "list",
@@ -997,7 +1081,7 @@
     {
       "file": "providers.toml",
       "label": "模型厂商",
-      "description": "API 厂商与连接策略；密钥只保存到本机，WebUI 读取时不会回传明文。",
+      "description": "API 厂商与连接策略；文件由 WebUI 保存时整体重写。密钥只保存到本机，WebUI 读取时不会回传明文。",
       "sections": [
         {
           "kind": "table_list",
@@ -1131,7 +1215,7 @@
     {
       "file": "models.toml",
       "label": "模型与任务",
-      "description": "模型定义、八类任务候选与按任务拆分的生成参数。",
+      "description": "模型定义、八类任务候选与按任务拆分的生成参数；文件由 WebUI 保存时整体重写。",
       "sections": [
         {
           "kind": "map",
@@ -1378,7 +1462,7 @@
                   "label": "不解析（none）"
                 }
               ],
-              "help": "选择如何解析模型返回的思考内容。"
+              "help": "解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。"
             },
             {
               "key": "visual",

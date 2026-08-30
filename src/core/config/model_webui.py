@@ -115,7 +115,10 @@ def snapshot(directory: Path) -> Dict[str, Any]:
 
 
 def _write_vision_bool(directory: Path, field: str, enabled: bool) -> None:
-    """只更新 features.toml 的 vision 段布尔字段，保留其余内容。"""
+    """只更新 features.toml 的 vision 段布尔字段，保留其余内容。
+
+    段头与字段行都可能带行尾注释，比较前先剥掉。
+    """
     path = directory / 'features.toml'
     text = path.read_text(encoding='utf-8')
     lines = text.splitlines()
@@ -124,7 +127,7 @@ def _write_vision_bool(directory: Path, field: str, enabled: bool) -> None:
     field_line = re.compile(rf'\s*{field}\s*=')
     for index, line in enumerate(lines):
         if line.startswith('['):
-            in_vision = line.strip() == '[vision]'
+            in_vision = line.split('#', 1)[0].strip() == '[vision]'
             continue
         if in_vision and field_line.match(line):
             lines[index] = f'{field} = {'true' if enabled else 'false'}'
@@ -132,7 +135,7 @@ def _write_vision_bool(directory: Path, field: str, enabled: bool) -> None:
             break
     if not changed:
         insert_at = next(
-            (index for index, line in enumerate(lines) if line.strip() == '[vision]'),
+            (index for index, line in enumerate(lines) if line.split('#', 1)[0].strip() == '[vision]'),
             len(lines),
         ) + 1
         lines.insert(insert_at, f'{field} = {'true' if enabled else 'false'}')
@@ -319,7 +322,7 @@ def _default_model() -> Dict[str, Any]:
 
 def _dump_providers(providers: List[Dict[str, Any]]) -> str:
     lines = [
-        '# API 厂商与连接策略（WebUI 模型工作台生成）',
+        '# API 厂商与连接策略；由 WebUI 模型工作台生成，手工改动会在下次保存时被覆盖。',
         '',
     ]
     if not providers:
@@ -331,22 +334,24 @@ def _dump_providers(providers: List[Dict[str, Any]]) -> str:
         '',
     ])
     for provider in providers:
-        lines.append('[[api_providers]]')
-        lines.append(f'name = {_toml_value(provider["name"])}')
-        lines.append(f'kind = {_toml_value(provider.get("kind", "openai"))}')
-        lines.append(f'base_url = {_toml_value(provider.get("base_url", ""))}')
-        lines.append(f'api_key = {_toml_value(provider.get("api_key", ""))}')
-        lines.append(f'auth_type = {_toml_value(provider.get("auth_type", "bearer"))}')
-        lines.append(f'auth_name = {_toml_value(provider.get("auth_name", ""))}')
-        lines.append(f'client_type = {_toml_value(provider.get("client_type", "openai"))}')
-        lines.append(f'app_id = {_toml_value(provider.get("app_id", ""))}')
-        lines.append(f'model_list_endpoint = {_toml_value(provider.get("model_list_endpoint", "/models"))}')
-        lines.append(f'default_headers = {_toml_value(provider.get("default_headers", {}))}')
-        lines.append(f'default_query = {_toml_value(provider.get("default_query", {}))}')
-        lines.append(f'timeout_ms = {int(provider.get("timeout_ms", 120_000))}')
-        lines.append(f'max_retries = {int(provider.get("max_retries", 2))}')
-        lines.append(f'retry_interval_ms = {int(provider.get("retry_interval_ms", 800))}')
-        lines.append('')
+        lines.extend([
+            '[[api_providers]] # 一个 API 厂商条目。',
+            f'name = {_toml_value(provider["name"])} # 模型配置引用的唯一名称；不能与其他厂商重复。',
+            f'kind = {_toml_value(provider.get("kind", "openai"))} # 预设标识，如 deepseek、openai、ark；base_url 为空时按预设取官方地址。',
+            f'base_url = {_toml_value(provider.get("base_url", ""))} # API 端点基础 URL，通常以 /v1 结尾；留空使用预设官方地址。',
+            f'api_key = {_toml_value(provider.get("api_key", ""))} # 身份验证密钥；编辑时留空表示保持已保存的密钥不变。',
+            f'auth_type = {_toml_value(provider.get("auth_type", "bearer"))} # Bearer 使用 Authorization 头；header/query 需要填写 auth_name。',
+            f'auth_name = {_toml_value(provider.get("auth_name", ""))} # header/query 鉴权使用的字段名；Bearer/none 时必须留空。',
+            f'client_type = {_toml_value(provider.get("client_type", "openai"))} # OpenAI 兼容支持对话、视觉、向量和 TTS；volcengine 只允许绑定 TTS 任务。',
+            f'app_id = {_toml_value(provider.get("app_id", ""))} # 豆包语音的服务接口认证信息；仅 client_type=volcengine 时生效。',
+            f'model_list_endpoint = {_toml_value(provider.get("model_list_endpoint", "/models"))} # 用于 WebUI 连通性测试与模型拉取的路径；OpenAI 兼容默认 /models。',
+            f'default_headers = {_toml_value(provider.get("default_headers", {}))} # 需要额外 HTTP 头的厂商在这里写键值；认证头仍由 auth_type/auth_name 负责。',
+            f'default_query = {_toml_value(provider.get("default_query", {}))} # 需要固定查询参数的厂商在这里写键值。',
+            f'timeout_ms = {int(provider.get("timeout_ms", 120_000))} # 单次 HTTP 连接与流式读取超时；首字阶段的内部重试仍受任务级首字超时整体截断。',
+            f'max_retries = {int(provider.get("max_retries", 2))} # 同一连接内尚未输出内容时的重试次数；需要跑满重试应调大任务级首字超时。',
+            f'retry_interval_ms = {int(provider.get("retry_interval_ms", 800))} # 两次重试之间的等待时间。',
+            '',
+        ])
     return '\n'.join(lines)
 
 
@@ -356,7 +361,7 @@ def _dump_models(
     models: List[Dict[str, Any]],
 ) -> str:
     lines = [
-        '# 模型定义、任务路由与生成参数（WebUI 模型工作台生成）',
+        '# 模型定义、任务路由与生成参数；由 WebUI 模型工作台生成，手工改动会在下次保存时被覆盖。',
         '',
     ]
     if not models:
@@ -369,35 +374,58 @@ def _dump_models(
     ])
     for task in TASK_NAMES:
         raw = tasks[task]
-        lines.append(f'[model_tasks.{task}]')
-        lines.append(f'model_list = {_toml_value(raw["model_list"])}')
-        lines.append(f'selection_strategy = {_toml_value(raw["selection_strategy"])}')
-        lines.append(f'first_token_timeout_ms = {int(raw["first_token_timeout_ms"])}')
-        lines.append(f'slow_threshold_ms = {int(raw["slow_threshold_ms"])}')
-        lines.append('')
+        lines.extend([
+            f'[model_tasks.{task}]',
+            f'model_list = {_toml_value(raw["model_list"])} # 该任务使用的候选模型名称，对应下方 [[models]] 的 name；顺序即优先级。',
+            f'selection_strategy = {_toml_value(raw["selection_strategy"])} # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。',
+            f'first_token_timeout_ms = {int(raw["first_token_timeout_ms"])} # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。',
+            f'slow_threshold_ms = {int(raw["slow_threshold_ms"])} # 只用于慢响应记账；必须小于首字超时，0 表示关闭。',
+            '',
+        ])
     for task in GENERATION_TASKS:
         raw = generation[task]
         lines.append(f'[generation.{task}]')
         if task == 'proactive':
-            lines.append(f'enabled = {_toml_value(bool(raw.get("enabled", True)))}')
-        lines.append(f'temperature = {_toml_value(float(raw["temperature"]))}')
-        lines.append(f'max_tokens = {int(raw["max_tokens"] or 0)}')
+            lines.append(
+                f'enabled = {_toml_value(bool(raw.get("enabled", True)))}'
+                ' # 关闭后 Electron 不安装全局键鼠钩子，也不会主动发起互动。'
+            )
+        lines.append(
+            f'temperature = {_toml_value(float(raw["temperature"]))}'
+            ' # 采样温度；低温度更确定，高温度更有创造性。'
+        )
+        lines.append(
+            f'max_tokens = {int(raw["max_tokens"] or 0)}'
+            ' # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。'
+        )
         lines.append('')
     for model in models:
-        lines.append('[[models]]')
-        lines.append(f'name = {_toml_value(model["name"])}')
-        lines.append(f'model_identifier = {_toml_value(model.get("model_identifier", ""))}')
-        lines.append(f'api_provider = {_toml_value(model.get("api_provider", ""))}')
-        lines.append(f'extra_body = {_toml_value(model.get("extra_body", {}))}')
-        lines.append(f'reasoning_parse_mode = {_toml_value(model.get("reasoning_parse_mode", "field"))}')
-        lines.append(f'visual = {_toml_value(bool(model.get("visual", False)))}')
+        lines.append('[[models]] # 一个模型条目。')
+        lines.append(f'name = {_toml_value(model["name"])} # 任务候选引用的唯一名称；不能与其他模型重复。')
+        lines.append(
+            f'model_identifier = {_toml_value(model.get("model_identifier", ""))}'
+            ' # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。'
+        )
+        lines.append(f'api_provider = {_toml_value(model.get("api_provider", ""))} # 引用的厂商名称，必须存在于 providers.toml。')
+        lines.append(f'extra_body = {_toml_value(model.get("extra_body", {}))} # 透传给厂商请求体的额外参数；JSON 对象格式。')
+        lines.append(
+            f'reasoning_parse_mode = {_toml_value(model.get("reasoning_parse_mode", "field"))}'
+            ' # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。'
+        )
+        lines.append(f'visual = {_toml_value(bool(model.get("visual", False)))} # 标记该模型可用于 vision / 图片描述任务。')
         if model.get('temperature') is not None:
-            lines.append(f'temperature = {_toml_value(float(model["temperature"]))}')
+            lines.append(
+                f'temperature = {_toml_value(float(model["temperature"]))}'
+                ' # 模型级覆盖；留空时使用任务 generation 配置。'
+            )
         if model.get('max_tokens') is not None:
-            lines.append(f'max_tokens = {int(model["max_tokens"])}')
-        lines.append(f'price_in = {_toml_value(float(model.get("price_in") or 0.0))}')
-        lines.append(f'price_out = {_toml_value(float(model.get("price_out") or 0.0))}')
-        lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))}')
+            lines.append(
+                f'max_tokens = {int(model["max_tokens"])}'
+                ' # 模型级覆盖；留空时使用任务 generation 配置。'
+            )
+        lines.append(f'price_in = {_toml_value(float(model.get("price_in") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
+        lines.append(f'price_out = {_toml_value(float(model.get("price_out") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
+        lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))} # 仅嵌入模型需要填写；备用向量模型必须与主力输出同样的维度。')
         lines.append('')
     return '\n'.join(lines)
 

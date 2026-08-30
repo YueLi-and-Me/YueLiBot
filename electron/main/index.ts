@@ -37,11 +37,14 @@ import { IPC, type YueliConfig } from '../shared/ipc.ts'
 import { mentionsScreen } from './screenIntent.ts'
 import { InputActivity } from './inputActivity.ts'
 import { PythonSupervisor } from './python/supervisor.ts'
-import { PythonClient, windowSink } from './python/client.ts'
+import { PythonClient, windowSink, type EventSink } from './python/client.ts'
 import { resolveRuntimePaths } from './runtimePaths.ts'
 
 const PET_W = 440
 const PET_H = 480
+
+/** 桌宠关闭时的事件出口：推送直接丢弃；不建立 WS 时该出口实际不会收到消息。 */
+const NULL_SINK: EventSink = { send: () => {}, isAlive: () => false }
 
 /** 前台窗口轮询间隔，单位为毫秒；后端仍会根据事件内容执行业务级节流。 */
 const FOREGROUND_POLL_MS = 8_000
@@ -71,6 +74,8 @@ let client: PythonClient | null = null
 /** 当前有效配置；后端重启后刷新，保证 Electron 侧按最新功能开关执行轮询和截图。 */
 let currentCfg: YueliConfig | null = null
 let inputActivity: InputActivity | null = null
+/** 退出清理是否已完成；before-quit 的异步优雅关闭据此实现幂等重入。 */
+let quitPrepared = false
 /**
  * 本次运行的持续截图开关。
  *
@@ -89,7 +94,8 @@ registerAppScheme()
  */
 function syncInputActivity(): void {
   if (!inputActivity) return
-  if (currentCfg?.generation.proactive.enabled) {
+  // 桌宠关闭时不采集键鼠：前台快照不会上报，全局钩子只剩隐私暴露面。
+  if (currentCfg?.generation.proactive.enabled && currentCfg.desktop_pet.enabled) {
     inputActivity.start()
   } else {
     inputActivity.stop()
@@ -129,8 +135,13 @@ app.whenReady().then(async () => {
     console.log('[main] 收到重启指令，重启 Python 后端…')
     currentCfg = readConfigDirectory(configDir, legacyConfigPath)
     syncInputActivity()
-    supervisor.stop()
-    supervisor.start()
+    // 优雅关闭后再拉起：等服务停完（通常 1–3 秒，上限约 10 秒），
+    // 换来不再丢在飞回合与未落库状态。
+    const target = supervisor
+    void (async () => {
+      await target.shutdown()
+      target.start()
+    })()
   })
   // 首次启动缺少模型或 API 密钥时先显示设置窗口，桌宠和 Python 后端延后启动。
   if (!configIsComplete(readConfigDirectory(configDir, legacyConfigPath))) {
@@ -215,11 +226,14 @@ async function startApp(
   currentCfg = cfg
   inputActivity = new InputActivity()
   syncInputActivity()
-  petWindow = createPetWindow({
-    width: PET_W, height: PET_H,
-    url: devUrl ?? APP_INDEX_URL,
-    preload: resolvePreload(),
-  })
+  // 桌宠开关关闭时不创建窗口：托盘仍提供设置、日记与后端控制，重启应用后按新配置生效。
+  petWindow = cfg.desktop_pet.enabled
+    ? createPetWindow({
+      width: PET_W, height: PET_H,
+      url: devUrl ?? APP_INDEX_URL,
+      preload: resolvePreload(),
+    })
+    : null
 
   // 窗口控制 IPC：渲染器只传递用户交互意图，窗口状态由主进程统一维护。
   ipcMain.on(IPC.SetInteractive, (_e, interactive: boolean) => {
@@ -239,23 +253,34 @@ async function startApp(
     napcatConfigPath,
   })
   supervisor.on('ready', (port, token) => {
-    if (!petWindow || petWindow.isDestroyed() || !supervisor) return
+    if (!supervisor) return
     client?.stop()
-    client = new PythonClient(port, token, windowSink(petWindow), (reason) => {
+    // 桌宠关闭时窗口不存在：仍创建客户端让日记窗口走 HTTP 可用，但不建立 WS——
+    // 聊天、语音、睡眠推送都没有接收窗口。
+    const win = petWindow && !petWindow.isDestroyed() ? petWindow : null
+    client = new PythonClient(port, token, win ? windowSink(win) : NULL_SINK, (reason) => {
       void glanceForChat(reason)
     })
-    client.connect()
+    if (win) client.connect()
   })
   // 监护器已经记录详细故障，主进程只更新托盘提示，避免重复输出同一错误。
   supervisor.on('adapterFailed', (err) => {
     notifyTray(cfg.bot.name, err.message)
   })
   supervisor.start()
-  app.on('before-quit', () => {
-    supervisor?.stop()
-    client?.stop()
-    inputActivity?.stop()
-    disposeWindowCapture()
+  app.on('before-quit', (event) => {
+    // 异步幂等退出：首次触发拦截退出，等清理与后端优雅关闭完成后再真正退出；
+    // 重入时（quitPrepared 已置位）直接放行。所有等待都有内部超时，不会卡住退出。
+    if (quitPrepared) return
+    quitPrepared = true
+    event.preventDefault()
+    void (async () => {
+      client?.stop()
+      inputActivity?.stop()
+      disposeWindowCapture()
+      await supervisor?.shutdown()
+      app.quit()
+    })()
   })
 
   /**
@@ -292,7 +317,7 @@ async function startApp(
    *   轮询间隔由 ``FOREGROUND_POLL_MS`` 控制。
    */
   const pollForeground = async (): Promise<void> => {
-    if (!client || !currentCfg) return
+    if (!client || !currentCfg?.desktop_pet.enabled) return
     try {
       const fg = await readForeground(currentCfg.vision.fullscreen_silent)
       if (!fg || isSelfProcess(fg.process)) return
@@ -342,9 +367,10 @@ async function startApp(
    * @remarks 采集前刷新一次前台窗口标题，防止轮询延迟导致窗口匹配失败；整屏模式不要求标题。
    */
   const glanceForChat = async (reason: string = 'user_request') => {
-    if (!currentCfg?.vision.enabled || !client) {
+    if (!currentCfg?.desktop_pet.enabled || !currentCfg.vision.enabled || !client) {
       console.debug('[vision] 截图请求跳过：', {
         reason,
+        petEnabled: !!currentCfg?.desktop_pet.enabled,
         visionEnabled: !!currentCfg?.vision.enabled, hasClient: !!client,
       })
       return
@@ -401,13 +427,20 @@ async function startApp(
         preload: resolveSettingsPreload(),
         botName: cfg.bot.name,
       }),
-    restartBackend: () => { supervisor?.stop(); supervisor?.start() },
+    restartBackend: () => {
+      const target = supervisor
+      if (!target) return
+      void (async () => {
+        await target.shutdown()
+        target.start()
+      })()
+    },
   })
 
-  petWindow.on('closed', () => { petWindow = null })
+  petWindow?.on('closed', () => { petWindow = null })
 
   // 按环境变量决定是否执行 Electron 自检。
-  if (SELFTEST) runSelfTest(petWindow)
+  if (SELFTEST && petWindow) runSelfTest(petWindow)
 }
 
 // Electron 自检开关。

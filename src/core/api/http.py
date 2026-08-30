@@ -11,7 +11,6 @@ from ipaddress import ip_address
 from typing import Any, List, Literal
 
 import asyncio
-import os
 import sqlite3
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
@@ -325,14 +324,37 @@ async def web_auto_login(response: Response) -> dict:
     return {'ok': True}
 
 
+@router.post('/runtime/shutdown', dependencies=[Depends(_auth), Depends(_require_loopback)])
+async def runtime_shutdown() -> JSONResponse:
+    """请求后端进程优雅退出；无 server 句柄（测试挂载场景）时返回 503。
+
+    置位 ``should_exit`` 后 uvicorn 走与 SIGINT 完全相同的优雅路径：停监听、
+    对在飞请求只关 keep-alive 并等其完成、跑 lifespan 逆序关闭链后以 0 退出。
+    因此本响应仍能正常发出，Electron supervisor 只需等待子进程退出事件。
+    """
+    server = app_state.uvicorn_server
+    if server is None:
+        return JSONResponse({'detail': '关机句柄未注入'}, status_code=503)
+    logger.info('shutdown_requested')
+    server.should_exit = True
+    return JSONResponse({'ok': True})
+
+
 @router.post('/system/restart', dependencies=[Depends(_auth), Depends(_require_loopback)])
 async def system_restart() -> dict:
-    """重启当前 Python 后端进程；Electron supervisor 会重新拉起。"""
-    async def _exit_soon() -> None:
-        await asyncio.sleep(0.4)
-        os._exit(0)
+    """重启当前 Python 后端进程；Electron supervisor 会重新拉起。
 
-    asyncio.create_task(_exit_soon())
+    与 ``/runtime/shutdown`` 同一条优雅路径：进程退出后 supervisor 照旧按
+    ``_scheduleRestart`` 拉起，重启语义不变，只是关闭链有机会收尾。
+    """
+    server = app_state.uvicorn_server
+    if server is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='关机句柄未注入',
+        )
+    logger.info('restart_requested')
+    server.should_exit = True
     return {'ok': True}
 
 
@@ -577,7 +599,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             ),
             reason,
         )
-        # DROP 不调用模型，但必须落一条可审计行动事件，回答「代码根本没让她考虑」。
+        # DROP 不调用模型，但必须落一条可审计行动事件，回答「代码根本没让 Bot 考虑」。
         gate_event = ActionDecisionEvent(
             turn_id=None,
             snapshot_id=f'gate-{message_id}',
@@ -633,6 +655,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         image_sources=image_sources if not legacy_attachments else (),
         emoji_sources=emoji_sources,
         emoji_sub_types=emoji_sub_types,
+        poked_me=body.poked_me,
+        pokes_in_window=pokes_in_window,
     ))
     return JSONResponse({
         'streamId': context.stream.id,
@@ -1868,7 +1892,7 @@ def _memory_spread_rows(
     """从指定节点出发跑一次扩散，返回带正文的命中列表。
 
     直接调用运行时的 :func:`~src.core.memory.association.spread`，不另写一份预览
-    实现：面板要回答的是「她真的会想起什么」，重写一遍就只能回答「我以为会想起
+    实现：面板要回答的是「Bot 真的会想起什么」，重写一遍就只能回答「我以为会想起
     什么」。该函数已声明只读，不建边也不加强，因此面板反复点不会污染边权。
 
     与真机的唯一差别是不传短期激活表——面板没有对话上下文，也就没有「刚才聊到
@@ -1947,8 +1971,8 @@ async def memory_spread_preview(
 ) -> dict:
     """以指定记忆为种子跑一次扩散预览，只读。
 
-    面板据此回答「从这里出发她会顺带想起什么」。走的是运行时同一份 spread
-    实现，因此结果与她真实的联想一致；唯一差别是没有短期激活加成（面板没有
+    面板据此回答「从这里出发 Bot 会顺带想起什么」。走的是运行时同一份 spread
+    实现，因此结果与 Bot 真实的联想一致；唯一差别是没有短期激活加成（面板没有
     对话上下文），界面上标注为「不含刚才聊到过的加成」。
 
     :param kind: 种子所在层。
