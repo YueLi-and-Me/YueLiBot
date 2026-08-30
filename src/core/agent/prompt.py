@@ -56,8 +56,8 @@ def _time_context(now: datetime, schedule: Optional[str] = None) -> str:
     weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
     lines = [
         f'现在是 {now.year}年{now.month}月{now.day}日{weekdays[now.weekday()]}，{period}{hour}点{now.minute:02d}分。',
-        '时间只是这段对话的背景。除非他正在聊作息、饭点或时间本身，否则不要像报时一样主动提起；'
-        '真要关心也只自然带一句，不要每到固定时段重复问候。',
+        '时间只是这段对话的背景。除非对方正在聊作息、饭点或时间本身，否则不要主动提起时间；'
+        '确有必要时提一句即可，不要每到固定时段重复问候。',
     ]
     if schedule:
         lines.extend(['', schedule])
@@ -78,7 +78,7 @@ def _relationship_context(user_nickname: Optional[str], relationship: Optional[s
     if relationship:
         lines.append(
             f'你把对方当{relationship}看待。这会影响你的分寸和亲近感，但不要反复声明这层关系，'
-            '也不要把称呼当成口头禅。'
+            '也不要在每句话里都带上称呼。'
         )
     return '\n'.join(lines)
 
@@ -192,15 +192,16 @@ def _activity_block(activity: Optional[str]) -> str:
     return _prefixed_block('\n'.join([
         '# 眼前的一点情境',
         activity,
-        '这只是你顺眼得到的背景，不是监控报告。和当前话题无关就别提，也不要复述成「我看到你正在……」。',
+        '这只是后台得到的背景信息，不是监控报告。与当前话题无关时不要提及，'
+        '也不要复述为「我看到你正在……」。',
     ]))
 
 
 def _scene_block(scene: Optional[Tuple[str, str]]) -> str:
     """把场景画像包装成不要求主动提及的群聊背景块。
 
-    与 ``_activity_block`` 同一条纪律：这是她顺眼得到的背景，不是要她复述的简报。
-    观察 Agent 只在群聊跑，因此私聊与桌面传 ``None``、整块省略。
+    与 ``_activity_block`` 同一纪律：后台取得的背景信息，不要求 Bot 复述。
+    观察 Agent 只在群聊运行，私聊与桌面传 ``None``、整块省略。
 
     :param scene: ``(话题, 气氛)`` 二元组；``None`` 表示还没有观察结果。
     :return: 带段落前缀的提示词块，无场景时返回空字符串。
@@ -212,20 +213,19 @@ def _scene_block(scene: Optional[Tuple[str, str]]) -> str:
         '# 群里现在的情况',
         f'大家在聊：{topic}',
         f'气氛：{atmosphere}',
-        '这是你扫一眼群里得到的印象，用来判断这一轮该不该接、用什么调子接。'
-        '不要复述它，也不要因为气氛就硬凑一句话。',
+        '这是当前群聊的概览，用于判断本轮是否发言以及用什么语气。'
+        '不要复述这些内容，也不要为了呼应气氛而强行发言。',
     ]))
 
 
 def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
-    """把本轮命中的黑话渲染为「背景，不是任务」的提示词块。
+    """把本轮命中的黑话渲染为背景类提示词块。
 
-    与 ``_activity_block`` / ``_scene_block`` 同一条纪律：只注入本轮消息里
-    真正命中的词条（查表与截断在 ``agent/jargon.py``，这里是纯渲染器），
-    表头必须声明这是机械匹配的结果、可能不准、只用来听懂大家在说什么
-    ——没有这句，她会把词条释义当成可信事实转述；收尾必须压一句
-    「听得懂就行、别刻意去用」——没有这句，模型会把「我知道这个词的意思」
-    当成本轮要交代的内容。
+    与 ``_activity_block`` / ``_scene_block`` 同一纪律：只注入本轮消息里
+    实际命中的词条（查表与截断在 ``agent/jargon.py``，此处为纯渲染器）。
+    表头声明这是机械匹配的结果、可能不准确、仅用于理解消息内容，缺少该
+    声明时模型会把词条释义当作可信事实转述；收尾注明仅供理解、不要刻意
+    使用，缺少该约束时模型会把理解词义当成本轮任务。
 
     :param jargon: ``(词, 含义)`` 序列；`None` 或空序列表示不生成该块。
     :return: 带段落前缀的黑话块；无命中时返回空字符串，整块省略。
@@ -234,23 +234,22 @@ def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
         return ''
     return _prefixed_block('\n'.join([
         '# 这个群里的一些说法',
-        '下面这些说法是按字面从上下文里机械匹配出来的，可能有不准的地方，'
-        '只用来听懂他们在说什么。',
+        '以下说法是按字面从上下文匹配的结果，可能不准确，仅用于理解消息内容。',
         *[f'「{term}」= {meaning}' for term, meaning in jargon],
         '',
-        '这是他们平时的说法，你听得懂就行。别刻意去用，也不要解释给他们听。',
+        '这些是群内常用说法，能看懂即可。不要刻意使用，也不要向群成员解释词义。',
     ]))
 
 
 def _impressions_block(impressions: Optional[Sequence[str]]) -> str:
-    """把在场者的人物画像渲染为「背景，不是任务」的印象块。
+    """把在场者的人物画像渲染为背景类提示词块。
 
-    与 ``_jargon_block`` 同一条纪律：只注入本轮在场者的画像（取数与上限在
-    ``agent/profile.py``，这里是纯渲染器），收尾必须压一句「不用向谁复述」——
-    没有这句，模型会把「我对你的印象是……」当成本轮要交代的内容。
+    与 ``_jargon_block`` 同一纪律：只注入本轮在场者的画像（取数与上限在
+    ``agent/profile.py``，此处为纯渲染器），收尾注明仅供自身参考、不向对方
+    复述，缺少该约束时模型会把印象陈述当成本轮任务。
 
     :param impressions: 画像正文序列；``None`` 或空序列表示整块省略，
-        绝不输出只有标题的空块（★W5-4）。
+        不输出只有标题的空块。
     :return: 带段落前缀的印象块；无画像时返回空字符串。
     """
     if not impressions:
@@ -259,7 +258,7 @@ def _impressions_block(impressions: Optional[Sequence[str]]) -> str:
         '# 你对他们的印象',
         *impressions,
         '',
-        '这是你自己攒下的印象，不用向谁复述，也别拿它当判断人的标签。',
+        '以上是你对这些人的既有印象，仅供自己参考，不要向对方复述，也不要作为对人的定论。',
     ]))
 
 
@@ -290,7 +289,7 @@ def _expression_habits_block(expression_habits: Optional[str]) -> str:
     """
     if not expression_habits:
         return ''
-    return _prefixed_block(f'# 平时的说法\n{expression_habits}')
+    return _prefixed_block(f'# 表达方式参考\n{expression_habits}')
 
 
 def build_system_prompt(
@@ -351,9 +350,9 @@ def build_system_prompt(
     :param jargon: 本轮消息命中的黑话 ``(词, 含义)`` 列表，由 ``agent/jargon.py``
         查表截断后传入；为空时整块省略。
     :param decision_only: 只产出动作决策、不写正文时置真。此时省略回复风格、
-        临时语调与表达样本三块——它们全都只影响「话怎么说」，决策层用不上，
-        留着既占上下文也会诱导它顺手把台词写了。身份、人格、关系与记忆照常
-        注入：判断「她这种人会不会这么做」依赖的正是那些。
+        临时语调与表达样本三块：它们只影响表达方式，对决策无用，保留会占用
+        上下文并诱导模型直接产出台词。身份、人格、关系与记忆照常注入：
+        动作决策依赖这些背景。
 
     :return: 可直接提交给模型服务的完整系统提示词。
 
@@ -413,7 +412,7 @@ def build_system_prompt(
         'facts': _memory_block(
             '你早就知道的事',
             facts,
-            '把这些当成相处已久留下的常识。用得上时自然接住，用不上就放着；不要逐条复述给对方听。',
+            '这些是长期相处积累的常识，需要时自然使用，不需要时不提；不要逐条复述给对方。',
         ),
         'episodes': _memory_block(
             '最近留下的聊天回想',
@@ -534,8 +533,8 @@ def build_itemized_system_prompt(
         length = get_prompt(length_template_id).render().rstrip()
 
     # 表达层整节在这里组装，而不是在模板里写死标题：decision_only 会把这一节的
-    # 内容全部抽走，标题留在模板里就会渲染出一个空的「# 说话的味道」——决策层每
-    # 一轮都白读一个空小节，还容易让它以为自己漏看了什么。
+    # 内容全部抽走，标题留在模板里就会渲染出一个空的「# 说话的风格」——决策层每
+    # 轮都会读到一个空小节，并可能误以为遗漏了内容。
     sections: List[str] = []
     if not decision_only:
         voice = (
@@ -544,7 +543,7 @@ def build_itemized_system_prompt(
             f'{_expression_habits_block(expression_habits)}'
         ).strip()
         if voice:
-            sections.append('# 说话的味道' + '\n' + voice)
+            sections.append('# 说话风格' + '\n' + voice)
     # 篇幅块自带标题，与表达层同级，单独成节而不是并进上面那段。
     if length:
         sections.append(length)
@@ -575,7 +574,7 @@ def build_itemized_system_prompt(
         ('长期记忆', _memory_block(
             '你早就知道的事',
             facts,
-            '把这些当成相处已久留下的常识。用得上时自然接住，用不上就放着；不要逐条复述给对方听。',
+            '这些是长期相处积累的常识，需要时自然使用，不需要时不提；不要逐条复述给对方。',
         ).strip()),
         ('近期回想', _memory_block(
             '最近留下的聊天回想',
@@ -654,23 +653,23 @@ def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
 
 
 def _render_turn_scope(target_person: str) -> str:
-    """渲染「这一轮在接谁」的范围说明。
+    """渲染「这一轮回应谁」的范围说明。
 
-    可选清单只覆盖当前人物这一批消息，是缓冲按人物切批的结果，不是模型选错了。
-    线上观测到的全部 illegal_action 都是同一种形态：模型想接的是群里另一个人刚
-    说的话，清单里没有对应编号，于是把目标字段写成人名，整轮被判协议失败、
-    表现为她突然不回话。因此这里必须说清两件事：越界不可行，以及别人的话会有
-    属于他们自己的回合，不必抢在这一轮里接。
+    可选清单只覆盖当前人物这一批消息，是缓冲按人物切批的结果，不是模型选错。
+    线上观测到的全部 illegal_action 均为同一形态：模型尝试回应群里另一个人的
+    消息，清单中无对应编号，把目标字段写成人名，整轮被判协议失败、表现为
+    Bot 不回话。因此该说明须讲清两点：越界不可行；其他人的消息有各自的回合，
+    无需在本轮处理。
 
     :param target_person: 本轮批次发送者的显示名；私聊传空字符串。
     :return: 供协议模板插入的单行说明。
     """
-    who = f'{target_person}刚说的话' if target_person else '对方刚说的话'
+    who = f'{target_person}刚发送的消息' if target_person else '对方刚发送的消息'
     return (
-        f'这一轮只处理{who}，清单以外的编号（包括群里别人刚发的）一律不能填。'
-        '别人的消息会各自触发属于他们的回合，不用抢在这一轮接；'
-        '要是你真正想接的是别人那句、对清单里这几条没什么可说的，就写 silent。'
-        '历史里别人的话仍然可以读，用来理解上下文，也可以在台词里顺带提一句。'
+        f'本轮只处理{who}，清单以外的编号（包括群里其他人刚发的）一律不能填写。'
+        '其他人的消息会由各自属于他们的回合处理；如果你真正想回应的是其他人的消息、'
+        '对清单中这几条没有需要回应的内容，请选择 silent。'
+        '历史记录中其他人的消息仍然可以阅读，用于理解上下文，也可以在台词中顺带提及。'
     )
 
 
@@ -687,9 +686,9 @@ def render_action_protocol(
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
-    该文本会整体替换主对话提示词中的直接发言协议，而不是追加在末尾：动作头
-    先于正文是 Agent 模式的唯一输出格式，必须避免与 ``chat.protocol`` 的
-    「直接输出 <say>」指令竞争。
+    该文本整体替换主对话提示词中的直接发言协议，而不是追加在末尾：动作头
+    先于正文是 Agent 模式的唯一输出格式，与 ``chat.protocol`` 的
+    「直接输出 <say>」指令互斥。
 
     :param available_actions: 运行时给出的本回合动作枚举值。
     :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
@@ -698,11 +697,11 @@ def render_action_protocol(
         提示词明确禁止 quote。平台投递层的自动引用不受该开关控制。
     :param emoji_enabled: 本轮是否允许发表情包。
     :param emoji_tags: 表情包库内高频情绪标签，锚定 ``<emoji>`` 的 emotion 用词。
-    :param target_person: 本回合批次发送者的显示名，用于说明这一轮在接谁的话；
+    :param target_person: 本回合批次发送者的显示名，用于说明这一轮在回应谁的消息；
         私聊传空字符串。
-    :param cognitive_rounds: 本回合的认知轮次预算；写进提示词让模型一开始就知道
-        自己最多能查几次。**这只是把动作空间里已经成立的事实说给它听**，真正的
-        约束在 available_actions，两处口径必须一致。
+    :param cognitive_rounds: 本回合的认知轮次预算；写进提示词使模型预先知道
+        检索次数上限。仅向模型复述动作空间的既有约束，实际约束在
+        available_actions，两处口径必须一致。
     :param available_reactions: 本平台真实可用的表情回应标识；react 不在动作集时
         传空序列，此时该段完全不渲染。
     :param stream_kind: 会话类型；等待动作的收尾语义在群聊与私聊不同。
@@ -715,7 +714,7 @@ def render_action_protocol(
     ids = [message_id for message_id, _ in selectable]
     selectable_text = _render_selectable_messages(selectable)
     # 不写「本平台不支持引用」：QQ 群聊的回复由投递层按需要自动挂引用，
-    # 断言平台没有引用能力会让她在台词里说出与事实相反的话。这条规则只约束
+    # 断言平台没有引用能力会让 Bot 在台词里说出与事实相反的话。这条规则只约束
     # 动作头里能不能出现 quote 属性。
     quote_rule = (
         'quote 只能引用上面列出的可选消息之一；不引用就不写 quote 属性'
@@ -765,12 +764,11 @@ def render_tool_protocol(
     """渲染工具调用模式下决策那一次的协议文本。
 
     与 XML 动作头协议互斥：动作枚举、参数取值、理由码分域全部由工具声明承载，
-    这里只留提示词才说得清的三件事——目标编号与原文的对应、引用能不能写、
-    以及选长选短的口径。把这些也塞进工具描述会让每个工具的 description
-    重复一大段，反而稀释掉动作本身的说明。
+    本段仅保留必须由提示词承载的三件事：目标编号与原文的对应、能否写引用、
+    篇幅选择口径。写入工具描述会使每个工具的 description 重复并稀释动作说明。
 
     :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
-        工具声明里 target 是一个裸数字，没有这份对照模型认不出指的是哪句话。
+        工具声明里 target 是裸数字，缺少该对照时模型无法确定编号对应的消息。
     :param quote_supported: 平台是否支持模型显式指定引用目标。
     :param target_person: 本回合批次发送者的显示名；私聊传空字符串。
     :param cognitive_rounds: 本回合的认知轮次预算，用于渲染检索说明。
@@ -803,12 +801,12 @@ def render_replyer_protocol(
 ) -> str:
     """渲染回复生成那一次调用的协议文本。
 
-    与动作头协议互斥：决策已经定了，这段只讲「怎么把这句话说出来」。它同样整体
-    替换系统提示词里的直接发言协议，因此回复生成模型看到的人格、历史、事实与
-    决策那一次完全相同，区别只在这一段。
+    与动作头协议互斥：决策已定，该段仅约束正文表达。它同样整体替换系统提示词
+    里的直接发言协议，因此回复生成模型看到的人格、历史、事实与决策那次完全
+    相同，区别只在这一段。
 
-    :param reference: 决策层写的背景说明；为空时退回一句中性说明，不留空占位符——
-        空白背景会让模型自己去猜为什么开口，那正是拆分要避免的事。
+    :param reference: 决策层写的背景说明；为空时退回一句中性说明，不留空占位符：
+        空白背景会使模型自行猜测开口原因。
     :param length: 决策层选定的篇幅；``None`` 时按 brief 处理，与单次调用路径
         ``to_decision`` 的默认口径一致。
     :param emoji_enabled: 本回合是否允许发表情包。
@@ -817,7 +815,7 @@ def render_replyer_protocol(
     :raises KeyError: 模板未加载时由注册表抛出。
     """
     return get_prompt('chat.replyer').render(
-        reference=reference.strip() or '接着上面的对话往下说，别起新话题。',
+        reference=reference.strip() or '继续当前话题，不要开启新话题。',
         length_rule=_replyer_length_rule(length),
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
@@ -826,31 +824,30 @@ def render_replyer_protocol(
 
 
 def _replyer_length_rule(length: str | None) -> str:
-    """把决策层选定的篇幅翻译成给回复生成模型的具体要求。
+    """把决策层选定的篇幅转换成给回复生成模型的具体要求。
 
-    篇幅是决策层已经做完的判断，这里不再让模型自己选，只把结论说清楚——否则
-    两级会各判一次，短回复的口径就守不住了。
+    篇幅由决策层判定，此处仅向回复生成模型转达结论：两级各判一次会使
+    短回复口径失效。
     """
     if length == 'long':
         return (
-            '篇幅：这一条要把话说完整，但也只是说完整，不是写小作文，整轮不超过八九十个字。'
+            '篇幅：把话说完整即可，不要写长，整轮不超过八九十个字。'
         )
     return (
-        '篇幅：说短的。按省力口语来，允许句子残缺、省略主语、只接半句，'
-        '整轮加起来二三十个字就够。'
+        '篇幅：简短回复。允许句子残缺、省略主语、倒装，整轮合计二三十个字即可。'
     )
 
 
 def _speak_protocol_rule(actions: FrozenSet[str]) -> str:
-    """渲染「起一个不接任何人的话头」的说明。
+    """渲染「主动发起一个不回应任何人的话题」的说明。
 
-    speak 与 reply 的区别只在有没有目标：reply 是接某条消息，speak 是她自己想说
-    点什么。它**不需要独立的触发路径**——扩展触发口径本来就会在「群里热闹但没人
-    理她」时给出候选，speak 只是让那个候选里多一个选项。
+    speak 与 reply 的区别只在有没有目标：reply 回应某条消息，speak 是 Bot 主动
+    发起话题。speak 不需要独立的触发路径：扩展触发口径在群里活跃但无人点名
+    Bot 时已给出候选，speak 为该候选增加一个动作选项。
 
-    措辞的重点不是教她怎么写，而是压住「既然轮到我了就得说点什么」这种冲动：
-    参考实现那边主动发言效果不好，根因大概率不在触发机制而在内容——没料硬开口，
-    产出就是「大家在聊什么呀」这类。所以这里反复强调没东西可加就别说。
+    该段措辞重点为约束无内容时的强行发言：缺乏可说内容时强行发言会产出空泛
+    搭话，主动发言效果差的根因通常在内容而非触发机制，因此反复强调无内容时
+    不发言。
 
     :param actions: 本轮实际可用的动作集合。
     :return: 主动开口说明文本；speak 不可用时返回空字符串。
@@ -859,29 +856,28 @@ def _speak_protocol_rule(actions: FrozenSet[str]) -> str:
         return ''
     return '\n'.join([
         '',
-        '如果群里这些话你一条都不想接，但确实有别的想说，可以起一个新话头——'
-        '不接任何人，就是你自己想说：',
+        '如果清单中的消息你都不想回应，但确实有其他想说的内容，可以开启一个新话题——'
+        '不回应任何人，是你自己想发言：',
         '<decision action="speak" reasons="理由码"/>',
         '<say emotion="表情">你想说的话</say>',
-        '- reasons 只能写：noticed_activity（看到他们在聊的事想接一句）/ '
-        'remembered_something（想起一件和现在有关的事）/ '
-        'long_silence（太久没说话了）/ promise_due（之前答应过的事到点了）',
-        '- 不写 targets、length、quote——没有哪条消息是你在回的',
-        '- 主动开口要短，一句就够',
-        '- **绝大多数时候都该选 silent。** 没什么非说不可的就别说：'
-        '硬凑一句、复述他们刚说过的话、或者「大家在聊什么呀」这种没内容的搭话，'
-        '比不说话难受得多',
-        '- 只有确实有东西可加（你知道点他们不知道的、想起相关的事、'
-        '或者话头明显能接）时才开口',
+        '- reasons 只能写：noticed_activity（看到他们在聊的话题想参与）/ '
+        'remembered_something（想起一件相关的事）/ '
+        'long_silence（长时间没有发言）/ promise_due（之前答应过的事到了时间）',
+        '- 不写 targets、length、quote——没有正在回应的消息',
+        '- 主动发言保持简短，一句即可',
+        '- 绝大多数时候都应选择 silent。没有需要表达的内容时不要发言：'
+        '勉强发言、复述他人刚说过的内容、无实际内容的搭话，效果都比沉默差',
+        '- 只在确实有可补充的内容（你知道对方不知道的信息、想起相关的事、'
+        '话题适合参与）时才使用 speak',
     ]) + '\n'
 
 
 def _wait_protocol_rule(actions: FrozenSet[str], stream_kind: str) -> str:
     """渲染「先等等」动作的说明。
 
-    与 silent 的分界必须写清楚，否则模型会把两者当同义词：silent 是放弃这一茬，
-    wait 是话没说完先不表态、这些消息之后还会再看一遍。收尾语义按会话类型
-    分化——提示词里出现另一种会话的措辞，会让现场把当前回合误读成那个类型。
+    与 silent 的分界必须写清楚，否则模型会把两者当同义词：silent 是放弃这批消息，
+    wait 是暂不表态、这批消息之后还会再进入回合。收尾语义按会话类型分化：
+    提示词中出现另一种会话的措辞，会使模型把当前回合误判为该类型。
 
     :param actions: 本轮实际可用的动作集合。
     :param stream_kind: 会话类型；等待的收尾语义在群聊与私聊不同。
@@ -891,22 +887,21 @@ def _wait_protocol_rule(actions: FrozenSet[str], stream_kind: str) -> str:
         return ''
     if stream_kind == 'direct':
         ending = (
-            '- 等不到下文时这些消息稍后会再回来一次，届时同样必须表态，'
-            '不会一直晾着对方'
+            '- 等不到后续时，这批消息稍后会再次进入你的回合，届时同样需要表态，'
+            '不会被一直搁置'
         )
     else:
-        ending = '- 等不到下文就当没这茬'
+        ending = '- 等不到后续就视为不需要回应'
     return '\n'.join([
         '',
-        '大家常把一句话拆成几条短消息连着发。刚到的这条很短、语义悬着、'
-        '或者明显正在往下讲时，先不表态，等下文合并进来一次接住，'
-        '比逐条抢答自然得多：',
+        '一个意思常被拆成多条消息连续发送。刚到的消息很短、语义不完整、或明显还有后续时，'
+        '先不表态，等后续消息合并进来后统一回应，比逐条回复更自然：',
         '<decision action="wait" reasons="理由码"/>',
-        '- reasons 只能写：unfinished_thought（话没说完）/ thread_developing（这事还在往下走）',
+        '- reasons 只能写：unfinished_thought（对方的话没有说完）/ thread_developing（对话还在继续）',
         '- 不写 targets、length、quote，之后不要有任何正文',
-        '- 这和 silent 不是一回事：silent 是「这茬我不接了」，'
-        'wait 是「我在等下文」，这些消息之后你还会再看到一次',
-        '- 只能等一次。等过之后再看到这些消息时就必须表态，那时没有这个选项了',
+        '- wait 与 silent 不同：silent 是放弃回应这批消息，wait 是在等待后续消息，'
+        '这批消息之后还会再次进入你的回合',
+        '- wait 只能使用一次。等过之后再看到这批消息时必须给出最终动作，届时不再有这个选项',
         ending,
     ]) + '\n'
 
@@ -928,8 +923,7 @@ def _poke_protocol_rule(
         '你还可以戳一戳某个人（QQ 的戳一戳，不发消息）：',
         '<decision action="poke" targets="消息编号" reasons="理由码"/>',
         '- targets 只填一条，写你想戳的那个人发的消息；不写 length、不写 quote、之后不要有正文',
-        '- 它会给对方推一条提醒，比贴表情吵得多。'
-        '只在你确实想叫某个人一下的时候用，别拿它当口头禅',
+        '它会给对方发送一条提醒。只在确实需要提醒对方时使用，不要频繁使用',
     ]
     if selectable_ids:
         lines.extend([
@@ -951,8 +945,8 @@ def _react_protocol_rule(
     与 reply / silent / 认知动作示例同一条纪律：动作集里没有 react 时整段不渲染。
     展示一个本回合非法的动作等同于主动制造 illegal_action。
 
-    可用反应逐个列出而不是让模型自由描述情绪：贴哪个表情最终要落到平台的封闭
-    编号上，让它写自由文本只会把映射失败推迟到投递时才发现。
+    可用反应逐个列出而不由模型自由描述情绪：表情最终映射到平台的封闭编号，
+    自由文本会使映射失败推迟到投递时才暴露。
 
     :param actions: 本轮实际可用的动作集合。
     :param selectable_ids: 本轮可选消息 ID，用于给示例挑一个合法目标。
@@ -963,13 +957,12 @@ def _react_protocol_rule(
         return ''
     lines = [
         '',
-        '除了说话和沉默，你还可以只给某条消息贴一个表情回应——'
-        '就是群里那种「在别人消息上点一个表情」，不发新消息：',
+        '除了发言和沉默，你还可以给某条消息添加一个表情回应——'
+        '即在他人消息上添加一个表情，不发送新消息：',
         f'<decision action="react" targets="消息编号" reaction="表情" reasons="理由码"/>',
         f'- reaction 只能写：{" / ".join(available_reactions)}',
         '- targets 只填一条，写你在回应哪条消息；不写 length、不写 quote、之后不要有任何正文',
-        '- 想接话就正常 reply，别用表情回应糊弄；'
-        '它适合「看到了、有点反应、但没什么要补充的」那种时候',
+        '- 需要发言时正常使用 reply；表情回应适合「看到了、有反应、但没有需要补充的内容」的情况',
     ]
     if selectable_ids:
         lines.extend([
@@ -990,15 +983,15 @@ def _cognition_protocol_rule(
     """渲染本轮认知动作（recall / inspect / consult）的可用性与用法说明。
 
     认知动作只在本回合还剩检索次数时进入动作空间，因此本段按实际动作集渲染：
-    **动作集里没有的东西绝不能出现在提示词里**，展示一个本轮非法的动作等同于
-    主动制造 illegal_action，这条纪律与 reply/silent 示例的开关是同一条。
+    动作集之外的动作不得出现在提示词里，展示一个本回合非法的动作等同于制造
+    illegal_action，与 reply/silent 示例的开关同一纪律。
 
-    措辞刻意强调「绝大多数时候不用」：每一次检索都是一次完整的模型往返，直接
-    加在首字延迟上。检索该由「确实想不起来」触发，不该由「多查一次更保险」触发。
+    该段强调绝大多数时候无需检索：每次检索是一次完整的模型往返，直接增加
+    首字延迟。检索应由信息缺失触发，不应由保险起见触发。
 
     :param actions: 本轮实际可用的动作集合。
     :param selectable_ids: 本轮可选消息 ID；用于给示例挑一个合法的后续目标。
-    :param cognitive_rounds: 本回合的检索次数上限，写进说明避免她在最后一轮
+    :param cognitive_rounds: 本回合的检索次数上限，写进说明避免 Bot 在最后一轮
         还想再查（那一轮认知动作已不在动作空间里，会被判为协议失败）。
     :return: 认知动作说明文本；本轮不含认知动作时返回空字符串。
     """
@@ -1008,50 +1001,56 @@ def _cognition_protocol_rule(
     lines = [
         '',
         '上面的聊天记录只是你们此刻的互动，你和这些人之间还有更多过去的事和你知道的'
-        '知识没有摆在眼前。想不起来或拿不准的时候，可以先查一下再决定这一轮做什么：',
+        '知识没有出现在上下文中。想不起来或拿不准时，可以先查询再决定本轮做什么：',
     ]
     if tool_mode:
         # 工具模式下检索动作的调用形状由函数签名承载，这里只讲什么时候用它。
         # 再写一遍 XML 语法会让模型以为还有第二套输出格式。
         if 'recall' in available:
             lines.append(
-                '- 翻你自己的长期记忆，包括你记得的关于在场这些人的事，'
-                '以及你们一起经历过的事'
+                '- 查询你的长期记忆，包括你记得的关于在场这些人的事，'
+                '以及你们共同经历过的事'
             )
         if 'inspect' in available:
-            lines.append('- 翻这个会话里更早的聊天记录，也就是上面聊天记录之前发生的事')
+            lines.append('- 查询这个会话更早的聊天记录，即上面聊天记录之前发生的内容')
         if 'consult' in available:
             lines.append(
-                '- 查你知道的知识和资料，比如概念、定义、事实——这不是翻聊天记录'
+                '- 查询你知道的知识和资料，例如概念、定义、事实——这不是查询聊天记录'
             )
         lines.extend([
-            f'- 这一回合你最多只能查 {cognitive_rounds} 次，查完必须给出最终动作',
-            '- 绝大多数时候都不需要查，直接给出最终动作。'
-            '只有当对方提到的事你确实记不清、或者话头明显指向你看不到的更早内容时才查',
+            f'- 本回合你最多只能查询 {cognitive_rounds} 次，查完必须给出最终动作',
+            '- 绝大多数时候都不需要查询，直接给出最终动作。只有两类情况值得查：'
+            '对方话里带「上次」「之前」「还记得吗」「我说过」这类指过去的信号，'
+            '或者话题明显指向你看不到的更早内容',
+            '- 查询没有结果时，按眼前的消息正常回复，不要编造记忆，'
+            '也不要向对方提到查询过程',
         ])
         return '\n'.join(lines) + '\n'
     if 'recall' in available:
         lines.append(
             '- <decision action="recall" query="想查的东西"/>：'
-            '翻你自己的长期记忆，包括你记得的关于在场这些人的事，以及你们一起经历过的事'
+            '查询你的长期记忆，包括你记得的关于在场这些人的事，以及你们共同经历过的事'
         )
     if 'inspect' in available:
         lines.append(
             '- <decision action="inspect" query="想查的东西"/>：'
-            '翻这个会话里更早的聊天记录，也就是上面聊天记录之前发生的事'
+            '查询这个会话更早的聊天记录，即上面聊天记录之前发生的内容'
         )
     if 'consult' in available:
         lines.append(
             '- <decision action="consult" query="想查的东西"/>：'
-            '查你知道的知识和资料，比如概念、定义、事实——这不是翻聊天记录'
+            '查询你知道的知识和资料，例如概念、定义、事实——这不是查询聊天记录'
         )
     lines.extend([
-        '- query 必填，写你想查什么，用几个关键词就行；'
+        '- query 必填，写你想查什么，用几个关键词即可；'
         '这些动作都不写 targets、reasons、length、quote',
-        '- 查完会把结果告诉你，你再决定这一轮回不回、回什么；动作标签之后不要写任何正文',
-        f'- 这一回合你最多只能查 {cognitive_rounds} 次，查完必须给出最终动作',
-        '- 绝大多数时候都不需要查，直接给出最终动作。'
-        '只有当对方提到的事你确实记不清、或者话头明显指向你看不到的更早内容时才查',
+        '- 查询结果会在下一轮提供给你，届时再决定是否回复以及回复内容；动作标签之后不要写任何正文',
+        f'- 本回合你最多只能查询 {cognitive_rounds} 次，查完必须给出最终动作',
+        '- 绝大多数时候都不需要查询，直接给出最终动作。只有两类情况值得查：'
+        '对方话里带「上次」「之前」「还记得吗」「我说过」这类指过去的信号，'
+        '或者话题明显指向你看不到的更早内容',
+        '- 查询没有结果时，按眼前的消息正常回复，不要编造记忆，'
+        '也不要向对方提到查询过程',
     ])
     if selectable_ids:
         lines.extend([
@@ -1082,8 +1081,8 @@ def _emoji_protocol_rule(enabled: bool, tags: Sequence[str] = ()) -> str:
         else 'emotion 写简短的情绪词。'
     )
     return (
-        '情绪浓到文字撑不住、或者想接住对方发的表情包时，在 <say> 之后追加'
-        '且最多追加一个 <emoji emotion="目标情绪"/>；也允许不写 <say>、只发一个 '
-        f'<emoji>，但两者不能同时都没有。{vocabulary}'
-        '库里没有贴切的词时才自己措辞；刚贴过就收一收，别连着刷。'
+        '当情绪需要表情包辅助表达、或需要回应对方发送的表情包时，在 <say> 之后追加'
+        '最多一个 <emoji emotion="目标情绪"/>；也允许只发送一个 <emoji> 而不写 '
+        f'<say>，但两者不能都没有。{vocabulary}'
+        '库中没有贴切的词时再自行措辞；不要连续多轮发送表情包。'
     )
