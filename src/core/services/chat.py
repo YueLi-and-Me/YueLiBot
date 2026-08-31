@@ -149,6 +149,7 @@ from src.core.prompts.registry import (
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
 from src.core.tooling.registry import build_builtin_action_registry
+from src.core.tooling.spec import ToolContext
 
 logger = get_logger(__name__)
 
@@ -540,8 +541,8 @@ class ChatService:
         # 拆分后决策走 planner 槽、表达走 replyer 槽；两个槽留空即继承 chat，
         # 因此不配模型也能打开开关，只是两级用同一个模型、延迟收益为零。
         decision_provider = planner_provider if self._split_replyer else chat_provider
-        # 工具注册表按进程装配一次：动作登记与会话无关，声明按回合帧动态生成，
-        # 注册表只负责统一命名空间与声明入口，不持有任何会话状态。
+        # 工具注册表按进程装配一次：动作声明按回合帧动态生成，外部工具也按
+        # 当前会话能力与剩余认知预算过滤后再下发。
         self._tool_registry = build_builtin_action_registry()
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
@@ -4408,18 +4409,28 @@ class ChatService:
             trace.emit('llm_chunk', turnId=turn, text=text, reasoning=chunk.get('reasoning'))
 
         def on_round(round_outcome: AgentOutcome) -> None:
-            """把认知轮显示到控制台。
+            """把认知动作或外部只读工具轮显示到控制台。
 
-            认知轮不产生任何用户可见产物，不渲染的话终端上只会看到「Bot 沉默了
-            十几秒然后说了句话」，中间查了什么完全不可见。
+            内部工具轮不产生任何用户可见产物，不渲染的话终端上只会看到
+            「Bot 沉默了十几秒然后说了句话」，中间查了什么完全不可见。
             """
-            assert round_outcome.decision is not None
+            if round_outcome.tool_invocation is not None:
+                action = round_outcome.tool_invocation.tool_name
+                query = json.dumps(
+                    round_outcome.tool_invocation.arguments,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            else:
+                assert round_outcome.decision is not None
+                action = round_outcome.decision.action
+                query = round_outcome.decision.query or ''
             render_action_decision(
                 turn=turn,
                 agent_scope='live',
                 event_status=round_outcome.event_status,
-                action=round_outcome.decision.action,
-                query=round_outcome.decision.query or '',
+                action=action,
+                query=query,
                 observation=round_outcome.observation,
             )
 
@@ -4441,6 +4452,17 @@ class ChatService:
                 else None
             ),
             cognitive_rounds=self._cognitive_rounds,
+            tool_context=(
+                ToolContext(
+                    stream_id=context.stream.id,
+                    stream_kind=context.stream.kind,
+                    frame=frame,
+                    turn_id=frame.turn_id,
+                    snapshot_id=frame.snapshot_id,
+                )
+                if self._tool_calling
+                else None
+            ),
             on_events=on_events,
             on_chunk=on_chunk,
             on_round=on_round,
