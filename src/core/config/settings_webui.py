@@ -28,7 +28,7 @@ from .model_webui import (
 from .schema import BotDocument, FeatureDocument, ModelCatalog, ProviderCatalog
 from .toml_io import read_versioned_toml
 from src.core.common.logger import get_logger
-from src.platforms.napcat.config import NAPCAT_CONFIG_VERSION, NapcatDocument, read_config as read_napcat_config
+from src.platforms.onebot11.config import NAPCAT_CONFIG_VERSION, NapcatDocument, read_config as read_napcat_config
 
 logger = get_logger(__name__)
 

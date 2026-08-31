@@ -1,4 +1,4 @@
-"""提供 `python -m src.platforms.napcat` 的命令行入口。
+"""提供 `python -m src.platforms.onebot11` 的命令行入口。
 
 本模块解析配置文件路径和主体运行时信息，初始化日志后启动
 `NapcatRunner`；适配器业务逻辑和连接重试由同包的配置、运行器模块负责。

@@ -27,9 +27,9 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "api.model_config": ("#87afff", False),
     "api.ws": ("#00d7ff", True),
     # QQ 适配器
-    "platforms.napcat.backend": ("#d787ff", True),
-    "platforms.napcat.runner": ("#ff5f87", True),
-    "platforms.napcat.transport": ("#afafff", True),
+    "platforms.onebot11.backend": ("#d787ff", True),
+    "platforms.onebot11.runner": ("#ff5f87", True),
+    "platforms.onebot11.transport": ("#afafff", True),
     # 插件契约
     "plugin_system.adapter": ("#87d7af", True),
     # 归属解析
@@ -84,9 +84,9 @@ MODULE_ALIASES: Dict[str, str] = {
     "api.http": "HTTP接口",
     "api.model_config": "模型配置",
     "api.ws": "事件推流",
-    "platforms.napcat.backend": "QQ主体",
-    "platforms.napcat.runner": "QQ运行器",
-    "platforms.napcat.transport": "QQ传输",
+    "platforms.onebot11.backend": "QQ主体",
+    "platforms.onebot11.runner": "QQ运行器",
+    "platforms.onebot11.transport": "QQ传输",
     "plugin_system.adapter": "插件契约",
     "platform_io.registry": "归属登记",
     "common.logger": "日志",

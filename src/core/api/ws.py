@@ -36,15 +36,15 @@ router = APIRouter()
 # 连接管理
 # ─────────────────────────────────────────────────────────────────────
 
-ClientKind = Literal['desktop', 'napcat']
-_CLIENT_KINDS = frozenset({'desktop', 'napcat'})
+ClientKind = Literal['desktop', 'platform']
+_CLIENT_KINDS = frozenset({'desktop', 'platform'})
 _DESKTOP_STREAM_ID = 1
 
 
 class _ConnectionManager:
     """管理按客户端分区的 WebSocket 订阅。
 
-    `desktop` 对应固定桌面 stream，其他 stream 归入 `napcat`；连接集合由异步锁
+    `desktop` 对应固定桌面 stream，其他 stream 归入 `platform`；连接集合由异步锁
     保护，推送时复制快照后在锁外执行网络发送。
     """
 
@@ -56,14 +56,14 @@ class _ConnectionManager:
         """
         self._connections: Dict[ClientKind, Set[WebSocket]] = {
             'desktop': set(),
-            'napcat': set(),
+            'platform': set(),
         }
         self._lock = asyncio.Lock()
 
     async def connect(self, client: ClientKind, ws: WebSocket) -> None:
         """登记一个已完成鉴权的 WebSocket。
 
-        :param client: 客户端分区，只能为 `desktop` 或 `napcat`。
+        :param client: 客户端分区，只能为 `desktop` 或 `platform`。
         :param ws: 待登记的 FastAPI WebSocket 对象。
         :return: 无返回值。
         副作用：在锁保护下向对应集合加入连接。
@@ -74,7 +74,7 @@ class _ConnectionManager:
     async def disconnect(self, client: ClientKind, ws: WebSocket) -> None:
         """从客户端分区移除一个 WebSocket，重复移除安全。
 
-        :param client: 客户端分区，只能为 `desktop` 或 `napcat`。
+        :param client: 客户端分区，只能为 `desktop` 或 `platform`。
         :param ws: 待移除的 WebSocket 对象。
         :return: 无返回值。
         副作用：在锁保护下修改对应连接集合。
@@ -86,7 +86,7 @@ class _ConnectionManager:
         """向 stream 对应的客户端分区推送一条 JSON 信封消息。
 
         :param stream_id: 目标 stream 数据库 ID；固定桌面 stream 发送至 desktop 分区，
-                其他 stream 发送至 napcat 分区。
+                其他 stream 发送至 platform 分区。
         :param channel: 推送通道名称，例如 ``chat.event`` 或 ``voice.play``。
         :param payload: 通道负载；必须可由 ``json.dumps`` 序列化。
 
@@ -95,17 +95,17 @@ class _ConnectionManager:
         :raises TypeError: 负载无法 JSON 序列化或参数不符合协议时抛出。
 
         副作用：
-            在锁外向连接发送网络消息；发送失败的连接会从对应分区移除，napcat 无订阅者
+            在锁外向连接发送网络消息；发送失败的连接会从对应分区移除，platform 无订阅者
             时记录 ``outbound_dropped`` 观测事件。
 
         性能：
             连接快照复制在锁内完成，网络发送按快照顺序串行执行，发送阶段不会阻塞连接登记。
         """
-        client: ClientKind = 'desktop' if stream_id == _DESKTOP_STREAM_ID else 'napcat'
+        client: ClientKind = 'desktop' if stream_id == _DESKTOP_STREAM_ID else 'platform'
         async with self._lock:
             connections: List[WebSocket] = list(self._connections[client])
         if not connections:
-            if client == 'napcat':
+            if client == 'platform':
                 trace.emit('outbound_dropped', streamId=stream_id, channel=channel)
             return 0
 
