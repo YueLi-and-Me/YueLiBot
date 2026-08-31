@@ -114,7 +114,8 @@ class ToolRegistry:
 
         :param spec: 工具声明；参数 Schema 的合法性由调用方保证。
         :param executor: 工具执行器。
-        :raises ValueError: 名字与已登记的动作或外部工具重名。
+        :raises ValueError: 名字与已登记的动作或外部工具重名；或声明的副作用等级
+            为 irreversible——不可逆副作用不允许经模型调用触发。
         """
         if spec.side_effect == 'irreversible':
             raise ValueError(f'工具 {spec.name} 具有不可逆副作用，不允许注册')
