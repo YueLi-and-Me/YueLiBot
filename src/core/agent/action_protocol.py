@@ -24,8 +24,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any, Dict, FrozenSet, Literal, Set, Tuple
 
 from src.core.platform_io.types import StreamKind
 
@@ -200,7 +200,8 @@ class PlatformCapabilities:
     模型只能在这些真实能力内选择：``quote`` 关闭时决策不能携带
     ``quote_message_id``；平台未验证 reaction 执行能力时 ``react`` 不进入
     动作集，且可用反应标识封闭给出；``emoji`` 表示当前平台、表情包库和
-    频率窗口共同允许产生表情包可见产物。
+    频率窗口共同允许产生表情包可见产物；``forward_message`` 表示当前会话
+    有可供只读工具逐层展开的合并转发缓存，不改变动作集。
 
     ``quote`` 只管「模型能否自己指定引用目标」。QQ 群聊投递时按目标消息是否
     已被后续发言冲开自动挂引用，那条路径由代码强制，不受本开关影响——目标已经
@@ -212,6 +213,9 @@ class PlatformCapabilities:
     available_reactions: tuple[str, ...] = ()
     emoji: bool = False
     poke: bool = False
+    # 当前会话缓存中存在可按路径读取的合并转发。它只控制外部只读工具声明，
+    # 不改变终局动作集，也不表示平台能发送合并转发。
+    forward_message: bool = False
 
     def __post_init__(self) -> None:
         """拒绝空反应标识，防止资源 ID 空洞进入动作集。"""
@@ -220,6 +224,13 @@ class PlatformCapabilities:
         for reaction_id in self.available_reactions:
             if not reaction_id.strip():
                 raise ValueError('可用反应标识不能为空字符串')
+
+    def tool_capabilities(self) -> FrozenSet[str]:
+        """返回可用于外部工具过滤的显式能力名集合。"""
+        capabilities: Set[str] = set()
+        if self.forward_message:
+            capabilities.add('forward_message')
+        return frozenset(capabilities)
 
 
 @dataclass(frozen=True)
@@ -757,6 +768,12 @@ class ActionDecisionEvent:
     round_index: int = 0
     # 认知动作的观察结果摘要，已按 OBSERVATION_EVENT_MAX_CHARS 截断后写入账本。
     observation: str = ''
+    # 外部工具调用与动作决策互斥；仅工具轮填写，保持既有动作事件形状不变。
+    tool_name: str = ''
+    tool_call_id: str = ''
+    tool_arguments: Dict[str, Any] = field(default_factory=dict)
+    # 当前轮真实下发给模型的外部工具，便于判断“模型没用”还是“根本没声明”。
+    available_tools: Tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """组装四层审计字典，供 ``trace.emit('action_decision', ...)`` 使用。
@@ -801,7 +818,7 @@ class ActionDecisionEvent:
                     else None
                 ),
             }
-        return {
+        payload: Dict[str, Any] = {
             'turnId': self.turn_id,
             'snapshotId': self.snapshot_id,
             'roundIndex': self.round_index,
@@ -824,3 +841,12 @@ class ActionDecisionEvent:
                 'latencyMs': self.latency_ms,
             },
         }
+        if self.available_tools:
+            payload['gate']['availableTools'] = list(self.available_tools)
+        if self.tool_name:
+            payload['toolInvocation'] = {
+                'name': self.tool_name,
+                'callId': self.tool_call_id,
+                'arguments': dict(self.tool_arguments),
+            }
+        return payload

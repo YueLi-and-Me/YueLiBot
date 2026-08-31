@@ -7,9 +7,9 @@
    同源生成，外部工具声明由 ToolSpec 派生并按帧能力过滤；
 3. 按工具名解析登记项，供执行阶段区分动作路径与工具路径。
 
-动作工具的执行不在本模块：动作路径继续走 ConversationAgent 的动作头结算，
-认知动作执行器的迁移与多工具执行语义属于后续批次；本模块当前只统一「声明从
-哪里来」，执行路径原样保留。
+动作工具与外部工具的执行都不在本模块：前者继续走 ConversationAgent 的动作头
+结算，后者在这里完成登记、可用性过滤和参数校验后，由 ConversationAgent 统一
+执行并把结果回灌下一轮。
 
 依赖：``src.core.agent.action_protocol``（动作枚举与回合帧）、
 ``src.core.agent.tool_schema``（动作声明同源生成）、``spec`` 与
@@ -20,20 +20,23 @@ ConversationAgent，不反向依赖聊天服务或模型层。
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
+
+import json
 
 from src.core.agent.action_protocol import (
     COGNITIVE_ACTIONS,
     TERMINAL_ACTIONS,
     ConversationAction,
     DecisionFrame,
+    IllegalActionError,
 )
 from src.core.agent.tool_schema import (
     build_tool_definitions as build_action_tool_definitions,
 )
 
 from .executor import ToolExecutor
-from .spec import ToolSpec
+from .spec import ToolInvocation, ToolSpec
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,8 @@ class ToolRegistry:
         :param executor: 工具执行器。
         :raises ValueError: 名字与已登记的动作或外部工具重名。
         """
+        if spec.side_effect == 'irreversible':
+            raise ValueError(f'工具 {spec.name} 具有不可逆副作用，不允许注册')
         self._reject_duplicate(spec.name)
         self._tools[spec.name] = RegisteredTool(spec=spec, executor=executor)
 
@@ -121,18 +126,79 @@ class ToolRegistry:
         """
         return tuple(sorted(self._action_names))
 
+    def has_registered_tools(self) -> bool:
+        """判断注册表是否含动作集之外的工具。"""
+        return bool(self._tools)
+
+    def available_tool_names(self, frame: DecisionFrame) -> Tuple[str, ...]:
+        """返回当前回合真正会声明给模型的外部工具名。"""
+        return tuple(sorted(
+            name
+            for name, registered in self._tools.items()
+            if self._tool_available(registered.spec, frame)
+        ))
+
     def build_tool_definitions(self, frame: DecisionFrame) -> List[Dict[str, Any]]:
         """按回合帧生成模型可见的工具声明。
 
         动作声明与 tool_schema.build_tool_definitions 同源生成——动作空间、
         理由码分域与目标范围的判据只有那一份，本方法不复制。外部工具声明由
-        ToolSpec 派生，能力与帧不符的不进入声明；当前没有外部工具接入，
-        输出与动作声明逐字一致。
+        ToolSpec 派生，能力与帧不符、或认知预算已经用尽的不进入声明。外部工具
+        追加在动作声明之后，并按名字排序；没有可用外部工具时，输出与原动作声明
+        逐字一致。
 
         :param frame: 本回合固定快照。
         :return: OpenAI 兼容的工具声明列表，按名字排序保证请求可复现。
         """
-        return list(build_action_tool_definitions(frame))
+        definitions = list(build_action_tool_definitions(frame))
+        for name in self.available_tool_names(frame):
+            spec = self._tools[name].spec
+            parameters = spec.parameters or {
+                'type': 'object',
+                'properties': {},
+                'additionalProperties': False,
+            }
+            definitions.append({
+                'type': 'function',
+                'function': {
+                    'name': spec.name,
+                    'description': spec.description,
+                    'parameters': parameters,
+                },
+            })
+        return definitions
+
+    def parse_invocation(
+        self,
+        tool_name: str,
+        raw_arguments: str | Mapping[str, Any],
+        frame: DecisionFrame,
+        call_id: str = '',
+    ) -> ToolInvocation:
+        """解析并按声明校验一次外部工具调用。"""
+        resolved = self.resolve(tool_name)
+        if resolved is None:
+            raise IllegalActionError(f'模型调用了未登记的工具：{tool_name}')
+        if resolved.kind != 'tool' or resolved.spec is None:
+            raise IllegalActionError(f'{tool_name} 是动作工具，不能走外部执行路径')
+        if not self._tool_available(resolved.spec, frame):
+            raise IllegalActionError(f'工具 {tool_name} 在当前回合不可用')
+        arguments = _decode_arguments(tool_name, raw_arguments)
+        _validate_value(arguments, resolved.spec.parameters, '参数')
+        return ToolInvocation(
+            tool_name=resolved.name,
+            call_id=call_id,
+            arguments=arguments,
+        )
+
+    @staticmethod
+    def _tool_available(spec: ToolSpec, frame: DecisionFrame) -> bool:
+        """按剩余认知预算、显式平台能力与副作用等级过滤工具。"""
+        if not (frame.available_actions & COGNITIVE_ACTIONS):
+            return False
+        if not spec.capabilities.issubset(frame.capabilities.tool_capabilities()):
+            return False
+        return spec.side_effect == 'readonly'
 
     def _reject_duplicate(self, name: str) -> None:
         """拒绝与现有登记重名的条目。"""
@@ -152,3 +218,83 @@ def build_builtin_action_registry() -> ToolRegistry:
     for action in TERMINAL_ACTIONS | COGNITIVE_ACTIONS:
         registry.register_action(action)
     return registry
+
+
+def _decode_arguments(
+    tool_name: str,
+    raw_arguments: Any,
+) -> Dict[str, Any]:
+    """把模型参数还原为对象，JSON 不完整时按协议错误暴露。"""
+    if isinstance(raw_arguments, str):
+        try:
+            decoded = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise IllegalActionError(
+                f'工具 {tool_name} 的 arguments 不是合法 JSON：{exc.msg}'
+            ) from exc
+    elif isinstance(raw_arguments, Mapping):
+        decoded = dict(raw_arguments)
+    else:
+        raise IllegalActionError(f'工具 {tool_name} 的 arguments 必须是 JSON 对象')
+    if not isinstance(decoded, dict):
+        raise IllegalActionError(f'工具 {tool_name} 的 arguments 必须是 JSON 对象')
+    return decoded
+
+
+def _validate_value(value: Any, schema: Mapping[str, Any], label: str) -> None:
+    """校验内置工具使用的 JSON Schema 子集，错误精确指向字段。"""
+    if not schema:
+        if value:
+            raise IllegalActionError(f'{label}不接受任何字段')
+        return
+    schema_type = schema.get('type')
+    if schema_type == 'object':
+        if not isinstance(value, dict):
+            raise IllegalActionError(f'{label}必须是对象')
+        properties = schema.get('properties', {})
+        if not isinstance(properties, Mapping):
+            raise ValueError(f'{label} Schema 的 properties 必须是对象')
+        required = schema.get('required', [])
+        if not isinstance(required, list):
+            raise ValueError(f'{label} Schema 的 required 必须是数组')
+        missing = [str(name) for name in required if name not in value]
+        if missing:
+            raise IllegalActionError(f'缺少必填字段：{", ".join(missing)}')
+        if schema.get('additionalProperties') is False:
+            unknown = sorted(str(name) for name in value if name not in properties)
+            if unknown:
+                raise IllegalActionError(f'未知字段：{", ".join(unknown)}')
+        for name, item in value.items():
+            item_schema = properties.get(name)
+            if isinstance(item_schema, Mapping):
+                _validate_value(item, item_schema, str(name))
+        return
+    if schema_type == 'array':
+        if not isinstance(value, list):
+            raise IllegalActionError(f'{label}必须是数组')
+        item_schema = schema.get('items', {})
+        if not isinstance(item_schema, Mapping):
+            raise ValueError(f'{label} Schema 的 items 必须是对象')
+        for index, item in enumerate(value):
+            _validate_value(item, item_schema, f'{label}[{index}]')
+        return
+    if schema_type == 'integer':
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise IllegalActionError(f'{label}必须是整数')
+        minimum = schema.get('minimum')
+        if isinstance(minimum, (int, float)) and value < minimum:
+            raise IllegalActionError(f'{label}不能小于 {minimum}')
+    elif schema_type == 'number':
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise IllegalActionError(f'{label}必须是数字')
+    elif schema_type == 'string':
+        if not isinstance(value, str):
+            raise IllegalActionError(f'{label}必须是字符串')
+    elif schema_type == 'boolean':
+        if not isinstance(value, bool):
+            raise IllegalActionError(f'{label}必须是布尔值')
+    elif schema_type is not None:
+        raise ValueError(f'{label} Schema 使用了不支持的类型：{schema_type}')
+    enum = schema.get('enum')
+    if isinstance(enum, list) and value not in enum:
+        raise IllegalActionError(f'{label}不在允许值范围内')
