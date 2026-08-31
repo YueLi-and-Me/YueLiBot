@@ -148,6 +148,7 @@ from src.core.prompts.registry import (
     prompt_metadata,
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
+from src.core.tooling.builtin.forward_message import ForwardMessageTool
 from src.core.tooling.registry import build_builtin_action_registry
 from src.core.tooling.spec import ToolContext
 
@@ -541,9 +542,16 @@ class ChatService:
         # 拆分后决策走 planner 槽、表达走 replyer 槽；两个槽留空即继承 chat，
         # 因此不配模型也能打开开关，只是两级用同一个模型、延迟收益为零。
         decision_provider = planner_provider if self._split_replyer else chat_provider
+        # 合并转发正文不直接铺进工作记忆：平台交来的完整树进入有界会话缓存，
+        # 模型仅在有转发内容的 stream 里看到逐层读取工具。
+        self._forward_message_tool = ForwardMessageTool()
         # 工具注册表按进程装配一次：动作声明按回合帧动态生成，外部工具也按
         # 当前会话能力与剩余认知预算过滤后再下发。
         self._tool_registry = build_builtin_action_registry()
+        self._tool_registry.register_tool(
+            self._forward_message_tool.spec(),
+            self._forward_message_tool,
+        )
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
@@ -941,6 +949,11 @@ class ChatService:
             trimmed,
             accepted_at,
             inbound.external_message_id,
+        )
+        self._forward_message_tool.remember(
+            stream_id,
+            message_id,
+            inbound.forward_messages,
         )
         image_task: asyncio.Task[str] | None = None
         if inbound.image_sources or inbound.emoji_sources:
@@ -1587,6 +1600,11 @@ class ChatService:
             text,
             current_time(),
             inbound.external_message_id,
+        )
+        self._forward_message_tool.remember(
+            context.stream.id,
+            message_id,
+            inbound.forward_messages,
         )
         if inbound.image_sources or inbound.emoji_sources:
             task = asyncio.create_task(self._describe_image_message(
@@ -3721,6 +3739,7 @@ class ChatService:
             react=react_enabled,
             available_reactions=REACTION_IDS if react_enabled else (),
             poke=self._poke_available(context),
+            forward_message=self._forward_message_tool.has_stream(context.stream.id),
         )
         return DecisionFrame(
             turn_id=turn,

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Literal
+from typing import List, Literal, Tuple
+
+from .forward import ForwardMessageTree
 
 
 PersonKind = Literal['contact', 'owner']
@@ -92,6 +94,9 @@ class InboundMessage:
     # 入口登记一次，批次侧重算等于重复记账。
     poked_me: bool = False
     pokes_in_window: int = 0
+    # 已由平台适配器完整解析的合并转发根树；主体按内部消息 ID 放入有界会话缓存，
+    # 模型只能通过只读工具逐层浏览，不把整棵树直接拼进聊天正文。
+    forward_messages: Tuple[ForwardMessageTree, ...] = ()
 
     def __post_init__(self) -> None:
         """校验表情包来源与协议子类型逐项对齐。"""

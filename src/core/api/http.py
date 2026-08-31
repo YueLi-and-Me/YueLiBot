@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from typing import Any, List, Literal
+from typing import Any, Dict, List, Literal
 
 import asyncio
 import sqlite3
@@ -43,6 +43,7 @@ from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
+from src.core.platform_io.forward import forward_tree_from_payload
 from src.core.platform_io.types import InboundMessage, StreamRef
 from src.core.prompts.registry import (
     delete_prompt_override,
@@ -91,6 +92,10 @@ class PlatformInboundBody(BaseModel):
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
+    forward_messages: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        alias='forwardMessages',
+    )
     # 旧协议字段：已下载的 Base64 附件；新适配器只应提交 imageSources。
     images: List[InboundImageBody] = Field(default_factory=list, alias='imageSegments')
 
@@ -110,6 +115,22 @@ class PlatformInboundBody(BaseModel):
             for value in values
         ):
             raise ValueError('emojiSubTypes 必须只包含表情包子类型整数')
+        return values
+
+    @field_validator('forward_messages')
+    @classmethod
+    def _validate_forward_messages(
+        cls,
+        values: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """在进入业务副作用前严格验证每棵合并转发消息树。"""
+        for index, payload in enumerate(values):
+            try:
+                forward_tree_from_payload(payload)
+            except ValueError as exc:
+                raise ValueError(
+                    f'forwardMessages[{index}] 结构非法：{exc}'
+                ) from exc
         return values
 
     @model_validator(mode='after')
@@ -485,6 +506,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             status_code=503,
         )
 
+    forward_messages = tuple(
+        forward_tree_from_payload(payload) for payload in body.forward_messages
+    )
+
     now = current_time()
     # 归属解析必须先于门控，后续 trace、记忆和出站路由都依赖稳定 stream/person 引用。
     context = app_state.registry.resolve_inbound(
@@ -596,6 +621,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 image_sources=tuple(body.image_sources),
                 emoji_sources=tuple(body.emoji_sources),
                 emoji_sub_types=tuple(body.emoji_sub_types),
+                forward_messages=forward_messages,
             ),
             reason,
         )
@@ -655,6 +681,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         image_sources=image_sources if not legacy_attachments else (),
         emoji_sources=emoji_sources,
         emoji_sub_types=emoji_sub_types,
+        forward_messages=forward_messages,
         poked_me=body.poked_me,
         pokes_in_window=pokes_in_window,
     ))
