@@ -941,9 +941,12 @@ class NapcatRunner:
                 'group_poke', {'group_id': group_id, 'user_id': user_id},
             )
         except (ActionError, asyncio.TimeoutError) as exc:
+            # 记实际发出的群号而不只是内部 stream 编号：失败归因需要区分「群号
+            # 解析错了」和「协议端拒绝了正确的调用」，只有内部编号时两者无法分辨。
             logger.error(
                 'QQ 戳一戳失败',
                 streamId=poke.stream_id,
+                groupId=group_id,
                 targetId=poke.target_external_id,
                 error=str(exc),
             )

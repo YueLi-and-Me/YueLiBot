@@ -43,9 +43,19 @@ class ActionError(RuntimeError):
         """
         self.action = action
         self.response = dict(response)
+        # 协议端在失败响应里用 message / wording 说明原因，wording 是面向人的
+        # 中文措辞。只打 status 与 retcode 会把唯一可归因的信息丢掉——现场只剩
+        # 一个裸错误码，既判不出是参数问题还是业务拒绝，也无法复现。
+        # 两个字段内容常有重合，去重后按出现顺序拼接。
+        reasons: list[str] = []
+        for key in ('message', 'wording'):
+            text = str(response.get(key, '')).strip()
+            if text and text not in reasons:
+                reasons.append(text)
+        detail = f'，原因：{" / ".join(reasons)}' if reasons else ''
         super().__init__(
             f'action {action} 失败：status={response.get("status")!r} '
-            f'retcode={response.get("retcode")!r}'
+            f'retcode={response.get("retcode")!r}{detail}'
         )
 
 
