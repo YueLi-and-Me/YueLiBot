@@ -19,6 +19,7 @@ from websockets.protocol import State
 import httpx
 
 from src.core.common.logger import get_logger
+from src.core.platform_io.forward import forward_tree_to_payload
 
 from .events import QqInboundEvent
 
@@ -163,25 +164,31 @@ class BackendClient:
         client = self._http
         if client is None:
             raise BackendDisconnected('主体 HTTP 尚未连接')
+        body: Dict[str, Any] = {
+            'platform': 'qq',
+            'streamKind': event.stream_kind,
+            'streamExternalId': event.stream_external_id,
+            'senderExternalId': event.sender_external_id,
+            'senderNickname': event.sender_nickname,
+            'senderGroupCard': event.sender_group_card,
+            'botName': event.bot_name,
+            'text': event.text,
+            'mentionedMe': event.mentioned_me,
+            'externalMessageId': event.external_message_id,
+            'imageSources': list(event.image_sources),
+            'emojiSources': list(event.emoji_sources),
+            'emojiSubTypes': list(event.emoji_sub_types),
+            'pokedMe': event.poked_me,
+            'emojiLikedMe': event.emoji_liked_me,
+        }
+        # 空集合不发送新字段，保持旧适配器报文与既有精确载荷测试不变。
+        if event.forward_messages:
+            body['forwardMessages'] = [
+                forward_tree_to_payload(tree) for tree in event.forward_messages
+            ]
         response = await client.post(
             '/platform/inbound',
-            json={
-                'platform': 'qq',
-                'streamKind': event.stream_kind,
-                'streamExternalId': event.stream_external_id,
-                'senderExternalId': event.sender_external_id,
-                'senderNickname': event.sender_nickname,
-                'senderGroupCard': event.sender_group_card,
-                'botName': event.bot_name,
-                'text': event.text,
-                'mentionedMe': event.mentioned_me,
-                'externalMessageId': event.external_message_id,
-                'imageSources': list(event.image_sources),
-                'emojiSources': list(event.emoji_sources),
-                'emojiSubTypes': list(event.emoji_sub_types),
-                'pokedMe': event.poked_me,
-                'emojiLikedMe': event.emoji_liked_me,
-            },
+            json=body,
         )
         response.raise_for_status()
         payload = response.json()

@@ -3,10 +3,10 @@
 `NapcatRunner` 负责建立两条连接、按失败类型执行重试、过滤协议事件，并把主体
 回复转换为 OneBot action；分类和字段解析委托给同目录的纯函数模块。
 
-入站正文里的两类引用关系必须在提交主体前补齐，否则模型只能看到裸 QQ 号和不含
-内容的引用占位符：被 ``@`` 的显示名经 ``get_group_member_info`` /
-``get_stranger_info`` 解析，被引用消息的原文经 ``get_msg`` 还原，两者都带进程内
-缓存，失败时退回原占位形态而不阻断消息入站。
+入站正文里的引用关系与合并转发结构必须在提交主体前补齐：被 ``@`` 的显示名经
+成员信息接口解析，被引用消息的原文经 ``get_msg`` 还原，合并转发经
+``get_forward_msg`` 还原为完整树。显示名和引用摘要带进程内缓存；附加解析失败时
+保留原占位形态，不阻断消息正文入站。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import asyncio
 import httpx
 
 from src.core.common.logger import get_logger
+from src.core.platform_io.forward import ForwardMessageTree
 
 from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReaction
 from .config import NapcatDocument
@@ -30,6 +31,7 @@ from .events import (
     classify_event,
     parse_inbound_event,
 )
+from .forward import parse_forward_content, parse_forward_response
 from .segments import (
     is_emoji_image,
     mentioned_user_ids,
@@ -534,6 +536,64 @@ class NapcatRunner:
             emoji_sources=tuple(resolved_emojis),
         )
 
+    async def _resolve_forward_messages(
+        self,
+        payload: Mapping[str, Any],
+        event: QqInboundEvent,
+    ) -> QqInboundEvent:
+        """把顶层 ``forward`` 段解析为包含全部嵌套层级的消息树。
+
+        协议事件通常只带转发资源编号，此时每个根转发调用一次
+        ``get_forward_msg``；若事件已经内联 ``data.content``，直接解析而不重复
+        请求。任一根解析失败时整条消息仍以 ``[转发消息]`` 占位入站，但不暴露
+        半棵树给工具，避免多根转发的路径编号错位。
+        """
+        raw_segments = payload.get('message')
+        if not isinstance(raw_segments, list):
+            return event
+        forward_segments = [
+            segment
+            for segment in raw_segments
+            if isinstance(segment, Mapping) and segment.get('type') == 'forward'
+        ]
+        if not forward_segments:
+            return event
+
+        trees: List[ForwardMessageTree] = []
+        for root_index, segment in enumerate(forward_segments):
+            data = segment.get('data')
+            try:
+                if not isinstance(data, Mapping):
+                    raise ValueError('顶层合并转发缺少对象类型的 data')
+                inline_content = data.get('content')
+                if inline_content is not None:
+                    if not isinstance(inline_content, list):
+                        raise ValueError('顶层合并转发的 data.content 必须是数组')
+                    trees.append(parse_forward_content(inline_content))
+                    continue
+                forward_id = str(data.get('id') or '').strip()
+                if not forward_id:
+                    raise ValueError('顶层合并转发缺少 data.id')
+                response = await self._transport.call_action(
+                    'get_forward_msg',
+                    {'message_id': forward_id},
+                )
+                trees.append(parse_forward_response(response))
+            except (ActionError, asyncio.TimeoutError, ValueError) as exc:
+                logger.warning(
+                    'QQ 合并转发解析失败，保留正文占位且不开放读取工具',
+                    messageId=event.external_message_id,
+                    rootIndex=root_index,
+                    forwardId=(
+                        str(data.get('id') or '').strip()
+                        if isinstance(data, Mapping)
+                        else ''
+                    ),
+                    error=str(exc),
+                )
+                return event
+        return replace(event, forward_messages=tuple(trees))
+
     async def _resolve_image_source(self, source: str, file_name: str) -> str:
         """把单张 QQ CDN 图片来源解析为本地 ``file://`` 引用。
 
@@ -774,6 +834,9 @@ class NapcatRunner:
             # QQ CDN 来源先由协议端解析成本地路径；仍然只提交来源引用，
             # 实际读取与 VLM 描述由主体后台完成，避免逐张下载阻塞串行入站循环。
             event = await self._resolve_inbound_image_sources(payload, event)
+            # 合并转发树只解析结构，不下载媒体；解析完成后与消息一起提交主体，
+            # 主体再按内部消息 ID 建立会话隔离的逐层读取缓存。
+            event = await self._resolve_forward_messages(payload, event)
             try:
                 await self._backend.submit_inbound(event)
             except httpx.ReadTimeout as exc:
