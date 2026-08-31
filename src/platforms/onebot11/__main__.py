@@ -1,7 +1,7 @@
 """提供 `python -m src.platforms.onebot11` 的命令行入口。
 
 本模块解析配置文件路径和主体运行时信息，初始化日志后启动
-`NapcatRunner`；适配器业务逻辑和连接重试由同包的配置、运行器模块负责。
+`OneBot11Runner`；适配器业务逻辑和连接重试由同包的配置、运行器模块负责。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from src.core.common.logger import initialize_logging
 from src.core.common.backend_runtime import read_backend_runtime
 
 from .config import load_config
-from .runner import NapcatRunner
+from .runner import OneBot11Runner
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -49,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 先加载适配器配置，再读取主体端口和令牌，避免使用不完整运行时信息建立连接。
         config = load_config(args.config_path)
         runtime = read_backend_runtime(args.runtime_path)
-        asyncio.run(NapcatRunner(config, runtime.port, runtime.token).run())
+        asyncio.run(OneBot11Runner(config, runtime.port, runtime.token).run())
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

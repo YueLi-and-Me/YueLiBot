@@ -36,7 +36,7 @@ class InnerConfig(BaseModel):
     version: Literal['0.1.0']
 
 
-class NapcatConnectionConfig(BaseModel):
+class ProtocolConnectionConfig(BaseModel):
     """描述协议端 WebSocket 的连接参数。
 
     :ivar enabled: 是否启用 QQ 适配器。
@@ -256,7 +256,7 @@ class OwnerConfig(BaseModel):
         return value
 
 
-class NapcatDocument(BaseModel):
+class AdapterDocument(BaseModel):
     """组合 QQ 适配器所需的全部配置段。
 
     :ivar inner: 配置版本信息。
@@ -271,13 +271,13 @@ class NapcatDocument(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
     inner: InnerConfig
-    napcat: NapcatConnectionConfig
+    napcat: ProtocolConnectionConfig
     owner: OwnerConfig
     private: PrivateAccessConfig = Field(default_factory=PrivateAccessConfig)
     group: GroupAccessConfig = Field(default_factory=GroupAccessConfig)
 
     @model_validator(mode='after')
-    def _require_two_distinct_qq_numbers(self) -> 'NapcatDocument':
+    def _require_two_distinct_qq_numbers(self) -> 'AdapterDocument':
         """校验启用适配器时机器人与 owner 使用两个不同的完整 QQ 号。
 
         :return: 当前已校验的配置模型实例。
@@ -301,19 +301,19 @@ class NapcatDocument(BaseModel):
         return self
 
 
-def read_config(path: Path) -> NapcatDocument:
+def read_config(path: Path) -> AdapterDocument:
     """读取并校验一份完整的 NapCat TOML 配置文件。
 
     :param path: 配置文件路径；文件必须包含当前支持的版本字段和完整配置结构。
 
-    :return: 校验通过的 ``NapcatDocument`` 实例。
+    :return: 校验通过的 ``AdapterDocument`` 实例。
 
     :raises OSError: 配置文件无法读取时抛出。
     :raises ValueError: 版本字段不匹配或 TOML 结构不合法时抛出。
     :raises pydantic.ValidationError: 配置字段类型、范围或跨字段约束校验失败。
     """
     document = read_versioned_toml(path, NAPCAT_CONFIG_VERSION, _CONFIG_HINT)
-    return NapcatDocument.model_validate(document)
+    return AdapterDocument.model_validate(document)
 
 
 def _readable_error(exc: Exception) -> str:
@@ -335,12 +335,12 @@ def _readable_error(exc: Exception) -> str:
     return '\n'.join(lines)
 
 
-def load_config(path: Path) -> NapcatDocument:
+def load_config(path: Path) -> AdapterDocument:
     """读取 NapCat 配置；校验失败时输出诊断信息并以状态码 1 终止进程。
 
     :param path: NapCat TOML 配置文件路径。
 
-    :return: 校验通过的 ``NapcatDocument`` 实例。
+    :return: 校验通过的 ``AdapterDocument`` 实例。
 
     :raises SystemExit: 文件读取、版本解析或字段校验失败时以状态码 ``1`` 退出。
     """
