@@ -32,6 +32,8 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "platforms.onebot11.transport": ("#afafff", True),
     # 插件契约
     "plugin_system.adapter": ("#87d7af", True),
+    # 适配器插件
+    "adapters.yueli_napcat_adapter.plugin": ("#ffd7af", False),
     # 归属解析
     "platform_io.registry": ("#5fffd7", False),
     # 基础设施
@@ -88,6 +90,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "platforms.onebot11.runner": "QQ运行器",
     "platforms.onebot11.transport": "QQ传输",
     "plugin_system.adapter": "插件契约",
+    "adapters.yueli_napcat_adapter.plugin": "NapCat适配",
     "platform_io.registry": "归属登记",
     "common.logger": "日志",
     "common.logger_colors": "日志配色",
