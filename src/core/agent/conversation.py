@@ -16,7 +16,9 @@
 动作空间——该判据只有 ``action_protocol.available_actions`` 一处。
 
 失败语义（event_status 与自主沉默是互斥的两类状态）：
-- 正文先于动作头 / 缺失动作头 → parse_error；
+- 正文先于动作头 / 缺失动作头 → parse_error；工具调用模式下模型不走工具通道
+  （整条响应只有正文，或既无正文也无工具调用）同属此类，先按
+  ``_ACTION_CALL_REPAIR_LIMIT`` 纠错重发，重发仍不调工具才落此状态；
 - 动作头违反协议或回合帧（非法枚举、自由理由码、目标越界、引用能力缺失、
   FORCE 禁默、认知动作缺 query、动作头之后没有正文）→ illegal_action；
   工具调用模式下的此类错误先按 ``_ACTION_CALL_REPAIR_LIMIT`` 纠错重试，
@@ -92,9 +94,11 @@ _OUTPUT_REQUIREMENT = (
 _FINAL_ROUND_NOTICE = (
     '你已经用完这一轮可以查东西的次数，接下来必须直接给出最终动作，不能再检索。'
 )
-# 工具调用被判不合法时的纠错重试上限。兼容网关会把工具参数整段丢弃（到达
-# 校验层的是空对象），把拒绝原因回灌重发一次即可恢复；仍不合法才按
-# illegal_action 失败。重试只重发模型调用，不替模型补写任何参数。
+# 工具调用协议错误的纠错重试上限，两类模型侧错误共用同一份预算：
+# - 兼容网关把工具参数整段丢弃，到达校验层的是空对象（illegal_action）；
+# - 模型完全不走工具通道，直接输出正文或什么都不给（parse_error）。
+# 两类都把原因回灌重发一次即可恢复；重发仍不合法才按对应状态失败。重试只重发
+# 模型调用，不替模型补写任何参数。
 _ACTION_CALL_REPAIR_LIMIT = 1
 
 
@@ -105,6 +109,18 @@ class _LocalToolExecutionError(RuntimeError):
         """保存原始异常，调用层会按既有本机故障语义原样抛出。"""
         self.error = error
         super().__init__(str(error))
+
+
+class _MissingActionCall(Exception):
+    """工具调用模式下模型没有通过工具给出动作。
+
+    - 现象：声明了 tools 的决策请求里，模型流出的是台词正文（观测到的都是回复
+      开头的一两个字），整条响应没有任何工具调用；偶尔正文也没有。
+    - 原因：tools 只是可选项，服务端默认的 tool_choice=auto 允许模型改用正文
+      作答，提示词里「只调用工具」的约束对部分模型并不成立。
+    - 后果：正文在工具模式下不被承认为动作表达，该轮没有可执行的决策；直接
+      终局会把一次可自愈的协议失效变成用户侧的无声失败，因此先纠错重发一次。
+    """
 
 
 class _RepairableCallFault(Exception):
@@ -651,6 +667,9 @@ class ConversationAgent:
         # 本轮工具调用解析是否发生模型侧协议错误。只有这类错误允许纠错重试，
         # XML 动作头与本机接线故障保持既有的直接终局语义。
         call_fault = False
+        # 工具模式下是否收到过正文。仅用于让缺失工具调用的失败原因区分「输出了
+        # 台词」与「整条响应为空」，两者的纠错回灌措辞不同。
+        prose_only = False
 
         async def release(events: list[ParseEvent]) -> None:
             """放出已通过动作头校验的事件；无回调时仅聚合到结果。"""
@@ -901,12 +920,14 @@ class ConversationAgent:
                     if not text:
                         continue
                     if self._tool_calling:
-                        # 工具模式只接受函数调用这一种动作表达。接受旧 XML 会在
-                        # 模型未调工具时仍把正文判为合法决策，无法区分协议失效
-                        # 与正常动作。
-                        status = 'parse_error'
-                        detail = '工具调用模式收到正文，模型没有通过工具选择动作'
-                        return finish()
+                        # 工具模式只接受函数调用这一种动作表达：正文既不解析也
+                        # 不放出，只记一笔用于区分「输出了正文」与「什么都没给」。
+                        #
+                        # 收到正文不就地终局，是因为部分模型会先流出一小段正文
+                        # 再发工具调用；在首个正文分片上关流会把本可用的调用一并
+                        # 丢掉。缺失工具调用的判定因此推迟到整条流结束之后。
+                        prose_only = True
+                        continue
                     for event in parser.push(text):
                         if head is None:
                             if isinstance(event, DecisionEvent):
@@ -963,12 +984,14 @@ class ConversationAgent:
                 )
                 return finish()
             if head is None:
+                if self._tool_calling:
+                    raise _MissingActionCall(
+                        '工具调用模式收到正文，模型没有通过工具选择动作'
+                        if prose_only
+                        else '模型没有选择任何动作'
+                    )
                 status = 'parse_error'
-                detail = (
-                    '模型没有选择任何动作'
-                    if self._tool_calling
-                    else '模型输出中没有动作头'
-                )
+                detail = '模型输出中没有动作头'
                 return finish()
             # 冲刷未闭合标签，与既有流式管线保持一致的宽容度。
             for event in parser.flush():
@@ -999,6 +1022,16 @@ class ConversationAgent:
                     _call_fault_messages(str(exc)),
                 ) from exc
             status = 'illegal_action'
+            detail = str(exc)
+            return finish()
+        except _MissingActionCall as exc:
+            # 与非法工具调用同属模型侧协议错误，共用同一份纠错预算；预算判断放在
+            # 抛出侧，耗尽时就地终局，驱动层因此无需再处理预算用尽的分支。
+            if repairs_used < _ACTION_CALL_REPAIR_LIMIT:
+                raise _RepairableCallFault(
+                    _missing_call_messages(str(exc)),
+                ) from exc
+            status = 'parse_error'
             detail = str(exc)
             return finish()
         except _LocalToolExecutionError as exc:
@@ -1306,6 +1339,27 @@ def _observation_messages(
             'content': f'[检索结果] {observation}{notice}\n\n{_OUTPUT_REQUIREMENT}',
         },
     ]
+
+
+def _missing_call_messages(reason: str) -> list[dict[str, str]]:
+    """把一次没有工具调用的响应渲染为纠错回灌消息。
+
+    只陈述这一轮的输出不成立并要求改用工具调用，不提示该调哪个工具：动作选择
+    仍然由模型自己做，回灌一个具体动作等于替它决策。
+
+    :param reason: 判定缺失工具调用的原因，与终局状态的 detail 同一措辞。
+    :return: 追加到消息序列尾部的一条 user 消息，与观察回灌同一扁平格式。
+    """
+    return [{
+        'role': 'user',
+        'content': (
+            '[无效的响应]\n'
+            f'原因：{reason}\n\n'
+            '这一轮的动作只能通过调用工具给出，正文不会被采纳，'
+            '你刚才的输出没有生效。请重新发起一次工具调用；'
+            '只输出工具调用，不要输出台词、解释或格式说明。'
+        ),
+    }]
 
 
 def _call_fault_messages(reason: str) -> list[dict[str, str]]:
