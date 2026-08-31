@@ -30,6 +30,8 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "platforms.napcat.backend": ("#d787ff", True),
     "platforms.napcat.runner": ("#ff5f87", True),
     "platforms.napcat.transport": ("#afafff", True),
+    # 插件契约
+    "plugin_system.adapter": ("#87d7af", True),
     # 归属解析
     "platform_io.registry": ("#5fffd7", False),
     # 基础设施
@@ -85,6 +87,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "platforms.napcat.backend": "QQ主体",
     "platforms.napcat.runner": "QQ运行器",
     "platforms.napcat.transport": "QQ传输",
+    "plugin_system.adapter": "插件契约",
     "platform_io.registry": "归属登记",
     "common.logger": "日志",
     "common.logger_colors": "日志配色",
