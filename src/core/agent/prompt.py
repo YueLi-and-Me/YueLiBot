@@ -923,7 +923,8 @@ def _poke_protocol_rule(
         '你还可以戳一戳某个人（QQ 的戳一戳，不发消息）：',
         '<decision action="poke" targets="消息编号" reasons="理由码"/>',
         '- targets 只填一条，写你想戳的那个人发的消息；不写 length、不写 quote、之后不要有正文',
-        '它会给对方发送一条提醒。只在确实需要提醒对方时使用，不要频繁使用',
+        '它会给对方发送一条提醒。有人戳了你时，可以戳回去回应，不必每次都发消息；'
+        '其余时候只在确实需要提醒对方时使用，不要频繁使用',
     ]
     if selectable_ids:
         lines.extend([
@@ -962,7 +963,7 @@ def _react_protocol_rule(
         f'<decision action="react" targets="消息编号" reaction="表情" reasons="理由码"/>',
         f'- reaction 只能写：{" / ".join(available_reactions)}',
         '- targets 只填一条，写你在回应哪条消息；不写 length、不写 quote、之后不要有任何正文',
-        '- 需要发言时正常使用 reply；表情回应适合「看到了、有反应、但没有需要补充的内容」的情况',
+        '- 需要发言时正常使用 reply；表情回应适合「某条消息值得回应、但你不想开口」的情况',
     ]
     if selectable_ids:
         lines.extend([
