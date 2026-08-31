@@ -234,6 +234,37 @@ class BackendClient:
             raise ValueError('主体 /platform/typing 响应必须包含布尔 spoke')
         return payload['spoke']
 
+    async def report_capabilities(
+        self,
+        *,
+        adapter_id: str,
+        capabilities: List[str],
+    ) -> None:
+        """把协议端实测能力上报主体，供其收窄动作集。
+
+        每次连接成功后调用一次，主体侧整体替换：能力属于当前这条连接指向的协议端，
+        累积或沿用旧结论会让已经失效的动作继续被选中。
+
+        :param adapter_id: 上报者的插件标识，只用于落账与排障。
+        :param capabilities: 实测可用的能力名，顺序无关。
+        :return: ``None``。
+        :raises BackendDisconnected: HTTP 客户端尚未建立连接。
+        :raises httpx.HTTPError: 请求失败或主体返回非成功状态码，由调用方决定是否降级。
+        副作用：向主体能力接口发送一次 POST 请求。
+        """
+        client = self._http
+        if client is None:
+            raise BackendDisconnected('主体 HTTP 尚未连接')
+        response = await client.post(
+            '/platform/capabilities',
+            json={
+                'platform': 'qq',
+                'adapterId': adapter_id,
+                'capabilities': list(capabilities),
+            },
+        )
+        response.raise_for_status()
+
     async def report_delivery_failure(
         self,
         *,

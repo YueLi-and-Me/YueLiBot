@@ -733,6 +733,22 @@ class PlatformTypingBody(BaseModel):
     sender_external_id: str = Field(alias='senderExternalId')
 
 
+class PlatformCapabilitiesBody(BaseModel):
+    """平台适配器在每次连接成功后上报的协议端实测能力。
+
+    每连接一次上报一次、整体替换：协议端的能力会随其自身状态变化（例如发包组件
+    与客户端版本不匹配时戳一戳整体失效），沿用上一次连接的结论会让已经失效的动作
+    继续进入动作集，现场表现为她反复选中一个执行不了的动作。
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: str
+    # 上报者的插件标识，只用于落账与排障，不参与能力判定。
+    adapter_id: str = Field(alias='adapterId')
+    capabilities: List[str]
+
+
 class PlatformDeliveryFailureBody(BaseModel):
     """平台适配器上报的一次出站动作在协议端的失败。
 
@@ -791,6 +807,31 @@ async def platform_typing(body: PlatformTypingBody) -> JSONResponse:
         app_state.register_platform_stream(context.stream)
     spoke = await app_state.chat.note_peer_typing(context)
     return JSONResponse({'accepted': True, 'spoke': spoke})
+
+
+@router.post('/platform/capabilities', dependencies=[Depends(_auth)])
+async def platform_capabilities(body: PlatformCapabilitiesBody) -> JSONResponse:
+    """接收适配器上报的协议端能力，据此收窄后续回合的动作集。
+
+    能力只描述「协议端能不能做」，与用户的开关是与的关系：开关关着不会因为上报
+    而打开，能力不可用则开关开着也不进动作集。
+
+    :param body: 已通过 Pydantic 校验的能力上报。
+    :return: JSON 响应；聊天服务未初始化时返回 503。
+    :raises fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+    副作用：替换该平台的能力集合，并写入一条观察事件供控制台与面板查看。
+    """
+    if app_state.chat is None:
+        return JSONResponse({'detail': '对话服务未初始化'}, status_code=503)
+
+    app_state.chat.set_platform_capabilities(body.platform, body.capabilities)
+    trace.emit(
+        'platform_capabilities',
+        platform=body.platform,
+        adapterId=body.adapter_id,
+        capabilities=sorted(body.capabilities),
+    )
+    return JSONResponse({'accepted': True})
 
 
 @router.post('/platform/delivery/failed', dependencies=[Depends(_auth)])

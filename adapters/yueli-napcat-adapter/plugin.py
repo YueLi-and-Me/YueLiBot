@@ -83,6 +83,8 @@ class NapCatAdapterPlugin(AdapterPlugin):
             runtime.port,
             runtime.token,
             transport=self._transport,
+            adapter_id=self._manifest.plugin_id,
+            capability_probe=self.resolve_capabilities,
         )
 
     async def probe_capabilities(self) -> FrozenSet[AdapterCapability]:

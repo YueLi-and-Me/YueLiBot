@@ -92,6 +92,8 @@ class SnowlumaAdapterPlugin(AdapterPlugin):
             runtime.token,
             transport=self._transport,
             backend=self._backend,
+            adapter_id=self._manifest.plugin_id,
+            capability_probe=self.resolve_capabilities,
         )
 
     async def probe_capabilities(self) -> FrozenSet[AdapterCapability]:

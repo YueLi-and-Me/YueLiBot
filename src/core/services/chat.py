@@ -542,6 +542,10 @@ class ChatService:
         # 拆分后决策走 planner 槽、表达走 replyer 槽；两个槽留空即继承 chat，
         # 因此不配模型也能打开开关，只是两级用同一个模型、延迟收益为零。
         decision_provider = planner_provider if self._split_replyer else chat_provider
+        # 平台标识 -> 该平台协议端实测可用的能力集合，由适配器每次连接成功后上报。
+        # 进程内状态而非落库：能力属于「当前这条连接指向的协议端」，重启后必须
+        # 重新探测，持久化会让上一次的结论在协议端已经变化后继续生效。
+        self._platform_capabilities: Dict[str, frozenset[str]] = {}
         # 合并转发正文不直接铺进工作记忆：平台交来的完整树进入有界会话缓存，
         # 模型仅在有转发内容的 stream 里看到逐层读取工具。
         self._forward_message_tool = ForwardMessageTool()
@@ -3870,13 +3874,14 @@ class ChatService:
             context.stream.platform == 'qq'
             and context.stream.kind == 'group'
             and self._cfg.group_chat.reactions_enabled
+            and self._backend_supports(context, 'reaction')
         )
 
     def _poke_available(self, context: ConversationContext) -> bool:
         """判断当前 stream 能否戳一戳。
 
-        条件与表情回应同构（QQ + 群聊 + 配置开关），但默认关闭：表情回应无推送，
-        戳一戳会给对方推送提醒，扰动量级不同，须由使用者主动打开。
+        条件与表情回应同构（QQ + 群聊 + 配置开关 + 协议端能力），但默认关闭：
+        表情回应无推送，戳一戳会给对方推送提醒，扰动量级不同，须由使用者主动打开。
 
         :param context: 当前会话上下文。
         :return: 允许 poke 进入动作集时返回 ``True``。
@@ -3885,6 +3890,40 @@ class ChatService:
             context.stream.platform == 'qq'
             and context.stream.kind == 'group'
             and self._cfg.group_chat.pokes_enabled
+            and self._backend_supports(context, 'poke')
+        )
+
+    def set_platform_capabilities(
+        self,
+        platform: str,
+        capabilities: Iterable[str],
+    ) -> None:
+        """登记某个平台的协议端当前实际具备的能力。
+
+        每次适配器连接成功都会重新上报一次，因此这里是整体替换而不是并入：
+        协议端的能力会随其自身状态变化（例如发包组件与客户端版本不匹配时戳一戳
+        整体失效），保留上一次连接的结论会让已经失效的动作继续进入动作集。
+
+        :param platform: 平台标识，例如 ``qq``。
+        :param capabilities: 该平台协议端实测可用的能力名。
+        :return: ``None``。
+        副作用：替换该平台的能力集合，影响后续回合的动作集。
+        """
+        self._platform_capabilities[platform] = frozenset(capabilities)
+
+    def _backend_supports(self, context: ConversationContext, capability: str) -> bool:
+        """判断该会话所在平台的协议端是否具备某项能力。
+
+        未收到过上报时一律返回 ``False``。方向是刻意的：未知按不可用处理，最坏
+        结果是她少用一个动作；反过来按可用处理，她会选中一个执行不了的终局动作，
+        对方收到的是彻底的沉默，而账本里查不出来。
+
+        :param context: 当前会话上下文。
+        :param capability: 能力名，取值见 ``src.plugin_system.capabilities``。
+        :return: 该平台已上报且包含该能力时返回 ``True``。
+        """
+        return capability in self._platform_capabilities.get(
+            context.stream.platform, frozenset(),
         )
 
     def _agent_gate_inputs(

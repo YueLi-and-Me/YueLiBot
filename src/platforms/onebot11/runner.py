@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping
 from urllib.parse import urlsplit
 import asyncio
 
@@ -72,6 +72,8 @@ class OneBot11Runner:
         token: str,
         transport: OneBot11Transport | None = None,
         backend: BackendClient | None = None,
+        adapter_id: str = '',
+        capability_probe: Callable[[], Awaitable[Iterable[str]]] | None = None,
     ) -> None:
         """创建 QQ 适配器运行器。
 
@@ -81,6 +83,12 @@ class OneBot11Runner:
         :param transport: 可选的协议传输实现；为空时创建真实的
             :class:`OneBot11Transport`，测试可传入替身。
         :param backend: 可选的主体客户端；为空时创建 :class:`BackendClient`。
+        :param adapter_id: 上报能力时标注的插件标识；``capability_probe`` 为空时无意义。
+        :param capability_probe: 可选回调，返回协议端实测可用的能力名。在协议端与
+            主体都连上、开始收发之前调用，结果由本运行器提交给主体——探测归插件、
+            上报归运行器，是因为只有运行器持有主体客户端。**每次重连都会再调用
+            一次**：能力属于当前这条连接指向的协议端，只在首次连接探测会让重连后
+            失效或恢复的能力停留在旧结论上。
         :raises ValueError: 默认客户端发现主体端口或 token 非法时抛出。
         副作用：保存配置并可能构造网络客户端，但不会建立连接。
         """
@@ -89,6 +97,8 @@ class OneBot11Runner:
         self._token = token
         self._transport = transport or OneBot11Transport(config.napcat)
         self._backend = backend or BackendClient(backend_port, token)
+        self._adapter_id = adapter_id
+        self._capability_probe = capability_probe
         self._connected_once = False
         # (群号, QQ 号) -> 显示名；私聊用空群号。群名片按群独立，不能跨群复用。
         self._display_names: Dict[tuple[str, str], str] = {}
@@ -124,6 +134,28 @@ class OneBot11Runner:
                     _check_self_qq_matches(self._config.napcat.self_qq, self_id)
                     await self._backend.connect()
                     await self._backend.link_owner_identity(self._config.owner.qq)
+                    if self._capability_probe is not None:
+                        try:
+                            capabilities = sorted(await self._capability_probe())
+                            await self._backend.report_capabilities(
+                                adapter_id=self._adapter_id,
+                                capabilities=capabilities,
+                            )
+                            logger.info(
+                                '协议端能力已上报',
+                                adapterId=self._adapter_id,
+                                capabilities=capabilities,
+                            )
+                        except Exception as exc:
+                            # 能力上报失败不阻断连接：主体侧未收到上报时按「能力
+                            # 不可用」处理，结果是她少用几个可选动作，聊天本身不受
+                            # 影响。反过来因为上报失败就断连重来，会把一次可降级的
+                            # 故障升级成整条链路反复重连。
+                            logger.warning(
+                                '协议端能力上报失败，本次连接按能力不可用运行',
+                                adapterId=self._adapter_id,
+                                error=str(exc),
+                            )
                     # 只回填观察上下文，不触发回复；失败不阻断连接建立。
                     await self._backfill_recent_group_history(self_id, self_name)
                     self._connected_once = True
