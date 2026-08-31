@@ -149,6 +149,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
       orphan_retention_days: 30,
     },
   },
+  desktop_pet: { enabled: false },
   generation: {
     chat: { temperature: 0.85, max_tokens: 0 },
     proactive: { enabled: true, temperature: 0.9, max_tokens: 200 },
@@ -930,6 +931,25 @@ function parseEmoji(document: Record<string, unknown>, path: string): YueliConfi
 }
 
 /**
+ * 从配置文档读取桌宠外壳开关，并为缺失字段合并默认值。
+ *
+ * @param document 已解析的配置文档。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 合并默认值后的桌宠配置。
+ * @throws Error 当段不是表或 `enabled` 不是布尔值时抛出。
+ */
+function parseDesktopPet(document: Record<string, unknown>, path: string): YueliConfig['desktop_pet'] {
+  const defaults = DEFAULT_CONFIG.desktop_pet
+  if (document.desktop_pet === undefined) return structuredClone(defaults)
+  const section = recordAt(document, 'desktop_pet', path)
+  return {
+    enabled: section.enabled === undefined
+      ? defaults.enabled
+      : booleanAt(section, 'enabled', `${path} 的 desktop_pet`),
+  }
+}
+
+/**
  * 校验每日方向的备用主题和生成重试间隔。
  *
  * @param schedule 待校验的日程配置。
@@ -1208,6 +1228,7 @@ function readSplitConfig(directory: string): YueliConfig {
   const typing = parseTyping(botDocument, botPath)
   const schedule = parseSchedule(botDocument, botPath)
   const emoji = parseEmoji(botDocument, botPath)
+  const desktopPet = parseDesktopPet(botDocument, botPath)
   const toneVariants = personality.tone_variants
   if (!Array.isArray(toneVariants) || !toneVariants.every((value) => typeof value === 'string')) {
     throw new Error(`${botPath} 的 personality.tone_variants 必须是字符串数组`)
@@ -1261,6 +1282,7 @@ function readSplitConfig(directory: string): YueliConfig {
     conversation_agent: conversationAgent,
     typing,
     emoji,
+    desktop_pet: desktopPet,
     generation,
     api_providers: providers,
     models,
@@ -2124,6 +2146,10 @@ enabled = ${cfg.emoji.cleanup.enabled}
 check_interval_hours = ${cfg.emoji.cleanup.check_interval_hours}
 # 孤儿文件至少保留多少天；0 表示下次检查时立即清理
 orphan_retention_days = ${cfg.emoji.cleanup.orphan_retention_days}
+
+[desktop_pet]
+# 是否启用桌宠窗口；关闭后不创建窗口与桌面感知，只保留托盘与后端，改动重启应用后生效
+enabled = ${cfg.desktop_pet.enabled}
 `
 }
 

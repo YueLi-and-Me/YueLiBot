@@ -238,7 +238,7 @@ class ResponseParser:
         """
         out = self._run()
 
-        # discard 状态下的残留是未闭合的废止标签内容，丢弃而不是当成台词吐出去。
+        # discard 状态下的残留是未闭合的废止标签内容，丢弃而不作为台词输出。
         if self._state != 'discard' and self._buf:
             # 残留可能是没闭合的正文，也可能是半截标签
             tail = '' if re.match(r'^<[^>]*$', self._buf) else self._buf
@@ -346,13 +346,13 @@ class ResponseParser:
             # <memory> 已废止：事实抽取改由回合之后的独立后台任务承担
             # （agent/fact_extract.py），不再让正在说话的模型顺手打标签。
             #
-            # 这里仍然识别它、但只吞不写，是刻意的：
-            # - 现象：若把 memory 从已知标签里摘掉，模型偶尔仍吐出的
+            # 这里仍然识别该标签但不写入事件，这是刻意设计：
+            # - 现象：若把 memory 从已知标签里摘掉，模型偶尔仍输出的
             #   `<memory type="...">…</memory>` 会被当成普通文本，整段协议标签
-            #   直接漏进她的可见台词。
+            #   直接漏进 Bot 的可见台词。
             # - 原因：未登记的标签一律走 _emit_text 当正文处理。
-            # - 后果：宁可静默丢弃，也不能让协议外壳出现在对话里；真要观察模型
-            #   还写不写这个标签，看 data/logs/prompt/ 里的原始响应，不看这里。
+            # - 后果：静默丢弃，避免协议外壳出现在对话中。如需观察模型是否仍
+            #   输出该标签，查看 data/logs/prompt/ 下的原始响应。
             if closing:
                 self._state = 'say' if self._say_open else 'outside'
                 return
@@ -404,7 +404,7 @@ class ResponseParser:
             return
 
     def _step_discard(self) -> bool:
-        """吞掉已废止标签的正文，直到其闭合标签为止，不产出任何事件。
+        """丢弃已废止标签的正文，直到其闭合标签为止，不产出任何事件。
 
         :return: 找到并消费闭合标签时返回 `True`，否则保留尾部片段并返回 `False`。
         副作用：消费内部缓冲区并恢复说话/外部状态；不写入输出列表。

@@ -1,7 +1,7 @@
 """实现 OpenAI 兼容协议的异步流式对话客户端。
 
 方舟、DeepSeek、Qwen、月之暗面、智谱、Ollama、OpenAI 本身都提供
-`POST {baseUrl}/chat/completions`，所以一个实现打通全部。
+`POST {baseUrl}/chat/completions`，一个实现即可覆盖全部厂商。
 
 客户端负责鉴权参数组装、SSE 增量解析、HTTP 200 诊断正文识别、思考字段/标签
 分流和请求级重试；在已经向上游产生正文后不重放请求，以避免重复输出和副作用。
@@ -73,7 +73,7 @@ def error_hint(kind: str) -> str:
 
     :param kind: ``LlmError.kind``。
     :return: 对应说明；未知类别回退到 ``unknown`` 那条，不返回空串——失败面板上
-        留一行空白比说「未归类」更让人摸不着头脑。
+        留一行空白比标注「未归类」更难理解。
     """
     return LLM_ERROR_HINTS.get(kind, LLM_ERROR_HINTS['unknown'])
 
@@ -110,7 +110,12 @@ def _classify_code(code: str) -> str:
     :return: `blocked`、`quota`、`auth`、`model` 或 `unknown` 类别。
     副作用：不修改输入文本。
     """
-    if re.search(r'SensitiveContent|Sensitive|Risk|Policy|content_filter', code, re.I): return 'blocked'
+    # `prompt_blocked` 是兼容网关转发 Gemini 输入侧拦截时用的 code/type，正文形如
+    # `request blocked by Gemini API: PROHIBITED_CONTENT`。缺了它这类失败会落到
+    # `unknown`，路由层就不会按内容策略跳过同族候选，只能把整族依次撞一遍。
+    if re.search(r'SensitiveContent|Sensitive|Risk|Policy|content_filter|prompt_blocked|prohibited',
+                 code, re.I):
+        return 'blocked'
     if re.search(r'Quota|RateLimit|TPM|RPM|Throttl|insufficient', code, re.I): return 'quota'
     if re.search(r'Auth|ApiKey|Credential|Permission|invalid_api_key', code, re.I): return 'auth'
     if code.casefold() == 'get_channel_failed':
@@ -732,7 +737,7 @@ class _ToolCallAccumulator:
         """
         ordered = [self._calls[index] for index in sorted(self._calls)]
         self._calls.clear()
-        # 没有名字的分片是协议噪声，留着只会让下游拿到一个调不动的工具。
+        # 没有名字的分片是协议噪声，留着会让下游得到一个无法调用的工具定义。
         return [call for call in ordered if call['name']]
 
 

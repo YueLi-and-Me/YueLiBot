@@ -8,10 +8,9 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
-from typing import Any, List, Literal
+from typing import Any, Dict, List, Literal
 
 import asyncio
-import os
 import sqlite3
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
@@ -44,6 +43,7 @@ from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
+from src.core.platform_io.forward import forward_tree_from_payload
 from src.core.platform_io.types import InboundMessage, StreamRef
 from src.core.prompts.registry import (
     delete_prompt_override,
@@ -92,6 +92,10 @@ class PlatformInboundBody(BaseModel):
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
+    forward_messages: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        alias='forwardMessages',
+    )
     # 旧协议字段：已下载的 Base64 附件；新适配器只应提交 imageSources。
     images: List[InboundImageBody] = Field(default_factory=list, alias='imageSegments')
 
@@ -111,6 +115,22 @@ class PlatformInboundBody(BaseModel):
             for value in values
         ):
             raise ValueError('emojiSubTypes 必须只包含表情包子类型整数')
+        return values
+
+    @field_validator('forward_messages')
+    @classmethod
+    def _validate_forward_messages(
+        cls,
+        values: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """在进入业务副作用前严格验证每棵合并转发消息树。"""
+        for index, payload in enumerate(values):
+            try:
+                forward_tree_from_payload(payload)
+            except ValueError as exc:
+                raise ValueError(
+                    f'forwardMessages[{index}] 结构非法：{exc}'
+                ) from exc
         return values
 
     @model_validator(mode='after')
@@ -325,14 +345,37 @@ async def web_auto_login(response: Response) -> dict:
     return {'ok': True}
 
 
+@router.post('/runtime/shutdown', dependencies=[Depends(_auth), Depends(_require_loopback)])
+async def runtime_shutdown() -> JSONResponse:
+    """请求后端进程优雅退出；无 server 句柄（测试挂载场景）时返回 503。
+
+    置位 ``should_exit`` 后 uvicorn 走与 SIGINT 完全相同的优雅路径：停监听、
+    对在飞请求只关 keep-alive 并等其完成、跑 lifespan 逆序关闭链后以 0 退出。
+    因此本响应仍能正常发出，Electron supervisor 只需等待子进程退出事件。
+    """
+    server = app_state.uvicorn_server
+    if server is None:
+        return JSONResponse({'detail': '关机句柄未注入'}, status_code=503)
+    logger.info('shutdown_requested')
+    server.should_exit = True
+    return JSONResponse({'ok': True})
+
+
 @router.post('/system/restart', dependencies=[Depends(_auth), Depends(_require_loopback)])
 async def system_restart() -> dict:
-    """重启当前 Python 后端进程；Electron supervisor 会重新拉起。"""
-    async def _exit_soon() -> None:
-        await asyncio.sleep(0.4)
-        os._exit(0)
+    """重启当前 Python 后端进程；Electron supervisor 会重新拉起。
 
-    asyncio.create_task(_exit_soon())
+    与 ``/runtime/shutdown`` 同一条优雅路径：进程退出后 supervisor 照旧按
+    ``_scheduleRestart`` 拉起，重启语义不变，只是关闭链有机会收尾。
+    """
+    server = app_state.uvicorn_server
+    if server is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='关机句柄未注入',
+        )
+    logger.info('restart_requested')
+    server.should_exit = True
     return {'ok': True}
 
 
@@ -463,6 +506,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             status_code=503,
         )
 
+    forward_messages = tuple(
+        forward_tree_from_payload(payload) for payload in body.forward_messages
+    )
+
     now = current_time()
     # 归属解析必须先于门控，后续 trace、记忆和出站路由都依赖稳定 stream/person 引用。
     context = app_state.registry.resolve_inbound(
@@ -574,10 +621,11 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 image_sources=tuple(body.image_sources),
                 emoji_sources=tuple(body.emoji_sources),
                 emoji_sub_types=tuple(body.emoji_sub_types),
+                forward_messages=forward_messages,
             ),
             reason,
         )
-        # DROP 不调用模型，但必须落一条可审计行动事件，回答「代码根本没让她考虑」。
+        # DROP 不调用模型，但必须落一条可审计行动事件，回答「代码根本没让 Bot 考虑」。
         gate_event = ActionDecisionEvent(
             turn_id=None,
             snapshot_id=f'gate-{message_id}',
@@ -633,6 +681,9 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         image_sources=image_sources if not legacy_attachments else (),
         emoji_sources=emoji_sources,
         emoji_sub_types=emoji_sub_types,
+        forward_messages=forward_messages,
+        poked_me=body.poked_me,
+        pokes_in_window=pokes_in_window,
     ))
     return JSONResponse({
         'streamId': context.stream.id,
@@ -1580,7 +1631,7 @@ def _delete_expressions(
 
     受影响的会话必须在删除**之前**取，删完再查就丢了：整条会话的表达被删光
     时它在 expressions 里不再有行，事后的 ``GROUP BY stream_id`` 根本不会出现
-    这个会话，而候选池归零恰恰是最需要报出来的一种。
+    这个会话，而候选池归零正是最需要报出来的一种。
 
     候选池只做如实回报、不做拦截。跌破 :data:`MIN_POOL_CANDIDATES` 时
     ``fetch_expression_pool`` 直接返回空池，表达注入静默停摆——这件事必须让
@@ -1608,7 +1659,7 @@ def _delete_expressions(
     low_pools = []
     for stream_id in affected:
         candidates = int(db.execute(
-            'SELECT COUNT(*) FROM expressions WHERE stream_id = ? AND checked != -1',
+            'SELECT COUNT(*) FROM expressions WHERE stream_id = ? AND checked = 1',
             (stream_id,),
         ).fetchone()[0])
         if candidates < MIN_POOL_CANDIDATES:
@@ -1868,7 +1919,7 @@ def _memory_spread_rows(
     """从指定节点出发跑一次扩散，返回带正文的命中列表。
 
     直接调用运行时的 :func:`~src.core.memory.association.spread`，不另写一份预览
-    实现：面板要回答的是「她真的会想起什么」，重写一遍就只能回答「我以为会想起
+    实现：面板要回答的是「Bot 真的会想起什么」，重写一遍就只能回答「我以为会想起
     什么」。该函数已声明只读，不建边也不加强，因此面板反复点不会污染边权。
 
     与真机的唯一差别是不传短期激活表——面板没有对话上下文，也就没有「刚才聊到
@@ -1947,8 +1998,8 @@ async def memory_spread_preview(
 ) -> dict:
     """以指定记忆为种子跑一次扩散预览，只读。
 
-    面板据此回答「从这里出发她会顺带想起什么」。走的是运行时同一份 spread
-    实现，因此结果与她真实的联想一致；唯一差别是没有短期激活加成（面板没有
+    面板据此回答「从这里出发 Bot 会顺带想起什么」。走的是运行时同一份 spread
+    实现，因此结果与 Bot 真实的联想一致；唯一差别是没有短期激活加成（面板没有
     对话上下文），界面上标注为「不含刚才聊到过的加成」。
 
     :param kind: 种子所在层。

@@ -3,10 +3,10 @@
 `NapcatRunner` 负责建立两条连接、按失败类型执行重试、过滤协议事件，并把主体
 回复转换为 OneBot action；分类和字段解析委托给同目录的纯函数模块。
 
-入站正文里的两类引用关系必须在提交主体前补齐，否则模型只能看到裸 QQ 号和不含
-内容的引用占位符：被 ``@`` 的显示名经 ``get_group_member_info`` /
-``get_stranger_info`` 解析，被引用消息的原文经 ``get_msg`` 还原，两者都带进程内
-缓存，失败时退回原占位形态而不阻断消息入站。
+入站正文里的引用关系与合并转发结构必须在提交主体前补齐：被 ``@`` 的显示名经
+成员信息接口解析，被引用消息的原文经 ``get_msg`` 还原，合并转发经
+``get_forward_msg`` 还原为完整树。显示名和引用摘要带进程内缓存；附加解析失败时
+保留原占位形态，不阻断消息正文入站。
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import asyncio
 import httpx
 
 from src.core.common.logger import get_logger
+from src.core.platform_io.forward import ForwardMessageTree
 
 from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReaction
 from .config import NapcatDocument
@@ -30,6 +31,7 @@ from .events import (
     classify_event,
     parse_inbound_event,
 )
+from .forward import parse_forward_content, parse_forward_response
 from .segments import (
     is_emoji_image,
     mentioned_user_ids,
@@ -93,7 +95,7 @@ class NapcatRunner:
         # 被引用消息 ID -> 已渲染的引用摘要，避免同一条消息被反复引用时重复查询。
         self._quote_previews: Dict[str, str] = {}
         # 消息 ID -> 该消息是否 Bot 自己发的。表情回应通知不携带目标消息的发送者，
-        # 必须查一次协议端才能判断「回应是不是给她的」；同一条消息往往连着多个
+        # 必须查一次协议端才能判断「回应是不是给 Bot 的」；同一条消息往往连着多个
         # 回应，缓存避免反复查询。
         self._own_message_ids: Dict[str, bool] = {}
 
@@ -111,64 +113,70 @@ class NapcatRunner:
             return
 
         retry_count = 0
-        while True:
-            try:
-                # 先确认协议端实际登录身份，再建立主体连接，避免向错误账号发送消息。
-                self_id = await self._transport.connect()
-                self_name = self._transport.self_name
-                _check_self_qq_matches(self._config.napcat.self_qq, self_id)
-                await self._backend.connect()
-                await self._backend.link_owner_identity(self._config.owner.qq)
-                # 只回填观察上下文，不触发回复；失败不阻断连接建立。
-                await self._backfill_recent_group_history(self_id, self_name)
-                self._connected_once = True
-                logger.info(
-                    'QQ 适配器已连接',
-                    protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
-                    selfId=self_id,
-                    selfName=self_name,
-                    backendPort=self._backend_port,
-                    retryCount=retry_count,
-                )
-                retry_count = 0
-                await self._serve_connected(self_id, self_name)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await self._backend.close()
-                await self._transport.close()
-                if not _is_retryable(exc):
-                    logger.error(
-                        'QQ 适配器启动失败，停止重试',
+        # finally 兜底：Ctrl+C 走 CancelledError 时此前不关闭连接（幂等，与
+        # except 分支里的重复关闭不冲突）。
+        try:
+            while True:
+                try:
+                    # 先确认协议端实际登录身份，再建立主体连接，避免向错误账号发送消息。
+                    self_id = await self._transport.connect()
+                    self_name = self._transport.self_name
+                    _check_self_qq_matches(self._config.napcat.self_qq, self_id)
+                    await self._backend.connect()
+                    await self._backend.link_owner_identity(self._config.owner.qq)
+                    # 只回填观察上下文，不触发回复；失败不阻断连接建立。
+                    await self._backfill_recent_group_history(self_id, self_name)
+                    self._connected_once = True
+                    logger.info(
+                        'QQ 适配器已连接',
                         protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
-                        error=str(exc),
+                        selfId=self_id,
+                        selfName=self_name,
+                        backendPort=self._backend_port,
+                        retryCount=retry_count,
                     )
-                    raise RuntimeError(f'QQ 适配器启动失败，已停止重试：{exc}') from exc
+                    retry_count = 0
+                    await self._serve_connected(self_id, self_name)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await self._backend.close()
+                    await self._transport.close()
+                    if not _is_retryable(exc):
+                        logger.error(
+                            'QQ 适配器启动失败，停止重试',
+                            protocol=f'{self._config.napcat.host}:{self._config.napcat.port}',
+                            error=str(exc),
+                        )
+                        raise RuntimeError(f'QQ 适配器启动失败，已停止重试：{exc}') from exc
 
-                # 可恢复故障使用退避重试；仅首次失败记录完整警告，后续降低日志级别。
-                retry_count += 1
-                delay = _retry_delay(
-                    self._config.napcat.reconnect_interval_sec,
-                    retry_count,
-                )
-                phase = '重连' if self._connected_once else '首次连接'
-                log_fields = {
-                    'protocol': f'{self._config.napcat.host}:{self._config.napcat.port}',
-                    'intervalSec': delay,
-                    'retryCount': retry_count,
-                    'error': str(exc),
-                }
-                if retry_count == 1:
-                    logger.warning(
-                        f'QQ 协议端{phase}暂不可用，准备重试；请确认协议端已启动且连接已启用',
-                        **log_fields,
+                    # 可恢复故障使用退避重试；仅首次失败记录完整警告，后续降低日志级别。
+                    retry_count += 1
+                    delay = _retry_delay(
+                        self._config.napcat.reconnect_interval_sec,
+                        retry_count,
                     )
-                else:
-                    logger.debug(
-                        f'QQ 协议端{phase}仍不可用，继续重试',
-                        **log_fields,
-                    )
-                await asyncio.sleep(delay)
+                    phase = '重连' if self._connected_once else '首次连接'
+                    log_fields = {
+                        'protocol': f'{self._config.napcat.host}:{self._config.napcat.port}',
+                        'intervalSec': delay,
+                        'retryCount': retry_count,
+                        'error': str(exc),
+                    }
+                    if retry_count == 1:
+                        logger.warning(
+                            f'QQ 协议端{phase}暂不可用，准备重试；请确认协议端已启动且连接已启用',
+                            **log_fields,
+                        )
+                    else:
+                        logger.debug(
+                            f'QQ 协议端{phase}仍不可用，继续重试',
+                            **log_fields,
+                        )
+                    await asyncio.sleep(delay)
+        finally:
+            await self._backend.close()
+            await self._transport.close()
 
     async def _serve_connected(self, self_id: str, self_name: str) -> None:
         """并发运行协议入站和主体出站两个消费者。
@@ -348,15 +356,15 @@ class NapcatRunner:
     ) -> bool:
         """判断被贴表情回应的那条消息是不是 Bot 自己发的。
 
-        协议端为群里的**所有**回应都推送 group_msg_emoji_like，通知里只有
-        目标消息 ID、没有发送者；不查一次就会把群里所有人的回应都当成给她的。
+        协议端为群里所有回应都推送 group_msg_emoji_like，通知里只有
+        目标消息 ID、没有发送者；不查询一次就会把群里所有人的回应都当成给 Bot 的。
         查询结果按消息 ID 缓存：同一条消息经常连着多个回应，逐次查询会放大
         串行入站循环的往返次数。
 
         :param message_id: 被回应消息的平台编号。
         :param self_id: 机器人登录 QQ 号。
         :return: 目标消息发送者是 Bot 时返回 True；查询失败一律按不是处理，
-            宁可漏一条回应，也不能把群里的回应错当成给她的。
+            漏一条回应的代价低于把群里回应错记为给 Bot 的。
         副作用：调用一次 get_msg 并写入消息归属缓存。
         """
         cached = self._own_message_ids.get(message_id)
@@ -399,7 +407,7 @@ class NapcatRunner:
         答非所问；引用同时又是触发必回的强信号，所以这类盲回占比很高。
 
         :param raw_segments: 该消息的消息段列表。
-        :param self_id: 机器人登录 QQ 号，用于识别引用的是她自己的消息。
+        :param self_id: 机器人登录 QQ 号，用于识别引用的是 Bot 自己的消息。
         :param self_name: 机器人显示名，用于渲染引用自身消息的摘要。
         :return: 被引用消息 ID 到摘要文本的映射；还原失败的 ID 不出现在映射里。
         副作用：对未缓存的被引用消息调用一次 ``get_msg``，并写入摘要缓存。
@@ -528,6 +536,64 @@ class NapcatRunner:
             emoji_sources=tuple(resolved_emojis),
         )
 
+    async def _resolve_forward_messages(
+        self,
+        payload: Mapping[str, Any],
+        event: QqInboundEvent,
+    ) -> QqInboundEvent:
+        """把顶层 ``forward`` 段解析为包含全部嵌套层级的消息树。
+
+        协议事件通常只带转发资源编号，此时每个根转发调用一次
+        ``get_forward_msg``；若事件已经内联 ``data.content``，直接解析而不重复
+        请求。任一根解析失败时整条消息仍以 ``[转发消息]`` 占位入站，但不暴露
+        半棵树给工具，避免多根转发的路径编号错位。
+        """
+        raw_segments = payload.get('message')
+        if not isinstance(raw_segments, list):
+            return event
+        forward_segments = [
+            segment
+            for segment in raw_segments
+            if isinstance(segment, Mapping) and segment.get('type') == 'forward'
+        ]
+        if not forward_segments:
+            return event
+
+        trees: List[ForwardMessageTree] = []
+        for root_index, segment in enumerate(forward_segments):
+            data = segment.get('data')
+            try:
+                if not isinstance(data, Mapping):
+                    raise ValueError('顶层合并转发缺少对象类型的 data')
+                inline_content = data.get('content')
+                if inline_content is not None:
+                    if not isinstance(inline_content, list):
+                        raise ValueError('顶层合并转发的 data.content 必须是数组')
+                    trees.append(parse_forward_content(inline_content))
+                    continue
+                forward_id = str(data.get('id') or '').strip()
+                if not forward_id:
+                    raise ValueError('顶层合并转发缺少 data.id')
+                response = await self._transport.call_action(
+                    'get_forward_msg',
+                    {'message_id': forward_id},
+                )
+                trees.append(parse_forward_response(response))
+            except (ActionError, asyncio.TimeoutError, ValueError) as exc:
+                logger.warning(
+                    'QQ 合并转发解析失败，保留正文占位且不开放读取工具',
+                    messageId=event.external_message_id,
+                    rootIndex=root_index,
+                    forwardId=(
+                        str(data.get('id') or '').strip()
+                        if isinstance(data, Mapping)
+                        else ''
+                    ),
+                    error=str(exc),
+                )
+                return event
+        return replace(event, forward_messages=tuple(trees))
+
     async def _resolve_image_source(self, source: str, file_name: str) -> str:
         """把单张 QQ CDN 图片来源解析为本地 ``file://`` 引用。
 
@@ -647,10 +713,10 @@ class NapcatRunner:
                     )
                 continue
             if kind == 'poke':
-                # 通知不带昵称与群名片，必须先查一次成员信息再提交：主体的
-                # set_group_card 把空串视为「清除名片」，用空值提交会把发起者
-                # 已存的群名片抹掉。查不到就只记日志不提交——宁可这一戳不进意识，
-                # 也不能拿空名字污染人物档案。
+                # 通知不带昵称与群名片，必须先查询一次成员信息再提交：主体的
+                # set_group_card 将空串视为「清除名片」，以空值提交会清除发起者
+                # 已存的群名片。查询失败时仅记日志不提交：放弃本次入站，
+                # 不以空名字写入人物档案。
                 poke_group_id = _optional_text(payload.get('group_id'))
                 poke_user_id = _optional_text(payload.get('user_id'))
                 nickname, group_card = await self._query_member_identity(
@@ -685,7 +751,7 @@ class NapcatRunner:
                 continue
             if kind == 'emoji_like':
                 # 回应通知不带昵称与群名片，且不携带目标消息的发送者：先确认
-                # 被贴表情的是不是她的消息（协议端只推「群里有回应」，谁的都推），
+                # 被贴表情的是不是 Bot 的消息（协议端只推「群里有回应」，谁的都推），
                 # 再查发起者成员信息，两步与戳一戳同口径——查不到就只记日志不提交。
                 like_group_id = _optional_text(payload.get('group_id'))
                 like_user_id = _optional_text(payload.get('user_id'))
@@ -768,6 +834,9 @@ class NapcatRunner:
             # QQ CDN 来源先由协议端解析成本地路径；仍然只提交来源引用，
             # 实际读取与 VLM 描述由主体后台完成，避免逐张下载阻塞串行入站循环。
             event = await self._resolve_inbound_image_sources(payload, event)
+            # 合并转发树只解析结构，不下载媒体；解析完成后与消息一起提交主体，
+            # 主体再按内部消息 ID 建立会话隔离的逐层读取缓存。
+            event = await self._resolve_forward_messages(payload, event)
             try:
                 await self._backend.submit_inbound(event)
             except httpx.ReadTimeout as exc:
@@ -826,7 +895,7 @@ class NapcatRunner:
                 delays = _batch_delays_seconds(outbound)
                 for index, message_segments in enumerate(message_batches):
                     # 打字节奏由主体按人格配置算好，适配器只负责照做；首项恒为 0，
-                    # 因为模型生成本身已经占了十几秒，她在对方视角里早就在打字了。
+                    # 因为模型生成本身已经占了十几秒，Bot 在对方视角里早就在打字了。
                     #
                     # 等待发生在出站消费循环内，会顺带推迟其它 stream 的这一轮
                     # 投递。选择阻塞而不是并发发送，是为了保住同一 stream 内的

@@ -1,10 +1,11 @@
 """把每轮对话合成一个嵌套彩色面板，并同步呈现到终端、Electron 控制台与 WebUI 日志面板。
 
-完整提示词与模型原始响应仍由观察事件账本记录，本模块只负责面向人的摘要展示：轮次头、
-「模型请求」「模型返回」「内部变化」子面板与底部耗时页脚。渲染出的 rich 面板被捕获为带
-ANSI 的字符串后一次写两处——``stdout``（本机终端与 Electron 控制台）和 ``webui_logs``
-（WebUI 日志面板），因此三端呈现一致。终端能力判断复用 ``common.logger_colors``：非彩色/
-非交互场景（如重定向到文件或测试）所有渲染函数保持无操作，避免把调试面板混入服务日志。
+完整提示词仍由观察记录保存；模型返回则在这里把正文、推理和工具调用完整展示。属于用户
+回合的调用在轮末嵌套面板中呈现，视觉理解、摘要、记忆抽取、日程等回合外调用在完成时独立
+成框。渲染出的 rich 面板被捕获为带 ANSI 的字符串后一次写两处——``stdout``（本机终端与
+Electron 控制台）和 ``webui_logs``（WebUI 日志面板），因此三端呈现一致。终端能力判断复用
+``common.logger_colors``：非彩色/非交互场景（如重定向到文件或测试）所有渲染函数保持无
+操作，避免把调试面板混入服务日志。
 """
 
 from __future__ import annotations
@@ -18,14 +19,15 @@ from rich.panel import Panel
 from rich.text import Text
 
 from src.core.common.log_display import event_label, value_label
+from src.core.common.logger import get_logger
+from src.core.common.logger_colors import is_color_enabled
 from src.core.services.turn_panel import (
+    ModelCall,
     begin_turn as begin_turn_capture,
     render_stage_panel,
     render_timing_footer,
     take_calls,
 )
-from src.core.common.logger import get_logger
-from src.core.common.logger_colors import is_color_enabled
 from src.core.webui.logs import webui_logs
 
 logger = get_logger(__name__)
@@ -34,6 +36,10 @@ logger = get_logger(__name__)
 # 也避免 rich 因 stdout 是管道而回退到窄默认宽度导致排版跳动；取 100 落在既有纯文本
 # 框宽度区间内（启动公告 76+、管线追踪框 48–118）。
 _PANEL_WIDTH = 100
+# Rich 会把嵌套 Panel 的可用高度继承为当前终端行数；未显式提供高度时，长推理即使
+# 没有字符截断也会在约 25 行处被裁掉。这里给捕获控制台一个只用于布局的极大高度，
+# 最终字符串仍只包含实际内容，不会补齐空行；它不是业务长度上限。
+_PANEL_LAYOUT_HEIGHT = 1_000_000
 
 # 是否渲染面板。import 期一次性判断：Electron 启动 Python 时注入 YUELI_FORCE_COLOR=1，
 # 故管道转发场景同样为真；重定向到文件或 pytest 下为假，渲染函数直接跳过。
@@ -50,7 +56,12 @@ _render_enabled = is_color_enabled()
 _capture_console = Console(
     force_terminal=True,
     color_system="truecolor",
+    # 是否进入本渲染链已经由 ``is_color_enabled`` 统一裁定。Rich 若再次读取父进程
+    # 的 NO_COLOR，会覆盖 Electron 注入的 YUELI_FORCE_COLOR=1，出现面板生成成功却
+    # 没有 ANSI 色码的矛盾；这里禁止二次环境裁定。
+    no_color=False,
     width=_PANEL_WIDTH,
+    height=_PANEL_LAYOUT_HEIGHT,
     legacy_windows=False,
     safe_box=False,
 )
@@ -69,11 +80,34 @@ def _emit_console_block(renderable: RenderableType) -> None:
     """
 
     with _capture_console.capture() as capture:
-        _capture_console.print(renderable)
+        # crop=False 同时关闭最外层终端裁剪；嵌套面板的高度由上面的布局高度保证。
+        _capture_console.print(renderable, crop=False)
     text = capture.get()
     # stdout 保留结尾换行让相邻面板留白；WebUI 面板按整段发布，去掉尾换行避免多出空行。
     print(text, end="", flush=True)
     webui_logs.publish(text.rstrip("\n"))
+
+
+def render_model_call(call: ModelCall) -> None:
+    """独立展示一次不属于活跃用户回合的完整模型返回。
+
+    视觉理解通常在批次真正开始前完成；摘要、事实抽取、表达学习和场景观察则在
+    回合收尾后后台执行。它们都经过统一模型路由，却没有用户回合面板可以承载，
+    因而必须在调用完成时直接成框，否则控制台只会看到“请求模型”而看不到结果。
+
+    :param call: 路由层已经聚合完成的模型调用，包含正文、推理、工具调用与错误。
+
+    副作用：
+        向终端、Electron 控制台与 WebUI 日志面板写入同一份完整调用面板；渲染
+        失败只记录调试日志，不影响模型调用结果。
+    """
+
+    if not _render_enabled:
+        return
+    try:
+        _emit_console_block(render_stage_panel(call))
+    except Exception as exc:
+        logger.debug('render_model_call_failed', task=call.task, error=str(exc))
 
 
 def mark_turn_start(turn: int) -> None:
@@ -205,8 +239,8 @@ def render_turn(
             *stage_panels,
         ]
         reply = _reply_text(reply_segments)
-        # 分级面板里最后一级的「输出」已经是这句话；再挂一个「模型返回」等于同一句
-        # 在同一个框里显示两遍，扫读时反而要多确认一次是不是发了两条。
+        # 分级面板里最后一级的「输出」已经是这句话；再挂一个「模型返回」会把
+        # 同一内容在同一框内显示两遍。
         if stage_calls:
             pass
         elif reply:
@@ -271,7 +305,7 @@ def render_observation(sender_label: str, user_text: str, reason: str) -> None:
         logger.debug('render_observation_failed', error=str(exc))
 
 
-# 控制台里观察结果只展示开头：完整正文在事件账本里，终端要的是一眼可读。
+# 控制台里观察结果只展示开头，完整正文在事件账本里。
 _OBSERVATION_CONSOLE_CHARS = 60
 
 
@@ -329,10 +363,10 @@ def render_action_decision(
             if target_message_ids:
                 summary += f"  目标消息：{'、'.join(str(target) for target in target_message_ids)}"
             if observation:
-                # 观察正文可能很长，控制台只给一眼能看完的开头。
+                # 观察正文可能很长，控制台只展示开头。
                 summary += f'  结果：{_clip_observation(observation)}'
             # 会产出可见内容的动作用绿色，其余（沉默、等待、认知轮）用黄色，
-            # 一眼就能在滚动的日志里分出「她说话了」和「她没说话」。
+            # 便于在滚动日志中区分 Bot 是否发言。
             style = 'green' if action in ('reply', 'speak') else 'yellow'
             parts.append(Text(summary, style=style))
         else:

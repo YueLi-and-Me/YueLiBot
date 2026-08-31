@@ -77,7 +77,7 @@ class JargonLearnService:
         :param provider: 学习任务的模型客户端（memory 任务槽）。
         :param temperature: 模型采样温度。
         :param max_tokens: 模型输出上限；``None`` 表示由提供者决定。
-        :param bot_name: bot 展示名，渲染语料时标记她自己的发言。
+        :param bot_name: bot 展示名，渲染语料时标记 Bot 自己的发言。
         :param bot_names: 名字守卫用的 bot 名字族（主名、别名、对用户的称呼）。
         副作用：只保存引用与初始化任务状态，不启动任务。
         """

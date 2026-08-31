@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Tuple
+
+from src.core.platform_io.forward import ForwardMessageTree
 
 from .config import GroupAccessConfig, PrivateAccessConfig
 from .qq_faces import face_name
@@ -66,6 +68,9 @@ class QqInboundEvent:
     # 本条是「有人给 Bot 发的消息贴了表情回应」。与戳一戳同口径：没有正文，
     # 门控靠独立事实抬入 DELIBERATE；贴表情非常频繁，绝不 FORCE。
     emoji_liked_me: bool = False
+    # ``forward`` 段经 get_forward_msg 解析后的完整根树；正文仍保留稳定占位符，
+    # 主体用内部消息编号和路径按需读取。
+    forward_messages: Tuple[ForwardMessageTree, ...] = ()
 
 
 def build_poke_inbound_event(
@@ -108,7 +113,7 @@ def build_poke_inbound_event(
         sender_group_card=sender_group_card,
         bot_name=bot_name,
         # raw_info 是协议端可选携带的展示片段（"戳了戳" / 自定义后缀）；缺失时
-        # 退回统一措辞，正文始终写明动作对象，避免她读成「谁戳了谁」。
+        # 退回统一措辞，正文始终写明动作对象，避免 Bot 读成「谁戳了谁」。
         text=f'[{_poke_action_text(payload)}{bot_name}]',
         mentioned_me=False,
         external_message_id='',

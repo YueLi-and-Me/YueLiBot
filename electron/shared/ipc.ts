@@ -457,6 +457,10 @@ export interface YueliConfig {
       orphan_retention_days: number
     }
   }
+  /** 桌宠外壳总开关；关闭时不创建桌宠窗口与桌面感知，只保留托盘和后端。 */
+  desktop_pet: {
+    enabled: boolean
+  }
   generation: {
     chat: { temperature: number; max_tokens: number }
     proactive: { enabled: boolean; temperature: number; max_tokens: number }

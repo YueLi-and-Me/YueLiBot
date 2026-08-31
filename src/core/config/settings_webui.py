@@ -242,7 +242,11 @@ def _comment_lines(text: str) -> List[str]:
 
 
 def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[str, Any]) -> None:
-    """按 schema 顺序把一个配置表内的字段写为带注释的 TOML 行。"""
+    """按 schema 顺序把一个配置表内的字段写为带注释的 TOML 行。
+
+    注释采用紧邻配置项的行尾风格 ``key = value # 说明``；说明本身含换行时
+    才退回键上方的注释块。
+    """
     for field in fields:
         key = field.get('key', '')
         if key not in values:
@@ -250,9 +254,23 @@ def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[s
         value = values[key]
         if value is None:
             continue
-        lines.extend(_comment_lines(field.get('help', '')))
-        lines.append(f'{key} = {_toml_inline(value)}')
-        lines.append('')
+        help_text = str(field.get('help', '')).strip()
+        line = f'{key} = {_toml_inline(value)}'
+        if help_text and '\n' not in help_text:
+            lines.append(f'{line} # {help_text}')
+        else:
+            lines.extend(_comment_lines(help_text))
+            lines.append(line)
+
+
+def _section_header(key: str, label: str, description: str) -> List[str]:
+    """构造小节头；说明单行时挂在表头行尾，多行时保留上方注释块。"""
+    text = '：'.join(part for part in (label, description) if part)
+    if not text:
+        return [f'[{key}]']
+    if '\n' not in text:
+        return [f'[{key}] # {text}']
+    return [*_comment_lines(text), f'[{key}]']
 
 
 def _section_values(document: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -290,26 +308,28 @@ def _write_documented_toml(
         label = section.get('label', key)
         description = section.get('description', '')
         fields = section.get('fields', [])
-        lines.extend(_comment_lines(f'{label}：{description}'))
         if kind == 'object':
-            lines.append(f'[{key}]')
+            lines.extend(_section_header(key, label, description))
             _write_fields(lines, fields, _section_values(document, key))
+            lines.append('')
         elif kind == 'map':
             entries = section.get('entries', [])
             for entry in entries:
                 entry_key = entry.get('key', '')
                 entry_doc = document.get(key, {})
                 values = entry_doc.get(entry_key, {}) if isinstance(entry_doc, dict) else {}
-                lines.extend(_comment_lines(
-                    f'{entry.get("label", entry_key)}：{entry.get("description", "")}'
+                lines.extend(_section_header(
+                    f'{key}.{entry_key}',
+                    entry.get('label', entry_key),
+                    entry.get('description', ''),
                 ))
-                lines.append(f'[{key}.{entry_key}]')
                 entry_fields = [
                     field for field in fields
                     if not field.get('only_for_entries')
                     or entry_key in field.get('only_for_entries', [])
                 ]
                 _write_fields(lines, entry_fields, values if isinstance(values, dict) else {})
+                lines.append('')
         elif kind == 'table_list':
             items = document.get(key, [])
             if not isinstance(items, list):
@@ -321,8 +341,11 @@ def _write_documented_toml(
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                lines.extend(_comment_lines(f'[[{key}]]：一个 {label} 条目'))
-                lines.append(f'[[{key}]]')
+                entry_text = f'一个「{label}」条目'
+                if '\n' not in entry_text:
+                    lines.append(f'[[{key}]] # {entry_text}')
+                else:
+                    lines.extend(_comment_lines(f'[[{key}]]：{entry_text}'))
                 _write_fields(lines, fields, item)
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 

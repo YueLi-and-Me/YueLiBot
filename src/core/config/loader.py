@@ -192,14 +192,14 @@ def _build_routing(
                 f'model_tasks.{task} 的候选 {model_name} 指向厂商 {provider.name}，其 '
                 f'client_type={provider.client_type}，该协议只支持 tts 任务'
             )
-        # 豆包语音不吃 model_identifier（音色由 voice 决定），其余任务必须有模型 ID。
+        # 豆包语音不使用 model_identifier（音色由 voice 决定），其余任务必须有模型 ID。
         if provider.client_type == 'openai' and not model.model_identifier.strip():
             raise ValueError(
                 f'models.toml 中模型 {model_name} 没有填 model_identifier，'
                 f'model_tasks.{task} 无法使用它'
             )
         # 地址在加载期就解析一次。留到第一次请求才发现「这个 kind 没有内置地址」，
-        # 表现是轮询把每条候选都撞一遍然后整轮失败，根因藏在最后一条报错里。
+        # 表现为轮询逐条尝试全部候选后整轮失败，根因藏在最后一条报错里。
         if provider.client_type == 'openai':
             resolve_base_url(provider.kind, provider.base_url)
         candidates.append(ModelCandidate(
@@ -259,8 +259,8 @@ def _load_split_config(directory: Path) -> Config:
 
     providers = _providers_by_name(providers_document)
     models = _models_by_name(models_document)
-    # 不只校验当前任务引用；未选中的坏模型同样属于配置错误，不能等轮询切到
-    # 它头上、用户正等着回话的时候才暴露。
+    # 不只校验当前任务引用；未选中的坏模型同样属于配置错误，不能等到轮询切换到
+    # 该模型、用户正在等待回复时才暴露。
     for model in models.values():
         _selected_provider(model, providers)
 
@@ -320,6 +320,8 @@ def _load_split_config(directory: Path) -> Config:
         conversation=bot_document.conversation,
         conversation_agent=bot_document.conversation_agent,
         typing=bot_document.typing,
+        emoji=bot_document.emoji,
+        desktop_pet=bot_document.desktop_pet,
         generation=models_document.generation,
         routing=routing,
         tts=features_tts,

@@ -1,11 +1,11 @@
 """按当前对话情境从 expressions 表候选池中挑选表达样本。
 
-本模块构造受限编号选择提示词，调用 `LlmProvider` 获取 JSON 对象，并严格把
-模型返回的编号映射回候选表达样本；解析失败不会静默生成新文本或扩展候选集合。
+本模块构造受限编号选择提示词，调用 `LlmProvider` 获取 JSON 对象，并严格将
+模型返回的编号映射回候选表达样本；解析失败时不生成新文本、不扩展候选集合。
 
-选择提示词只向模型列出候选的**情境**描述，模型回答的是「我现在处在哪个情境」；
-说法示例（style）不进选择提示词，是选中之后才拼进注入文本的载荷——把 style
-一起给选择模型，它会按好听程度挑，那是另一个问题。
+选择提示词只向模型列出候选的情境描述，模型返回命中的情境编号；说法示例
+（style）不进选择提示词，是选中之后才拼进注入文本的载荷。若将 style 一并提供
+给选择模型，模型会偏向表述的表面质量，偏离情境匹配的目标。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from src.core.llm_models.protocol import LlmProvider
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
 _SELECTION_KEY = 'selected'
-# 限制模型夹带正文。
+# 限制模型输出额外正文。
 _MAX_SELECTION_CHARS = 256
 
 
@@ -81,7 +81,7 @@ def parse_selection(
     :raises ValueError: 响应超长、JSON 结构不符、编号非整数、编号越界、编号重复或超过数量上限。
     :raises json.JSONDecodeError: 不直接向上抛出，解析错误会转换为 ``ValueError``。
     """
-    # 先限制原始响应长度，防止模型夹带正文占用解析和日志空间。
+    # 先限制原始响应长度，防止额外正文占用解析与日志空间。
     if len(raw) > _MAX_SELECTION_CHARS:
         raise ValueError(f'表达挑选输出超过 {_MAX_SELECTION_CHARS} 字符')
     try:

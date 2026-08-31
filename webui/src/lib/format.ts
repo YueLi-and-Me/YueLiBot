@@ -41,6 +41,7 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   reply_gate: '回复门控判定',
   sleep_transition: '睡眠状态变化',
   stage: '处理阶段变化',
+  tool_execution: '工具执行',
   turn_action: '轮次动作规划',
   turn_competition: '轮次竞争处理',
   user_input: '收到用户消息',

@@ -206,9 +206,9 @@ class EmojiDescriptionProvider(Protocol):
 class VisionEmojiContentFilter:
     """用既有 [model_tasks.vision] 槽做入库内容审查。
 
-    决定五：内容过滤不新开模型槽。过滤关闭时本类根本不会被调用；开启但
-    provider 为 None（视觉路由没有候选）时 filter_emoji_content 返回
-    None，调用方据此拒绝入库并告警，而不是把没审过的图放进库。
+    内容过滤复用既有视觉任务槽，不新增模型槽。过滤关闭时本类不会被调用；
+    开启但 provider 为 None（视觉路由无候选）时 filter_emoji_content 返回
+    None，调用方据此拒绝入库并告警，不放行未审查的图片。
     """
 
     def __init__(
@@ -272,8 +272,8 @@ class VisionEmojiContentFilter:
             logger.warning('emoji_content_filter_failed', error=str(exc))
             return None
         verdict = raw.strip()
-        # 只认明确的「适合」：无法判断与一切其他输出都按拒绝处理，
-        # 把没审明白的图放进去比拒掉一张可重收的图代价大得多。
+        # 只认明确的「适合」，无法判断与其他输出均按拒绝处理：未完成审查的
+        # 图片入库的代价高于拒绝一张可重新收集的图片。
         if '不适合' in verdict:
             return False
         if '适合' in verdict:
@@ -490,7 +490,7 @@ class EmojiLibrary:
     ) -> str:
         """保存一张识别成功的表情包并按内容哈希 upsert。
 
-        入库闸门按顺序执行：先查封禁表（决定二），再按 max_file_size_mb
+        入库闸门按顺序执行：先查封禁表，再按 max_file_size_mb
         拒绝超大文件，最后在开启 content_filtration 时过视觉模型审查。
         全部通过后文件先以临时名写入，再在同一目录原子替换为哈希文件；
         数据库引用只有在文件可用后才提交。相同内容再次出现时 seen_count
@@ -558,8 +558,8 @@ class EmojiLibrary:
                     image_bytes, media_type,
                 )
             if verdict is None:
-                # 决定五：开启过滤但视觉模型不可用时拒绝入库并明确告警，
-                # 不能把没审过的图静默放行。
+                # 开启过滤但视觉模型不可用时拒绝入库并明确告警，
+                # 不把未审查的图片静默放行。
                 logger.warning(
                     'emoji_content_filter_unavailable',
                     hash=digest,
@@ -705,8 +705,8 @@ class EmojiLibrary:
         :param banned_only: ``True`` 只取已封禁、``False`` 只取未封禁、
             ``None``（默认）不筛选。封禁记录独立于 emoji 行存在，因此筛选按
             两表的哈希交集判断，而不是 emoji 表上的某一列。
-        :return: 按「最少用、最久没用」顺序排列的记录字典列表，与淘汰排序
-            同口径，页面看到的先后就是真会先被淘汰的先后。
+        :return: 按「最少用、最久未用」顺序排列的记录字典列表，与淘汰排序
+            同口径，页面顺序即淘汰顺序。
         :raises ValueError: 分页参数非法。
         """
 
@@ -879,17 +879,15 @@ class EmojiLibrary:
     def evict_to_limit(self, max_count: int) -> list[EmojiEvictionRecord]:
         """按淘汰顺序把库容量收回到上限以内。
 
-        决定一：淘汰用确定性策略，按 (use_count 升序, last_used_at 升序)
-        一句 SQL 取最冷条目——最少用、且最久没用的先走。可解释、可回放、
-        零模型调用。
+        淘汰采用确定性策略：按 (use_count 升序, last_used_at 升序) 单条 SQL
+        取最冷条目。可解释、可回放、零模型调用。
 
-        决定二：已封禁的记录既不计入容量、也不会被淘汰。封禁的语义是「永远
-        别发这张」，那一行留着只为了在界面上看得见这个判断；让它占容量等于
-        用「拉黑」换掉一个可用名额。
+        已封禁的记录不计入容量也不参与淘汰：封禁行的作用是在界面上保留该判定；
+        若计入容量，等于以一个可用名额为代价保留一条不可发送的记录。
 
-        两件事必须同时做，缺一会死循环：只把封禁行排除出**计数**、却仍允许
-        它们进入淘汰候选，那么被封的行往往 ``use_count = 0`` 排在最前，会被
-        一条条删掉而计数纹丝不动，直到封禁行删光才轮到真正该淘汰的。
+        两个条件必须同时满足，否则死循环：仅将封禁行排除出计数、仍允许其进入
+        淘汰候选时，封禁行通常 ``use_count = 0`` 排在最前，会被逐条删除而计数
+        不变，直到封禁行删光才开始淘汰真正超限的条目。
 
         :param max_count: 目标容量上限；0 或负值表示不设限，直接返回空列表。
         :return: 被淘汰的记录列表；未超限时为空列表。
@@ -947,7 +945,7 @@ class EmojiLibrary:
         """按目标情绪取语义最相近的 top-K 并随机返回一张。
 
         嵌入客户端不可用或查询失败时，按逗号分隔标签执行双向包含匹配；仍无
-        候选时返回 None，不硬塞无关表情包。
+        候选时返回 None，不强行返回无关表情包。
 
         :param emotion: 本轮想表达的目标情绪。
         :param top_k: 进入随机池的最大候选数，必须大于零。
@@ -969,15 +967,15 @@ class EmojiLibrary:
 
         query_vec = await self._embed_tags(query)
         if query_vec is not None:
-            # 【关键】维度必须从查询向量的实际字节数推导，不能读配置的
+            # 维度必须从查询向量的实际字节数推导，不能读配置的
             # embedding_dim（float32 每分量 4 字节，与事实召回 store 侧同口径）。
             #
             # 原因：
             # 1. 配置未填 embedding_dim 时该值为 0，按配置推导会把库内全部向量
-            #    当作维度不符跳过，语义排序永远为空，检索静默退化为字面子串匹配，
-            #    现场表现为模型写了 <emoji> 却几乎发不出、且无任何报错。
+            #    当作维度不符跳过，语义排序恒为空，检索静默退化为字面子串匹配，
+            #    表现为模型写出 <emoji> 却几乎不发送、且无任何报错。
             # 2. 库内残留其它维度的历史向量时，按查询长度逐条过滤只会跳过不匹配
-            #    的记录，不会拖垮整批候选。
+            #    的记录，不影响其余候选。
             dim = len(query_vec) // 4
             ranked: list[tuple[float, EmojiSelection]] = []
             for send_ref, _tags, vector, sub_type in rows:
@@ -1093,12 +1091,12 @@ def _delete_emoji_file(path: Path, directory: Path) -> int:
 def _banned_predicate(banned_only: bool | None) -> str:
     """按封禁筛选生成 WHERE 子句片段，供 emoji 表的查询拼接。
 
-    返回的是**固定字面量**，不含任何调用方数据，拼进 SQL 文本没有注入面；
+    返回的是固定字面量，不含任何调用方数据，拼进 SQL 文本没有注入面；
     参数化做不到这件事——要变的是子句结构而不是值。
 
     哈希两侧都套 ``LOWER``：封禁表的键由 ``_normalize_hash`` 归一化过，而
     emoji 表的 hash 是入库时原样写的，直接比较会漏掉大小写不同的行。表只有
-    千级，放弃索引换取判定正确是划算的。
+    千级，放弃索引换取判定正确是合理的取舍。
 
     :param banned_only: ``True`` 只要已封禁、``False`` 只要未封禁、``None``
         不筛选。

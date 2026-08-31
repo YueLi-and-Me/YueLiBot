@@ -105,7 +105,9 @@ class AwarenessService:
         self._cfg = cfg
         self._push_event = push_event
         self._sensor = sensor
-        self._enabled = cfg.generation.proactive.enabled
+        # 主动搭话的唯一出口是桌面 stream：桌宠关闭时没有窗口接收这些消息，
+        # 跑兴趣累积与生成只会白烧模型调用，因此两个开关取与。
+        self._enabled = cfg.generation.proactive.enabled and cfg.desktop_pet.enabled
 
         # 启动前恢复 promise，保证服务重建不会丢失尚未到期的主动意图。
         self._sleep = SleepStateController(timeline=timeline)

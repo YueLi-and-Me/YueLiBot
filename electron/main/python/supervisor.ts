@@ -149,6 +149,8 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private backendToken: string | null = null
   private backendReady = false
   private readyEmitted = false
+  /** 进行中的优雅关闭流程；缓存 Promise 使重复调用幂等，start() 时清零。 */
+  private _shutdownPromise: Promise<void> | null = null
   /** 最大重启次数。超过后等用户重启 Electron。 */
   private static readonly MAX_RESTARTS = 5
   /** 退避基准（毫秒）。 */
@@ -187,6 +189,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
    */
   start(): void {
     this.stopping = false
+    this._shutdownPromise = null
     void this._connectOrSpawn()
   }
 
@@ -202,6 +205,63 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this._clearAttachedMonitor()
     this._killAdapter()
     this._kill()
+  }
+
+  /**
+   * 优雅关闭后端：先请 Python 自行收尾，超时再回退强杀。
+   *
+   * 本地子进程路径：杀掉适配器（无持久状态，避免它在后端关闭期间继续提交入站
+   * 消息）后 POST ``/runtime/shutdown``，等待子进程退出事件至多 ``graceMs``，
+   * 超时回退 ``stopProcessTree``。接管的外部后端维持现状语义：只断开监控、
+   * 杀适配器，不动外部进程。
+   *
+   * @param graceMs 等待子进程优雅退出的最长毫秒数。
+   * @returns 关闭流程完成后的 Promise；重复调用返回同一次流程，幂等。
+   * @sideEffects 终止适配器、请求后端优雅退出、必要时强杀子进程树，并阻止后续重启。
+   */
+  shutdown(graceMs = 10_000): Promise<void> {
+    this._shutdownPromise ??= this._shutdown(graceMs)
+    return this._shutdownPromise
+  }
+
+  /** ``shutdown`` 的单次执行体；重复调用由缓存的 Promise 去重。 */
+  private async _shutdown(graceMs: number): Promise<void> {
+    this.stopping = true
+    this._clearAttachedMonitor()
+    this._killAdapter()
+    if (this.attachedBackend !== null) {
+      this.attachedBackend = null
+      return
+    }
+    const child = this.child
+    if (!child || child.exitCode !== null) return
+    if (this.backendPort !== null && this.backendToken !== null) {
+      try {
+        await fetch(`http://127.0.0.1:${this.backendPort}/runtime/shutdown`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.backendToken}` },
+          signal: AbortSignal.timeout(2_000),
+        })
+      } catch { /* 请求失败静默：后续有强杀兜底。 */ }
+    }
+    // 后端可能在 shutdown 请求返回前已经退出；此时 exit 事件已发生，继续监听只会
+    // 白等完整宽限时间。同步检查与监听注册之间没有 await，不会再错过事件。
+    if (child.exitCode !== null) return
+    const exited = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        child.off('exit', onExit)
+        resolve(false)
+      }, graceMs)
+      const onExit = () => {
+        clearTimeout(timer)
+        resolve(true)
+      }
+      child.once('exit', onExit)
+    })
+    if (!exited && child.exitCode === null) {
+      console.warn('[supervisor] 优雅关闭超时，回退强制终止 Python 后端')
+      stopProcessTree(child)
+    }
   }
 
   /**

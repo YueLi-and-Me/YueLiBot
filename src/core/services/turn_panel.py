@@ -2,12 +2,12 @@
 
 一个回合在多级 Agent 下会产生多次模型调用：决策一次、回复生成一次、认知检索
 各一次。控制台原来只看得到最后一条可见产物，出了问题分不清是哪一级——本模块
-把每次调用的模型、耗时、落盘记录、思考与产出收集起来，回合收尾时渲染成一个
-嵌套面板。
+把每次调用的模型、耗时、落盘记录、完整思考与完整产出收集起来，回合收尾时渲染
+成一个嵌套面板。模型响应不在展示层截断，控制台看到的内容与分阶段记录一致。
 
 收集走 ``ContextVar``：回合是一个 asyncio Task，模型路由在同一个 Task 树里执行，
 因此 ``ModelRouter`` 只管调用 ``note_model_call``，不需要知道自己属于哪个回合，
-并发的多个会话之间也不会互相串台。
+并发的多个会话之间也不会互相混淆。
 
 对外暴露 ``begin_turn`` / ``note_model_call`` / ``take_calls`` 与 ``render_stage_panel``，
 被 ``src.core.llm_models.router``（写入）与 ``src.core.services.trace_console``
@@ -22,11 +22,11 @@ from typing import Any, Dict, List
 
 import json
 
-from src.core.llm_models.openai import error_hint
-
 from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
+
+from src.core.llm_models.openai import error_hint
 
 
 @dataclass(frozen=True)
@@ -59,36 +59,48 @@ class ModelCall:
     error_kind: str = ''
 
 
-# 当前回合已发生的模型调用。默认 None 表示「不在回合内」——主动消息、日程生成
-# 这类调用不该被算进某个回合的面板里。
-_calls: ContextVar[List[ModelCall] | None] = ContextVar('turn_model_calls', default=None)
+@dataclass
+class _TurnCallBuffer:
+    """保存当前回合仍可接收的模型调用。
 
-# 面板里思考与产出的展示上限。完整内容在 data/logs/prompt/ 的记录里，终端要的是
-# 一眼能读完；截断点给得比较宽，是因为思考正是这个面板最值得看的部分。
-_REASONING_CHARS = 1200
-_TEXT_CHARS = 600
+    后台任务会继承创建它时的 ``ContextVar``。回合面板取走调用后，把同一个对象
+    标记为关闭，迟到的摘要、视觉或记忆任务就能识别自己已不属于该面板，改走独立
+    控制台输出；只清空列表会让这些调用追加到一个再也没人读取的旧列表里。
+    """
+
+    calls: List[ModelCall] = field(default_factory=list)
+    accepting: bool = True
+
+
+# 当前回合已发生的模型调用。默认 None 表示「不在回合内」——主动消息、日程生成
+# 这类调用应独立展示，而不是被误算进某个用户回合。
+_calls: ContextVar[_TurnCallBuffer | None] = ContextVar('turn_model_calls', default=None)
 
 
 def begin_turn() -> None:
     """在当前回合的协程上下文里开启收集。
 
-    副作用：把当前 ContextVar 指向一个新的空列表；同一 Task 内后续的模型调用
+    副作用：把当前 ContextVar 指向一个新的开放缓冲；同一 Task 内后续的模型调用
         都会记进去，其他 Task 不受影响。
     """
-    _calls.set([])
+    _calls.set(_TurnCallBuffer())
 
 
-def note_model_call(call: ModelCall) -> None:
+def note_model_call(call: ModelCall) -> bool:
     """记录一次已完成的模型调用。
 
-    不在回合内（未调用过 ``begin_turn``）时静默忽略：主动消息、日程与摘要都走
-    同一个路由层，它们不属于任何回合，塞进面板只会让人以为这一轮多调了模型。
+    不在回合内或继承到的回合缓冲已经关闭时不收集，由路由层把这次调用独立展示。
+    返回收集结果让路由层只选择一个控制台出口，避免同一响应既独立打印又在轮末
+    面板重复出现。
 
     :param call: 已完成调用的展示事实。
+    :return: 已收入当前回合面板时为 ``True``；应独立展示时为 ``False``。
     """
-    calls = _calls.get()
-    if calls is not None:
-        calls.append(call)
+    buffer = _calls.get()
+    if buffer is None or not buffer.accepting:
+        return False
+    buffer.calls.append(call)
+    return True
 
 
 def take_calls() -> List[ModelCall]:
@@ -101,13 +113,15 @@ def take_calls() -> List[ModelCall]:
     :return: 按发生顺序排列的调用列表；不在回合内时为空列表。
     副作用：清空收集器并解除回合标记，避免同一批调用被渲染两次。
     """
-    calls = _calls.get()
+    buffer = _calls.get()
     _calls.set(None)
-    if not calls:
+    if buffer is None:
         return []
-    taken = list(calls)
-    # 已经派生出去的子任务仍持有这个列表引用，清空它让那些迟到的调用无处可去。
-    calls.clear()
+    # 已经派生出去的子任务仍持有这个对象；先关闭，再复制和清空，确保迟到调用
+    # 返回 False 并由路由层独立展示，而不是落入无人读取的旧列表。
+    buffer.accepting = False
+    taken = list(buffer.calls)
+    buffer.calls.clear()
     return taken
 
 
@@ -120,15 +134,15 @@ def render_stage_panel(call: ModelCall) -> Panel:
     tint = _TASK_TINTS.get(call.task, 'cyan')
     blocks: List[RenderableType] = [Text('\n'.join(_headline(call)), style=tint)]
 
-    # 路径单独一行且不截断：它是从终端跳到完整请求体的唯一入口，断了就得自己翻目录。
+    # 路径单独一行且不截断：它是从终端跳到完整请求体的唯一入口，缺失后需自行查找目录。
     # 失败时跳过这一行——下面的失败块会连同「怎么办」一起再给一次路径，这里重复只是噪声。
     if call.record_path and not call.error:
         blocks.append(Text(f'结构化记录：{call.record_path}', style='dim'))
 
     if call.reasoning.strip():
         blocks.append(Panel(
-            Text(_clip(call.reasoning, _REASONING_CHARS), style='grey70'),
-            title='思考', border_style=tint, padding=(0, 1),
+            Text(call.reasoning.strip(), style='grey70'),
+            title=f'完整思考 · {len(call.reasoning)} 字', border_style=tint, padding=(0, 1),
         ))
 
     for tool_call in call.tool_calls:
@@ -140,8 +154,8 @@ def render_stage_panel(call: ModelCall) -> Panel:
 
     if call.text.strip():
         blocks.append(Panel(
-            Text(_clip(call.text, _TEXT_CHARS), style='bright_green'),
-            title='输出', border_style='green', padding=(0, 1),
+            Text(call.text.strip(), style='bright_green'),
+            title=f'完整输出 · {len(call.text)} 字', border_style='green', padding=(0, 1),
         ))
 
     if call.error:
@@ -177,25 +191,37 @@ def render_timing_footer(calls: List[ModelCall]) -> Text:
     return Text(' | '.join(parts), style='cyan')
 
 
-# 任务槽到中文名的映射。只覆盖会出现在回合面板里的槽；未列出的原样显示，
-# 不硬造译名——新增一级 Agent 时宁可看到英文槽名，也好过看到一个猜出来的词。
+# 任务槽到中文名的映射。覆盖当前全部路由任务，确保回合面板和后台独立面板使用
+# 同一套名称；未登记的新任务原样显示，不虚构译名。
 _TASK_LABELS: Dict[str, str] = {
     'chat': '对话',
+    'proactive': '主动对话',
+    'summary': '对话摘要',
+    'schedule': '日程规划',
+    'vision': '视觉理解',
+    'expression': '表达模型',
     'planner': '决策',
     'replyer': '回复生成',
-    'expression': '表达选择',
-    'scene': '情景分析',
-    'vision': '视觉',
+    'scene': '群聊场景理解',
+    'memory': '记忆抽取',
+    'tts': '语音合成',
+    'embedding': '向量生成',
 }
 
-# 各级的边框色，按「决策冷色、产出暖色」区分，扫一眼就知道看的是哪一级。
+# 各级的边框色，按「决策冷色、产出暖色」区分层级。
 _TASK_TINTS: Dict[str, str] = {
     'chat': 'cyan',
+    'proactive': 'bright_cyan',
+    'summary': 'blue',
+    'schedule': 'yellow',
+    'vision': 'blue',
+    'expression': 'magenta',
     'planner': 'cyan',
     'replyer': 'green',
-    'expression': 'magenta',
     'scene': 'blue',
-    'vision': 'blue',
+    'memory': 'bright_magenta',
+    'tts': 'bright_green',
+    'embedding': 'bright_blue',
 }
 
 
@@ -212,8 +238,8 @@ def _headline(call: ModelCall) -> List[str]:
 def _tool_lines(tool_call: Dict[str, Any]) -> str:
     """把一次工具调用渲染成「名字 + 逐行参数」。
 
-    参数按 JSON 缩进展开：挤成一行的原始 JSON 在终端里基本读不了，而工具参数
-    正是这一级唯一的产出。解析失败时原样展示，不猜模型想写什么。
+    参数按 JSON 缩进展开：挤成一行的原始 JSON 在终端中难以阅读，而工具参数
+    正是这一级唯一的产出。解析失败时原样展示，不推断模型意图。
     """
     raw = str(tool_call.get('arguments', '')).strip()
     try:
@@ -223,11 +249,3 @@ def _tool_lines(tool_call: Dict[str, Any]) -> str:
     else:
         formatted = json.dumps(parsed, ensure_ascii=False, indent=2) if parsed else '（无）'
     return f"调用：{tool_call.get('name', '?')}\n{formatted}"
-
-
-def _clip(text: str, limit: int) -> str:
-    """按字符数截断展示文本，保留完整内容在落盘记录里。"""
-    stripped = text.strip()
-    if len(stripped) <= limit:
-        return stripped
-    return f'{stripped[:limit]}…（完整内容见结构化记录）'

@@ -6,10 +6,10 @@
 # 此刻
 {{time_context}}{{birthday_note}}{{resumption}}{{persona}}{{activity}}{{scene}}{{jargon}}{{impressions}}{{facts}}{{episodes}}
 
-# 说话的味道
+# 说话风格
 {{reply_style}}{{tone}}{{expression_habits}}{{length}}
 
-# 有一说一
+# 事实纪律
 {{discipline}}
 
 # 边界

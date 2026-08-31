@@ -139,7 +139,7 @@ def _bind_backend_socket(port: int) -> socket.socket:
     副作用：
         成功时占用本地端口；绑定失败时关闭临时 socket。
     """
-    # 要一直持有这个 socket，探完就放会被别人占走。
+    # 该 socket 需持续持有：探测后立即释放会被其他进程抢占。
     sock = socket.socket()
     try:
         sock.bind(("127.0.0.1", port))
@@ -193,14 +193,14 @@ def _announce_ready() -> None:
 def _announce_model_routing(cfg: Config) -> None:
     """在启动早期展示各模型任务解析到的候选，让配置改动可见。
 
-    配置是四份 TOML 加一层默认值，「我改的那行到底生效没有」以前只能翻日志逐条找。
+    配置是四份 TOML 加一层默认值，配置改动是否生效此前只能翻日志逐条确认。
     任务路由是其中最容易出错也最容易被误改的一层：模型改名、厂商引用错、新任务槽
     没配而静默继承 chat，这三种都不会报错，只会在运行时表现为「换了个模型说话」。
 
     :param cfg: 已完成交叉校验的配置对象。
     :return: 无返回值。
     副作用：向 stdout 打印信息框；不写日志文件（同 WebUI 入口框的口径，避免与
-        结构化日志重复刷屏）。
+        结构化日志重复输出占满控制台）。
     """
 
     rows: List[str] = []
@@ -454,7 +454,7 @@ def main() -> None:
         vision_provider = routers.vision
         logger.info("vision_model_ready", model=vision_provider.model,
                     candidates=len(vision_provider.candidates))
-    # 内容过滤只在配置开启时装配（决定五：走既有 vision 槽，不开新槽）；
+    # 内容过滤仅在配置开启时装配（复用既有 vision 槽，不新增槽）；
     # 过滤关闭时该对象为 None，入库路径零模型调用。
     emoji_content_filter = (
         VisionEmojiContentFilter(
@@ -603,6 +603,21 @@ def main() -> None:
     from src.core.services.lifecycle import lifecycle
     from src.core.services.proactive import AwarenessService
     from src.desktop.sensor import DesktopSensor
+
+    # 存储连接此前从不关闭：注册最早的服务，逆序关闭时最后执行，
+    # 保证 chat/awareness 等关闭期间仍能写库。
+    async def _storage_startup() -> None:
+        """存储服务无启动动作；注册仅为挂接关闭钩子。"""
+
+    async def _storage_shutdown() -> None:
+        """关闭观察账本与主数据库连接（两者均已实现幂等关闭）。"""
+
+        from src.core.observe.store import close as close_event_store
+        close_event_store()
+        from src.core.common.db.connection import close_db
+        close_db()
+
+    lifecycle.register('storage', _storage_startup, _storage_shutdown)
     sensor = DesktopSensor(cfg, _push_event, vision_provider)
     awareness = AwarenessService(
         chat=app_state.chat,
@@ -620,7 +635,7 @@ def main() -> None:
 
         只有真的登记了新图片才重新校验完整性：构造 EmojiLibrary 时已经全量
         校验过一遍，扫描没有新增时库的形态没变，再算一遍是把每个文件的
-        SHA-256 白算第二次。真机 369 个文件（97 MB）的一次全量校验约 0.3 秒，
+        SHA-256 重复计算第二次。真机 369 个文件（97 MB）的一次全量校验约 0.3 秒，
         占整个启动的可观份额。
         """
 
@@ -647,7 +662,7 @@ def main() -> None:
     async def _emoji_maintenance_loop() -> None:
         """按配置节奏在后台检查库容量并清理孤儿文件。
 
-        淘汰与清理都不进入收表情的入站热路径（决定三）：容量按
+        淘汰与清理不进入表情收集的入站路径：容量按
         check_interval_minutes 检查，孤儿文件按 cleanup.check_interval_hours
         检查，两次检查共用同一个等待循环。max_count 为 0 表示不设限；
         auto_evict 关闭时只告警不删除。
@@ -753,8 +768,8 @@ def main() -> None:
 
     # 配置热重载的持有方更新：第 1 类字段的使用点都通过下面这些引用读取，
     # 重载成功后统一换到新对象即生效（第 2/3 类的分类见 loader 的前缀表与
-    # 交付报告）。这里写私有属性是权宜——chat.py 等归记忆线，等它空出再改
-    # 造成公开 setter，届时本回调只换调用形式、语义不变。
+    # 交付报告）。这里写入私有属性是权宜实现，后续应
+    # 改为公开 setter；届时本回调只换调用形式、语义不变。
     def _on_config_reloaded(previous: object, fresh: object) -> None:
         """把装配期创建的服务切到新配置对象上。
 
@@ -780,13 +795,23 @@ def main() -> None:
     logger.info("backend_starting", port=port)
 
     from src.core.api.app import create_app
-    config = uvicorn.Config(create_app(), log_level="warning", access_log=False)
-    _ReadyAnnouncingServer(
+    config = uvicorn.Config(
+        create_app(),
+        log_level="warning",
+        access_log=False,
+        # 给「等在飞 HTTP 任务」加 15 秒上界；超时由 uvicorn 取消残留任务，
+        # 保证优雅退出有界。
+        timeout_graceful_shutdown=15,
+    )
+    server = _ReadyAnnouncingServer(
         config,
         port=port,
         token=backend_runtime.token,
         runtime_path=runtime_file_path(data_dir),
-    ).run(sockets=[sock])
+    )
+    # 关机端点据这句柄置位 should_exit，走与 SIGINT 相同的优雅路径。
+    app_state.uvicorn_server = server
+    server.run(sockets=[sock])
 
 
 if __name__ == "__main__":

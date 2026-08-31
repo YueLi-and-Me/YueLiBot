@@ -1,28 +1,20 @@
-"""认知动作的定义、三个内置实现与窄执行器。
+"""认知动作的定义与内置实现。
 
-认知动作是 ReAct 回环里的非终局动作：它们不产生任何用户可见产物，只把检索结果
-渲染成一段观察文本回灌给模型，由模型在下一轮决定终局动作。本模块负责「查什么、
-怎么查、查到的东西怎么说给她听」，不负责轮次预算与动作空间收窄——那两件事分别由
-``ConversationAgent`` 的循环和 ``action_protocol.available_actions`` 表达。
+认知动作是 ReAct 回环中的非终局工具：不产生用户可见产物，将检索结果渲染为
+观察文本回灌给模型，由模型在下一轮决定终局动作。轮次预算与动作空间收窄分别
+由 ``ConversationAgent`` 的循环与 ``action_protocol.available_actions`` 负责，
+本模块不处理；按名分发的职责已并入工具注册表，本模块只保留检索实现。
 
-三个内置动作：
+内置动作：
 
-- ``recall``：检索长期记忆（会话在场者的事实 + 该 stream 的情节），打的是
-  「工作记忆窗口之外一片空白」这个缺口。
-- ``inspect``：检索本 stream 水位之前的聊天原文，打的是「她想接的东西不在视野里」
-  这个缺口。
-- ``consult``：检索她知道的知识（knowledge 层），打的是「对方提到的东西她不懂」
-  这个缺口。知识不进每轮组装——两万余条里绝大多数与当前对话无关——只在她
-  主动查时出现。
+- ``recall``：检索长期记忆（会话在场者的事实与该 stream 的情节）。
+- ``inspect``：检索本 stream 水位之前的聊天原文。
+- ``consult``：检索知识层（knowledge）。知识不进入每轮上下文组装，仅在
+  主动查询时出现。
 
-**这里刻意不叫 Registry，也不做插件挂载点或可见性标签。** 项目至今只有三个真实
-认知动作，先建注册表等于用想象中的工具定形状；等媒体资源动作也落地之后，再从
-四个真实动作归纳统一协议。
-
-依赖：``src.core.memory.store`` 的只读检索接口、``src.core.memory.knowledge``
-的知识检索接口、``src.core.platform_io.types`` 的 ``StreamKind``；被
-``src.core.services.chat`` 组装并透传给 ``ConversationAgent``，
-不反向依赖聊天服务或模型层。
+依赖：``src.core.memory.store``、``src.core.memory.knowledge`` 的只读检索接口与
+``src.core.platform_io.types``；三个实现由 ``src.core.services.chat`` 包装成
+工具执行器绑定进注册表，不反向依赖聊天服务或模型层。
 """
 
 from __future__ import annotations
@@ -42,15 +34,15 @@ from src.core.observe import events as trace
 from src.core.platform_io.types import StreamKind
 
 # 回灌给模型的观察正文上限。观察会占用本回合上下文预算，且每多一轮 ReAct 就再占一次；
-# 超出上限只截断观察，不截断她原本的历史。
+# 超出上限只截断观察，不截断 Bot 原本的历史。
 OBSERVATION_MAX_CHARS = 600
-# 写进行动事件账本的观察摘要上限。账本要能回答「她查了什么、查到没有」，不需要全文。
+# 写入行动事件账本的观察摘要上限；账本仅反映查询内容与命中情况。
 OBSERVATION_EVENT_MAX_CHARS = 300
 # 单条检索结果的展示上限。一条超长消息不应挤掉其余命中项。
 _ITEM_MAX_CHARS = 80
 
-# (人物 ID, stream ID) -> 该 stream 内的显示名。群聊历史正文不落库说话人前缀，
-# 渲染检索结果时必须现查，否则观察里会出现一堆无主发言。
+# (人物 ID, stream ID) -> 该 stream 内的显示名。群聊历史正文不存储说话人前缀，
+# 渲染检索结果时必须实时查询，否则观察结果中会出现无归属的发言。
 SpeakerNamer = Callable[[int, int], str]
 
 
@@ -71,7 +63,7 @@ def _clip(text: str, limit: int) -> str:
 class CognitiveScope:
     """一个回合内所有认知动作共享的检索范围。
 
-    范围在回合开始时定死、不随轮次变化：她这一回合能查到的东西是固定的，
+    范围在回合开始时定死、不随轮次变化：Bot 这一回合能查到的东西是固定的，
     否则「回合固定快照」这条性质会被多轮检索悄悄破坏。
 
     :ivar stream_id: 当前会话 ID；检索不跨会话，与既有隐私硬隔离同一条边界。
@@ -107,8 +99,8 @@ class CognitiveRequest:
 class CognitiveObservation:
     """一次认知动作的执行结果。
 
-    :ivar text: 回灌给模型的观察正文；**无命中时也必须是明确的「没找到」而不是
-        空串**——「查过了但没有」是真实信息，会决定她该说「我想不起来了」还是硬编。
+    :ivar text: 回灌给模型的观察正文；无命中时返回明确的「没找到」文本而非空串，
+        供模型区分「想不起来」与需要编造的情况。
     :ivar hit_count: 命中条目数，供事件账本与后续标定使用。
     """
 
@@ -116,7 +108,7 @@ class CognitiveObservation:
     hit_count: int
 
     def __post_init__(self) -> None:
-        """拒绝空观察：无命中必须由动作自己写明，不允许留给调用方猜。"""
+        """拒绝空观察：无命中必须由动作显式声明。"""
         if not self.text.strip():
             raise ValueError('认知动作的观察正文不能为空')
         if self.hit_count < 0:
@@ -136,9 +128,7 @@ class CognitiveAction(Protocol):
 class RecallAction:
     """检索长期记忆：会话在场者的事实与该 stream 的情节。
 
-    对应「她想起来了」而不是「她随时全知」：事实与情节此前是每轮无条件灌进系统
-    提示词的，那样既贵又不像人；改为按需检索之后，常驻注入只留最小集，深处的东西
-    要她自己去想。
+    事实与情节按需检索，不逐轮无条件注入系统提示词；常驻注入仅保留最小集。
     """
 
     name = 'recall'
@@ -168,7 +158,7 @@ class RecallAction:
         self._db = db
         self._fact_limit = fact_limit
         self._episode_limit = episode_limit
-        # 短期激活留在动作实例上，因此天然是进程内的：进程重启后重新构造，残留自动消失。
+        # 短期激活留在动作实例上，作用范围因此仅限进程内：进程重启后重新构造，残留自动消失。
         self._activation = ShortTermActivation()
 
     def _describe_node(self, hit: SpreadHit, stream_id: int) -> str:
@@ -224,9 +214,9 @@ class RecallAction:
         for episode in episodes:
             lines.append(f'- 你们聊过：{_clip(episode.summary, _ITEM_MAX_CHARS)}')
 
-        # 第二步：从命中的这些出发沿边扩散，把「没查但被牵出来」的东西也捞上来。
-        # 与种子**分开成段**：种子是她记得的，扩散结果是她顺带想起的，语气不是一回事，
-        # 混在一起她就会把联想当成确凿的记忆说出去。
+        # 第二步：从命中的这些出发沿边扩散，把未被查询但被关联出来的内容也纳入观察。
+        # 与种子**分开成段**：种子是 Bot 记得的，扩散结果是 Bot 顺带想起的，语气不是一回事，
+        # 混在一起 Bot 就会把联想当成确凿的记忆说出去。
         seeds = (
             [('fact', fact.id, fact.score) for fact in facts]
             + [('episode', episode.id, episode.score) for episode in episodes]
@@ -243,7 +233,7 @@ class RecallAction:
         adopted = [(kind, ref) for kind, ref, _ in seeds]
         adopted += [(hit.ref_kind, hit.ref_id) for hit in spread_hits]
         # 只有真正进了这段观察文本的才加强边——被检索到不等于被用到，
-        # 这个区分是边质量的全部来源（★W6-2）。
+        # 这个区分是边质量的全部来源。
         link_together(self._db, adopted, now)
         self._activation.touch(
             [node_id(self._db, kind, ref) for kind, ref in adopted], now,
@@ -264,12 +254,10 @@ class RecallAction:
 class InspectAction:
     """检索本 stream 水位之前的聊天原文。
 
-    工作记忆窗口只保留最近若干条，窗口之外她看不见。实测里模型多次想接一条不在
-    可选清单里的消息（记为 illegal_action、用户侧表现为她不回话），本动作让她能
-    先把话头看清楚再决定接谁。
+    工作记忆窗口之外的消息对本轮不可见，本动作提供对该范围的读取。
 
-    检索结果**不进入 selectable_message_ids**：水位与可选集约束的是「回复投递给谁」，
-    不是「理解范围」；让检索反过来扩可选集会让回合快照不再固定。
+    检索结果不进入 selectable_message_ids：可选集约束回复投递目标，检索仅扩展
+    理解范围；二者分离以保持回合快照不变。
     """
 
     name = 'inspect'
@@ -339,12 +327,10 @@ class InspectAction:
 
 
 class ConsultAction:
-    """检索她知道的知识（knowledge 层）：概念、定义、事实性资料。
+    """检索知识层（knowledge）：概念、定义与事实性资料。
 
-    与 ``recall`` 的分工：recall 翻的是「她记得的事」（事实与情节，有遗忘曲线），
-    consult 查的是「她知道的东西」（知识，没有衰减）。知识不进入每轮组装，
-    只在她主动 consult 时出现；命中经 ``touch_knowledge`` 落计数，供后续
-    检索调优，不参与打分。
+    与 ``recall`` 的分工：recall 检索有遗忘曲线的记忆，consult 检索无衰减的知识。
+    命中经 ``touch_knowledge`` 记录计数，供检索调优，不参与打分。
     """
 
     name = 'consult'
@@ -359,7 +345,7 @@ class ConsultAction:
         """保存知识检索依赖与返回条数上限。
 
         :param db: 当前库连接。知识检索直接走 ``memory.knowledge`` 而不经
-            ``MemoryStore``——那里管的是「她的记忆」的衰减曲线，知识没有曲线。
+            ``MemoryStore``——那里管的是「Bot 的记忆」的衰减曲线，知识没有曲线。
         :param embed_query: 可选的查询向量回调（``VectorService.embed_query``
             口径：服务禁用或失败时返回 ``None``）；为 ``None`` 时只用 BM25。
         :param limit: 单次返回的知识条数上限，必须大于 0。
@@ -400,47 +386,3 @@ class ConsultAction:
             lines.append(f'- {_clip(hit.content, _ITEM_MAX_CHARS)}')
         touch_knowledge(self._db, [hit.id for hit in hits], current_time())
         return CognitiveObservation(text='\n'.join(lines), hit_count=len(hits))
-
-
-class CognitiveExecutor:
-    """按动作名分发认知动作，并统一施加观察长度上限。
-
-    只做分发和截断两件事。可用性判断（哪个动作这一轮能选）在
-    ``available_actions``，轮次预算在 ``ConversationAgent`` 的循环里，
-    本类不重复表达任何一处。
-    """
-
-    def __init__(self, actions: Sequence[CognitiveAction]) -> None:
-        """按动作名建立分发表。
-
-        :param actions: 已构造的认知动作序列。
-        :raises ValueError: 动作序列为空或存在重名。
-        """
-        if not actions:
-            raise ValueError('认知执行器至少需要一个动作')
-        table: Dict[str, CognitiveAction] = {}
-        for action in actions:
-            if action.name in table:
-                raise ValueError(f'认知动作重名：{action.name}')
-            table[action.name] = action
-        self._actions = table
-
-    @property
-    def action_names(self) -> tuple[str, ...]:
-        """返回已注册的动作名，按注册顺序排列。"""
-        return tuple(self._actions)
-
-    async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
-        """执行一次认知动作并按上限截断观察正文。
-
-        :param request: 待执行的认知动作请求。
-        :return: 正文已按 ``OBSERVATION_MAX_CHARS`` 截断的观察。
-        :raises KeyError: 动作名未注册；这代表动作空间与执行器不同步，
-            属于装配错误而非模型错误，不应被当作协议失败吞掉。
-        """
-        action = self._actions[request.action]
-        observation = await action.execute(request)
-        clipped = _clip(observation.text, OBSERVATION_MAX_CHARS)
-        if clipped == observation.text:
-            return observation
-        return CognitiveObservation(text=clipped, hit_count=observation.hit_count)

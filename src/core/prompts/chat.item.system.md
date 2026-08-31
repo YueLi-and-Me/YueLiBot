@@ -3,7 +3,7 @@
 # 你是谁
 {{identity}}{{relationship}}{{voice}}
 
-# 有一说一
+# 事实纪律
 {{discipline}}
 
 # 边界

@@ -6,7 +6,7 @@
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { app, Menu, Notification, Tray, nativeImage, screen, type BrowserWindow } from 'electron'
+import { app, Menu, Notification, Tray, nativeImage, screen, type BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 
 /** 系统托盘为无边框桌宠提供显示、窗口、配置、重启和退出入口。 */
 
@@ -86,14 +86,15 @@ function trayIcon(): Electron.NativeImage {
 /**
  * 创建系统托盘并绑定窗口与后端控制动作。
  *
- * @param win 桌宠 BrowserWindow，用于显示状态和显隐切换。
+ * @param win 桌宠 BrowserWindow，用于显示状态和显隐切换；桌宠关闭时为 ``null``，
+ *   托盘只保留日记、设置和后端控制等窗口无关的入口。
  * @param botName 菜单标题中的人物名称；空字符串时使用 ``Bot``。
  * @param handlers 托盘动作回调集合，由主进程注入具体业务实现。
  * @returns 当前创建的 Tray 实例。
  * @throws Error Electron 创建托盘图标失败时由运行时抛出。
  * @sideEffects 销毁旧托盘、创建新菜单并监听窗口 show/hide 和托盘 click 事件。
  */
-export function createTray(win: BrowserWindow, botName: string, handlers: TrayHandlers): Tray {
+export function createTray(win: BrowserWindow | null, botName: string, handlers: TrayHandlers): Tray {
   destroyTray()
 
   tray = new Tray(trayIcon())
@@ -108,11 +109,13 @@ export function createTray(win: BrowserWindow, botName: string, handlers: TrayHa
    */
   const rebuild = (): void => {
     if (!tray || tray.isDestroyed()) return
-    const visible = !win.isDestroyed() && win.isVisible()
+    const visible = !!win && !win.isDestroyed() && win.isVisible()
     const labelName = botName || 'Bot'
 
-    tray.setContextMenu(
-      Menu.buildFromTemplate([
+    // 桌宠窗口不存在时（desktop_pet.enabled = false）隐藏全部窗口相关菜单项，
+    // 留下的入口都不依赖窗口：日记走 HTTP、设置与后端控制由主进程直接处理。
+    const petItems: MenuItemConstructorOptions[] = win
+      ? [
         {
           label: `${visible ? '隐藏' : '显示'}${labelName}`,
           click: () => {
@@ -124,20 +127,26 @@ export function createTray(win: BrowserWindow, botName: string, handlers: TrayHa
         {
           // 默认仅按聊天请求采集屏幕；勾选后由主进程持续提交视觉采样。
           label: `让${labelName}看着屏幕`,
-          type: 'checkbox',
+          type: 'checkbox' as const,
           checked: handlers.watchingScreen(),
           click: (item) => {
             handlers.setWatchingScreen(item.checked)
             rebuild()
           },
         },
+      ]
+      : []
+
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        ...petItems,
         // 日记窗口与桌宠显隐状态独立，隐藏桌宠时仍允许打开日记。
         { label: `看${labelName}的日记…`, click: handlers.openDiary },
         { type: 'separator' },
         { label: '设置…', click: handlers.openSettings },
         { label: `重启${labelName}`, click: handlers.restartBackend },
         { type: 'separator' },
-        { label: '搬回原位', click: handlers.resetPosition },
+        ...(win ? [{ label: '搬回原位', click: handlers.resetPosition }] : []),
         {
           label: '开机自启',
           type: 'checkbox',
@@ -152,11 +161,12 @@ export function createTray(win: BrowserWindow, botName: string, handlers: TrayHa
 
   rebuild()
   // 菜单项文案依赖当前显隐状态，因此窗口状态变化后必须重建菜单。
-  win.on('show', rebuild)
-  win.on('hide', rebuild)
+  win?.on('show', rebuild)
+  win?.on('hide', rebuild)
 
   // 左键单击直接切换显隐，右键菜单保留其他控制项。
   tray.on('click', () => {
+    if (!win || win.isDestroyed()) return
     togglePet(win, !win.isVisible())
     rebuild()
   })

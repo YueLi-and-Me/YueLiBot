@@ -24,8 +24,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any, Dict, FrozenSet, Literal, Set, Tuple
 
 from src.core.platform_io.types import StreamKind
 
@@ -38,15 +38,16 @@ TERMINAL_ACTIONS: frozenset[ConversationAction] = frozenset({
     'reply', 'silent', 'react', 'poke', 'wait', 'speak',
 })
 COGNITIVE_ACTIONS: frozenset[ConversationAction] = frozenset({'recall', 'inspect', 'consult'})
-# 需要产出可见正文的终局动作。决策与表达拆开之后，只有这两个动作要再调一次
-# 回复生成模型；silent / wait / react / poke 在决策那一次调用就结束，不额外付费。
+# 需要产出可见正文的终局动作。决策与表达拆分后，仅这两个动作需要二次调用回复生成模型；
+# silent / wait / react / poke 在决策调用内结束。
 SPEAKING_ACTIONS: frozenset[ConversationAction] = frozenset({'reply', 'speak'})
 ALL_ACTIONS: frozenset[ConversationAction] = TERMINAL_ACTIONS | COGNITIVE_ACTIONS
 ReplyLength = Literal['brief', 'long']
 # 三态门控的态；门控判定本身在 conversation_gate 模块实现。
 GateDisposition = Literal['drop', 'force', 'deliberate']
-# 行动事件的状态：区分「她考虑后选择行动」与各类失败，绝不允许混为一谈。
-# cognitive_step 是认知轮的终态：既不是她定了要做什么，也不是失败，而是「她去查了一下」。
+# 行动事件状态。committed / silent_by_choice / cognitive_step 为 Agent 自主结论，
+# gate_dropped 及其余为失败或拦截状态；两类禁止合并。
+# cognitive_step 表示本回合以一次认知检索结束，尚未给出终局动作。
 EventStatus = Literal[
     'committed',
     'silent_by_choice',
@@ -59,7 +60,7 @@ EventStatus = Literal[
     'delivery_failed',
 ]
 
-# 回复理由：封闭枚举，不允许模型自由编造；后续扩充必须显式改这里并同步校验。
+# 回复理由码：封闭枚举。扩充时必须同步修改本表与校验逻辑。
 REPLY_REASON_CODES: frozenset[str] = frozenset({
     'directly_addressed',
     'direct_question',
@@ -71,7 +72,7 @@ REPLY_REASON_CODES: frozenset[str] = frozenset({
     'natural_reaction',
 })
 
-# 沉默理由：封闭枚举，同样不允许自由文本思维链进入事件。
+# 沉默理由码：封闭枚举。
 SILENT_REASON_CODES: frozenset[str] = frozenset({
     'others_conversation',
     'would_interrupt',
@@ -83,16 +84,15 @@ SILENT_REASON_CODES: frozenset[str] = frozenset({
     'low_relevance',
 })
 
-# 等待理由：封闭枚举。它与沉默分域是有意的——「我决定不接这茬」和「话还没说完，
-# 我先不表态」是两件不同的事，混进同一个域会让账本再也分不出她是放弃了还是在等。
+# 等待理由码：封闭枚举。与沉默分域：silent 表示放弃本批消息，wait 表示等待后续消息
+# 后合并处理；分域保证审计事件可区分两种行为。
 WAIT_REASON_CODES: frozenset[str] = frozenset({
     'unfinished_thought',
     'thread_developing',
 })
 
-# 主动开口的理由：封闭枚举。与回复分域，因为「有人跟我说话所以我接」和
-# 「没人跟我说话但我想说」是两种完全不同的动机，混域会让账本分不出她是被
-# 叫起来的还是自己起的念头。
+# 主动发言理由码：封闭枚举。与回复分域：reply 由入站消息触发，speak 为自主发起；
+# 分域保证审计事件可区分两类动机。
 SPEAK_REASON_CODES: frozenset[str] = frozenset({
     'noticed_activity',
     'remembered_something',
@@ -107,22 +107,18 @@ ALL_REASON_CODES: frozenset[str] = (
     | SPEAK_REASON_CODES
 )
 
-# 表情回应的语义词表：模型只写这些名字，平台侧的具体表情编号由适配器映射。
-# 语义名而非平台编号进协议，是因为「贴哪个表情」是角色行为，「它在 QQ 上是几号」
-# 是平台细节；把编号写进提示词等于让人格层去背协议表，换个平台就得重写人格。
+# 表情回应语义词表：模型只输出语义名，平台编号由适配器映射。语义名进入协议而非
+# 平台编号：表情选择属于角色行为，编号属于平台实现，二者解耦后更换平台无需修改提示词。
 #
-# 【关键】名字必须逐字照抄平台自己的表情名，不许自己起近义词。
+# 【关键】名称必须逐字取自平台表情表，禁止自创近义词。
 #
-# - 现象：第一版凭印象写了「惊讶」「无语」两个名字，实测「惊讶」被配到 26 号
-#   （那是「惊恐」），而「无语」在 QQ 的表情表里**根本不存在**。
-# - 原因：语义名与平台编号是两张表，名字一旦自创就失去可逐条比对的基准，
-#   错配只能靠人眼在群里发现。
-# - 后果：贴错表情不报错，只会显示成另一个表情，是最难被发现的那类错。
-#   照抄平台名之后，映射表可以直接对着平台的表情表逐条核。
+# - 现象：首版按印象命名，「惊讶」被映射到 26 号（实际为「惊恐」），
+#   「无语」在平台表情表中不存在。
+# - 原因：语义名与平台编号需保持逐字对应，自创名称即失去比对基准。
+# - 后果：错配不报错，仅表现为发送了错误表情。
 #
-# 只给六个，不给全表：真人在群里常用的反应就那么几个，给两百个只会让她挑得
-# 又慢又乱。这六个覆盖六种不同的社交意图（认可 / 觉得好笑 / 服了 / 喜欢 /
-# 没想到 / 围观），要加就明确加，别为了「更全」而全。
+# 仅保留六个条目，覆盖六种社交意图（认可 / 觉得好笑 / 服了 / 喜欢 / 没想到 / 围观）；
+# 候选过多会降低模型选择的速度与准确性。扩充时必须显式修改本表。
 REACTION_IDS: tuple[str, ...] = ('赞', '笑哭', '无奈', '爱心', '惊讶', '吃瓜')
 
 
@@ -132,10 +128,9 @@ def _validate_reason_codes(
 ) -> None:
     """校验理由码的形状与动作分域，完整决策与动作头共用。
 
-    认知动作（recall/inspect/consult）不参与本校验：理由码是给「回不回」这个决策做审计的
-    封闭枚举，而认知动作的审计信息是它的 query 本身。强行要求一个不承载信息的字段
-    只会加重生成侧格式负担、抬高 parse_error 率——动作头合规率是花了一整轮 shadow
-    才压到 0 的，不为此再赌一次。
+    认知动作（recall/inspect/consult）不参与本校验：理由码服务于回复/沉默决策的审计，
+    认知动作的审计信息是 query 本身；强制要求不承载信息的字段会增加生成侧格式
+    负担并抬高 parse_error 率，该格式经过完整影子阶段验证后才收敛为此形态。
 
     :param action: 已确认属于封闭动作集的当前动作。
     :param reason_codes: 模型声明的理由码元组。
@@ -147,8 +142,7 @@ def _validate_reason_codes(
         raise IllegalActionError('reason_codes 不能为空')
     if len(set(reason_codes)) != len(reason_codes):
         raise IllegalActionError('reason_codes 不允许重复')
-    # react 与 poke 不单独说话，但都是「做出了回应」，其理由与回复同域；
-    # 沉默与等待各有自己的域，三者不允许互串。
+    # react 与 poke 属于回应行为，理由码与回复同域；沉默与等待各自独立分域。
     if action == 'silent':
         domain = SILENT_REASON_CODES
     elif action == 'wait':
@@ -195,7 +189,7 @@ class IllegalActionError(ValueError):
     """决策违反行动协议或回合帧约束时抛出，代表模型协议错误。
 
     调用方必须把该异常记录为 ``illegal_action`` 事件状态，不得降级成普通
-    回复，也不得记录成「她选择沉默」。
+    回复，也不得记录成「Bot 选择沉默」。
     """
 
 
@@ -206,7 +200,8 @@ class PlatformCapabilities:
     模型只能在这些真实能力内选择：``quote`` 关闭时决策不能携带
     ``quote_message_id``；平台未验证 reaction 执行能力时 ``react`` 不进入
     动作集，且可用反应标识封闭给出；``emoji`` 表示当前平台、表情包库和
-    频率窗口共同允许产生表情包可见产物。
+    频率窗口共同允许产生表情包可见产物；``forward_message`` 表示当前会话
+    有可供只读工具逐层展开的合并转发缓存，不改变动作集。
 
     ``quote`` 只管「模型能否自己指定引用目标」。QQ 群聊投递时按目标消息是否
     已被后续发言冲开自动挂引用，那条路径由代码强制，不受本开关影响——目标已经
@@ -218,6 +213,9 @@ class PlatformCapabilities:
     available_reactions: tuple[str, ...] = ()
     emoji: bool = False
     poke: bool = False
+    # 当前会话缓存中存在可按路径读取的合并转发。它只控制外部只读工具声明，
+    # 不改变终局动作集，也不表示平台能发送合并转发。
+    forward_message: bool = False
 
     def __post_init__(self) -> None:
         """拒绝空反应标识，防止资源 ID 空洞进入动作集。"""
@@ -226,6 +224,13 @@ class PlatformCapabilities:
         for reaction_id in self.available_reactions:
             if not reaction_id.strip():
                 raise ValueError('可用反应标识不能为空字符串')
+
+    def tool_capabilities(self) -> FrozenSet[str]:
+        """返回可用于外部工具过滤的显式能力名集合。"""
+        capabilities: Set[str] = set()
+        if self.forward_message:
+            capabilities.add('forward_message')
+        return frozenset(capabilities)
 
 
 @dataclass(frozen=True)
@@ -270,7 +275,7 @@ class DecisionFrame:
         """复制本帧并替换动作集，用于 ReAct 各轮按剩余预算收窄动作空间。
 
         除动作集之外的一切（水位、可选消息、门控态、平台能力）在整个回合内保持不变，
-        因此「回合固定快照」这条性质不被多轮破坏：变的只有她这一轮还能选什么。
+        因此「回合固定快照」这条性质不被多轮破坏：变的只有 Bot 这一轮还能选什么。
 
         :param actions: 本轮允许的动作集合。
         :return: 除动作集外与本帧完全相同的新帧。
@@ -484,9 +489,9 @@ class DecisionHead:
     length: ReplyLength | None = None
     query: str | None = None
     reaction: str | None = None
-    # 决策层写给回复生成层的背景说明：为什么要开口、往哪个方向说、当前有哪些
-    # 前因。封闭理由码只够做审计，喂不饱一个独立的回复生成模型，因此额外留这
-    # 一条自由文本通道。它不是正文，也不允许当正文用。
+    # 决策层写给回复生成层的背景说明：发言动机、方向与相关前因。封闭理由码仅用于
+    # 审计，信息量不足以为独立回复生成调用提供上下文，因此保留此自由文本字段。
+    # 该字段不是正文，不得作为正文输出。
     reference: str | None = None
 
     def __post_init__(self) -> None:
@@ -519,8 +524,8 @@ class DecisionHead:
             if self.length is not None:
                 raise IllegalActionError('silent 动作不能声明回复篇幅')
         if self.action == 'speak':
-            # 自主开口没有可回的消息，因此没有目标、没有引用；篇幅也不给：
-            # 主动搭话本来就该短，多一个字段只多一种写错的方式。
+            # 自主发言没有可回应的消息，不携带 targets 与 quote；篇幅固定为短，
+            # 不提供 length 字段以减少出错面。
             if self.target_message_ids:
                 raise IllegalActionError('speak 动作不能指定目标消息')
             if self.quote_message_id is not None:
@@ -651,10 +656,10 @@ def available_actions(
         支持才会让 react 进入动作集。
     :param cognitive_rounds_left: 本回合还剩几次认知动作机会；小于等于 0
         表示只能给出终局动作。
-    :param allow_speak: 是否允许她起一个**不接任何人**的话头。它与 reply 的区别
-        只在有没有目标：reply 是接某条消息，speak 是她自己想说点什么。
+    :param allow_speak: 是否允许 Bot 主动发起一个**不回应任何人**的话题。它与 reply 的区别
+        只在有没有目标：reply 是回应某条消息，speak 是 Bot 自己想说点什么。
         **不需要独立的触发机制**——扩展触发口径（frequency / reply_necessity）
-        本来就会在「群里热闹但没人理她」时给出候选，speak 只是让那个候选里多一个
+        本来就会在「群里热闹但没人理 Bot」时给出候选，speak 只是让那个候选里多一个
         选项，而不是再造一条并行的唤起路径。
     :param allow_wait: 本批是否还可以「先等等」。同一批消息只允许等一次——
         第二次进来时 wait 直接不在动作集里，模型再选就是越界。**约束写在动作
@@ -676,15 +681,14 @@ def available_actions(
             actions.add('poke')
         if allow_speak:
             actions.add('speak')
-    # 等待在群聊与私聊都成立：对方把一句话拆成几条连发时，逐条抢答比等一下
-    # 更失真。三条边界各不相同——群聊的 @必回是明确点名要她说话，不允许拖着；
-    # 私聊的门控虽然也是必回，但那只约束「最终必须表态」，等对方把话说完由
-    # 服务层的超时兜底保证，不冲突；桌面是即时交互界面，不排队。
+    # 等待在群聊与私聊均可用：对方将一句话拆成多条连发时，等待合并后统一回应
+    # 比逐条回复更合理。三条边界：群聊 @必回要求立即回应；私聊门控只约束
+    # 「最终必须表态」，等待由服务层超时兜底；桌面为即时交互，不排队。
     if allow_wait and stream_kind != 'desktop':
         if not (disposition == 'force' and stream_kind == 'group'):
             actions.add('wait')
-    # 认知动作与 stream 类型、门控态都无关：无论她最终要不要开口，
-    # 「先想一下再决定」这件事在任何出口都成立，只受轮次预算约束。
+    # 认知动作与 stream 类型、门控态无关：任一会话出口都允许先检索再决策，
+    # 仅受轮次预算约束。
     if cognitive_rounds_left > 0:
         actions.update(COGNITIVE_ACTIONS)
     return frozenset(actions)
@@ -733,9 +737,9 @@ class GateInputFacts:
 class ActionDecisionEvent:
     """四层可审计行动事件：输入事实 / 门控结果 / Agent 决策 / 版本信息。
 
-    ``event_status`` 必须区分：``committed``（她考虑后选择行动）、
-    ``silent_by_choice``（她考虑后选择沉默）、``cognitive_step``（她先去查了
-    一下，本回合尚未结束）、``gate_dropped``（代码根本没让她考虑）、
+    ``event_status`` 必须区分：``committed``（Bot 考虑后选择行动）、
+    ``silent_by_choice``（Bot 考虑后选择沉默）、``cognitive_step``（Bot 先去查了
+    一下，本回合尚未结束）、``gate_dropped``（代码根本没让 Bot 考虑）、
     ``timeout`` / ``provider_error`` / ``parse_error`` / ``illegal_action`` /
     ``delivery_failed``（模型或投递故障）。模型失败与自主沉默绝不能混进同一个状态。
 
@@ -764,6 +768,12 @@ class ActionDecisionEvent:
     round_index: int = 0
     # 认知动作的观察结果摘要，已按 OBSERVATION_EVENT_MAX_CHARS 截断后写入账本。
     observation: str = ''
+    # 外部工具调用与动作决策互斥；仅工具轮填写，保持既有动作事件形状不变。
+    tool_name: str = ''
+    tool_call_id: str = ''
+    tool_arguments: Dict[str, Any] = field(default_factory=dict)
+    # 当前轮真实下发给模型的外部工具，便于判断“模型没用”还是“根本没声明”。
+    available_tools: Tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """组装四层审计字典，供 ``trace.emit('action_decision', ...)`` 使用。
@@ -808,7 +818,7 @@ class ActionDecisionEvent:
                     else None
                 ),
             }
-        return {
+        payload: Dict[str, Any] = {
             'turnId': self.turn_id,
             'snapshotId': self.snapshot_id,
             'roundIndex': self.round_index,
@@ -831,3 +841,12 @@ class ActionDecisionEvent:
                 'latencyMs': self.latency_ms,
             },
         }
+        if self.available_tools:
+            payload['gate']['availableTools'] = list(self.available_tools)
+        if self.tool_name:
+            payload['toolInvocation'] = {
+                'name': self.tool_name,
+                'callId': self.tool_call_id,
+                'arguments': dict(self.tool_arguments),
+            }
+        return payload

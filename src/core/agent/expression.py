@@ -1,9 +1,8 @@
 """表达方式候选池：从 ``expressions`` 表按会话加权抽样，并渲染注入文本。
 
-表达方式的唯一来源是 ``expressions`` 表——机器从真实对话学出来的「在什么情境下
-用什么句式」示例，不是手写配置。本模块负责两件事：按 ``stream_id`` 取出当前会话
-的候选池（加权抽样，口径见 :func:`fetch_expression_pool`），以及把选择器挑中的
-样本渲染成提示词文本块。候选数量截断只发生在取池这一步，提示词侧是纯渲染器。
+表达方式来源为 ``expressions`` 表中从真实对话学到的「情境 → 句式」条目。
+本模块负责：按 ``stream_id`` 取出当前会话的候选池（加权抽样），以及将选中的
+样本渲染为提示词文本块。候选数量截断只发生在取池阶段，提示词侧为纯渲染器。
 """
 
 from __future__ import annotations
@@ -28,8 +27,7 @@ class ExpressionSample:
     style: str
 
 
-# 候选总数低于此数时本轮不选：候选太少说明这个会话还没积累出可挑的表达方式，
-# 硬选只会让选择模型在几条并不贴合的样本里凑数。
+# 候选总数低于此数时本轮不选：候选过少时无贴合样本可选。
 MIN_POOL_CANDIDATES = 10
 # 高频子集（use_count > 1）达到此数才先从中抽一轮；不足时整轮抽样退化为只从全量抽。
 _MIN_HIGH_FREQ = 10
@@ -85,14 +83,19 @@ def fetch_expression_pool(
     抽样口径：
 
     1. 候选总数小于 :data:`MIN_POOL_CANDIDATES` 时不选，返回空池；
-    2. 高频子集（``use_count > 1``）达到 10 条时，先从中加权抽 5 条——
-       高频信号代表「这个群真的常用什么」；
+    2. 高频子集（``use_count > 1``）达到 10 条时，先从中加权抽 5 条；
     3. 再从全量候选加权抽 5 条，与高频结果按行去重合并，候选池至多 10 条。
 
     加权抽样的权重是 use_count 在候选组内线性映射到 [1, 5]：最高频最多 5 倍
-    权重但不垄断，长尾始终有非零概率。``checked`` 只排除 ``-1``（人工驳回，
-    立刻停止生效）；``0``（未复核）照常进池——复核不是使用的前置条件，把
-    未复核挡在池外等于整条线停摆；``1``（人工确认）也照常进池。
+    权重，长尾始终保有非零概率。
+
+    ``checked`` 是放行闸门：仅 ``1``（人工确认）进池，``0``（未复核）与
+    ``-1``（人工驳回）不进。闸门隔离 Bot 说过的记录与注入的表达，学习侧的
+    自强化闭环问题与依据见 ``agent/expression_learn.py`` 模块文档。
+
+    复核进度落后时，该会话候选可能不足 :data:`MIN_POOL_CANDIDATES`，表达注入
+    停摆。该停摆为预期行为：不注入未经人工确认的内容。停摆由调用方的
+    ``expression_select`` 观测事件上报。
 
     :param db: 进程级 SQLite 连接（与 MemoryStore 同一来源）。
     :param stream_id: 当前会话 ID；候选池严格按会话隔离，不跨会话借。
@@ -106,7 +109,7 @@ def fetch_expression_pool(
 
     rows = db.execute(
         'SELECT id, situation, style, use_count FROM expressions'
-        ' WHERE stream_id = ? AND checked != -1',
+        ' WHERE stream_id = ? AND checked = 1',
         (stream_id,),
     ).fetchall()
     total = len(rows)

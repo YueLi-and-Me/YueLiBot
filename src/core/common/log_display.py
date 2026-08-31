@@ -238,7 +238,7 @@ FIELD_LABELS: Dict[str, str] = {
     "failed_provider": "失败服务",
     "favor": "好感变化",
     # 兴趣增长的五个乘数与合成速率，来自 awareness.interest.InterestFactors.as_trace()。
-    # 它们相乘得到每分钟兴趣增长量，是复盘「她为什么这时候想说话」的唯一依据。
+    # 它们相乘得到每分钟兴趣增长量，是复盘「Bot 为什么这时候想说话」的唯一依据。
     "fAbsence": "久未互动系数",
     "fActivity": "活动系数",
     "fEnergy": "精力系数",
@@ -425,7 +425,7 @@ VALUE_LABELS: Dict[str, str] = {
     "provider_error": "模型服务错误",
     "react": "发表情回应",
     "poke": "戳一戳",
-    "speak": "主动起话头",
+    "speak": "主动发言",
     "wait": "先等下文",
     "recall": "翻长期记忆",
     "inspect": "翻更早的聊天",
@@ -455,10 +455,11 @@ VALUE_LABELS: Dict[str, str] = {
     "direct_question": "明确提问",
     "directly_addressed": "直接叫到机器人",
     "direct_poke": "被戳了一下",
+    "poke_repeat": "刚回应过戳一戳",
     "emotional_support": "需要情绪支持",
-    "pending_thread": "有没接完的话头",
+    "pending_thread": "之前的话题没说完",
     "can_add_value": "能补充有价值的内容",
-    "relationship_impulse": "出于关系想接一句",
+    "relationship_impulse": "出于关系想回应一句",
     "natural_reaction": "自然而然的反应",
     "natural_reply_window": "处于自然接话窗口",
     "no_new_value": "没有新的回复价值",
@@ -482,7 +483,7 @@ VALUE_LABELS: Dict[str, str] = {
     "deliberate": "交给她定",
     "force": "必须回应",
 
-    # DROP 理由码：确定的硬过滤，不承载「她大概不想说」。
+    # DROP 理由码：确定的硬过滤，不承载「Bot 大概不想说」。
     # 与 DELIBERATE 那组分开补是因为此前只登记了 DELIBERATE，控制台于是一半中文
     # 一半机器码（现场表现：「决策理由：name_mention、被戳了一下、ongoing_topic」）。
     "self_message": "她自己发的",
@@ -491,7 +492,7 @@ VALUE_LABELS: Dict[str, str] = {
     "timeout_window": "超出超时窗",
     "message_type_disallowed": "这类消息被配置关掉了",
 
-    # FORCE 理由码：用户直接找她，模型没有沉默选项。
+    # FORCE 理由码：用户直接找 Bot，模型没有沉默选项。
     "at_mention_must_reply": "被 @ 且设了必回",
     "direct_conversation": "对方在直接跟她说话",
     "system_confirmation": "系统确认",

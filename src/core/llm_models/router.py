@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Sequence
 import asyncio
 import json
 import random
+import re
 import time
 
 from src.core.common.clock import now as current_time
@@ -32,11 +33,64 @@ from src.core.llm_models.snapshot import (
     select_candidate,
 )
 from src.core.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
+from src.core.services.trace_console import render_model_call
 from src.core.services.turn_panel import ModelCall, note_model_call
 
 logger = get_logger(__name__)
 
 T = TypeVar('T')
+
+# 从模型标识里剥出厂商的模型族名。名字有三种前缀要跳过：渠道标签 `[Heavy]`、
+# 路径式命名空间 `Qwen/`，以及紧跟族名的版本号。
+_MODEL_FAMILY = re.compile(r'^(?:\[[^\]]*\])?(?:[^/]*/)?([A-Za-z]+)')
+
+
+def _remaining(
+    order: Sequence[ModelCandidate],
+    index: int,
+    blocked_scopes: set[tuple[str, str]],
+) -> int:
+    """统计当前候选之后还有几个真正会被尝试的候选。
+
+    同族已被内容策略拒绝的候选会被跳过，计入「剩余」会让失败日志高估补救机会。
+
+    :param order: 本轮候选顺序。
+    :param index: 当前候选在 ``order`` 中的下标。
+    :param blocked_scopes: 已被内容策略拒绝的 ``(厂商, 模型族)`` 集合。
+    :return: 下标之后未被同族拒绝规则排除的候选数量。
+    副作用：只读入参。
+    """
+    return sum(
+        1
+        for later in order[index + 1:]
+        if _policy_scope(later) not in blocked_scopes
+    )
+
+
+def _model_family(candidate: ModelCandidate) -> str:
+    """取候选所属的模型族名，用于判断两个候选是否共享同一套内容策略。
+
+    :param candidate: 待判定的模型候选。
+    :return: 小写族名（如 ``gemini``、``claude``、``qwen``）；标识里取不出字母
+        前缀时退回完整标识的小写形式，此时该候选只与自身同族。
+    副作用：不访问网络，不修改候选。
+    """
+    text = candidate.identifier or candidate.name
+    match = _MODEL_FAMILY.match(text)
+    return match.group(1).casefold() if match else text.casefold()
+
+
+def _policy_scope(candidate: ModelCandidate) -> tuple[str, str]:
+    """返回内容策略跳过规则的最小安全作用域。
+
+    同一模型族经不同厂商或网关提供时，安全策略与参数可能不同，不能因一个厂商
+    拒绝就跳过另一个明确配置的兜底候选。因此作用域必须同时包含厂商与模型族。
+
+    :param candidate: 待归类的模型候选。
+    :return: 小写的 ``(厂商名, 模型族名)`` 二元组。
+    副作用：无。
+    """
+    return candidate.provider.casefold(), _model_family(candidate)
 
 
 class _ExchangeRecord:
@@ -114,9 +168,11 @@ class _ExchangeRecord:
             path = None
         if path is not None:
             emit('prompt_record', task=self.task, path=str(path))
-        # 同一份事实再交给回合面板。事件账本是给事后查的，面板是给当场看的；
-        # 路由层不知道自己属于哪个回合，收集靠 ContextVar 在 Task 内传递。
-        note_model_call(ModelCall(
+        # 同一份事实再交给控制台。活跃用户回合先收集、在轮末合并展示；视觉、
+        # 摘要、日程、记忆等回合外调用没有轮末出口，完成后立即独立展示。
+        # ``note_model_call`` 通过 ContextVar 判断归属并返回是否已被回合接住，
+        # 保证一次响应只打印一次。
+        call = ModelCall(
             task=self.task,
             model=getattr(self, '_model', ''),
             provider=getattr(self, '_provider', ''),
@@ -128,7 +184,9 @@ class _ExchangeRecord:
             record_path=str(path) if path is not None else '',
             error=f'{self._error_type}：{self._error}' if self._error_type else '',
             error_kind=self._error_type,
-        ))
+        )
+        if not note_model_call(call):
+            render_model_call(call)
 
 
 # 刚失败过的厂商在这段时间内排到候选队尾。
@@ -435,7 +493,28 @@ class ModelRouter:
             raise self._no_candidate_error()
 
         last_error: LlmError | None = None
+        # 已被内容策略拒绝的模型族。
+        #
+        # - 现象：一次摘要请求连续切换 gemini-3.7-flash 与 gemini-3.6-flash，两次
+        #   都以 blocked 失败，候选耗尽。
+        # - 原因：输入侧内容分类器按模型族部署，同族不同版本共用同一套判定，
+        #   同一段提示词在其中一个上被判 PROHIBITED_CONTENT，在另一个上必然同判。
+        # - 后果：不跳过则每个同族候选都要承担一次完整请求的延迟与费用，而候选
+        #   列表整族同厂时，切换等于没有备份。
+        blocked_scopes: set[tuple[str, str]] = set()
         for index, candidate in enumerate(order):
+            family = _model_family(candidate)
+            scope = _policy_scope(candidate)
+            if scope in blocked_scopes:
+                logger.warning(
+                    'model_skip_blocked_family',
+                    task=self.task,
+                    skipped_model=candidate.name,
+                    skipped_provider=candidate.provider,
+                    family=family,
+                    reason='同族模型已被内容策略拒绝，重试必然同样被拒',
+                )
+                continue
             yielded = False
             try:
                 client = self.client(candidate)
@@ -573,6 +652,8 @@ class ModelRouter:
                 # 其它模型和任务一起进入网络故障冷却。
                 if exc.kind != 'format':
                     self._health.penalize(candidate.provider)
+                if exc.kind == 'blocked':
+                    blocked_scopes.add(scope)
                 logger.warning(
                     'model_switch',
                     task=self.task,
@@ -581,7 +662,7 @@ class ModelRouter:
                     errorKind=exc.kind,
                     hint=error_hint(exc.kind),
                     reason=str(exc),
-                    remaining=len(order) - index - 1,
+                    remaining=_remaining(order, index, blocked_scopes),
                 )
 
         logger.error('model_all_failed', task=self.task, tried=len(order))
@@ -616,7 +697,21 @@ class ModelRouter:
             raise self._no_candidate_error()
 
         last_error: Exception | None = None
+        # 与流式路径同一条纪律：blocked 是确定性失败，同族候选不必再试。
+        blocked_scopes: set[tuple[str, str]] = set()
         for index, candidate in enumerate(order):
+            family = _model_family(candidate)
+            scope = _policy_scope(candidate)
+            if scope in blocked_scopes:
+                logger.warning(
+                    'model_skip_blocked_family',
+                    task=self.task,
+                    skipped_model=candidate.name,
+                    skipped_provider=candidate.provider,
+                    family=family,
+                    reason='同族模型已被内容策略拒绝，重试必然同样被拒',
+                )
+                continue
             try:
                 select_candidate(
                     model=candidate.name,
@@ -629,8 +724,8 @@ class ModelRouter:
             except Exception as exc:
                 last_error = exc
                 # 非流式路径接的是任意异常，不只是 LlmError：豆包语音这类私有协议
-                # 直接抛 RuntimeError，取 .kind 会当场炸在错误处理里，把真正的失败
-                # 原因盖掉。
+                # 直接抛 RuntimeError，取 .kind 会在错误处理中触发属性异常，
+                # 掩盖真正的失败原因。
                 error_kind = exc.kind if isinstance(exc, LlmError) else type(exc).__name__
                 record_attempt(
                     model=candidate.name,
@@ -639,6 +734,8 @@ class ModelRouter:
                     message=str(exc),
                 )
                 self._health.penalize(candidate.provider)
+                if error_kind == 'blocked':
+                    blocked_scopes.add(scope)
                 logger.warning(
                     'model_switch',
                     task=self.task,
@@ -647,7 +744,7 @@ class ModelRouter:
                     errorKind=error_kind,
                     hint=error_hint(error_kind),
                     reason=str(exc),
-                    remaining=len(order) - index - 1,
+                    remaining=_remaining(order, index, blocked_scopes),
                 )
 
         logger.error('model_all_failed', task=self.task, tried=len(order))
