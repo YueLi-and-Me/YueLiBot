@@ -1,4 +1,4 @@
-"""把 NapCat 的合并转发响应还原为平台中立消息树。
+"""把 OneBot 11 协议端的合并转发响应还原为平台中立消息树。
 
 ``get_forward_msg`` 会在顶层返回 ``data.messages``；其中嵌套 ``forward``
 消息段应继续携带 ``data.content``。解析器保留每个节点内的片段顺序，任何缺失的

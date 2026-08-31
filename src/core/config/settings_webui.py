@@ -28,7 +28,7 @@ from .model_webui import (
 from .schema import BotDocument, FeatureDocument, ModelCatalog, ProviderCatalog
 from .toml_io import read_versioned_toml
 from src.core.common.logger import get_logger
-from src.platforms.napcat.config import NAPCAT_CONFIG_VERSION, NapcatDocument, read_config as read_napcat_config
+from src.platforms.onebot11.config import AdapterDocument, NAPCAT_CONFIG_VERSION, read_config as read_napcat_config
 
 logger = get_logger(__name__)
 
@@ -96,7 +96,7 @@ def _require_sections_match_models(schema: Dict[str, Any]) -> None:
     documents: Dict[str, type[BaseModel]] = {
         'bot.toml': BotDocument,
         'features.toml': FeatureDocument,
-        'napcat.toml': NapcatDocument,
+        'napcat.toml': AdapterDocument,
     }
     for file_item in schema.get('files', []):
         document = documents.get(file_item.get('file', ''))
@@ -366,7 +366,7 @@ def save(directory: Path, values: Dict[str, Any]) -> Dict[str, Any]:
             'inner': {'version': CONFIG_VERSION},
             **values.get('features.toml', {}),
         })
-        napcat = NapcatDocument.model_validate({
+        napcat = AdapterDocument.model_validate({
             'inner': {'version': NAPCAT_CONFIG_VERSION},
             **values.get('napcat.toml', {}),
         })

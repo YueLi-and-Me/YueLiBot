@@ -1,6 +1,6 @@
 """实现连接协议端正向 WebSocket 的传输层。
 
-`NapcatTransport` 用一个 reader 协程统一接收 action 响应和业务事件，通过 echo
+`OneBot11Transport` 用一个 reader 协程统一接收 action 响应和业务事件，通过 echo
 把响应分发给挂起的 Future，并用异步队列按到达顺序暴露业务事件；连接断开时，
 所有挂起调用和事件消费者都会收到明确异常。
 """
@@ -19,7 +19,7 @@ from websockets.protocol import State
 
 from src.core.common.logger import get_logger
 
-from .config import NapcatConnectionConfig
+from .config import ProtocolConnectionConfig
 from .events import is_action_response
 
 
@@ -80,18 +80,18 @@ class ProtocolAuthenticationError(ProtocolHandshakeError):
 _DISCONNECTED = object()
 
 
-class NapcatTransport:
+class OneBot11Transport:
     """协议端 WebSocket 客户端；一条 reader 协程负责所有入站报文。
 
     发送 action 通过锁串行化，接收由 `_read_loop` 独占，从而避免多个协程直接
     读取同一个 WebSocket 导致响应错配。
     """
 
-    def __init__(self, config: NapcatConnectionConfig) -> None:
+    def __init__(self, config: ProtocolConnectionConfig) -> None:
         """创建尚未连接的协议传输层。
 
         :param config: 已完成字段校验的协议端连接配置。
-        :raises TypeError: 配置对象不是兼容的 `NapcatConnectionConfig` 实例时，
+        :raises TypeError: 配置对象不是兼容的 `ProtocolConnectionConfig` 实例时，
             后续属性访问会暴露类型错误。
         副作用：初始化连接状态、发送锁、响应 Future 表和事件队列；不执行网络 I/O。
         """

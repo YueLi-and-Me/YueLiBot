@@ -101,7 +101,7 @@ class BackendClient:
         if not token.strip():
             raise ValueError('主体 backend token 不能为空')
         self._base_url = f'http://127.0.0.1:{port}'
-        self._ws_url = f'ws://127.0.0.1:{port}/ws?client=napcat'
+        self._ws_url = f'ws://127.0.0.1:{port}/ws?client=platform'
         self._token = token
         self._http_timeout_sec = http_timeout_sec
         self._http: httpx.AsyncClient | None = None

@@ -1,6 +1,6 @@
 """编排 QQ 协议端、主体后端和入出站消息处理循环。
 
-`NapcatRunner` 负责建立两条连接、按失败类型执行重试、过滤协议事件，并把主体
+`OneBot11Runner` 负责建立两条连接、按失败类型执行重试、过滤协议事件，并把主体
 回复转换为 OneBot action；分类和字段解析委托给同目录的纯函数模块。
 
 入站正文里的引用关系与合并转发结构必须在提交主体前补齐：被 ``@`` 的显示名经
@@ -23,7 +23,7 @@ from src.core.common.logger import get_logger
 from src.core.platform_io.forward import ForwardMessageTree
 
 from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReaction
-from .config import NapcatDocument
+from .config import AdapterDocument
 from .events import (
     QqInboundEvent,
     build_emoji_like_inbound_event,
@@ -42,7 +42,7 @@ from .segments import (
 )
 from .transport import (
     ActionError,
-    NapcatTransport,
+    OneBot11Transport,
     ProtocolAuthenticationError,
     ProtocolHandshakeError,
 )
@@ -58,7 +58,7 @@ QUOTE_PREVIEW_LIMIT = 40
 RESOLUTION_CACHE_LIMIT = 512
 
 
-class NapcatRunner:
+class OneBot11Runner:
     """管理协议端与主体连接，并接通允许的 QQ 私聊与群聊。
 
     运行器保持单一的协议事件消费者和主体出站消费者，任一连接任务提前结束都会
@@ -67,10 +67,10 @@ class NapcatRunner:
 
     def __init__(
         self,
-        config: NapcatDocument,
+        config: AdapterDocument,
         backend_port: int,
         token: str,
-        transport: NapcatTransport | None = None,
+        transport: OneBot11Transport | None = None,
         backend: BackendClient | None = None,
     ) -> None:
         """创建 QQ 适配器运行器。
@@ -79,7 +79,7 @@ class NapcatRunner:
         :param backend_port: 主体 HTTP/WS 服务端口，必须传给 `BackendClient`。
         :param token: 主体 API 鉴权 token。
         :param transport: 可选的协议传输实现；为空时创建真实的
-            :class:`NapcatTransport`，测试可传入替身。
+            :class:`OneBot11Transport`，测试可传入替身。
         :param backend: 可选的主体客户端；为空时创建 :class:`BackendClient`。
         :raises ValueError: 默认客户端发现主体端口或 token 非法时抛出。
         副作用：保存配置并可能构造网络客户端，但不会建立连接。
@@ -87,7 +87,7 @@ class NapcatRunner:
         self._config = config
         self._backend_port = backend_port
         self._token = token
-        self._transport = transport or NapcatTransport(config.napcat)
+        self._transport = transport or OneBot11Transport(config.napcat)
         self._backend = backend or BackendClient(backend_port, token)
         self._connected_once = False
         # (群号, QQ 号) -> 显示名；私聊用空群号。群名片按群独立，不能跨群复用。
