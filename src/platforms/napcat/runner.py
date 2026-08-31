@@ -917,6 +917,51 @@ class NapcatRunner:
                     targetId=outbound.stream_external_id,
                     error=str(exc),
                 )
+                await self._report_delivery_failure(
+                    stream_id=outbound.stream_id,
+                    turn_id=outbound.turn_id,
+                    action='send',
+                    target=outbound.stream_external_id,
+                    error=str(exc),
+                )
+
+    async def _report_delivery_failure(
+        self,
+        *,
+        stream_id: int,
+        turn_id: int,
+        action: str,
+        target: str,
+        error: str,
+    ) -> None:
+        """把一次出站动作失败回报主体，回报本身失败不再向上传播。
+
+        协议端故障已经让本次动作丢失；若回报再抛出，就会连带中断出站消费循环，
+        把一次局部失败升级成整条出站通道停摆，因此这里只记日志。
+
+        :param stream_id: 主体会话编号。
+        :param turn_id: 发起本次投递的回合编号；0 表示无回合上下文。
+        :param action: 动作类别，取 send / react / poke。
+        :param target: 目标平台标识，无目标时为空串。
+        :param error: 协议端返回的失败原因原文。
+        :return: ``None``。
+        副作用：向主体发送一次 HTTP 回报；回报失败仅记警告日志。
+        """
+        try:
+            await self._backend.report_delivery_failure(
+                stream_id=stream_id,
+                turn_id=turn_id,
+                action=action,
+                target=target,
+                error=error,
+            )
+        except Exception as exc:
+            logger.warning(
+                'QQ 投递失败回报未送达主体',
+                streamId=stream_id,
+                action=action,
+                error=str(exc),
+            )
 
     async def _apply_poke(self, poke: BackendPoke) -> None:
         """在群里戳一戳指定成员。
@@ -948,6 +993,13 @@ class NapcatRunner:
                 streamId=poke.stream_id,
                 groupId=group_id,
                 targetId=poke.target_external_id,
+                error=str(exc),
+            )
+            await self._report_delivery_failure(
+                stream_id=poke.stream_id,
+                turn_id=poke.turn_id,
+                action='poke',
+                target=poke.target_external_id,
                 error=str(exc),
             )
 
@@ -987,6 +1039,13 @@ class NapcatRunner:
                 streamKind=reaction.stream_kind,
                 targetId=reaction.stream_external_id,
                 targetMessageId=reaction.target_external_message_id,
+                error=str(exc),
+            )
+            await self._report_delivery_failure(
+                stream_id=reaction.stream_id,
+                turn_id=reaction.turn_id,
+                action='react',
+                target=reaction.target_external_message_id,
                 error=str(exc),
             )
 

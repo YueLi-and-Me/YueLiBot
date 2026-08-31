@@ -123,6 +123,9 @@ class OutboundMessage:
     # 旁观者看不出在回谁。引用与否由投递层按「目标之后是否已有人插话」判定，
     # 不进入模型的动作头，避免多一个可写错的协议字段。
     quote_external_message_id: str | None = None
+    # 发起本次投递的回合编号，随出站报文传给适配器，仅在投递失败时被原样回传，
+    # 使失败能落到发起它的那一轮上。0 表示调用方没有回合上下文（如后台补发）。
+    turn_id: int = 0
 
     def __post_init__(self) -> None:
         """校验表情包引用与协议子类型对齐，以及停顿覆盖全部发送批次。"""
@@ -152,6 +155,8 @@ class OutboundReaction:
     stream: StreamRef
     target_external_message_id: str
     reaction: str
+    # 语义同 :class:`OutboundMessage.turn_id`。
+    turn_id: int = 0
 
     def __post_init__(self) -> None:
         """拒绝空目标编号与空反应标识，避免空洞进入平台调用。"""
@@ -174,6 +179,8 @@ class OutboundPoke:
 
     stream: StreamRef
     target_external_id: str
+    # 语义同 :class:`OutboundMessage.turn_id`。
+    turn_id: int = 0
 
     def __post_init__(self) -> None:
         """拒绝空目标标识，避免空洞进入平台调用。"""

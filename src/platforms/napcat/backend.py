@@ -45,6 +45,9 @@ class BackendOutbound:
     batch_delays_ms: tuple[int, ...] = ()
     # 第一条气泡要引用的平台消息编号；为空表示不引用。
     quote_external_message_id: str = ''
+    # 主体发起本次投递的回合编号，只在投递失败回传时原样带回，使失败能落到发起
+    # 它的那一轮上。0 表示主体没有回合上下文。
+    turn_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,8 @@ class BackendReaction:
     stream_external_id: str
     target_external_message_id: str
     reaction: str
+    # 语义同 :attr:`BackendOutbound.turn_id`。
+    turn_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,8 @@ class BackendPoke:
     stream_kind: Literal['direct', 'group']
     stream_external_id: str
     target_external_id: str
+    # 语义同 :attr:`BackendOutbound.turn_id`。
+    turn_id: int = 0
 
 
 class BackendClient:
@@ -227,6 +234,46 @@ class BackendClient:
             raise ValueError('主体 /platform/typing 响应必须包含布尔 spoke')
         return payload['spoke']
 
+    async def report_delivery_failure(
+        self,
+        *,
+        stream_id: int,
+        turn_id: int,
+        action: str,
+        target: str,
+        error: str,
+    ) -> None:
+        """把一次出站动作在协议端的失败回报给主体。
+
+        主体的投递回执只证明报文送到了适配器，真正的 action 在这里才发出；不回报
+        就会出现「主体记 outbound_delivered、控制台显示动作成功，实际什么都没发生」
+        的假成功。回报本身失败只记日志：协议端故障不应再连带中断出站循环。
+
+        :param stream_id: 主体的会话编号。
+        :param turn_id: 发起该投递的回合编号；0 表示没有回合上下文。
+        :param action: 失败的动作类别，取 send / react / poke。
+        :param target: 动作目标的平台标识（QQ 号或消息编号），无目标时为空串。
+        :param error: 协议端返回的失败原因原文。
+        :return: ``None``。
+        :raises BackendDisconnected: HTTP 客户端尚未建立连接。
+        副作用：向主体投递失败接口发送一次 POST 请求。
+        """
+        client = self._http
+        if client is None:
+            raise BackendDisconnected('主体 HTTP 尚未连接')
+        response = await client.post(
+            '/platform/delivery/failed',
+            json={
+                'platform': 'qq',
+                'streamId': stream_id,
+                'turnId': turn_id,
+                'action': action,
+                'target': target,
+                'error': error,
+            },
+        )
+        response.raise_for_status()
+
     async def submit_group_backfill(
         self,
         group_id: str,
@@ -352,6 +399,26 @@ def _decode_payload(raw: str | bytes) -> Dict[str, Any]:
     return payload
 
 
+def _parse_turn_id(body: Mapping[str, Any], channel: str) -> int:
+    """从出站报文里取发起投递的回合编号。
+
+    该字段可选：主体只在有回合上下文时下发，缺省表示后台补发一类没有回合归属的
+    投递。字段存在却类型不对属于协议不同步，必须当场暴露而不是按 0 放过——静默
+    放过会让投递失败回传丢掉归属，失败重新变得无法归因。
+
+    :param body: 出站报文的 payload 对象。
+    :param channel: 通道名，仅用于错误信息定位。
+    :return: 正整数回合编号；字段缺省时返回 0。
+    :raises ValueError: 字段存在但不是正整数。
+    """
+    raw = body.get('turnId')
+    if raw is None:
+        return 0
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+        raise ValueError(f'主体 {channel} 的 turnId 必须是正整数')
+    return raw
+
+
 def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     """校验并转换主体 `qq.send` 报文。
 
@@ -422,6 +489,7 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         emoji_sub_types=emoji_sub_types,
         batch_delays_ms=batch_delays_ms,
         quote_external_message_id=raw_quote.strip(),
+        turn_id=_parse_turn_id(body, 'qq.send'),
     )
 
 
@@ -453,6 +521,7 @@ def _parse_poke(payload: Mapping[str, Any]) -> BackendPoke:
         stream_kind=stream_kind,
         stream_external_id=stream_external_id.strip(),
         target_external_id=target.strip(),
+        turn_id=_parse_turn_id(body, 'qq.poke'),
     )
 
 
@@ -490,4 +559,5 @@ def _parse_reaction(payload: Mapping[str, Any]) -> BackendReaction:
         stream_external_id=stream_external_id.strip(),
         target_external_message_id=target.strip(),
         reaction=reaction.strip(),
+        turn_id=_parse_turn_id(body, 'qq.react'),
     )

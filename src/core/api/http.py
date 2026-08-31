@@ -60,6 +60,7 @@ from src.core.services.prompt_records import (
     read_record as read_prompt_record,
 )
 from src.core.services.replay import replay_event, replay_task_for_seq
+from src.core.services.trace_console import render_action_decision
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -732,6 +733,27 @@ class PlatformTypingBody(BaseModel):
     sender_external_id: str = Field(alias='senderExternalId')
 
 
+class PlatformDeliveryFailureBody(BaseModel):
+    """平台适配器上报的一次出站动作在协议端的失败。
+
+    主体的投递回执只证明出站报文送到了适配器，真正的平台调用在适配器进程里才
+    发出。没有这条回报时，协议端拒绝只留在适配器日志里，主体侧照常记
+    outbound_delivered，控制台显示动作成功——现场表现为「她做了动作但对方什么
+    都没收到」，且无法从账本查出。
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: str
+    stream_id: int = Field(alias='streamId')
+    # 发起该投递的回合编号；0 表示投递没有回合上下文（如后台补发）。
+    turn_id: int = Field(default=0, alias='turnId')
+    action: Literal['send', 'react', 'poke']
+    # 目标平台标识（QQ 号或消息编号）；发消息一类没有单独目标时为空串。
+    target: str = ''
+    error: str
+
+
 @router.post('/platform/typing', dependencies=[Depends(_auth)])
 async def platform_typing(body: PlatformTypingBody) -> JSONResponse:
     """接收对方正在输入的通知，交由聊天服务判断是否据此开口。
@@ -769,6 +791,37 @@ async def platform_typing(body: PlatformTypingBody) -> JSONResponse:
         app_state.register_platform_stream(context.stream)
     spoke = await app_state.chat.note_peer_typing(context)
     return JSONResponse({'accepted': True, 'spoke': spoke})
+
+
+@router.post('/platform/delivery/failed', dependencies=[Depends(_auth)])
+async def platform_delivery_failed(body: PlatformDeliveryFailureBody) -> JSONResponse:
+    """接收适配器回报的出站动作失败，写入观察账本并渲染到控制台。
+
+    只落账与展示，不做任何补偿投递：这类失败的原因基本都在平台侧（发包能力不可
+    用、目标失效、频率限制），自动重发只会把一次可见失败变成对用户的反复骚扰。
+
+    :param body: 已通过 Pydantic 校验的投递失败回报。
+    :return: JSON 响应，恒为已接收。
+    :raises fastapi.HTTPException: 路由鉴权失败时由依赖项返回 401。
+    副作用：写入一条 delivery_failed 观察事件，并渲染一行控制台决策摘要。
+    """
+    trace.emit(
+        'delivery_failed',
+        turnId=body.turn_id,
+        platform=body.platform,
+        streamId=body.stream_id,
+        action=body.action,
+        target=body.target,
+        detail=body.error,
+    )
+    render_action_decision(
+        turn=body.turn_id,
+        agent_scope='live',
+        event_status='delivery_failed',
+        detail=body.error,
+        action=body.action,
+    )
+    return JSONResponse({'accepted': True})
 
 
 @router.post('/platform/group/backfill', dependencies=[Depends(_auth)])

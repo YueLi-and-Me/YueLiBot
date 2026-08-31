@@ -10,6 +10,7 @@ import type { ObservabilityStream, TraceEntry } from '../../../electron/shared/i
 /** 事件协议名与观察面板中文名称；协议值保留英文，仅展示时查表。 */
 const TRACE_KIND_LABELS: Record<string, string> = {
   action_decision: '行动决策',
+  delivery_failed: '投递失败',
   emoji_banned: '表情包封禁',
   emoji_cleanup: '表情包孤儿清理',
   emoji_evicted: '表情包淘汰',

@@ -84,6 +84,9 @@ class QqWebSocketDriver(PlatformDriver):
         if message.emoji_refs:
             payload['emojiRefs'] = list(message.emoji_refs)
             payload['emojiSubTypes'] = list(message.emoji_sub_types)
+        if message.turn_id:
+            # 只在有回合上下文时下发：缺省不发新字段，保持既有精确载荷断言不变。
+            payload['turnId'] = message.turn_id
         delivered = await self._push(message.stream.id, 'qq.send', payload)
         if delivered == 0:
             # 没有订阅者时不能返回成功回执，否则上层会误以为消息已经送达。
@@ -115,12 +118,15 @@ class QqWebSocketDriver(PlatformDriver):
             raise DeliveryError(
                 f'QQ driver 收到非 QQ stream：{reaction.stream.platform}'
             )
-        delivered = await self._push(reaction.stream.id, 'qq.react', {
+        reaction_payload: dict[str, Any] = {
             'streamKind': reaction.stream.kind,
             'streamExternalId': reaction.stream.external_id,
             'targetExternalMessageId': reaction.target_external_message_id,
             'reaction': reaction.reaction,
-        })
+        }
+        if reaction.turn_id:
+            reaction_payload['turnId'] = reaction.turn_id
+        delivered = await self._push(reaction.stream.id, 'qq.react', reaction_payload)
         if delivered == 0:
             raise DeliveryError(
                 f'QQ stream {reaction.stream.id} 没有适配器 WebSocket 订阅者'
@@ -144,11 +150,14 @@ class QqWebSocketDriver(PlatformDriver):
         """
         if poke.stream.platform != self.platform:
             raise DeliveryError(f'QQ driver 收到非 QQ stream：{poke.stream.platform}')
-        delivered = await self._push(poke.stream.id, 'qq.poke', {
+        poke_payload: dict[str, Any] = {
             'streamKind': poke.stream.kind,
             'streamExternalId': poke.stream.external_id,
             'targetExternalId': poke.target_external_id,
-        })
+        }
+        if poke.turn_id:
+            poke_payload['turnId'] = poke.turn_id
+        delivered = await self._push(poke.stream.id, 'qq.poke', poke_payload)
         if delivered == 0:
             raise DeliveryError(
                 f'QQ stream {poke.stream.id} 没有适配器 WebSocket 订阅者'

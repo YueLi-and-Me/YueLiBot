@@ -4719,6 +4719,7 @@ class ChatService:
             receipt = await self._broker.dispatch_poke(OutboundPoke(
                 stream=context.stream,
                 target_external_id=external_id,
+                turn_id=turn,
             ))
         except Exception as exc:
             delivery_event = ActionDecisionEvent(
@@ -4803,6 +4804,7 @@ class ChatService:
                 stream=context.stream,
                 target_external_message_id=external_id,
                 reaction=outcome.decision.reaction,
+                turn_id=turn,
             ))
         except Exception as exc:
             delivery_event = ActionDecisionEvent(
@@ -5279,6 +5281,7 @@ class ChatService:
             emoji_sub_types=tuple(sub_type for _emotion, _reference, sub_type in emoji_items),
             batch_delays_ms=self._batch_delays_ms(segments, len(emoji_items)),
             quote_external_message_id=quote_external_message_id,
+            turn_id=turn,
         ))
         # 只有拿到投递回执（发送成功）才回写使用记录；发送失败不动两列，
         # 淘汰判据不允许把「没发出去」记成「用过」。
