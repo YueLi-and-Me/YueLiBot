@@ -19,6 +19,8 @@
 - 正文先于动作头 / 缺失动作头 → parse_error；
 - 动作头违反协议或回合帧（非法枚举、自由理由码、目标越界、引用能力缺失、
   FORCE 禁默、认知动作缺 query、动作头之后没有正文）→ illegal_action；
+  工具调用模式下的此类错误先按 ``_ACTION_CALL_REPAIR_LIMIT`` 纠错重试，
+  把拒绝原因回灌给模型重发，重试仍不合法才落此状态；
 - LlmError(kind=timeout) → timeout，其余 LlmError 与未知异常 → provider_error；
 - LlmError(kind=aborted) 原样上抛且不写行动决策事件：用户主动中断不属于
   八种行动事件状态，由调用方沿用既有中断语义处理；
@@ -91,6 +93,10 @@ _OUTPUT_REQUIREMENT = (
 _FINAL_ROUND_NOTICE = (
     '你已经用完这一轮可以查东西的次数，接下来必须直接给出最终动作，不能再检索。'
 )
+# 工具调用被判不合法时的纠错重试上限。兼容网关会把工具参数整段丢弃（到达
+# 校验层的是空对象），把拒绝原因回灌重发一次即可恢复；仍不合法才按
+# illegal_action 失败。重试只重发模型调用，不替模型补写任何参数。
+_ACTION_CALL_REPAIR_LIMIT = 1
 
 
 class _LocalToolExecutionError(RuntimeError):
@@ -100,6 +106,19 @@ class _LocalToolExecutionError(RuntimeError):
         """保存原始异常，调用层会按既有本机故障语义原样抛出。"""
         self.error = error
         super().__init__(str(error))
+
+
+class _RepairableCallFault(Exception):
+    """还有纠错预算的工具调用协议错误，携带回灌用的纠错消息。
+
+    由单次尝试在 ``IllegalActionError`` 分支抛出、回合驱动层捕获；预算耗尽时
+    尝试自身直接按 ``illegal_action`` 终局，不会抛出本类。
+    """
+
+    def __init__(self, correction: list[dict[str, str]]) -> None:
+        """保存纠错消息，由回合驱动层追加进下一次尝试的消息序列。"""
+        self.correction = correction
+        super().__init__('工具调用协议错误，等待纠错重试')
 
 
 async def _execute_external_tool(
@@ -414,18 +433,87 @@ class ConversationAgent:
         replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None,
         signal: asyncio.Event | None,
     ) -> AgentOutcome:
-        """执行一次模型调用，并在选到认知动作时就地完成检索。
+        """执行一轮模型调用，并在选到认知动作时就地完成检索。
 
         检索放在本轮之内而不是交回 run()，是为了让事件的 ``latency_ms`` 覆盖
         「模型想 + 实际查」的完整耗时，也让观察摘要能与它所属的那一轮写进同一条事件。
 
+        工具调用被判协议错误时不直接终局：网关会把工具参数整段丢弃，这类错误
+        回灌拒绝原因重发一次即可恢复。驱动层只重发模型调用，不补写参数；预算
+        见 ``_ACTION_CALL_REPAIR_LIMIT``，由 ``_run_attempt`` 自身执行并终局。
+
         :param frame: 已按本轮剩余预算收窄动作集的回合帧。
-        :param messages: 本轮实际提交模型的消息序列。
+        :param messages: 本轮实际提交模型的消息序列；纠错消息追加在其副本尾部，
+            调用方传入的列表不被修改。
         :param round_index: 轮次序号，从 0 开始。
         :param cognitive_rounds_used: 进入本轮之前已用掉的认知轮次数。
         :return: 本轮结果；认知动作返回 ``cognitive_step`` 并带上观察正文。
         """
         started = time.monotonic()
+        correction: list[dict[str, str]] = []
+        repairs_used = 0
+        while True:
+            try:
+                return await self._run_attempt(
+                    [*messages, *correction],
+                    frame,
+                    gate_inputs,
+                    gate_reason_codes,
+                    round_index=round_index,
+                    cognitive_rounds_used=cognitive_rounds_used,
+                    prompt_hash=prompt_hash,
+                    model_task=model_task,
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    cognitive_executor=cognitive_executor,
+                    cognitive_scope=cognitive_scope,
+                    tool_context=tool_context,
+                    on_events=on_events,
+                    on_chunk=on_chunk,
+                    replyer_messages=replyer_messages,
+                    signal=signal,
+                    started=started,
+                    repairs_used=repairs_used,
+                )
+            except _RepairableCallFault as fault:
+                correction.extend(fault.correction)
+                repairs_used += 1
+
+    async def _run_attempt(
+        self,
+        messages: list[dict],
+        frame: DecisionFrame,
+        gate_inputs: GateInputFacts,
+        gate_reason_codes: tuple[str, ...],
+        *,
+        round_index: int,
+        cognitive_rounds_used: int,
+        prompt_hash: str,
+        model_task: str,
+        provider_name: str,
+        model_name: str,
+        cognitive_executor: CognitiveExecutor | None,
+        cognitive_scope: CognitiveScope | None,
+        tool_context: ToolContext | None,
+        on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
+        on_chunk: Callable[[dict[str, Any]], None] | None,
+        replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None,
+        signal: asyncio.Event | None,
+        started: float,
+        repairs_used: int,
+    ) -> AgentOutcome:
+        """执行一次模型调用；计时起点与纠错预算由 ``_run_round`` 给出。
+
+        :param messages: 本次尝试实际提交模型的消息序列，已含纠错回灌。
+        :param frame: 已按本轮剩余预算收窄动作集的回合帧。
+        :param round_index: 轮次序号，从 0 开始。
+        :param cognitive_rounds_used: 进入本轮之前已用掉的认知轮次数。
+        :param started: 本轮计时起点，跨纠错尝试不变，事件耗时因此覆盖重试。
+        :param repairs_used: 进入本次尝试前已用掉的纠错次数，用于预算判断与
+            审计事件中的纠错记数。
+        :return: 本次尝试的结果。
+        :raises _RepairableCallFault: 工具调用协议错误且还有纠错预算。
+        """
         parser = ResponseParser()
         # 决策与表达分离是否在本轮生效。两个条件缺一不可：注入了回复生成模型，
         # 且调用方给得出它的消息序列——提示词属于调用方，Agent 不自行拼装。
@@ -441,6 +529,9 @@ class ConversationAgent:
         status: EventStatus = "committed"
         detail = ""
         observation = ""
+        # 本轮工具调用解析是否发生模型侧协议错误。只有这类错误允许纠错重试，
+        # XML 动作头与本机接线故障保持既有的直接终局语义。
+        call_fault = False
 
         async def release(events: list[ParseEvent]) -> None:
             """放出已通过动作头校验的事件；无回调时仅聚合到结果。"""
@@ -452,6 +543,14 @@ class ConversationAgent:
         def finish() -> AgentOutcome:
             """组装审计事件、写入观察账本并返回本轮结果。"""
             latency_ms = int((time.monotonic() - started) * 1000)
+            # 纠错吞掉了一次本会终局的协议错误，审计事件必须留下记数，
+            # 否则该轮只能凭延迟异常反推发生过重试。
+            repair_note = (
+                f'含 {repairs_used} 次工具调用纠错' if repairs_used else ''
+            )
+            audited_detail = '；'.join(
+                part for part in (detail, repair_note) if part
+            )
             action_event = ActionDecisionEvent(
                 turn_id=frame.turn_id,
                 snapshot_id=frame.snapshot_id,
@@ -462,7 +561,7 @@ class ConversationAgent:
                 available_actions=tuple(sorted(frame.available_actions)),
                 decision=decision,
                 event_status=status,
-                detail=detail,
+                detail=audited_detail,
                 prompt_hash=prompt_hash,
                 model_task=model_task,
                 provider=provider_name,
@@ -542,9 +641,11 @@ class ConversationAgent:
                         # 只认第一个，多选属于模型噪声，与重复动作头同样处理。
                         call = tool_calls[0]
                         if not isinstance(call, Mapping):
+                            call_fault = True
                             raise IllegalActionError('模型工具调用必须是对象')
                         call_name = call.get('name')
                         if not isinstance(call_name, str) or not call_name.strip():
+                            call_fault = True
                             raise IllegalActionError('模型工具调用缺少非空 name')
                         raw_arguments = call.get('arguments', '')
                         resolved = (
@@ -560,12 +661,16 @@ class ConversationAgent:
                             assert self._tool_registry is not None
                             assert resolved.spec is not None
                             assert resolved.executor is not None
-                            tool_invocation = self._tool_registry.parse_invocation(
-                                call_name,
-                                raw_arguments,
-                                frame,
-                                call_id=str(call.get('id') or ''),
-                            )
+                            try:
+                                tool_invocation = self._tool_registry.parse_invocation(
+                                    call_name,
+                                    raw_arguments,
+                                    frame,
+                                    call_id=str(call.get('id') or ''),
+                                )
+                            except IllegalActionError:
+                                call_fault = True
+                                raise
                             execution_context = replace(
                                 tool_context,
                                 stream_kind=frame.stream_kind,
@@ -604,12 +709,17 @@ class ConversationAgent:
                             status = 'cognitive_step'
                             return finish()
                         if not isinstance(raw_arguments, str):
+                            call_fault = True
                             raise IllegalActionError(
                                 f'动作工具 {call_name} 的 arguments 必须是 JSON 文本'
                             )
-                        head = decision_head_from_tool_call(
-                            call_name, raw_arguments, frame,
-                        )
+                        try:
+                            head = decision_head_from_tool_call(
+                                call_name, raw_arguments, frame,
+                            )
+                        except IllegalActionError:
+                            call_fault = True
+                            raise
                         settled = await self._settle_head(
                             head, frame, cognitive_executor, cognitive_scope,
                         )
@@ -710,6 +820,12 @@ class ConversationAgent:
             detail = str(exc)
             return finish()
         except IllegalActionError as exc:
+            if call_fault and repairs_used < _ACTION_CALL_REPAIR_LIMIT:
+                # 协议错误回灌重试；预算判断放在抛出侧，耗尽时走下方终局路径，
+                # 驱动层因此无需再处理预算用尽的分支。
+                raise _RepairableCallFault(
+                    _call_fault_messages(str(exc)),
+                ) from exc
             status = 'illegal_action'
             detail = str(exc)
             return finish()
@@ -939,3 +1055,23 @@ def _tool_observation_messages(
         ),
     }]
 
+
+def _call_fault_messages(reason: str) -> list[dict[str, str]]:
+    """把一次被拒绝的工具调用渲染为纠错回灌消息。
+
+    网关会把工具参数整段丢弃，校验层收到的可能是空对象；这类协议错误直接
+    终局会把一次可自愈的故障变成用户可见的沉默。回灌只陈述拒绝原因并要求
+    重新调用，不替模型补写参数，决定权仍在模型。
+
+    :param reason: 校验层给出的拒绝原因。
+    :return: 追加到消息序列尾部的一条 user 消息，与观察回灌同一扁平格式。
+    """
+    return [{
+        'role': 'user',
+        'content': (
+            '[被拒绝的工具调用]\n'
+            f'原因：{reason}\n\n'
+            '这次调用没有被执行。请重新发起工具调用，完整填写全部必填字段；'
+            '只输出工具调用，不要输出解释文字。'
+        ),
+    }]
