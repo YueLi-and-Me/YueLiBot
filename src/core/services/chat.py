@@ -42,7 +42,6 @@ from src.core.agent.action_protocol import (
     available_actions,
 )
 from src.core.agent.cognition import (
-    CognitiveExecutor,
     CognitiveScope,
     InspectAction,
     ConsultAction,
@@ -149,6 +148,7 @@ from src.core.prompts.registry import (
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
 from src.core.tooling.builtin.forward_message import ForwardMessageTool
+from src.core.tooling.cognitive import CognitiveToolExecutor
 from src.core.tooling.registry import build_builtin_action_registry
 from src.core.tooling.spec import ToolContext
 
@@ -617,17 +617,29 @@ class ChatService:
         )
         # 同一个情景分析 Agent 同时服务群聊周期画像和私聊即时决策；刷新条数只控制
         # 群聊后台调度，不决定 Agent 是否存在。它与 reply / silent 决策 Agent 分离。
-        self._cognitive_executor = (
-            CognitiveExecutor([
-                RecallAction(self.memory, self._registry.stream_display_name, db),
-                InspectAction(self.memory, self._registry.stream_display_name),
-                # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；
-                # 执行器缺这一条就会在 Bot 真的选中时撞 KeyError，装配必须同步。
-                ConsultAction(db, embed_query=self._vector.embed_query),
-            ])
-            if self._cognitive_rounds > 0
-            else None
-        )
+        # 认知动作只在 ReAct 开启时绑定执行器：轮次预算为 0 时执行器永远不会被
+        # 调用，绑定它只会让「关闭即回退到单轮」这条性质多一处需要复核的地方。
+        # consult 已在 COGNITIVE_ACTIONS 里，动作空间会把它发给模型；执行器缺
+        # 这一条就会在 Bot 真的选中时撞 KeyError，装配必须同步。
+        if self._cognitive_rounds > 0:
+            self._tool_registry.bind_action_executor(
+                'recall',
+                CognitiveToolExecutor(
+                    RecallAction(self.memory, self._registry.stream_display_name, db)
+                ),
+            )
+            self._tool_registry.bind_action_executor(
+                'inspect',
+                CognitiveToolExecutor(
+                    InspectAction(self.memory, self._registry.stream_display_name)
+                ),
+            )
+            self._tool_registry.bind_action_executor(
+                'consult',
+                CognitiveToolExecutor(
+                    ConsultAction(db, embed_query=self._vector.embed_query)
+                ),
+            )
         self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
         self.persona.snapshot_daily(self._desktop_context.person.id)
@@ -4428,30 +4440,22 @@ class ChatService:
             trace.emit('llm_chunk', turnId=turn, text=text, reasoning=chunk.get('reasoning'))
 
         def on_round(round_outcome: AgentOutcome) -> None:
-            """把认知动作或外部只读工具轮显示到控制台。
+            """把认知动作与外部只读工具轮逐条显示到控制台。
 
             内部工具轮不产生任何用户可见产物，不渲染的话终端上只会看到
-            「Bot 沉默了十几秒然后说了句话」，中间查了什么完全不可见。
+            「Bot 沉默了十几秒然后说了句话」，中间查了什么完全不可见。一轮
+            允许执行多个工具，因此按明细逐条渲染：只渲染最后一条会让同轮的
+            前几次检索在控制台上凭空消失。
             """
-            if round_outcome.tool_invocation is not None:
-                action = round_outcome.tool_invocation.tool_name
-                query = json.dumps(
-                    round_outcome.tool_invocation.arguments,
-                    ensure_ascii=False,
-                    sort_keys=True,
+            for name, argument, observation in round_outcome.cognitive_steps:
+                render_action_decision(
+                    turn=turn,
+                    agent_scope='live',
+                    event_status=round_outcome.event_status,
+                    action=name,
+                    query=argument,
+                    observation=observation,
                 )
-            else:
-                assert round_outcome.decision is not None
-                action = round_outcome.decision.action
-                query = round_outcome.decision.query or ''
-            render_action_decision(
-                turn=turn,
-                agent_scope='live',
-                event_status=round_outcome.event_status,
-                action=action,
-                query=query,
-                observation=round_outcome.observation,
-            )
 
         outcome = await self._conversation_agent.run(
             frame,
@@ -4462,12 +4466,11 @@ class ChatService:
             model_task='chat.conversation',
             provider_name=getattr(self._chat_provider, 'provider', ''),
             model_name=getattr(self._chat_provider, 'model', ''),
-            cognitive_executor=self._cognitive_executor,
             # 关闭 ReAct 时连范围都不算：那是一次真实的数据库查询，
             # 为一个永远不会被消费的字段付账没有意义。
             cognitive_scope=(
                 self._cognitive_scope(frame, context.stream.id)
-                if self._cognitive_executor is not None
+                if self._cognitive_rounds > 0
                 else None
             ),
             cognitive_rounds=self._cognitive_rounds,
