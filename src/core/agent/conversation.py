@@ -151,7 +151,7 @@ def _clip_total(text: str, limit: int) -> str:
     """按总预算截断回灌文本，并显式标注截断。
 
     多条工具观察共享同一预算：整段拼接后一次性截断，而不是逐条各自截断——
-    逐条截断会让先执行的工具占满全部预算，后面的观察一句都进不来。
+    逐条截断会让先执行的工具占满全部预算，后续观察无法进入回灌。
 
     :param text: 待截断的完整文本。
     :param limit: 总字符预算。
@@ -209,7 +209,7 @@ def _emit_tool_execution(
     :param duration_ms: 执行耗时。
     :param observation: 观察摘要，按账本上限截断。
     :param tool_kind: 工具类别；内置认知动作为 cognitive，外部只读工具为
-        readonly。账本据此区分「她自己查记忆」与「她读了会话里的东西」。
+        readonly。账本据此区分 Bot 查询记忆与读取会话内容。
     """
     trace.emit(
         'tool_execution',
@@ -232,8 +232,8 @@ def _emit_discarded_tool_call(
 ) -> None:
     """给终局动作之后被截断的工具调用记一条轻量审计事件。
 
-    截断的调用不执行、不计为错误：它只说明「模型在终局动作后面多选了」，
-    与协议越界是两回事，账本上必须分得开。
+    截断的调用不执行、不计为错误：它表示模型在终局动作之后多选了工具，
+    不属于协议越界，账本须与协议越界区分记录。
 
     :param call: 被截断的工具调用原文。
     :param frame: 本回合固定快照。
@@ -345,15 +345,15 @@ def _parse_length(raw: str | None) -> ReplyLength | None:
 
 
 class ConversationAgent:
-    """唯一能产出用户可见内容的模型 Agent（项目全局不变量之一）。
+    """唯一能产出用户可见内容的模型 Agent。
 
     可见正文永远从一条已经通过校验的动作头派生，这一条不受调用次数影响：
 
-- 未注入 replyer：同一次模型调用内先出动作头再发声，与拆分前逐字相同。
-- 注入 replyer：动作头一解析完就结束决策流，正文改由第二次调用产出。
-      决策模型此后写的任何字都不解析、不流出——它的职责到动作头为止。
+    - 未注入 replyer：同一次模型调用内先出动作头再发声，与拆分前逐字相同。
+    - 注入 replyer：动作头一解析完就结束决策流，正文改由第二次调用产出。
+      决策模型此后写的任何字都不解析、不流出，其职责到动作头为止。
 
-    ReAct 回环只在动作头层面展开：认知动作不产出可见内容，因此不影响上述不变量。
+    ReAct 回环只在动作头层面展开：认知动作不产出可见内容，因此不影响上述约束。
     只有 ``SPEAKING_ACTIONS`` 会触发第二次调用；silent / wait / react / poke
     在决策那一次就结束，不额外付一次模型往返。
     """
@@ -461,8 +461,8 @@ class ConversationAgent:
 
         副作用：每轮写入一条 action_decision 观察事件；模型调用次数等于实际轮数。
         """
-        # 认知检索与外部只读工具各自都能撑起「多查一轮」：只配了外部工具、
-        # 没给认知范围的会话同样要进多轮，否则工具声明下发了却没有轮次可用。
+        # 认知检索与外部只读工具都可以启用多轮：只配置了外部工具、未给认知
+        # 范围的会话同样进入多轮，否则工具声明下发了却没有轮次可用。
         external_tool_enabled = (
             tool_context is not None
             and self._tool_registry is not None
@@ -511,8 +511,8 @@ class ConversationAgent:
             assert outcome.cognitive_steps
             if on_round is not None:
                 on_round(outcome)
-            # 一轮响应可以执行多个认知工具：预算按工具条数扣减，不做任何
-            # 借支；扣减后为负的情况已在 _run_round 内按「预算耗尽未给出
+            # 一轮响应可以执行多个认知工具：预算按工具条数扣减，不允许先超支
+            # 再补终局；扣减后为负的情况已在 _run_round 内按「预算耗尽未给出
             # 终局动作」记 illegal_action，不会走到这里。
             rounds_left -= len(outcome.cognitive_steps)
             round_index += 1
@@ -662,7 +662,7 @@ class ConversationAgent:
         def finish() -> AgentOutcome:
             """组装审计事件、写入观察账本并返回本轮结果。"""
             latency_ms = int((time.monotonic() - started) * 1000)
-            # 纠错吞掉了一次本会终局的协议错误，审计事件必须留下记数，
+            # 纠错重试覆盖了一次本会终局的协议错误，审计事件必须记录纠错次数，
             # 否则该轮只能凭延迟异常反推发生过重试。
             repair_note = (
                 f'含 {repairs_used} 次工具调用纠错' if repairs_used else ''
@@ -785,7 +785,7 @@ class ConversationAgent:
                                 # 预算与回灌通道，因此不会自成一条并行的轮次语义。
                                 if tool_context is None:
                                     # 装配缺失属于本机故障，不给纠错重试：重发
-                                    # 多少次上下文都不会凭空出现。
+                                    # 调用也不会使上下文出现。
                                     raise IllegalActionError(
                                         f'工具 {call_name} 缺少执行上下文'
                                     )
@@ -840,7 +840,7 @@ class ConversationAgent:
                                 # 内置认知工具的本机故障原样上抛：它会被外层
                                 # 异常分类捕获，这里用标记让它原样穿过，不转成
                                 # 模型失败——本机 bug 混进 provider_error 会被
-                                # 当成服务商抖动忽略掉。
+                                # 当成服务商波动忽略掉。
                                 tool_crash = tool_exc
                                 raise
                             tool_duration_ms = int((time.monotonic() - tool_started_at) * 1000)
@@ -1025,7 +1025,7 @@ class ConversationAgent:
 
         与认知动作的差别只在执行协议：外部工具的参数按 ToolSpec 的 Schema 校验，
         执行有独立超时，失败不上抛而是把失败原因作为观察回灌——只读工具查不到
-        东西是正常结果，不该让整轮判死。
+        内容是正常结果，不应使整轮按失败处理。
 
         :param call: 模型侧的工具调用原文，用于落账。
         :param call_name: 已校验非空的工具名。
@@ -1313,7 +1313,7 @@ def _call_fault_messages(reason: str) -> list[dict[str, str]]:
 
     网关会把工具参数整段丢弃，校验层收到的可能是空对象；这类协议错误直接
     终局会把一次可自愈的故障变成用户可见的沉默。回灌只陈述拒绝原因并要求
-    重新调用，不替模型补写参数，决定权仍在模型。
+    重新调用，不替模型补写参数，参数内容由模型重新给出。
 
     :param reason: 校验层给出的拒绝原因。
     :return: 追加到消息序列尾部的一条 user 消息，与观察回灌同一扁平格式。

@@ -2,9 +2,9 @@
 
 存在的理由是 ``CREATE TABLE IF NOT EXISTS`` 的两个盲区：
 
-1. **建表静默**。新增一张表时，启动日志里不会出现任何痕迹，运维无从确认它到底建没建。
-2. **加列无效且不报错**。表已存在时该语句直接跳过，DDL 里新加的列**不会**被补上，
-   库与代码就此漂移；读旧列的查询照常工作，直到某个写新列的语句在运行期炸掉。
+1. 建表静默：新增一张表时，启动日志不留任何痕迹，无法确认表是否建立。
+2. 加列无效且不报错：表已存在时该语句直接跳过，DDL 新增的列不会被补上，
+   库与代码就此漂移；读旧列的查询照常工作，直到写新列的语句在运行期失败。
 
 因此本模块把「期望结构」与「实际结构」都物化成 表名 → 列名集合 的字典再做差集：
 期望结构由当前 DDL 在内存库里跑一遍得到，不靠解析 SQL 文本。
@@ -86,7 +86,7 @@ def _expected_shape() -> SchemaShape:
     """在内存库里跑一遍当前 DDL，得到代码期望的结构。
 
     :return: 表名到列名集合的映射。
-    :raises sqlite3.Error: 当前 DDL 无法执行——那是代码缺陷，不应被吞掉。
+    :raises sqlite3.Error: 当前 DDL 无法执行：属于代码缺陷，不应静默忽略。
     副作用：创建并丢弃一个内存数据库，不触碰真实库。
     """
 
@@ -130,8 +130,7 @@ def describe_schema_changes(before: SchemaShape, after: SchemaShape) -> SchemaCh
 def report_schema_changes(changes: SchemaChanges, version: int) -> None:
     """把结构变化打印成控制台信息框并写入日志。
 
-    没有任何变化时**不打印**：每次启动都刷一个「无变化」的框只会让真正有变化的
-    那一次淹没在噪声里。
+    无变化时不打印：每次启动都输出「无变化」的框会使真正有变化的那次被淹没。
 
     :param changes: :func:`describe_schema_changes` 的产物。
     :param version: 当前 ``user_version``，一并展示便于与迁移记录对账。

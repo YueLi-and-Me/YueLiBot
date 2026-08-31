@@ -79,7 +79,7 @@ class PlatformInboundBody(BaseModel):
     bot_name: str | None = Field(default=None, alias='botName')
     text: str
     mentioned_me: bool = Field(alias='mentionedMe')
-    # 平台消息编号。**允许为空**：戳一戳这类 notice 通道在协议上就没有消息编号，
+    # 平台消息编号。允许为空：戳一戳这类 notice 通道在协议上就没有消息编号，
     # 下游引用逻辑已按「不带编号的通道」处理，不会拿内部 ID 冒充平台编号发出去。
     external_message_id: str = Field(alias='externalMessageId')
     # 本条是「有人戳了 Bot」。戳一戳没有正文也没有 @，正文里没有任何门控能识别的
@@ -1629,9 +1629,9 @@ def _delete_expressions(
 ) -> tuple[int, list[dict]]:
     """同步批量删除表达方式，并回报因此跌破下限的会话候选池。
 
-    受影响的会话必须在删除**之前**取，删完再查就丢了：整条会话的表达被删光
-    时它在 expressions 里不再有行，事后的 ``GROUP BY stream_id`` 根本不会出现
-    这个会话，而候选池归零正是最需要报出来的一种。
+    受影响的会话必须在删除之前取：整条会话的表达被删光时它在 expressions 里
+    不再有行，事后的 ``GROUP BY stream_id`` 不会出现该会话，而候选池归零正是
+    最需要上报的情形。
 
     候选池只做如实回报、不做拦截。跌破 :data:`MIN_POOL_CANDIDATES` 时
     ``fetch_expression_pool`` 直接返回空池，表达注入静默停摆——这件事必须让
@@ -1815,8 +1815,8 @@ def _memory_graph_rows(
 ) -> dict:
     """读出联想网络的节点、边与统计，供观察面板绘图。
 
-    只返回**有边**的节点：孤立节点在图上是一堆无法解释的散点，而「这条记忆还没
-    和任何东西一起被点亮过」这件事由统计里的 ``isolated`` 计数表达更清楚。
+    只返回有边的节点：孤立节点在图上无法解释，「记忆尚未与任何内容关联」由
+    统计中的 ``isolated`` 计数表达。
 
     节点超过 ``limit`` 时按度数降序截断，保留连接最密的核心；随后丢弃任一端点
     被截断的边，避免出现指向图外的悬空线。截断与否由 ``stats.truncated`` 标注。
@@ -2060,7 +2060,7 @@ async def emoji_entries(
     :param limit: 页大小，1 到 200，默认 50。
     :param offset: 偏移量，从 0 起。
     :param banned: ``true`` 只看已封禁、``false`` 只看未封禁、省略则不筛选。
-    :return: entries 表情包记录列表、total **当前筛选下**的条数与 stats 容量
+    :return: entries 表情包记录列表、total 当前筛选下的条数与 stats 容量
         总览。``total`` 跟着筛选走（否则翻页会翻出空白页），而 stats 里的数
         始终是全库口径。
     :raises fastapi.HTTPException: 服务未初始化 503；查询失败 500。

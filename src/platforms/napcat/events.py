@@ -81,7 +81,7 @@ def build_poke_inbound_event(
 ) -> QqInboundEvent:
     """把一条戳 Bot 的通知转换为可提交的入站事件。
 
-    戳一戳在协议上是 notice 而不是 message：**没有正文，也没有平台消息编号**。
+    戳一戳在协议上是 notice 而不是 message：没有正文，也没有平台消息编号。
     因此正文由适配器合成，``external_message_id`` 留空——主体侧「不带编号的通道」
     是已支持的形态，引用逻辑会据此拒绝把它当作引用目标。
 

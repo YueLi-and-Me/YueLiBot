@@ -156,7 +156,7 @@ def _reject_unknown_keys(
     allowed: Set[str],
     label: str,
 ) -> None:
-    """拒绝边界对象中的未知字段，避免协议漂移被静默吞掉。"""
+    """拒绝边界对象中的未知字段，避免协议漂移被静默忽略。"""
     unknown = sorted(str(key) for key in value if key not in allowed)
     if unknown:
         raise ValueError(f'{label}包含未知字段：{", ".join(unknown)}')

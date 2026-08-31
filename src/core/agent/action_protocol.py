@@ -13,7 +13,7 @@
 - ``PlatformCapabilities``：运行时按当前 stream 与平台适配器真实具备的能力；
 - ``DecisionFrame``：一次注意力候选窗口的回合固定快照；
 - ``ReplyPayload`` / ``ConversationDecision``：模型决策的数据形态与自检；
-- ``available_actions``：按 stream、平台能力与**剩余认知轮次**动态收窄动作空间——
+- ``available_actions``：按 stream、平台能力与剩余认知轮次动态收窄动作空间——
   剩余轮次归零时认知动作直接不在动作集里，模型再选就是越界，不存在「预算耗尽降级」路径；
 - ``GateInputFacts`` / ``ActionDecisionEvent``：四层审计事件，
   ``to_dict`` 生成可供 trace 使用的可序列化字典。
@@ -110,7 +110,7 @@ ALL_REASON_CODES: frozenset[str] = (
 # 表情回应语义词表：模型只输出语义名，平台编号由适配器映射。语义名进入协议而非
 # 平台编号：表情选择属于角色行为，编号属于平台实现，二者解耦后更换平台无需修改提示词。
 #
-# 【关键】名称必须逐字取自平台表情表，禁止自创近义词。
+# 名称必须逐字取自平台表情表，禁止自创近义词。
 #
 # - 现象：首版按印象命名，「惊讶」被映射到 26 号（实际为「惊恐」），
 #   「无语」在平台表情表中不存在。
@@ -645,7 +645,7 @@ def available_actions(
 
     认知动作的预算完全由本函数表达：``cognitive_rounds_left`` 归零时它们直接
     不在返回集合里，模型再选就撞上 ``_validate_frame_choice`` 的动作空间校验，
-    记为 ``illegal_action``。**不存在「预算耗尽就当 reply」这类降级路径**——
+    记为 ``illegal_action``。不存在「预算耗尽自动 reply」的降级路径：
     末轮的约束写在动作集里，不写在异常处理里。
 
     :param stream_kind: 会话类型；用户发起的私聊与桌面交互都不允许 silent，
@@ -656,14 +656,14 @@ def available_actions(
         支持才会让 react 进入动作集。
     :param cognitive_rounds_left: 本回合还剩几次认知动作机会；小于等于 0
         表示只能给出终局动作。
-    :param allow_speak: 是否允许 Bot 主动发起一个**不回应任何人**的话题。它与 reply 的区别
+    :param allow_speak: 是否允许 Bot 主动发起一个不回应任何人的话题。它与 reply 的区别
         只在有没有目标：reply 是回应某条消息，speak 是 Bot 自己想说点什么。
-        **不需要独立的触发机制**——扩展触发口径（frequency / reply_necessity）
+        不需要独立的触发机制：扩展触发口径（frequency / reply_necessity）
         本来就会在「群里热闹但没人理 Bot」时给出候选，speak 只是让那个候选里多一个
         选项，而不是再造一条并行的唤起路径。
     :param allow_wait: 本批是否还可以「先等等」。同一批消息只允许等一次——
-        第二次进来时 wait 直接不在动作集里，模型再选就是越界。**约束写在动作
-        空间而不是循环计数器里**，与认知轮次预算同一种表达方式，因此不需要
+        第二次进来时 wait 直接不在动作集里，模型再选就是越界。约束写在动作
+        空间而不是循环计数器里，与认知轮次预算同一种表达方式，因此不需要
         「连续等待上限」这类会与其它数互相牵制的常量。
 
     :return: 本轮允许模型选择的动作集合。

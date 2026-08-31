@@ -118,7 +118,7 @@ class EmojiBannedError(RuntimeError):
     """入库内容命中封禁表。
 
     封禁表以内容哈希为键独立于 emoji 行存在，因此这张图即使行被淘汰、
-    文件被删除也仍然进不来。
+    文件被删除后仍不允许入库。
     """
 
     def __init__(self, content_hash: str, reason: str = '') -> None:

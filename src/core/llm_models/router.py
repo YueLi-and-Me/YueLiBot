@@ -145,7 +145,7 @@ class _ExchangeRecord:
 
         观测失败不能影响对话：这里捕获写盘异常并只记一行警告。落盘属于旁路
         设施，磁盘满或权限不足时让正在进行的回复整个失败是更坏的结果；异常
-        本身仍然完整暴露在日志里，不做静默吞掉。
+        本身仍然完整保留在日志中，不做静默忽略。
         """
         try:
             path = dump_exchange(
@@ -170,7 +170,7 @@ class _ExchangeRecord:
             emit('prompt_record', task=self.task, path=str(path))
         # 同一份事实再交给控制台。活跃用户回合先收集、在轮末合并展示；视觉、
         # 摘要、日程、记忆等回合外调用没有轮末出口，完成后立即独立展示。
-        # ``note_model_call`` 通过 ContextVar 判断归属并返回是否已被回合接住，
+        # ``note_model_call`` 通过 ContextVar 判断归属并返回是否已被回合收集，
         # 保证一次响应只打印一次。
         call = ModelCall(
             task=self.task,

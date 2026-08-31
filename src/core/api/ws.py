@@ -175,7 +175,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         return
     client = cast(ClientKind, raw_client)
 
-    # 【关键】客户端选择 yueli-<token> 子协议时必须在 accept() 中回显。
+    # 客户端选择 yueli-<token> 子协议时必须在 accept() 中回显。
     # 未回显时，严格客户端会拒绝握手；当前实现只回显请求头中实际出现的令牌协议。
     selected_proto = None
     raw = websocket.headers.get("sec-websocket-protocol", "")
@@ -258,7 +258,7 @@ async def webui_events_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     # 必须先订阅实时广播，再读取历史账本；随后按 seq 去重，避免建立窗口丢事件。
     #
-    # 【关键】事件账本只承载持久化事件，订阅时排除 LIVE_ONLY_KINDS：
+    # 事件账本只承载持久化事件，订阅时排除 LIVE_ONLY_KINDS：
     # - 现象: llm_chunk 在模型流式生成时按 token 触发，全部转发给浏览器会让观察面板
     #   每个分片都重渲染整棵事件树，打开面板即把单核 CPU 打满。
     # - 原因: 这些事件不落账、seq 为 None，既无法参与历史回放与按 seq 去重，又会灌满

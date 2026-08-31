@@ -194,7 +194,7 @@ class RecallAction:
         :param request: 已校验的认知动作请求。
         :return: 含命中条目的观察；两类都为空时返回明确的「没想起来」。
         :raises sqlite3.Error: 底层检索失败时原样上抛，由 Agent 记为失败状态。
-        副作用：只读记忆库；**不回补事实强度**，检索本身不应改写遗忘曲线。
+        副作用：只读记忆库；不回补事实强度，检索本身不应改写遗忘曲线。
         """
         facts = self._store.recall_facts_in_scope(
             request.person_ids, request.query, limit=self._fact_limit,
@@ -215,8 +215,8 @@ class RecallAction:
             lines.append(f'- 你们聊过：{_clip(episode.summary, _ITEM_MAX_CHARS)}')
 
         # 第二步：从命中的这些出发沿边扩散，把未被查询但被关联出来的内容也纳入观察。
-        # 与种子**分开成段**：种子是 Bot 记得的，扩散结果是 Bot 顺带想起的，语气不是一回事，
-        # 混在一起 Bot 就会把联想当成确凿的记忆说出去。
+        # 与种子分开成段：种子是 Bot 记得的内容，扩散结果是关联引出的内容；
+        # 混在一起时模型会把联想当作确凿记忆复述。
         seeds = (
             [('fact', fact.id, fact.score) for fact in facts]
             + [('episode', episode.id, episode.score) for episode in episodes]

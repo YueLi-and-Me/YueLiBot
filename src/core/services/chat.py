@@ -4445,7 +4445,7 @@ class ChatService:
             内部工具轮不产生任何用户可见产物，不渲染的话终端上只会看到
             「Bot 沉默了十几秒然后说了句话」，中间查了什么完全不可见。一轮
             允许执行多个工具，因此按明细逐条渲染：只渲染最后一条会让同轮的
-            前几次检索在控制台上凭空消失。
+            前几次检索在控制台上无任何展示。
             """
             for name, argument, observation in round_outcome.cognitive_steps:
                 render_action_decision(

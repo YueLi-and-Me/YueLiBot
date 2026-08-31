@@ -704,7 +704,7 @@ class NapcatRunner:
                             userId=payload.get('user_id'),
                         )
                 except Exception as exc:
-                    # 该支路不阻断普通消息，但不能静默吞掉故障，否则现场只会表现为
+                    # 该支路不阻断普通消息，但不能静默忽略故障，否则现场只会表现为
                     # 「输入状态完全没生效」，无法判断断在协议端还是主体条件判断。
                     logger.warning(
                         '提交 QQ 输入状态失败',

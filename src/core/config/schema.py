@@ -17,7 +17,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
-# 配置格式版本的**唯一定义处**。loader 从这里导入，不再各写一份——两处必须永远
+# 配置格式版本的唯一定义处。loader 从这里导入，不再各写一份——两处必须始终
 # 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
 CONFIG_VERSION = '1.3.0'
 
@@ -33,7 +33,7 @@ class InnerConfig(BaseModel):
     # 1.3.0 新增 [emoji] 与 [emoji.cleanup] 两段表情包库管理配置。
     #
     # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
-    # 所以**删除或重命名配置字段时必须同时 bump 这里与 electron/main/config.ts**，
+    # 所以删除或重命名配置字段时必须同步修改这里与 electron/main/config.ts，
     # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
     # 为它们报一次「配置字段变更」。
     version: Literal['1.3.0'] = CONFIG_VERSION
@@ -108,13 +108,13 @@ class GroupChatConfig(BaseModel):
     reactions_enabled: bool = True
     # 是否允许 Bot 戳一戳群里的某个人（poke 动作）。
     #
-    # 与表情回应分开且**默认关闭**：贴表情是安静的，戳一戳会给对方推送提醒，
+    # 与表情回应分开且默认关闭：表情回应无推送，戳一戳会给对方推送提醒，
     # 扰动量级完全不同。合成一个开关就没法只开安静的那个。
     pokes_enabled: bool = False
-    # 是否允许 Bot 主动发起一个**不回应任何人**的话题（speak 动作）。
+    # 是否允许 Bot 主动发起一个不回应任何人的话题（speak 动作）。
     #
     # 它与 reply 的区别只在有没有目标：reply 是回应某条消息，speak 是 Bot 自己想说点
-    # 什么。**不需要独立的触发机制**——扩展触发口径（frequency / reply_necessity）
+    # 什么。不需要独立的触发机制：扩展触发口径（frequency / reply_necessity）
     # 本来就会在「群里热闹但没人理 Bot」时给出候选，speak 只是让那个候选里多一个
     # 选项，因此它天然受同一条频率闸门约束，不会另外增加 Bot 开口的次数。
     self_started_topics: bool = True
@@ -144,8 +144,8 @@ class ConversationAgentConfig(BaseModel):
     频率硬上限等确定性边界。
 
     ``max_cognitive_rounds`` 控制 ReAct 回环：一个回合内 Bot 最多可以先做几次
-    认知动作（recall / inspect）再给出终局动作。**每一次都是一次完整的模型
-    往返，直接加在首字延迟上**，因此上界很小；置 0 即关闭回环、退回单轮，
+    认知动作（recall / inspect）再给出终局动作。每一次都是一次完整的模型
+    往返，直接加在首字延迟上，因此上界很小；置 0 即关闭回环、退回单轮，
     与引入 ReAct 之前的行为逐字相同，是零风险回退开关。
     """
 
@@ -800,17 +800,17 @@ class ModelTaskConfig(BaseModel):
     replyer: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     # 情景分析：把一段历史概括成「此刻是什么情况」。它原来借用摘要那一档，
     # 但这件事已经从群聊后台画像扩展到私聊即时决策，在关键路径上，值得单开。
-    # 也因此它是少数**延迟与判断质量都要**的槽：输出直接喂给决策层，读错了当前局面，
+    # 因此它同时要求低延迟与判断质量：输出直接进入决策层，读错当前局面，
     # 整个回合的走向就跟着错，而它又卡在 Bot 开口之前。
     scene: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     # 记忆抽取：回合结束后回看一段对话，判断有没有值得长期记住的事实。
     #
-    # 不在回复关键路径上，因此**对延迟没有要求**；但这不等于可以配差模型——
+    # 不在回复关键路径上，对延迟没有要求；但模型判断力不能降低——
     # 原注释写的「配便宜快的模型即可」把「不需要发挥」误当成了「不需要判断力」，
     # 已按下述理由更正：
     # - 它要判断哪条算稳定事实、这条属于谁、哪些是与人无关的知识，全是判断题；
     # - 归属判断错了的后果是永久且无人察觉的：错事实会被反复召回、进提示词、
-    #   喂给画像层、再长出联想边（见 agent/fact_extract.py 里「记错人比不记更糟」）。
+    #   进入画像层并生成联想边（错误归属的事实会被反复召回且难以察觉）。
     # 对比回复生成——那里的错误当场可见且转瞬即逝。按错误代价排序，
     # 这一档的判断质量要求不低于回复生成，成本应从其他维度节省。
     memory: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
