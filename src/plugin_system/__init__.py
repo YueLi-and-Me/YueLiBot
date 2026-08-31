@@ -11,6 +11,7 @@ from .capabilities import (
     CapabilityError,
     parse_capabilities,
 )
+from .loader import PluginLoadError, load_adapter_plugin
 from .manifest import (
     SUPPORTED_MANIFEST_VERSION,
     AdapterManifest,
@@ -28,6 +29,8 @@ __all__ = [
     'AdapterPlugin',
     'CapabilityError',
     'ManifestError',
+    'PluginLoadError',
+    'load_adapter_plugin',
     'load_manifest',
     'manifest_from_payload',
     'parse_capabilities',
