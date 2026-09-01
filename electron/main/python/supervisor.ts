@@ -604,7 +604,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
 
     const adapter = spawn(this.pythonExe, [
       '-m', 'src.platforms.onebot11',
-      '--adapter', 'yueli-napcat-adapter',
+      '--adapter', 'yueli-snowluma-adapter',
       '--runtime-path', join(this.dataDir, 'runtime', 'backend.json'),
     ], {
       cwd: this.cwd,
