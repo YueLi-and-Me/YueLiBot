@@ -8,8 +8,6 @@ SnowLuma 是不依赖可选封包组件的 OneBot 11 协议端，不存在「能
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 from pathlib import Path
 from typing import FrozenSet
 
@@ -56,7 +54,6 @@ class SnowlumaAdapterPlugin(AdapterPlugin):
         self._transport = transport
         self._backend = backend
         self._runner: OneBot11Runner | None = None
-        self._run_task: asyncio.Task[None] | None = None
 
     async def on_load(self) -> None:
         """读取 ``snowluma`` 配置段并构造运行器。
@@ -106,28 +103,29 @@ class SnowlumaAdapterPlugin(AdapterPlugin):
         return frozenset()
 
     async def on_start(self) -> None:
-        """把运行器推进收发循环。
+        """把运行器推进收发循环，并阻塞到停机为止。
+
+        必须阻塞而不是起个任务就返回：宿主用本协程的返回判断「收发已结束」，
+        提前返回会让它立刻进入收尾路径，把刚建立的连接取消掉，表现为适配器
+        启动后零错误退出。约束的完整说明见基类 ``AdapterPlugin.on_start``。
 
         :raises RuntimeError: 未先调用 ``on_load``；生命周期顺序由宿主保证，
             此处只拒绝明显乱序的调用。
-        副作用：创建并持有运行任务；连接与重试由运行器自行管理。
+        :raises asyncio.CancelledError: 宿主取消时原样传播，用于结束收发循环。
+        副作用：建立协议端与主体连接并持续收发；连接与重试由运行器自行管理。
         """
         if self._runner is None:
             raise RuntimeError('on_start 在 on_load 之前被调用')
-        self._run_task = asyncio.create_task(self._runner.run())
+        await self._runner.run()
 
     async def on_stop(self) -> None:
-        """取消收发循环并等待连接释放。
+        """关闭协议端连接。
 
         幂等：停机与重连两条路径都可能调用，重复调用或先于 ``on_start`` 调用
-        都不抛异常。连接关闭由运行器在 ``run`` 的收尾路径完成，这里只负责
-        取消并等它结束。
+        都不抛异常。收发循环由宿主取消 ``on_start`` 协程结束，运行器在其收尾
+        路径里关闭两条连接；这里只做一次兜底关闭，不持有也不取消任务。
 
-        副作用：取消并等待已存在的运行任务；不重复取消已结束的任务。
+        副作用：关闭协议端传输；已关闭时重复调用无副作用。
         """
-        task, self._run_task = self._run_task, None
-        if task is None or task.done():
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        if self._transport is not None:
+            await self._transport.close()
