@@ -77,7 +77,12 @@ def _shape(db: sqlite3.Connection) -> SchemaShape:
     for (name,) in rows:
         if name in shadows:
             continue
-        columns = {row[1] for row in db.execute(f'PRAGMA table_info("{name}")')}
+        # PRAGMA 不支持参数绑定，表名只能拼进语句。名字取自 sqlite_master，是库
+        # 自己的目录而非外部输入，因此不构成注入面；但仍按 SQLite 标识符规则把内嵌
+        # 双引号翻倍——库里若真存在用引号构造的表名，不翻倍会拼出越界语句，而且
+        # 静态扫描每次都会把这行报成注入点，翻倍一次即可两边都免。
+        quoted = name.replace('"', '""')
+        columns = {row[1] for row in db.execute(f'PRAGMA table_info("{quoted}")')}
         shape[name] = columns
     return shape
 
