@@ -1,29 +1,38 @@
-"""按目录发现并实例化适配器插件。
+"""按目录发现并实例化插件。
 
-适配器目录名含连字符（``yueli-napcat-adapter``），不是合法的 Python 包名，因此
-按文件路径加载而不是按包导入。加载约定只有一条：``plugin.py`` 里恰好定义一个
-:class:`AdapterPlugin` 子类——零个说明忘了写，多个说明入口有歧义，两者都当场报错，
-不猜测该用哪一个。
+插件目录名允许含连字符（``yueli-napcat-adapter``），不是合法的 Python 包名，因此
+按文件路径加载而不是按包导入。加载约定只有一条：``plugin.py`` 里恰好定义一个期望
+基类的子类——零个说明忘了写，多个说明入口有歧义，两者都当场报错，不猜测该用哪一个。
 
-依赖 ``manifest`` 与 ``adapter``；被适配器进程入口调用，不被主体业务代码引用。
+``_load_module`` 与 ``_single_plugin_class`` 是类型无关的通用逻辑，适配器与工具
+两条加载路径共用同一份，只是期望的基类不同：``load_adapter_plugin`` 被适配器进程
+入口按名字调用，``load_tool_plugin`` 被插件注册表在扫目录发现时调用。
+
+依赖 ``manifest``、``adapter`` 与 ``tools``；被适配器进程入口与插件注册表调用，
+不被主体业务代码引用。
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from types import ModuleType
-from typing import List, Type
+from typing import List, Type, TypeVar
 
 import importlib.util
 import inspect
 
 from .adapter import AdapterPlugin
-from .manifest import AdapterManifest, load_manifest
+from .manifest import AdapterManifest, PluginManifest, load_manifest
+from .plugin import Plugin
+from .tools import ToolPlugin
 
 
-# 适配器目录里两个固定文件名。清单描述插件是什么，入口模块提供实现。
+# 插件目录里两个固定文件名。清单描述插件是什么，入口模块提供实现。
 MANIFEST_FILENAME = '_manifest.json'
 PLUGIN_FILENAME = 'plugin.py'
+
+# 唯一实现判定按期望基类收窄；类型参数让两条加载路径各自拿到准确的返回类型。
+PluginT = TypeVar('PluginT', bound=Plugin)
 
 
 class PluginLoadError(RuntimeError):
@@ -49,29 +58,37 @@ def _load_module(path: Path, module_name: str) -> ModuleType:
     return module
 
 
-def _single_plugin_class(module: ModuleType, path: Path) -> Type[AdapterPlugin]:
-    """在入口模块里找出唯一的适配器插件实现。
+def _single_plugin_class(
+    module: ModuleType,
+    path: Path,
+    base_class: Type[PluginT],
+) -> Type[PluginT]:
+    """在入口模块里找出唯一实现了期望基类的插件类。
 
     只认在该模块内定义的类：基类本身是被导入进来的，把它算进候选会让每个模块都
     至少有两个候选。
 
     :param module: 已加载的入口模块。
     :param path: 入口路径，仅用于错误信息定位。
+    :param base_class: 期望的插件基类；候选必须是它的子类，入口里其它类型的插件
+        实现（例如与工具插件同处一个模块的适配器类）不计入候选。
     :return: 唯一的插件类。
     :raises PluginLoadError: 候选数量不是一个。
     """
-    candidates: List[Type[AdapterPlugin]] = [
+    candidates: List[Type[PluginT]] = [
         member
         for _name, member in inspect.getmembers(module, inspect.isclass)
-        if issubclass(member, AdapterPlugin)
-        and member is not AdapterPlugin
+        if issubclass(member, base_class)
+        and member is not base_class
         and member.__module__ == module.__name__
     ]
     if not candidates:
-        raise PluginLoadError(f'插件入口没有定义 AdapterPlugin 子类：{path}')
+        raise PluginLoadError(f'插件入口没有定义 {base_class.__name__} 子类：{path}')
     if len(candidates) > 1:
         names = '、'.join(sorted(cls.__name__ for cls in candidates))
-        raise PluginLoadError(f'插件入口定义了多个 AdapterPlugin 子类，入口有歧义：{names}')
+        raise PluginLoadError(
+            f'插件入口定义了多个 {base_class.__name__} 子类，入口有歧义：{names}'
+        )
     return candidates[0]
 
 
@@ -99,5 +116,28 @@ def load_adapter_plugin(directory: Path, **options: object) -> AdapterPlugin:
     entry = directory / PLUGIN_FILENAME
     # 模块名用插件标识派生：两个适配器的入口文件同名，按文件名注册会互相覆盖。
     module = _load_module(entry, manifest.plugin_id.replace('.', '_'))
-    plugin_class = _single_plugin_class(module, entry)
+    plugin_class = _single_plugin_class(module, entry, AdapterPlugin)
     return plugin_class(manifest, **options)
+
+
+def load_tool_plugin(directory: Path, manifest: PluginManifest) -> ToolPlugin:
+    """用已解析的清单加载一个工具插件目录，返回可用的插件实例。
+
+    清单由调用方（注册表）先行解析：扫目录发现时必须先拿到插件类型与标识做分派
+    与去重——类型不符的目录不该走到加载，同 id 的后出现者更不该执行其入口模块。
+
+    :param directory: 插件目录，需包含 ``plugin.py``。
+    :param manifest: 该目录已校验的清单，``plugin_type`` 必须为 ``tool``。
+    :return: 已用清单构造、尚未 ``on_load`` 的工具插件实例。
+    :raises PluginLoadError: 清单类型不符、入口缺失或实现不唯一。
+    :raises TypeError: 插件构造函数拒绝清单以外的参数。
+    副作用：读取入口文件并执行其顶层代码。
+    """
+    if manifest.plugin_type != 'tool':
+        raise PluginLoadError(
+            f'{directory} 的清单类型是 {manifest.plugin_type}，不是工具插件'
+        )
+    entry = directory / PLUGIN_FILENAME
+    module = _load_module(entry, manifest.plugin_id.replace('.', '_'))
+    plugin_class = _single_plugin_class(module, entry, ToolPlugin)
+    return plugin_class(manifest)
