@@ -13,25 +13,36 @@ from .capabilities import (
 )
 from .loader import PluginLoadError, load_adapter_plugin
 from .manifest import (
+    ALL_PLUGIN_TYPES,
     SUPPORTED_MANIFEST_VERSION,
     AdapterManifest,
     ManifestError,
+    PluginManifest,
+    PluginType,
     load_manifest,
     manifest_from_payload,
 )
+from .plugin import Plugin
+from .tools import ToolPlugin, tool
 
 
 __all__ = [
     'ALL_CAPABILITIES',
+    'ALL_PLUGIN_TYPES',
     'SUPPORTED_MANIFEST_VERSION',
     'AdapterCapability',
     'AdapterManifest',
     'AdapterPlugin',
     'CapabilityError',
     'ManifestError',
+    'Plugin',
     'PluginLoadError',
+    'PluginManifest',
+    'PluginType',
+    'ToolPlugin',
     'load_adapter_plugin',
     'load_manifest',
     'manifest_from_payload',
     'parse_capabilities',
+    'tool',
 ]

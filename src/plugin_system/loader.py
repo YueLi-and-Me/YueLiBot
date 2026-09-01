@@ -91,7 +91,11 @@ def load_adapter_plugin(directory: Path, **options: object) -> AdapterPlugin:
     """
     if not directory.is_dir():
         raise PluginLoadError(f'适配器目录不存在：{directory}')
-    manifest: AdapterManifest = load_manifest(directory / MANIFEST_FILENAME)
+    manifest = load_manifest(directory / MANIFEST_FILENAME)
+    if not isinstance(manifest, AdapterManifest):
+        raise PluginLoadError(
+            f'{directory} 的清单类型是 {manifest.plugin_type}，不是适配器'
+        )
     entry = directory / PLUGIN_FILENAME
     # 模块名用插件标识派生：两个适配器的入口文件同名，按文件名注册会互相覆盖。
     module = _load_module(entry, manifest.plugin_id.replace('.', '_'))

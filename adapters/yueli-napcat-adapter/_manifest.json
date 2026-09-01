@@ -1,6 +1,7 @@
 {
   "manifest_version": 1,
   "id": "yueli.napcat-adapter",
+  "plugin_type": "adapter",
   "name": "YueLi-NapCat-Adapter",
   "version": "0.1.0",
   "description": "连接 NapCat 协议端的 OneBot 11 适配器；戳一戳依赖其私有 packet 后端，连接后实测",
@@ -15,6 +16,8 @@
       "group_history",
       "member_info"
     ],
-    "probed": ["poke"]
+    "probed": [
+      "poke"
+    ]
   }
 }

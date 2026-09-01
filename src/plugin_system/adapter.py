@@ -13,46 +13,33 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import FrozenSet
+from abc import abstractmethod
+from typing import FrozenSet, cast
 
 from src.core.common.logger import get_logger
 
 from .capabilities import AdapterCapability
 from .manifest import AdapterManifest
+from .plugin import Plugin
 
 
 logger = get_logger(__name__)
 
 
-class AdapterPlugin(ABC):
+class AdapterPlugin(Plugin):
     """适配器插件基类；子类实现四个生命周期方法。
 
     生命周期顺序固定为 ``on_load`` → ``probe_capabilities`` → ``on_start``，
     停机或重连前调用 ``on_stop``。宿主保证这个顺序，子类不必自行判断阶段。
+
+    与其它插件的差别：适配器互斥（一个账号只连一个协议端）、跑在独立进程里，
+    因此由进程入口按名字选中一个加载，不走「扫目录全部加载」那条发现路径。
     """
-
-    def __init__(self, manifest: AdapterManifest) -> None:
-        """保存清单。
-
-        :param manifest: 已校验的插件清单；能力结算以它为上界。
-        """
-        self._manifest = manifest
 
     @property
     def manifest(self) -> AdapterManifest:
-        """返回本插件的清单。"""
-        return self._manifest
-
-    @abstractmethod
-    async def on_load(self) -> None:
-        """读取配置并构造运行期对象。
-
-        此时尚未连接协议端，**禁止在这里发起任何网络 I/O**：加载失败应当是纯粹的
-        配置问题，混入网络故障会让「配置写错」和「协议端没起来」在现场无法区分。
-
-        :raises Exception: 配置缺失或非法时原样上抛，由宿主决定是否终止启动。
-        """
+        """返回本插件的清单；类型由加载器保证是适配器清单。"""
+        return cast(AdapterManifest, self._manifest)
 
     @abstractmethod
     async def probe_capabilities(self) -> FrozenSet[AdapterCapability]:
@@ -101,26 +88,26 @@ class AdapterPlugin(ABC):
             不同步；这属于装配错误，必须暴露而不是过滤掉。
         副作用：调用子类的 ``probe_capabilities``；探测失败时写一条 warning 日志。
         """
-        declared_probed = self._manifest.probed_capabilities
+        declared_probed = self.manifest.probed_capabilities
         if not declared_probed:
             # 没有待探测能力时不调用探测，避免插件为了「被调用」而做无谓的网络往返。
-            return self._manifest.static_capabilities
+            return self.manifest.static_capabilities
 
         try:
             probed = await self.probe_capabilities()
         except Exception as exc:
             logger.warning(
                 '适配器能力探测失败，相关能力按不可用处理',
-                plugin=self._manifest.plugin_id,
+                plugin=self.manifest.plugin_id,
                 probed=sorted(declared_probed),
                 error=str(exc),
             )
-            return self._manifest.static_capabilities
+            return self.manifest.static_capabilities
 
         unexpected = frozenset(probed) - declared_probed
         if unexpected:
             raise ValueError(
-                f'{self._manifest.plugin_id} 探测返回了清单未声明的能力：'
+                f'{self.manifest.plugin_id} 探测返回了清单未声明的能力：'
                 f'{"、".join(sorted(unexpected))}'
             )
         unavailable = declared_probed - frozenset(probed)
@@ -128,7 +115,7 @@ class AdapterPlugin(ABC):
             # 探测判定不可用是正常结果而非故障，记 info 便于事后对照现场行为。
             logger.info(
                 '适配器部分能力经探测不可用',
-                plugin=self._manifest.plugin_id,
+                plugin=self.manifest.plugin_id,
                 unavailable=sorted(unavailable),
             )
-        return self._manifest.static_capabilities | frozenset(probed)
+        return self.manifest.static_capabilities | frozenset(probed)

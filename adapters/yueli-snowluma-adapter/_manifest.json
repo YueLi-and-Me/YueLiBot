@@ -1,6 +1,7 @@
 {
   "manifest_version": 1,
   "id": "yueli.snowluma-adapter",
+  "plugin_type": "adapter",
   "name": "YueLi-SnowLuma-Adapter",
   "version": "0.1.0",
   "description": "连接 SnowLuma 提供的 OneBot 11 正向 WebSocket 协议端",
