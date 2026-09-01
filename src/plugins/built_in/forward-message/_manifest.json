@@ -1,0 +1,8 @@
+{
+  "manifest_version": 1,
+  "id": "yueli.forward-message",
+  "plugin_type": "tool",
+  "name": "YueLi-Forward-Message",
+  "version": "0.1.0",
+  "description": "按消息编号与路径逐层浏览合并转发内容的内置工具；只在缓存过转发树的会话贡献 forward_message 能力"
+}

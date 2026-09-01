@@ -1,4 +1,10 @@
-"""按消息编号与路径逐层浏览合并转发内容。
+"""按消息编号与路径逐层浏览合并转发内容的内置工具插件。
+
+本模块承载工具本体与 ``ToolPlugin`` 的三个挂载点：``@tool`` 装饰的方法同时
+给出模型可见声明与执行体；``observe_inbound`` 在入站路径把完整转发树写入
+有界会话缓存；``stream_capabilities`` 只在缓存里确有转发内容的会话贡献
+``forward_message`` 能力，让工具声明按会话收窄。除挂载点外不依赖聊天服务，
+宿主经清单加载本插件后把收集到的工具登记进 ToolRegistry。
 
 工具缓存只保存当前进程已经接收的完整转发树，以 ``(stream_id, message_id)``
 隔离会话；模型每次只得到选中层的节点和下一层路径。这样既能访问任意深度，
@@ -7,7 +13,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, FrozenSet, List, Tuple
 
 import json
 
@@ -16,8 +22,8 @@ from src.core.tooling.spec import (
     ToolContext,
     ToolExecutionResult,
     ToolInvocation,
-    ToolSpec,
 )
+from src.plugin_system import PluginManifest, ToolPlugin, tool
 
 
 DEFAULT_FORWARD_CACHE_LIMIT = 128
@@ -25,15 +31,24 @@ DEFAULT_FORWARD_OBSERVATION_MAX_CHARS = 16000
 MIN_FORWARD_OBSERVATION_MAX_CHARS = 128
 
 
-class ForwardMessageTool:
+class ForwardMessagePlugin(ToolPlugin):
     """有界保存入站转发树，并按路径执行只读查询。"""
 
     def __init__(
         self,
+        manifest: PluginManifest,
         cache_limit: int = DEFAULT_FORWARD_CACHE_LIMIT,
         observation_max_chars: int = DEFAULT_FORWARD_OBSERVATION_MAX_CHARS,
     ) -> None:
-        """创建进程内缓存，并为分页正文和续读提示保留足够观察空间。"""
+        """创建进程内缓存，并为分页正文和续读提示保留足够观察空间。
+
+        :param manifest: 已校验的插件清单。
+        :param cache_limit: 会话缓存容量上限，必须大于 0。
+        :param observation_max_chars: 单次观察的字符上限，不得小于
+            :data:`MIN_FORWARD_OBSERVATION_MAX_CHARS`，否则分页提示放不下。
+        :raises ValueError: 容量或观察上限非法。
+        """
+        super().__init__(manifest)
         if cache_limit <= 0:
             raise ValueError('合并转发缓存容量必须大于 0')
         if observation_max_chars < MIN_FORWARD_OBSERVATION_MAX_CHARS:
@@ -47,72 +62,44 @@ class ForwardMessageTool:
             Tuple[int, int], Tuple[ForwardMessageTree, ...]
         ] = {}
 
-    @staticmethod
-    def spec() -> ToolSpec:
-        """返回模型可见声明；路径省略时读取这条消息的全部根转发。"""
-        return ToolSpec(
-            name='read_forward_message',
-            description=(
-                '当聊天记录出现合并转发占位时，用内部消息编号逐层读取内容；'
-                '默认读取一层，返回的 path 可定位子树；嵌套很深时可设置 depth '
-                '在一次调用里展开多层；结果出现 next_offset 时，保持其他参数不变'
-                '并传入 offset 可继续读取，避免深层或超长单层内容被截断。'
-            ),
-            parameters={
-                'type': 'object',
-                'properties': {
-                    'message_id': {
-                        'type': 'integer',
-                        'minimum': 1,
-                        'description': '聊天记录里的内部消息编号。',
-                    },
-                    'path': {
-                        'type': 'array',
-                        'items': {'type': 'integer', 'minimum': 0},
-                        'description': '上一次结果给出的嵌套路径；首次读取时省略。',
-                    },
-                    'depth': {
-                        'type': 'integer',
-                        'minimum': 1,
-                        'description': '本次从选中位置向下展开的层数，默认 1。',
-                    },
-                    'offset': {
-                        'type': 'integer',
-                        'minimum': 0,
-                        'description': '结果分页字符游标，首次读取时省略或设为 0。',
-                    },
+    @tool(
+        name='read_forward_message',
+        description=(
+            '当聊天记录出现合并转发占位时，用内部消息编号逐层读取内容；'
+            '默认读取一层，返回的 path 可定位子树；嵌套很深时可设置 depth '
+            '在一次调用里展开多层；结果出现 next_offset 时，保持其他参数不变'
+            '并传入 offset 可继续读取，避免深层或超长单层内容被截断。'
+        ),
+        parameters={
+            'type': 'object',
+            'properties': {
+                'message_id': {
+                    'type': 'integer',
+                    'minimum': 1,
+                    'description': '聊天记录里的内部消息编号。',
                 },
-                'required': ['message_id'],
-                'additionalProperties': False,
+                'path': {
+                    'type': 'array',
+                    'items': {'type': 'integer', 'minimum': 0},
+                    'description': '上一次结果给出的嵌套路径；首次读取时省略。',
+                },
+                'depth': {
+                    'type': 'integer',
+                    'minimum': 1,
+                    'description': '本次从选中位置向下展开的层数，默认 1。',
+                },
+                'offset': {
+                    'type': 'integer',
+                    'minimum': 0,
+                    'description': '结果分页字符游标，首次读取时省略或设为 0。',
+                },
             },
-            capabilities=frozenset({'forward_message'}),
-        )
-
-    def remember(
-        self,
-        stream_id: int,
-        message_id: int,
-        trees: Tuple[ForwardMessageTree, ...],
-    ) -> None:
-        """把一条已落库入站消息的转发根树写入有界会话缓存。"""
-        if stream_id <= 0:
-            raise ValueError('合并转发缓存的 stream_id 必须大于 0')
-        if message_id <= 0:
-            raise ValueError('合并转发缓存的 message_id 必须大于 0')
-        if not trees:
-            return
-        key = (stream_id, message_id)
-        # 重写同一键时先删除，确保它重新成为最新条目。
-        self._cache.pop(key, None)
-        self._cache[key] = trees
-        while len(self._cache) > self._cache_limit:
-            self._cache.pop(next(iter(self._cache)))
-
-    def has_stream(self, stream_id: int) -> bool:
-        """判断当前会话是否至少缓存过一条可读合并转发。"""
-        return any(key_stream_id == stream_id for key_stream_id, _ in self._cache)
-
-    async def execute(
+            'required': ['message_id'],
+            'additionalProperties': False,
+        },
+        capabilities=('forward_message',),
+    )
+    async def read_forward_message(
         self,
         invocation: ToolInvocation,
         context: ToolContext,
@@ -165,6 +152,53 @@ class ForwardMessageTool:
                 'nextOffset': next_offset,
             },
         )
+
+    def observe_inbound(
+        self,
+        stream_id: int,
+        message_id: int,
+        inbound: Any,
+    ) -> None:
+        """把一条已落库入站消息的转发根树写入有界会话缓存。
+
+        入站消息不含转发根树时本方法没有任何效果；容量超限时按最旧条目
+        淘汰。
+        """
+        self._remember(stream_id, message_id, inbound.forward_messages)
+
+    def stream_capabilities(self, stream_id: int) -> FrozenSet[str]:
+        """只在缓存过转发树的会话贡献 ``forward_message``，其余会话为空。
+
+        能力跟随缓存而不是协议端静态声明：没有可读内容的会话里，工具声明
+        出现只会诱导模型调用后必败。
+        """
+        if self._has_stream(stream_id):
+            return frozenset({'forward_message'})
+        return frozenset()
+
+    def _remember(
+        self,
+        stream_id: int,
+        message_id: int,
+        trees: Tuple[ForwardMessageTree, ...],
+    ) -> None:
+        """把一条已落库入站消息的转发根树写入有界会话缓存。"""
+        if stream_id <= 0:
+            raise ValueError('合并转发缓存的 stream_id 必须大于 0')
+        if message_id <= 0:
+            raise ValueError('合并转发缓存的 message_id 必须大于 0')
+        if not trees:
+            return
+        key = (stream_id, message_id)
+        # 重写同一键时先删除，确保它重新成为最新条目。
+        self._cache.pop(key, None)
+        self._cache[key] = trees
+        while len(self._cache) > self._cache_limit:
+            self._cache.pop(next(iter(self._cache)))
+
+    def _has_stream(self, stream_id: int) -> bool:
+        """判断当前会话是否至少缓存过一条可读合并转发。"""
+        return any(key_stream_id == stream_id for key_stream_id, _ in self._cache)
 
 
 def _parse_arguments(
@@ -348,5 +382,5 @@ __all__ = [
     'DEFAULT_FORWARD_CACHE_LIMIT',
     'DEFAULT_FORWARD_OBSERVATION_MAX_CHARS',
     'MIN_FORWARD_OBSERVATION_MAX_CHARS',
-    'ForwardMessageTool',
+    'ForwardMessagePlugin',
 ]
