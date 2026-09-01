@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, FrozenSet
 
 
 EVENT_LABELS: Dict[str, str] = {
@@ -387,6 +387,13 @@ FIELD_LABELS: Dict[str, str] = {
 }
 
 
+# 值属于协议词汇表、必须原样呈现的字段。
+# 现象：能力清单里的 poke 会被 VALUE_LABELS 翻成「戳一戳」，同一行其余六项仍是
+#   英文原文，列表看起来自相矛盾。
+# 原因：VALUE_LABELS 是全局值表，任何字段的值撞上键就替换，没有字段上下文。
+# 后果：照着控制台里的「戳一戳」去查能力名查不到——它不是词汇表里的取值。
+VERBATIM_VALUE_FIELDS: FrozenSet[str] = frozenset({"capabilities"})
+
 VALUE_LABELS: Dict[str, str] = {
     "away": "暂时离开",
     "backfill": "历史补全",
@@ -538,24 +545,27 @@ def value_label(value: str) -> str:
     return VALUE_LABELS.get(value, value)
 
 
-def display_value(value: Any) -> str:
+def display_value(value: Any, field: str | None = None) -> str:
     """将结构化字段值转换为紧凑中文文本。
 
     :param value: 日志字段中的任意 JSON 兼容值。
+    :param field: 该值所属的字段名；属于 :data:`VERBATIM_VALUE_FIELDS` 时跳过
+        枚举翻译。省略时按可翻译处理，与历史行为一致。
     :return: 布尔值、空值、枚举、列表和字典的中文展示文本。
     :raises TypeError: 嵌套值无法 JSON 序列化时抛出，避免掩盖错误数据。
     """
+    verbatim = field in VERBATIM_VALUE_FIELDS
     if value is None:
         return "—"
     if isinstance(value, bool):
         return "是" if value else "否"
     if isinstance(value, str):
-        return value_label(value)
+        return value if verbatim else value_label(value)
     if isinstance(value, list):
-        return "、".join(display_value(item) for item in value) if value else "无"
+        return "、".join(display_value(item, field) for item in value) if value else "无"
     if isinstance(value, dict):
         return "，".join(
-            f"{field_label(str(key))}：{display_value(item)}"
+            f"{field_label(str(key))}：{display_value(item, str(key))}"
             for key, item in value.items()
         ) or "无"
     return str(value)
@@ -565,6 +575,7 @@ __all__ = [
     "EVENT_LABELS",
     "FIELD_LABELS",
     "VALUE_LABELS",
+    "VERBATIM_VALUE_FIELDS",
     "display_value",
     "event_label",
     "field_label",

@@ -260,19 +260,20 @@ def _flatten(text: str) -> str:
     )
 
 
-def _stringify(value: Any) -> str:
+def _stringify(value: Any, field: str | None = None) -> str:
     """将日志字段转换为适合控制台展示的字符串。
 
     字典、列表、布尔值和常见协议枚举经展示层转换为紧凑中文文本；普通字符串
     原样保留。
 
     :param value: 任意日志字段值。
+    :param field: 该值所属的字段名；协议词汇表类字段据此跳过枚举翻译。
 
     :return: 展示文本统一经过 :func:`_flatten` 压平为单行。
 
     :raises TypeError: 字典或列表包含无法 JSON 序列化的值时抛出。
     """
-    return _flatten(display_value(value))
+    return _flatten(display_value(value, field))
 
 
 # 管线 trace 事件的控制台出口。``src.core.observe.events`` 在 main 启动早期被导入，
@@ -424,7 +425,7 @@ def _pack_trace_rows(summary: Dict[str, Any]) -> list[str]:
     rows: list[str] = []
     current = ''
     for key, value in summary.items():
-        item = f'{field_label(key)}：{_stringify(value)}'
+        item = f'{field_label(key)}：{_stringify(value, key)}'
         if current and display_width(current) + 4 + display_width(item) <= _TRACE_ROW_WIDTH:
             current += f'  │  {item}'
             continue
@@ -468,7 +469,7 @@ def _render_trace_line(
         head.append(f'{FIELD_VALUE_COLOR}{sender}{RESET_COLOR}' if colored else sender)
     items = []
     for key, value in summary.items():
-        label, text = field_label(key), _stringify(value)
+        label, text = field_label(key), _stringify(value, key)
         items.append(
             f'{FIELD_LABEL_COLOR}{label}{RESET_COLOR}：{FIELD_VALUE_COLOR}{text}{RESET_COLOR}'
             if colored
