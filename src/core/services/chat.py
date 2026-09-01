@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
 from html import escape
 from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Sequence
 
@@ -147,12 +148,16 @@ from src.core.prompts.registry import (
     prompt_metadata,
 )
 from src.core.schedule.plan import DayPlan, DayPlanService, ScheduleSleepState, asks_about_activity
-from src.core.tooling.builtin.forward_message import ForwardMessageTool
 from src.core.tooling.cognitive import CognitiveToolExecutor
 from src.core.tooling.registry import build_builtin_action_registry
 from src.core.tooling.spec import ToolContext
+from src.plugin_system import PluginRegistry
 
 logger = get_logger(__name__)
+
+# 插件根目录，按发现顺序排列：内置在前、第三方在后。同一插件标识冲突时先扫到的
+# 生效，因此随程序发布的内置实现不会被用户目录里的同名插件顶掉。
+PLUGIN_ROOTS = (Path('src/plugins/built_in'), Path('plugins'))
 
 CHAT_POLL_INTERVAL_S = 0.1
 
@@ -546,16 +551,17 @@ class ChatService:
         # 进程内状态而非落库：能力属于「当前这条连接指向的协议端」，重启后必须
         # 重新探测，持久化会让上一次的结论在协议端已经变化后继续生效。
         self._platform_capabilities: Dict[str, frozenset[str]] = {}
-        # 合并转发正文不直接铺进工作记忆：平台交来的完整树进入有界会话缓存，
-        # 模型仅在有转发内容的 stream 里看到逐层读取工具。
-        self._forward_message_tool = ForwardMessageTool()
         # 工具注册表按进程装配一次：动作声明按回合帧动态生成，外部工具也按
         # 当前会话能力与剩余认知预算过滤后再下发。
         self._tool_registry = build_builtin_action_registry()
-        self._tool_registry.register_tool(
-            self._forward_message_tool.spec(),
-            self._forward_message_tool,
-        )
+        # 插件在构造期发现并登记工具，与 on_load 的先后是刻意的：登记必须在
+        # ConversationAgent 拿到注册表之前完成，而 on_load 可能要做 I/O，只能等到
+        # startup。因此 tools() 不得依赖 on_load 建立的状态，该约束写在契约里。
+        self._plugins = PluginRegistry()
+        self._plugins.discover(PLUGIN_ROOTS)
+        for plugin in self._plugins.tool_plugins():
+            for spec, executor in plugin.tools():
+                self._tool_registry.register_tool(spec, executor)
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
@@ -829,13 +835,19 @@ class ChatService:
             self.persona.snapshot_daily(person_id, now)
 
     async def startup(self) -> None:
-        """启动由入站消息唤醒、固定心跳兜底的聊天缓冲循环。"""
+        """启动由入站消息唤醒、固定心跳兜底的聊天缓冲循环，并加载插件。
+
+        插件的工具已在构造期登记；这里只跑它们的 ``on_load``——那一步允许读配置、
+        建运行期对象，必须在事件循环里执行。
+        """
+        await self._plugins.load_all()
         self._stop.clear()
         self._wake.clear()
         self._poll_task = asyncio.create_task(self._poll_loop(), name='chat-poll')
 
     async def shutdown(self) -> None:
-        """停止聊天缓冲轮询并终止仍在执行的回复。"""
+        """停止聊天缓冲轮询、终止仍在执行的回复，并卸载插件。"""
+        await self._plugins.unload_all()
         self._stop.set()
         self._wake.set()
         follow_up_tasks = [
@@ -966,11 +978,7 @@ class ChatService:
             accepted_at,
             inbound.external_message_id,
         )
-        self._forward_message_tool.remember(
-            stream_id,
-            message_id,
-            inbound.forward_messages,
-        )
+        self._plugins.observe_inbound(stream_id, message_id, inbound)
         image_task: asyncio.Task[str] | None = None
         if inbound.image_sources or inbound.emoji_sources:
             # 先以稳定占位符确认接收并返回；描述成功后后台回写同一行正文。
@@ -1617,11 +1625,7 @@ class ChatService:
             current_time(),
             inbound.external_message_id,
         )
-        self._forward_message_tool.remember(
-            context.stream.id,
-            message_id,
-            inbound.forward_messages,
-        )
+        self._plugins.observe_inbound(context.stream.id, message_id, inbound)
         if inbound.image_sources or inbound.emoji_sources:
             task = asyncio.create_task(self._describe_image_message(
                 context.stream.id,
@@ -3755,7 +3759,10 @@ class ChatService:
             react=react_enabled,
             available_reactions=REACTION_IDS if react_enabled else (),
             poke=self._poke_available(context),
-            forward_message=self._forward_message_tool.has_stream(context.stream.id),
+            forward_message=(
+                'forward_message'
+                in self._plugins.stream_capabilities(context.stream.id)
+            ),
         )
         return DecisionFrame(
             turn_id=turn,
