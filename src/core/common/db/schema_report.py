@@ -144,6 +144,22 @@ def _fact_kind_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
     return [(str(kind), int(amount)) for kind, amount in rows]
 
 
+def _fact_origin_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
+    """读取事实来源分布，按来源升序返回。
+
+    ``legacy`` 是可见性边界落地前的存量行，数量随新事实写入自然稀释；
+    分布进日志供这一趋势可查，不参与任何决策。
+    """
+
+    rows = db.execute(
+        '''SELECT origin_kind, COUNT(*) AS amount
+           FROM facts
+           GROUP BY origin_kind
+           ORDER BY origin_kind ASC'''
+    ).fetchall()
+    return [(str(origin), int(amount)) for origin, amount in rows]
+
+
 def report_schema_changes(
     changes: SchemaChanges,
     version: int,
@@ -161,6 +177,7 @@ def report_schema_changes(
     """
 
     kind_line: Optional[str] = None
+    origin_line: Optional[str] = None
     if db is not None:
         distribution = _fact_kind_distribution(db)
         kind_line = '、'.join(f'{kind} {amount}' for kind, amount in distribution) or '暂无事实'
@@ -169,11 +186,22 @@ def report_schema_changes(
             distribution=kind_line,
             total=sum(amount for _, amount in distribution),
         )
+        origin_distribution = _fact_origin_distribution(db)
+        origin_line = '、'.join(
+            f'{origin} {amount}' for origin, amount in origin_distribution
+        ) or '暂无事实'
+        logger.info(
+            'db_fact_origin_distribution',
+            distribution=origin_line,
+            total=sum(amount for _, amount in origin_distribution),
+        )
     if changes.is_empty():
         return
     rows: List[str] = [f'schema 版本：{version}']
     if kind_line is not None:
         rows.append(f'事实 kind 分布：{kind_line}')
+    if origin_line is not None:
+        rows.append(f'事实 origin_kind 分布：{origin_line}')
     if changes.created:
         rows.append(f'本次新建的表（{len(changes.created)}）：')
         rows.extend(f'  + {name}' for name in changes.created)

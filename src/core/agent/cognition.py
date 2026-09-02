@@ -141,6 +141,7 @@ class RecallAction:
         *,
         fact_limit: int = 5,
         episode_limit: int = 3,
+        private_in_group: bool = False,
     ) -> None:
         """保存记忆检索依赖与每类结果的条数上限。
 
@@ -149,6 +150,8 @@ class RecallAction:
         :param db: 当前库连接，供联想层读写边；与 ``ConsultAction`` 同惯例直接收连接。
         :param fact_limit: 单次返回的事实条数上限，必须大于 0。
         :param episode_limit: 单次返回的情节条数上限，必须大于 0。
+        :param private_in_group: ``conversation.private_facts_in_group`` 的当前值；
+            事实可见性由读取场合决定，见 ``memory/scope.py``。
         :raises ValueError: 任一上限小于 1。
         """
         if fact_limit < 1 or episode_limit < 1:
@@ -158,6 +161,7 @@ class RecallAction:
         self._db = db
         self._fact_limit = fact_limit
         self._episode_limit = episode_limit
+        self._private_in_group = private_in_group
         # 短期激活留在动作实例上，作用范围因此仅限进程内：进程重启后重新构造，残留自动消失。
         self._activation = ShortTermActivation()
 
@@ -198,6 +202,8 @@ class RecallAction:
         """
         facts = self._store.recall_facts_in_scope(
             request.person_ids, request.query, limit=self._fact_limit,
+            stream_kind=request.stream_kind,
+            private_in_group=self._private_in_group,
         )
         episodes = self._store.recall_episodes(
             request.stream_id, request.query, limit=self._episode_limit,

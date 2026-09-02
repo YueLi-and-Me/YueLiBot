@@ -83,6 +83,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "observe.events": ("#ff5fd7", True),
     "services.trace_console": ("#ff87d7", True),
     "agent.expression_learn": ("#ffaf87", False),
+    "agent.impression": ("#d7af87", False),
 }
 
 # 模块名 → 控制台上显示的中文别名；控制台输出统一使用简体中文。
@@ -141,6 +142,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "observe.events": "追踪",
     "services.trace_console": "追踪面板",
     "agent.expression_learn": "表达学习",
+    "agent.impression": "会话印象",
 }
 
 

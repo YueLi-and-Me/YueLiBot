@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS facts (
   embedding       BLOB,                          -- float32 packed（v5 加）
   -- 自解释 SQ8：头部携带格式版本、维度和单向量 scale；原 float32 列继续保留。
   embedding_q8    BLOB,
+  -- 事实被听见的场合（v21 加）：group 群里听到 / direct 私聊或桌面听到 /
+  -- legacy 迁移前的存量行。可见范围由它决定，见 memory/scope.py。
+  origin_kind     TEXT    NOT NULL DEFAULT 'legacy',
   UNIQUE(person_id, content_key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(active, due_at);

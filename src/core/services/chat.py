@@ -67,6 +67,7 @@ from src.core.agent.expression_learn import (
     run_learning,
 )
 from src.core.agent.fact_extract import Participant, advance_cursor, read_cursor, run_extraction
+from src.core.agent.impression import ConversationImpressions
 from src.core.agent.jargon import InjectedTerms, lookup_jargon
 from src.core.agent.profile import profiles_for_injection, refresh_profiles
 from src.core.agent.expression_select import ExpressionSelector
@@ -500,6 +501,7 @@ class ChatService:
         self._refreshing_profiles = False
         self._session_gap_ms = conversation.session_gap_minutes * 60_000
         self._fact_recall_limit = conversation.fact_recall_limit
+        self._private_facts_in_group = conversation.private_facts_in_group
         self._recalled_episode_limit = conversation.recalled_episode_limit
         self._recent_episode_limit = conversation.recent_episode_limit
         self._episode_context_limit = conversation.episode_context_limit
@@ -608,6 +610,10 @@ class ChatService:
             else None
         )
         self.memory = MemoryStore(db)
+        # 会话印象是事实检索的第二检索词；状态只在进程内，复用 memory 模型槽。
+        self._impressions = ConversationImpressions(
+            self.memory, memory_provider, conversation.working_memory_messages,
+        )
         self._registry = StreamRegistry(db)
         # 认知动作只在 ReAct 开启时构造：轮次预算为 0 时执行器永远不会被调用，
         # 持有它只会让「关闭即回退到单轮」这条性质多一处需要复核的地方。
@@ -635,7 +641,10 @@ class ChatService:
             self._tool_registry.bind_action_executor(
                 'recall',
                 CognitiveToolExecutor(
-                    RecallAction(self.memory, self._registry.stream_display_name, db)
+                    RecallAction(
+                        self.memory, self._registry.stream_display_name, db,
+                        private_in_group=self._private_facts_in_group,
+                    )
                 ),
             )
             self._tool_registry.bind_action_executor(
@@ -1252,6 +1261,7 @@ class ChatService:
                     source_text=trimmed,
                 )
                 self._mark_stage(context, CONTEXT, turn_id=turn)
+                impression = await self._conversation_impression(context, now)
                 prepared_context = self._prepare_turn_context(
                     context,
                     trimmed,
@@ -1261,6 +1271,7 @@ class ChatService:
                     batch_message_ids=tuple(
                         message.message_id for message in materialized_batch
                     ),
+                    impression=impression,
                 )
                 render_params: dict[str, dict[str, str]] = {}
                 batch_gate = self._batch_gate(
@@ -1455,7 +1466,9 @@ class ChatService:
                 # Bot 刚开过口，对话仍在 Bot 这边：与 Agent 路径同口径重新敞开自然回应窗口。
                 self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
-                asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+                asyncio.create_task(
+                    self._maybe_extract_facts(context.stream.id, context.stream.kind)
+                )
                 asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
                 asyncio.create_task(self._maybe_refresh_profiles())
             except LlmError as exc:
@@ -2317,6 +2330,7 @@ class ChatService:
             target.content,
             now,
             user_message_id_watermark=target.message_id,
+            impression=await self._conversation_impression(context, now),
         )
         render_params: dict[str, dict[str, str]] = {}
         follow_up_context = '\n'.join((
@@ -2735,7 +2749,11 @@ class ChatService:
             acquaintance=acquaintance,
             facts=[
                 fact.content
-                for fact in self.memory.top_facts(context.person.id, 5, now)
+                for fact in self.memory.top_facts(
+                    context.person.id, 5, now,
+                    stream_kind=context.stream.kind,
+                    private_in_group=self._private_facts_in_group,
+                )
             ],
             episodes=[episode.summary for episode in self.memory.recent_episodes(
                 context.stream.id, 2
@@ -3262,6 +3280,75 @@ class ChatService:
             *messages[first_batch_index:last_user_index + 1],
         ]
 
+    def _recall_turn_facts(
+        self,
+        context: ConversationContext,
+        query: str,
+        impression: str | None,
+        now: int,
+    ) -> list[RecalledFact]:
+        """按在场者召回事实，当前文本与会话印象取并集。
+
+        群聊里当前这条消息经常是短应答，拿它当检索词捞不到东西；印象是对
+        一段对话的概括，覆盖面是另一个量级。两个检索词各自跑一次召回，
+        候选按 ID 去重后统一排序——当前文本命中的往往更精确，词面分相同
+        时排在前面（稳定排序，当前文本的候选先进池）。
+
+        候选池不在这里截断：与单人召回时代一致，保留 ``limit * 3`` 量级的
+        池子供确认回复后的向量重排；进提示词的条数由渲染层按
+        ``fact_recall_limit`` 截取。
+
+        :param context: 当前会话上下文。
+        :param query: 当前用户文本。
+        :param impression: 会话印象；``None`` 时退回只用当前文本检索。
+        :param now: 当前毫秒时间戳。
+        :return: 去重排序后的事实候选池。
+        :raises sqlite3.Error: 检索失败。
+        副作用：只读；被可见性规则挡下的条数会发一条事件。
+        """
+
+        limit = self._fact_recall_limit
+        person_ids = self._present_person_ids(context)
+        pool: list[RecalledFact] = []
+        seen: set[int] = set()
+        for text in (query, impression or ''):
+            if not text:
+                continue
+            for fact in self.memory.recall_facts_in_scope(
+                person_ids, text, limit, now,
+                stream_kind=context.stream.kind,
+                private_in_group=self._private_facts_in_group,
+                return_candidates=True,
+            ):
+                if fact.id not in seen:
+                    seen.add(fact.id)
+                    pool.append(fact)
+        pool.sort(key=lambda fact: fact.score, reverse=True)
+        return pool
+
+    async def _conversation_impression(
+        self,
+        context: ConversationContext,
+        now: int,
+    ) -> str | None:
+        """取当前会话的印象，作为回合组装前的一次性输入。
+
+        :param context: 当前会话上下文。
+        :param now: 当前毫秒时间戳。
+        :return: 印象正文；未达重算条件时复用缓存，无可概括内容或生成失败
+            时返回 ``None``（失败路径的事件由印象服务自己发）。
+        副作用：可能发起一次受限流约束的 memory 模型请求。
+        """
+
+        return await self._impressions.current(
+            context.stream.id,
+            bot_name=self._bot_display_name,
+            speaker_name=self._registry.stream_display_name,
+            temperature=self._memory_temperature,
+            max_tokens=self._memory_max_tokens,
+            now=now,
+        )
+
     def _prepare_turn_context(
         self,
         context: ConversationContext,
@@ -3270,6 +3357,7 @@ class ChatService:
         platform_bot_name: str | None = None,
         user_message_id_watermark: int | None = None,
         batch_message_ids: tuple[int, ...] | None = None,
+        impression: str | None = None,
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -3280,20 +3368,15 @@ class ChatService:
         :param user_message_id_watermark: 可选的本批末条用户消息 ID；用于隔离后来落库的用户消息。
         :param batch_message_ids: 可选的本批用户消息主键；用于把上一回合回复
             插回当前批之前的正确历史位置。
+        :param impression: 调用方在组装前取到的会话印象；作为事实检索的第二
+            检索词与当前文本取并集，``None`` 表示本次只用当前文本检索。
         :return: 可供动作决策读取、并可在确认回复后继续增强的上下文。
 
         副作用：
             读取记忆、人格、日程和活动状态，并消费一次重逢提示；不调用模型，
             不强化召回事实。
         """
-        fact_candidates = self.memory.recall_facts(
-            context.person.id,
-            query,
-            self._fact_recall_limit,
-            now,
-            reinforce_matches=False,
-            return_candidates=True,
-        )
+        fact_candidates = self._recall_turn_facts(context, query, impression, now)
         recalled = self.memory.recall_episodes(
             context.stream.id,
             query,
@@ -3501,11 +3584,7 @@ class ChatService:
             query_embedding,
             self._fact_recall_limit,
         )
-        self.memory.reinforce_recalled_facts(
-            prepared.context.person.id,
-            facts,
-            prepared.now,
-        )
+        self.memory.reinforce_recalled_facts(facts, prepared.now)
         expression_habits = render_expression_habits(
             await self._pick_expression_habits(
                 prepared.context,
@@ -4351,7 +4430,9 @@ class ChatService:
         # - 原因：两条收尾路径只有摘要挂了两处，抽取只挂了旧那一处，而默认走的是这条。
         # - 后果：漏挂不会报错也不留日志（_maybe_extract_facts 的前置判断都是静默 return），
         #   表现为「功能已接线但永远不产出」，只能靠游标为空反推。
-        asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+        asyncio.create_task(
+            self._maybe_extract_facts(context.stream.id, context.stream.kind)
+        )
         # 表达学习同理，与抽取同处收尾、同样两处都挂。
         asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
         asyncio.create_task(self._maybe_refresh_profiles())
@@ -5750,13 +5831,14 @@ class ChatService:
             reason=reason,
         )
 
-    async def _maybe_extract_facts(self, stream_id: int) -> None:
+    async def _maybe_extract_facts(self, stream_id: int, stream_kind: str) -> None:
         """在待抽取消息达到阈值时后台抽取人物事实并写入长期记忆。
 
         与 :meth:`_maybe_summarize` 同一条纪律：独立模型任务、回合之后执行、
         同一会话同时只允许一个在飞、失败只丢该批且不影响已完成的对话。
 
         :param stream_id: 待检查的会话 ID。
+        :param stream_kind: 该会话的类型；决定新写事实的来源标记。
         :return: 无返回值。
         副作用：可能发起一次模型请求、写入 facts 并推进抽取游标。
         """
@@ -5781,6 +5863,7 @@ class ChatService:
                 self._memory_provider,
                 self._db,
                 stream_id=stream_id,
+                stream_kind=stream_kind,
                 participants=participants,
                 bot_name=self._bot_display_name,
                 trigger_messages=self._fact_extract_trigger,

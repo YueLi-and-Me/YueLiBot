@@ -19,10 +19,12 @@ from .decay import (
     reinforce, relevance_from_bm25, retention, retention_weight, score,
 )
 from .similarity import exact_key, is_same_fact
+from .scope import SCOPE_ALL, fact_visible_in_stream
 from .tokenize import index_tokens, match_query, words
 
 from src.core.common.clock import now as current_time
 from src.core.common.db.schema import DDL, SCHEMA_VERSION, SEED
+from src.core.observe import events as trace
 
 
 _PENDING_PROMISES_KEY = 'pending_promises'
@@ -739,6 +741,16 @@ class MemoryStore:
                         'updated_at': c[3], 'half_life_hours': c[4]}
         return None
 
+    def _emit_scope_blocked(self, stream_kind: str, blocked: int) -> None:
+        """登记一次可见性拦截，供「她怎么突然不记得了」与「本来就没有」区分。
+
+        :param stream_kind: 本次读取发生的会话类型。
+        :param blocked: 被挡下的事实条数，恒大于零。
+        副作用：发出一条 ``memory_fact_scope_blocked`` 观测事件，不写库。
+        """
+
+        trace.emit('memory_fact_scope_blocked', streamKind=stream_kind, blocked=blocked)
+
     def recall_facts(
         self,
         person_id: int,
@@ -748,6 +760,9 @@ class MemoryStore:
         query_embedding: bytes | None = None,
         reinforce_matches: bool = True,
         return_candidates: bool = False,
+        *,
+        stream_kind: str,
+        private_in_group: bool = False,
     ) -> list[RecalledFact]:
         """
         按 BM25 召回人物事实，并在向量齐全时执行混合相关度排序。
@@ -759,6 +774,10 @@ class MemoryStore:
         :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时仅使用 BM25。
         :param reinforce_matches: 是否回补命中事实；动作决策预览应传 ``False``。
         :param return_candidates: 是否返回截取前的候选池，供同一轮后续向量重排。
+        :param stream_kind: 当前读取发生的会话类型；必填，漏传会让
+            ``direct`` 事实无声地出现在群聊提示词里。
+        :param private_in_group: ``conversation.private_facts_in_group`` 的当前值；
+            默认关闭，即群聊里挡下私聊来源的事实。
 
         :return: 按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
 
@@ -766,10 +785,12 @@ class MemoryStore:
         :raises struct.error: 查询向量与事实向量维度不匹配时，向量分支捕获该错误并回退 BM25。
 
         副作用：
-            读取 FTS 和 facts 表；对最终命中的事实回补强度、更新时间、命中次数并提交事务。
+            读取 FTS 和 facts 表；对最终命中的事实回补强度、更新时间、命中次数并提交事务；
+            有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
 
         性能：
-            最多读取 ``limit * 3`` 个 FTS 候选，向量融合仅在查询向量和事实向量同时存在时执行。
+            最多读取 ``limit * 3`` 个 FTS 候选，可见性过滤发生在截断之前；
+            向量融合仅在查询向量和事实向量同时存在时执行。
         """
         now = now if now is not None else current_time()
         match = match_query(query)
@@ -778,14 +799,25 @@ class MemoryStore:
         rows = self._db.execute(
             '''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
                       f.half_life_hours, f.active, bm25(facts_fts) AS bm,
-                      f.embedding
+                      f.embedding, f.origin_kind
                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                WHERE facts_fts MATCH ? AND f.person_id = ?
                ORDER BY bm ASC LIMIT ?''',
             (match, person_id, limit * 3)
         ).fetchall()
-        scored = []
+        blocked = 0
+        visible_rows = []
         for r in rows:
+            if fact_visible_in_stream(
+                r[9], stream_kind, private_in_group=private_in_group,
+            ):
+                visible_rows.append(r)
+            else:
+                blocked += 1
+        if blocked:
+            self._emit_scope_blocked(stream_kind, blocked)
+        scored = []
+        for r in visible_rows:
             ret = retention(r[3], r[4], r[5], now)
             relevance = relevance_from_bm25(r[7])
             # 只有两侧向量都存在时才融合相关度，缺失任一向量则保留 BM25 结果。
@@ -843,6 +875,10 @@ class MemoryStore:
         query: str,
         limit: int = 6,
         now: int | None = None,
+        *,
+        stream_kind: str,
+        private_in_group: bool = False,
+        return_candidates: bool = False,
     ) -> list[ScopedFact]:
         """在若干人物范围内一次性召回事实，供认知动作按会话在场者检索。
 
@@ -858,12 +894,18 @@ class MemoryStore:
         :param query: 待检索的自然语言文本。
         :param limit: 最多返回的事实数量，默认 ``6``。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :param stream_kind: 当前读取发生的会话类型；必填，漏传会让
+            ``direct`` 事实无声地出现在群聊提示词里。
+        :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+        :param return_candidates: 是否返回截取前的候选池，供同一轮的向量重排
+            与多检索词并集合并；候选随 ``embedding`` 一并带回。
 
         :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
 
         :raises sqlite3.Error: FTS 查询失败。
 
-        副作用：只读 facts_fts 与 facts 表，不写任何列、不提交事务。
+        副作用：只读 facts_fts 与 facts 表，不写任何列、不提交事务；
+            有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
 
         性能：单次 FTS 查询，最多读取 ``limit * 3`` 个候选。
         """
@@ -877,14 +919,26 @@ class MemoryStore:
         placeholders = ','.join('?' for _ in scope)
         rows = self._db.execute(
             f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
-                       f.half_life_hours, f.person_id, bm25(facts_fts) AS bm
+                       f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
+                       f.origin_kind, f.embedding
                 FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                 WHERE facts_fts MATCH ? AND f.person_id IN ({placeholders})
                 ORDER BY bm ASC LIMIT ?''',
             (match, *scope, limit * 3),
         ).fetchall()
-        scored: list[ScopedFact] = []
+        blocked = 0
+        visible_rows = []
         for r in rows:
+            if fact_visible_in_stream(
+                r[8], stream_kind, private_in_group=private_in_group,
+            ):
+                visible_rows.append(r)
+            else:
+                blocked += 1
+        if blocked:
+            self._emit_scope_blocked(stream_kind, blocked)
+        scored: list[ScopedFact] = []
+        for r in visible_rows:
             ret = retention(r[3], r[4], r[5], now)
             relevance = relevance_from_bm25(r[7])
             scored.append(ScopedFact(
@@ -894,11 +948,12 @@ class MemoryStore:
                 retention=ret,
                 score=relevance * retention_weight(ret),
                 lexical_relevance=relevance,
+                embedding=r[9],
                 half_life_hours=r[5],
                 person_id=r[6],
             ))
         scored.sort(key=lambda fact: fact.score, reverse=True)
-        return scored[:limit]
+        return scored if return_candidates else scored[:limit]
 
     def message_count_after(self, stream_id: int, since_id: int) -> int:
         """统计某条消息之后该 stream 又落库了多少条消息。
@@ -1091,14 +1146,15 @@ class MemoryStore:
 
     def reinforce_recalled_facts(
         self,
-        person_id: int,
-        facts: list[RecalledFact],
+        facts: Sequence[ScopedFact],
         now: int | None = None,
     ) -> None:
         """强化同一轮最终实际用于回复的事实，不再次执行召回。
 
-        :param person_id: 目标人物 ID。
-        :param facts: 已确认用于回复的召回事实名单。
+        回补按每条事实自带的 ``person_id`` 落行：召回范围扩到在场多人后，
+        继续按单一人物回补会把别人的事实强度全记到当前说话人头上。
+
+        :param facts: 已确认用于回复的召回事实名单，携带各自归属。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :raises sqlite3.Error: 更新或提交失败。
         副作用：按传入事实 ID 更新强度、命中次数和下次评估时间并提交。
@@ -1118,7 +1174,7 @@ class MemoryStore:
                     freeze_due_at(next_strength, now, fact.half_life_hours),
                     now,
                     fact.id,
-                    person_id,
+                    fact.person_id,
                 ),
             )
         self._db.commit()
@@ -1179,23 +1235,41 @@ class MemoryStore:
         return n
 
     def top_facts(self, person_id: int, limit: int = 8,
-                  now: int | None = None) -> list[RecalledFact]:
+                  now: int | None = None, *,
+                  stream_kind: str,
+                  private_in_group: bool = False) -> list[RecalledFact]:
         """按当前留存度返回人物的活跃事实。
 
         :param person_id: 目标人物 ID。
         :param limit: 最多返回的事实数，默认值为 8。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :param stream_kind: 当前读取发生的会话类型；唯一例外是抽取去重清单
+            传旁路值 ``'all'``——清单的目的是去重不是输出，必须看到全部事实。
+        :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
         :return: 按留存度降序排列的事实列表。
-        副作用：只读 facts 表，不执行命中回补。
+        副作用：只读 facts 表，不执行命中回补；有事实被可见性规则挡下时
+            发出一条 ``memory_fact_scope_blocked`` 事件。
         """
         now = now if now is not None else current_time()
         rows = self._db.execute(
-            '''SELECT id, kind, content, strength, updated_at, half_life_hours
+            '''SELECT id, kind, content, strength, updated_at, half_life_hours,
+                      origin_kind
                FROM facts WHERE person_id = ? AND active = 1''',
             (person_id,)
         ).fetchall()
-        result = []
+        blocked = 0
+        visible_rows = []
         for r in rows:
+            if stream_kind == SCOPE_ALL or fact_visible_in_stream(
+                r[6], stream_kind, private_in_group=private_in_group,
+            ):
+                visible_rows.append(r)
+            else:
+                blocked += 1
+        if blocked:
+            self._emit_scope_blocked(stream_kind, blocked)
+        result = []
+        for r in visible_rows:
             ret = retention(r[3], r[4], r[5], now)
             result.append(RecalledFact(id=r[0], kind=r[1], content=r[2], retention=ret, score=ret))
         result.sort(key=lambda x: x.score, reverse=True)
