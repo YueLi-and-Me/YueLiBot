@@ -35,6 +35,14 @@ NestedForwardResolver = Callable[[str], Awaitable[Mapping[str, Any]]]
 # 嵌套层补取失败降级成的文本片段；根级占位树的单节点正文复用同一段文本。
 FORWARD_LAYER_UNREADABLE_TEXT = '[这一层的转发内容读取失败]'
 
+# 正文预览的单行字符预算，包含首尾的 ``[转发消息：`` 与 ``共 N 条]``。
+# 只设一个常量：预览条数与单条字数互相牵制的双常量在调整时必须同时改，
+# 单预算下「装不下就停」由节点粒度自然给出边界。
+FORWARD_PREVIEW_MAX_CHARS = 120
+
+# 预览里嵌套转发的短标记：只提示存在，不展开，要看全的走读取工具。
+FORWARD_PREVIEW_NESTED_MARKER = '[嵌套转发]'
+
 
 class ForwardStructureError(ValueError):
     """嵌套转发段自身的结构损坏：资源编号循环引用，或既无 content 又无 id。
@@ -57,6 +65,46 @@ def unreadable_forward_tree() -> ForwardMessageTree:
     ),))
 
 
+def forward_tree_preview(tree: ForwardMessageTree) -> str:
+    """把一棵已解析的转发树渲染成单行预览，只读平台中立的树结构。
+
+    按节点顺序在 :data:`FORWARD_PREVIEW_MAX_CHARS` 预算内填充
+    ``发送者：正文`` 片段，装不下的节点整体不出现——用省略号截出半个
+    节点会让模型把残句当成完整发言；末尾恒为真实总条数，预览出来的
+    条数与总数不一致同样会误导。单行是硬要求：正文会进历史、进记忆
+    抽取、进表达学习，多行块会撑散这些按行组织的结构。
+
+    :param tree: 已解析的转发树。
+    :return: 形如 ``[转发消息：张三：内容｜李四：内容｜共 12 条]`` 的单行
+        预览；一个节点都装不下时仅剩 ``[转发消息：共 N 条]``。
+    """
+    total = len(tree.nodes)
+    suffix = f'｜共 {total} 条]'
+    used = len('[转发消息：') + len(suffix)
+    pieces: List[str] = []
+    for node in tree.nodes:
+        piece = f'{node.sender_name}：{_preview_node_text(node)}'
+        cost = len(piece) + (len('｜') if pieces else 0)
+        if used + cost > FORWARD_PREVIEW_MAX_CHARS:
+            break
+        pieces.append(piece)
+        used += cost
+    if not pieces:
+        return f'[转发消息：共 {total} 条]'
+    return f'[转发消息：{"｜".join(pieces)}{suffix}'
+
+
+def _preview_node_text(node: ForwardNode) -> str:
+    """把节点内有序片段压成单行文本：文本压平换行，嵌套转发换短标记。"""
+    chunks: List[str] = []
+    for part in node.parts:
+        if part.kind == 'text':
+            chunks.append(' '.join(part.text.split()))
+        else:
+            chunks.append(FORWARD_PREVIEW_NESTED_MARKER)
+    return ''.join(chunks)
+
+
 async def parse_forward_response(
     response: Mapping[str, Any],
     resolve_nested: NestedForwardResolver,
@@ -66,7 +114,8 @@ async def parse_forward_response(
     :param response: 协议端返回的响应映射。
     :param resolve_nested: 未内联嵌套层的取内容解析器。
     :return: 已展开全部嵌套层级的消息树。
-    :raises ValueError: 响应结构不完整，或任一层节点无法解析。
+    :raises ValueError: 响应形状无法识别、节点数组为空，或存在节点结构错误；
+        嵌套层补取失败不在此列，已在解析器内降级为文本片段。
     """
     return await parse_forward_content(_response_messages(response), resolve_nested)
 
@@ -83,7 +132,9 @@ async def parse_forward_content(
     :param ancestor_ids: 当前解析路径上已按编号取过的祖先资源编号，用于断开
         自引用；调用方无需传入。
     :return: 该层及其全部嵌套层级的消息树。
-    :raises ValueError: 节点结构不完整、没有可读内容，或嵌套层取不到正文。
+    :raises ValueError: 节点结构不完整、没有可读内容，或嵌套段出现结构错误
+        （资源编号循环引用、既无 content 又无 id）；嵌套层补取失败不在此列，
+        已降级为文本片段。
     """
     if not isinstance(messages, list):
         raise ValueError('合并转发内容必须是数组')
@@ -247,8 +298,10 @@ def _sender_name(raw_sender: Any, node_index: int) -> str:
 
 __all__ = [
     'FORWARD_LAYER_UNREADABLE_TEXT',
+    'FORWARD_PREVIEW_MAX_CHARS',
     'ForwardStructureError',
     'NestedForwardResolver',
+    'forward_tree_preview',
     'parse_forward_content',
     'parse_forward_response',
     'unreadable_forward_tree',

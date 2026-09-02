@@ -31,7 +31,12 @@ from .events import (
     classify_event,
     parse_inbound_event,
 )
-from .forward import parse_forward_content, parse_forward_response, unreadable_forward_tree
+from .forward import (
+    forward_tree_preview,
+    parse_forward_content,
+    parse_forward_response,
+    unreadable_forward_tree,
+)
 from .segments import (
     FORWARD_PLACEHOLDER,
     FORWARD_UNREADABLE_PLACEHOLDER,
@@ -589,7 +594,9 @@ class OneBot11Runner:
         输出对不上的编号反复试错。全部根都失败时不暴露任何树：读取工具的
         能力按「该会话缓存过转发树」声明，把只含占位树的消息也塞进缓存会让
         「缓存过」不再蕴含「有内容可读」，能力门失去意义；此时正文整体标记
-        读取失败，与单根失败时的区分见正文占位的按位置替换。
+        读取失败。只要有一个根成功，正文里的第 i 个占位就替换为第 i 个根的
+        结果：成功根换成单行预览，失败根换成失败形态，正文本身即可分清
+        哪条能读、大概在聊什么。
         """
         raw_segments = payload.get('message')
         if not isinstance(raw_segments, list):
@@ -663,8 +670,12 @@ class OneBot11Runner:
             unreadable_forward_tree() if root is None else root
             for root in roots
         )
+        # 成功根换成含内容预览的占位：正文本身成为「哪条能读、大概在聊
+        # 什么」的答案，模型不必先调一次工具才拿到概要；失败根保持失败
+        # 形态，与预览形态区分。
         replaced = _replace_forward_placeholders(event.text, [
-            FORWARD_UNREADABLE_PLACEHOLDER if root is None else FORWARD_PLACEHOLDER
+            FORWARD_UNREADABLE_PLACEHOLDER if root is None
+            else forward_tree_preview(root)
             for root in roots
         ])
         if replaced is None:

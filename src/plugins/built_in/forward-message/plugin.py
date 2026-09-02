@@ -65,10 +65,11 @@ class ForwardMessagePlugin(ToolPlugin):
     @tool(
         name='read_forward_message',
         description=(
-            '当聊天记录里出现 [转发消息] 占位时，用该行的内部消息编号逐层读取内容；'
-            '默认读取一层，返回的 path 可定位子树；嵌套很深时可设置 depth '
-            '在一次调用里展开多层；结果出现 next_offset 时，保持其他参数不变'
-            '并传入 offset 可继续读取，避免深层或超长单层内容被截断。'
+            '当聊天记录里出现 [转发消息：发送者：内容预览｜共 N 条] 形态的占位时，'
+            '用该行的内部消息编号逐层读取完整内容；[转发消息：内容读取失败] '
+            '表示该转发不可读取，无需调用；默认读取一层，返回的 path 可定位子树；'
+            '嵌套很深时可设置 depth 在一次调用里展开多层；结果出现 next_offset 时，'
+            '保持其他参数不变并传入 offset 可继续读取，避免深层或超长单层内容被截断。'
         ),
         parameters={
             'type': 'object',
