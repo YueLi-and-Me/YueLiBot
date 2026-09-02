@@ -23,6 +23,12 @@ ImageSourceKind = Literal['base64', 'file']
 
 _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI = frozenset({0, 4, 9})
 
+# 合并转发在正文里的两种占位形态。解析成功时用前者，模型可据此调用读取工具；
+# 解析失败时由运行器换成后者——读取工具的声明按会话给出，正文里若两种转发
+# 长得一样，模型分不出哪条能读，只能挨个试到失败。
+FORWARD_PLACEHOLDER = '[转发消息]'
+FORWARD_UNREADABLE_PLACEHOLDER = '[转发消息：内容读取失败]'
+
 # 语义反应标识到 QQ 表情编号的映射，由平台表情表按名反查派生，不再手写。
 #
 # 派生而不是手写，是因为手写过一次就错过一次：第一版凭印象写的六个里，「惊讶」
@@ -138,7 +144,7 @@ def segment_to_text(
         'contact': '[联系人]',
         'json': '[JSON 消息]',
         'xml': '[XML 消息]',
-        'forward': '[转发消息]',
+        'forward': FORWARD_PLACEHOLDER,
     }
     return placeholders.get(segment_type, f'[非文本消息：{segment_type}]')
 

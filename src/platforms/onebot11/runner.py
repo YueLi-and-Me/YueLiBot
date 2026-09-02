@@ -33,6 +33,8 @@ from .events import (
 )
 from .forward import parse_forward_content, parse_forward_response
 from .segments import (
+    FORWARD_PLACEHOLDER,
+    FORWARD_UNREADABLE_PLACEHOLDER,
     is_emoji_image,
     mentioned_user_ids,
     message_to_text,
@@ -578,8 +580,12 @@ class OneBot11Runner:
         协议事件通常只带转发资源编号，此时每个根转发调用一次
         ``get_forward_msg``；若事件已经内联 ``data.content``，直接解析而不重复
         请求。协议端不会内联嵌套层的正文，解析器据此按编号回调
-        ``_fetch_forward_response`` 逐层取内容。任一根解析失败时整条消息仍以
-        ``[转发消息]`` 占位入站，但不暴露半棵树给工具，避免多根转发的路径编号错位。
+        ``_fetch_forward_response`` 逐层取内容。
+
+        任一根解析失败时整条消息仍然入站，但不暴露半棵树给工具，避免多根转发的
+        路径编号错位；同时把正文里的转发占位换成明确的失败形态。读取工具的声明
+        按会话给出，只要该会话缓存过任意一条转发它就一直挂着；正文里若可读与不可
+        读的转发长得一样，模型分不出该对哪条调用，只能挨个试到失败为止。
         """
         raw_segments = payload.get('message')
         if not isinstance(raw_segments, list):
@@ -627,7 +633,7 @@ class OneBot11Runner:
                     ),
                     error=str(exc),
                 )
-                return event
+                return replace(event, text=_mark_forward_unreadable(event.text))
         return replace(event, forward_messages=tuple(trees))
 
     async def _fetch_forward_response(self, forward_id: str) -> Mapping[str, Any]:
@@ -1134,6 +1140,18 @@ def _batch_delays_seconds(outbound: BackendOutbound) -> List[float]:
     delays = [value / 1000 for value in outbound.batch_delays_ms]
     total = len(outbound.segments) + len(outbound.emoji_refs)
     return delays + [0.0] * (total - len(delays))
+
+
+def _mark_forward_unreadable(text: str) -> str:
+    """把正文里的转发占位全部换成读取失败形态。
+
+    解析是按整条消息全有或全无的：任一根失败就一棵树都不暴露，因此正文里的每个
+    转发占位都不可读，全部替换而不是只换第一个。
+
+    :param text: 已渲染的入站正文。
+    :return: 替换后的正文；正文里没有转发占位时原样返回。
+    """
+    return text.replace(FORWARD_PLACEHOLDER, FORWARD_UNREADABLE_PLACEHOLDER)
 
 
 def _parse_group_history(
