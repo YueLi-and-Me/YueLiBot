@@ -63,6 +63,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "llm_models.router": ("#00ffff", True),
     "llm_models.openai": ("#00d7d7", False),
     "memory.embed": ("#5fafff", False),
+    "memory.pagerank": ("#5f87ff", True),
     "memory.quantize": ("#8787ff", False),
     "services.vector": ("#af87ff", True),
     # 业务
@@ -121,6 +122,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "llm_models.router": "模型路由",
     "llm_models.openai": "模型连接",
     "memory.embed": "记忆嵌入",
+    "memory.pagerank": "图谱重排",
     "memory.quantize": "向量量化",
     "services.vector": "向量召回",
     "services.chat": "对话",
