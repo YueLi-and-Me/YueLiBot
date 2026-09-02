@@ -577,8 +577,9 @@ class OneBot11Runner:
 
         协议事件通常只带转发资源编号，此时每个根转发调用一次
         ``get_forward_msg``；若事件已经内联 ``data.content``，直接解析而不重复
-        请求。任一根解析失败时整条消息仍以 ``[转发消息]`` 占位入站，但不暴露
-        半棵树给工具，避免多根转发的路径编号错位。
+        请求。协议端不会内联嵌套层的正文，解析器据此按编号回调
+        ``_fetch_forward_response`` 逐层取内容。任一根解析失败时整条消息仍以
+        ``[转发消息]`` 占位入站，但不暴露半棵树给工具，避免多根转发的路径编号错位。
         """
         raw_segments = payload.get('message')
         if not isinstance(raw_segments, list):
@@ -601,16 +602,19 @@ class OneBot11Runner:
                 if inline_content is not None:
                     if not isinstance(inline_content, list):
                         raise ValueError('顶层合并转发的 data.content 必须是数组')
-                    trees.append(parse_forward_content(inline_content))
+                    trees.append(await parse_forward_content(
+                        inline_content,
+                        self._fetch_forward_response,
+                    ))
                     continue
                 forward_id = str(data.get('id') or '').strip()
                 if not forward_id:
                     raise ValueError('顶层合并转发缺少 data.id')
-                response = await self._transport.call_action(
-                    'get_forward_msg',
-                    {'message_id': forward_id},
-                )
-                trees.append(parse_forward_response(response))
+                response = await self._fetch_forward_response(forward_id)
+                trees.append(await parse_forward_response(
+                    response,
+                    self._fetch_forward_response,
+                ))
             except (ActionError, asyncio.TimeoutError, ValueError) as exc:
                 logger.warning(
                     'QQ 合并转发解析失败，保留正文占位且不开放读取工具',
@@ -625,6 +629,19 @@ class OneBot11Runner:
                 )
                 return event
         return replace(event, forward_messages=tuple(trees))
+
+    async def _fetch_forward_response(self, forward_id: str) -> Mapping[str, Any]:
+        """按资源编号取一层合并转发内容。
+
+        :param forward_id: 转发段 ``data.id`` 给出的资源编号。
+        :return: 协议端 ``get_forward_msg`` 的原始响应，由解析器校验结构。
+        :raises ActionError: 协议端拒绝该动作。
+        :raises asyncio.TimeoutError: 协议端在动作超时窗口内未响应。
+        """
+        return await self._transport.call_action(
+            'get_forward_msg',
+            {'message_id': forward_id},
+        )
 
     async def _resolve_image_source(self, source: str, file_name: str) -> str:
         """把单张 QQ CDN 图片来源解析为本地 ``file://`` 引用。
