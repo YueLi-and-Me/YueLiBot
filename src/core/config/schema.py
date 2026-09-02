@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 # 配置格式版本的唯一定义处。loader 从这里导入，不再各写一份——两处必须始终
 # 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
-CONFIG_VERSION = '1.3.0'
+CONFIG_VERSION = '1.4.0'
 
 
 class InnerConfig(BaseModel):
@@ -31,12 +31,13 @@ class InnerConfig(BaseModel):
     # 1.1.0 起 model_tasks 从「一个任务一个模型名」改成候选列表 + 轮询策略。
     # 1.2.0 移除日程时刻表遗留字段，它们已被活动时间线取代。
     # 1.3.0 新增 [emoji] 与 [emoji.cleanup] 两段表情包库管理配置。
+    # 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊。
     #
     # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
     # 所以删除或重命名配置字段时必须同步修改这里与 electron/main/config.ts，
     # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
     # 为它们报一次「配置字段变更」。
-    version: Literal['1.3.0'] = CONFIG_VERSION
+    version: Literal['1.4.0'] = CONFIG_VERSION
 
 
 class BotConfig(BaseModel):
@@ -342,6 +343,9 @@ class ConversationConfig(BaseModel):
     # 一条「他下周要考试」隔两小时才入库就已经错过了可用的窗口。
     fact_extract_trigger_messages: int = Field(default=32, ge=8, le=500)
     fact_extract_batch_messages: int = Field(default=12, ge=4, le=200)
+    # 私聊（含桌面端）听到的事实能否出现在群聊提示词里。事实的可见范围默认
+    # 由它被听见的场合决定：关着时私聊来源被挡下，打开是显式放宽。
+    private_facts_in_group: bool = Field(default=False)
 
     @model_validator(mode='after')
     def _validate_summary_window(self) -> 'ConversationConfig':

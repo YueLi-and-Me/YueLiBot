@@ -500,6 +500,7 @@ class ChatService:
         self._refreshing_profiles = False
         self._session_gap_ms = conversation.session_gap_minutes * 60_000
         self._fact_recall_limit = conversation.fact_recall_limit
+        self._private_facts_in_group = conversation.private_facts_in_group
         self._recalled_episode_limit = conversation.recalled_episode_limit
         self._recent_episode_limit = conversation.recent_episode_limit
         self._episode_context_limit = conversation.episode_context_limit
@@ -635,7 +636,10 @@ class ChatService:
             self._tool_registry.bind_action_executor(
                 'recall',
                 CognitiveToolExecutor(
-                    RecallAction(self.memory, self._registry.stream_display_name, db)
+                    RecallAction(
+                        self.memory, self._registry.stream_display_name, db,
+                        private_in_group=self._private_facts_in_group,
+                    )
                 ),
             )
             self._tool_registry.bind_action_executor(
@@ -1455,7 +1459,9 @@ class ChatService:
                 # Bot 刚开过口，对话仍在 Bot 这边：与 Agent 路径同口径重新敞开自然回应窗口。
                 self._follow_up_declined.discard(context.stream.id)
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
-                asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+                asyncio.create_task(
+                    self._maybe_extract_facts(context.stream.id, context.stream.kind)
+                )
                 asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
                 asyncio.create_task(self._maybe_refresh_profiles())
             except LlmError as exc:
@@ -2735,7 +2741,11 @@ class ChatService:
             acquaintance=acquaintance,
             facts=[
                 fact.content
-                for fact in self.memory.top_facts(context.person.id, 5, now)
+                for fact in self.memory.top_facts(
+                    context.person.id, 5, now,
+                    stream_kind=context.stream.kind,
+                    private_in_group=self._private_facts_in_group,
+                )
             ],
             episodes=[episode.summary for episode in self.memory.recent_episodes(
                 context.stream.id, 2
@@ -3270,6 +3280,7 @@ class ChatService:
         platform_bot_name: str | None = None,
         user_message_id_watermark: int | None = None,
         batch_message_ids: tuple[int, ...] | None = None,
+        impression: str | None = None,
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -3293,6 +3304,8 @@ class ChatService:
             now,
             reinforce_matches=False,
             return_candidates=True,
+            stream_kind=context.stream.kind,
+            private_in_group=self._private_facts_in_group,
         )
         recalled = self.memory.recall_episodes(
             context.stream.id,
@@ -4351,7 +4364,9 @@ class ChatService:
         # - 原因：两条收尾路径只有摘要挂了两处，抽取只挂了旧那一处，而默认走的是这条。
         # - 后果：漏挂不会报错也不留日志（_maybe_extract_facts 的前置判断都是静默 return），
         #   表现为「功能已接线但永远不产出」，只能靠游标为空反推。
-        asyncio.create_task(self._maybe_extract_facts(context.stream.id))
+        asyncio.create_task(
+            self._maybe_extract_facts(context.stream.id, context.stream.kind)
+        )
         # 表达学习同理，与抽取同处收尾、同样两处都挂。
         asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
         asyncio.create_task(self._maybe_refresh_profiles())
@@ -5750,13 +5765,14 @@ class ChatService:
             reason=reason,
         )
 
-    async def _maybe_extract_facts(self, stream_id: int) -> None:
+    async def _maybe_extract_facts(self, stream_id: int, stream_kind: str) -> None:
         """在待抽取消息达到阈值时后台抽取人物事实并写入长期记忆。
 
         与 :meth:`_maybe_summarize` 同一条纪律：独立模型任务、回合之后执行、
         同一会话同时只允许一个在飞、失败只丢该批且不影响已完成的对话。
 
         :param stream_id: 待检查的会话 ID。
+        :param stream_kind: 该会话的类型；决定新写事实的来源标记。
         :return: 无返回值。
         副作用：可能发起一次模型请求、写入 facts 并推进抽取游标。
         """
@@ -5781,6 +5797,7 @@ class ChatService:
                 self._memory_provider,
                 self._db,
                 stream_id=stream_id,
+                stream_kind=stream_kind,
                 participants=participants,
                 bot_name=self._bot_display_name,
                 trigger_messages=self._fact_extract_trigger,
