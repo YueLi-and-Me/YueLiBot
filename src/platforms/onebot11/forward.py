@@ -1,7 +1,9 @@
 """把 OneBot 11 协议端的合并转发响应还原为平台中立消息树。
 
-``get_forward_msg`` 在顶层返回 ``data.messages``；其中嵌套 ``forward`` 段是否
-内联 ``data.content`` 由协议端决定，缺失时本模块用调用方注入的解析器按
+``get_forward_msg`` 的响应包装存在多种真实形状（``data`` 直接是节点数组、
+``data.messages`` / ``data.content``、再包一层 ``data.data.*``），由
+``_response_messages`` 统一识别；其中嵌套 ``forward`` 段是否内联
+``data.content`` 由协议端决定，缺失时本模块用调用方注入的解析器按
 ``data.id`` 再取一层。解析保留每个节点内的片段顺序，任何取不到的嵌套正文都
 直接报错，避免对外声称支持深层浏览却只保存一个不可展开的编号。
 
@@ -123,18 +125,54 @@ async def _parse_nested(
 
 
 def _response_messages(response: Mapping[str, Any]) -> List[Any]:
-    """校验 ``get_forward_msg`` 响应结构并取出该层的节点数组。"""
+    """校验 ``get_forward_msg`` 响应并取出该层的节点数组。
+
+    :param response: 协议端 ``get_forward_msg`` 的原始响应。
+    :return: 该层的转发节点数组，保证非空。
+    :raises ValueError: 响应不是对象、节点数组为空，或 ``data`` 不在五种已知
+        形状之列；未识别时错误信息携带 ``data`` 的实际类型与顶层键名。
+    """
+    # [WORKAROUND] 协议端对 get_forward_msg 的响应包装存在多种真实形状
+    # - 现象：只认 ``data.messages`` 时，``data`` 直接是节点数组、``data.content``、
+    #   ``data.data.messages`` / ``data.data.content`` 这些同样真实存在的返回会被
+    #   判为结构损坏，整棵根树丢弃，正文退回占位符、读取工具无树可开放。
+    # - 原因：OneBot 11 标准未规定 ``get_forward_msg`` 的响应形状，不同协议端及
+    #   同一协议端的不同版本各自选择包装层级与字段名。
+    # - 后果：漏认一种形状等于在该版本协议端上禁用转发读取；反过来把识别不了
+    #   的形状静默当成空转发，会把结构漂移伪装成解析成功。因此只识别有据可查
+    #   的五种形状，全部对不上时报错并携带实际类型与顶层键名，空数组单独报错。
     if not isinstance(response, Mapping):
         raise ValueError('合并转发响应必须是对象')
     data = response.get('data')
-    if not isinstance(data, Mapping):
-        raise ValueError('合并转发响应缺少对象类型的 data')
-    messages = data.get('messages')
-    if not isinstance(messages, list):
-        raise ValueError('合并转发响应的 messages 必须是数组')
-    if not messages:
-        raise ValueError('合并转发响应的 messages 不能为空')
-    return messages
+    inner = data.get('data') if isinstance(data, Mapping) else None
+    for candidate in (
+        data if isinstance(data, list) else None,
+        _array_field(data, 'messages'),
+        _array_field(data, 'content'),
+        _array_field(inner, 'messages'),
+        _array_field(inner, 'content'),
+    ):
+        if isinstance(candidate, list):
+            if not candidate:
+                raise ValueError('合并转发响应的节点数组不能为空')
+            return candidate
+    keys = (
+        '、'.join(sorted(str(key) for key in data))
+        if isinstance(data, Mapping)
+        else '（无）'
+    )
+    raise ValueError(
+        '合并转发响应的 data 不是已知的节点数组形状：'
+        f'实际类型 {type(data).__name__}，顶层键 {keys}'
+    )
+
+
+def _array_field(container: Any, key: str) -> List[Any] | None:
+    """读取对象字段，仅当值是数组时返回，否则返回 ``None``。"""
+    if not isinstance(container, Mapping):
+        return None
+    value = container.get(key)
+    return value if isinstance(value, list) else None
 
 
 def _sender_name(raw_sender: Any, node_index: int) -> str:
