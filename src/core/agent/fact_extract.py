@@ -26,7 +26,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 import json
 import re
@@ -39,6 +39,7 @@ from src.core.common.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.memory.association import link_together
+from src.core.memory.decay import DEFAULT_FACT_KIND, FACT_KINDS
 from src.core.memory.knowledge import add_knowledge
 from src.core.memory.store import (
     FactInput,
@@ -56,12 +57,12 @@ CURSOR_KEY = 'fact_extract_cursor'
 KNOWN_FACT_LIMIT = 30
 # 单个在场者取多少条既有事实进清单。群聊在场者可能十几个，逐人不设限会超出总上限。
 KNOWN_FACT_PER_PERSON = 6
-# 模型未给出 kind 时的兜底类别，与 FactInput 的默认值一致。
-DEFAULT_KIND = '未分类'
 # 知识层的来源标识，与迁移进来的历史知识区分开，便于核对哪些是本机学到的。
 KNOWLEDGE_SOURCE = 'fact_extract'
 # 对话正文短于此长度时不发起模型请求：无可抽取内容。
 MIN_DIALOGUE_CHARS = 40
+
+EmbedFactFn = Callable[[int, str], Awaitable[None]]
 
 
 @dataclass
@@ -83,7 +84,7 @@ class ExtractedFact:
     """表示模型抽出的一条待写入事实。
 
     :ivar person_ref: 模型声明的归属对象，必须是输入名单里出现过的平台编号。
-    :ivar kind: 事实类别，两到四个字。
+    :ivar kind: 事实类别，固定为衰减模型支持的七个枚举值之一。
     :ivar content: 脱离原对话也能读懂的一句话。
     """
 
@@ -270,10 +271,18 @@ def parse_extraction(raw: str) -> Optional[Extraction]:
             return None
         if not isinstance(content, str) or not content.strip():
             return None
-        kind = item.get('kind')
+        raw_kind = item.get('kind')
+        kind = raw_kind.strip() if isinstance(raw_kind, str) else ''
+        if kind not in FACT_KINDS:
+            trace.emit(
+                'memory_fact_kind_normalized',
+                rawKind=kind or '<空>',
+                normalizedKind=DEFAULT_FACT_KIND,
+            )
+            kind = DEFAULT_FACT_KIND
         facts.append(ExtractedFact(
             person_ref=person.strip(),
-            kind=kind.strip() if isinstance(kind, str) and kind.strip() else DEFAULT_KIND,
+            kind=kind,
             content=content.strip(),
         ))
 
@@ -345,12 +354,14 @@ async def extract_facts(
     return parse_extraction(raw)
 
 
-def persist_facts(
+async def persist_facts(
     store: MemoryStore,
     facts: Sequence[ExtractedFact],
     participants: Sequence[Participant],
     db: sqlite3.Connection,
     now: Optional[int] = None,
+    *,
+    embed_fact: Optional[EmbedFactFn] = None,
 ) -> List[int]:
     """按平台编号归属把事实写入长期记忆。
 
@@ -363,9 +374,10 @@ def persist_facts(
     :param participants: 在场者名单，用于把平台编号解析成 ``person_id``。
     :param db: 当前库连接，用于给写过新事实的人置画像脏位。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
+    :param embed_fact: 可选事实向量写入回调；提供时在事实落库后于同一后台链路等待完成。
     :return: 实际写入或强化的事实 ID 列表，顺序与输入一致；被丢弃的条目不占位。
     :raises sqlite3.Error: 写入失败时由 ``add_fact`` 抛出。
-    副作用：写入 ``facts`` 与 ``facts_fts`` 并提交事务。
+    副作用：写入 ``facts`` 与 ``facts_fts`` 并提交事务；可选生成并持久化事实向量。
     """
 
     now = now if now is not None else current_time()
@@ -381,6 +393,10 @@ def persist_facts(
             continue
         fact_id = store.add_fact(person.person_id, FactInput(content=fact.content, kind=fact.kind), now)
         if fact_id:
+            # 事实正文已经持久化后再生成向量：向量服务失败不能回滚事实；等待回调完成
+            # 则保证 run_extraction 返回时，新事实已经具备可供语义融合读取的 embedding。
+            if embed_fact is not None:
+                await embed_fact(fact_id, fact.content)
             # 写入成功必须发事件：本处是 memory_fact 事件唯一的生产者，缺少它时
             # 控制台与 WebUI 均不可见事实写入，写入结果也无从验证。
             trace.emit(
@@ -442,6 +458,7 @@ async def run_extraction(
     batch_messages: int,
     temperature: float,
     max_tokens: Optional[int],
+    embed_fact: Optional[EmbedFactFn] = None,
     now: Optional[int] = None,
 ) -> Optional[List[int]]:
     """检查触发条件并完成一次抽取。
@@ -459,6 +476,7 @@ async def run_extraction(
     :param batch_messages: 单次交给模型的消息条数，必须小于 ``trigger_messages``。
     :param temperature: 采样温度。
     :param max_tokens: 输出上限。
+    :param embed_fact: 可选事实向量写入回调，原始事实写入成功后于同一链路调用。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :return: 写入的事实 ID 列表（可能为空列表，表示这批确实没什么可记的）；
         未达触发条件或整批被丢弃时返回 ``None``。
@@ -487,7 +505,14 @@ async def run_extraction(
         # 跳过该段对话。
         trace.emit('memory_extract_failed', streamId=stream_id, cursor=cursor)
         return None
-    written = persist_facts(store, extraction.facts, participants, db, now)
+    written = await persist_facts(
+        store,
+        extraction.facts,
+        participants,
+        db,
+        now,
+        embed_fact=embed_fact,
+    )
     knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
     # 同批产出的事实与知识描述同一段时间内发生的事，是联想层两种建边时机中的
     # 第一种（另一种是「一起被召回并被采用」，在认知动作那侧）。

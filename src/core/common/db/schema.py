@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS facts (
   active          INTEGER NOT NULL DEFAULT 1,
   tokens_v2       TEXT    NOT NULL DEFAULT '',   -- jieba 预分词（v4 加）
   embedding       BLOB,                          -- float32 packed（v5 加）
+  -- 自解释 SQ8：头部携带格式版本、维度和单向量 scale；原 float32 列继续保留。
+  embedding_q8    BLOB,
   UNIQUE(person_id, content_key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(active, due_at);
@@ -146,6 +148,8 @@ CREATE TABLE IF NOT EXISTS knowledge (
   -- float32 packed，与 facts.embedding 同格式。迁移进来的历史知识必须用当前向量
   -- 模型重算：不同模型的向量空间不可比，直接搬旧值检索结果是错的。
   embedding   BLOB,
+  -- 自解释 SQ8，与原向量并存；读取方可逐条校验格式和维度。
+  embedding_q8 BLOB,
   created_at  INTEGER NOT NULL,
   -- 命中计数与 facts.hit_count 同口径。本轮不参与检索打分，只落数据：
   -- 检索调优要的是「哪些知识真的被用到过」，而那份数据只能事后积累，

@@ -25,7 +25,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 18  # 当前 schema 版本：表情包使用记录与封禁表、表达方式人工确认与最近使用时间、会话高频词表、黑话学习证据三列
+CURRENT_VERSION = 20  # 当前 schema 版本：事实与知识增加并存的 SQ8 向量列
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -96,7 +96,11 @@ def _initialize_fresh_database(db: sqlite3.Connection) -> None:
     set_user_version(db, CURRENT_VERSION)
     db.commit()
     logger.info("db_fresh_initialized", version=CURRENT_VERSION)
-    report_schema_changes(describe_schema_changes({}, snapshot_shape(db)), CURRENT_VERSION)
+    report_schema_changes(
+        describe_schema_changes({}, snapshot_shape(db)),
+        CURRENT_VERSION,
+        db,
+    )
 
 
 def _apply_current_schema(db: sqlite3.Connection) -> None:
@@ -150,6 +154,8 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v15_to_v16,
         v16_to_v17,
         v17_to_v18,
+        v18_to_v19,
+        v19_to_v20,
     )
 
     registry = get_registry()
@@ -163,7 +169,11 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
     if current >= CURRENT_VERSION:
         logger.debug("db_up_to_date", version=current)
         _apply_current_schema(db)
-        report_schema_changes(describe_schema_changes(before, snapshot_shape(db)), current)
+        report_schema_changes(
+            describe_schema_changes(before, snapshot_shape(db)),
+            current,
+            db,
+        )
         return
 
     logger.info("db_migration_start", from_version=current, to_version=CURRENT_VERSION)
@@ -189,5 +199,9 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         current += 1
 
     _apply_current_schema(db)
-    report_schema_changes(describe_schema_changes(before, snapshot_shape(db)), current)
+    report_schema_changes(
+        describe_schema_changes(before, snapshot_shape(db)),
+        current,
+        db,
+    )
     logger.info("db_migration_done", version=current)

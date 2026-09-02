@@ -430,11 +430,13 @@ def main() -> None:
     # 表情包语义检索与事实召回复用同一个 embedding 客户端；表情包本身即使
     # 未配置 embedding 也可按标签包含匹配，不影响收侧识别和登记。
     embed_client = None
+    embedding_client_disabled_reason = 'model_tasks.embedding.model_list 是空的'
     if routers.embedding.ready:
         try:
             from src.core.memory.embed import build_client
             embed_client = build_client(routers.embedding)
         except Exception as exc:
+            embedding_client_disabled_reason = '向量客户端构造失败'
             logger.warning('embedding_client_init_failed', error=str(exc))
 
     chat_provider = routers.chat if routers.chat.ready else None
@@ -525,16 +527,27 @@ def main() -> None:
     )
 
     # 向量服务依赖 ChatService 已创建的 MemoryStore，因此必须在聊天服务之后装配。
-    if cfg.vector.enabled:
-        try:
-            from src.core.services.vector import VectorService
-            if embed_client is None:
-                raise ValueError('model_tasks.embedding.model_list 是空的，无法启用向量召回')
-            app_state.chat._vector = VectorService(app_state.chat.memory, embed_client)
-            logger.info("vector_recall_enabled", model=routers.embedding.model,
-                        candidates=len(routers.embedding.candidates))
-        except Exception as exc:
-            logger.warning("vector_recall_init_failed", error=str(exc))
+    # 无论开关状态都创建并注册服务：关闭或候选缺失必须在生命周期启动期明确说出来。
+    from src.core.services.vector import VectorService
+    vector_client = embed_client if cfg.vector.enabled else None
+    vector_disabled_reason = (
+        'vector.enabled=false'
+        if not cfg.vector.enabled
+        else embedding_client_disabled_reason
+    )
+    vector_service = VectorService(
+        app_state.chat.memory,
+        vector_client,
+        disabled_reason=vector_disabled_reason,
+        db=db,
+    )
+    app_state.chat._vector = vector_service
+    if vector_service.enabled:
+        logger.info(
+            "vector_recall_enabled",
+            model=routers.embedding.model,
+            candidates=len(routers.embedding.candidates),
+        )
 
     # TTS 只在配置启用且至少有一个可用候选时装配，避免创建永远失败的后台任务。
     if cfg.tts.enabled and routers.tts.ready:
@@ -740,6 +753,7 @@ def main() -> None:
     from src.core.services.jargon_stats import JargonStatsService
     jargon_stats = JargonStatsService(db)
     lifecycle.register('jargon_stats', jargon_stats.startup, jargon_stats.shutdown)
+    lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
     from src.core.services.jargon_learn import JargonLearnService

@@ -5787,6 +5787,7 @@ class ChatService:
                 batch_messages=self._fact_extract_batch,
                 temperature=self._memory_temperature,
                 max_tokens=self._memory_max_tokens,
+                embed_fact=self._vector.embed_fact,
             )
             if written is None:
                 self._skip_stuck_batch(
