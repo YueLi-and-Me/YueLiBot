@@ -12,19 +12,15 @@ from pathlib import Path
 from typing import FrozenSet
 
 from src.core.common.backend_runtime import read_backend_runtime
-from src.core.config.toml_io import read_versioned_toml
 from src.platforms.onebot11.backend import BackendClient
-from src.platforms.onebot11.config import (
-    NAPCAT_CONFIG_VERSION,
-    AdapterDocument,
-)
+from src.platforms.onebot11.config import read_section_config
 from src.platforms.onebot11.runner import OneBot11Runner
 from src.platforms.onebot11.transport import OneBot11Transport
 from src.plugin_system import AdapterCapability, AdapterManifest, AdapterPlugin
 
-# 共用配置模型里的连接段字段名。清单的 config_section 决定磁盘上的段名，两者
-# 不同名时在这里做一次显式映射；字段名若由契约层统一改名，改这一处即可。
-_PROTOCOL_SECTION_FIELD = 'napcat'
+# 连接配置与插件同目录：它描述的是「这个适配器连哪个协议端」，属于适配器自身，
+# 放进全局 config/ 只会和主体配置混在一起，还要靠文件名去猜是哪个适配器在用。
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / 'config.toml'
 
 
 class SnowlumaAdapterPlugin(AdapterPlugin):
@@ -42,14 +38,14 @@ class SnowlumaAdapterPlugin(AdapterPlugin):
         """保存清单与注入项。
 
         :param manifest: 已校验的插件清单；连接段名取自其中的 config_section。
-        :param config_path: 适配器配置文件路径；缺省为 ``config/<config_section>.toml``。
+        :param config_path: 适配器配置文件路径；缺省为本插件目录下的 ``config.toml``。
         :param runtime_path: 主体运行时信息文件路径；缺省为 ``data/runtime/backend.json``。
         :param transport: 协议传输替身注入位；缺省由运行器构造真实传输。
         :param backend: 主体客户端替身注入位；缺省由运行器构造真实客户端。
         副作用：只保存引用，不读文件也不建对象。
         """
         super().__init__(manifest)
-        self._config_path = config_path or Path('config') / f'{manifest.config_section}.toml'
+        self._config_path = config_path or _DEFAULT_CONFIG_PATH
         self._runtime_path = runtime_path or Path('data/runtime/backend.json')
         self._transport = transport
         self._backend = backend
@@ -59,29 +55,18 @@ class SnowlumaAdapterPlugin(AdapterPlugin):
         """读取 ``snowluma`` 配置段并构造运行器。
 
         配置文件与共用协议配置模型同构，只是连接段以本适配器的段名出现；
-        校验全部复用共用模型，段名在此处映射。段缺失时上抛明确错误而不是
-        回退默认值——连接参数写错段的适配器连不上任何协议端，静默默认只会
-        把错误推迟到运行期。
+        读取、段名映射与校验全部复用 ``read_section_config``，本插件只提供
+        清单里声明的段名。
 
         :raises ValueError: 配置文件缺少本适配器的连接段。
         :raises OSError: 配置文件或运行时文件无法读取。
         :raises pydantic.ValidationError: 连接参数不符合共用配置模型。
         副作用：读取两个本地文件；构造运行器但不建立连接。
         """
-        section = self._manifest.config_section
-        document = read_versioned_toml(
+        config = read_section_config(
             self._config_path,
-            NAPCAT_CONFIG_VERSION,
-            '该文件版本与程序支持的版本不一致，需要用当前版本的模板重写',
+            self._manifest.config_section,
         )
-        section_payload = document.get(section)
-        if not isinstance(section_payload, dict):
-            raise ValueError(
-                f'{self._config_path} 缺少 [{section}] 配置段，无法确定协议端连接参数'
-            )
-        payload = {key: value for key, value in document.items() if key != section}
-        payload[_PROTOCOL_SECTION_FIELD] = section_payload
-        config = AdapterDocument.model_validate(payload)
         runtime = read_backend_runtime(self._runtime_path)
         self._runner = OneBot11Runner(
             config,

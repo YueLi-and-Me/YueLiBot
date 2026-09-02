@@ -33,8 +33,11 @@ logger = get_logger('adapters.yueli_napcat_adapter.plugin')
 _POKE_PROBE_ACTION = 'nc_get_packet_status'
 _POKE_CAPABILITY: AdapterCapability = 'poke'
 
-# 默认路径与 src.platforms.onebot11.__main__ 的命令行默认值保持一致。
-_DEFAULT_CONFIG_PATH = Path('config/napcat.toml')
+# 连接配置与插件同目录：它描述的是「这个适配器连哪个协议端」，属于适配器自身，
+# 放进全局 config/ 只会和主体配置混在一起，还要靠文件名去猜是哪个适配器在用。
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / 'config.toml'
+# 运行时信息属于主体，随数据目录配置变化，默认值与 src.platforms.onebot11.__main__
+# 的命令行默认值保持一致。
 _DEFAULT_RUNTIME_PATH = Path('data/runtime/backend.json')
 
 
@@ -52,7 +55,7 @@ class NapCatAdapterPlugin(AdapterPlugin):
         """保存路径与可选的传输替身；不做任何 I/O。
 
         :param manifest: 已校验的插件清单；能力结算以它为上界。
-        :param config_path: 协议端连接配置路径，默认 ``config/napcat.toml``。
+        :param config_path: 协议端连接配置路径，默认为本插件目录下的 ``config.toml``。
         :param runtime_path: 主体后端运行时信息路径，默认 ``data/runtime/backend.json``。
         :param transport: 可选的协议传输实现；为空时由 ``on_load`` 创建真实的
             :class:`OneBot11Transport`，测试可传入替身。

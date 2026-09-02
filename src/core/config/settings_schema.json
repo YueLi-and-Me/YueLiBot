@@ -945,21 +945,21 @@
       ]
     },
     {
-      "file": "napcat.toml",
+      "file": "adapter.toml",
       "label": "QQ 适配器",
-      "description": "NapCat 协议端连接、owner 身份与私聊/群聊访问名单。",
+      "description": "协议端连接、owner 身份与私聊/群聊访问名单。配置随适配器插件存放，段名由该插件的清单决定。",
       "sections": [
         {
           "kind": "object",
           "key": "napcat",
           "label": "协议端连接",
-          "description": "NapCat 正向 WebSocket 服务端连接参数。",
+          "description": "协议端正向 WebSocket 服务端连接参数。",
           "fields": [
             {
               "key": "enabled",
               "type": "boolean",
               "label": "启用 QQ 适配器",
-              "help": "安全起点：停用时不会连接协议端；启用前先在 NapCat WebUI 创建正向 WebSocket 服务端连接。"
+              "help": "安全起点：停用时不会连接协议端；启用前先在协议端创建正向 WebSocket 服务端连接。"
             },
             {
               "key": "self_qq",
@@ -972,7 +972,7 @@
               "type": "string",
               "label": "协议端地址",
               "required": true,
-              "help": "NapCat WebSocket 服务端主机名或 IP 地址，通常为 127.0.0.1。"
+              "help": "协议端 WebSocket 服务端主机名或 IP 地址，通常为 127.0.0.1。"
             },
             {
               "key": "port",
@@ -980,7 +980,7 @@
               "label": "协议端端口",
               "min": 1,
               "max": 65535,
-              "help": "正向 WebSocket 端口；启用前请改成 NapCat WebUI 中实际监听的端口。"
+              "help": "正向 WebSocket 端口；启用前请改成协议端实际监听的端口。"
             },
             {
               "key": "token",

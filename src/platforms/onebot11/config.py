@@ -301,8 +301,13 @@ class AdapterDocument(BaseModel):
         return self
 
 
+# 共用配置模型里的连接段字段名。磁盘上的段名由各适配器清单的 config_section
+# 决定，与模型字段不同名时在读写边界做一次映射。
+PROTOCOL_SECTION_FIELD = 'napcat'
+
+
 def read_config(path: Path) -> AdapterDocument:
-    """读取并校验一份完整的 NapCat TOML 配置文件。
+    """读取并校验一份连接段名为 ``napcat`` 的适配器配置文件。
 
     :param path: 配置文件路径；文件必须包含当前支持的版本字段和完整配置结构。
 
@@ -312,8 +317,35 @@ def read_config(path: Path) -> AdapterDocument:
     :raises ValueError: 版本字段不匹配或 TOML 结构不合法时抛出。
     :raises pydantic.ValidationError: 配置字段类型、范围或跨字段约束校验失败。
     """
+    return read_section_config(path, PROTOCOL_SECTION_FIELD)
+
+
+def read_section_config(path: Path, section: str) -> AdapterDocument:
+    """按适配器声明的连接段名读取并校验一份适配器配置文件。
+
+    各适配器的连接段名取自自身清单（``snowluma``、``napcat`` 等），配置模型只有
+    一个 ``napcat`` 字段；映射放在读取边界，模型和下游都不必知道段名的差异。
+
+    :param path: 配置文件路径。
+    :param section: 该适配器在磁盘上使用的连接段名。
+
+    :return: 校验通过的 ``AdapterDocument`` 实例。
+
+    :raises OSError: 配置文件无法读取时抛出。
+    :raises ValueError: 版本字段不匹配、TOML 结构不合法，或文件缺少该连接段。
+        缺段不回退默认值：连接参数写错段的配置连不上任何协议端，静默补默认只会
+        把错误推迟到运行期。
+    :raises pydantic.ValidationError: 配置字段类型、范围或跨字段约束校验失败。
+    """
     document = read_versioned_toml(path, NAPCAT_CONFIG_VERSION, _CONFIG_HINT)
-    return AdapterDocument.model_validate(document)
+    section_payload = document.get(section)
+    if not isinstance(section_payload, dict):
+        raise ValueError(
+            f'{path} 缺少 [{section}] 配置段，无法确定协议端连接参数'
+        )
+    payload = {key: value for key, value in document.items() if key != section}
+    payload[PROTOCOL_SECTION_FIELD] = section_payload
+    return AdapterDocument.model_validate(payload)
 
 
 def _readable_error(exc: Exception) -> str:

@@ -24,15 +24,17 @@ interface BackendConnection {
 }
 
 /**
- * 桌宠固定拉起的适配器插件目录名，位于 ``adapters/`` 下。
+ * 由插件目录名派生适配器输出行的控制台标签。
  *
- * 两个协议端后端互斥，只能选一个；这里选定的目录同时决定控制台标签，避免出现
- * 「拉起的是 A、日志写着 B」这种只能靠翻代码才能发现的错标。
+ * 标签必须跟着实际拉起的那个插件走：写死一个协议端名字，换适配器后就会出现
+ * 「拉起的是 A、日志写着 B」，只能靠翻代码才发现。
+ *
+ * @param pluginDir ``adapters/`` 下的插件目录名。
+ * @returns 去掉固定前后缀后的协议端名字。
  */
-const ADAPTER_PLUGIN_DIR = 'yueli-snowluma-adapter'
-
-/** 适配器输出行的控制台标签：去掉插件目录的固定前后缀，只留协议端名字。 */
-const ADAPTER_LOG_TAG = ADAPTER_PLUGIN_DIR.replace(/^yueli-/, '').replace(/-adapter$/, '')
+function adapterLogTag(pluginDir: string): string {
+  return pluginDir.replace(/^yueli-/, '').replace(/-adapter$/, '')
+}
 
 /** 结束一个子进程及其整棵进程树。
 
@@ -122,8 +124,10 @@ export interface SupervisorOptions {
   /** Python 侧的工作目录：含 bot.py 与 src/ 的那一层，也就是仓库根。 */
   cwd: string
   pythonExe?: string
-  /** QQ 适配器配置文件；不传表示只启动主体，便于保留无 QQ 场景。 */
-  napcatConfigPath?: string
+  /** 适配器插件目录下的连接配置；不传表示只启动主体，便于保留无 QQ 场景。 */
+  adapterConfigPath?: string
+  /** 当前启用的适配器插件目录名；由 config/adapter.toml 声明，决定拉起哪个适配器。 */
+  adapterPluginDir?: string
 }
 
 /**
@@ -175,7 +179,8 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly configPath: string
   private readonly cwd: string
   private readonly pythonExe: string
-  private readonly napcatConfigPath: string | null
+  private readonly adapterConfigPath: string | null
+  private readonly adapterPluginDir: string
 
   /**
    * 创建后端进程监护器。
@@ -189,7 +194,8 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     this.configPath = opts.configPath
     this.cwd = opts.cwd
     this.pythonExe = opts.pythonExe ?? 'python'
-    this.napcatConfigPath = opts.napcatConfigPath ?? null
+    this.adapterConfigPath = opts.adapterConfigPath ?? null
+    this.adapterPluginDir = opts.adapterPluginDir ?? ''
   }
 
   /**
@@ -608,14 +614,14 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
    * 故障通过 ``adapterFailed`` 事件通知主进程，不参与主体重启计数。
    */
   private _spawnAdapter(): void {
-    if (!this.napcatConfigPath) return
+    if (!this.adapterConfigPath || !this.adapterPluginDir) return
     this._killAdapter()
     this.adapterStdoutBuf = ''
     this.adapterStderrBuf = ''
 
     const adapter = spawn(this.pythonExe, [
       '-m', 'src.platforms.onebot11',
-      '--adapter', ADAPTER_PLUGIN_DIR,
+      '--adapter', this.adapterPluginDir,
       '--runtime-path', join(this.dataDir, 'runtime', 'backend.json'),
     ], {
       cwd: this.cwd,
@@ -734,7 +740,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     const text = line.trimEnd()
     if (!text) return
     const output = isError ? process.stderr : process.stdout
-    output.write(`[${ADAPTER_LOG_TAG}] ${text}\n`)
+    output.write(`[${adapterLogTag(this.adapterPluginDir)}] ${text}\n`)
   }
 
   /**

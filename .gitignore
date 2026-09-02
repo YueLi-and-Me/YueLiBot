@@ -41,6 +41,10 @@ __pycache__/
 /config/
 /data/
 
+# 适配器的连接配置与插件同目录，但它带着协议端访问令牌和真实 QQ 号，
+# 和 /config/ 同属运行时配置，不能随插件源码一起入库。
+/adapters/*/config.toml
+
 # 测试不入库。文件仍留在工作区，pytest 与 vitest 照常运行；
 # 加这三条是防止一次 `git add .` 把它们重新带进版本库。
 /pytests/

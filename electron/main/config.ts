@@ -42,16 +42,27 @@ export const MODEL_TASKS = [
   'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding',
 ] as const
 
-const NAPCAT_CONFIG_TEMPLATE = `# Bot 的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
+/**
+ * 生成停用状态的 QQ 适配器连接配置模板。
+ *
+ * 连接段名由适配器清单的 config_section 决定，不写死在模板里：段名一旦有两个
+ * 独立来源，换适配器就会写出一份该适配器读不了的配置，且只在启动时表现为
+ * 「缺少 [xxx] 配置段」，从模板本身看不出任何异常。
+ *
+ * @param section 适配器清单声明的连接段名。
+ * @returns 完整的 TOML 文本，连接默认停用。
+ */
+function adapterConfigTemplate(section: string): string {
+  return `# Bot 的 QQ 配置。self_qq 和 owner.qq 是两个号，别填反。
 
 [inner]
 version = "0.1.0"
 
-[napcat]
+[${section}]
 enabled = false              # 改成 true 才连 QQ
-self_qq = ""                 # Bot 的号：NapCat 登录的那个
-host = "127.0.0.1"           # NapCat 在本机就不用改
-port = 8095                  # NapCat 里那条正向 WebSocket 的端口
+self_qq = ""                 # Bot 的号：协议端登录的那个
+host = "127.0.0.1"           # 协议端在本机就不用改
+port = 8095                  # 协议端那条正向 WebSocket 的端口
 token = ""                   # 那条连接的令牌，没设就留空
 reconnect_interval_sec = 5   # 断线后几秒重连
 action_timeout_sec = 15      # 请求几秒算超时
@@ -67,6 +78,7 @@ list = []                    # 数字 QQ 号，你自己不用写
 mode = "whitelist"           # 群聊固定使用白名单
 list = []                    # 数字 QQ 群号；用户本人在群里也不会豁免名单外群
 `
+}
 
 /** 新装时的唯一一条连接。用户可以在设置页继续添加备用厂商。 */
 const DEFAULT_PROVIDER: ApiProviderConfig = {
@@ -2431,27 +2443,89 @@ export function writeConfigDirectory(directory: string, cfg: YueliConfig): void 
   }
 }
 
+/** 当前适配器声明文件名与其中的字段名；与 src/core/config/adapter_selection.py 同名同义。 */
+const ADAPTER_SELECTION_FILE = 'adapter.toml'
+const ADAPTER_SELECTION_FIELD = 'plugin'
+/** 新装时默认启用的适配器插件目录名，仅在创建声明文件时使用一次。 */
+const DEFAULT_ADAPTER_PLUGIN = 'yueli-snowluma-adapter'
+
+/**
+ * 读取当前启用的适配器插件目录名，文件不存在时按默认值创建声明。
+ *
+ * 两个协议端后端互斥，同时只能开一个。这个事实必须只有一处来源：以前它写死在
+ * 监护器常量里，主体侧读不到，设置页只能按固定文件名去读一份可能没人用的配置。
+ *
+ * @param configDir 主体配置目录；不存在时递归创建。
+ * @returns ``adapters/`` 下的插件目录名。
+ * @throws Error 声明文件不是合法 TOML，或其中的插件目录名为空。
+ */
+export function ensureAdapterSelection(configDir: string): string {
+  const path = join(configDir, ADAPTER_SELECTION_FILE)
+  if (!existsSync(path)) {
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(path, [
+      '# 当前启用的 QQ 适配器：adapters/ 下的插件目录名。',
+      '# 两个协议端后端互斥，同时只能开一个；桌宠与主体都读这一处声明。',
+      `${ADAPTER_SELECTION_FIELD} = ${tomlString(DEFAULT_ADAPTER_PLUGIN)}`,
+      '',
+    ].join('\n'), 'utf-8')
+    console.log(`[config] 已创建适配器声明：${path}`)
+    return DEFAULT_ADAPTER_PLUGIN
+  }
+  const document = TOML.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
+  const plugin = document[ADAPTER_SELECTION_FIELD]
+  if (typeof plugin !== 'string' || !plugin.trim()) {
+    throw new Error(`${path} 缺少非空的 ${ADAPTER_SELECTION_FIELD}，无法确定启用哪个适配器`)
+  }
+  return plugin.trim()
+}
+
+/**
+ * 从适配器清单读出该适配器要读的连接段名。
+ *
+ * @param adapterDir 适配器插件目录。
+ * @returns 清单中的 `config_section`。
+ * @throws Error 清单缺失、不是合法 JSON，或没有非空 `config_section` 时抛出。
+ * 段名猜错写出的配置该适配器根本读不了，退回一个默认段只会让错误挪到启动时。
+ */
+function readAdapterConfigSection(adapterDir: string): string {
+  const manifestPath = join(adapterDir, '_manifest.json')
+  if (!existsSync(manifestPath)) {
+    throw new Error(`${manifestPath} 不存在，无法确定适配器的连接段名`)
+  }
+  const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+  const section = (manifest as { config_section?: unknown }).config_section
+  if (typeof section !== 'string' || !section.trim()) {
+    throw new Error(`${manifestPath} 缺少非空的 config_section`)
+  }
+  return section.trim()
+}
+
 /**
  * 在首次启动时创建停用状态的 QQ 适配器配置模板。
  *
- * @param directory 配置目录；不存在时递归创建。
- * @returns `napcat.toml` 的完整路径。
- * @throws Error 当目录或目标路径类型不正确、目录创建失败或模板写入失败时抛出。
- * @remarks 已存在的文件只校验其为普通文件，不覆盖原有内容；并发创建时保留先写入者的文件。
+ * @param adapterDir 适配器插件目录；必须已存在且含 `_manifest.json`。
+ * @returns 该目录下 `config.toml` 的完整路径。
+ * @throws Error 当目录或目标路径类型不正确、清单缺失或不含连接段名、模板写入失败时抛出。
+ * @remarks 连接配置与插件同目录，由插件按自身位置读取，与主体的 config/ 无关；
+ * 已存在的文件只校验其为普通文件，不覆盖原有内容；并发创建时保留先写入者的文件。
  */
-export function ensureNapcatConfig(directory: string): string {
-  const path = join(directory, 'napcat.toml')
+export function ensureAdapterConfig(adapterDir: string): string {
+  // 适配器目录随应用一起分发，缺失说明安装不完整。这里不 mkdir 补一个空目录：
+  // 补出来的目录没有 plugin.py 也没有清单，适配器进程照样起不来，只是把同一个
+  // 故障推迟到启动时，还少了一条指向真正原因的报错。
+  if (!existsSync(adapterDir) || !statSync(adapterDir).isDirectory()) {
+    throw new Error(`${adapterDir} 不是适配器插件目录，无法创建连接配置`)
+  }
+  const path = join(adapterDir, 'config.toml')
   if (existsSync(path)) {
     if (!statSync(path).isFile()) throw new Error(`${path} 存在，但不是 QQ 配置文件`)
     return path
   }
-  if (existsSync(directory) && !statSync(directory).isDirectory()) {
-    throw new Error(`${directory} 存在，但不是配置目录`)
-  }
-  mkdirSync(directory, { recursive: true })
   let created = false
   try {
-    writeFileSync(path, NAPCAT_CONFIG_TEMPLATE, { encoding: 'utf-8', flag: 'wx' })
+    const template = adapterConfigTemplate(readAdapterConfigSection(adapterDir))
+    writeFileSync(path, template, { encoding: 'utf-8', flag: 'wx' })
     created = true
   } catch (error) {
     if (

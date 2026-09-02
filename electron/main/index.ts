@@ -30,7 +30,8 @@ import {
   createTray, destroyTray, notifyTray, resetPetPosition, togglePet, trayIconEmpty,
 } from './platform/tray.ts'
 import {
-  assertConfigConsistent, configIsComplete, ensureNapcatConfig, mergeLegacyEnvPrefill,
+  assertConfigConsistent, configIsComplete, ensureAdapterConfig, ensureAdapterSelection,
+  mergeLegacyEnvPrefill,
   readConfigDirectory, tryPrefillFromLegacyEnv, writeConfigDirectory,
 } from './config.ts'
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
@@ -111,7 +112,12 @@ let firstRunResolve: (() => void) | null = null
 app.whenReady().then(async () => {
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (!devUrl) serveAppScheme(resolveRendererRoot())
-  const napcatConfigPath = ensureNapcatConfig(configDir)
+  // 启用哪个适配器只有 config/adapter.toml 一处声明，主体侧的设置页读同一份；
+  // 它的连接配置与插件同目录，换协议端就是换那个文件夹，配置跟着一起走。
+  const adapterPluginDir = ensureAdapterSelection(configDir)
+  const adapterConfigPath = ensureAdapterConfig(
+    join(app.getAppPath(), 'adapters', adapterPluginDir),
+  )
 
   // 配置读写 IPC 同时服务首次启动设置窗口和后续编辑。
   ipcMain.handle(IPC.ReadConfig, async () => readConfigDirectory(configDir, legacyConfigPath))
@@ -148,7 +154,12 @@ app.whenReady().then(async () => {
     await runFirstRunWizard(devUrl)
   }
 
-  await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath), napcatConfigPath)
+  await startApp(
+    devUrl,
+    readConfigDirectory(configDir, legacyConfigPath),
+    adapterConfigPath,
+    adapterPluginDir,
+  )
 }).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
   console.error('[main] 启动初始化失败：', error)
@@ -213,7 +224,8 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
  *
  * @param devUrl 开发服务器地址；生产模式下为 `undefined`，窗口使用自定义协议加载资源。
  * @param cfg 已读取且通过最小启动条件检查的运行时配置。
- * @param napcatConfigPath QQ 适配器配置文件路径，传给后端监护器。
+ * @param adapterConfigPath 适配器插件目录下的连接配置路径，传给后端监护器。
+ * @param adapterPluginDir 当前启用的适配器插件目录名，传给后端监护器。
  * @returns 所有同步初始化完成后的 Promise；后端与轮询器通过事件持续运行。
  * @throws Error 当窗口、后端监护器、配置读取或 IPC 初始化失败时抛出。
  * @remarks 方法会创建窗口和定时器、注册应用退出清理逻辑，并对屏幕捕获失败执行隔离处理，避免阻断文本消息发送。
@@ -221,7 +233,8 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
 async function startApp(
   devUrl: string | undefined,
   cfg: YueliConfig,
-  napcatConfigPath: string,
+  adapterConfigPath: string,
+  adapterPluginDir: string,
 ): Promise<void> {
   currentCfg = cfg
   inputActivity = new InputActivity()
@@ -250,7 +263,8 @@ async function startApp(
     configPath: configDir,
     cwd: app.getAppPath(),
     pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
-    napcatConfigPath,
+    adapterConfigPath,
+    adapterPluginDir,
   })
   supervisor.on('ready', (port, token) => {
     if (!supervisor) return
