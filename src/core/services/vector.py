@@ -1,8 +1,8 @@
-"""协调事实向量生成、历史数据补算和查询向量计算。
+"""协调事实与知识向量生成、历史数据补算和查询向量计算。
 
-``VectorService`` 依赖内存存储提供事实查询和向量持久化，依赖可选的嵌入客户端
+``VectorService`` 依赖内存存储和数据库连接持久化向量，依赖可选的嵌入客户端
 执行模型调用。未配置客户端时服务保持禁用；嵌入调用失败只影响对应向量操作，
-不会阻断事实写入或查询调用方的关键词召回路径。
+不会阻断事实、知识正文写入或查询调用方的关键词召回路径。
 """
 
 from __future__ import annotations
@@ -13,17 +13,19 @@ import asyncio
 import sqlite3
 
 from src.core.common.logger import get_logger
+from src.core.memory.knowledge import knowledge_without_embedding
 from src.core.memory.quantize import (
     backfill_quantized_embeddings,
     pending_quantization_counts,
     store_fact_quantized,
+    store_knowledge_vector_pair,
 )
 
 logger = get_logger(__name__)
 
 
 class VectorService:
-    """管理可选的事实向量生成与批量补算任务。"""
+    """管理可选的事实、知识向量生成与批量补算任务。"""
 
     def __init__(
         self,
@@ -59,12 +61,12 @@ class VectorService:
         return self._client is not None
 
     async def startup(self) -> None:
-        """显式报告装配状态，并把历史事实补算挂成一次性后台任务。
+        """显式报告装配状态，并把事实与知识补算挂成一次性后台任务。
 
         :return: ``None``；补算任务创建后立即返回，不等待模型批次完成。
         副作用：
-            服务未装配时发一条启动告警；已装配且存在缺失向量的事实时发告警，
-            随后创建 ``vector-fact-backfill`` 后台任务。
+            服务未装配时发一条启动告警；已装配且存在缺失向量的事实或知识时发告警，
+            随后创建 ``vector-backfill`` 后台任务。
         """
 
         if self._client is None:
@@ -76,6 +78,13 @@ class VectorService:
             pending = self._store.facts_without_embedding(limit=1_000_000)
             if pending:
                 logger.warning('vector_fact_backfill_pending', count=len(pending))
+            if self._db is not None:
+                pending_knowledge = knowledge_without_embedding(self._db, limit=1_000_000)
+                if pending_knowledge:
+                    logger.warning(
+                        'vector_knowledge_backfill_pending',
+                        count=len(pending_knowledge),
+                    )
         quantize_total = 0
         if self._db is not None:
             quantize_pending = pending_quantization_counts(self._db)
@@ -93,7 +102,7 @@ class VectorService:
             return
         self._backfill_task = asyncio.create_task(
             self._run_backfill(),
-            name='vector-fact-backfill',
+            name='vector-backfill',
         )
 
     async def shutdown(self) -> None:
@@ -120,6 +129,10 @@ class VectorService:
             await self.backfill()
         except Exception as exc:
             logger.error('vector_backfill_failed', error=str(exc))
+        try:
+            await self.backfill_knowledge()
+        except Exception as exc:
+            logger.error('vector_knowledge_backfill_failed', error=str(exc))
         if self._db is None:
             return
         try:
@@ -172,6 +185,41 @@ class VectorService:
             except Exception as exc:
                 logger.error('embed_fact_quantize_failed', id=fact_id, error=str(exc))
 
+    async def embed_knowledge(self, knowledge_id: int, content: str) -> None:
+        """为一条知识生成并同步持久化原向量与 SQ8。
+
+        :param knowledge_id: ``knowledge.id`` 稳定主键。
+        :param content: 知识正文。
+        副作用：成功时在一个 SQL 更新里写入 ``embedding`` 与 ``embedding_q8``；
+            服务未装配时不重复告警，装配状态已由 :meth:`startup` 统一报告。
+        """
+
+        if self._client is None:
+            return
+        if self._db is None:
+            logger.warning(
+                'vector_knowledge_write_failed',
+                id=knowledge_id,
+                reason='数据库连接未装配',
+            )
+            return
+        try:
+            vec = await self._client.embed_one(content)
+            if vec is None:
+                logger.warning(
+                    'vector_knowledge_write_failed',
+                    id=knowledge_id,
+                    reason='embedding 返回空值',
+                )
+                return
+            store_knowledge_vector_pair(self._db, knowledge_id, vec)
+        except Exception as exc:
+            logger.warning(
+                'vector_knowledge_write_failed',
+                id=knowledge_id,
+                error=str(exc),
+            )
+
     async def backfill(self) -> int:
         """分批补算历史事实中缺失的 embedding。
 
@@ -208,4 +256,36 @@ class VectorService:
             logger.warning('vector_backfill_left_null', count=failed)
         if total > 0:
             logger.info("backfill_done", count=total)
+        return total
+
+    async def backfill_knowledge(self) -> int:
+        """为启动时缺失原向量的知识生成原向量与 SQ8。
+
+        :return: 本次成功写入两列的知识数量；服务或数据库未装配时返回 0。
+        :raises Exception: provider、量化或数据库错误直接传播给启动任务记录。
+        副作用：冻结一次待办快照，按每批 32 条请求 provider；成功行以单条
+            ``UPDATE`` 同步写入两列，失败行保持两列 ``NULL`` 供下次启动续算。
+        """
+
+        if self._client is None or self._db is None:
+            return 0
+        pending = knowledge_without_embedding(self._db, limit=1_000_000)
+        total = 0
+        failed = 0
+        for start in range(0, len(pending), 32):
+            batch = pending[start:start + 32]
+            contents = [content for _, content in batch]
+            ids = [knowledge_id for knowledge_id, _ in batch]
+            vecs = await self._client.embed(contents)
+            for knowledge_id, vec in zip(ids, vecs, strict=True):
+                if vec is None:
+                    failed += 1
+                    continue
+                store_knowledge_vector_pair(self._db, knowledge_id, vec)
+                total += 1
+            await asyncio.sleep(0)
+        if failed > 0:
+            logger.warning('vector_knowledge_backfill_left_null', count=failed)
+        if total > 0:
+            logger.info('vector_knowledge_backfill_done', count=total)
         return total

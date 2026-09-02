@@ -5788,6 +5788,7 @@ class ChatService:
                 temperature=self._memory_temperature,
                 max_tokens=self._memory_max_tokens,
                 embed_fact=self._vector.embed_fact,
+                embed_knowledge=self._vector.embed_knowledge,
             )
             if written is None:
                 self._skip_stuck_batch(

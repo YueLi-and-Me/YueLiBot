@@ -173,6 +173,35 @@ def store_knowledge_quantized(
     db.commit()
 
 
+def store_knowledge_vector_pair(
+    db: sqlite3.Connection,
+    knowledge_id: int,
+    embedding: bytes,
+) -> None:
+    """用一个 SQL 语句同步写入知识的原向量与 SQ8。
+
+    :param db: 已迁移到包含 ``knowledge.embedding_q8`` 的数据库连接。
+    :param knowledge_id: ``knowledge.id`` 稳定主键。
+    :param embedding: 小端 float32 packed 向量；维度由字节长度推导。
+    :raises ValueError: 原向量不能编码为合法 SQ8 时抛出，数据库保持不变。
+    :raises sqlite3.Error: 更新或提交失败时抛出并回滚。
+    副作用：原向量与量化向量在同一行、同一条 UPDATE 中提交，避免覆盖错位。
+    """
+
+    encoded = quantize(embedding)
+    try:
+        db.execute(
+            '''UPDATE knowledge
+               SET embedding = ?, embedding_q8 = ?
+               WHERE id = ?''',
+            (embedding, encoded, knowledge_id),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
 async def _backfill_target(
     db: sqlite3.Connection,
     target: str,

@@ -63,6 +63,7 @@ KNOWLEDGE_SOURCE = 'fact_extract'
 MIN_DIALOGUE_CHARS = 40
 
 EmbedFactFn = Callable[[int, str], Awaitable[None]]
+EmbedKnowledgeFn = Callable[[int, str], Awaitable[None]]
 
 
 @dataclass
@@ -414,10 +415,12 @@ async def persist_facts(
     return written
 
 
-def persist_knowledge(
+async def persist_knowledge(
     db: sqlite3.Connection,
     candidates: Sequence[str],
     now: Optional[int] = None,
+    *,
+    embed_knowledge: Optional[EmbedKnowledgeFn] = None,
 ) -> List[int]:
     """把与人无关的客观信息写入知识层（L3）。
 
@@ -428,9 +431,10 @@ def persist_knowledge(
         不访问 ``MemoryStore`` 私有属性。
     :param candidates: :func:`parse_extraction` 校验过的知识正文列表。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
+    :param embed_knowledge: 可选知识向量写入回调；提供时在知识落库后于同一后台链路等待完成。
     :return: 新建或命中的知识行 ID 列表。
     :raises sqlite3.Error: 写入失败时由 ``add_knowledge`` 抛出。
-    副作用：写入 ``knowledge`` 与 ``knowledge_fts`` 并提交事务。
+    副作用：写入 ``knowledge`` 与 ``knowledge_fts`` 并提交事务；可选生成并持久化知识向量。
     """
 
     now = now if now is not None else current_time()
@@ -440,6 +444,8 @@ def persist_knowledge(
         # 同一批里换个说法重复提到同一件事时 add_knowledge 会返回同一行 ID。
         # 去重后再计数，否则观察事件里的「数量」会大于库里实际新增的行数。
         if kid and kid not in ids:
+            if embed_knowledge is not None:
+                await embed_knowledge(kid, content)
             ids.append(kid)
     if ids:
         trace.emit('knowledge_learned', count=len(ids), source=KNOWLEDGE_SOURCE)
@@ -460,6 +466,7 @@ async def run_extraction(
     max_tokens: Optional[int],
     embed_fact: Optional[EmbedFactFn] = None,
     now: Optional[int] = None,
+    embed_knowledge: Optional[EmbedKnowledgeFn] = None,
 ) -> Optional[List[int]]:
     """检查触发条件并完成一次抽取。
 
@@ -478,6 +485,7 @@ async def run_extraction(
     :param max_tokens: 输出上限。
     :param embed_fact: 可选事实向量写入回调，原始事实写入成功后于同一链路调用。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
+    :param embed_knowledge: 可选知识向量写入回调，知识写入成功后于同一链路调用。
     :return: 写入的事实 ID 列表（可能为空列表，表示这批确实没什么可记的）；
         未达触发条件或整批被丢弃时返回 ``None``。
     :raises sqlite3.Error: 落库失败时由 ``add_fact`` 抛出。
@@ -513,7 +521,12 @@ async def run_extraction(
         now,
         embed_fact=embed_fact,
     )
-    knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
+    knowledge_ids = await persist_knowledge(
+        db,
+        extraction.knowledge,
+        now,
+        embed_knowledge=embed_knowledge,
+    )
     # 同批产出的事实与知识描述同一段时间内发生的事，是联想层两种建边时机中的
     # 第一种（另一种是「一起被召回并被采用」，在认知动作那侧）。
     linked = link_together(

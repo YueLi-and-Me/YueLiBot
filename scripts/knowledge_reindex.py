@@ -9,7 +9,7 @@
    2025-07 用当时模型算的文本数组，与当前向量模型不同源，一个数值都不许搬，
    全部用当前模型重算。待办集合就是 ``embedding IS NULL``，中断后重跑自动接上；
    走 ``memory/embed.py`` 的批量入口（单批 96，既有上限不改）；向量服务失败的
-   批次留 ``NULL``、记事件，下次重跑再补——失败的批不阻断其他批。
+   批次让原向量与 SQ8 都留 ``NULL``、记事件，下次重跑再补——失败的批不阻断其他批。
 
 用法示例：
 
@@ -19,20 +19,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
 import argparse
 import asyncio
 import sqlite3
 import sys
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Sequence
 
 from src.core.common.logger import get_logger
 from src.core.memory.knowledge import (
     index_knowledge,
     knowledge_without_embedding,
-    store_knowledge_embedding,
 )
+from src.core.memory.quantize import store_knowledge_vector_pair
 from src.core.memory.store import MemoryStore
 
 logger = get_logger(__name__)
@@ -82,7 +83,7 @@ async def recompute_embeddings(
             if vec is None:
                 report.failed += 1
                 continue
-            store_knowledge_embedding(db, kid, vec)
+            store_knowledge_vector_pair(db, kid, vec)
             report.embedded += 1
         # 批次之间主动让出事件循环，与 VectorService.backfill 同口径。
         await asyncio.sleep(0)
