@@ -112,11 +112,10 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
         required.append('reasons')
 
     if action in ('reply', 'react', 'poke'):
-        properties['target'] = {
-            'type': 'integer',
-            'enum': list(frame.selectable_message_ids),
-            'description': '这一轮针对的那条消息编号，只填一个，必须来自给定取值。',
-        }
+        properties['target'] = _message_id_property(
+            frame,
+            '这一轮针对的那条消息编号，只填一个，必须来自给定取值。',
+        )
         required.append('target')
 
     if action in ('reply', 'speak'):
@@ -146,11 +145,10 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
         required.append('reaction')
 
     if action == 'reply' and frame.capabilities.quote:
-        properties['quote'] = {
-            'type': 'integer',
-            'enum': list(frame.selectable_message_ids),
-            'description': '需要显式挂引用时填被引用的消息编号；不需要就不要填这个字段。',
-        }
+        properties['quote'] = _message_id_property(
+            frame,
+            '需要显式挂引用时填被引用的消息编号；不需要就不要填这个字段。',
+        )
 
     return {
         'type': 'function',
@@ -168,6 +166,30 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
                 'additionalProperties': False,
             },
         },
+    }
+
+
+def _message_id_property(frame: DecisionFrame, description: str) -> Dict[str, Any]:
+    """生成一个取值限定在本轮可选消息内的消息编号参数。
+
+    [WORKAROUND] 消息编号声明为字符串而非整数
+    - 现象：声明成 ``integer`` + 整数 ``enum`` 时，经网关转换为 Google 系
+      function declaration 的候选模型固定返回 HTTP 400，报文形如
+      ``Invalid value at '...properties[N]...enum[0]' (TYPE_STRING), 9674``，
+      括号里那个数就是本轮唯一一条可选消息的编号。
+    - 原因：Google 的 function declaration 只允许 ``STRING`` 类型带 ``enum``，
+      整数枚举在它的 schema 里非法；OpenAI 兼容接口则两种都接受。
+    - 后果：只要本轮有可选消息，这类候选必然 400，每轮白烧一个候选并多等一次
+      失败。改回整数枚举就会复现。取值仍是封闭集合，解析时转回整数。
+
+    :param frame: 本回合固定快照，可选消息编号取自其中。
+    :param description: 该参数在工具声明里的中文说明。
+    :return: 单个参数的 JSON Schema 片段。
+    """
+    return {
+        'type': 'string',
+        'enum': [str(message_id) for message_id in frame.selectable_message_ids],
+        'description': description,
     }
 
 
@@ -250,9 +272,9 @@ def _validate_payload_shape(
 def _target_id(raw: Any) -> tuple[int, ...]:
     """把单个 target 参数规范化为内部目标消息元组。
 
-    工具协议只允许选择一条目标消息，因此数组属于形状错误；数字字符串仍接受，
-    因为部分 OpenAI 兼容服务会把 JSON Schema 的 integer 参数序列化成字符串。
-    取值范围仍由动作头的帧校验严格限制。
+    工具协议只允许选择一条目标消息，因此数组属于形状错误。声明里消息编号是
+    字符串（见 :func:`_message_id_property`），整数同样接受：部分服务会把
+    枚举值按原始数字类型回传。取值范围仍由动作头的帧校验严格限制。
 
     :param raw: 工具参数里的 target 原值。
     :return: 消息编号元组；未提供时为空元组。
