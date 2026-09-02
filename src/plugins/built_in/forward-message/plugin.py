@@ -65,7 +65,7 @@ class ForwardMessagePlugin(ToolPlugin):
     @tool(
         name='read_forward_message',
         description=(
-            '当聊天记录出现合并转发占位时，用内部消息编号逐层读取内容；'
+            '当聊天记录里出现 [转发消息] 占位时，用该行的内部消息编号逐层读取内容；'
             '默认读取一层，返回的 path 可定位子树；嵌套很深时可设置 depth '
             '在一次调用里展开多层；结果出现 next_offset 时，保持其他参数不变'
             '并传入 offset 可继续读取，避免深层或超长单层内容被截断。'
@@ -122,9 +122,14 @@ class ForwardMessagePlugin(ToolPlugin):
 
         trees = self._cache.get((context.stream_id, message_id))
         if trees is None:
+            # 工具声明按会话给出（见 stream_capabilities），可读性却是按消息的：
+            # 同一个会话里有的转发解析成功进了缓存，有的因协议端超时或结构损坏
+            # 没进。模型只能看到正文里清一色的 [转发消息] 占位，分不出哪条能读，
+            # 因此失败信息必须把可读的编号一并给出，否则它只能继续猜。
             return _failure(
                 invocation.tool_name,
-                f'当前会话中没有可读取的合并转发消息 {message_id}',
+                f'当前会话中没有可读取的合并转发消息 {message_id}'
+                f'{self._readable_hint(context.stream_id, context.frame.message_watermark)}',
             )
         try:
             selected = _select_trees(trees, path)
@@ -175,6 +180,24 @@ class ForwardMessagePlugin(ToolPlugin):
         if self._has_stream(stream_id):
             return frozenset({'forward_message'})
         return frozenset()
+
+    def _readable_hint(self, stream_id: int, watermark: int) -> str:
+        """列出该会话当前可读的合并转发编号，供失败信息给出可用取值。
+
+        :param stream_id: 会话编号。
+        :param watermark: 本回合消息水位；晚于水位的缓存不列出，否则模型能从
+            失败信息里得知尚未进入本轮快照的消息存在。
+        :return: 以分号起头的中文补充说明；没有可读内容时说明这一事实。
+        """
+        readable = sorted(
+            cached_message_id
+            for cached_stream_id, cached_message_id in self._cache
+            if cached_stream_id == stream_id and cached_message_id <= watermark
+        )
+        if not readable:
+            return '；本会话目前没有任何可读取的合并转发'
+        listed = '、'.join(str(message_id) for message_id in readable)
+        return f'；本会话可读取的是 {listed}'
 
     def _remember(
         self,
