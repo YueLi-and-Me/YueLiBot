@@ -510,6 +510,11 @@ class OneBot11Runner:
             # 部分协议端按 CQ 码字符串返回历史消息，此时只有 raw_message 可用。
             body = _optional_text(data.get('raw_message'))
         body = ' '.join(body.split())
+        # 摘要正文若原样带着转发占位，就会和本条消息自己的转发占位混在同一段
+        # 文本里，按位置替换无从分辨哪个属于谁。摘要是对另一条消息的转述，
+        # 它那条转发能不能读由那条消息自己的行回答，这里不需要保留可被工具
+        # 读取的占位形态，换成不可混淆的说法即可。
+        body = body.replace(FORWARD_PLACEHOLDER, '[合并转发]')
         if not body:
             return ''
         if len(body) > QUOTE_PREVIEW_LIMIT:
@@ -1217,9 +1222,12 @@ def _replace_forward_placeholders(
 def _mark_forward_unreadable(text: str, forward_count: int) -> str:
     """把正文里的全部转发占位换成读取失败形态，仅在全部根失败时使用。
 
-    全失败的消息不暴露任何树，正文里每个同形占位——包括被引用消息摘要里
-    带的——都不可读。占位个数与根数对齐时走按位置替换；对不上时退回全量
-    替换：全失败分支里不存在可读的转发，多标不会冤枉任何一棵树，漏标却
+    全失败的消息不暴露任何树，正文里每个占位都不可读。占位个数与根数对齐时
+    走按位置替换；对不上时退回全量替换。
+
+    引用摘要带来的同形占位已在 ``_query_quote_preview`` 里换成 ``[合并转发]``，
+    所以走到全量替换时，多出来的占位只可能是用户手打的同形文本——把它一并
+    标成读取失败只是措辞变化，不会对任何一条真实消息作出错误断言；反过来漏标
     会让模型对着可读形态的占位调用注定失败的工具。
 
     :param text: 已渲染的入站正文。
