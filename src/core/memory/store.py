@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 import json
 import sqlite3
@@ -105,14 +105,37 @@ class StoredMessage:
 
 @dataclass
 class FactInput:
-    """表示待写入 L3 事实的内容和分类。
+    """表示待写入 L3 事实的内容、分类与账本字段。
 
     :ivar content: 事实正文。
     :ivar kind: 事实类型，默认值为 `未分类`。
+    :ivar slot: 单值槽位名（居住地、职业、生日……）；空串表示多值事实，
+        多值事实之间永不判冲突。
+    :ivar supersedes: 显式声明取代的既有事实 ID；``0`` 表示不取代。
     """
 
     content: str
     kind: str = '未分类'
+    slot: str = ''
+    supersedes: int = 0
+
+
+@dataclass
+class FactWrite:
+    """表示 ``MemoryStore.add_fact`` 的一次写入结果。
+
+    :ivar fact_id: 新建或被强化的事实 ID；正文归一化后为空、未写入时为 ``0``。
+    :ivar created: 本次是否新建了行；``False`` 表示命中相似事实、只做了强化。
+    :ivar conflict_with: 同一 ``(person_id, slot)`` 下仍活跃的其他事实 ID；
+        空列表表示没有冲突。冲突只上报不解决：两条都保留，由提示词并排呈现。
+    :ivar superseded: 本次被显式取代（回填 ``superseded_by``）的旧行 ID；
+        ``0`` 表示没有发生取代。
+    """
+
+    fact_id: int
+    created: bool = False
+    conflict_with: list[int] = field(default_factory=list)
+    superseded: int = 0
 
 
 @dataclass
@@ -653,13 +676,22 @@ class MemoryStore:
         return list(best.values())[:limit]
 
     # ------------------------------------------------------------------ L3 语义记忆
-    def add_fact(self, person_id: int, input: FactInput, now: int | None = None) -> int:
-        """新增或强化人物的一条语义事实。
+    def add_fact(self, person_id: int, input: FactInput, now: int | None = None) -> FactWrite:
+        """新增、强化或取代人物的一条语义事实。
+
+        三条规则：
+
+        1. 完全重复只强化留存度，不新增重复正文，保持同一人物的事实唯一性；
+        2. ``input.supersedes`` 显式声明取代时，写新行并在同一事务里回填旧行的
+           ``superseded_by``——取代是唯一让事实失效的入口；
+        3. ``slot`` 非空且同一 ``(person_id, slot)`` 已有其他活跃事实时，两条都保留，
+           返回值里的 ``conflict_with`` 让调用方知道发生了冲突。冲突只被看见，
+           不按时间取新、不按分数取高、不在写入侧二选一。
 
         :param person_id: 事实所属人物 ID。
-        :param input: 事实正文和类型。
+        :param input: 事实正文、类型与账本字段。
         :param now: 可选更新时间戳；省略时读取当前毫秒时钟。
-        :return: 新建或强化的事实 ID；正文归一化后为空时返回 0。
+        :return: 本次写入结果；正文归一化后为空时 ``fact_id`` 为 ``0``。
         :raises sqlite3.Error: 查询、插入、更新、FTS 写入或提交失败。
         副作用：可能更新已有事实强度，或写入 facts 与 facts_fts 并提交事务。
         """
@@ -667,10 +699,12 @@ class MemoryStore:
         now = now if now is not None else current_time()
         content = input.content.strip()
         if not content:
-            return 0
+            return FactWrite(fact_id=0)
         key = exact_key(content)
         if not key:
-            return 0
+            return FactWrite(fact_id=0)
+        slot = input.slot.strip()
+        supersedes = input.supersedes if input.supersedes > 0 else 0
         half_life = half_life_for(input.kind)
 
         existing = self._find_similar(person_id, content, key)
@@ -689,23 +723,110 @@ class MemoryStore:
                     person_id,
                 )
             )
+            # 强化命中不取消显式取代的声明：新正文恰好与既有事实同义时，
+            # 被取代行改由这条既有事实接续。
+            superseded = (
+                self._apply_supersede(person_id, supersedes, replaced_by=existing['id'])
+                if supersedes else 0
+            )
             self._db.commit()
-            return existing['id']
+            return FactWrite(fact_id=existing['id'], created=False, superseded=superseded)
 
-        # 未命中相似事实时创建新记录，并在同一事务中写入 FTS 索引。
+        # 未命中相似事实时创建新记录；新行、取代回填与 FTS 索引在同一事务里提交。
         due = freeze_due_at(1.0, now, half_life)
         cur = self._db.execute(
             '''INSERT INTO facts (person_id, kind, content, content_key, strength, half_life_hours,
-                                  updated_at, created_at, due_at, active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)''',
-            (person_id, input.kind, content, key, 1.0, half_life, now, now, due)
+                                  updated_at, created_at, due_at, active, slot)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''',
+            (person_id, input.kind, content, key, 1.0, half_life, now, now, due, slot)
         )
         fid = cur.lastrowid or 0
         self._db.execute(
             'INSERT INTO facts_fts (rowid, tokens) VALUES (?, ?)', (fid, index_tokens(content))
         )
+        superseded = (
+            self._apply_supersede(person_id, supersedes, replaced_by=fid)
+            if supersedes else 0
+        )
+        conflict_with = (
+            self._slot_conflicts_with(person_id, slot, exclude_id=fid)
+            if slot else []
+        )
         self._db.commit()
-        return fid
+        return FactWrite(
+            fact_id=fid,
+            created=True,
+            conflict_with=conflict_with,
+            superseded=superseded,
+        )
+
+    def _apply_supersede(self, person_id: int, target_id: int, *, replaced_by: int) -> int:
+        """把同属一人的旧行回填为由新行取代；目标不可写时不改任何行并返回 ``0``。
+
+        守卫条件缺一不可：同一人物、尚未被取代、不是取代者自己——
+        模型可能编造或错指 ID，越界的取代绝不能落到无关的行上。
+        """
+
+        if target_id == replaced_by:
+            return 0
+        cur = self._db.execute(
+            '''UPDATE facts SET superseded_by = ?
+               WHERE id = ? AND person_id = ? AND superseded_by IS NULL''',
+            (replaced_by, target_id, person_id),
+        )
+        return target_id if cur.rowcount else 0
+
+    def _slot_conflicts_with(self, person_id: int, slot: str, *, exclude_id: int) -> list[int]:
+        """读取同一 ``(person_id, slot)`` 下仍活跃的其他事实 ID，供冲突上报。"""
+
+        rows = self._db.execute(
+            '''SELECT id FROM facts
+               WHERE person_id = ? AND slot = ? AND active = 1
+                 AND superseded_by IS NULL AND id <> ?
+               ORDER BY id''',
+            (person_id, slot, exclude_id),
+        ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def slot_conflicts(
+        self,
+        person_id: int,
+        fact_ids: Iterable[int],
+    ) -> dict[int, tuple[str, list[tuple[int, str]]]]:
+        """读取给定事实所属的槽位冲突组，供提示词把对不上的几条并排渲染。
+
+        冲突组定义为同一 ``(person_id, slot)`` 下至少两条活跃且未被取代的事实；
+        ``slot`` 为空的多值事实永不入组。
+
+        :param person_id: 事实所属人物 ID。
+        :param fact_ids: 待检查的事实 ID 集合，通常为即将注入提示词的那批。
+        :return: ``fact_id -> (slot, [(成员 ID, 成员正文), ...])``；成员列表含该
+            槽位下全部活跃事实（包括传入者自身），按 ID 升序。不在映射里的
+            事实没有冲突。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 facts 表。
+        """
+
+        wanted = {int(fact_id) for fact_id in fact_ids}
+        if not wanted:
+            return {}
+        rows = self._db.execute(
+            '''SELECT id, slot, content FROM facts
+               WHERE person_id = ? AND active = 1 AND superseded_by IS NULL AND slot <> ''
+               ORDER BY id''',
+            (person_id,),
+        ).fetchall()
+        by_slot: dict[str, list[tuple[int, str]]] = {}
+        for row_id, slot, content in rows:
+            by_slot.setdefault(str(slot), []).append((int(row_id), str(content)))
+        result: dict[int, tuple[str, list[tuple[int, str]]]] = {}
+        for slot, members in by_slot.items():
+            if len(members) < 2:
+                continue
+            member_ids = {member_id for member_id, _ in members}
+            for fact_id in wanted & member_ids:
+                result[fact_id] = (slot, members)
+        return result
 
     def _find_similar(self, person_id: int, content: str, key: str) -> dict[str, Any] | None:
         """按精确键和 FTS 候选查找同一人物的相似事实。
@@ -718,6 +839,8 @@ class MemoryStore:
         副作用：只读 facts 和 facts_fts 表。
         :performance: 精确键优先；未命中时最多检查 8 个 FTS 候选。
         """
+        # 精确键必须不带失效过滤：``UNIQUE(person_id, content_key)`` 约束要求
+        # 同键必命中既有行，否则同文重提会在插入时撞上唯一约束。
         row = self._db.execute(
             '''SELECT id, content, strength, updated_at, half_life_hours
                FROM facts WHERE person_id = ? AND content_key = ?''', (person_id, key)
@@ -728,10 +851,12 @@ class MemoryStore:
         match = match_query(content)
         if not match:
             return None
+        # FTS 候选排除已被取代的行：与失效事实措辞相近的新表述应当另起一行
+        # （同槽时形成可见冲突），而不是把留存度回补到一条不再召回的死行上。
         candidates = self._db.execute(
             '''SELECT f.id, f.content, f.strength, f.updated_at, f.half_life_hours
                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
-               WHERE facts_fts MATCH ? AND f.person_id = ?
+               WHERE facts_fts MATCH ? AND f.person_id = ? AND f.superseded_by IS NULL
                ORDER BY bm25(facts_fts) ASC LIMIT 8''',
             (match, person_id)
         ).fetchall()
@@ -767,6 +892,9 @@ class MemoryStore:
         """
         按 BM25 召回人物事实，并在向量齐全时执行混合相关度排序。
 
+        已被取代（``superseded_by`` 非空）的事实不进入候选：失效行只留在库里
+        构成取代链，不再被任何召回入口返回。
+
         :param person_id: 目标人物 ID。
         :param query: 待检索的自然语言文本。
         :param limit: 最多返回的事实数量，默认 ``6``。
@@ -801,7 +929,7 @@ class MemoryStore:
                       f.half_life_hours, f.active, bm25(facts_fts) AS bm,
                       f.embedding, f.origin_kind
                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
-               WHERE facts_fts MATCH ? AND f.person_id = ?
+               WHERE facts_fts MATCH ? AND f.person_id = ? AND f.superseded_by IS NULL
                ORDER BY bm ASC LIMIT ?''',
             (match, person_id, limit * 3)
         ).fetchall()
@@ -889,6 +1017,7 @@ class MemoryStore:
         2. 不回补强度。决策期的主动检索若参与遗忘曲线，检索动作本身会改写
            记忆权重，同一条事实被反复 recall 后不再衰减。
            写回只应发生在真实使用（回复里确实用上了）时，不在检索时。
+        3. 已被取代（``superseded_by`` 非空）的事实不进入候选。
 
         :param person_ids: 检索范围内的人物 ID 序列；为空时直接返回空列表。
         :param query: 待检索的自然语言文本。
@@ -923,6 +1052,7 @@ class MemoryStore:
                        f.origin_kind, f.embedding
                 FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                 WHERE facts_fts MATCH ? AND f.person_id IN ({placeholders})
+                  AND f.superseded_by IS NULL
                 ORDER BY bm ASC LIMIT ?''',
             (match, *scope, limit * 3),
         ).fetchall()
@@ -1240,6 +1370,8 @@ class MemoryStore:
                   private_in_group: bool = False) -> list[RecalledFact]:
         """按当前留存度返回人物的活跃事实。
 
+        已被取代（``superseded_by`` 非空）的事实不返回：它只留在库里构成取代链。
+
         :param person_id: 目标人物 ID。
         :param limit: 最多返回的事实数，默认值为 8。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
@@ -1254,7 +1386,8 @@ class MemoryStore:
         rows = self._db.execute(
             '''SELECT id, kind, content, strength, updated_at, half_life_hours,
                       origin_kind
-               FROM facts WHERE person_id = ? AND active = 1''',
+               FROM facts
+               WHERE person_id = ? AND active = 1 AND superseded_by IS NULL''',
             (person_id,)
         ).fetchall()
         blocked = 0

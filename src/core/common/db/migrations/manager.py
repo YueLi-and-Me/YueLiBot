@@ -25,7 +25,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 21  # 当前 schema 版本：事实增加被听见场合的来源标记列
+CURRENT_VERSION = 22  # 当前 schema 版本：事实增加来源标记列与账本列 slot / superseded_by
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -157,6 +157,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v18_to_v19,
         v19_to_v20,
         v20_to_v21,
+        v21_to_v22,
     )
 
     registry = get_registry()

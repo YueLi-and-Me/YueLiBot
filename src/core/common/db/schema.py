@@ -128,10 +128,16 @@ CREATE TABLE IF NOT EXISTS facts (
   -- 事实被听见的场合（v21 加）：group 群里听到 / direct 私聊或桌面听到 /
   -- legacy 迁移前的存量行。可见范围由它决定，见 memory/scope.py。
   origin_kind     TEXT    NOT NULL DEFAULT 'legacy',
+  -- 事实账本（v22 加）：slot 是单值槽位名，多值事实留空；
+  -- superseded_by 非空即已被取代失效，同时记录取代链指向谁。
+  slot            TEXT    NOT NULL DEFAULT '',
+  superseded_by   INTEGER REFERENCES facts(id),
   UNIQUE(person_id, content_key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(active, due_at);
 CREATE INDEX IF NOT EXISTS idx_facts_person_active ON facts(person_id, active);
+-- 冲突检测按（人, 槽位）成组查询。（v22 加）
+CREATE INDEX IF NOT EXISTS idx_facts_person_slot ON facts(person_id, slot);
 
 -- ---------------------------------------------------------------- 全文索引
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(tokens, content='', tokenize='unicode61');

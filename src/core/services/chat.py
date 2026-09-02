@@ -83,6 +83,7 @@ from src.core.agent.parser import (
     SayEvent, TextEvent,
 )
 from src.core.agent.prompt import (
+    MemoryFactItem,
     build_itemized_system_prompt,
     build_proactive_prompt,
     build_system_prompt,
@@ -2747,14 +2748,15 @@ class ChatService:
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
             acquaintance=acquaintance,
-            facts=[
-                fact.content
-                for fact in self.memory.top_facts(
+            facts=_facts_for_prompt(
+                self.memory,
+                context.person.id,
+                self.memory.top_facts(
                     context.person.id, 5, now,
                     stream_kind=context.stream.kind,
                     private_in_group=self._private_facts_in_group,
-                )
-            ],
+                ),
+            ),
             episodes=[episode.summary for episode in self.memory.recent_episodes(
                 context.stream.id, 2
             )],
@@ -3505,7 +3507,11 @@ class ChatService:
             'now': datetime.fromtimestamp(prepared.now / 1000),
             'persona': prepared.persona,
             'acquaintance': prepared.acquaintance,
-            'facts': [fact.content for fact in selected_facts],
+            'facts': _facts_for_prompt(
+                self.memory,
+                prepared.context.person.id,
+                selected_facts,
+            ),
             'episodes': prepared.episodes,
             'activity': prepared.activity,
             'schedule': prepared.schedule,
@@ -5961,6 +5967,46 @@ class ChatService:
             )
         finally:
             self._learning_expressions.discard(stream_id)
+
+
+def _facts_for_prompt(
+    memory: MemoryStore,
+    person_id: int,
+    facts: Sequence[RecalledFact],
+) -> list[MemoryFactItem]:
+    """把召回事实组装成提示词条目，同槽冲突的整组标注并补齐缺失成员。
+
+    冲突事实只注入一半等于没注入：模型只看到一边就会把那边当成定论。
+    因此同槽冲突组的全体成员（包括本轮没被召回的）都进入提示词并排呈现，
+    不按时间取新、不按分数取高。
+
+    :param memory: 记忆存储实例。
+    :param person_id: 事实所属人物 ID。
+    :param facts: 本轮已选中的召回事实。
+    :return: 供 ``build_system_prompt`` 渲染的事实条目列表。
+    副作用：只读 facts 表。
+    """
+
+    if not facts:
+        return []
+    groups = memory.slot_conflicts(person_id, [fact.id for fact in facts])
+    items = [
+        MemoryFactItem(
+            content=fact.content,
+            slot=groups[fact.id][0] if fact.id in groups else '',
+            conflicting=fact.id in groups,
+        )
+        for fact in facts
+    ]
+    # 同组里本轮没被选中的成员一并补上：并排呈现的前提是两边都在场。
+    selected = {fact.id for fact in facts}
+    appended: set[int] = set()
+    for slot, members in groups.values():
+        for member_id, content in members:
+            if member_id not in selected and member_id not in appended:
+                appended.add(member_id)
+                items.append(MemoryFactItem(content=content, slot=slot, conflicting=True))
+    return items
 
 
 def _extract_lines(raw: str) -> list[dict] | None:
