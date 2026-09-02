@@ -27,6 +27,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "api.model_config": ("#87afff", False),
     "api.ws": ("#00d7ff", True),
     # QQ 适配器
+    "platforms.onebot11.host": ("#ffafd7", True),
     "platforms.onebot11.backend": ("#d787ff", True),
     "platforms.onebot11.runner": ("#ff5f87", True),
     "platforms.onebot11.transport": ("#afafff", True),
@@ -88,6 +89,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "api.http": "HTTP接口",
     "api.model_config": "模型配置",
     "api.ws": "事件推流",
+    "platforms.onebot11.host": "QQ适配宿主",
     "platforms.onebot11.backend": "QQ主体",
     "platforms.onebot11.runner": "QQ运行器",
     "platforms.onebot11.transport": "QQ传输",

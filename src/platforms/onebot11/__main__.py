@@ -20,8 +20,12 @@ import argparse
 import asyncio
 import sys
 
-from src.core.common.logger import initialize_logging
+from src.core.common.logger import get_logger, initialize_logging
 from src.plugin_system import AdapterPlugin, load_adapter_plugin
+
+
+# 与 logger_colors 的 MODULE_COLORS、MODULE_ALIASES 中的键逐字一致。
+_LOGGER_NAME = 'platforms.onebot11.host'
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -54,6 +58,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     initialize_logging()
+    # 宿主以 `python -m src.platforms.onebot11` 运行，__name__ 恒为 __main__，与主体
+    # 后端入口同名；logger 名写成显式常量并登记在 logger_colors，控制台才分得开两者。
+    logger = get_logger(_LOGGER_NAME)
     try:
         # 连接参数读哪个配置段归插件的 on_load：不同适配器读不同段，宿主不替它们
         # 决定。只有运行时信息路径由宿主注入——它随数据目录配置变化，插件的默认值
@@ -61,6 +68,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         plugin = load_adapter_plugin(
             args.adapters_dir / args.adapter,
             runtime_path=args.runtime_path,
+        )
+        # 两个协议端后端互斥，选错了在控制台只表现为「连不上」。开跑前先把实际
+        # 选中的插件、协议端和配置段落一行日志，省得靠翻启动参数才能确认。
+        manifest = plugin.manifest
+        logger.info(
+            'QQ 适配器已选定',
+            adapter=args.adapter,
+            plugin=manifest.plugin_id,
+            name=manifest.name,
+            version=manifest.version,
+            protocol=manifest.protocol,
+            configSection=manifest.config_section,
         )
         asyncio.run(_serve(plugin))
     except KeyboardInterrupt:

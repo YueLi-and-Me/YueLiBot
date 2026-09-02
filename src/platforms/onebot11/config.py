@@ -348,7 +348,7 @@ def load_config(path: Path) -> AdapterDocument:
         return read_config(path)
     except Exception as exc:
         print(
-            f'[napcat] {path} 配置校验失败：\n{_readable_error(exc)}\n\n{_CONFIG_HINT}',
+            f'[QQ 适配器] {path} 配置校验失败：\n{_readable_error(exc)}\n\n{_CONFIG_HINT}',
             file=sys.stderr,
         )
         raise SystemExit(1) from exc

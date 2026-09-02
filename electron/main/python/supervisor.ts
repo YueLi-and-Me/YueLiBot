@@ -23,6 +23,17 @@ interface BackendConnection {
   token: string
 }
 
+/**
+ * 桌宠固定拉起的适配器插件目录名，位于 ``adapters/`` 下。
+ *
+ * 两个协议端后端互斥，只能选一个；这里选定的目录同时决定控制台标签，避免出现
+ * 「拉起的是 A、日志写着 B」这种只能靠翻代码才能发现的错标。
+ */
+const ADAPTER_PLUGIN_DIR = 'yueli-snowluma-adapter'
+
+/** 适配器输出行的控制台标签：去掉插件目录的固定前后缀，只留协议端名字。 */
+const ADAPTER_LOG_TAG = ADAPTER_PLUGIN_DIR.replace(/^yueli-/, '').replace(/-adapter$/, '')
+
 /** 结束一个子进程及其整棵进程树。
 
  * Windows 上优先 taskkill /T；taskkill 偶尔迟迟不返回，不能让已知的 Python
@@ -604,7 +615,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
 
     const adapter = spawn(this.pythonExe, [
       '-m', 'src.platforms.onebot11',
-      '--adapter', 'yueli-snowluma-adapter',
+      '--adapter', ADAPTER_PLUGIN_DIR,
       '--runtime-path', join(this.dataDir, 'runtime', 'backend.json'),
     ], {
       cwd: this.cwd,
@@ -723,7 +734,7 @@ export class PythonSupervisor extends EventEmitter<SupervisorEvents> {
     const text = line.trimEnd()
     if (!text) return
     const output = isError ? process.stderr : process.stdout
-    output.write(`[napcat] ${text}\n`)
+    output.write(`[${ADAPTER_LOG_TAG}] ${text}\n`)
   }
 
   /**
