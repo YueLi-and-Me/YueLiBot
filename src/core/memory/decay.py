@@ -10,14 +10,15 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, FrozenSet, Optional
+
+import math
 
 FREEZE = 0.1
 REVIVE = 0.15
 
-HALF_LIFE_HOURS: dict[str, float] = {
+HALF_LIFE_HOURS: Dict[str, float] = {
     '身份': 24 * 365,   # 名字、职业、家庭等长期身份信息
     '日期': 24 * 365,   # 生日、纪念日
     '偏好': 24 * 90,    # 喜好厌恶，变化很慢
@@ -27,18 +28,20 @@ HALF_LIFE_HOURS: dict[str, float] = {
     '状态': 12,         # 临时状态，本来就该很快过期
 }
 
-DEFAULT_HALF_LIFE = 24 * 30
+FACT_KINDS: FrozenSet[str] = frozenset(HALF_LIFE_HOURS)
+DEFAULT_FACT_KIND = '事件'
+DEFAULT_HALF_LIFE = HALF_LIFE_HOURS[DEFAULT_FACT_KIND]
 MS_PER_HOUR = 3_600_000
 
 
-def half_life_for(kind: str | None) -> float:
+def half_life_for(kind: Optional[str]) -> float:
     """返回指定事实类型的半衰期小时数。
 
-    :param kind: 事实类型；未提供或不在配置表中时使用默认半衰期。
+    :param kind: 事实类型；未提供或不在枚举中时使用默认类别 ``事件`` 的半衰期。
     :return: 半衰期，单位为小时。
     副作用：不修改衰减配置。
     """
-    return HALF_LIFE_HOURS.get(kind or '', DEFAULT_HALF_LIFE) if kind else DEFAULT_HALF_LIFE
+    return HALF_LIFE_HOURS.get(kind or DEFAULT_FACT_KIND, DEFAULT_HALF_LIFE)
 
 
 def clamp_unit(v: float) -> float:

@@ -39,6 +39,7 @@ from src.core.common.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.memory.association import link_together
+from src.core.memory.decay import DEFAULT_FACT_KIND, FACT_KINDS
 from src.core.memory.knowledge import add_knowledge
 from src.core.memory.store import (
     FactInput,
@@ -56,8 +57,6 @@ CURSOR_KEY = 'fact_extract_cursor'
 KNOWN_FACT_LIMIT = 30
 # 单个在场者取多少条既有事实进清单。群聊在场者可能十几个，逐人不设限会超出总上限。
 KNOWN_FACT_PER_PERSON = 6
-# 模型未给出 kind 时的兜底类别，与 FactInput 的默认值一致。
-DEFAULT_KIND = '未分类'
 # 知识层的来源标识，与迁移进来的历史知识区分开，便于核对哪些是本机学到的。
 KNOWLEDGE_SOURCE = 'fact_extract'
 # 对话正文短于此长度时不发起模型请求：无可抽取内容。
@@ -85,7 +84,7 @@ class ExtractedFact:
     """表示模型抽出的一条待写入事实。
 
     :ivar person_ref: 模型声明的归属对象，必须是输入名单里出现过的平台编号。
-    :ivar kind: 事实类别，两到四个字。
+    :ivar kind: 事实类别，固定为衰减模型支持的七个枚举值之一。
     :ivar content: 脱离原对话也能读懂的一句话。
     """
 
@@ -272,10 +271,18 @@ def parse_extraction(raw: str) -> Optional[Extraction]:
             return None
         if not isinstance(content, str) or not content.strip():
             return None
-        kind = item.get('kind')
+        raw_kind = item.get('kind')
+        kind = raw_kind.strip() if isinstance(raw_kind, str) else ''
+        if kind not in FACT_KINDS:
+            trace.emit(
+                'memory_fact_kind_normalized',
+                rawKind=kind or '<空>',
+                normalizedKind=DEFAULT_FACT_KIND,
+            )
+            kind = DEFAULT_FACT_KIND
         facts.append(ExtractedFact(
             person_ref=person.strip(),
-            kind=kind.strip() if isinstance(kind, str) and kind.strip() else DEFAULT_KIND,
+            kind=kind,
             content=content.strip(),
         ))
 

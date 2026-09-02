@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import sqlite3
 
@@ -132,20 +132,48 @@ def describe_schema_changes(before: SchemaShape, after: SchemaShape) -> SchemaCh
     return SchemaChanges(created=created, added_columns=added_columns, drifted=drifted)
 
 
-def report_schema_changes(changes: SchemaChanges, version: int) -> None:
+def _fact_kind_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
+    """读取事实类别分布，按数量降序、类别升序返回。"""
+
+    rows = db.execute(
+        '''SELECT kind, COUNT(*) AS amount
+           FROM facts
+           GROUP BY kind
+           ORDER BY amount DESC, kind ASC'''
+    ).fetchall()
+    return [(str(kind), int(amount)) for kind, amount in rows]
+
+
+def report_schema_changes(
+    changes: SchemaChanges,
+    version: int,
+    db: Optional[sqlite3.Connection] = None,
+) -> None:
     """把结构变化打印成控制台信息框并写入日志。
 
     无变化时不打印：每次启动都输出「无变化」的框会使真正有变化的那次被淹没。
 
     :param changes: :func:`describe_schema_changes` 的产物。
     :param version: 当前 ``user_version``，一并展示便于与迁移记录对账。
+    :param db: 可选当前数据库连接；提供时额外输出事实类别分布。
     :return: 无返回值。
     副作用：向 stdout 打印信息框，并记一条 info 或 error 日志。
     """
 
+    kind_line: Optional[str] = None
+    if db is not None:
+        distribution = _fact_kind_distribution(db)
+        kind_line = '、'.join(f'{kind} {amount}' for kind, amount in distribution) or '暂无事实'
+        logger.info(
+            'db_fact_kind_distribution',
+            distribution=kind_line,
+            total=sum(amount for _, amount in distribution),
+        )
     if changes.is_empty():
         return
     rows: List[str] = [f'schema 版本：{version}']
+    if kind_line is not None:
+        rows.append(f'事实 kind 分布：{kind_line}')
     if changes.created:
         rows.append(f'本次新建的表（{len(changes.created)}）：')
         rows.extend(f'  + {name}' for name in changes.created)
