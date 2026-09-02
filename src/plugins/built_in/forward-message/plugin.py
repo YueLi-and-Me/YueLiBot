@@ -13,9 +13,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, FrozenSet, List, Tuple
 
 import json
+import re
 
 from src.core.platform_io.forward import ForwardMessageTree
 from src.core.tooling.spec import (
@@ -328,6 +330,54 @@ def _direct_nested_trees(tree: ForwardMessageTree) -> Tuple[ForwardMessageTree, 
     return tuple(nested_trees)
 
 
+# 整段都是方括号占位的片段判为非文本内容。用结构判据而不是枚举
+# ``[图片]`` / ``[表情包]`` 这些具体词：占位符词表由平台适配器维护，
+# 在这里抄一份会让两边各自演进后悄悄对不上。
+_PLACEHOLDER_PATTERN = re.compile(r'\[[^\[\]]*\]')
+
+
+def _is_placeholder(text: str) -> bool:
+    """判断一个文本片段是否整段都是方括号占位。"""
+    return _PLACEHOLDER_PATTERN.fullmatch(text) is not None
+
+
+def _is_textless_layer(tree: ForwardMessageTree) -> bool:
+    """判断一层是否只有非文本内容，且没有可继续展开的子树。
+
+    含嵌套子树的层不算：它下面还有内容，模型仍有展开的理由。
+    """
+    for node in tree.nodes:
+        for part in node.parts:
+            if part.kind != 'text' or not _is_placeholder(part.text):
+                return False
+    return bool(tree.nodes)
+
+
+def _textless_layer_summary(tree: ForwardMessageTree) -> str:
+    """把一层纯非文本内容概括成一行，按出现顺序给出各类占位的条数。
+
+    逐条列出十几行一模一样的 ``[表情包]`` 对模型没有任何信息量，却要占满观察
+    预算；真机上出现过为此白花两个认知轮次的情况。概括保留「有多少、都是什么」
+    这两件有用的事，丢掉的只是「第几条是谁发的」——在全是占位的层里那不构成信息。
+    """
+    counts = Counter(
+        part.text for node in tree.nodes for part in node.parts
+    )
+    kinds = '、'.join(f'{text}×{count}' for text, count in counts.items())
+    return f'（这一层 {len(tree.nodes)} 条，全部为非文本内容：{kinds}）'
+
+
+def _nested_hint(tree: ForwardMessageTree) -> str:
+    """给未展开的嵌套子树附一句规模说明，供模型决定要不要往下钻。
+
+    只给 path 时，模型无从判断展开值不值：真机上它展开一层，拿回十几行
+    ``[表情包]``，两个认知轮次白花。条数与「有没有文本」在展开前就能算出来。
+    """
+    if _is_textless_layer(tree):
+        return f'，{len(tree.nodes)} 条，无文本'
+    return f'，{len(tree.nodes)} 条'
+
+
 def _render_selection(
     message_id: int,
     selected: List[Tuple[Tuple[int, ...], ForwardMessageTree]],
@@ -354,6 +404,9 @@ def _render_tree(
     indent: str,
 ) -> None:
     """深度优先渲染一棵树；每层先保留原片段顺序，再展开直接子树。"""
+    if _is_textless_layer(tree):
+        lines.append(f'{indent}{_textless_layer_summary(tree)}')
+        return
     nested: List[Tuple[Tuple[int, ...], ForwardMessageTree]] = []
     nested_index = 0
     for node in tree.nodes:
@@ -370,7 +423,8 @@ def _render_tree(
                 )
             else:
                 content.append(
-                    f'[嵌套合并转发，path={_path_text(nested_path)}]'
+                    f'[嵌套合并转发{_nested_hint(part.nested)}，'
+                    f'path={_path_text(nested_path)}]'
                 )
             nested.append((nested_path, part.nested))
             nested_index += 1
