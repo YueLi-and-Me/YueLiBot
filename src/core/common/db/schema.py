@@ -125,10 +125,16 @@ CREATE TABLE IF NOT EXISTS facts (
   embedding       BLOB,                          -- float32 packed（v5 加）
   -- 自解释 SQ8：头部携带格式版本、维度和单向量 scale；原 float32 列继续保留。
   embedding_q8    BLOB,
+  -- 事实账本（v22 加）：slot 是单值槽位名，多值事实留空；
+  -- superseded_by 非空即已被取代失效，同时记录取代链指向谁。
+  slot            TEXT    NOT NULL DEFAULT '',
+  superseded_by   INTEGER REFERENCES facts(id),
   UNIQUE(person_id, content_key)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_due ON facts(active, due_at);
 CREATE INDEX IF NOT EXISTS idx_facts_person_active ON facts(person_id, active);
+-- 冲突检测按（人, 槽位）成组查询。（v22 加）
+CREATE INDEX IF NOT EXISTS idx_facts_person_slot ON facts(person_id, slot);
 
 -- ---------------------------------------------------------------- 全文索引
 CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(tokens, content='', tokenize='unicode61');

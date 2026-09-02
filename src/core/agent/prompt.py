@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
@@ -262,6 +263,21 @@ def _impressions_block(impressions: Optional[Sequence[str]]) -> str:
     ]))
 
 
+@dataclass(frozen=True)
+class MemoryFactItem:
+    """注入主对话提示词的一条长期事实。
+
+    :ivar content: 事实正文。
+    :ivar slot: 单值槽位名；空串表示多值事实，不参与冲突分组。
+    :ivar conflicting: 同一槽位下是否还有其他活跃事实与之对不上；为真时
+        本条目与同槽成员并排渲染并明确标注。
+    """
+
+    content: str
+    slot: str = ''
+    conflicting: bool = False
+
+
 def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> str:
     """把一组记忆条目渲染为带标题和使用规则的列表块。
 
@@ -278,6 +294,52 @@ def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> 
         *[f'- {value}' for value in values],
         instruction,
     ]))
+
+
+def _facts_block(
+    title: str,
+    facts: Optional[Sequence['str | MemoryFactItem']],
+    instruction: str,
+) -> str:
+    """把长期事实渲染为带标题和使用规则的列表块，同槽冲突的多条并排呈现。
+
+    冲突不做取舍：不按时间取新、不按分数取高、不替她二选一——对不上的几条
+    全部保留并明确标注，把核实的余地留给她与当事人的对话。这是
+    ``_memory_block`` 的事实专用形态；情节块不需要分组，继续走 ``_memory_block``。
+
+    :param title: 提示词中显示的区块标题。
+    :param facts: 事实条目；纯字符串按无槽位事实渲染。``None`` 或空序列表示
+        整块省略，不输出只有标题的空块。
+    :param instruction: 约束模型如何使用这些记忆的说明。
+    :return: 带段落前缀的 Markdown 风格列表；无事实时返回空字符串。
+    副作用：不修改传入序列。
+    """
+
+    if not facts:
+        return ''
+    items = [
+        fact if isinstance(fact, MemoryFactItem) else MemoryFactItem(content=str(fact))
+        for fact in facts
+    ]
+    groups: Dict[str, List[MemoryFactItem]] = {}
+    for item in items:
+        if item.slot and item.conflicting:
+            groups.setdefault(item.slot, []).append(item)
+    lines: List[str] = [f'# {title}']
+    rendered_groups: set[str] = set()
+    for item in items:
+        if item.slot in groups:
+            if item.slot in rendered_groups:
+                continue
+            rendered_groups.add(item.slot)
+            lines.append(f'- 关于「{item.slot}」，你先后记下了对不上的几条：')
+            lines.extend(f'  - {member.content}' for member in groups[item.slot])
+        else:
+            lines.append(f'- {item.content}')
+    if rendered_groups:
+        lines.append('对不上的几条都原样并列在上面了；不要自己选定哪条为准，合适的时候可以当面问。')
+    lines.append(instruction)
+    return _prefixed_block('\n'.join(lines))
 
 
 def _expression_habits_block(expression_habits: Optional[str]) -> str:
@@ -300,7 +362,7 @@ def build_system_prompt(
     now: Optional[datetime] = None,
     persona: Optional[str] = None,
     acquaintance: Optional[str] = None,
-    facts: Optional[List[str]] = None,
+    facts: Optional[Sequence['str | MemoryFactItem']] = None,
     episodes: Optional[List[str]] = None,
     activity: Optional[str] = None,
     schedule: Optional[str] = None,
@@ -330,7 +392,8 @@ def build_system_prompt(
     :param now: 用于时间、年龄和生日判断的当前时间；省略时读取系统时钟。
     :param persona: 可选的额外人格上下文。
     :param acquaintance: 可选的熟悉程度描述。
-    :param facts: 可选的长期事实记忆列表。
+    :param facts: 可选的长期事实记忆列表；条目为 ``MemoryFactItem`` 时，
+        同一槽位下对不上的多条会并排渲染并明确标注。
     :param episodes: 可选的近期对话回想列表。
     :param activity: 可选的当前前台活动描述。
     :param schedule: 可选的当天日程文本。
@@ -409,7 +472,7 @@ def build_system_prompt(
         'scene': _scene_block(scene),
         'jargon': _jargon_block(jargon),
         'impressions': _impressions_block(impressions),
-        'facts': _memory_block(
+        'facts': _facts_block(
             '你早就知道的事',
             facts,
             '这些是长期相处积累的常识，需要时自然使用，不需要时不提；不要逐条复述给对方。',
@@ -448,7 +511,7 @@ def build_itemized_system_prompt(
     now: Optional[datetime] = None,
     persona: Optional[str] = None,
     acquaintance: Optional[str] = None,
-    facts: Optional[List[str]] = None,
+    facts: Optional[Sequence['str | MemoryFactItem']] = None,
     episodes: Optional[List[str]] = None,
     activity: Optional[str] = None,
     schedule: Optional[str] = None,
@@ -479,7 +542,8 @@ def build_itemized_system_prompt(
     :param now: 当前本地时间；省略时读取统一时钟。
     :param persona: 当前人物关系与精力画像。
     :param acquaintance: 可选相识时长描述。
-    :param facts: 可选长期事实记忆。
+    :param facts: 可选长期事实记忆；条目为 ``MemoryFactItem`` 时，
+        同一槽位下对不上的多条会并排渲染并明确标注。
     :param episodes: 可选近期聊天回想。
     :param activity: 可选前台活动背景。
     :param schedule: 可选当日日程，随时间项一起渲染。
@@ -571,7 +635,7 @@ def build_itemized_system_prompt(
         ('会话场景', _scene_block(scene).strip()),
         ('群里的说法', _jargon_block(jargon).strip()),
         ('你对他们的印象', _impressions_block(impressions).strip()),
-        ('长期记忆', _memory_block(
+        ('长期记忆', _facts_block(
             '你早就知道的事',
             facts,
             '这些是长期相处积累的常识，需要时自然使用，不需要时不提；不要逐条复述给对方。',

@@ -144,6 +144,16 @@ def _fact_kind_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
     return [(str(kind), int(amount)) for kind, amount in rows]
 
 
+def _fact_ledger_counts(db: sqlite3.Connection) -> Tuple[int, int]:
+    """读取事实账本计数：带槽位的事实条数、已被取代的事实条数。"""
+
+    slotted = db.execute("SELECT COUNT(*) FROM facts WHERE slot <> ''").fetchone()[0]
+    superseded = db.execute(
+        'SELECT COUNT(*) FROM facts WHERE superseded_by IS NOT NULL'
+    ).fetchone()[0]
+    return int(slotted), int(superseded)
+
+
 def report_schema_changes(
     changes: SchemaChanges,
     version: int,
@@ -161,6 +171,7 @@ def report_schema_changes(
     """
 
     kind_line: Optional[str] = None
+    ledger_counts: Optional[Tuple[int, int]] = None
     if db is not None:
         distribution = _fact_kind_distribution(db)
         kind_line = '、'.join(f'{kind} {amount}' for kind, amount in distribution) or '暂无事实'
@@ -169,11 +180,15 @@ def report_schema_changes(
             distribution=kind_line,
             total=sum(amount for _, amount in distribution),
         )
+        ledger_counts = _fact_ledger_counts(db)
     if changes.is_empty():
         return
     rows: List[str] = [f'schema 版本：{version}']
     if kind_line is not None:
         rows.append(f'事实 kind 分布：{kind_line}')
+    if ledger_counts is not None:
+        rows.append(f'带槽位的事实：{ledger_counts[0]}')
+        rows.append(f'已被取代的事实：{ledger_counts[1]}')
     if changes.created:
         rows.append(f'本次新建的表（{len(changes.created)}）：')
         rows.extend(f'  + {name}' for name in changes.created)
