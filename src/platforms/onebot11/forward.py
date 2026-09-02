@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, List, Mapping, Tuple
 
+from src.core.common.logger import get_logger
 from src.core.platform_io.forward import (
     ForwardMessagePart,
     ForwardMessageTree,
@@ -27,6 +28,9 @@ from src.core.platform_io.forward import (
 )
 
 from .segments import segment_to_text
+
+
+logger = get_logger(__name__)
 
 
 # 按资源编号取一层合并转发内容，返回协议端 ``get_forward_msg`` 的原始响应。
@@ -182,7 +186,7 @@ async def _parse_nested(
 
     内联正文直接解析，结构错误照常上抛；缺失内联时按资源编号补取一层，
     补取抛异常或补取内容非法只说明这一层读不到，降级为文本片段而不是
-    丢弃外层已解析的内容。循环引用与「既无 content 又无 id」是段自身的
+    丢弃外层已解析的内容，并记一条 warning——降级不留痕等于把故障藏进正文。循环引用与「既无 content 又无 id」是段自身的
     结构错误，属于 :class:`ForwardStructureError`，任何一层都不降级。
 
     :param data: 嵌套 ``forward`` 段的 ``data`` 映射。
@@ -208,8 +212,24 @@ async def _parse_nested(
         raise ForwardStructureError(
             f'嵌套合并转发的资源编号 {forward_id} 出现循环引用'
         )
+    # 取内容与解析内容分开捕获，捕获宽度按各自的失败来源给：
+    # 协议端往返什么异常都可能抛（超时、连接断开、协议端自定义错误），这是
+    # 外部边界，捕获得宽；而解析是我们自己的代码，只有 ValueError 表示「拿回来
+    # 的内容不合法」，捕获宽了会把解析器自身的 TypeError / AttributeError 也
+    # 改写成「这一层读取失败」，等于用降级掩盖自己的 bug。
     try:
         response = await resolve_nested(forward_id)
+    except Exception as exc:
+        # 降级必须留痕：这一层读不到时正文只多一句说明，若不记日志，现场就只剩
+        # 「内容少了一块」，连是哪个资源编号取失败都无从查起——2026-09-01 那次
+        # 定案靠的正是适配器控制台里这条 error 原文。
+        logger.warning(
+            '嵌套合并转发补取失败，该层降级为文本占位',
+            forwardId=forward_id,
+            error=str(exc),
+        )
+        return ForwardMessagePart.text_part(FORWARD_LAYER_UNREADABLE_TEXT)
+    try:
         tree = await parse_forward_content(
             _response_messages(response),
             resolve_nested,
@@ -217,11 +237,14 @@ async def _parse_nested(
         )
     except ForwardStructureError:
         # 更深层的结构错误同样不可降级，穿过本层的捕获继续上抛。
+        # 它是 ValueError 的子类，这条分支必须排在下面那条之前。
         raise
-    except Exception:
-        # 补取失败或补取内容非法只影响这一层：解析器不再上抛，让调用点以
-        # 文本片段占位。文本片段不会被计入工具的嵌套路径，同层后续嵌套的
-        # path 序号相应前移，渲染与 path 由同一棵已解析的树推出，自洽即可。
+    except ValueError as exc:
+        logger.warning(
+            '嵌套合并转发补取内容不合法，该层降级为文本占位',
+            forwardId=forward_id,
+            error=str(exc),
+        )
         return ForwardMessagePart.text_part(FORWARD_LAYER_UNREADABLE_TEXT)
     return ForwardMessagePart.forward_part(tree)
 
