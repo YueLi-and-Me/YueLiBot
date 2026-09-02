@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Tuple
 from urllib.parse import urlsplit
 import asyncio
 
@@ -31,7 +31,7 @@ from .events import (
     classify_event,
     parse_inbound_event,
 )
-from .forward import parse_forward_content, parse_forward_response
+from .forward import parse_forward_content, parse_forward_response, unreadable_forward_tree
 from .segments import (
     FORWARD_PLACEHOLDER,
     FORWARD_UNREADABLE_PLACEHOLDER,
@@ -575,17 +575,21 @@ class OneBot11Runner:
         payload: Mapping[str, Any],
         event: QqInboundEvent,
     ) -> QqInboundEvent:
-        """把顶层 ``forward`` 段解析为包含全部嵌套层级的消息树。
+        """把顶层 ``forward`` 段逐根解析为包含全部嵌套层级的消息树。
 
         协议事件通常只带转发资源编号，此时每个根转发调用一次
         ``get_forward_msg``；若事件已经内联 ``data.content``，直接解析而不重复
         请求。协议端不会内联嵌套层的正文，解析器据此按编号回调
-        ``_fetch_forward_response`` 逐层取内容。
+        ``_fetch_forward_response`` 逐层取内容，嵌套层失败由解析器降级为文本
+        片段，不牵连所在根。
 
-        任一根解析失败时整条消息仍然入站，但不暴露半棵树给工具，避免多根转发的
-        路径编号错位；同时把正文里的转发占位换成明确的失败形态。读取工具的声明
-        按会话给出，只要该会话缓存过任意一条转发它就一直挂着；正文里若可读与不可
-        读的转发长得一样，模型分不出该对哪条调用，只能挨个试到失败为止。
+        根级失败逐根降级：失败根以单节点占位树占住位置，保证
+        ``forward_messages`` 的长度恒等于正文里转发占位的个数——读取工具按
+        位置给根编号，删掉失败根的占位树会让编号与正文错位，模型拿着工具
+        输出对不上的编号反复试错。全部根都失败时不暴露任何树：读取工具的
+        能力按「该会话缓存过转发树」声明，把只含占位树的消息也塞进缓存会让
+        「缓存过」不再蕴含「有内容可读」，能力门失去意义；此时正文整体标记
+        读取失败，与单根失败时的区分见正文占位的按位置替换。
         """
         raw_segments = payload.get('message')
         if not isinstance(raw_segments, list):
@@ -598,9 +602,15 @@ class OneBot11Runner:
         if not forward_segments:
             return event
 
-        trees: List[ForwardMessageTree] = []
+        roots: List[ForwardMessageTree | None] = []
+        failures: List[Tuple[int, str, Exception]] = []
         for root_index, segment in enumerate(forward_segments):
             data = segment.get('data')
+            forward_id = (
+                str(data.get('id') or '').strip()
+                if isinstance(data, Mapping)
+                else ''
+            )
             try:
                 if not isinstance(data, Mapping):
                     raise ValueError('顶层合并转发缺少对象类型的 data')
@@ -608,33 +618,60 @@ class OneBot11Runner:
                 if inline_content is not None:
                     if not isinstance(inline_content, list):
                         raise ValueError('顶层合并转发的 data.content 必须是数组')
-                    trees.append(await parse_forward_content(
+                    roots.append(await parse_forward_content(
                         inline_content,
                         self._fetch_forward_response,
                     ))
                     continue
-                forward_id = str(data.get('id') or '').strip()
                 if not forward_id:
                     raise ValueError('顶层合并转发缺少 data.id')
                 response = await self._fetch_forward_response(forward_id)
-                trees.append(await parse_forward_response(
+                roots.append(await parse_forward_response(
                     response,
                     self._fetch_forward_response,
                 ))
             except (ActionError, asyncio.TimeoutError, ValueError) as exc:
+                roots.append(None)
+                failures.append((root_index, forward_id, exc))
+
+        if all(root is None for root in roots):
+            for root_index, forward_id, exc in failures:
                 logger.warning(
-                    'QQ 合并转发解析失败，保留正文占位且不开放读取工具',
+                    'QQ 合并转发解析失败，整条消息不开放读取工具',
                     messageId=event.external_message_id,
                     rootIndex=root_index,
-                    forwardId=(
-                        str(data.get('id') or '').strip()
-                        if isinstance(data, Mapping)
-                        else ''
-                    ),
+                    forwardId=forward_id,
                     error=str(exc),
                 )
-                return replace(event, text=_mark_forward_unreadable(event.text))
-        return replace(event, forward_messages=tuple(trees))
+            return replace(
+                event,
+                text=_mark_forward_unreadable(event.text, len(roots)),
+            )
+
+        for root_index, forward_id, exc in failures:
+            logger.warning(
+                'QQ 合并转发解析失败，该根以占位树占位',
+                messageId=event.external_message_id,
+                rootIndex=root_index,
+                forwardId=forward_id,
+                error=str(exc),
+            )
+        # 失败根补占位树而不是从序列里删掉：根数量是正文占位与工具编号
+        # 一一对应的唯一依据，删掉占位树就重新引入「正文 N 个占位、工具
+        # 只有 M 棵树」的错位。
+        trees = tuple(
+            unreadable_forward_tree() if root is None else root
+            for root in roots
+        )
+        replaced = _replace_forward_placeholders(event.text, [
+            FORWARD_UNREADABLE_PLACEHOLDER if root is None else FORWARD_PLACEHOLDER
+            for root in roots
+        ])
+        if replaced is None:
+            # 占位个数与根数对不上（如被引用消息摘要里混入同形文本），
+            # 任何按位置的替换都无从对齐；树照常暴露，正文保持原样。
+            return replace(event, forward_messages=trees)
+        return replace(event, text=replaced, forward_messages=trees)
 
     async def _fetch_forward_response(self, forward_id: str) -> Mapping[str, Any]:
         """按资源编号取一层合并转发内容。
@@ -1142,15 +1179,48 @@ def _batch_delays_seconds(outbound: BackendOutbound) -> List[float]:
     return delays + [0.0] * (total - len(delays))
 
 
-def _mark_forward_unreadable(text: str) -> str:
-    """把正文里的转发占位全部换成读取失败形态。
+def _replace_forward_placeholders(
+    text: str,
+    replacements: List[str],
+) -> str | None:
+    """按出现位置把正文里的转发占位逐个替换为对应文本。
 
-    解析是按整条消息全有或全无的：任一根失败就一棵树都不暴露，因此正文里的每个
-    转发占位都不可读，全部替换而不是只换第一个。
+    占位符由本条消息的 ``forward`` 段渲染而来，个数与根转发一一对应；被引用
+    消息的摘要或用户手打的正文里也可能出现同形文本，此时占位个数对不上，
+    任何按位置的映射都无从对齐，返回 ``None`` 由调用方决定退路。
 
     :param text: 已渲染的入站正文。
+    :param replacements: 与根转发等长的替换文本列表。
+    :return: 替换后的正文；占位个数与替换个数不一致时返回 ``None``。
+    """
+    pieces = text.split(FORWARD_PLACEHOLDER)
+    if len(pieces) != len(replacements) + 1:
+        return None
+    chunks: List[str] = []
+    for piece, replacement in zip(pieces, (*replacements, '')):
+        chunks.append(piece)
+        chunks.append(replacement)
+    return ''.join(chunks)
+
+
+def _mark_forward_unreadable(text: str, forward_count: int) -> str:
+    """把正文里的全部转发占位换成读取失败形态，仅在全部根失败时使用。
+
+    全失败的消息不暴露任何树，正文里每个同形占位——包括被引用消息摘要里
+    带的——都不可读。占位个数与根数对齐时走按位置替换；对不上时退回全量
+    替换：全失败分支里不存在可读的转发，多标不会冤枉任何一棵树，漏标却
+    会让模型对着可读形态的占位调用注定失败的工具。
+
+    :param text: 已渲染的入站正文。
+    :param forward_count: 本条消息的根转发个数。
     :return: 替换后的正文；正文里没有转发占位时原样返回。
     """
+    replaced = _replace_forward_placeholders(
+        text,
+        [FORWARD_UNREADABLE_PLACEHOLDER] * forward_count,
+    )
+    if replaced is not None:
+        return replaced
     return text.replace(FORWARD_PLACEHOLDER, FORWARD_UNREADABLE_PLACEHOLDER)
 
 

@@ -4,8 +4,9 @@
 ``data.messages`` / ``data.content``、再包一层 ``data.data.*``），由
 ``_response_messages`` 统一识别；其中嵌套 ``forward`` 段是否内联
 ``data.content`` 由协议端决定，缺失时本模块用调用方注入的解析器按
-``data.id`` 再取一层。解析保留每个节点内的片段顺序，任何取不到的嵌套正文都
-直接报错，避免对外声称支持深层浏览却只保存一个不可展开的编号。
+``data.id`` 再取一层。解析保留每个节点内的片段顺序；补取失败或补取内容
+非法时该嵌套层降级为文本片段，不牵连整棵根树，段自身既无 ``content`` 又
+无 ``id``、或资源编号循环引用属结构错误，仍然上抛。
 
 [WORKAROUND] 协议端不内联嵌套转发正文
 - 现象：转发套转发时，顶层 ``get_forward_msg`` 结果里的内层 ``forward`` 段只有
@@ -30,6 +31,30 @@ from .segments import segment_to_text
 
 # 按资源编号取一层合并转发内容，返回协议端 ``get_forward_msg`` 的原始响应。
 NestedForwardResolver = Callable[[str], Awaitable[Mapping[str, Any]]]
+
+# 嵌套层补取失败降级成的文本片段；根级占位树的单节点正文复用同一段文本。
+FORWARD_LAYER_UNREADABLE_TEXT = '[这一层的转发内容读取失败]'
+
+
+class ForwardStructureError(ValueError):
+    """嵌套转发段自身的结构损坏：资源编号循环引用，或既无 content 又无 id。
+
+    这类错误描述段本身不可解析，降级成「读取失败」文本会掩盖结构漂移，
+    必须穿过逐层降级的捕获向上传播；其余取内容失败才允许降级。
+    """
+
+
+def unreadable_forward_tree() -> ForwardMessageTree:
+    """构造根级占位树：单节点、正文为读取失败说明。
+
+    多根转发中某根失败时用它占住位置，保证根数量与正文占位个数一致；
+    发送者用带方括号的标记而不是任何形似人名的文本，模型由此区分
+    「这一层读不到」与真实节点，不会把占位当成某个发言者。
+    """
+    return ForwardMessageTree(nodes=(ForwardNode(
+        sender_name='[读取失败]',
+        parts=(ForwardMessagePart.text_part(FORWARD_LAYER_UNREADABLE_TEXT),),
+    ),))
 
 
 async def parse_forward_response(
@@ -86,9 +111,7 @@ async def parse_forward_content(
                 data = segment.get('data')
                 if not isinstance(data, Mapping):
                     raise ValueError('嵌套合并转发缺少对象类型的 data')
-                parts.append(ForwardMessagePart.forward_part(
-                    await _parse_nested(data, resolve_nested, ancestor_ids)
-                ))
+                parts.append(await _parse_nested(data, resolve_nested, ancestor_ids))
                 continue
             text = segment_to_text(segment)
             if text:
@@ -103,25 +126,53 @@ async def _parse_nested(
     data: Mapping[str, Any],
     resolve_nested: NestedForwardResolver,
     ancestor_ids: Tuple[str, ...],
-) -> ForwardMessageTree:
-    """解析一个嵌套转发段：优先用内联正文，缺失时按资源编号再取一层。"""
+) -> ForwardMessagePart:
+    """解析一个嵌套转发段，返回嵌套树片段或降级后的文本片段。
+
+    内联正文直接解析，结构错误照常上抛；缺失内联时按资源编号补取一层，
+    补取抛异常或补取内容非法只说明这一层读不到，降级为文本片段而不是
+    丢弃外层已解析的内容。循环引用与「既无 content 又无 id」是段自身的
+    结构错误，属于 :class:`ForwardStructureError`，任何一层都不降级。
+
+    :param data: 嵌套 ``forward`` 段的 ``data`` 映射。
+    :param resolve_nested: 未内联嵌套层的取内容解析器。
+    :param ancestor_ids: 当前解析路径上已按编号取过的祖先资源编号。
+    :return: 该层的 ``forward`` 片段；补取失败时为说明读取失败的 ``text`` 片段。
+    :raises ForwardStructureError: 资源编号循环引用，或段既无 content 又无 id。
+    """
     content = data.get('content')
     if isinstance(content, list):
-        # 内联正文是有限数据，不经过协议端，沿用当前的祖先编号链即可。
-        return await parse_forward_content(content, resolve_nested, ancestor_ids)
+        # 内联正文是有限数据，不经过协议端，沿用当前的祖先编号链即可；
+        # 其结构错误不走降级——降级吸收的是协议端往返的失败，本地数据
+        # 损坏应当上抛让根级按失败根处理，而不是被静默改写成文本。
+        return ForwardMessagePart.forward_part(await parse_forward_content(
+            content, resolve_nested, ancestor_ids,
+        ))
     forward_id = str(data.get('id') or '').strip()
     if not forward_id:
-        raise ValueError('嵌套合并转发既没有 data.content 也没有 data.id')
+        raise ForwardStructureError('嵌套合并转发既没有 data.content 也没有 data.id')
     # 自引用的资源编号会让「按编号再取一层」无限递归并持续发起协议端请求，
     # 取之前先在当前路径上断链。
     if forward_id in ancestor_ids:
-        raise ValueError(f'嵌套合并转发的资源编号 {forward_id} 出现循环引用')
-    response = await resolve_nested(forward_id)
-    return await parse_forward_content(
-        _response_messages(response),
-        resolve_nested,
-        (*ancestor_ids, forward_id),
-    )
+        raise ForwardStructureError(
+            f'嵌套合并转发的资源编号 {forward_id} 出现循环引用'
+        )
+    try:
+        response = await resolve_nested(forward_id)
+        tree = await parse_forward_content(
+            _response_messages(response),
+            resolve_nested,
+            (*ancestor_ids, forward_id),
+        )
+    except ForwardStructureError:
+        # 更深层的结构错误同样不可降级，穿过本层的捕获继续上抛。
+        raise
+    except Exception:
+        # 补取失败或补取内容非法只影响这一层：解析器不再上抛，让调用点以
+        # 文本片段占位。文本片段不会被计入工具的嵌套路径，同层后续嵌套的
+        # path 序号相应前移，渲染与 path 由同一棵已解析的树推出，自洽即可。
+        return ForwardMessagePart.text_part(FORWARD_LAYER_UNREADABLE_TEXT)
+    return ForwardMessagePart.forward_part(tree)
 
 
 def _response_messages(response: Mapping[str, Any]) -> List[Any]:
@@ -195,7 +246,10 @@ def _sender_name(raw_sender: Any, node_index: int) -> str:
 
 
 __all__ = [
+    'FORWARD_LAYER_UNREADABLE_TEXT',
+    'ForwardStructureError',
     'NestedForwardResolver',
     'parse_forward_content',
     'parse_forward_response',
+    'unreadable_forward_tree',
 ]
