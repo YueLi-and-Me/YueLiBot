@@ -91,6 +91,8 @@ EVENT_LABELS: Dict[str, str] = {
     "memory_extract": "记忆抽取完成",
     "memory_spread": "联想扩散",
     "memory_extract_failed": "记忆抽取失败",
+    "memory_impression_refreshed": "会话印象已更新",
+    "memory_impression_failed": "会话印象生成失败",
     "memory_fact": "写入记忆",
     "memory_fact_dropped": "记忆归属不明已丢弃",
     "memory_fact_kind_normalized": "事实类别已归一",

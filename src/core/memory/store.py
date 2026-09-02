@@ -878,6 +878,7 @@ class MemoryStore:
         *,
         stream_kind: str,
         private_in_group: bool = False,
+        return_candidates: bool = False,
     ) -> list[ScopedFact]:
         """在若干人物范围内一次性召回事实，供认知动作按会话在场者检索。
 
@@ -896,6 +897,8 @@ class MemoryStore:
         :param stream_kind: 当前读取发生的会话类型；必填，漏传会让
             ``direct`` 事实无声地出现在群聊提示词里。
         :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+        :param return_candidates: 是否返回截取前的候选池，供同一轮的向量重排
+            与多检索词并集合并；候选随 ``embedding`` 一并带回。
 
         :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
 
@@ -917,7 +920,7 @@ class MemoryStore:
         rows = self._db.execute(
             f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
                        f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
-                       f.origin_kind
+                       f.origin_kind, f.embedding
                 FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                 WHERE facts_fts MATCH ? AND f.person_id IN ({placeholders})
                 ORDER BY bm ASC LIMIT ?''',
@@ -945,11 +948,12 @@ class MemoryStore:
                 retention=ret,
                 score=relevance * retention_weight(ret),
                 lexical_relevance=relevance,
+                embedding=r[9],
                 half_life_hours=r[5],
                 person_id=r[6],
             ))
         scored.sort(key=lambda fact: fact.score, reverse=True)
-        return scored[:limit]
+        return scored if return_candidates else scored[:limit]
 
     def message_count_after(self, stream_id: int, since_id: int) -> int:
         """统计某条消息之后该 stream 又落库了多少条消息。
@@ -1142,14 +1146,15 @@ class MemoryStore:
 
     def reinforce_recalled_facts(
         self,
-        person_id: int,
-        facts: list[RecalledFact],
+        facts: Sequence[ScopedFact],
         now: int | None = None,
     ) -> None:
         """强化同一轮最终实际用于回复的事实，不再次执行召回。
 
-        :param person_id: 目标人物 ID。
-        :param facts: 已确认用于回复的召回事实名单。
+        回补按每条事实自带的 ``person_id`` 落行：召回范围扩到在场多人后，
+        继续按单一人物回补会把别人的事实强度全记到当前说话人头上。
+
+        :param facts: 已确认用于回复的召回事实名单，携带各自归属。
         :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
         :raises sqlite3.Error: 更新或提交失败。
         副作用：按传入事实 ID 更新强度、命中次数和下次评估时间并提交。
@@ -1169,7 +1174,7 @@ class MemoryStore:
                     freeze_due_at(next_strength, now, fact.half_life_hours),
                     now,
                     fact.id,
-                    person_id,
+                    fact.person_id,
                 ),
             )
         self._db.commit()
