@@ -25,7 +25,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 19  # 当前 schema 版本：事实类别收敛并重算衰减时间
+CURRENT_VERSION = 20  # 当前 schema 版本：事实与知识增加并存的 SQ8 向量列
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -155,6 +155,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v16_to_v17,
         v17_to_v18,
         v18_to_v19,
+        v19_to_v20,
     )
 
     registry = get_registry()

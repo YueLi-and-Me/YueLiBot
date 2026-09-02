@@ -539,6 +539,7 @@ def main() -> None:
         app_state.chat.memory,
         vector_client,
         disabled_reason=vector_disabled_reason,
+        db=db,
     )
     app_state.chat._vector = vector_service
     if vector_service.enabled:

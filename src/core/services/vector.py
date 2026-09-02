@@ -7,11 +7,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import asyncio
+import sqlite3
 
 from src.core.common.logger import get_logger
+from src.core.memory.quantize import (
+    backfill_quantized_embeddings,
+    pending_quantization_counts,
+    store_fact_quantized,
+)
 
 logger = get_logger(__name__)
 
@@ -25,6 +31,7 @@ class VectorService:
         embed_client: Any | None,
         *,
         disabled_reason: str | None = None,
+        db: Optional[sqlite3.Connection] = None,
     ) -> None:
         """初始化向量服务。
 
@@ -33,11 +40,13 @@ class VectorService:
         :param embed_client: 提供 ``embed_one`` 与 ``embed`` 异步方法的嵌入客户端；
                 ``None`` 表示向量功能被配置禁用。
         :param disabled_reason: 客户端未装配时用于启动告警的明确原因。
+        :param db: 已迁移到当前结构的数据库连接；提供后同步维护并补算 SQ8 列。
         """
 
         self._store = store
         self._client = embed_client
         self._disabled_reason = disabled_reason
+        self._db = db
         self._backfill_task: asyncio.Task[None] | None = None
 
     @property
@@ -63,10 +72,25 @@ class VectorService:
                 'vector_service_disabled',
                 reason=self._disabled_reason or 'embedding 客户端未装配',
             )
+        else:
+            pending = self._store.facts_without_embedding(limit=1_000_000)
+            if pending:
+                logger.warning('vector_fact_backfill_pending', count=len(pending))
+        quantize_total = 0
+        if self._db is not None:
+            quantize_pending = pending_quantization_counts(self._db)
+            quantize_total = quantize_pending['facts'] + quantize_pending['knowledge']
+            if quantize_total > 0:
+                logger.warning(
+                    'vector_quantize_pending',
+                    facts=quantize_pending['facts'],
+                    knowledge=quantize_pending['knowledge'],
+                    total=quantize_total,
+                )
+        # SQ8 是已有原向量的本地派生数据，不依赖 provider；即使在线向量功能
+        # 暂时未装配，也应完成这部分存量补算。两类待办都为空时不创建空任务。
+        if self._client is None and quantize_total == 0:
             return
-        pending = self._store.facts_without_embedding(limit=1_000_000)
-        if pending:
-            logger.warning('vector_fact_backfill_pending', count=len(pending))
         self._backfill_task = asyncio.create_task(
             self._run_backfill(),
             name='vector-fact-backfill',
@@ -96,6 +120,12 @@ class VectorService:
             await self.backfill()
         except Exception as exc:
             logger.error('vector_backfill_failed', error=str(exc))
+        if self._db is None:
+            return
+        try:
+            await backfill_quantized_embeddings(self._db)
+        except Exception as exc:
+            logger.error('vector_quantize_failed', error=str(exc))
 
     async def embed_query(self, text: str) -> bytes | None:
         """为查询文本计算实时 embedding。
@@ -130,10 +160,17 @@ class VectorService:
             return
         try:
             vec = await self._client.embed_one(content)
-            if vec is not None:
-                self._store.store_embedding(fact_id, vec)
+            if vec is None:
+                return
+            self._store.store_embedding(fact_id, vec)
         except Exception as exc:
             logger.debug("embed_fact_failed", id=fact_id, error=str(exc))
+            return
+        if self._db is not None:
+            try:
+                store_fact_quantized(self._db, fact_id, vec)
+            except Exception as exc:
+                logger.error('embed_fact_quantize_failed', id=fact_id, error=str(exc))
 
     async def backfill(self) -> int:
         """分批补算历史事实中缺失的 embedding。
