@@ -41,7 +41,7 @@ from src.core.llm_models.snapshot import bind_render_params
 from src.core.memory.association import link_together
 from src.core.memory.decay import DEFAULT_FACT_KIND, FACT_KINDS
 from src.core.memory.knowledge import add_knowledge
-from src.core.memory.scope import ORIGIN_GROUP, ORIGIN_LEGACY, origin_kind_for_stream
+from src.core.memory.scope import ORIGIN_LEGACY, origin_kind_for_stream
 from src.core.memory.store import (
     FactInput,
     MemoryStore,
@@ -65,45 +65,6 @@ MIN_DIALOGUE_CHARS = 40
 
 EmbedFactFn = Callable[[int, str], Awaitable[None]]
 EmbedKnowledgeFn = Callable[[int, str], Awaitable[None]]
-
-
-def _stamp_origin_kind(
-    db: sqlite3.Connection,
-    fact_id: int,
-    origin_kind: str,
-    now: int,
-) -> bool:
-    """在事实落库后补写来源标记。
-
-    ``MemoryStore.add_fact`` 的参数集由事实账本线持有，本线不能给它加
-    ``origin_kind`` 参数；在参数合入前，来源标记由本函数在落库后补写。
-    新写入行按本批场合直接落值；强化命中的既有行只在私聊来源被群聊重说时
-    升格为 ``group``——说过就视为已公开，其余方向不改，legacy 行保持原值。
-
-    :param db: 当前库连接。
-    :param fact_id: ``add_fact`` 返回的事实 ID。
-    :param origin_kind: 本批抽取发生场合映射出的来源标记。
-    :param now: 本批落库时间戳，与 ``add_fact`` 收到的值相同。
-    :return: 本次是否执行了改写。
-    副作用：可能更新 ``facts.origin_kind``；提交由调用方在整批结束后统一执行。
-    """
-
-    row = db.execute(
-        'SELECT created_at, origin_kind FROM facts WHERE id = ?', (fact_id,)
-    ).fetchone()
-    if row is None:
-        return False
-    if row[0] == now:
-        db.execute(
-            'UPDATE facts SET origin_kind = ? WHERE id = ?', (origin_kind, fact_id)
-        )
-        return True
-    if row[1] == 'direct' and origin_kind == ORIGIN_GROUP:
-        db.execute(
-            'UPDATE facts SET origin_kind = ? WHERE id = ?', (origin_kind, fact_id)
-        )
-        return True
-    return False
 
 
 @dataclass
@@ -472,9 +433,10 @@ async def persist_facts(
     取 FTS 候选逐个过 ``is_same_fact`` 的字符与 bigram 双阈值，命中即强化既有行。
     本函数不再叠任何一层判重——那会让同一件事算两遍。
 
-    事实的 ``slot`` 与 ``supersedes`` 原样传给写入层：显式取代在同一事务里回填旧行，
-    同槽异值的冲突只上报不解决。取代与冲突都会各发一条观测事件——这两类信号
-    是「记忆被纠正」和「记忆对不上」的唯一痕迹，必须可见。
+    事实的 ``slot``、``supersedes`` 与 ``origin_kind`` 原样传给写入层：显式取代在
+    同一事务里回填旧行，同槽异值的冲突只上报不解决，来源标记与正文一并落库。
+    取代与冲突都会各发一条观测事件——这两类信号是「记忆被纠正」和
+    「记忆对不上」的唯一痕迹，必须可见。
 
     :param store: 记忆存储实例。
     :param facts: :func:`parse_extraction` 校验过的事实列表。
@@ -482,11 +444,11 @@ async def persist_facts(
     :param db: 当前库连接，用于给写过新事实的人置画像脏位。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :param embed_fact: 可选事实向量写入回调；提供时在事实落库后于同一后台链路等待完成。
-    :param origin_kind: 本批事实被听见的场合；省略时按 ``legacy`` 处理，
-        与存量行口径一致。
+    :param origin_kind: 本批事实被听见的场合；生产调用必须显式传本批会话类型
+        映射出的来源，默认 ``legacy`` 只兜底参数遗漏。
     :return: 实际写入或强化的事实 ID 列表，顺序与输入一致；被丢弃的条目不占位。
     :raises sqlite3.Error: 写入失败时由 ``add_fact`` 抛出。
-    副作用：写入 ``facts`` 与 ``facts_fts`` 并提交事务；补写来源标记；
+    副作用：写入 ``facts`` 与 ``facts_fts``（含来源标记）并提交事务；
         可能回填旧行的 ``superseded_by``；可选生成并持久化事实向量。
     """
 
@@ -494,7 +456,6 @@ async def persist_facts(
     by_external = {p.external_id: p for p in participants}
     written: List[int] = []
     touched: set[int] = set()
-    stamped = False
     for fact in facts:
         person = by_external.get(fact.person_ref)
         if person is None:
@@ -509,12 +470,12 @@ async def persist_facts(
                 kind=fact.kind,
                 slot=fact.slot,
                 supersedes=fact.supersedes,
+                origin_kind=origin_kind,
             ),
             now,
         )
         fact_id = result.fact_id
         if fact_id:
-            stamped = _stamp_origin_kind(db, fact_id, origin_kind, now) or stamped
             # 事实正文已经持久化后再生成向量：向量服务失败不能回滚事实；等待回调完成
             # 则保证 run_extraction 返回时，新事实已经具备可供语义融合读取的 embedding。
             if embed_fact is not None:
@@ -556,10 +517,6 @@ async def persist_facts(
                 )
             written.append(fact_id)
             touched.add(person.person_id)
-    # 来源标记的补写发生在 add_fact 各自提交之后，这里显式收尾一次，
-    # 不依赖后面 mark_profiles_dirty 顺带提交——两件事的提交时机由各自语义决定。
-    if stamped:
-        db.commit()
     # 写过新事实的人，画像随之过期。置位在这里而不是在画像模块里反查，
     # 是因为「谁被写过」只有这一层知道；画像刷新是后台任务，只消费脏位。
     mark_profiles_dirty(db, sorted(touched), now)

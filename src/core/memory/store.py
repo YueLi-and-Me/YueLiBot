@@ -19,7 +19,9 @@ from .decay import (
     reinforce, relevance_from_bm25, retention, retention_weight, score,
 )
 from .similarity import exact_key, is_same_fact
-from .scope import SCOPE_ALL, fact_visible_in_stream
+from .scope import (
+    ORIGIN_DIRECT, ORIGIN_GROUP, ORIGIN_LEGACY, SCOPE_ALL, fact_visible_in_stream,
+)
 from .tokenize import index_tokens, match_query, words
 
 from src.core.common.clock import now as current_time
@@ -112,12 +114,17 @@ class FactInput:
     :ivar slot: 单值槽位名（居住地、职业、生日……）；空串表示多值事实，
         多值事实之间永不判冲突。
     :ivar supersedes: 显式声明取代的既有事实 ID；``0`` 表示不取代。
+    :ivar origin_kind: 本条事实被听见的场合，取值 ``direct`` / ``group`` /
+        ``legacy``。由抽取层按本批会话类型声明；默认 ``legacy`` 只兜底
+       「调用方未声明来源」的情形——它意味着按改造前的存量口径放行，
+        生产路径必须显式传值，不许把默认值写进真实链路。
     """
 
     content: str
     kind: str = '未分类'
     slot: str = ''
     supersedes: int = 0
+    origin_kind: str = ORIGIN_LEGACY
 
 
 @dataclass
@@ -130,12 +137,16 @@ class FactWrite:
         空列表表示没有冲突。冲突只上报不解决：两条都保留，由提示词并排呈现。
     :ivar superseded: 本次被显式取代（回填 ``superseded_by``）的旧行 ID；
         ``0`` 表示没有发生取代。
+    :ivar origin_promoted: 本次强化是否把既有行的来源从 ``direct`` 升格为
+        ``group``。升格是唯一允许的改写方向——direct 被群聊重说即视为已公开；
+        新建行落库不是改写，恒为 ``False``。
     """
 
     fact_id: int
     created: bool = False
     conflict_with: list[int] = field(default_factory=list)
     superseded: int = 0
+    origin_promoted: bool = False
 
 
 @dataclass
@@ -688,8 +699,13 @@ class MemoryStore:
            返回值里的 ``conflict_with`` 让调用方知道发生了冲突。冲突只被看见，
            不按时间取新、不按分数取高、不在写入侧二选一。
 
+        来源标记随本次写入一并落库：新建行直接落 ``input.origin_kind``；强化
+        命中既有行时只在「既有 ``direct`` 被群聊重说」这一种方向上升格为
+        ``group``，``legacy`` 与 ``group`` 永不改写。来源与正文在同一事务里
+        提交，中途失败不会留下「正文已落库、来源仍是默认值」的行。
+
         :param person_id: 事实所属人物 ID。
-        :param input: 事实正文、类型与账本字段。
+        :param input: 事实正文、类型、账本字段与来源标记。
         :param now: 可选更新时间戳；省略时读取当前毫秒时钟。
         :return: 本次写入结果；正文归一化后为空时 ``fact_id`` 为 ``0``。
         :raises sqlite3.Error: 查询、插入、更新、FTS 写入或提交失败。
@@ -729,16 +745,37 @@ class MemoryStore:
                 self._apply_supersede(person_id, supersedes, replaced_by=existing['id'])
                 if supersedes else 0
             )
+            # 来源改写只有「既有 direct 被群聊重说升格 group」一个方向：说过即视为
+            # 已公开。legacy 与 group 永不降格，其余方向一律保持原值；升格与强化
+            # 的 UPDATE 在同一事务里提交。
+            origin_promoted = (
+                input.origin_kind == ORIGIN_GROUP
+                and existing['origin_kind'] == ORIGIN_DIRECT
+            )
+            if origin_promoted:
+                self._db.execute(
+                    'UPDATE facts SET origin_kind = ? WHERE id = ? AND person_id = ?',
+                    (ORIGIN_GROUP, existing['id'], person_id),
+                )
             self._db.commit()
-            return FactWrite(fact_id=existing['id'], created=False, superseded=superseded)
+            return FactWrite(
+                fact_id=existing['id'],
+                created=False,
+                superseded=superseded,
+                origin_promoted=origin_promoted,
+            )
 
-        # 未命中相似事实时创建新记录；新行、取代回填与 FTS 索引在同一事务里提交。
+        # 未命中相似事实时创建新记录；新行、来源标记、取代回填与 FTS 索引在
+        # 同一事务里提交。
         due = freeze_due_at(1.0, now, half_life)
         cur = self._db.execute(
             '''INSERT INTO facts (person_id, kind, content, content_key, strength, half_life_hours,
-                                  updated_at, created_at, due_at, active, slot)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''',
-            (person_id, input.kind, content, key, 1.0, half_life, now, now, due, slot)
+                                  updated_at, created_at, due_at, active, slot, origin_kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+            (
+                person_id, input.kind, content, key, 1.0, half_life,
+                now, now, due, slot, input.origin_kind,
+            )
         )
         fid = cur.lastrowid or 0
         self._db.execute(
@@ -834,7 +871,8 @@ class MemoryStore:
         :param person_id: 事实所属人物 ID。
         :param content: 已去空白的待比较正文。
         :param key: `exact_key(content)` 生成的严格去重键。
-        :return: 含事实 ID、正文、强度和衰减参数的字典；没有相似事实时返回 `None`。
+        :return: 含事实 ID、正文、强度、衰减参数与来源标记的字典；没有相似事实时
+            返回 `None`。
         :raises sqlite3.Error: 查询失败。
         副作用：只读 facts 和 facts_fts 表。
         :performance: 精确键优先；未命中时最多检查 8 个 FTS 候选。
@@ -842,19 +880,20 @@ class MemoryStore:
         # 精确键必须不带失效过滤：``UNIQUE(person_id, content_key)`` 约束要求
         # 同键必命中既有行，否则同文重提会在插入时撞上唯一约束。
         row = self._db.execute(
-            '''SELECT id, content, strength, updated_at, half_life_hours
+            '''SELECT id, content, strength, updated_at, half_life_hours, origin_kind
                FROM facts WHERE person_id = ? AND content_key = ?''', (person_id, key)
         ).fetchone()
         if row:
             return {'id': row[0], 'content': row[1], 'strength': row[2],
-                    'updated_at': row[3], 'half_life_hours': row[4]}
+                    'updated_at': row[3], 'half_life_hours': row[4],
+                    'origin_kind': row[5]}
         match = match_query(content)
         if not match:
             return None
         # FTS 候选排除已被取代的行：与失效事实措辞相近的新表述应当另起一行
         # （同槽时形成可见冲突），而不是把留存度回补到一条不再召回的死行上。
         candidates = self._db.execute(
-            '''SELECT f.id, f.content, f.strength, f.updated_at, f.half_life_hours
+            '''SELECT f.id, f.content, f.strength, f.updated_at, f.half_life_hours, f.origin_kind
                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                WHERE facts_fts MATCH ? AND f.person_id = ? AND f.superseded_by IS NULL
                ORDER BY bm25(facts_fts) ASC LIMIT 8''',
@@ -863,7 +902,8 @@ class MemoryStore:
         for c in candidates:
             if is_same_fact(content, c[1]):
                 return {'id': c[0], 'content': c[1], 'strength': c[2],
-                        'updated_at': c[3], 'half_life_hours': c[4]}
+                        'updated_at': c[3], 'half_life_hours': c[4],
+                        'origin_kind': c[5]}
         return None
 
     def _emit_scope_blocked(self, stream_kind: str, blocked: int) -> None:
