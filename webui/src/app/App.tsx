@@ -42,6 +42,9 @@ const ExpressionsPage = lazy(() =>
 const MemoryGraphPage = lazy(() =>
   import('@/features/memory/MemoryGraphPage').then((m) => ({ default: m.MemoryGraphPage })),
 )
+const RetrievalTuningPage = lazy(() =>
+  import('@/features/memory/RetrievalTuningPage').then((m) => ({ default: m.RetrievalTuningPage })),
+)
 const EmojisPage = lazy(() =>
   import('@/features/emojis/EmojisPage').then((m) => ({ default: m.EmojisPage })),
 )
@@ -87,6 +90,7 @@ function AuthGate() {
           <Route path="jargon" element={<JargonPage />} />
           <Route path="expressions" element={<ExpressionsPage />} />
           <Route path="memory" element={<MemoryGraphPage />} />
+          <Route path="memory/tuning" element={<RetrievalTuningPage />} />
           <Route path="emojis" element={<EmojisPage />} />
           <Route path="*" element={<ObservePage />} />
         </Route>

@@ -106,6 +106,7 @@ from src.core.config.schema import Config, ConversationConfig, TypingConfig
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_request
+from src.core.memory.tuning import apply_pool_percentile, tuned_value
 from src.core.memory.store import (
     EpisodeInput,
     FactInput,
@@ -3294,6 +3295,12 @@ class ChatService:
             *messages[first_batch_index:last_user_index + 1],
         ]
 
+    @property
+    def fact_recall_limit(self) -> int:
+        """配置提供的进提示词条数初值；检索调优的覆盖在各读取点叠加。"""
+
+        return self._fact_recall_limit
+
     def _recall_turn_facts(
         self,
         context: ConversationContext,
@@ -3321,7 +3328,7 @@ class ChatService:
         副作用：只读；被可见性规则挡下的条数会发一条事件。
         """
 
-        limit = self._fact_recall_limit
+        limit = int(tuned_value('fact_recall_limit', self._fact_recall_limit))
         person_ids = self._present_person_ids(context)
         pool: list[RecalledFact] = []
         seen: set[int] = set()
@@ -3338,7 +3345,10 @@ class ChatService:
                     seen.add(fact.id)
                     pool.append(fact)
         pool.sort(key=lambda fact: fact.score, reverse=True)
-        return pool
+        # 候选池分数百分位是调优白名单参数：阈值大于零时截掉低分尾部，
+        # 让「明显不相关却仍占位」的条目在进重排之前就被挡下。
+        kept = apply_pool_percentile([fact.score for fact in pool])
+        return pool[:kept]
 
     async def _conversation_impression(
         self,
@@ -3394,11 +3404,11 @@ class ChatService:
         recalled = self.memory.recall_episodes(
             context.stream.id,
             query,
-            self._recalled_episode_limit,
+            int(tuned_value('recalled_episode_limit', self._recalled_episode_limit)),
         )
         recent = self.memory.recent_episodes(
             context.stream.id,
-            self._recent_episode_limit,
+            int(tuned_value('recent_episode_limit', self._recent_episode_limit)),
         )
         seen_ids: set[int] = set()
         episodes = []
@@ -3508,7 +3518,9 @@ class ChatService:
         副作用：只读取配置和会话语调，不读写数据库、不调用模型。
         """
         selected_facts = (
-            prepared.fact_candidates[:self._fact_recall_limit]
+            prepared.fact_candidates[
+                :int(tuned_value('fact_recall_limit', self._fact_recall_limit))
+            ]
             if facts is None
             else facts
         )
@@ -3600,7 +3612,7 @@ class ChatService:
         facts = self.memory.rank_recalled_facts(
             prepared.fact_candidates,
             query_embedding,
-            self._fact_recall_limit,
+            int(tuned_value('fact_recall_limit', self._fact_recall_limit)),
         )
         self.memory.reinforce_recalled_facts(facts, prepared.now)
         expression_habits = render_expression_habits(

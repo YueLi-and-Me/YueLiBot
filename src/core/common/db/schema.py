@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
+-- 检索调优的参数快照。新表无存量数据回填需求，按 jargon 先例由链尾 DDL
+-- 幂等建表，不占迁移号；生效名存 meta 表的 retrieval_tuning_active_profile。
+CREATE TABLE IF NOT EXISTS retrieval_profiles (
+  name             TEXT PRIMARY KEY,
+  params           TEXT    NOT NULL,
+  created_at       INTEGER NOT NULL,
+  last_applied_at  INTEGER
+);
+
 -- ---------------------------------------------------------------- stream / person 归属
 CREATE TABLE IF NOT EXISTS persons (
   id            INTEGER PRIMARY KEY,

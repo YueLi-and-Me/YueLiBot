@@ -21,6 +21,8 @@ from src.core.observe import events as trace
 
 from .decay import FREEZE, REVIVE, reinforce, retention
 from .pagerank import PageRankTimeoutError, personalized_pagerank
+from .tuning import ppr_alpha as tuned_ppr_alpha
+from .tuning import ppr_hops as tuned_ppr_hops
 
 # 沿边扩散的最大跳数。
 HOPS = 2
@@ -363,7 +365,7 @@ def _memory_ppr(
     ranks = personalized_pagerank(
         adjacency,
         seed_nodes,
-        alpha=PPR_ALPHA,
+        alpha=tuned_ppr_alpha(),
         max_iterations=PPR_MAX_ITERATIONS,
         tolerance=PPR_TOLERANCE,
         timeout_seconds=PPR_TIMEOUT_SECONDS,
@@ -473,7 +475,7 @@ def _knowledge_ppr(
     ranks = personalized_pagerank(
         bounded,
         concept_seeds,
-        alpha=PPR_ALPHA,
+        alpha=tuned_ppr_alpha(),
         max_iterations=PPR_MAX_ITERATIONS,
         tolerance=PPR_TOLERANCE,
         timeout_seconds=PPR_TIMEOUT_SECONDS,
@@ -600,7 +602,7 @@ def spread(
     seeds: Sequence[Tuple[str, int, float]],
     now: int,
     *,
-    hops: int = HOPS,
+    hops: Optional[int] = None,
     limit: int = SPREAD_LIMIT,
     activation: Optional[ShortTermActivation] = None,
 ) -> List[SpreadHit]:
@@ -617,7 +619,8 @@ def spread(
     :param db: 当前库连接。
     :param seeds: ``(ref_kind, ref_id, 相关度)`` 序列，来自现有的 recall / inspect。
     :param now: 当前毫秒时间戳。
-    :param hops: 最多走几跳；``0`` 表示整层关闭，直接返回空列表。
+    :param hops: 最多走几跳；``None`` 表示由检索调优的当前覆盖决定（未覆盖时取
+        模块常量 ``HOPS``）；``0`` 表示整层关闭，直接返回空列表。
     :param limit: 结果条数上限。
     :param activation: 可选的短期激活表；省略时不加成。
     :return: 按融合分数降序的扩散命中，最多 ``limit`` 条。
@@ -625,6 +628,7 @@ def spread(
     副作用：只读，不建边也不加强——建边只发生在「被采用」之后，由调用方显式调用
         :func:`link_together`。
     """
+    hops = tuned_ppr_hops(HOPS) if hops is None else hops
     if hops < 1 or limit < 1 or not seeds:
         return []
     seed_nodes = _seed_memory_nodes(db, seeds)

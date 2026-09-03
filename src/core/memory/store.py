@@ -16,13 +16,14 @@ import sqlite3
 
 from .decay import (
     FREEZE, DecayState, evaluate, freeze_due_at, half_life_for,
-    reinforce, relevance_from_bm25, retention, retention_weight, score,
+    relevance_from_bm25, reinforce, retention, score,
 )
 from .similarity import exact_key, is_same_fact
 from .scope import (
     ORIGIN_DIRECT, ORIGIN_GROUP, ORIGIN_LEGACY, SCOPE_ALL, fact_visible_in_stream,
 )
 from .tokenize import index_tokens, match_query, words
+from .tuning import blend_score
 
 from src.core.common.clock import now as current_time
 from src.core.common.db.schema import DDL, SCHEMA_VERSION, SEED
@@ -1007,7 +1008,7 @@ class MemoryStore:
                 except Exception:
                     # 向量计算失败时保留 BM25 相关度，确保单条坏向量不阻断整批召回。
                     pass
-            final_score = relevance * retention_weight(ret)
+            final_score = blend_score(relevance, ret)
             scored.append(RecalledFact(
                 id=r[0],
                 kind=r[1],
@@ -1116,7 +1117,7 @@ class MemoryStore:
                 kind=r[1],
                 content=r[2],
                 retention=ret,
-                score=relevance * retention_weight(ret),
+                score=blend_score(relevance, ret),
                 lexical_relevance=relevance,
                 embedding=r[9],
                 half_life_hours=r[5],
@@ -1310,7 +1311,7 @@ class MemoryStore:
                 except Exception:
                     # 与召回入口保持一致：单条坏向量只放弃该条语义融合。
                     pass
-            ranked.append((relevance * retention_weight(fact.retention), fact))
+            ranked.append((blend_score(relevance, fact.retention), fact))
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [fact for _, fact in ranked[:limit]]
 

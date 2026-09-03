@@ -387,6 +387,22 @@ def main() -> None:
     )
     logger.info("db_ready", path=str(db_path))
 
+    # 检索调优的生效 profile 必须在启动横幅里可见：参数何时被谁换过，
+    # 事后只能从这里对账；bootstrap 同时把覆盖表恢复进进程。
+    from src.core.memory import tuning as retrieval_tuning
+    active_profile = retrieval_tuning.bootstrap_active(db)
+    overrides = retrieval_tuning.active_overrides()
+    print_box(
+        '检索调优',
+        [
+            f'当前生效 profile：{active_profile}',
+            f'覆盖参数：{len(overrides)} 项'
+            + (f'（{"、".join(sorted(overrides))}）' if overrides else ''),
+        ],
+        width=96,
+        source=__name__,
+    )
+
     # 先装配归属注册表和 broker，随后创建的聊天服务才能解析并投递外部 stream。
     from src.core.api.state import app_state
     from src.core.api.ws import push

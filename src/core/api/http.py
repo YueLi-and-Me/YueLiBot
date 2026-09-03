@@ -39,6 +39,7 @@ from src.core.common.db.connection import get_db, run_in_thread
 from src.core.common.logger import get_logger
 from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
+from src.core.memory import tuning
 from src.core.memory.decay import retention
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
@@ -2408,6 +2409,222 @@ async def memory_spread_preview(
             detail=f'扩散预览失败：{exc}',
         ) from exc
     return {'hits': hits, 'seed': {'kind': kind, 'refId': ref_id}, 'hops': hops, 'limit': limit}
+
+
+class TuningProfileBody(BaseModel):
+    """保存检索调优 profile 的请求体。"""
+
+    name: str
+    params: dict[str, float] = {}
+
+
+class TuningApplyBody(BaseModel):
+    """让一个检索调优 profile 生效的请求体。"""
+
+    name: str
+
+
+class TuningEvaluateBody(BaseModel):
+    """跑一次检索评估的请求体：按名字或按匿名参数集。"""
+
+    profile: str | None = None
+    params: dict[str, float] | None = None
+    max_turns: int | None = Field(default=None, alias='maxTurns', ge=1, le=500)
+
+
+def _tuning_store_or_503() -> Any:
+    """返回评估重放所需的 MemoryStore，聊天服务未就绪时按 503 拒绝。"""
+
+    chat = app_state.chat
+    if chat is None or getattr(chat, 'memory', None) is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='聊天服务尚未初始化，无法评估',
+        )
+    return chat.memory, int(chat.fact_recall_limit)
+
+
+@router.get('/api/memory/tuning', dependencies=[Depends(_auth)])
+async def retrieval_tuning_overview() -> dict:
+    """返回参数白名单、当前生效 profile 与已保存 profile 列表。
+
+    :return: ``whitelist``（参数名到取值域与现状值）、``active``（生效名与
+        覆盖表）、``profiles``（已保存项）。
+    :raises fastapi.HTTPException: 数据库未初始化时 503。
+    副作用：只读。
+    """
+    db = _read_db_or_503()
+    try:
+        return {
+            'whitelist': {
+                name: {
+                    'kind': 'int' if spec.kind is int else 'float',
+                    'min': spec.minimum,
+                    'max': spec.maximum,
+                    'legacy': spec.legacy,
+                    'label': spec.label,
+                }
+                for name, spec in tuning.WHITELIST.items()
+            },
+            'active': {
+                'profile': tuning.active_profile_name(db),
+                'overrides': tuning.active_overrides(),
+            },
+            'profiles': tuning.list_profiles(db),
+        }
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'检索调优状态读取失败：{exc}',
+        ) from exc
+
+
+@router.post('/api/memory/tuning/profiles', dependencies=[Depends(_auth)])
+async def retrieval_tuning_save_profile(body: TuningProfileBody) -> dict:
+    """保存或更新一个检索调优 profile。
+
+    :param body: profile 名与参数覆盖；``default`` 不可覆盖。
+    :return: 保存后的 profile 内容。
+    :raises fastapi.HTTPException: 参数不在白名单或越界时 400；
+        数据库未初始化时 503。
+    副作用：写 ``retrieval_profiles`` 表；不影响当前生效覆盖。
+    """
+    db = _read_db_or_503()
+    try:
+        saved = tuning.save_profile(db, body.name.strip(), body.params, current_time())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'profile 保存被拒绝：{exc}',
+        ) from exc
+    return saved
+
+
+@router.delete('/api/memory/tuning/profiles/{name}', dependencies=[Depends(_auth)])
+async def retrieval_tuning_delete_profile(name: str) -> dict:
+    """删除一个已保存的 profile；正在生效时自动回退 default。
+
+    :param name: profile 名；``default`` 不可删除。
+    :return: 删除后的 profile 名列表。
+    :raises fastapi.HTTPException: 名字为内置项时 400；数据库未初始化时 503。
+    副作用：删除 ``retrieval_profiles`` 行并提交；删除生效项时清空进程内覆盖。
+    """
+    db = _read_db_or_503()
+    try:
+        tuning.delete_profile(db, name)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'profile 删除被拒绝：{exc}',
+        ) from exc
+    return {'profiles': [item['name'] for item in tuning.list_profiles(db)]}
+
+
+@router.post('/api/memory/tuning/apply', dependencies=[Depends(_auth)])
+async def retrieval_tuning_apply(body: TuningApplyBody) -> dict:
+    """让一个 profile 立即生效。
+
+    :param body: profile 名；``default`` 表示回到配置初值。
+    :return: 生效的 profile 名与覆盖表。
+    :raises fastapi.HTTPException: profile 不存在时 404；数据库未初始化时 503。
+    副作用：写 meta 与 ``last_applied_at``，替换进程内覆盖表并发一条事件。
+    """
+    db = _read_db_or_503()
+    try:
+        applied = tuning.apply_profile(db, body.name.strip(), current_time())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'profile 不存在：{exc}',
+        ) from exc
+    return applied
+
+
+@router.post('/api/memory/tuning/rollback', dependencies=[Depends(_auth)])
+async def retrieval_tuning_rollback() -> dict:
+    """回滚到内置 default：清空覆盖，检索链路回到配置初值。"""
+
+    db = _read_db_or_503()
+    return tuning.rollback_to_default(db)
+
+
+@router.get('/api/memory/tuning/export', dependencies=[Depends(_auth)])
+async def retrieval_tuning_export(name: str = Query(default='')) -> dict:
+    """导出一个 profile 的可搬运 JSON 内容。
+
+    :param name: profile 名；空串取当前生效项。
+    :return: ``{"profile": name, "params": {...}, "exported_at": ...}``。
+    :raises fastapi.HTTPException: profile 不存在时 404。
+    副作用：只读。
+    """
+    db = _read_db_or_503()
+    target = name.strip() or tuning.active_profile_name(db)
+    try:
+        return tuning.export_profile(db, target)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'profile 不存在：{exc}',
+        ) from exc
+
+
+@router.post('/api/memory/tuning/evaluate', dependencies=[Depends(_auth)])
+async def retrieval_tuning_evaluate(body: TuningEvaluateBody) -> dict:
+    """按给定参数重放检索并返回 nDCG@k 与召回条数报告。
+
+    评估样本从事件账本与提示词转储实时构建；重放只读，评估期间临时切换
+    进程内覆盖表、结束后还原。样本量受快照滚动保留量限制。
+
+    :param body: ``profile`` 或 ``params`` 二选一；都不给时按当前生效覆盖评估。
+    :return: :class:`~src.core.memory.tuning.EvalReport` 的字典形态。
+    :raises fastapi.HTTPException: 参数不在白名单时 400；服务未就绪时 503。
+    副作用：临时切换并还原进程内覆盖表；发一条 ``retrieval_eval_done`` 事件。
+    """
+    db = _read_db_or_503()
+    store, config_limit = _tuning_store_or_503()
+    if body.profile is not None:
+        params = tuning.load_profile_params(db, body.profile.strip())
+        if params is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f'profile 不存在：{body.profile}',
+            )
+        profile_name = body.profile.strip()
+    else:
+        params = body.params if body.params is not None else tuning.active_overrides()
+        profile_name = None
+    try:
+        report = await run_in_thread(
+            _retrieval_eval_run, db, store, params, profile_name,
+            config_limit, body.max_turns,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'评估被拒绝：{exc}',
+        ) from exc
+    return report
+
+
+def _retrieval_eval_run(
+    db: Any,
+    store: Any,
+    params: dict[str, float],
+    profile_name: str | None,
+    config_limit: int,
+    max_turns: int | None,
+) -> dict:
+    """工作线程里执行评估全流程：建样本、重放、汇总。"""
+
+    samples = tuning.build_turn_samples(db, max_turns=max_turns)
+    report = tuning.evaluate(
+        store,
+        samples,
+        params,
+        profile_name=profile_name,
+        config_fact_limit=config_limit,
+    )
+    return report.as_dict()
 
 
 def _emoji_library_or_503() -> Any:

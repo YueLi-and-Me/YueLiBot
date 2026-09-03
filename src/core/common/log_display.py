@@ -101,6 +101,8 @@ EVENT_LABELS: Dict[str, str] = {
     "memory_fact_conflict": "事实冲突并存",
     "memory_fact_superseded": "事实已被取代",
     "memory_fact_supersede_dropped": "事实取代声明已丢弃",
+    "retrieval_profile_applied": "检索调优 profile 已生效",
+    "retrieval_eval_done": "检索评估完成",
     "meta_schema_version_unparsable": "数据库版本无法解析",
     "model_all_failed": "全部候选模型均失败",
     "model_switch": "切换候选模型",
