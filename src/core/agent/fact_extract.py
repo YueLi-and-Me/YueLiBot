@@ -26,7 +26,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Collection, Dict, List, Optional, Sequence
 
 import json
 import re
@@ -41,6 +41,7 @@ from src.core.llm_models.snapshot import bind_render_params
 from src.core.memory.association import link_together
 from src.core.memory.decay import DEFAULT_FACT_KIND, FACT_KINDS
 from src.core.memory.knowledge import add_knowledge
+from src.core.memory.scope import ORIGIN_GROUP, ORIGIN_LEGACY, origin_kind_for_stream
 from src.core.memory.store import (
     FactInput,
     MemoryStore,
@@ -63,6 +64,46 @@ KNOWLEDGE_SOURCE = 'fact_extract'
 MIN_DIALOGUE_CHARS = 40
 
 EmbedFactFn = Callable[[int, str], Awaitable[None]]
+EmbedKnowledgeFn = Callable[[int, str], Awaitable[None]]
+
+
+def _stamp_origin_kind(
+    db: sqlite3.Connection,
+    fact_id: int,
+    origin_kind: str,
+    now: int,
+) -> bool:
+    """在事实落库后补写来源标记。
+
+    ``MemoryStore.add_fact`` 的参数集由事实账本线持有，本线不能给它加
+    ``origin_kind`` 参数；在参数合入前，来源标记由本函数在落库后补写。
+    新写入行按本批场合直接落值；强化命中的既有行只在私聊来源被群聊重说时
+    升格为 ``group``——说过就视为已公开，其余方向不改，legacy 行保持原值。
+
+    :param db: 当前库连接。
+    :param fact_id: ``add_fact`` 返回的事实 ID。
+    :param origin_kind: 本批抽取发生场合映射出的来源标记。
+    :param now: 本批落库时间戳，与 ``add_fact`` 收到的值相同。
+    :return: 本次是否执行了改写。
+    副作用：可能更新 ``facts.origin_kind``；提交由调用方在整批结束后统一执行。
+    """
+
+    row = db.execute(
+        'SELECT created_at, origin_kind FROM facts WHERE id = ?', (fact_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    if row[0] == now:
+        db.execute(
+            'UPDATE facts SET origin_kind = ? WHERE id = ?', (origin_kind, fact_id)
+        )
+        return True
+    if row[1] == 'direct' and origin_kind == ORIGIN_GROUP:
+        db.execute(
+            'UPDATE facts SET origin_kind = ? WHERE id = ?', (origin_kind, fact_id)
+        )
+        return True
+    return False
 
 
 @dataclass
@@ -86,11 +127,17 @@ class ExtractedFact:
     :ivar person_ref: 模型声明的归属对象，必须是输入名单里出现过的平台编号。
     :ivar kind: 事实类别，固定为衰减模型支持的七个枚举值之一。
     :ivar content: 脱离原对话也能读懂的一句话。
+    :ivar slot: 单值槽位名；空串表示多值事实。由模型判断基数：它输出 ``slot``
+        即表示「这条事实在同一个人身上只可能有一个取值」。
+    :ivar supersedes: 模型声明取代的既有事实 ID；``0`` 表示不取代。
+        校验时必须在本次给出的既有事实清单内，否则丢弃该字段。
     """
 
     person_ref: str
     kind: str
     content: str
+    slot: str = ''
+    supersedes: int = 0
 
 
 def read_cursor(store: MemoryStore, stream_id: int) -> int:
@@ -142,27 +189,38 @@ def render_known_facts(
     store: MemoryStore,
     participants: Sequence[Participant],
     now: Optional[int] = None,
-) -> str:
-    """渲染在场者已经被记住的事实清单。
+) -> tuple[str, frozenset[int]]:
+    """渲染在场者已经被记住的事实清单，并返回清单中出现过的事实 ID 集合。
 
     既有事实清单供模型逐条比对以避免重复写入。仅靠提示词禁令无法验证
     「已经记过」；抽取是后台任务，可以先查表生成可比对的清单。
 
+    每行 ``[平台编号] #事实ID 正文``：平铺的无归属列表会让模型分不清事实是谁的，
+    也无法表达「我要取代 #123」——编号是取代机制的入口。返回的 ID 集合供
+    :func:`parse_extraction` 校验 ``supersedes`` 不指向清单外的行。
+
     :param store: 记忆存储实例。
     :param participants: 本批对话的在场者。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
-    :return: 每行一条既有事实的文本；没有任何既有事实时返回空字符串。
+    :return: ``(清单文本, 事实 ID 集合)``；没有任何既有事实时文本为空字符串。
     副作用：只读 ``facts`` 表，不回补留存度——查表本身不该改写记忆权重。
     """
 
     now = now if now is not None else current_time()
     lines: List[str] = []
+    shown: set[int] = set()
     for person in participants:
-        for fact in store.top_facts(person.person_id, KNOWN_FACT_PER_PERSON, now):
-            lines.append(f'  - {fact.content}')
+        # stream_kind 传旁路值 'all'：这份清单的用途是让模型比对去重、并按 #ID
+        # 声明取代，不是进提示词输出，必须看到全部事实，否则同一句私聊来源的事实
+        # 会因被可见性挡下而在清单里缺席，随后被当成新事实重复写入。
+        for fact in store.top_facts(
+            person.person_id, KNOWN_FACT_PER_PERSON, now, stream_kind='all',
+        ):
+            lines.append(f'  [{person.external_id}] #{fact.id} {fact.content}')
+            shown.add(fact.id)
             if len(lines) >= KNOWN_FACT_LIMIT:
-                return '\n'.join(lines)
-    return '\n'.join(lines)
+                return '\n'.join(lines), frozenset(shown)
+    return '\n'.join(lines), frozenset(shown)
 
 
 def render_dialogue(
@@ -218,16 +276,36 @@ class Extraction:
     knowledge: List[str]
 
 
-def parse_extraction(raw: str) -> Optional[Extraction]:
+def _parse_supersedes(raw: Any) -> int:
+    """把模型输出的 ``supersedes`` 字段归一成事实 ID；无法解析时返回 ``0``。
+
+    契约是 ``#ID``；模型也可能直接给数字。布尔、浮点与非数字文本一律视为
+    未声明取代——可选字段的脏值丢弃即可，不牵连本条事实。
+    """
+
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return raw if raw > 0 else 0
+    if isinstance(raw, str):
+        text = raw.strip().lstrip('#').strip()
+        if text.isdigit() and int(text) > 0:
+            return int(text)
+    return 0
+
+
+def parse_extraction(raw: str, known_fact_ids: Collection[int] = ()) -> Optional[Extraction]:
     """从模型输出中提取并校验事实与知识候选。
 
     契约是一个对象而非裸数组：知识候选没有归属也没有类别，并入事实数组只能靠
     判别字段区分，缺字段的含义会无法判定，无法整批判废。
 
     :param raw: 可能带 Markdown 代码围栏或额外说明的模型输出。
+    :param known_fact_ids: 本次随提示词给出的既有事实 ID 集合，用于校验
+        ``supersedes``；缺省视为空集合，任何取代声明都会被丢弃。
     :return: 校验通过的产出（两个列表都空是合法结果，表示这批没什么可记的）；
         JSON 非法、顶层不是对象、或任一事实条目缺字段时返回 ``None`` 表示整批丢弃。
-    副作用：不写存储，不抛出解析异常。
+    副作用：不写存储，不抛出解析异常；取代声明指向清单外 ID 时发出观测事件。
     """
 
     text = re.sub(r'```(?:json)?', '', raw or '', flags=re.IGNORECASE).strip()
@@ -280,10 +358,28 @@ def parse_extraction(raw: str) -> Optional[Extraction]:
                 normalizedKind=DEFAULT_FACT_KIND,
             )
             kind = DEFAULT_FACT_KIND
+        raw_slot = item.get('slot')
+        slot = raw_slot.strip() if isinstance(raw_slot, str) else ''
+        # 槽位名约定为 2～6 字名词（见 memory.extract.md）；长度离谱说明模型把它
+        # 当成了自由文本，丢弃该字段而不是让脏值污染冲突分组。
+        if slot and not 2 <= len(slot) <= 6:
+            slot = ''
+        supersedes = _parse_supersedes(item.get('supersedes'))
+        if supersedes and supersedes not in known_fact_ids:
+            # 模型编造清单外的 ID 是可预期的：丢弃该字段并发 trace，
+            # 绝不能让它改到无关的行。
+            trace.emit(
+                'memory_fact_supersede_dropped',
+                supersededId=supersedes,
+                reason='not_in_known_list',
+            )
+            supersedes = 0
         facts.append(ExtractedFact(
             person_ref=person.strip(),
             kind=kind,
             content=content.strip(),
+            slot=slot,
+            supersedes=supersedes,
         ))
 
     knowledge: List[str] = []
@@ -304,6 +400,7 @@ async def extract_facts(
     dialogue: str,
     temperature: float,
     max_tokens: Optional[int],
+    known_fact_ids: Collection[int] = (),
 ) -> Optional[Extraction]:
     """请求模型从一段对话里抽出人物事实与知识候选。
 
@@ -314,6 +411,8 @@ async def extract_facts(
     :param dialogue: :func:`render_dialogue` 的产物。
     :param temperature: 采样温度。
     :param max_tokens: 输出上限；``None`` 表示由 provider 决定。
+    :param known_fact_ids: ``known_facts`` 清单里出现过的事实 ID，用于校验
+        取代声明；与清单文本由 :func:`render_known_facts` 一并产出。
     :return: 抽出的事实列表；对话过短、模型调用失败或输出不合契约时返回 ``None``。
     副作用：发起一次流式模型请求并记录 ``llm_request`` 观测事件，不写数据库。
     :performance: 请求体长度与对话正文加既有事实清单成正比，网络耗时占主要成本。
@@ -324,7 +423,10 @@ async def extract_facts(
     render_params = {'memory.extract': {'bot_name': bot_name}}
     sections = [f'在场的人：\n{render_participants(participants)}']
     if known_facts:
-        sections.append(f'你已经记住的（不要重复写这些）：\n{known_facts}')
+        sections.append(
+            '你已经记住的（每条以 [平台编号] #事实编号 开头；不要重复写这些；'
+            f'某条已经不成立时用 supersedes 取代它）：\n{known_facts}'
+        )
     sections.append(f'对话：\n{dialogue}')
     request_messages = [
         {'role': 'system', 'content': get_prompt('memory.extract').render(bot_name=bot_name)},
@@ -351,7 +453,7 @@ async def extract_facts(
     except Exception:
         # 抽取是旁路设施：模型故障不该让已经完成的回合受任何影响，整批丢弃即可。
         return None
-    return parse_extraction(raw)
+    return parse_extraction(raw, known_fact_ids)
 
 
 async def persist_facts(
@@ -362,6 +464,7 @@ async def persist_facts(
     now: Optional[int] = None,
     *,
     embed_fact: Optional[EmbedFactFn] = None,
+    origin_kind: str = ORIGIN_LEGACY,
 ) -> List[int]:
     """按平台编号归属把事实写入长期记忆。
 
@@ -369,21 +472,29 @@ async def persist_facts(
     取 FTS 候选逐个过 ``is_same_fact`` 的字符与 bigram 双阈值，命中即强化既有行。
     本函数不再叠任何一层判重——那会让同一件事算两遍。
 
+    事实的 ``slot`` 与 ``supersedes`` 原样传给写入层：显式取代在同一事务里回填旧行，
+    同槽异值的冲突只上报不解决。取代与冲突都会各发一条观测事件——这两类信号
+    是「记忆被纠正」和「记忆对不上」的唯一痕迹，必须可见。
+
     :param store: 记忆存储实例。
     :param facts: :func:`parse_extraction` 校验过的事实列表。
     :param participants: 在场者名单，用于把平台编号解析成 ``person_id``。
     :param db: 当前库连接，用于给写过新事实的人置画像脏位。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :param embed_fact: 可选事实向量写入回调；提供时在事实落库后于同一后台链路等待完成。
+    :param origin_kind: 本批事实被听见的场合；省略时按 ``legacy`` 处理，
+        与存量行口径一致。
     :return: 实际写入或强化的事实 ID 列表，顺序与输入一致；被丢弃的条目不占位。
     :raises sqlite3.Error: 写入失败时由 ``add_fact`` 抛出。
-    副作用：写入 ``facts`` 与 ``facts_fts`` 并提交事务；可选生成并持久化事实向量。
+    副作用：写入 ``facts`` 与 ``facts_fts`` 并提交事务；补写来源标记；
+        可能回填旧行的 ``superseded_by``；可选生成并持久化事实向量。
     """
 
     now = now if now is not None else current_time()
     by_external = {p.external_id: p for p in participants}
     written: List[int] = []
     touched: set[int] = set()
+    stamped = False
     for fact in facts:
         person = by_external.get(fact.person_ref)
         if person is None:
@@ -391,8 +502,19 @@ async def persist_facts(
             # 因此不设兜底。
             trace.emit('memory_fact_dropped', reason='unknown_person', personRef=fact.person_ref)
             continue
-        fact_id = store.add_fact(person.person_id, FactInput(content=fact.content, kind=fact.kind), now)
+        result = store.add_fact(
+            person.person_id,
+            FactInput(
+                content=fact.content,
+                kind=fact.kind,
+                slot=fact.slot,
+                supersedes=fact.supersedes,
+            ),
+            now,
+        )
+        fact_id = result.fact_id
         if fact_id:
+            stamped = _stamp_origin_kind(db, fact_id, origin_kind, now) or stamped
             # 事实正文已经持久化后再生成向量：向量服务失败不能回滚事实；等待回调完成
             # 则保证 run_extraction 返回时，新事实已经具备可供语义融合读取的 embedding。
             if embed_fact is not None:
@@ -406,18 +528,50 @@ async def persist_facts(
                 memoryKind=fact.kind,
                 content=fact.content,
             )
+            # 取代与冲突都要看得见：前者是记忆被纠正的唯一痕迹，后者是
+            # 「同槽异值并存」的信号，提示词会把冲突双方并排呈现。
+            if result.superseded:
+                trace.emit(
+                    'memory_fact_superseded',
+                    factId=fact_id,
+                    supersededId=result.superseded,
+                    personId=person.person_id,
+                )
+            if result.conflict_with:
+                trace.emit(
+                    'memory_fact_conflict',
+                    factId=fact_id,
+                    slot=fact.slot,
+                    conflictWith=result.conflict_with,
+                    personId=person.person_id,
+                )
+            if fact.supersedes and not result.superseded:
+                # 写入侧的守卫（同人物、未被取代、非自身）拒绝了这次取代；
+                # 声明落空必须可见，否则「取代为什么没生效」无从排查。
+                trace.emit(
+                    'memory_fact_supersede_dropped',
+                    supersededId=fact.supersedes,
+                    reason='target_not_writable',
+                    personId=person.person_id,
+                )
             written.append(fact_id)
             touched.add(person.person_id)
+    # 来源标记的补写发生在 add_fact 各自提交之后，这里显式收尾一次，
+    # 不依赖后面 mark_profiles_dirty 顺带提交——两件事的提交时机由各自语义决定。
+    if stamped:
+        db.commit()
     # 写过新事实的人，画像随之过期。置位在这里而不是在画像模块里反查，
     # 是因为「谁被写过」只有这一层知道；画像刷新是后台任务，只消费脏位。
     mark_profiles_dirty(db, sorted(touched), now)
     return written
 
 
-def persist_knowledge(
+async def persist_knowledge(
     db: sqlite3.Connection,
     candidates: Sequence[str],
     now: Optional[int] = None,
+    *,
+    embed_knowledge: Optional[EmbedKnowledgeFn] = None,
 ) -> List[int]:
     """把与人无关的客观信息写入知识层（L3）。
 
@@ -428,9 +582,10 @@ def persist_knowledge(
         不访问 ``MemoryStore`` 私有属性。
     :param candidates: :func:`parse_extraction` 校验过的知识正文列表。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
+    :param embed_knowledge: 可选知识向量写入回调；提供时在知识落库后于同一后台链路等待完成。
     :return: 新建或命中的知识行 ID 列表。
     :raises sqlite3.Error: 写入失败时由 ``add_knowledge`` 抛出。
-    副作用：写入 ``knowledge`` 与 ``knowledge_fts`` 并提交事务。
+    副作用：写入 ``knowledge`` 与 ``knowledge_fts`` 并提交事务；可选生成并持久化知识向量。
     """
 
     now = now if now is not None else current_time()
@@ -440,6 +595,8 @@ def persist_knowledge(
         # 同一批里换个说法重复提到同一件事时 add_knowledge 会返回同一行 ID。
         # 去重后再计数，否则观察事件里的「数量」会大于库里实际新增的行数。
         if kid and kid not in ids:
+            if embed_knowledge is not None:
+                await embed_knowledge(kid, content)
             ids.append(kid)
     if ids:
         trace.emit('knowledge_learned', count=len(ids), source=KNOWLEDGE_SOURCE)
@@ -452,6 +609,7 @@ async def run_extraction(
     db: sqlite3.Connection,
     *,
     stream_id: int,
+    stream_kind: str,
     participants: Sequence[Participant],
     bot_name: str,
     trigger_messages: int,
@@ -460,6 +618,7 @@ async def run_extraction(
     max_tokens: Optional[int],
     embed_fact: Optional[EmbedFactFn] = None,
     now: Optional[int] = None,
+    embed_knowledge: Optional[EmbedKnowledgeFn] = None,
 ) -> Optional[List[int]]:
     """检查触发条件并完成一次抽取。
 
@@ -470,6 +629,7 @@ async def run_extraction(
     :param store: 记忆存储实例。
     :param provider: 抽取任务的模型客户端。
     :param stream_id: 目标 stream ID。
+    :param stream_kind: 目标 stream 类型；决定新写事实的来源标记。
     :param participants: 本 stream 的在场者，由调用方从人物注册表解析。
     :param bot_name: Bot 展示名。
     :param trigger_messages: 游标之后累积多少条消息才触发一次抽取。
@@ -478,6 +638,7 @@ async def run_extraction(
     :param max_tokens: 输出上限。
     :param embed_fact: 可选事实向量写入回调，原始事实写入成功后于同一链路调用。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
+    :param embed_knowledge: 可选知识向量写入回调，知识写入成功后于同一链路调用。
     :return: 写入的事实 ID 列表（可能为空列表，表示这批确实没什么可记的）；
         未达触发条件或整批被丢弃时返回 ``None``。
     :raises sqlite3.Error: 落库失败时由 ``add_fact`` 抛出。
@@ -491,14 +652,16 @@ async def run_extraction(
     batch = store.messages_after(stream_id, cursor, batch_messages)
     if not batch:
         return None
+    known_facts, known_fact_ids = render_known_facts(store, participants, now)
     extraction = await extract_facts(
         provider,
         bot_name=bot_name,
         participants=participants,
-        known_facts=render_known_facts(store, participants, now),
+        known_facts=known_facts,
         dialogue=render_dialogue(batch, participants, bot_name),
         temperature=temperature,
         max_tokens=max_tokens,
+        known_fact_ids=known_fact_ids,
     )
     if extraction is None:
         # 解析失败或模型故障：不推进游标，下次重跑同一批，重复抽取优于永久
@@ -512,8 +675,14 @@ async def run_extraction(
         db,
         now,
         embed_fact=embed_fact,
+        origin_kind=origin_kind_for_stream(stream_kind),
     )
-    knowledge_ids = persist_knowledge(db, extraction.knowledge, now)
+    knowledge_ids = await persist_knowledge(
+        db,
+        extraction.knowledge,
+        now,
+        embed_knowledge=embed_knowledge,
+    )
     # 同批产出的事实与知识描述同一段时间内发生的事，是联想层两种建边时机中的
     # 第一种（另一种是「一起被召回并被采用」，在认知动作那侧）。
     linked = link_together(

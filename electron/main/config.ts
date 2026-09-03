@@ -33,9 +33,11 @@ import type {
  * 它们已被活动时间线取代；旧文件按 1.1.0 解析后重写即自动清除。
  * 1.3.0 新增 [emoji] 与 [emoji.cleanup] 表情包库管理段；旧文件按 1.2.0 解析后
  * 重写即补齐两段及默认值。
+ * 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊；
+ * 旧文件按 1.3.0 解析后重写即补齐该字段及默认值。
  */
-export const CONFIG_VERSION = '1.3.0'
-const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0'] as const
+export const CONFIG_VERSION = '1.4.0'
+const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
@@ -125,6 +127,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     episode_context_limit: 3,
     fact_extract_trigger_messages: 32,
     fact_extract_batch_messages: 12,
+    private_facts_in_group: false,
   },
   conversation_agent: {
     mode: 'off',
@@ -699,6 +702,9 @@ function parseConversation(
     fact_extract_batch_messages: numberAtOr(
       conversation, 'fact_extract_batch_messages', defaults.fact_extract_batch_messages, path,
     ),
+    private_facts_in_group: conversation.private_facts_in_group === undefined
+      ? defaults.private_facts_in_group
+      : booleanAt(conversation, 'private_facts_in_group', path),
   }
 }
 
@@ -2086,6 +2092,8 @@ episode_context_limit = ${cfg.conversation.episode_context_limit}
 fact_extract_trigger_messages = ${cfg.conversation.fact_extract_trigger_messages}
 # 每次事实抽取消化的最老消息条数
 fact_extract_batch_messages = ${cfg.conversation.fact_extract_batch_messages}
+# 私聊（含桌面端）听到的事实能否出现在群聊提示词里；默认只在被听见的场合可见
+private_facts_in_group = ${cfg.conversation.private_facts_in_group}
 
 [conversation_agent]
 # 对话 Agent 运行模式：off 关闭 / shadow 只记录不改行为 / selected_streams 仅指定会话 / enabled 全量

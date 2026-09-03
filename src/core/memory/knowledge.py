@@ -14,9 +14,10 @@ knowledge 不是「Bot 的记忆」而是「Bot 知道的事」：没有衰减�
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from typing import Sequence
+
+import sqlite3
 
 from .decay import relevance_from_bm25, retention_weight, score
 from .similarity import exact_key
@@ -79,8 +80,8 @@ def add_knowledge(
     ``knowledge_fts JOIN knowledge`` 的形态，没有 FTS 行的知识不是排名靠后，
     而是整行检索不到，且该缺失不易察觉。
 
-    向量则相反，留给 ``scripts/knowledge_reindex.py`` 异步补：缺向量只是退回
-    BM25 打分（见 :func:`search_knowledge`），词面仍能命中，不影响可见性。
+    向量由上层写入链路在本函数返回 ID 后生成；启动期补算与
+    ``scripts/knowledge_reindex.py`` 负责历史缺口。缺向量时检索仍可使用 BM25。
 
     去重靠 ``content_key`` 唯一约束，与 ``facts.content_key`` 同口径
     （``similarity.exact_key``）。重复内容直接返回既有行 ID，不新增、不报错——
@@ -116,7 +117,7 @@ def add_knowledge(
 
 
 def knowledge_without_embedding(db: sqlite3.Connection, limit: int) -> list[tuple[int, str]]:
-    """读取尚未计算向量的知识行，供离线重算。
+    """读取尚未计算向量的知识行，供启动期或离线重算。
 
     :param db: 当前库连接。
     :param limit: 最多返回的行数。

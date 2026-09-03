@@ -408,6 +408,8 @@ export interface YueliConfig {
     fact_extract_trigger_messages: number
     /** 每次事实抽取消化的最老消息条数 */
     fact_extract_batch_messages: number
+    /** 私聊（含桌面端）听到的事实能否出现在群聊提示词里 */
+    private_facts_in_group: boolean
   }
   /** 对话 Agent（决策/表达分离）的运行模式与触发参数。 */
   conversation_agent: {

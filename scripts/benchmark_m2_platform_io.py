@@ -17,12 +17,14 @@ import asyncio
 import json
 import sqlite3
 
-from src.common.logger import initialize_logging
-from src.memory.store import EpisodeInput, FactInput, MemoryStore
-from src.platform_io.registry import StreamRegistry
-from src.platform_io.types import ConversationContext, InboundMessage
-from src.services.chat import ChatService
-from src.services.vector import VectorService
+from src.core.common.logger import initialize_logging
+from src.core.config.schema import Config, LogConfig
+from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
+from src.core.observe.store import event_store
+from src.core.platform_io.registry import StreamRegistry
+from src.core.platform_io.types import ConversationContext, InboundMessage
+from src.core.services.chat import ChatService
+from src.core.services.vector import VectorService
 
 
 _FACT_COUNT = 24
@@ -132,12 +134,12 @@ def _seed_recall_data(store: MemoryStore, contexts: List[ConversationContext]) -
 
     # 固定召回规模，避免数据量差异掩盖并发调度造成的延迟变化。
     for index in range(_FACT_COUNT):
-        fact_id = store.add_fact(
+        fact_write = store.add_fact(
             1,
             FactInput(content=f'压测事实 {index}：用户在意并发、首字延迟与数据库召回。'),
             now=index + 1,
         )
-        store.store_embedding(fact_id, _QUERY_EMBEDDING)
+        store.store_embedding(fact_write.fact_id, _QUERY_EMBEDDING)
     for context in contexts:
         for index in range(_EPISODE_COUNT):
             store.add_episode(
@@ -167,7 +169,8 @@ def _contexts(registry: StreamRegistry, count: int) -> List[ConversationContext]
     contexts: List[ConversationContext] = []
     owner = registry.owner_person()
     for index in range(count):
-        stream = registry.get_or_create_stream('benchmark', 'direct', f'stream-{index}')
+        # chat.event 解析事件只对 desktop 平台推送，平台名必须是 desktop 才能采到首字事件。
+        stream = registry.get_or_create_stream('desktop', 'direct', f'stream-{index}')
         contexts.append(ConversationContext(stream=stream, person=owner))
     return contexts
 
@@ -192,6 +195,8 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
     # 每条消息使用独立 stream，避免 ChatService 的同 stream interrupt 机制改变样本。
     db = sqlite3.connect(':memory:', check_same_thread=False)
     db.row_factory = sqlite3.Row
+    # 回合链路会写模块级事件账本；基准用独立的内存库，不碰运行期数据。
+    event_store.configure(':memory:')
     store = MemoryStore(db)
     registry = StreamRegistry(db)
     message_count = rate_per_second * duration_seconds
@@ -200,26 +205,25 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
     starts: Dict[int, float] = {}
     first_text_at: Dict[int, float] = {}
 
-    async def push_event(channel: str, payload: object, _stream_id: int) -> None:
-        """记录每个回合首个文本解析事件的时间戳。
+    async def push_event(channel: str, payload: object, stream_id: int) -> None:
+        """记录每个 stream 首个可见文本解析事件的时间戳。
 
         Args:
             channel: 推送通道名称。
-            payload: 通道负载；仅处理字典型聊天事件。
-            _stream_id: 事件所属 stream ID；基准只按回合统计，不使用该参数。
+            payload: 通道负载；仅处理字典型聊天事件，``text`` 与 ``say`` 都算可见文本。
+            stream_id: 事件所属 stream ID；基准按 stream 统计首字延迟。
 
         Side Effects:
-            首次收到指定回合的 ``text`` 事件时更新内存延迟采样表。
+            首次收到指定 stream 的文本事件时更新内存延迟采样表。
         """
 
         if channel != 'chat.event' or not isinstance(payload, dict):
             return
         event = payload.get('event')
-        if not isinstance(event, dict) or event.get('type') != 'text':
+        if not isinstance(event, dict) or event.get('type') not in ('text', 'say'):
             return
-        turn_id = payload.get('turnId')
-        if isinstance(turn_id, int) and turn_id not in first_text_at:
-            first_text_at[turn_id] = perf_counter()
+        if stream_id not in first_text_at:
+            first_text_at[stream_id] = perf_counter()
 
     provider = _BenchmarkProvider()
     chat = ChatService(
@@ -228,6 +232,7 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
         proactive_provider=None,
         summary_provider=None,
         push_event=push_event,
+        cfg=Config(),
         vector=VectorService(store, _BenchmarkEmbeddingClient()),
     )
     tasks: List[asyncio.Task[None]] = []
@@ -240,17 +245,20 @@ async def run(rate_per_second: int, duration_seconds: int) -> BenchmarkResult:
         if remaining > 0:
             await asyncio.sleep(remaining)
         started_at = perf_counter()
-        turn_id = await chat.send(InboundMessage(text='压测：并发消息的首字延迟。', context=context))
-        starts[turn_id] = started_at
-        task = chat._inflight.get(context.stream.id)
-        if task is None:
-            raise RuntimeError(f'压测 turn {turn_id} 未进入运行态')
-        tasks.append(task.task)
+        # send 只入缓冲、不创建回合；显式 tick 让该 stream 的回合当场进入运行态。
+        await chat.send(InboundMessage(text='压测：并发消息的首字延迟。', context=context))
+        starts[context.stream.id] = started_at
+        await chat._tick()
+        inflight = chat._inflight.get(context.stream.id)
+        if inflight is None:
+            raise RuntimeError(f'压测 stream {context.stream.id} 未进入运行态')
+        tasks.append(inflight.task)
     await asyncio.gather(*tasks)
     db.close()
+    event_store.close()
 
     # 只有每个回合都产生首个文本事件时，分位数才具有完整样本语义。
-    delays = sorted((first_text_at[turn_id] - started_at) * 1000 for turn_id, started_at in starts.items())
+    delays = sorted((first_text_at[stream_id] - started_at) * 1000 for stream_id, started_at in starts.items())
     if len(delays) != message_count:
         raise RuntimeError(f'只收集到 {len(delays)}/{message_count} 条首字延迟')
     return BenchmarkResult(
@@ -274,7 +282,7 @@ async def main() -> None:
         初始化进程日志，创建隔离内存数据库并向标准输出写入一行 JSON 结果。
     """
 
-    initialize_logging('WARNING')
+    initialize_logging(LogConfig(level='WARNING', to_file=False))
     rate, seconds = _parse_args()
     result = await run(rate, seconds)
     print(json.dumps(result.as_dict(), ensure_ascii=False))

@@ -63,6 +63,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "llm_models.router": ("#00ffff", True),
     "llm_models.openai": ("#00d7d7", False),
     "memory.embed": ("#5fafff", False),
+    "memory.pagerank": ("#5f87ff", True),
     "memory.quantize": ("#8787ff", False),
     "services.vector": ("#af87ff", True),
     # 业务
@@ -82,6 +83,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "observe.events": ("#ff5fd7", True),
     "services.trace_console": ("#ff87d7", True),
     "agent.expression_learn": ("#ffaf87", False),
+    "agent.impression": ("#d7af87", False),
 }
 
 # 模块名 → 控制台上显示的中文别名；控制台输出统一使用简体中文。
@@ -121,6 +123,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "llm_models.router": "模型路由",
     "llm_models.openai": "模型连接",
     "memory.embed": "记忆嵌入",
+    "memory.pagerank": "图谱重排",
     "memory.quantize": "向量量化",
     "services.vector": "向量召回",
     "services.chat": "对话",
@@ -139,6 +142,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "observe.events": "追踪",
     "services.trace_console": "追踪面板",
     "agent.expression_learn": "表达学习",
+    "agent.impression": "会话印象",
 }
 
 
