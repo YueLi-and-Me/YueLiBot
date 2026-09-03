@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 from .action_protocol import COGNITIVE_ACTIONS
+from .profile import InjectionProfile
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
 from src.core.common.clock import now as current_time
@@ -242,24 +243,39 @@ def _jargon_block(jargon: Optional[Sequence[Tuple[str, str]]]) -> str:
     ]))
 
 
-def _impressions_block(impressions: Optional[Sequence[str]]) -> str:
-    """把在场者的人物画像渲染为背景类提示词块。
+def _impressions_block(impressions: Optional[Sequence['InjectionProfile']]) -> str:
+    """把在场者的人物画像渲染为背景类提示词块，确凿档与印象档分开标注。
 
     与 ``_jargon_block`` 同一纪律：只注入本轮在场者的画像（取数与上限在
-    ``agent/profile.py``，此处为纯渲染器），收尾注明仅供自身参考、不向对方
-    复述，缺少该约束时模型会把印象陈述当成本轮任务。
+    ``agent/profile.py``，此处为纯渲染器）。两档必须能让读提示词的人
+    （和模型自己）分清「这是记着的」和「这是印象」：确凿档逐条有账本
+    记录可查，印象档只是模型收敛出的感觉。收尾注明仅供自身参考、不向
+    对方复述，缺少该约束时模型会把印象陈述当成本轮任务。
 
-    :param impressions: 画像正文序列；``None`` 或空序列表示整块省略，
+    :param impressions: 画像条目序列；``None`` 或空序列表示整块省略，
         不输出只有标题的空块。
     :return: 带段落前缀的印象块；无画像时返回空字符串。
     """
     if not impressions:
         return ''
+    sections: List[str] = []
+    for item in impressions:
+        lines: List[str] = []
+        if item.confirmed:
+            lines.append('记着的：')
+            lines.extend(f'- {entry.label}：{entry.content}' for entry in item.confirmed)
+        if item.impression:
+            lines.append(f'印象：{item.impression}')
+        if lines:
+            sections.append('\n'.join(lines))
+    if not sections:
+        return ''
     return _prefixed_block('\n'.join([
         '# 你对他们的印象',
-        *impressions,
+        '\n\n'.join(sections),
         '',
-        '以上是你对这些人的既有印象，仅供自己参考，不要向对方复述，也不要作为对人的定论。',
+        '「记着的」逐条有记录可查；「印象」只是你的感觉，未必准确。'
+        '这些都仅供自己参考，不要向对方复述，也不要作为对人的定论。',
     ]))
 
 
@@ -383,7 +399,7 @@ def build_system_prompt(
     emoji_tags: Sequence[str] = (),
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
-    impressions: Optional[Sequence[str]] = None,
+    impressions: Optional[Sequence[InjectionProfile]] = None,
     decision_only: bool = False,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
@@ -528,7 +544,7 @@ def build_itemized_system_prompt(
     platform_name: Optional[str] = None,
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
-    impressions: Optional[Sequence[str]] = None,
+    impressions: Optional[Sequence[InjectionProfile]] = None,
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     decision_only: bool = False,
 ) -> Tuple[str, List[str]]:

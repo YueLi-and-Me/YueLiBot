@@ -28,22 +28,12 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return inter / (len(a) + len(b) - inter)
 
 
-def normalize(text: str) -> str:
-    """使用当前正则规则移除标点和空白，并将英文转换为小写。
-
-    :param text: 待归一化的文本。
-
-    :return: 删除匹配字符并转为小写后的文本。
-
-    :raises re.error: 当前 Python 正则引擎不支持配置的字符类别时抛出。
-    :raises TypeError: ``text`` 不是字符串时抛出。
-    """
-    return re.sub(r'[\s\p{P}\p{S}]', '', text, flags=re.UNICODE).lower()
-
-
-# Python 不支持 \p{P} in re without regex library; use a broader approach
 def _normalize(text: str) -> str:
     """保留字母、数字和 CJK 字符，并将英文转换为小写。
+
+    stdlib ``re`` 不支持 ``\\p{P}`` 这类 Unicode 类别（写了会在编译期
+    ``re.error``），这里用补集字符类达到「去掉标点与符号」的效果，
+    不引入额外正则依赖。
 
     :param text: 待归一化的事实文本。
 

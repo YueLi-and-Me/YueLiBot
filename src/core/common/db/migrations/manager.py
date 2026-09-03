@@ -25,7 +25,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 24  # 当前 schema 版本：存量事实回填 slot；N4 反馈纠错存储表
+CURRENT_VERSION = 26  # 当前 schema 版本：人物画像信任分级（确凿档与证据指纹两列）
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -160,6 +160,8 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v21_to_v22,
         v22_to_v23,
         v23_to_v24,
+        # v24_to_v25 属导入中心包，合流前此处在 24 断开是预期的；存量库先到那侧落地再进本包。
+        v25_to_v26,
     )
 
     registry = get_registry()
