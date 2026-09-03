@@ -146,6 +146,9 @@ def bind_origin(
     sender_group_card: str,
     sender_display_name: str,
     sender_label: str,
+    stream_kind: str,
+    stream_external_id: str,
+    source_label: str,
     bot_name: str,
 ) -> None:
     """将当前异步上下文绑定到本轮消息来源。
@@ -159,6 +162,9 @@ def bind_origin(
     :param sender_group_card: 当前群聊中的群名片；非群聊为空字符串。
     :param sender_display_name: 当前会话最终使用的显示名。
     :param sender_label: 观测面板展示的发送者标签。
+    :param stream_kind: 当前会话类型。
+    :param stream_external_id: 平台侧会话外部 ID。
+    :param source_label: 观测端共用的可读会话来源标签。
     :param bot_name: 当前平台使用的 Bot 名称。
 
     副作用：
@@ -174,6 +180,9 @@ def bind_origin(
         "senderGroupCard": sender_group_card,
         "senderDisplayName": sender_display_name,
         "senderLabel": sender_label,
+        "streamKind": stream_kind,
+        "streamExternalId": stream_external_id,
+        "sourceLabel": source_label,
         "botName": bot_name,
     })
 
@@ -219,7 +228,18 @@ def emit(event_kind: str, **fields: Any) -> Dict[str, Any]:
     副作用：
         可能写入事件账本，向全部订阅者队列投递事件，并记录调试日志。
     """
-    merged = {**_origin.get(), **fields}
+    # W7 当前唯一会被场合边界挡下的是 direct 来源事实进入 group。事实存储层的
+    # 既有事件只传目标 streamKind 与数量；这里把稳定的不变量补成事件字段，让观测
+    # 消费方无需反推。若可见性规则以后扩展，调用方可显式传 factOriginKind 覆盖它。
+    event_defaults = (
+        {"factOriginKind": "direct"}
+        if (
+            event_kind == "memory_fact_scope_blocked"
+            and fields.get("streamKind") == "group"
+        )
+        else {}
+    )
+    merged = {**event_defaults, **_origin.get(), **fields}
     stream_id = merged.pop("streamId", _current_stream_id.get())
     turn_id = merged.pop("turnId", _current_turn_id.get())
     for reserved in _RESERVED_FIELDS:

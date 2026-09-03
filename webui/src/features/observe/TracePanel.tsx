@@ -25,6 +25,7 @@ import {
   traceKindLabel,
   traceKindQueryValue,
   traceSenderLabel,
+  traceSourceLabel,
 } from '@/lib/format'
 import type { TraceEntry } from '../../../../electron/shared/ipc.ts'
 
@@ -291,6 +292,7 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
       ? Math.max(0, lastEntry.at - firstEntry.at)
       : 0
   const senderName = origin ? optionalText(origin.senderDisplayName) : ''
+  const sourceName = origin ? traceSourceLabel(origin) : ''
   /* 编号被多次对话复用的分组不做配对摘要与耗时：跨轮配对会把不存在的
    * 问答组合说成事实，首尾相减的耗时同样失真；条数仍是真实计数，保留。 */
   const mergedTurns = isMergedTurnGroup(entries)
@@ -305,7 +307,7 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
         <strong className="text-[13px] font-semibold">
           第 {turnId} 轮
           {senderName ? ` · ${senderName}` : ''}
-          {origin ? ` · 来源：${displayValue(origin.platform)}` : ''}
+          {sourceName ? ` · 来源：${sourceName}` : ''}
           {origin?.streamId != null ? ` · 会话 #${origin.streamId}` : ''}
           {origin?.personId != null ? ` · 人物 #${origin.personId}` : ''}
           <span className="ml-2 font-mono text-xs font-normal text-muted-foreground tabular-nums">
@@ -337,7 +339,7 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
             <>
               {userInput ? (
                 <p className="truncate text-[13px]" title={text(userInput.text)}>
-                  {traceSenderLabel(userInput)}：{text(userInput.text)}
+                  {sourceName ? `[${sourceName}] ` : ''}{traceSenderLabel(userInput)}：{text(userInput.text)}
                 </p>
               ) : null}
               {botReply ? (
@@ -365,6 +367,7 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
         if (entry.kind === 'user_input') {
           return (
             <p key={key} className="text-[13px]">
+              {traceSourceLabel(entry) ? `[${traceSourceLabel(entry)}] ` : ''}
               {traceSenderLabel(entry)}：{text(entry.text)}
             </p>
           )
@@ -442,11 +445,17 @@ const BackgroundRow = memo(function BackgroundRow({ entry }: { entry: TraceEntry
         <strong className="flex-none font-semibold text-accent-foreground" title={entry.kind}>
           {traceKindLabel(entry.kind)}
         </strong>
+        {traceSourceLabel(entry) ? (
+          <span className="flex-none text-muted-foreground">来源：{traceSourceLabel(entry)}</span>
+        ) : null}
       </div>
       {/* 观察事件直接展示原消息和后端门控原因，避免把「未回复」误判为链路故障。 */}
       {entry.kind === 'observation' ? (
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          <span className="min-w-0 break-all">{traceSenderLabel(entry)}：{text(entry.text)}</span>
+          <span className="min-w-0 break-all">
+            {traceSourceLabel(entry) ? `[${traceSourceLabel(entry)}] ` : ''}
+            {traceSenderLabel(entry)}：{text(entry.text)}
+          </span>
           <span className="text-warning">未回复：{displayValue(entry.reason)}</span>
         </div>
       ) : (

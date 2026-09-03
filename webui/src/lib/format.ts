@@ -137,6 +137,7 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   senderGroupCard: '发送者群名片',
   senderLabel: '发送者',
   senderNickname: '发送者昵称',
+  sourceLabel: '会话来源',
   silent: '静默场景',
   snapshotPath: '快照路径',
   source: '来源',
@@ -145,6 +146,10 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   stageLabel: '处理阶段',
   streamId: '会话编号',
   streamName: '会话',
+  streamExternalId: '会话外部编号',
+  streamKind: '会话类型',
+  factOriginKind: '事实来源',
+  blocked: '被挡数量',
   subject: '约定内容',
   targetMessageIds: '目标消息',
   temperature: '生成温度',
@@ -325,6 +330,16 @@ export function traceSenderLabel(entry: TraceEntry): string {
 }
 
 /**
+ * 读取后端纯函数生成的会话来源标签。
+ *
+ * @param entry 单条追踪事件。
+ * @returns 可直接展示的来源标签；历史事件没有该字段时返回空字符串。
+ */
+export function traceSourceLabel(entry: TraceEntry): string {
+  return optionalText(entry.sourceLabel)
+}
+
+/**
  * 将快照数字格式化为固定小数位文本。
  *
  * @param value 待格式化的未知值。
@@ -460,7 +475,8 @@ export function formatMessages(messages: unknown): string {
  * 折叠；消息数组只显示条数，完整提示词由专用展开区呈现。
  */
 export function traceDetailItems(entry: TraceEntry): TraceDetailItem[] {
-  const excluded = new Set(['seq', 'at', 'kind', 'turnId'])
+  // 来源标签由轮次头部或后台事件头部单独呈现，详情区不再重复一遍。
+  const excluded = new Set(['seq', 'at', 'kind', 'turnId', 'sourceLabel'])
   if (optionalText(entry.senderLabel)) {
     excluded.add('senderDisplayName')
     excluded.add('senderExternalId')

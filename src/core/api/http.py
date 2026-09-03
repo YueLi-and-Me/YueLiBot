@@ -42,10 +42,11 @@ from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT
 from src.core.memory.decay import retention
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
+from src.core.observe.source import source_label
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
 from src.core.platform_io.forward import forward_tree_from_payload
-from src.core.platform_io.types import InboundMessage, StreamRef
+from src.core.platform_io.types import InboundMessage
 from src.core.prompts.registry import (
     delete_prompt_override,
     list_prompts,
@@ -525,7 +526,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     )
     if app_state.register_platform_stream is not None:
         app_state.register_platform_stream(context.stream)
-    stream_name = _stream_label(context.stream)
+    stream_name = source_label(
+        context.stream,
+        direct_name=context.identity.display_name if context.identity is not None else '',
+    )
     enter_stage(
         RECEIVED, context.stream.id, stream_name, body.text[:40],
     )
@@ -1014,23 +1018,6 @@ async def observability(stream_id: int = Query(alias='streamId')) -> JSONRespons
     if app_state.tts:
         payload["voice"] = app_state.tts.inspect()
     return JSONResponse(payload)
-
-
-def _stream_label(stream: StreamRef) -> str:
-    """生成观察面板使用的 stream 可读短名称。
-
-    :param stream: 已解析的 stream 引用，包含平台、会话类型和外部 ID。
-
-    :return: 桌面 stream 返回 ``桌面``；其他 stream 返回平台大写名称、私聊或群聊类型
-        以及外部 ID 组成的短名称。
-
-    副作用：
-        仅读取 stream 字段，不修改注册表或业务状态。
-    """
-    if stream.platform == 'desktop':
-        return '桌面'
-    kind = '群聊' if stream.kind == 'group' else '私聊'
-    return f'{stream.platform.upper()} {kind} {stream.external_id}'
 
 
 @router.get('/stages', dependencies=[Depends(_auth)])

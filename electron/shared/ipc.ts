@@ -172,6 +172,9 @@ export interface TraceEntry {
   senderGroupCard?: string
   senderDisplayName?: string
   senderLabel?: string
+  streamKind?: 'desktop' | 'direct' | 'group'
+  streamExternalId?: string
+  sourceLabel?: string
   botName?: string
   turnId?: number | null
   [key: string]: unknown

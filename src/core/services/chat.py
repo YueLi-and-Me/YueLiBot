@@ -118,6 +118,7 @@ from src.core.memory.store import (
 )
 from src.core.observe import events as trace
 from src.core.observe.events import bind_origin, enter_stage
+from src.core.observe.source import source_label
 from src.core.observe.stages import CONTEXT, DISPATCHING, EXPRESSION, FAILED, GATED, GENERATING, REPLIED, Stage
 from src.core.observe.store import max_turn_id
 from src.core.persona.state import (
@@ -1177,6 +1178,7 @@ class ChatService:
         self._active_turns[stream_id] = turn
         mark_turn_start(turn)
         sender = self._sender_metadata(context)
+        source = source_label(context.stream, direct_name=sender['senderNickname'])
         # 绑定来源，这一轮后续的每条 trace 都会带上，不必逐个 kind 拼
         bind_origin(
             stream_id=stream_id,
@@ -1188,6 +1190,9 @@ class ChatService:
             sender_group_card=sender['senderGroupCard'],
             sender_display_name=sender['senderDisplayName'],
             sender_label=sender['senderLabel'],
+            stream_kind=context.stream.kind,
+            stream_external_id=context.stream.external_id,
+            source_label=source,
             bot_name=self._bot_display_name,
         )
         for message in batch:
@@ -1438,6 +1443,7 @@ class ChatService:
                     sink.segments,
                     sink.side_effects,
                     self._bot_display_name,
+                    source_label=source,
                     model_name=getattr(self._chat_provider, 'model', ''),
                 )
                 try:
@@ -1491,6 +1497,7 @@ class ChatService:
                            snapshotPath=str(snapshot) if snapshot else None)
                 render_turn_error(
                     turn, sender['senderLabel'], trimmed, exc.kind, str(exc),
+                    source_label=source,
                     model_name=getattr(self._chat_provider, 'model', ''),
                 )
                 self._mark_stage(context, FAILED, f'{exc.kind}：{exc}', turn_id=turn)
@@ -1521,6 +1528,7 @@ class ChatService:
                            snapshotPath=str(snapshot) if snapshot else None)
                 render_turn_error(
                     turn, sender['senderLabel'], trimmed, 'unknown', str(exc),
+                    source_label=source,
                     model_name=getattr(self._chat_provider, 'model', ''),
                 )
                 self._mark_stage(context, FAILED, str(exc), turn_id=turn)
@@ -1904,6 +1912,7 @@ class ChatService:
         if not text:
             raise ValueError('群聊消息正文不能为空')
         sender = self._sender_metadata(context)
+        source = source_label(context.stream, direct_name=sender['senderNickname'])
         trace.emit(
             'observation',
             streamId=context.stream.id,
@@ -1911,9 +1920,12 @@ class ChatService:
             text=text,
             reason=reason,
             externalMessageId=external_message_id or '',
+            streamKind=context.stream.kind,
+            streamExternalId=context.stream.external_id,
+            sourceLabel=source,
             **sender,
         )
-        render_observation(sender['senderLabel'], text, reason)
+        render_observation(sender['senderLabel'], text, reason, source_label=source)
 
     def _session(self, stream_id: int) -> _SessionState:
         """取得或创建一个 stream 的内存会话状态。
@@ -4656,6 +4668,10 @@ class ChatService:
             render_turn_error(
                 turn, sender['senderLabel'], trimmed,
                 outcome.event_status, outcome.action_event.detail,
+                source_label=source_label(
+                    context.stream,
+                    direct_name=sender['senderNickname'],
+                ),
                 model_name=getattr(self._chat_provider, 'model', ''),
             )
             self._mark_stage(
@@ -4709,6 +4725,10 @@ class ChatService:
             sink.segments,
             sink.side_effects,
             self._bot_display_name,
+            source_label=source_label(
+                context.stream,
+                direct_name=sender['senderNickname'],
+            ),
             model_name=getattr(self._chat_provider, 'model', ''),
         )
         if context.stream.platform == 'desktop':

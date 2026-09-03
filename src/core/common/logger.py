@@ -296,6 +296,9 @@ _TRACE_ORIGIN_FIELDS = frozenset({
     'senderGroupCard',
     'senderDisplayName',
     'senderLabel',
+    'streamKind',
+    'streamExternalId',
+    'sourceLabel',
     'botName',
 })
 
@@ -324,6 +327,7 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
     'sleep_transition': ('asleep', 'resting'),
     'interest': ('interest', 'factors'),
     'memory_fact': ('personId', 'memoryKind', 'content'),
+    'memory_fact_scope_blocked': ('factOriginKind', 'streamId', 'blocked'),
     'mood_delta': ('turnId', 'favor', 'energy'),
     'promise_stashed': ('turnId', 'subject', 'at'),
     # 选中的说法正文留在事件账本，控制台只看「从多少候选里选了几条、谁选的」。
@@ -440,6 +444,7 @@ def _pack_trace_rows(summary: Dict[str, Any]) -> list[str]:
 def _render_trace_line(
     timestamp: str,
     event_name: str,
+    source: str,
     sender: str,
     summary: Dict[str, Any],
 ) -> str:
@@ -451,6 +456,7 @@ def _render_trace_line(
 
     :param timestamp: 已格式化的事件时间。
     :param event_name: 已翻成中文的事件名。
+    :param source: 可读会话来源标签；空串表示该事件不属于具体 stream。
     :param sender: 发送者显示名；空串表示该事件与具体发言人无关。
     :param summary: 已压缩的字段表。
     :return: 单行文本；:func:`is_color_enabled` 为假时不含任何 ANSI 序列。
@@ -465,6 +471,9 @@ def _render_trace_line(
         f'{tint}{tag}{RESET_COLOR}' if tint else tag,
         f'{EVENT_COLOR}{event_name}{RESET_COLOR}' if colored else event_name,
     ]
+    if source:
+        source_text = f'会话来源：{source}'
+        head.append(f'{FIELD_VALUE_COLOR}{source_text}{RESET_COLOR}' if colored else source_text)
     if sender:
         head.append(f'{FIELD_VALUE_COLOR}{sender}{RESET_COLOR}' if colored else sender)
     items = []
@@ -503,7 +512,10 @@ def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
     # 带 turnId 的管线事件已由 trace_console 的轮末合成面板整体呈现，这里不再逐条打，
     # 避免同一轮既出嵌套大面板又出一串小框。事件账本仍保留完整事件，观察面板订阅不受影响；
     # 无 turnId 的管线事件（如部分主动感知事件）仍在这里呈现，保留其控制台可见性。
-    if entry.get('turnId') is not None:
+    if (
+        entry.get('turnId') is not None
+        and entry.get('kind') != 'memory_fact_scope_blocked'
+    ):
         return
     from datetime import datetime
     timestamp = datetime.fromtimestamp((entry.get('at') or 0) / 1000).strftime(_trace_date_format)
@@ -522,11 +534,14 @@ def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
     if stage_label:
         summary.pop('stageLabel', None)
     sender = str(fields.get('senderDisplayName') or '').strip()
+    source = str(fields.get('sourceLabel') or '').strip()
     rows = _pack_trace_rows(summary)
     if len(rows) == 1:
-        line = _render_trace_line(timestamp, event_name, sender, summary)
+        line = _render_trace_line(timestamp, event_name, source, sender, summary)
     else:
         title = f'{timestamp} · 运行追踪 · {event_name}'
+        if source:
+            title += f' · {source}'
         if sender:
             title += f' · {sender}'
         line = render_box(

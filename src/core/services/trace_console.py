@@ -203,6 +203,7 @@ def render_turn(
     side_effects: list[dict],
     bot_name: str,
     *,
+    source_label: str,
     model_name: str = '',
 ) -> None:
     """把一轮对话合成一个嵌套面板并三端呈现。
@@ -215,6 +216,7 @@ def render_turn(
         标签）由事件账本保留，控制台只展示剥掉标签后的可见正文。
     :param side_effects: 本轮解析出的副作用列表。
     :param bot_name: 主体展示名。
+    :param source_label: 当前消息所在 stream 的可读来源标签，与发送者标签分开呈现。
     :param model_name: 本轮请求所用模型名；为空时「模型请求」面板省略该行。
 
     副作用：
@@ -234,6 +236,7 @@ def render_turn(
         children: list[Any] = [
             Text.assemble(
                 Text('收到消息  ', style='bold cyan'),
+                Text(f'[{source_label}] ', style='bold magenta'),
                 Text(f'{sender_label}：{user_text}', style='bold white'),
             ),
             *stage_panels,
@@ -273,7 +276,7 @@ def render_turn(
         )
         _emit_console_block(Panel(
             Group(*children),
-            title=f'第 {turn} 轮 · {sender_label}',
+            title=f'第 {turn} 轮 · {source_label} · {sender_label}',
             subtitle=subtitle,
             border_style='bright_cyan',
             padding=(0, 1),
@@ -282,12 +285,19 @@ def render_turn(
         logger.debug('render_turn_failed', error=str(exc))
 
 
-def render_observation(sender_label: str, user_text: str, reason: str) -> None:
+def render_observation(
+    sender_label: str,
+    user_text: str,
+    reason: str,
+    *,
+    source_label: str,
+) -> None:
     """以单行显示被回复门控拦截的群消息。
 
     :param sender_label: 发送者展示名。
     :param user_text: 用户原始文本。
     :param reason: 未回复的机器可读或可读原因。
+    :param source_label: 当前消息所在 stream 的可读来源标签。
 
     副作用：
         向三端写入观察行；渲染异常只记录调试日志。
@@ -297,6 +307,7 @@ def render_observation(sender_label: str, user_text: str, reason: str) -> None:
     try:
         _emit_console_block(
             Text('旁听  ', style='bold magenta')
+            + Text(f'[{source_label}] ', style='bold magenta')
             + Text(f'{sender_label}：', style='bold cyan')
             + Text(user_text, style='white')
             + Text(f'  未回复：{value_label(reason)}', style='yellow'),
@@ -386,6 +397,7 @@ def render_turn_error(
     kind: str,
     message: str,
     *,
+    source_label: str,
     model_name: str = '',
 ) -> None:
     """把一轮失败对话合成红色面板并三端呈现。
@@ -395,6 +407,7 @@ def render_turn_error(
     :param user_text: 用户原始文本。
     :param kind: 错误类别。
     :param message: 错误消息。
+    :param source_label: 当前消息所在 stream 的可读来源标签，与发送者标签分开呈现。
     :param model_name: 本轮请求所用模型名；为空时省略「模型请求」面板。
 
     副作用：
@@ -410,6 +423,7 @@ def render_turn_error(
         children: list[Any] = [
             Text.assemble(
                 Text('收到消息  ', style='bold cyan'),
+                Text(f'[{source_label}] ', style='bold magenta'),
                 Text(f'{sender_label}：{user_text}', style='bold white'),
             ),
         ]
@@ -425,7 +439,7 @@ def render_turn_error(
         ))
         _emit_console_block(Panel(
             Group(*children),
-            title=f'第 {turn} 轮 · {sender_label} · 失败',
+            title=f'第 {turn} 轮 · {source_label} · {sender_label} · 失败',
             subtitle=f'耗时 {_elapsed_ms(turn)}',
             border_style='bright_red',
             padding=(0, 1),
