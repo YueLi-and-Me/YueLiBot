@@ -32,6 +32,7 @@ from src.core.agent.action_protocol import ActionDecisionEvent, GateInputFacts
 from src.core.agent.conversation_gate import GateRequest, decide_disposition, mentions_bot_name
 from src.core.agent.expression import MIN_POOL_CANDIDATES
 from src.core.agent.jargon import jargon_use_enabled, set_jargon_use
+from src.core.agent.jargon_mine import COMPLETE_SIGHTINGS
 from src.core.common.clock import now as current_time
 from src.core.common.console_layout import print_box
 from src.core.common.db.connection import get_db, run_in_thread
@@ -1278,16 +1279,41 @@ async def person_detail(person_id: int) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-# ------------------------------------------------------- 黑话与表达方式（只读浏览）
-# 以下两条路由只做 SELECT。两张表当前都是「只出不进」：条目全部来自一次性历史
-# 迁移脚本，运行时只消费不新增——黑话的消费在 agent/jargon.py 的查表命中，表达
-# 方式的消费在 services/chat.py 的候选池抽样与选择模型，两条链路都会回写使用
-# 计数，但都不会 INSERT 新词条。表达方式行因此同时返回 use_count 与
-# last_used_at：前者是累计量（含迁移带来的历史值），只有后者能区分「这条在本
-# 部署真的被用过」和「这条只是迁移数据里频次高」。
+# ------------------------------------------------- 黑话与表达方式（浏览与人工复核）
+# 两张表的条目有两个来源：一次性历史迁移，以及后台学习任务的持续增补（黑话见
+# agent/jargon_mine.py，表达方式见 agent/expression_learn.py）。运行时的消费在
+# agent/jargon.py 的查表命中与 services/chat.py 的候选池抽样，两条链路都会回写
+# 使用计数。表达方式行因此同时返回 use_count 与 last_used_at：前者是累计量（含
+# 迁移带来的历史值），只有后者能区分「这条在本部署真的被用过」和「这条只是迁移
+# 数据里频次高」。
+# 除只读列表外，这一段还提供人工复核的写路由：逐条与批量各一套，语义完全一致，
+# 批量只省往返。
 # SQL 为完全静态文本：全部筛选值一律参数绑定，可选条件用 ``? IS NULL``
-# 参数开关表达；LIKE 关键词先转义 %、_ 与 \，排序方向来自 Literal 枚举、
-# 只决定执行哪一条静态语句，杜绝任何外部输入进 SQL 文本。
+# 参数开关表达；LIKE 关键词先转义 %、_ 与 \，排序子句取自下面的字面量表、
+# 键先经 Literal 校验，杜绝任何外部输入进 SQL 文本。
+
+#: 列表页排序口径的对外取值，三个词表共用一套排序名，前端一套控件通吃。
+#: 两个排序依据各带一个方向。界面上只有两个按钮，方向不占按钮——点已激活的
+#: 按钮即翻方向，四种口径都到得了。
+ListOrder = Literal['time_desc', 'time_asc', 'use_desc', 'use_asc']
+
+# 排序名到 ORDER BY 子句的映射。默认口径是 time_desc（后进入的排在最前）——
+# 人来这些页面基本是为了看「刚学到什么」，按使用次数排会把新条目埋在末页。
+# 每档都以主键收尾：同值行之间次序稳定，翻页才不会重复或漏行。
+_JARGON_ORDER_CLAUSES: dict[str, str] = {
+    'time_desc': 'created_at DESC, id DESC',
+    'time_asc': 'created_at ASC, id ASC',
+    # 黑话没有 use_count，与它同位的是 hits（查表命中数）。
+    'use_desc': 'hits DESC, id DESC',
+    'use_asc': 'hits ASC, id ASC',
+}
+
+_EXPRESSION_ORDER_CLAUSES: dict[str, str] = {
+    'time_desc': 'created_at DESC, id DESC',
+    'time_asc': 'created_at ASC, id ASC',
+    'use_desc': 'use_count DESC, id DESC',
+    'use_asc': 'use_count ASC, id ASC',
+}
 
 
 def _like_keyword(keyword: str) -> str:
@@ -1311,21 +1337,26 @@ def _list_jargon_rows(
     stream_id: int | None,
     global_only: bool,
     keyword: str | None,
+    order: str,
     limit: int,
     offset: int,
 ) -> tuple[list[dict], int]:
     """同步查询黑话词条一页与符合条件的总数。
 
     :param db: 进程级 SQLite 连接，由路由层取得后传入。
-    :param entry_status: 只取该状态的词条（confirmed / pending）。
+    :param entry_status: 只取该状态的词条（confirmed / pending / rejected）。
     :param stream_id: 只取该会话专属词条；``None`` 表示不限。
     :param global_only: 为真时只取全局词条（``stream_id IS NULL``）。
     :param keyword: 关键词，同时匹配词与含义；``None`` 表示不过滤。
+    :param order: 排序口径，键取自 :data:`_JARGON_ORDER_CLAUSES`。
     :param limit: 页大小。
     :param offset: 偏移量。
     :return: ``(词条字典列表, 总数)``。
+    :raises KeyError: 排序名不在 :data:`_JARGON_ORDER_CLAUSES` 内；路由层的
+        Literal 校验挡在前面，走到这里说明两处取值集合已经失配。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
     """
+    order_clause = _JARGON_ORDER_CLAUSES[order]
     # 与查询文本占位符一一对应的绑定参数：NULL / 0 即关闭对应可选条件。
     keyword_pattern = _like_keyword(keyword) if keyword else None
     filters = [
@@ -1343,14 +1374,14 @@ def _list_jargon_rows(
         filters,
     ).fetchone()[0])
     rows = db.execute(
-        '''SELECT id, term, meaning, stream_id, status, hits, source, created_at,
+        f'''SELECT id, term, meaning, stream_id, status, hits, source, created_at,
                   sightings, inferred_at_sightings
            FROM jargon
            WHERE status = ?
              AND (? IS NULL OR stream_id = ?)
              AND (? = 0 OR stream_id IS NULL)
              AND (? IS NULL OR term LIKE ? ESCAPE '\\' OR meaning LIKE ? ESCAPE '\\')
-           ORDER BY id
+           ORDER BY {order_clause}
            LIMIT ? OFFSET ?''',
         [*filters, limit, offset],
     ).fetchall()
@@ -1376,24 +1407,27 @@ def _list_expression_rows(
     db: sqlite3.Connection,
     stream_id: int | None,
     checked: int | None,
-    use_desc: bool,
+    order: str,
     limit: int,
     offset: int,
 ) -> tuple[list[dict], int]:
-    """同步查询表达方式一页与总数，按使用次数排序、id 作稳定次序。
+    """同步查询表达方式一页与总数，排序口径由 ``order`` 决定、id 作稳定次序。
 
     :param db: 进程级 SQLite 连接，由路由层取得后传入。
     :param stream_id: 只取该会话的表达；``None`` 表示不限。
     :param checked: 只取该复核状态的表达（0 未复核 / 1 已确认 / -1 已驳回）；
         ``None`` 表示不限。
-    :param use_desc: 为真按使用次数降序，否则升序。
+    :param order: 排序口径，键取自 :data:`_EXPRESSION_ORDER_CLAUSES`。
     :param limit: 页大小。
     :param offset: 偏移量。
     :return: ``(表达字典列表, 总数)``；每行含 ``useCount`` 累计次数、
         ``lastUsedAt`` 最近一次被选中的毫秒时间戳（从未被选中时为 ``None``）
         与 ``checked`` 复核状态。
+    :raises KeyError: 排序名不在 :data:`_EXPRESSION_ORDER_CLAUSES` 内；路由层的
+        Literal 校验挡在前面，走到这里说明两处取值集合已经失配。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
     """
+    order_clause = _EXPRESSION_ORDER_CLAUSES[order]
     # ? IS NULL 参数开关：传 NULL 即关闭对应过滤，SQL 文本保持完全静态。
     filters = [stream_id, stream_id, checked, checked]
     total = int(db.execute(
@@ -1401,26 +1435,15 @@ def _list_expression_rows(
         ' WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)',
         filters,
     ).fetchone()[0])
-    if use_desc:
-        rows = db.execute(
-            '''SELECT id, situation, style, stream_id, use_count, source,
-                      created_at, last_used_at, checked
-               FROM expressions
-               WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)
-               ORDER BY use_count DESC, id DESC
-               LIMIT ? OFFSET ?''',
-            [*filters, limit, offset],
-        ).fetchall()
-    else:
-        rows = db.execute(
-            '''SELECT id, situation, style, stream_id, use_count, source,
-                      created_at, last_used_at, checked
-               FROM expressions
-               WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)
-               ORDER BY use_count ASC, id ASC
-               LIMIT ? OFFSET ?''',
-            [*filters, limit, offset],
-        ).fetchall()
+    rows = db.execute(
+        f'''SELECT id, situation, style, stream_id, use_count, source,
+                   created_at, last_used_at, checked
+            FROM expressions
+            WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)
+            ORDER BY {order_clause}
+            LIMIT ? OFFSET ?''',
+        [*filters, limit, offset],
+    ).fetchall()
     entries = [
         {
             'id': row['id'],
@@ -1463,12 +1486,13 @@ def _read_db_or_503() -> sqlite3.Connection:
 
 @router.get('/api/jargon', dependencies=[Depends(_auth)])
 async def jargon_entries(
-    entry_status: Literal['confirmed', 'pending'] = Query(
+    entry_status: Literal['confirmed', 'pending', 'rejected'] = Query(
         default='confirmed', alias='status',
     ),
     stream_id: int | None = Query(default=None, alias='streamId', ge=1),
     global_only: bool = Query(default=False, alias='globalOnly'),
     keyword: str | None = Query(default=None, max_length=64),
+    order: ListOrder = Query(default='time_desc'),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -1476,13 +1500,15 @@ async def jargon_entries(
 
     ``streamId`` 选中某会话的专属词条，``globalOnly`` 只看全局词条，两者都不传
     则全部返回——词条响应里的 ``streamId`` 为 ``null`` 即全局，前端据此区分
-    「全局通用」与「只在某个群成立」。默认只给已确认词条，待定候选需显式传
-    ``status=pending``。
+    「全局通用」与「只在某个群成立」。默认只给已确认词条，待定候选与人工驳回
+    的条目需显式传 ``status=pending`` 或 ``status=rejected``。
 
     :param entry_status: 词条状态过滤，默认 ``confirmed``。
     :param stream_id: 会话 ID 过滤；``None`` 表示不限。
     :param global_only: 为真时只返回全局词条。
     :param keyword: 关键词，同时匹配词条与含义。
+    :param order: 排序口径，默认 ``time_desc``（后入库的排在最前）；
+        ``use_*`` 两档按查表命中数 ``hits`` 排。
     :param limit: 页大小，1 到 200，默认 50。
     :param offset: 偏移量，从 0 起。
 
@@ -1500,7 +1526,8 @@ async def jargon_entries(
     try:
         entries, total = await run_in_thread(
             _list_jargon_rows,
-            db, entry_status, stream_id, global_only, cleaned_keyword, limit, offset,
+            db, entry_status, stream_id, global_only, cleaned_keyword,
+            order, limit, offset,
         )
     except Exception as exc:
         logger.exception('jargon_query_failed')
@@ -1509,6 +1536,213 @@ async def jargon_entries(
             detail=f'黑话词表查询失败：{exc}',
         ) from exc
     return {'entries': entries, 'total': total, 'limit': limit, 'offset': offset}
+
+
+class JargonStatusBody(BaseModel):
+    """黑话词条人工复核的写入体（逐条）。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    status: Literal['confirmed', 'pending', 'rejected']
+
+
+class JargonBatchStatusBody(BaseModel):
+    """黑话词条人工复核的写入体（批量）。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    ids: List[int] = Field(min_length=1, max_length=200)
+    status: Literal['confirmed', 'pending', 'rejected']
+
+
+class JargonBatchDeleteBody(BaseModel):
+    """批量删除黑话词条的请求体。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    ids: List[int] = Field(min_length=1, max_length=200)
+
+
+def _set_jargon_status(
+    db: sqlite3.Connection,
+    ids: List[int],
+    entry_status: str,
+) -> int:
+    """同步写若干条黑话词条的复核状态，并连带改写推断阶梯。
+
+    只改 ``status`` 是不够的，推断任务会把人工判定覆盖掉：
+
+    - 现象：人工驳回的词条过一阵子又变回 ``confirmed``，重新出现在注入里。
+    - 原因：``select_inference_targets`` 只看 ``sightings`` 与
+      ``inferred_at_sightings`` 两列、不看 ``status``，证据继续增长就会重判，
+      判定结果直接覆写 ``status``。
+    - 后果：不锁定则人工复核形同虚设，只能靠反复驳回同一个词。
+
+    锁定手段复用既有的阶梯机制（与 ``jargon_mine`` 里的名字守卫同一条路）：把
+    ``inferred_at_sightings`` 推到 ``COMPLETE_SIGHTINGS``，推断目标查询的
+    ``inferred_at_sightings < 100`` 条件即把它排除，不另加过滤层。
+
+    三个目标状态的口径：
+
+    - ``rejected``：判定「这不是黑话」，退出注入并锁定；行保留着，
+      ``UNIQUE(term, stream_id)`` 会挡住重新插入，学习器再遇到它只累加证据。
+    - ``confirmed``：判定「这是黑话」，进入注入并同样锁定——人的结论优先于
+      模型的三步比较。
+    - ``pending``：交回自动判定，同时把 ``inferred_at_sightings`` 清零解锁，
+      证据够了会被重新推断。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param ids: 词条行 ID 列表；不存在的 ID 静默跳过。
+    :param entry_status: 目标状态。
+    :return: 实际写入的行数。
+    :raises sqlite3.Error: 写入失败时抛出，由路由层转换。
+    副作用：写 jargon 的 ``status`` 与 ``inferred_at_sightings`` 两列并提交；
+        下一次召回与下一轮推断即生效。
+    """
+    # 占位符由 '?' 拼成、数量取自列表长度，参数仍走绑定，不存在注入面。
+    marks = ','.join('?' * len(ids))
+    lock = 0 if entry_status == 'pending' else COMPLETE_SIGHTINGS
+    with db:
+        cursor = db.execute(
+            'UPDATE jargon SET status = ?, inferred_at_sightings = ?'
+            f' WHERE id IN ({marks})',
+            [entry_status, lock, *ids],
+        )
+    return cursor.rowcount
+
+
+def _delete_jargon_rows(db: sqlite3.Connection, ids: List[int]) -> int:
+    """同步删除若干条黑话词条。
+
+    与驳回的分工：驳回保留行并锁住推断，是「判过了」的记号，学习器再学到同一个
+    词会撞上 ``UNIQUE(term, stream_id)`` 而只累加证据；删除不可逆，同一个词日后
+    会作为全新候选重新入库、从 ``pending`` 重走一遍判定。清理误抽取的噪声用
+    删除，压制一个真实存在但不该注入的词用驳回。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param ids: 词条行 ID 列表；不存在的 ID 静默跳过。
+    :return: 实际删除的行数。
+    :raises sqlite3.Error: 删除失败时抛出，由路由层转换。
+    副作用：从 jargon 表删除若干行并提交。
+    """
+    marks = ','.join('?' * len(ids))
+    with db:
+        cursor = db.execute(f'DELETE FROM jargon WHERE id IN ({marks})', ids)
+    return cursor.rowcount
+
+
+@router.put('/api/jargon/{jargon_id}/status', dependencies=[Depends(_auth)])
+async def jargon_status_update(jargon_id: int, body: JargonStatusBody) -> dict:
+    """人工复核一条黑话词条。
+
+    语义与锁定机制见 :func:`_set_jargon_status`。
+
+    :param jargon_id: 词条行 ID。
+    :param body: 目标状态。
+    :return: 写入后的 ``id`` 与 ``status``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；行不存在时 404；
+        写入失败时 500，完整 traceback 以 ``jargon_status_write_failed``
+        事件落日志。
+    副作用：见 :func:`_set_jargon_status`。
+    """
+    db = _read_db_or_503()
+    try:
+        written = await run_in_thread(_set_jargon_status, db, [jargon_id], body.status)
+    except Exception as exc:
+        logger.exception('jargon_status_write_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'黑话复核写入失败：{exc}',
+        ) from exc
+    if written == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='黑话词条不存在',
+        )
+    return {'id': jargon_id, 'status': body.status}
+
+
+@router.post('/api/jargon/batch-status', dependencies=[Depends(_auth)])
+async def jargon_batch_status(body: JargonBatchStatusBody) -> dict:
+    """批量人工复核黑话词条，语义与逐条完全一致。
+
+    单次上限 200 条，与列表路由的 ``limit`` 上限同值。界面的选择集跨页累积、
+    没有条数上限，因此由前端按这个值分批发出；上限留在这里是给单次请求的 SQL
+    占位符数量封顶，不作为业务约束。
+
+    :param body: 含 ``ids`` 与目标 ``status`` 的请求体；ID 不存在时静默跳过、
+        不报 404——批量场景下并发删除造成的部分失效属正常。
+    :return: ``updated`` 实际写入行数、``requested`` 请求条数与目标 ``status``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；写入失败时 500，完整
+        traceback 以 ``jargon_batch_status_failed`` 事件落日志。
+    副作用：见 :func:`_set_jargon_status`。
+    """
+    db = _read_db_or_503()
+    try:
+        updated = await run_in_thread(_set_jargon_status, db, body.ids, body.status)
+    except Exception as exc:
+        logger.exception('jargon_batch_status_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'黑话批量复核失败：{exc}',
+        ) from exc
+    logger.info(
+        'jargon_batch_status_written',
+        updated=updated, requested=len(body.ids), target=body.status,
+    )
+    return {'updated': updated, 'requested': len(body.ids), 'status': body.status}
+
+
+@router.delete('/api/jargon/{jargon_id}', dependencies=[Depends(_auth)])
+async def jargon_delete(jargon_id: int) -> dict:
+    """删除一条黑话词条。
+
+    与驳回的分工见 :func:`_delete_jargon_rows`。
+
+    :param jargon_id: 词条行 ID。
+    :return: 被删除的 ``id``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；行不存在时 404；
+        删除失败时 500，完整 traceback 以 ``jargon_delete_failed`` 事件落日志。
+    副作用：从 jargon 表删除一行；下一次召回即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        deleted = await run_in_thread(_delete_jargon_rows, db, [jargon_id])
+    except Exception as exc:
+        logger.exception('jargon_delete_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'黑话词条删除失败：{exc}',
+        ) from exc
+    if deleted == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='黑话词条不存在',
+        )
+    return {'id': jargon_id}
+
+
+@router.post('/api/jargon/batch-delete', dependencies=[Depends(_auth)])
+async def jargon_batch_delete(body: JargonBatchDeleteBody) -> dict:
+    """批量删除黑话词条，语义与逐条一致。
+
+    :param body: 含 ``ids`` 的请求体；ID 不存在时静默跳过，不报 404。
+    :return: ``deleted`` 实际删除行数与 ``requested`` 请求条数。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；删除失败时 500，完整
+        traceback 以 ``jargon_batch_delete_failed`` 事件落日志。
+    副作用：从 jargon 表删除若干行；下一次召回即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        deleted = await run_in_thread(_delete_jargon_rows, db, body.ids)
+    except Exception as exc:
+        logger.exception('jargon_batch_delete_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'黑话批量删除失败：{exc}',
+        ) from exc
+    logger.info('jargon_batch_deleted', deleted=deleted, requested=len(body.ids))
+    return {'deleted': deleted, 'requested': len(body.ids)}
 
 
 class JargonUseBody(BaseModel):
@@ -1559,7 +1793,7 @@ async def jargon_use_update(stream_id: int, body: JargonUseBody) -> dict:
 async def expression_entries(
     stream_id: int | None = Query(default=None, alias='streamId', ge=1),
     checked: int | None = Query(default=None, ge=-1, le=1),
-    order: Literal['use_desc', 'use_asc'] = Query(default='use_desc'),
+    order: ListOrder = Query(default='time_desc'),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
@@ -1571,7 +1805,8 @@ async def expression_entries(
 
     :param stream_id: 会话 ID 过滤；``None`` 表示不限。
     :param checked: 复核状态过滤；``None`` 表示不限。
-    :param order: ``use_desc`` 按使用次数降序（默认），``use_asc`` 升序。
+    :param order: 排序口径，默认 ``time_desc``（后学到的排在最前）；
+        ``use_*`` 两档按 ``use_count`` 排。
     :param limit: 页大小，1 到 200，默认 50。
     :param offset: 偏移量，从 0 起。
 
@@ -1586,7 +1821,7 @@ async def expression_entries(
     try:
         entries, total = await run_in_thread(
             _list_expression_rows,
-            db, stream_id, checked, order == 'use_desc', limit, offset,
+            db, stream_id, checked, order, limit, offset,
         )
     except Exception as exc:
         logger.exception('expression_query_failed')
@@ -1796,6 +2031,72 @@ async def expression_batch_delete(body: ExpressionBatchDeleteBody) -> dict:
         lowPools=len(low_pools),
     )
     return {'deleted': deleted, 'requested': len(body.ids), 'lowPools': low_pools}
+
+
+class ExpressionBatchCheckedBody(BaseModel):
+    """批量人工复核表达方式的请求体。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    ids: List[int] = Field(min_length=1, max_length=200)
+    checked: Literal[-1, 0, 1]
+
+
+def _set_expressions_checked(
+    db: sqlite3.Connection,
+    ids: List[int],
+    checked: int,
+) -> int:
+    """同步写若干条表达方式的复核状态，只动 ``checked`` 一列。
+
+    :param db: 进程级 SQLite 连接，由路由层取得后传入。
+    :param ids: 表达方式行 ID 列表；不存在的 ID 静默跳过。
+    :param checked: 目标复核状态（0 未复核 / 1 已确认 / -1 已驳回）。
+    :return: 实际写入的行数。
+    :raises sqlite3.Error: 写入失败时抛出，由路由层转换。
+    副作用：写 expressions 的 ``checked`` 列并提交；候选池下一次取池即生效。
+    """
+    # 占位符由 '?' 拼成、数量取自列表长度，参数仍走绑定，不存在注入面。
+    marks = ','.join('?' * len(ids))
+    with db:
+        cursor = db.execute(
+            f'UPDATE expressions SET checked = ? WHERE id IN ({marks})',
+            [checked, *ids],
+        )
+    return cursor.rowcount
+
+
+@router.post('/api/expressions/batch-checked', dependencies=[Depends(_auth)])
+async def expression_batch_checked(body: ExpressionBatchCheckedBody) -> dict:
+    """批量人工复核表达方式，语义与逐条完全一致。
+
+    批量驳回是清理噪声的主力路径：驳回不删行，因此既不会让候选池被删空，也不会
+    像删除那样让同样的说法日后被重新学回来。单次上限 200 条与列表 ``limit``
+    上限同值，界面的选择集跨页累积，由前端按这个值分批发出。
+
+    :param body: 含 ``ids`` 与目标 ``checked`` 的请求体；ID 不存在时静默跳过、
+        不报 404。
+    :return: ``updated`` 实际写入行数、``requested`` 请求条数与 ``checked``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503；写入失败时 500，完整
+        traceback 以 ``expression_batch_checked_failed`` 事件落日志。
+    副作用：写 expressions 若干行的 ``checked`` 列；候选池下一次取池即生效。
+    """
+    db = _read_db_or_503()
+    try:
+        updated = await run_in_thread(
+            _set_expressions_checked, db, body.ids, body.checked,
+        )
+    except Exception as exc:
+        logger.exception('expression_batch_checked_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'表达方式批量复核失败：{exc}',
+        ) from exc
+    logger.info(
+        'expression_batch_checked_written',
+        updated=updated, requested=len(body.ids), target=body.checked,
+    )
+    return {'updated': updated, 'requested': len(body.ids), 'checked': body.checked}
 
 
 # --------------------------------------------------------------- 联想网络只读
@@ -2140,20 +2441,41 @@ class EmojiBanBody(BaseModel):
     reason: str = ''
 
 
+class EmojiBatchBanBody(BaseModel):
+    """批量封禁请求体：一组内容哈希与整批共用的可选原因。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    hashes: List[str] = Field(min_length=1, max_length=200)
+    reason: str = ''
+
+
+class EmojiBatchBody(BaseModel):
+    """批量解封与批量删除的请求体：只带一组内容哈希。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    hashes: List[str] = Field(min_length=1, max_length=200)
+
+
 @router.get('/api/emojis', dependencies=[Depends(_auth)])
 async def emoji_entries(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     banned: bool | None = Query(default=None),
+    order: ListOrder = Query(default='time_desc'),
 ) -> dict:
     """分页浏览表情包库，附带库容量总览。
 
-    排序与后台淘汰同口径（use_count 升序、last_used_at 升序），页面看到的
-    先后就是真的会先被淘汰的先后；未使用过的记录 last_used_at 为 null。
+    默认按入库时间倒序（后入库的排在最前）。``use_asc`` 一档与后台淘汰同口径
+    （use_count 升序、last_used_at 升序），选它时页面看到的先后就是真的会先被
+    淘汰的先后；未使用过的记录 last_used_at 为 null，在该档排在最前。
 
     :param limit: 页大小，1 到 200，默认 50。
     :param offset: 偏移量，从 0 起。
     :param banned: ``true`` 只看已封禁、``false`` 只看未封禁、省略则不筛选。
+    :param order: 排序口径，默认 ``time_desc``；取值见
+        :data:`src.core.services.emoji._PAGE_ORDER_CLAUSES`。
     :return: entries 表情包记录列表、total 当前筛选下的条数与 stats 容量
         总览。``total`` 跟着筛选走（否则翻页会翻出空白页），而 stats 里的数
         始终是全库口径。
@@ -2164,7 +2486,7 @@ async def emoji_entries(
     """
     library = _emoji_library_or_503()
     try:
-        entries = await run_in_thread(library.page, limit, offset, banned)
+        entries = await run_in_thread(library.page, limit, offset, banned, order)
         total = await run_in_thread(library.count_entries, banned)
         stats = await run_in_thread(library.stats)
     except Exception as exc:
@@ -2265,6 +2587,69 @@ async def emoji_delete(content_hash: str) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return {'ok': True, 'removed': removed}
+
+
+@router.post('/api/emojis/batch-ban', dependencies=[Depends(_auth)])
+async def emoji_batch_ban(body: EmojiBatchBanBody) -> dict:
+    """批量封禁，语义与逐条封禁完全一致，只省往返。
+
+    单次上限 200 条，与列表路由的 ``limit`` 上限同值；界面的选择集跨页累积，
+    由前端按这个值分批发出。整批不是一个事务：中途遇到非法哈希会 400，此前的
+    条目已经写入——封禁是幂等的，重发整批只会跳过已封禁的条目。
+
+    :param body: 含 ``hashes`` 与整批共用 ``reason`` 的请求体。
+    :return: ``banned`` 本次新增封禁条数与 ``requested`` 请求条数；已封禁的
+        条目不计入 ``banned``。
+    :raises fastapi.HTTPException: 服务未初始化 503；任一哈希非法 400。
+    副作用：向封禁表写入若干行；封禁按内容哈希独立生效，与 emoji 行无关。
+    """
+    library = _emoji_library_or_503()
+    try:
+        banned = await run_in_thread(library.ban_many, body.hashes, body.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    logger.info('emoji_batch_banned', banned=banned, requested=len(body.hashes))
+    return {'ok': True, 'banned': banned, 'requested': len(body.hashes)}
+
+
+@router.post('/api/emojis/batch-unban', dependencies=[Depends(_auth)])
+async def emoji_batch_unban(body: EmojiBatchBody) -> dict:
+    """批量解封，语义与逐条解封完全一致。
+
+    :param body: 含 ``hashes`` 的请求体。
+    :return: ``unbanned`` 实际删除的封禁条数与 ``requested`` 请求条数。
+    :raises fastapi.HTTPException: 服务未初始化 503；任一哈希非法 400。
+    副作用：从封禁表删除若干行；这些图再次出现在聊天里时可以重新入库。
+    """
+    library = _emoji_library_or_503()
+    try:
+        unbanned = await run_in_thread(library.unban_many, body.hashes)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    logger.info('emoji_batch_unbanned', unbanned=unbanned, requested=len(body.hashes))
+    return {'ok': True, 'unbanned': unbanned, 'requested': len(body.hashes)}
+
+
+@router.post('/api/emojis/batch-delete', dependencies=[Depends(_auth)])
+async def emoji_batch_delete(body: EmojiBatchBody) -> dict:
+    """批量删除记录及其磁盘文件，语义与逐条删除完全一致。
+
+    与批量封禁的分工：删除只清掉这一份记录与文件，同一张图再次出现在聊天里仍会
+    重新入库；要让它永远进不来必须封禁——封禁按内容哈希独立保存，不随记录消失。
+
+    :param body: 含 ``hashes`` 的请求体；库中不存在的条目静默跳过。
+    :return: ``removed`` 实际删除的记录条数与 ``requested`` 请求条数。
+    :raises fastapi.HTTPException: 服务未初始化 503；任一哈希非法 400。
+    副作用：删除若干行记录并尝试删除对应磁盘文件；文件删除失败只记录警告，
+        由孤儿清理任务兜底。
+    """
+    library = _emoji_library_or_503()
+    try:
+        removed = await run_in_thread(library.remove_many, body.hashes)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    logger.info('emoji_batch_removed', removed=removed, requested=len(body.hashes))
+    return {'ok': True, 'removed': removed, 'requested': len(body.hashes)}
 
 
 @router.post('/system/config/reload', dependencies=[Depends(_auth), Depends(_require_loopback)])

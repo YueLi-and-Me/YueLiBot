@@ -188,8 +188,10 @@ CREATE TABLE IF NOT EXISTS jargon (
   -- NULL 表示全局通用，非空表示只在该会话里成立。同一个词在不同群含义可以不同，
   -- 所以唯一键带上 stream_id。
   stream_id  INTEGER REFERENCES streams(id) ON DELETE CASCADE,
-  -- confirmed 才参与提示词注入；pending 是尚未判定的候选，只存不用。「判定为
-  -- 普通词」不设新取值：pending 且 inferred_at_sightings > 0 即是。
+  -- confirmed 才参与提示词注入；pending 是尚未判定的候选，只存不用；rejected 是
+  -- 人工驳回，同样不注入，且写入时会把 inferred_at_sightings 顶到锁定档，避免
+  -- 自动推断把人的结论改回来。「判定为普通词」不设新取值：pending 且
+  -- inferred_at_sightings > 0 即是。
   status     TEXT    NOT NULL DEFAULT 'confirmed',
   hits       INTEGER NOT NULL DEFAULT 0,
   source     TEXT    NOT NULL DEFAULT '',

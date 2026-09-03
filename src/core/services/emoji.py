@@ -52,6 +52,17 @@ _IMPORT_MEDIA_TYPES = {
 
 _MB = 1024 * 1024
 
+# 管理页列表的排序口径。键是对外的排序名，值直接拼进 ORDER BY——全部为固定
+# 字面量，不含调用方数据，没有注入面；参数化做不到这件事（要变的是子句结构）。
+# 每档都以 hash 收尾保证同值行的次序稳定，翻页不会出现重复或漏行。
+# use_asc 一档与后台淘汰完全同口径（见 evict_to_limit），页面顺序即淘汰顺序。
+_PAGE_ORDER_CLAUSES: dict[str, str] = {
+    'time_desc': 'first_seen_at DESC, hash DESC',
+    'time_asc': 'first_seen_at ASC, hash ASC',
+    'use_desc': 'use_count DESC, last_used_at DESC, first_seen_at DESC, hash DESC',
+    'use_asc': 'use_count ASC, last_used_at ASC, first_seen_at ASC, hash ASC',
+}
+
 
 class EmojiEmbeddingClient(Protocol):
     """表情包库依赖的最小文本嵌入接口。"""
@@ -692,11 +703,51 @@ class EmojiLibrary:
         logger.info('emoji_removed', hash=normalized)
         return True
 
+    def ban_many(self, hashes: Sequence[str], reason: str = '') -> int:
+        """批量封禁，逐条复用 :meth:`ban`。
+
+        逐条而非一条 ``executemany``：单条路径带着「新增才记事件」的判定与
+        审计日志，批量若另写一条 SQL 就会出现两套行为，事后查不到某张图是谁
+        封的。批量只省往返，不省语义。
+
+        :param hashes: 图片 SHA-256 列表；已封禁的条目不重复计数。
+        :param reason: 可选封禁原因，整批共用。
+        :return: 本次新增的封禁条数。
+        :raises ValueError: 任一哈希格式非法。异常不回滚，此前的条目已经写入；
+            封禁幂等，重发整批即可对齐。
+        """
+
+        return sum(1 for digest in hashes if self.ban(digest, reason))
+
+    def unban_many(self, hashes: Sequence[str]) -> int:
+        """批量解封，逐条复用 :meth:`unban`。
+
+        :param hashes: 图片 SHA-256 列表；未封禁的条目不计数。
+        :return: 实际删除的封禁条数。
+        :raises ValueError: 任一哈希格式非法。
+        """
+
+        return sum(1 for digest in hashes if self.unban(digest))
+
+    def remove_many(self, hashes: Sequence[str]) -> int:
+        """批量删除记录与磁盘文件，逐条复用 :meth:`remove`。
+
+        逐条是必需的：文件删除要按每行的 ``send_ref`` 定位，一条 SQL 删不掉
+        磁盘上的图；批量若跳过这一步会把文件全留成孤儿。
+
+        :param hashes: 图片 SHA-256 列表；库中不存在的条目静默跳过。
+        :return: 实际删除的记录条数。
+        :raises ValueError: 任一哈希格式非法。
+        """
+
+        return sum(1 for digest in hashes if self.remove(digest))
+
     def page(
         self,
         limit: int = 20,
         offset: int = 0,
         banned_only: bool | None = None,
+        order: str = 'time_desc',
     ) -> list[dict[str, Any]]:
         """读取一页表情包记录供管理页展示。
 
@@ -705,15 +756,20 @@ class EmojiLibrary:
         :param banned_only: ``True`` 只取已封禁、``False`` 只取未封禁、
             ``None``（默认）不筛选。封禁记录独立于 emoji 行存在，因此筛选按
             两表的哈希交集判断，而不是 emoji 表上的某一列。
-        :return: 按「最少用、最久未用」顺序排列的记录字典列表，与淘汰排序
-            同口径，页面顺序即淘汰顺序。
-        :raises ValueError: 分页参数非法。
+        :param order: 排序口径，取值见 :data:`_PAGE_ORDER_CLAUSES`：
+            ``time_desc``（默认，最新入库在前）、``time_asc``、``use_desc``、
+            ``use_asc``。``use_asc`` 与后台淘汰同口径，此时页面顺序即淘汰顺序。
+        :return: 按指定口径排列的记录字典列表。
+        :raises ValueError: 分页参数非法，或排序名不在支持的取值内。
         """
 
         if limit < 1:
             raise ValueError('表情包页大小必须大于零')
         if offset < 0:
             raise ValueError('表情包页偏移不能为负')
+        order_clause = _PAGE_ORDER_CLAUSES.get(order)
+        if order_clause is None:
+            raise ValueError(f'不支持的表情包排序口径：{order}')
         banned = {
             str(row).lower()
             for (row,) in self._db.execute('SELECT hash FROM emoji_banned').fetchall()
@@ -721,7 +777,7 @@ class EmojiLibrary:
         rows = self._db.execute(
             'SELECT hash, send_ref, emotion_tags, sub_type, seen_count, use_count, last_used_at '
             f'FROM emoji WHERE {_banned_predicate(banned_only)} '
-            'ORDER BY use_count ASC, last_used_at ASC, first_seen_at ASC, hash ASC '
+            f'ORDER BY {order_clause} '
             'LIMIT ? OFFSET ?',
             (limit, offset),
         ).fetchall()
