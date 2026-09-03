@@ -11,6 +11,13 @@
 
 对外暴露 :func:`describe_schema_changes`（算差异）与 :func:`report_schema_changes`
 （差异非空时打印信息框并记日志），由 ``migrations.manager`` 在 schema 落地前后调用。
+
+report_schema_changes 在 run_migrations 的收尾对任意版本的库都会调用一次，而
+三个事实统计助手依赖的列来自不同版本的迁移：``kind`` 建表即有，``origin_kind``
+由 v21 补齐，``slot`` / ``superseded_by`` 由 v22 补齐。因此助手先以 PRAGMA
+table_info 查列存在性再 SELECT，缺列时整行跳过、也不记日志。判据必须是结构
+查询而不是捕获 OperationalError——异常捕获会把真正的库损坏一并吞掉；跳过也不
+显示「暂无」——库尚未到达引入该列的版本，「暂无」是错误语义。
 """
 
 from __future__ import annotations
@@ -87,6 +94,21 @@ def _shape(db: sqlite3.Connection) -> SchemaShape:
     return shape
 
 
+def _table_columns(db: sqlite3.Connection, table: str) -> Set[str]:
+    """读取一张表的列名集合，供统计助手做存在性判据。
+
+    :param db: 已打开的 SQLite 连接。
+    :param table: 表名，经参数绑定传入。
+    :return: 列名集合；表不存在时表值函数返回空结果，据此得到空集合，
+        「表不在」与「列不在」由同一个判据覆盖。
+    :raises sqlite3.Error: 查询失败时传播，库损坏不被吞掉。
+    副作用：只读。
+    """
+
+    rows = db.execute('SELECT name FROM pragma_table_info(?)', (table,))
+    return {str(row[0]) for row in rows}
+
+
 def _expected_shape() -> SchemaShape:
     """在内存库里跑一遍当前 DDL，得到代码期望的结构。
 
@@ -132,9 +154,14 @@ def describe_schema_changes(before: SchemaShape, after: SchemaShape) -> SchemaCh
     return SchemaChanges(created=created, added_columns=added_columns, drifted=drifted)
 
 
-def _fact_kind_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
-    """读取事实类别分布，按数量降序、类别升序返回。"""
+def _fact_kind_distribution(db: sqlite3.Connection) -> Optional[List[Tuple[str, int]]]:
+    """读取事实类别分布，按数量降序、类别升序返回；缺列时返回 ``None``。
 
+    ``kind`` 建表即有，判据仍保留，与另外两个助手维持同一存在性防护模式。
+    """
+
+    if 'kind' not in _table_columns(db, 'facts'):
+        return None
     rows = db.execute(
         '''SELECT kind, COUNT(*) AS amount
            FROM facts
@@ -144,13 +171,16 @@ def _fact_kind_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
     return [(str(kind), int(amount)) for kind, amount in rows]
 
 
-def _fact_origin_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
-    """读取事实来源分布，按来源升序返回。
+def _fact_origin_distribution(db: sqlite3.Connection) -> Optional[List[Tuple[str, int]]]:
+    """读取事实来源分布，按来源升序返回；缺列时返回 ``None``。
 
     ``legacy`` 是可见性边界落地前的存量行，数量随新事实写入自然稀释；
-    分布进日志供这一趋势可查，不参与任何决策。
+    分布进日志供这一趋势可查，不参与任何决策。``origin_kind`` 由 v21 迁移补齐，
+    未到达该版本的库不产出本行。
     """
 
+    if 'origin_kind' not in _table_columns(db, 'facts'):
+        return None
     rows = db.execute(
         '''SELECT origin_kind, COUNT(*) AS amount
            FROM facts
@@ -158,9 +188,14 @@ def _fact_origin_distribution(db: sqlite3.Connection) -> List[Tuple[str, int]]:
            ORDER BY origin_kind ASC'''
     ).fetchall()
     return [(str(origin), int(amount)) for origin, amount in rows]
-def _fact_ledger_counts(db: sqlite3.Connection) -> Tuple[int, int]:
-    """读取事实账本计数：带槽位的事实条数、已被取代的事实条数。"""
 
+
+def _fact_ledger_counts(db: sqlite3.Connection) -> Optional[Tuple[int, int]]:
+    """读取事实账本计数：带槽位的事实条数、已被取代的事实条数；缺列时返回 ``None``。"""
+
+    columns = _table_columns(db, 'facts')
+    if not {'slot', 'superseded_by'} <= columns:
+        return None
     slotted = db.execute("SELECT COUNT(*) FROM facts WHERE slot <> ''").fetchone()[0]
     superseded = db.execute(
         'SELECT COUNT(*) FROM facts WHERE superseded_by IS NOT NULL'
@@ -179,7 +214,8 @@ def report_schema_changes(
 
     :param changes: :func:`describe_schema_changes` 的产物。
     :param version: 当前 ``user_version``，一并展示便于与迁移记录对账。
-    :param db: 可选当前数据库连接；提供时额外输出事实类别分布。
+    :param db: 可选当前数据库连接；提供时额外输出事实类别分布、来源分布与
+        账本计数，依赖列缺失的统计整行跳过（见模块说明）。
     :return: 无返回值。
     副作用：向 stdout 打印信息框，并记一条 info 或 error 日志。
     """
@@ -188,22 +224,26 @@ def report_schema_changes(
     origin_line: Optional[str] = None
     ledger_counts: Optional[Tuple[int, int]] = None
     if db is not None:
+        # 三个助手各自判列存在性（见模块说明）；返回 None 表示库尚未到达引入
+        # 该列的版本，对应的行与日志整体跳过，与「暂无事实」的零行语义分开。
         distribution = _fact_kind_distribution(db)
-        kind_line = '、'.join(f'{kind} {amount}' for kind, amount in distribution) or '暂无事实'
-        logger.info(
-            'db_fact_kind_distribution',
-            distribution=kind_line,
-            total=sum(amount for _, amount in distribution),
-        )
+        if distribution is not None:
+            kind_line = '、'.join(f'{kind} {amount}' for kind, amount in distribution) or '暂无事实'
+            logger.info(
+                'db_fact_kind_distribution',
+                distribution=kind_line,
+                total=sum(amount for _, amount in distribution),
+            )
         origin_distribution = _fact_origin_distribution(db)
-        origin_line = '、'.join(
-            f'{origin} {amount}' for origin, amount in origin_distribution
-        ) or '暂无事实'
-        logger.info(
-            'db_fact_origin_distribution',
-            distribution=origin_line,
-            total=sum(amount for _, amount in origin_distribution),
-        )
+        if origin_distribution is not None:
+            origin_line = '、'.join(
+                f'{origin} {amount}' for origin, amount in origin_distribution
+            ) or '暂无事实'
+            logger.info(
+                'db_fact_origin_distribution',
+                distribution=origin_line,
+                total=sum(amount for _, amount in origin_distribution),
+            )
         ledger_counts = _fact_ledger_counts(db)
     if changes.is_empty():
         return
