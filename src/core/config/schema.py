@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 # 配置格式版本的唯一定义处。loader 从这里导入，不再各写一份——两处必须始终
 # 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
-CONFIG_VERSION = '1.4.0'
+CONFIG_VERSION = '1.5.0'
 
 
 class InnerConfig(BaseModel):
@@ -32,12 +32,13 @@ class InnerConfig(BaseModel):
     # 1.2.0 移除日程时刻表遗留字段，它们已被活动时间线取代。
     # 1.3.0 新增 [emoji] 与 [emoji.cleanup] 两段表情包库管理配置。
     # 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊。
+    # 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关。
     #
     # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
     # 所以删除或重命名配置字段时必须同步修改这里与 electron/main/config.ts，
     # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
     # 为它们报一次「配置字段变更」。
-    version: Literal['1.4.0'] = CONFIG_VERSION
+    version: Literal['1.5.0'] = CONFIG_VERSION
 
 
 class BotConfig(BaseModel):
@@ -597,6 +598,46 @@ class VectorConfig(BaseModel):
     enabled: bool = False
 
 
+class MemoryFeedbackConfig(BaseModel):
+    """反馈纠错链路（N4）的开关与节拍。
+
+    整条链路默认关闭，开启是显式动作；关闭时对 facts 及相关表零写入。
+    锚点是「这条记忆真的进了提示词」，纠正信号先过关键词预筛再调模型判定，
+    判定成立按事实账本的 superseded_by 应用纠正。
+    """
+
+    # 总开关；关闭时整条链路零写入
+    enabled: bool = False
+    # 从记忆进提示词起算的反馈观察窗口（小时）
+    window_hours: float = Field(default=12.0, gt=0)
+    # 纠错轮询间隔（分钟）
+    check_interval_minutes: int = Field(default=30, ge=1)
+    # 每轮最多处理的待观察项
+    batch_size: int = Field(default=20, ge=1)
+    # 自动应用取代的最低置信度
+    auto_apply_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    # 每个待观察项最多读取的窗口内用户消息数
+    max_feedback_messages: int = Field(default=30, ge=1)
+    # 关键词预筛开关；关闭会显著增加模型调用
+    prefilter_enabled: bool = True
+    # 是否给受影响事实写「已被纠正」标记
+    mark_enabled: bool = True
+    # 是否把带标记的事实硬过滤出召回
+    hard_filter_enabled: bool = True
+    # 纠错后是否把相关人物画像置脏
+    profile_refresh_enabled: bool = True
+    # 画像脏时读取是否强制刷新而非复用旧快照
+    profile_force_refresh_on_read: bool = True
+    # 纠错后是否把受影响情节排进重建
+    episode_rebuild_enabled: bool = True
+    # 情节待重建期间是否屏蔽它的召回
+    episode_query_block_enabled: bool = True
+    # 二阶段一致性协调任务的轮询间隔（分钟）
+    reconcile_interval_minutes: int = Field(default=5, ge=1)
+    # 协调任务每轮的批大小
+    reconcile_batch_size: int = Field(default=20, ge=1)
+
+
 class LogConfig(BaseModel):
     """日志等级、落盘与控制台样式。"""
 
@@ -954,6 +995,7 @@ class FeatureDocument(BaseModel):
     vision: VisionConfig
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig
+    memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig
 
@@ -996,5 +1038,6 @@ class Config(BaseModel):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)
+    memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)

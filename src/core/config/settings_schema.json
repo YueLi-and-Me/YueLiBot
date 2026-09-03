@@ -707,6 +707,112 @@
         },
         {
           "kind": "object",
+          "key": "memory_feedback",
+          "label": "记忆反馈纠错",
+          "description": "N4 反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用记忆反馈纠错",
+              "help": "总开关；事实进过提示词后被用户纠正时按事实账本取代机制改库，关闭时整条链路零写入。"
+            },
+            {
+              "key": "window_hours",
+              "type": "number",
+              "label": "反馈观察窗口（小时）",
+              "help": "从记忆进提示词起算的反馈观察窗口，单位小时；必须大于 0。"
+            },
+            {
+              "key": "check_interval_minutes",
+              "type": "integer",
+              "label": "纠错轮询间隔（分钟）",
+              "min": 1,
+              "help": "两次纠错轮询之间的间隔，单位分钟。"
+            },
+            {
+              "key": "batch_size",
+              "type": "integer",
+              "label": "每轮处理条数",
+              "min": 1,
+              "help": "每轮最多处理的待观察项数量。"
+            },
+            {
+              "key": "auto_apply_threshold",
+              "type": "number",
+              "label": "自动应用置信度阈值",
+              "min": 0,
+              "max": 1,
+              "step": 0.05,
+              "help": "自动应用取代的最低置信度，范围 0~1。"
+            },
+            {
+              "key": "max_feedback_messages",
+              "type": "integer",
+              "label": "每项最多读取消息数",
+              "min": 1,
+              "help": "每个待观察项最多读取的窗口内用户消息数。"
+            },
+            {
+              "key": "prefilter_enabled",
+              "type": "boolean",
+              "label": "启用关键词预筛",
+              "help": "纠正信号先过关键词预筛再调模型判定；关闭会显著增加模型调用。"
+            },
+            {
+              "key": "mark_enabled",
+              "type": "boolean",
+              "label": "写入「已被纠正」标记",
+              "help": "是否给受影响事实写「已被纠正」标记。"
+            },
+            {
+              "key": "hard_filter_enabled",
+              "type": "boolean",
+              "label": "硬过滤已纠正事实",
+              "help": "是否把带标记的事实硬过滤出召回。"
+            },
+            {
+              "key": "profile_refresh_enabled",
+              "type": "boolean",
+              "label": "纠错后置脏人物画像",
+              "help": "纠错后是否把相关人物画像置脏。"
+            },
+            {
+              "key": "profile_force_refresh_on_read",
+              "type": "boolean",
+              "label": "画像脏时强制刷新",
+              "help": "画像脏时读取是否强制刷新而非复用旧快照。"
+            },
+            {
+              "key": "episode_rebuild_enabled",
+              "type": "boolean",
+              "label": "纠错后重建情节",
+              "help": "纠错后是否把受影响情节排进重建。"
+            },
+            {
+              "key": "episode_query_block_enabled",
+              "type": "boolean",
+              "label": "重建期间屏蔽情节召回",
+              "help": "情节待重建期间是否屏蔽它的召回。"
+            },
+            {
+              "key": "reconcile_interval_minutes",
+              "type": "integer",
+              "label": "一致性协调轮询间隔（分钟）",
+              "min": 1,
+              "help": "二阶段一致性协调任务的轮询间隔，单位分钟。"
+            },
+            {
+              "key": "reconcile_batch_size",
+              "type": "integer",
+              "label": "协调任务批大小",
+              "min": 1,
+              "help": "协调任务每轮的批大小。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
           "key": "log",
           "label": "日志",
           "description": "日志等级、文件轮转、控制台样式与事件保留策略。",

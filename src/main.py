@@ -788,6 +788,25 @@ def main() -> None:
         # 没有 memory 路由时学习整条功能是关的，这句必须在启动时说出来：
         # 静默关掉在外部看来与「正常但这段对话没什么可学的」完全一样。
         logger.warning('jargon_learn_disabled', reason='memory 模型路由不可用')
+    # 反馈纠错（N4）整条链路默认关闭；开启时才装配服务。判定走 memory 路由，
+    # 情节重建重摘要走 summary 路由，路由不可用时对应循环空转而不是报错。
+    if cfg.memory_feedback.enabled:
+        from src.core.services.memory_feedback import MemoryFeedbackService
+        memory_feedback = MemoryFeedbackService(
+            db,
+            cfg.memory_feedback,
+            judge_provider=routers.memory if routers.memory.ready else None,
+            summary_provider=routers.summary if routers.summary.ready else None,
+            bot_name=cfg.bot.name,
+            bot_personality=cfg.personality.personality,
+            judge_temperature=cfg.generation.memory.temperature,
+            judge_max_tokens=cfg.generation.memory.token_limit,
+            summary_temperature=cfg.generation.summary.temperature,
+            summary_max_tokens=cfg.generation.summary.token_limit,
+        )
+        lifecycle.register('memory_feedback', memory_feedback.startup, memory_feedback.shutdown)
+        if not routers.memory.ready:
+            logger.warning('memory_feedback_disabled', reason='memory 模型路由不可用')
     lifecycle.register(
         'emoji_maintenance',
         _emoji_maintenance,

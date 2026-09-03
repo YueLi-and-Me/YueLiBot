@@ -104,6 +104,7 @@ TEMPLATE_IDS = (
     'jargon.meaning.bare',
     'jargon.compare',
     'memory.impression',
+    'memory.feedback',
 )
 TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'chat.protocol': frozenset({'emotions', 'gestures', 'emoji_rule'}),
@@ -213,6 +214,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     'jargon.meaning.bare': frozenset({'term'}),
     'jargon.compare': frozenset({'term', 'context_meaning', 'bare_meaning'}),
     'memory.impression': frozenset({'bot_name'}),
+    'memory.feedback': frozenset({'fact', 'messages'}),
 }
 
 _PLACEHOLDER_PATTERN = re.compile(r'\{\{([a-z][a-z0-9_]*)\}\}')

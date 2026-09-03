@@ -291,6 +291,8 @@ def profiles_for_injection(
     db: sqlite3.Connection,
     person_ids: Sequence[int],
     limit: int = INJECT_LIMIT,
+    *,
+    skip_dirty: bool = False,
 ) -> List[tuple[int, str]]:
     """取在场者中最该注入的几份画像。
 
@@ -300,6 +302,8 @@ def profiles_for_injection(
     :param db: 当前库连接。
     :param person_ids: 本轮在场者的人物主键。
     :param limit: 最多返回几份。
+    :param skip_dirty: 为真时跳过带脏位的画像：纠错之后旧快照可能还引用着
+        被纠正的事实，宁可在后台刷新前不注入，也不复用过期内容。
     :return: ``(person_id, summary)`` 列表；``summary`` 为空的人不算数，直接跳过。
     :raises sqlite3.Error: 查询失败。
     副作用：只读。
@@ -311,7 +315,8 @@ def profiles_for_injection(
         f'SELECT p.person_id, p.summary FROM person_profile p '
         f'LEFT JOIN persona_bond b ON b.person_id = p.person_id '
         f'WHERE p.person_id IN ({marks}) AND p.summary <> \'\' '
+        f'AND (? = 0 OR p.dirty = 0) '
         f'ORDER BY COALESCE(b.intimacy, 0) DESC LIMIT ?',
-        (*person_ids, limit),
+        (*person_ids, int(skip_dirty), limit),
     ).fetchall()
     return [(int(row[0]), str(row[1])) for row in rows]
