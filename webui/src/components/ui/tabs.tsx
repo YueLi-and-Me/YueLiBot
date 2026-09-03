@@ -4,6 +4,9 @@
  * 容器为 muted 底胶囊，激活项使用 motion 的 `layoutId` 共享元素转场——白色
  * 指示块在选项间滑动而非瞬移，是全站统一的手感来源；reduced-motion 由 App
  * 根部的 MotionConfig 自动降级为瞬移。
+ *
+ * 点击已激活项同样会触发 `onChange`：排序控件据此用两个按钮表达四种口径
+ * （再点一次翻方向），调用方需要自己判断是否为同值点击。
  */
 import { LayoutGroup, motion } from 'motion/react'
 import { useId } from 'react'
@@ -15,6 +18,8 @@ interface SegmentedTab<T extends string> {
   value: T
   /** 选项展示文本。 */
   label: string
+  /** 悬停提示，可选；用于说明按钮上写不下的行为（例如再点一次会怎样）。 */
+  title?: string
 }
 
 interface SegmentedTabsProps<T extends string> {
@@ -61,6 +66,7 @@ export function SegmentedTabs<T extends string>({
               type="button"
               role="tab"
               aria-selected={active}
+              title={tab.title}
               onClick={() => onChange(tab.value)}
               className={cn(
                 'relative cursor-pointer rounded-md px-3 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors duration-150',

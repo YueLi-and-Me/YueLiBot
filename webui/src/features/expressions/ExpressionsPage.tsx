@@ -11,24 +11,27 @@
  *   **自动淘汰只碰本机学来的行**，迁移存量一条都不自动删——存量里有整个会话
  *   的行从未被本机选中过，自动清理会让该会话候选池归零、表达选择停摆。
  *
- * 三种行内动作各管一件事，不要混用：
+ * 三种动作各管一件事，不要混用；每种都同时有行内与批量两条路径，语义一致：
  * - 确认（checked=1）：永不自动淘汰，用于锁住特别贴的说法；
  * - 驳回（checked=-1）：退出候选池但保留行，整行置灰加删除线标示「不再生效」。
  *   这一行同时是「判过了」的记号，学习器再学到同样的说法会被唯一约束挡住；
+ *   批量驳回是清理噪声的主力路径——它不删行，因此不会把候选池清空。
  * - 删除：不可逆地移除，同样的说法日后可以被重新学到。清理迁移存量走这条。
- *   行首勾选框喂的是批量删除，选择集跨页保留、筛选变化时清空；批量删除后端
+ *   行首勾选框喂的是批量动作，选择集跨页保留、筛选变化时清空；批量删除后端
  *   会回报候选数跌破起用下限的会话，那些会话的表达注入会直接停摆，页面必须
  *   如实报出来而不是替人拦下删除。
  *
  * 人工复核不是使用的前置条件（未复核照常进候选池），它的职责是剔除与保护。
  * 复核状态可筛选，用于从几千条里找出待处理的。
  *
- * 列表按使用次数排序，一行一条。
+ * 默认按入库时间倒序，后学到的排在最前；另一个按钮按使用次数排，
+ * 两个按钮都可以再点一次翻方向。
  */
 import { useState } from 'react'
 
 import { PageHeader } from '@/components/layout/PageHeader'
 import {
+  BatchBar,
   Button,
   ConfirmDialog,
   Card,
@@ -43,19 +46,28 @@ import {
   Select,
   SegmentedTabs,
   cn,
+  toast,
 } from '@/components/ui'
 import {
   deleteExpression,
   deleteExpressions,
   setExpressionChecked,
+  setExpressionsChecked,
   useExpressions,
   type ExpressionChecked,
   type ExpressionEntry,
   type LowPool,
 } from '@/hooks/use-expressions'
 import { useAuth } from '@/hooks/use-auth'
+import { useSelection } from '@/hooks/use-selection'
 import { useStreams } from '@/hooks/use-observability'
 import { dateTime, streamLabel } from '@/lib/format'
+import {
+  listOrderField,
+  listOrderTabs,
+  nextListOrder,
+  type ListOrder,
+} from '@/lib/list-ops'
 import { UnauthorizedError } from '@/lib/api'
 
 /** 页大小；一屏多一点为宜，太长要一直滚。后端路由 le=200，取值留足余量。 */
@@ -73,7 +85,7 @@ const CHECKED_LABEL: Record<string, string> = {
  * @param props.entry 表达数据。
  * @param props.streamLabelOf 按 streamId 取会话标签的函数。
  * @param props.pending 该行是否有写入在飞（复核或删除）。
- * @param props.selected 该行是否已被勾选进批量删除的选择集。
+ * @param props.selected 该行是否已被勾选进批量动作的选择集。
  * @param props.onReview 点击确认/驳回时的回调。
  * @param props.onDelete 点击删除时的回调；由调用方弹确认框，本组件只发起。
  * @param props.onToggleSelect 勾选框切换时的回调，参数为行 ID。
@@ -105,7 +117,7 @@ function ExpressionRow({
       )}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        {/* 勾选框在行首，只喂批量删除；行内确认/驳回/删除与选择集互不影响。 */}
+        {/* 勾选框在行首，只喂批量动作；行内确认/驳回/删除与选择集互不影响。 */}
         <Checkbox
           checked={selected}
           onChange={() => onToggleSelect(entry.id)}
@@ -117,6 +129,7 @@ function ExpressionRow({
           「{entry.style}」
         </span>
         <Chip label="用过" value={`${entry.useCount} 次`} />
+        <Chip label="学到" value={dateTime(entry.createdAt)} />
         {entry.lastUsedAt !== null ? (
           <Chip label="本机用过" value={dateTime(entry.lastUsedAt)} />
         ) : null}
@@ -157,7 +170,7 @@ function ExpressionRow({
 /**
  * 渲染表达方式页。
  *
- * @returns 页面容器元素；筛选变化自动回到第一页。
+ * @returns 页面容器元素；筛选变化自动回到第一页并清空选择集。
  */
 export function ExpressionsPage() {
   const { handleUnauthorized } = useAuth()
@@ -166,7 +179,7 @@ export function ExpressionsPage() {
   const [scope, setScope] = useState('all')
   /** all=不限复核状态；其余为 0/1/-1。 */
   const [checkedFilter, setCheckedFilter] = useState('all')
-  const [order, setOrder] = useState<'use_desc' | 'use_asc'>('use_desc')
+  const [order, setOrder] = useState<ListOrder>('time_desc')
   const [page, setPage] = useState(0)
   /** 复核写入后递增，触发列表重新拉取。 */
   const [refreshKey, setRefreshKey] = useState(0)
@@ -175,12 +188,9 @@ export function ExpressionsPage() {
   const [reviewError, setReviewError] = useState('')
   /** 待确认删除的行；null 表示确认弹窗关闭。删除不可逆，必须过一道确认。 */
   const [pendingDelete, setPendingDelete] = useState<ExpressionEntry | null>(null)
-  /** 已勾选待批量删除的行 ID。跨页保留（可翻几页攒一批再删），筛选变化时清空
-      ——换了筛选条件后选择集里剩什么已经看不见了，留着等于埋雷。 */
-  const [selected, setSelected] = useState<Set<number>>(new Set())
   /** 批量删除确认弹窗开关。 */
   const [batchConfirm, setBatchConfirm] = useState(false)
-  /** 批量删除在飞；期间禁用整个工具栏。 */
+  /** 批量写入在飞；期间禁用整个工具栏。 */
   const [batchPending, setBatchPending] = useState(false)
   /** 上一次批量删除后候选数跌破下限的会话，由后端回报。非空说明那些会话的
       表达注入已经停摆，必须持续显示到下一次删除为止。 */
@@ -197,6 +207,8 @@ export function ExpressionsPage() {
     refreshKey,
   })
 
+  const selection = useSelection(entries.map((entry) => entry.id))
+
   const streamLabelOf = (id: number) => {
     const stream = streams.find((item) => item.id === id)
     return stream ? streamLabel(stream) : `会话 #${id}`
@@ -205,7 +217,7 @@ export function ExpressionsPage() {
   const changeFilter = (apply: () => void) => {
     apply()
     setPage(0)
-    setSelected(new Set())
+    selection.clear()
   }
 
   const review = async (id: number, next: ExpressionChecked) => {
@@ -237,25 +249,24 @@ export function ExpressionsPage() {
     }
   }
 
-  const toggleSelect = (id: number) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  const pageIds = entries.map((entry) => entry.id)
-  const pageAllSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
-
-  const toggleSelectPage = () => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (pageAllSelected) pageIds.forEach((id) => next.delete(id))
-      else pageIds.forEach((id) => next.add(id))
-      return next
-    })
+  const reviewSelected = async (next: ExpressionChecked) => {
+    setBatchPending(true)
+    setReviewError('')
+    try {
+      const result = await setExpressionsChecked(selection.ids, next)
+      selection.clear()
+      toast.success(
+        next === 1
+          ? `已确认 ${result.updated} 条；这些说法不再参与自动淘汰`
+          : `已驳回 ${result.updated} 条；它们退出候选池，行仍保留作为判过的记号`,
+      )
+      setRefreshKey((key) => key + 1)
+    } catch (err: unknown) {
+      if (err instanceof UnauthorizedError) handleUnauthorized(err)
+      else setReviewError(`批量复核失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBatchPending(false)
+    }
   }
 
   const removeSelected = async () => {
@@ -263,9 +274,10 @@ export function ExpressionsPage() {
     setBatchPending(true)
     setReviewError('')
     try {
-      const result = await deleteExpressions([...selected])
-      setSelected(new Set())
+      const result = await deleteExpressions(selection.ids)
+      selection.clear()
       setLowPools(result.lowPools)
+      toast.success(`已删除 ${result.deleted} 条表达方式`)
       // 删完当前页可能整页落空，把页码夹回新的末页，避免停在空白分页上。
       const nextPageCount = Math.max(1, Math.ceil((total - result.deleted) / PAGE_SIZE))
       setPage((current) => Math.min(current, nextPageCount - 1))
@@ -285,16 +297,14 @@ export function ExpressionsPage() {
       <PageHeader
         eyebrow="YUELI · CONSOLE"
         title="表达方式"
-        subtitle="她说话时可选的说法与情境，按使用次数排序。"
+        subtitle="她说话时可选的说法与情境，默认后学到的排在最前。"
       />
       <div className="flex flex-wrap items-end gap-3">
+        {/* 两个按钮表达四种口径：点已激活的按钮翻方向，箭头写在激活项的文案里。 */}
         <SegmentedTabs
-          tabs={[
-            { value: 'use_desc', label: '用得最多' },
-            { value: 'use_asc', label: '用得最少' },
-          ]}
-          value={order}
-          onChange={(next) => changeFilter(() => setOrder(next))}
+          tabs={listOrderTabs(order)}
+          value={listOrderField(order)}
+          onChange={(field) => changeFilter(() => setOrder(nextListOrder(order, field)))}
         />
         <SegmentedTabs
           tabs={[
@@ -335,36 +345,38 @@ export function ExpressionsPage() {
       {!loading && !error && entries.length === 0 ? <Empty>没有符合条件的表达方式。</Empty> : null}
       {entries.length > 0 ? (
         <>
-          <div className="flex flex-wrap items-center gap-3">
-            <Checkbox
-              checked={pageAllSelected}
-              onChange={toggleSelectPage}
-              disabled={batchPending}
-              label="全选本页"
-            />
-            <span className="text-sm text-muted-foreground">
-              {selected.size > 0 ? `已选 ${selected.size} 条（可翻页继续选）` : '未选中任何条目'}
-            </span>
-            {selected.size > 0 ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={batchPending}
-                onClick={() => setSelected(new Set())}
-              >
-                清除选择
-              </Button>
-            ) : null}
+          <BatchBar
+            pageAllSelected={selection.pageAllSelected}
+            onTogglePage={selection.togglePage}
+            selectedCount={selection.size}
+            onClear={selection.clear}
+            busy={batchPending}
+          >
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={batchPending || selection.size === 0}
+              onClick={() => void reviewSelected(1)}
+            >
+              批量确认
+            </Button>
             <Button
               variant="danger-outline"
               size="sm"
-              className="ml-auto"
-              disabled={batchPending || selected.size === 0}
+              disabled={batchPending || selection.size === 0}
+              onClick={() => void reviewSelected(-1)}
+            >
+              批量驳回
+            </Button>
+            <Button
+              variant="danger-outline"
+              size="sm"
+              disabled={batchPending || selection.size === 0}
               onClick={() => setBatchConfirm(true)}
             >
-              {batchPending ? '删除中…' : `批量删除 ${selected.size} 条`}
+              {`批量删除 ${selection.size} 条`}
             </Button>
-          </div>
+          </BatchBar>
           <Card>
             <CardBody className="p-0">
               <ol>
@@ -374,10 +386,10 @@ export function ExpressionsPage() {
                     entry={entry}
                     streamLabelOf={streamLabelOf}
                     pending={pendingId === entry.id || batchPending}
-                    selected={selected.has(entry.id)}
+                    selected={selection.selected.has(entry.id)}
                     onReview={review}
                     onDelete={setPendingDelete}
-                    onToggleSelect={toggleSelect}
+                    onToggleSelect={selection.toggle}
                   />
                 ))}
               </ol>
@@ -409,16 +421,16 @@ export function ExpressionsPage() {
 
       <ConfirmDialog
         open={batchConfirm}
-        title={`删除选中的 ${selected.size} 条表达方式`}
+        title={`删除选中的 ${selection.size} 条表达方式`}
         description={
           <>
-            <p>删除不可逆，且同样的说法日后可以被重新学到。要让某条永久停止生效请改用「驳回」。</p>
+            <p>删除不可逆，且同样的说法日后可以被重新学到。要让某条永久停止生效请改用「批量驳回」。</p>
             <p className="mt-1">
               候选数跌破起用下限的会话会直接停止注入表达，删除后若发生会在页面上报出来。
             </p>
           </>
         }
-        confirmText={`删除 ${selected.size} 条`}
+        confirmText={`删除 ${selection.size} 条`}
         onCancel={() => setBatchConfirm(false)}
         onConfirm={() => void removeSelected()}
       />
