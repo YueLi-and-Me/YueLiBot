@@ -35,9 +35,11 @@ import type {
  * 重写即补齐两段及默认值。
  * 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊；
  * 旧文件按 1.3.0 解析后重写即补齐该字段及默认值。
+ * 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关；
+ * 旧文件按 1.4.0 解析后重写即补齐该段及默认值。
  */
-export const CONFIG_VERSION = '1.4.0'
-const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0'] as const
+export const CONFIG_VERSION = '1.5.0'
+const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0'] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
@@ -209,6 +211,23 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   vector: {
     enabled: false,
+  },
+  memory_feedback: {
+    enabled: false,
+    window_hours: 12,
+    check_interval_minutes: 30,
+    batch_size: 20,
+    auto_apply_threshold: 0.85,
+    max_feedback_messages: 30,
+    prefilter_enabled: true,
+    mark_enabled: true,
+    hard_filter_enabled: true,
+    profile_refresh_enabled: true,
+    profile_force_refresh_on_read: true,
+    episode_rebuild_enabled: true,
+    episode_query_block_enabled: true,
+    reconcile_interval_minutes: 5,
+    reconcile_batch_size: 20,
   },
   log: {
     level: 'INFO', console_level: '', file_level: '',
@@ -1326,6 +1345,7 @@ function readSplitConfig(directory: string): YueliConfig {
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
     },
+    memory_feedback: parseMemoryFeedback(features, featuresPath),
     log: parseLog(features, featuresPath),
     advanced: {
       https_proxy: stringAt(advanced, 'https_proxy', featuresPath),
@@ -1460,6 +1480,95 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
     ),
     event_retention_count: eventRetentionCount,
     event_retention_hours: eventRetentionHours,
+  }
+}
+
+/**
+ * 解析反馈纠错（N4）链路配置段，并为缺失字段合并默认值。
+ *
+ * @param features 已解析的功能配置文档。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 完整的反馈纠错运行配置。
+ * @throws Error 当配置段不是表、布尔字段类型无效或数值越界时抛出。
+ * @remarks 该段由 1.5.0 引入：旧版本文件没有它，按默认值补齐后由整目录重写写回。
+ */
+function parseMemoryFeedback(
+  features: Record<string, unknown>, path: string,
+): YueliConfig['memory_feedback'] {
+  const fallback = structuredClone(DEFAULT_CONFIG.memory_feedback)
+  if (features.memory_feedback === undefined) return fallback
+  const section = recordAt(features, 'memory_feedback', path)
+  const sectionPath = `${path} 的 memory_feedback`
+  const windowHours = numberAtOr(section, 'window_hours', fallback.window_hours, sectionPath)
+  if (windowHours <= 0) {
+    throw new Error(`${sectionPath}.window_hours 必须大于 0`)
+  }
+  const autoApplyThreshold = numberAtOr(
+    section, 'auto_apply_threshold', fallback.auto_apply_threshold, sectionPath,
+  )
+  if (autoApplyThreshold < 0 || autoApplyThreshold > 1) {
+    throw new Error(`${sectionPath}.auto_apply_threshold 必须在 0 到 1 之间`)
+  }
+  const checkIntervalMinutes = numberAtOr(
+    section, 'check_interval_minutes', fallback.check_interval_minutes, sectionPath,
+  )
+  if (!Number.isInteger(checkIntervalMinutes) || checkIntervalMinutes < 1) {
+    throw new Error(`${sectionPath}.check_interval_minutes 必须是正整数`)
+  }
+  const batchSize = numberAtOr(section, 'batch_size', fallback.batch_size, sectionPath)
+  if (!Number.isInteger(batchSize) || batchSize < 1) {
+    throw new Error(`${sectionPath}.batch_size 必须是正整数`)
+  }
+  const maxFeedbackMessages = numberAtOr(
+    section, 'max_feedback_messages', fallback.max_feedback_messages, sectionPath,
+  )
+  if (!Number.isInteger(maxFeedbackMessages) || maxFeedbackMessages < 1) {
+    throw new Error(`${sectionPath}.max_feedback_messages 必须是正整数`)
+  }
+  const reconcileIntervalMinutes = numberAtOr(
+    section, 'reconcile_interval_minutes', fallback.reconcile_interval_minutes, sectionPath,
+  )
+  if (!Number.isInteger(reconcileIntervalMinutes) || reconcileIntervalMinutes < 1) {
+    throw new Error(`${sectionPath}.reconcile_interval_minutes 必须是正整数`)
+  }
+  const reconcileBatchSize = numberAtOr(
+    section, 'reconcile_batch_size', fallback.reconcile_batch_size, sectionPath,
+  )
+  if (!Number.isInteger(reconcileBatchSize) || reconcileBatchSize < 1) {
+    throw new Error(`${sectionPath}.reconcile_batch_size 必须是正整数`)
+  }
+  return {
+    enabled: section.enabled === undefined
+      ? fallback.enabled
+      : booleanAt(section, 'enabled', sectionPath),
+    window_hours: windowHours,
+    check_interval_minutes: checkIntervalMinutes,
+    batch_size: batchSize,
+    auto_apply_threshold: autoApplyThreshold,
+    max_feedback_messages: maxFeedbackMessages,
+    prefilter_enabled: section.prefilter_enabled === undefined
+      ? fallback.prefilter_enabled
+      : booleanAt(section, 'prefilter_enabled', sectionPath),
+    mark_enabled: section.mark_enabled === undefined
+      ? fallback.mark_enabled
+      : booleanAt(section, 'mark_enabled', sectionPath),
+    hard_filter_enabled: section.hard_filter_enabled === undefined
+      ? fallback.hard_filter_enabled
+      : booleanAt(section, 'hard_filter_enabled', sectionPath),
+    profile_refresh_enabled: section.profile_refresh_enabled === undefined
+      ? fallback.profile_refresh_enabled
+      : booleanAt(section, 'profile_refresh_enabled', sectionPath),
+    profile_force_refresh_on_read: section.profile_force_refresh_on_read === undefined
+      ? fallback.profile_force_refresh_on_read
+      : booleanAt(section, 'profile_force_refresh_on_read', sectionPath),
+    episode_rebuild_enabled: section.episode_rebuild_enabled === undefined
+      ? fallback.episode_rebuild_enabled
+      : booleanAt(section, 'episode_rebuild_enabled', sectionPath),
+    episode_query_block_enabled: section.episode_query_block_enabled === undefined
+      ? fallback.episode_query_block_enabled
+      : booleanAt(section, 'episode_query_block_enabled', sectionPath),
+    reconcile_interval_minutes: reconcileIntervalMinutes,
+    reconcile_batch_size: reconcileBatchSize,
   }
 }
 
@@ -2222,6 +2331,40 @@ surfaces = ${tomlStringArray(cfg.perception.surfaces)}
 # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖
 enabled = ${tomlValue(cfg.vector.enabled)}
 
+# 反馈纠错（N4）：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
+# 整条链路默认关闭，开启是显式动作。
+[memory_feedback]
+# 总开关；关闭时整条链路零写入
+enabled = ${tomlValue(cfg.memory_feedback.enabled)}
+# 从记忆进提示词起算的反馈观察窗口（小时）
+window_hours = ${tomlValue(cfg.memory_feedback.window_hours)}
+# 纠错轮询间隔（分钟）
+check_interval_minutes = ${tomlValue(cfg.memory_feedback.check_interval_minutes)}
+# 每轮最多处理的待观察项
+batch_size = ${tomlValue(cfg.memory_feedback.batch_size)}
+# 自动应用取代的最低置信度
+auto_apply_threshold = ${tomlValue(cfg.memory_feedback.auto_apply_threshold)}
+# 每个待观察项最多读取的窗口内用户消息数
+max_feedback_messages = ${tomlValue(cfg.memory_feedback.max_feedback_messages)}
+# 关键词预筛开关；关闭会显著增加模型调用
+prefilter_enabled = ${tomlValue(cfg.memory_feedback.prefilter_enabled)}
+# 是否给受影响事实写「已被纠正」标记
+mark_enabled = ${tomlValue(cfg.memory_feedback.mark_enabled)}
+# 是否把带标记的事实硬过滤出召回
+hard_filter_enabled = ${tomlValue(cfg.memory_feedback.hard_filter_enabled)}
+# 纠错后是否把相关人物画像置脏
+profile_refresh_enabled = ${tomlValue(cfg.memory_feedback.profile_refresh_enabled)}
+# 画像脏时读取是否强制刷新而非复用旧快照
+profile_force_refresh_on_read = ${tomlValue(cfg.memory_feedback.profile_force_refresh_on_read)}
+# 纠错后是否把受影响情节排进重建
+episode_rebuild_enabled = ${tomlValue(cfg.memory_feedback.episode_rebuild_enabled)}
+# 情节待重建期间是否屏蔽它的召回
+episode_query_block_enabled = ${tomlValue(cfg.memory_feedback.episode_query_block_enabled)}
+# 二阶段一致性协调任务的轮询间隔（分钟）
+reconcile_interval_minutes = ${tomlValue(cfg.memory_feedback.reconcile_interval_minutes)}
+# 协调任务每轮的批大小
+reconcile_batch_size = ${tomlValue(cfg.memory_feedback.reconcile_batch_size)}
+
 [log]
 # 全局日志等级：DEBUG / INFO / WARNING / ERROR / CRITICAL
 level = ${tomlValue(cfg.log.level)}
@@ -2324,6 +2467,26 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   }
   if (!Number.isInteger(cfg.log.event_retention_hours) || cfg.log.event_retention_hours < 0) {
     throw new Error('事件保留小时数必须是非负整数')
+  }
+  if (!(cfg.memory_feedback.window_hours > 0)) {
+    throw new Error('反馈观察窗口小时数必须大于 0')
+  }
+  if (
+    cfg.memory_feedback.auto_apply_threshold < 0
+    || cfg.memory_feedback.auto_apply_threshold > 1
+  ) {
+    throw new Error('自动应用取代的最低置信度必须在 0 到 1 之间')
+  }
+  for (const [label, value] of [
+    ['纠错轮询间隔分钟数', cfg.memory_feedback.check_interval_minutes],
+    ['每轮最多处理的待观察项数', cfg.memory_feedback.batch_size],
+    ['每个待观察项最多读取的用户消息数', cfg.memory_feedback.max_feedback_messages],
+    ['一致性协调轮询间隔分钟数', cfg.memory_feedback.reconcile_interval_minutes],
+    ['协调任务每轮的批大小', cfg.memory_feedback.reconcile_batch_size],
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`${label}必须是正整数`)
+    }
   }
   if (!Array.isArray(cfg.perception.surfaces)) {
     throw new Error('perception.surfaces 必须是数组')

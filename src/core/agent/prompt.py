@@ -271,11 +271,14 @@ class MemoryFactItem:
     :ivar slot: 单值槽位名；空串表示多值事实，不参与冲突分组。
     :ivar conflicting: 同一槽位下是否还有其他活跃事实与之对不上；为真时
         本条目与同槽成员并排渲染并明确标注。
+    :ivar fact_id: 事实行 ID；反馈纠错的锚点登记用，``0`` 表示来源不明的
+        纯文本条目。
     """
 
     content: str
     slot: str = ''
     conflicting: bool = False
+    fact_id: int = 0
 
 
 def _memory_block(title: str, values: Optional[List[str]], instruction: str) -> str:

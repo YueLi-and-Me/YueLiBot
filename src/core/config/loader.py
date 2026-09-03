@@ -328,6 +328,7 @@ def _load_split_config(directory: Path) -> Config:
         vision=features_vision,
         perception=features_perception,
         vector=features_vector,
+        memory_feedback=features_document.memory_feedback,
         log=features_document.log,
         advanced=features_document.advanced,
     )
@@ -404,6 +405,7 @@ RESTART_REQUIRED_PREFIXES: Tuple[str, ...] = (
     'vision.fullscreen_silent',   # 视觉采集链路启动形态
     'vision.capture_mode',        # 同上
     'vector.enabled',             # VectorService 启动装配
+    'memory_feedback',            # MemoryFeedbackService 启动装配；关闭时根本不建服务
     'log',                        # 日志管道、快照与事件保留策略启动定型
 )
 DEFERRED_PREFIXES: Tuple[str, ...] = (

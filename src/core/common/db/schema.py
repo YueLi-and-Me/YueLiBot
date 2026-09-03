@@ -93,10 +93,13 @@ CREATE TABLE IF NOT EXISTS episodes (
   started_at INTEGER NOT NULL,
   ended_at   INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  stream_id  INTEGER NOT NULL DEFAULT 1
+  stream_id  INTEGER NOT NULL DEFAULT 1,
+  -- 纠错命中后置 1，等待后台重摘要；待重建期间可选择屏蔽召回（v25 加）。
+  needs_rebuild INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_time ON episodes(ended_at DESC);
 CREATE INDEX IF NOT EXISTS idx_episodes_stream_time ON episodes(stream_id, ended_at DESC);
+CREATE INDEX IF NOT EXISTS idx_episodes_rebuild ON episodes(needs_rebuild);
 
 CREATE TABLE IF NOT EXISTS episode_cues (
   id         INTEGER PRIMARY KEY,
@@ -370,6 +373,35 @@ CREATE TABLE IF NOT EXISTS activities (
   source         TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(started_at DESC);
+
+-- -------------------------------------------------------------- N4 反馈纠错（v25 加）
+-- 待观察项：一条事实真的进了提示词时登记一行，窗口内等待用户纠正信号。
+CREATE TABLE IF NOT EXISTS memory_feedback_pending (
+  id         INTEGER PRIMARY KEY,
+  fact_id    INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+  person_id  INTEGER NOT NULL,
+  stream_id  INTEGER NOT NULL,
+  entered_at INTEGER NOT NULL,
+  status     TEXT    NOT NULL DEFAULT 'pending',
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(fact_id, stream_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_pending_status ON memory_feedback_pending(status, entered_at);
+
+-- 纠错结果：判定成立的纠正留档；marked=1 表示该事实带「已被纠正」标记。
+CREATE TABLE IF NOT EXISTS memory_feedback_results (
+  id                INTEGER PRIMARY KEY,
+  fact_id           INTEGER NOT NULL,
+  person_id         INTEGER NOT NULL,
+  stream_id         INTEGER NOT NULL,
+  confidence        REAL    NOT NULL,
+  corrected_content TEXT    NOT NULL DEFAULT '',
+  new_fact_id       INTEGER NOT NULL DEFAULT 0,
+  marked            INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_results_fact ON memory_feedback_results(fact_id, marked);
 """
 
 SEED = """

@@ -129,6 +129,7 @@ from src.core.persona.state import (
 )
 from src.core.platform_io.broker import PlatformBroker
 from src.core.platform_io.registry import StreamRegistry
+from src.core.services.memory_feedback import marked_fact_ids, register_prompt_entries
 from src.core.platform_io.types import (
     ConversationContext,
     IdentityRef,
@@ -2744,21 +2745,36 @@ class ChatService:
         schedule_desc = (self._schedule.describe(now, self.current_sleep())
                          if self._schedule else '')
         render_params: dict[str, dict[str, str]] = {}
+        feedback_cfg = self._cfg.memory_feedback
+        proactive_facts = _facts_for_prompt(
+            self.memory,
+            context.person.id,
+            self.memory.top_facts(
+                context.person.id, 5, now,
+                stream_kind=context.stream.kind,
+                private_in_group=self._private_facts_in_group,
+            ),
+            hard_filter_marked=feedback_cfg.enabled and feedback_cfg.hard_filter_enabled,
+        )
+        # N4 锚点：主动消息注入的事实同样进入观察；链路默认关闭，关闭时零写入。
+        if feedback_cfg.enabled and proactive_facts:
+            register_prompt_entries(
+                self._db,
+                [(item.fact_id, context.person.id)
+                 for item in proactive_facts if item.fact_id],
+                context.stream.id,
+                now,
+            )
         base_prompt = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
             persona=persona_desc,
             acquaintance=acquaintance,
-            facts=_facts_for_prompt(
-                self.memory,
-                context.person.id,
-                self.memory.top_facts(
-                    context.person.id, 5, now,
-                    stream_kind=context.stream.kind,
-                    private_in_group=self._private_facts_in_group,
-                ),
-            ),
+            facts=proactive_facts,
             episodes=[episode.summary for episode in self.memory.recent_episodes(
-                context.stream.id, 2
+                context.stream.id, 2,
+                exclude_pending_rebuild=(
+                    feedback_cfg.enabled and feedback_cfg.episode_query_block_enabled
+                ),
             )],
             schedule=schedule_desc,
             # 主动开口同样从 expressions 表挑贴合当前情境的说法；没有独立候选源。
@@ -3379,14 +3395,20 @@ class ChatService:
             不强化召回事实。
         """
         fact_candidates = self._recall_turn_facts(context, query, impression, now)
+        exclude_rebuild = (
+            self._cfg.memory_feedback.enabled
+            and self._cfg.memory_feedback.episode_query_block_enabled
+        )
         recalled = self.memory.recall_episodes(
             context.stream.id,
             query,
             self._recalled_episode_limit,
+            exclude_pending_rebuild=exclude_rebuild,
         )
         recent = self.memory.recent_episodes(
             context.stream.id,
             self._recent_episode_limit,
+            exclude_pending_rebuild=exclude_rebuild,
         )
         seen_ids: set[int] = set()
         episodes = []
@@ -3493,7 +3515,8 @@ class ChatService:
             省略回复风格、语调与表达样本三块。
         :return: 首项为 system 消息；传统模式后接裁剪历史，工具模式后接独立的
             运行时上下文 item 与裁剪历史。
-        副作用：只读取配置和会话语调，不读写数据库、不调用模型。
+        副作用：读取配置和会话语调；反馈纠错链路开启时登记「事实进提示词」锚点，
+            其余情况不读写数据库、不调用模型。
         """
         selected_facts = (
             prepared.fact_candidates[:self._fact_recall_limit]
@@ -3503,15 +3526,27 @@ class ChatService:
         prompt_kwargs = self._prompt_config_kwargs(
             prepared.context.relationship_signals_enabled,
         )
+        feedback_cfg = self._cfg.memory_feedback
+        fact_items = _facts_for_prompt(
+            self.memory,
+            prepared.context.person.id,
+            selected_facts,
+            hard_filter_marked=feedback_cfg.enabled and feedback_cfg.hard_filter_enabled,
+        )
+        # N4 锚点：事实真的进了提示词才登记待观察；链路默认关闭，关闭时零写入。
+        if feedback_cfg.enabled and fact_items:
+            register_prompt_entries(
+                self._db,
+                [(item.fact_id, prepared.context.person.id)
+                 for item in fact_items if item.fact_id],
+                prepared.context.stream.id,
+                prepared.now,
+            )
         shared_context = {
             'now': datetime.fromtimestamp(prepared.now / 1000),
             'persona': prepared.persona,
             'acquaintance': prepared.acquaintance,
-            'facts': _facts_for_prompt(
-                self.memory,
-                prepared.context.person.id,
-                selected_facts,
-            ),
+            'facts': fact_items,
             'episodes': prepared.episodes,
             'activity': prepared.activity,
             'schedule': prepared.schedule,
@@ -3528,6 +3563,10 @@ class ChatService:
             'impressions': [
                 summary for _, summary in profiles_for_injection(
                     self._db, self._present_person_ids(prepared.context),
+                    skip_dirty=(
+                        feedback_cfg.enabled
+                        and feedback_cfg.profile_force_refresh_on_read
+                    ),
                 )
             ],
             'render_params': render_params,
@@ -5973,6 +6012,8 @@ def _facts_for_prompt(
     memory: MemoryStore,
     person_id: int,
     facts: Sequence[RecalledFact],
+    *,
+    hard_filter_marked: bool = False,
 ) -> list[MemoryFactItem]:
     """把召回事实组装成提示词条目，同槽冲突的整组标注并补齐缺失成员。
 
@@ -5983,10 +6024,19 @@ def _facts_for_prompt(
     :param memory: 记忆存储实例。
     :param person_id: 事实所属人物 ID。
     :param facts: 本轮已选中的召回事实。
+    :param hard_filter_marked: 为真时把带「已被纠正」标记的事实整体滤出注入
+        （含冲突组补齐的成员）；反馈纠错关闭或开关关闭时保持原行为。
     :return: 供 ``build_system_prompt`` 渲染的事实条目列表。
-    副作用：只读 facts 表。
+    副作用：只读 facts 与 memory_feedback_results 表。
     """
 
+    if not facts:
+        return []
+    marked = (
+        marked_fact_ids(memory._db, [fact.id for fact in facts])
+        if hard_filter_marked else set()
+    )
+    facts = [fact for fact in facts if fact.id not in marked]
     if not facts:
         return []
     groups = memory.slot_conflicts(person_id, [fact.id for fact in facts])
@@ -5995,6 +6045,7 @@ def _facts_for_prompt(
             content=fact.content,
             slot=groups[fact.id][0] if fact.id in groups else '',
             conflicting=fact.id in groups,
+            fact_id=fact.id,
         )
         for fact in facts
     ]
@@ -6003,9 +6054,9 @@ def _facts_for_prompt(
     appended: set[int] = set()
     for slot, members in groups.values():
         for member_id, content in members:
-            if member_id not in selected and member_id not in appended:
+            if member_id not in selected and member_id not in appended and member_id not in marked:
                 appended.add(member_id)
-                items.append(MemoryFactItem(content=content, slot=slot, conflicting=True))
+                items.append(MemoryFactItem(content=content, slot=slot, conflicting=True, fact_id=member_id))
     return items
 
 

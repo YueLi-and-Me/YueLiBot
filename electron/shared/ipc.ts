@@ -514,6 +514,39 @@ export interface YueliConfig {
   vector: {
     enabled: boolean
   }
+  /** 反馈纠错链路（N4）的开关与节拍；整条链路默认关闭，开启是显式动作。 */
+  memory_feedback: {
+    /** 总开关；关闭时整条链路零写入 */
+    enabled: boolean
+    /** 从记忆进提示词起算的反馈观察窗口（小时），必须大于 0 */
+    window_hours: number
+    /** 纠错轮询间隔（分钟） */
+    check_interval_minutes: number
+    /** 每轮最多处理的待观察项 */
+    batch_size: number
+    /** 自动应用取代的最低置信度，范围 0~1 */
+    auto_apply_threshold: number
+    /** 每个待观察项最多读取的窗口内用户消息数 */
+    max_feedback_messages: number
+    /** 关键词预筛开关；关闭会显著增加模型调用 */
+    prefilter_enabled: boolean
+    /** 是否给受影响事实写「已被纠正」标记 */
+    mark_enabled: boolean
+    /** 是否把带标记的事实硬过滤出召回 */
+    hard_filter_enabled: boolean
+    /** 纠错后是否把相关人物画像置脏 */
+    profile_refresh_enabled: boolean
+    /** 画像脏时读取是否强制刷新而非复用旧快照 */
+    profile_force_refresh_on_read: boolean
+    /** 纠错后是否把受影响情节排进重建 */
+    episode_rebuild_enabled: boolean
+    /** 情节待重建期间是否屏蔽它的召回 */
+    episode_query_block_enabled: boolean
+    /** 二阶段一致性协调任务的轮询间隔（分钟） */
+    reconcile_interval_minutes: number
+    /** 协调任务每轮的批大小 */
+    reconcile_batch_size: number
+  }
   log: {
     level: string; console_level: string; file_level: string
     level_style: 'lite' | 'compact' | 'full'

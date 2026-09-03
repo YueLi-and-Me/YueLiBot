@@ -101,6 +101,7 @@ EVENT_LABELS: Dict[str, str] = {
     "memory_fact_conflict": "事实冲突并存",
     "memory_fact_superseded": "事实已被取代",
     "memory_fact_supersede_dropped": "事实取代声明已丢弃",
+    "memory_fact_corrected": "记忆已被纠正",
     "meta_schema_version_unparsable": "数据库版本无法解析",
     "model_all_failed": "全部候选模型均失败",
     "model_switch": "切换候选模型",

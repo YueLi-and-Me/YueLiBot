@@ -610,7 +610,13 @@ class MemoryStore:
         self._db.commit()
         return episode_id
 
-    def recent_episodes(self, stream_id: int, limit: int = 4) -> list[RecalledEpisode]:
+    def recent_episodes(
+        self,
+        stream_id: int,
+        limit: int = 4,
+        *,
+        exclude_pending_rebuild: bool = False,
+    ) -> list[RecalledEpisode]:
         """读取指定 stream 最近结束的情节摘要。
 
         摘要失败留下的 ``UNSUMMARIZED_KIND`` 占位情节不参与召回：它只用于推进
@@ -618,13 +624,16 @@ class MemoryStore:
 
         :param stream_id: 目标 stream ID。
         :param limit: 最多返回的情节数，默认值为 4。
+        :param exclude_pending_rebuild: 为真时排除待纠错重建的情节
+            （``needs_rebuild = 1``）；反馈纠错的情节屏蔽开关关闭时保持原行为。
         :return: 按结束时间倒序排列的情节列表，分数固定为 1.0；不含占位情节。
         副作用：只读 episodes 表。
         """
         rows = self._db.execute(
             '''SELECT id, summary, kind, ended_at FROM episodes
-               WHERE stream_id = ? AND kind != ? ORDER BY ended_at DESC LIMIT ?''',
-            (stream_id, UNSUMMARIZED_KIND, limit)
+               WHERE stream_id = ? AND kind != ? AND (? = 0 OR needs_rebuild = 0)
+               ORDER BY ended_at DESC LIMIT ?''',
+            (stream_id, UNSUMMARIZED_KIND, int(exclude_pending_rebuild), limit)
         ).fetchall()
         return [RecalledEpisode(id=r[0], summary=r[1], kind=r[2], ended_at=r[3], score=1.0)
                 for r in rows]
@@ -656,12 +665,21 @@ class MemoryStore:
                  'streamId': r[4],
                  'cues': by_id.get(r[0], [])} for r in rows]
 
-    def recall_episodes(self, stream_id: int, query: str, limit: int = 3) -> list[RecalledEpisode]:
+    def recall_episodes(
+        self,
+        stream_id: int,
+        query: str,
+        limit: int = 3,
+        *,
+        exclude_pending_rebuild: bool = False,
+    ) -> list[RecalledEpisode]:
         """使用 cues FTS5 召回指定 stream 的相关情节。
 
         :param stream_id: 目标 stream ID。
         :param query: 待匹配的自然语言查询。
         :param limit: 最多返回的情节数，默认值为 3。
+        :param exclude_pending_rebuild: 为真时排除待纠错重建的情节
+            （``needs_rebuild = 1``）；反馈纠错的情节屏蔽开关关闭时保持原行为。
         :return: 按 BM25 归一化分数降序截取的情节列表；查询无有效词时返回空列表。
         :raises sqlite3.Error: FTS 查询失败。
         副作用：只读 FTS 和情节表。
@@ -675,8 +693,9 @@ class MemoryStore:
                JOIN episode_cues c ON c.id = cues_fts.rowid
                JOIN episodes e     ON e.id = c.episode_id
                WHERE cues_fts MATCH ? AND e.stream_id = ?
+                 AND (? = 0 OR e.needs_rebuild = 0)
                ORDER BY bm ASC LIMIT ?''',
-            (match, stream_id, limit * 4)
+            (match, stream_id, int(exclude_pending_rebuild), limit * 4)
         ).fetchall()
         best: dict[int, RecalledEpisode] = {}
         for r in rows:
