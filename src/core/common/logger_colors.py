@@ -65,6 +65,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "memory.embed": ("#5fafff", False),
     "memory.pagerank": ("#5f87ff", True),
     "memory.quantize": ("#8787ff", False),
+    "memory.tuning": ("#87afd7", True),
     "services.vector": ("#af87ff", True),
     # 业务
     "services.chat": ("#5fff5f", True),
@@ -125,6 +126,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "memory.embed": "记忆嵌入",
     "memory.pagerank": "图谱重排",
     "memory.quantize": "向量量化",
+    "memory.tuning": "检索调优",
     "services.vector": "向量召回",
     "services.chat": "对话",
     "services.chat_image": "聊天图片",
