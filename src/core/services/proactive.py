@@ -27,7 +27,7 @@ from src.core.awareness.interest import (
     minutes_to_full, spend, wants_to_speak,
 )
 from src.core.awareness.signals import Classified
-from src.core.awareness.sleep import SleepStateController
+from src.core.awareness.sleep import SleepState, SleepStateController
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 from src.core.observe import events as trace
@@ -239,6 +239,32 @@ class AwarenessService:
         """
 
         return self._sensor.vision if self._sensor else None
+
+    @property
+    def signal(self) -> Classified | None:
+        """返回最近一次前台事件的分类结果。
+
+        服务本身不另存一份分类：``_interest_factors`` 与 ``observability_fields``
+        取的都是 ``_sensor.signal``，这里只是把同一条路径开放给外部只读观察，
+        避免调用方去读私有属性而在信号源被替换时静默失效。
+
+        :return: 最近一次 ``on_foreground`` 产出的分类；尚未收到前台事件或未装配
+            信号源时返回 ``None``。
+        """
+
+        return self._sensor.signal if self._sensor else None
+
+    def current_sleep(self, now: int | None = None) -> SleepState:
+        """读取由活动时间线派生的当前睡眠状态。
+
+        与 ``startup`` 注册给聊天服务的提供者是同一条路径；未调用 ``startup``
+        的场景（自检、单测）也能直接取到，不必绕经聊天服务。
+
+        :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+        :return: 含 ``asleep`` / ``just_woke`` / ``resting`` 的睡眠状态。
+        """
+
+        return self._sleep.current(now)
 
     def observability_fields(self, now: int | None = None) -> dict:
         """构造观察面板使用的睡眠、兴趣、前台和待投放状态。

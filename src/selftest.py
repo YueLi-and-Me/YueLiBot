@@ -25,6 +25,7 @@ from src.core.observe.store import configure as configure_event_store
 from src.core.services.chat import ChatService, InboundMessage
 from src.core.services.proactive import AwarenessService
 from src.core.schedule.timeline import ActivityTimeline
+from src.desktop.sensor import DesktopSensor
 
 logger = get_logger(__name__)
 
@@ -202,16 +203,23 @@ async def _check_aware(
     """
 
     try:
+        # 必须装配传感器：前台分类与应用名都长在 DesktopSensor 上，AwarenessService
+        # 只做转发。不传 sensor 时 on_foreground 直接 return，本项检查会以
+        # activity=None、app='' 的形式静默失败，看起来像分类器坏了。
+        # 不传 vision_provider：自检不调用模型，视觉服务在 startup 才创建，这里也不启动。
+        sensor = DesktopSensor(cfg, push_event)
         awareness = AwarenessService(
             chat=chat,
             schedule=None,
             timeline=timeline,
             cfg=cfg,
             push_event=push_event,
+            sensor=sensor,
         )
 
         awareness.on_foreground({"process": "Code.exe", "title": "main.py - test", "fullscreen": False})
-        activity = awareness._last_classified.activity if awareness._last_classified else None
+        classified = awareness.signal
+        activity = classified.activity if classified else None
         activity_ok = activity == "coding"
 
         # 以程序名作为应用上下文输入，验证当前感知链路的确定性字段解析。
@@ -219,7 +227,7 @@ async def _check_aware(
         app = awareness.current_app()
         app_ok = app == "Steam"
 
-        sleep_state = awareness._sleep.current(current_time())
+        sleep_state = awareness.current_sleep(current_time())
         sleep_ok = sleep_state is not None and isinstance(sleep_state.asleep, bool)
 
         # 等待前台事件启动的短任务收尾，避免自检结束时留下 pending task。
