@@ -168,14 +168,20 @@ class StreamRegistry:
         :raises sqlite3.Error: 查询失败。
         """
         row = self._db.execute(
-            """SELECT id, platform, kind, external_id FROM streams
+            """SELECT id, platform, kind, external_id, display_name FROM streams
                WHERE id = ?""",
             (_DESKTOP_STREAM_ID,),
         ).fetchone()
         expected = (_DESKTOP_PLATFORM, _DESKTOP_KIND, _DESKTOP_EXTERNAL_ID)
-        if row is None or tuple(row[1:]) != expected:
+        if row is None or tuple(row[1:4]) != expected:
             raise RuntimeError("desktop stream 不存在或标识不正确，确认 v6 迁移已完成")
-        return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+        return StreamRef(
+            id=row[0],
+            platform=row[1],
+            kind=row[2],
+            external_id=row[3],
+            display_name=row[4] if row[4] is not None else '',
+        )
 
     def stream(self, stream_id: int) -> StreamRef:
         """按稳定数据库主键读取会话引用。
@@ -188,13 +194,19 @@ class StreamRegistry:
         :raises sqlite3.Error: 查询失败。
         """
         row = self._db.execute(
-            """SELECT id, platform, kind, external_id FROM streams
+            """SELECT id, platform, kind, external_id, display_name FROM streams
                WHERE id = ?""",
             (stream_id,),
         ).fetchone()
         if row is None:
             raise ValueError(f"stream {stream_id} 不存在，必须先经 StreamRegistry 创建或解析")
-        return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+        return StreamRef(
+            id=row[0],
+            platform=row[1],
+            kind=row[2],
+            external_id=row[3],
+            display_name=row[4] if row[4] is not None else '',
+        )
 
     def list_streams(self) -> List[StreamRef]:
         """列出全部可观察 stream。
@@ -204,11 +216,17 @@ class StreamRegistry:
         :raises sqlite3.Error: 查询失败。
         """
         rows = self._db.execute(
-            """SELECT id, platform, kind, external_id FROM streams
+            """SELECT id, platform, kind, external_id, display_name FROM streams
                ORDER BY id ASC"""
         ).fetchall()
         return [
-            StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+            StreamRef(
+                id=row[0],
+                platform=row[1],
+                kind=row[2],
+                external_id=row[3],
+                display_name=row[4] if row[4] is not None else '',
+            )
             for row in rows
         ]
 
@@ -224,7 +242,7 @@ class StreamRegistry:
         """
         person = self.person(person_id)
         rows = self._db.execute(
-            """SELECT DISTINCT s.id, s.platform, s.kind, s.external_id
+            """SELECT DISTINCT s.id, s.platform, s.kind, s.external_id, s.display_name
                FROM messages AS m
                JOIN streams AS s ON s.id = m.stream_id
                WHERE m.sender_person_id = ? AND m.role = 'user'
@@ -232,7 +250,13 @@ class StreamRegistry:
             (person.id,),
         ).fetchall()
         return [
-            StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+            StreamRef(
+                id=row[0],
+                platform=row[1],
+                kind=row[2],
+                external_id=row[3],
+                display_name=row[4] if row[4] is not None else '',
+            )
             for row in rows
         ]
 
@@ -329,7 +353,7 @@ class StreamRegistry:
             raise ValueError('私聊 stream_external_id 必须与 sender_external_id 一致')
 
         stream_row = self._db.execute(
-            '''SELECT id, platform, kind, external_id FROM streams
+            '''SELECT id, platform, kind, external_id, display_name FROM streams
                WHERE platform = ? AND kind = ? AND external_id = ?''',
             (platform, stream_kind, stream_external_id),
         ).fetchone()
@@ -350,6 +374,7 @@ class StreamRegistry:
             platform=stream_row[1],
             kind=stream_row[2],
             external_id=stream_row[3],
+            display_name=stream_row[4] if stream_row[4] is not None else '',
         )
         person = PersonRef(
             id=identity_row[0],
@@ -503,6 +528,38 @@ class StreamRegistry:
         )
         self._db.commit()
 
+    def set_group_display_name(
+        self,
+        platform: str,
+        group_external_id: str,
+        display_name: str,
+    ) -> StreamRef:
+        """创建或更新一个群聊 stream 的平台可读名称。
+
+        :param platform: 平台标识，不能为空。
+        :param group_external_id: 平台侧群标识，不能为空。
+        :param display_name: 协议端返回的非空群名称。
+        :return: 带最新展示名的群聊 stream 引用。
+        :raises ValueError: 任一字符串字段为空。
+        :raises sqlite3.Error: stream 创建、名称更新或提交失败。
+        副作用：群 stream 不存在时先创建，随后更新 ``streams.display_name`` 并提交。
+        """
+
+        display_name = _require_text(display_name, 'display_name')
+        stream = self.get_or_create_stream(platform, 'group', group_external_id)
+        self._db.execute(
+            'UPDATE streams SET display_name = ? WHERE id = ?',
+            (display_name, stream.id),
+        )
+        self._db.commit()
+        return StreamRef(
+            id=stream.id,
+            platform=stream.platform,
+            kind=stream.kind,
+            external_id=stream.external_id,
+            display_name=display_name,
+        )
+
     def link_identity(
         self,
         person: PersonRef,
@@ -632,12 +689,18 @@ class StreamRegistry:
             raise ValueError(f"不支持的 stream kind：{kind}")
 
         row = self._db.execute(
-            """SELECT id, platform, kind, external_id FROM streams
+            """SELECT id, platform, kind, external_id, display_name FROM streams
                WHERE platform = ? AND kind = ? AND external_id = ?""",
             (platform, kind, external_id),
         ).fetchone()
         if row is not None:
-            return StreamRef(id=row[0], platform=row[1], kind=row[2], external_id=row[3])
+            return StreamRef(
+                id=row[0],
+                platform=row[1],
+                kind=row[2],
+                external_id=row[3],
+                display_name=row[4] if row[4] is not None else '',
+            )
 
         cur = self._db.execute(
             """INSERT INTO streams (platform, kind, external_id)

@@ -328,6 +328,10 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
     'interest': ('interest', 'factors'),
     'memory_fact': ('personId', 'memoryKind', 'content'),
     'memory_fact_scope_blocked': ('factOriginKind', 'streamId', 'blocked'),
+    'memory_retrieval_trace': (
+        'turnId', 'currentTextChars', 'impressionChars', 'candidateCount',
+        'promptFactIds',
+    ),
     'mood_delta': ('turnId', 'favor', 'energy'),
     'promise_stashed': ('turnId', 'subject', 'at'),
     # 选中的说法正文留在事件账本，控制台只看「从多少候选里选了几条、谁选的」。

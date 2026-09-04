@@ -31,6 +31,7 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   llm_final: '模型输出完成',
   llm_request: '请求模型',
   memory_fact: '写入记忆',
+  memory_retrieval_trace: '事实召回留痕',
   mood_delta: '心情变化',
   observation: '旁听消息',
   outbound_delivered: '回复投递完成',
@@ -67,12 +68,16 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   botNames: '机器人名称',
   bytes: '字节数',
   candidateCount: '候选数量',
+  candidatePool: '候选池',
   candidates: '候选数量',
   channel: '通道',
   content: '内容',
+  conversationImpression: '会话印象检索词',
   contextMeaning: '语境含义',
   dropped: '丢弃数量',
   count: '数量',
+  currentText: '当前文本检索词',
+  currentTextChars: '当前文本字数',
   decisionSource: '决策来源',
   decision: '最终决策',
   detail: '说明',
@@ -87,11 +92,13 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   eventStatus: '事件状态',
   externalMessageId: '外部消息编号',
   favor: '好感变化',
+  factId: '事实编号',
   gateDisposition: '门控结果',
   gateReasonCodes: '门控理由',
   gate: '门控信息',
   habits: '表达习惯数量',
   hash: '内容指纹',
+  impressionChars: '会话印象字数',
   interest: '兴趣度',
   intensity: '活动强度',
   intentType: '意图类型',
@@ -117,6 +124,7 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   process: '进程',
   promptHash: '提示词指纹',
   promptId: '提示词模板',
+  promptFactIds: '进提示词的事实编号',
   providerName: '模型服务',
   quoteMessageId: '引用消息',
   reason: '原因',
@@ -131,6 +139,7 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   step: '推断步骤',
   substringHits: '子串命中数',
   scene: '场景变化',
+  score: '分数',
   seconds: '秒数',
   senderDisplayName: '发送者显示名',
   senderExternalId: '发送者账号',
@@ -406,7 +415,10 @@ export function elapsedLabel(ms: number): string {
 export function streamLabel(stream: ObservabilityStream): string {
   if (stream.kind === 'desktop') return `桌面 · #${stream.id}`
   const kind = stream.kind === 'direct' ? '私聊' : '群聊'
-  return `${stream.platform.toUpperCase()} ${kind} · ${stream.externalId} · #${stream.id}`
+  const name = stream.kind === 'group'
+    ? stream.displayName.trim() || stream.externalId
+    : stream.externalId
+  return `${stream.platform.toUpperCase()} ${kind} · ${name} · #${stream.id}`
 }
 
 /**

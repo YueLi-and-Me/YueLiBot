@@ -305,6 +305,34 @@ class BackendClient:
         )
         response.raise_for_status()
 
+    async def report_group_display_name(
+        self,
+        group_id: str,
+        display_name: str,
+    ) -> None:
+        """把协议端取得的群名称经独立元数据接口回传主体。
+
+        :param group_id: QQ 群号字符串。
+        :param display_name: 协议端返回的非空群名称。
+        :return: ``None``。
+        :raises BackendDisconnected: HTTP 客户端尚未建立连接。
+        :raises httpx.HTTPError: 请求失败或主体返回非成功状态码。
+        副作用：向主体群名称接口发送一次 POST 请求，不提交伪造入站消息。
+        """
+
+        client = self._http
+        if client is None:
+            raise BackendDisconnected('主体 HTTP 尚未连接')
+        response = await client.post(
+            '/platform/group/display-name',
+            json={
+                'platform': 'qq',
+                'streamExternalId': group_id,
+                'displayName': display_name,
+            },
+        )
+        response.raise_for_status()
+
     async def submit_group_backfill(
         self,
         group_id: str,

@@ -10,7 +10,8 @@ def source_label(stream: StreamRef, *, direct_name: str = '') -> str:
 
     :param stream: 已解析的 stream 引用。
     :param direct_name: 上游已解析的私聊对方显示名；群聊和桌面忽略该值。
-    :return: 桌面返回 ``桌面``；私聊优先带对方名；群聊在层一带外部标识。
+    :return: 桌面返回 ``桌面``；私聊优先带对方名；群聊优先带可读展示名，
+        尚未取得名称时退回外部标识。
     :raises ValueError: 非桌面 stream 的外部标识为空，或收到未知 stream kind。
     副作用：不查数据库、不读取配置，也不修改传入引用。
     """
@@ -23,7 +24,7 @@ def source_label(stream: StreamRef, *, direct_name: str = '') -> str:
     if stream.kind == 'direct':
         return f'私聊·{direct_name.strip() or external_id}'
     if stream.kind == 'group':
-        return f'群聊·{external_id}'
+        return f'群聊·{stream.display_name.strip() or external_id}'
     raise ValueError(f'未知 stream kind：{stream.kind}')
 
 

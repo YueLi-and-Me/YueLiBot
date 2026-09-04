@@ -49,10 +49,12 @@ CREATE TABLE IF NOT EXISTS persons (
 );
 
 CREATE TABLE IF NOT EXISTS streams (
-  id          INTEGER PRIMARY KEY,
-  platform    TEXT    NOT NULL,
-  kind        TEXT    NOT NULL,
-  external_id TEXT    NOT NULL,
+  id           INTEGER PRIMARY KEY,
+  platform     TEXT    NOT NULL,
+  kind         TEXT    NOT NULL,
+  external_id  TEXT    NOT NULL,
+  -- 平台侧可读的会话名称；当前用于群名，NULL 表示尚未拉到并退回 external_id。
+  display_name TEXT,
   UNIQUE(platform, kind, external_id)
 );
 
