@@ -48,6 +48,9 @@ const RetrievalTuningPage = lazy(() =>
 const ImportCenterPage = lazy(() =>
   import('@/features/memory/ImportCenterPage').then((m) => ({ default: m.ImportCenterPage })),
 )
+const MemoryManagePage = lazy(() =>
+  import('@/features/memory/MemoryManagePage').then((m) => ({ default: m.MemoryManagePage })),
+)
 const EmojisPage = lazy(() =>
   import('@/features/emojis/EmojisPage').then((m) => ({ default: m.EmojisPage })),
 )
@@ -95,6 +98,7 @@ function AuthGate() {
           <Route path="memory" element={<MemoryGraphPage />} />
           <Route path="memory/tuning" element={<RetrievalTuningPage />} />
           <Route path="memory/import" element={<ImportCenterPage />} />
+          <Route path="memory/manage" element={<MemoryManagePage />} />
           <Route path="emojis" element={<EmojisPage />} />
           <Route path="*" element={<ObservePage />} />
         </Route>

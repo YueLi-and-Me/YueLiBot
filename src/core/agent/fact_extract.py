@@ -38,6 +38,7 @@ from .profile import mark_dirty as mark_profiles_dirty
 from src.core.common.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
+from src.core.memory import FACT_EXTRACT_CURSOR_KEY
 from src.core.memory.association import link_together
 from src.core.memory.decay import DEFAULT_FACT_KIND, FACT_KINDS
 from src.core.memory.knowledge import add_knowledge
@@ -52,7 +53,7 @@ from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
 # 游标存在 meta 键值表里：抽取不新建表、不加列、不占迁移号。
-CURSOR_KEY = 'fact_extract_cursor'
+CURSOR_KEY = FACT_EXTRACT_CURSOR_KEY
 # 既有事实清单的总条数上限。超过该量提示词开销显著上升，且模型对长清单的
 # 遵守度下降；每人取前几条足以拦住重复写入。
 KNOWN_FACT_LIMIT = 30

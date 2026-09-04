@@ -422,6 +422,7 @@ class MemoryFeedbackService:
                     kind=fact_kind,
                     slot=fact_slot,
                     supersedes=fact_id,
+                    actor='n4',
                 ),
                 now,
             )

@@ -442,6 +442,25 @@ CREATE TABLE IF NOT EXISTS memory_feedback_results (
   created_at        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_results_fact ON memory_feedback_results(fact_id, marked);
+
+-- ---------------------------------------------------------- 事实操作流水（v28 加）
+-- 人工管理与自动取代共用的事实账本流水：每行记录一次对 facts 行的状态改写，
+-- prev 留操作前的值作为撤销依据，undone_by/undo_of 构成撤销链。流水只增不改，
+-- 是审计与撤销的唯一依据；失效判据仍是 facts.superseded_by，本表不参与召回。
+CREATE TABLE IF NOT EXISTS fact_operations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  at              INTEGER NOT NULL,               -- Unix 毫秒
+  actor           TEXT    NOT NULL,               -- 'manual' | 'n4' | 'auto'
+  op              TEXT    NOT NULL,               -- invalidate/restore/pin/unpin/supersede/replace/adjudicate/undo
+  person_id       INTEGER NOT NULL,
+  fact_id         INTEGER NOT NULL,               -- 被操作的行
+  related_fact_id INTEGER,                        -- supersede/replace 的新行；adjudicate 保留的行
+  prev            TEXT    NOT NULL DEFAULT '{{}}',  -- JSON：操作前的值（撤销依据）
+  undone_by       INTEGER REFERENCES fact_operations(id),  -- 本条被哪条撤销
+  undo_of         INTEGER REFERENCES fact_operations(id)   -- 本条是撤销了谁
+);
+CREATE INDEX IF NOT EXISTS idx_fact_operations_fact ON fact_operations(fact_id);
+CREATE INDEX IF NOT EXISTS idx_fact_operations_person ON fact_operations(person_id, at);
 """
 
 SEED = """

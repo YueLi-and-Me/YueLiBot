@@ -41,6 +41,7 @@ from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
 from src.core.memory import tuning
 from src.core.memory import import_center
+from src.core.memory import curate
 from src.core.memory.decay import retention
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
@@ -2811,6 +2812,320 @@ async def import_batch_delete(batch_id: int) -> dict:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f'批次删除失败：{exc}',
         ) from exc
+
+
+# ---------------------------------------------------------------- 记忆人工管理
+def _curate_store_or_503() -> Any:
+    """返回人工管理所需的 MemoryStore，聊天服务未就绪时按 503 拒绝。"""
+
+    chat = app_state.chat
+    if chat is None or getattr(chat, 'memory', None) is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='聊天服务尚未初始化，无法管理记忆',
+        )
+    return chat.memory
+
+
+async def _run_curate_op(fn: Any, *args: Any, action: str) -> Any:
+    """在线程池执行一次人工管理调用，并把业务异常统一映射为 HTTP 状态码。
+
+    :param fn: curate 模块的同步函数。
+    :param *args: 传给 ``fn`` 的位置参数。
+    :param action: 操作中文名，用于 500 响应的说明文字。
+    :return: ``fn`` 的返回值。
+    :raises fastapi.HTTPException: 事实或流水不存在 404；状态不允许 409；
+        参数非法 400；数据库失败 500，完整 traceback 落日志。
+    """
+
+    try:
+        return await run_in_thread(fn, *args)
+    except curate.FactNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except curate.FactStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except sqlite3.Error as exc:
+        logger.exception('memory_curate_failed', action=action)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'{action}失败：{exc}',
+        ) from exc
+
+
+class MemoryFactReplaceBody(BaseModel):
+    """人工取代一条事实的请求体。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class MemoryConflictResolveBody(BaseModel):
+    """裁决一组槽位冲突的请求体：保留 keep，废弃 drop。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    keep_fact_id: int = Field(alias='keepFactId')
+    drop_fact_id: int = Field(alias='dropFactId')
+
+
+@router.get('/api/memory/facts', dependencies=[Depends(_auth)])
+async def memory_facts_list(
+    personId: int = Query(...),
+    includeInvalid: bool = Query(default=True),
+) -> dict:
+    """列出人物的全部事实，供人工管理界面展示与操作。
+
+    :param personId: 目标人物 ID，必填。
+    :param includeInvalid: 为假时过滤掉已失效行，默认不过滤。
+    :return: ``personId`` 与 ``facts`` 列表；每条带 ``retention``（现算）、
+        ``invalid``（superseded_by 非空）与 ``pinned``（永久保留编码）标记。
+    :raises fastapi.HTTPException: 聊天服务未初始化时 503；查询失败时 500。
+    副作用：只读 facts 表。
+    """
+    store = _curate_store_or_503()
+    rows = await _run_curate_op(
+        curate.list_facts, store, personId, current_time(), action='事实列表读取',
+    )
+    if not includeInvalid:
+        rows = [row for row in rows if not row['invalid']]
+    return {
+        'personId': personId,
+        'facts': [
+            {
+                'id': row['id'],
+                'kind': row['kind'],
+                'content': row['content'],
+                'slot': row['slot'],
+                'originKind': row['origin_kind'],
+                'strength': row['strength'],
+                'retention': row['retention'],
+                'halfLifeHours': row['half_life_hours'],
+                'active': bool(row['active']),
+                'invalid': row['invalid'],
+                'pinned': row['pinned'],
+                'supersededBy': row['superseded_by'],
+                'updatedAt': row['updated_at'],
+                'createdAt': row['created_at'],
+                'hitCount': row['hit_count'],
+                'lastHitAt': row['last_hit_at'],
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.post('/api/memory/facts/{fact_id}/invalidate', dependencies=[Depends(_auth)])
+async def memory_fact_invalidate(fact_id: int) -> dict:
+    """把一条有效事实人工标为失效，不再被任何召回入口返回。
+
+    :param fact_id: 目标事实 ID。
+    :return: ``ok`` 与本次操作的流水 ``operationId``。
+    :raises fastapi.HTTPException: 事实不存在 404；已失效 409；服务未就绪 503。
+    副作用：更新 facts.superseded_by 为自指哨兵并写流水；发 memory_fact_invalidated 事件。
+    """
+    store = _curate_store_or_503()
+    op_id = await _run_curate_op(
+        curate.invalidate_fact, store, fact_id, current_time(), action='事实标失效',
+    )
+    return {'ok': True, 'operationId': op_id}
+
+
+@router.post('/api/memory/facts/{fact_id}/restore', dependencies=[Depends(_auth)])
+async def memory_fact_restore(fact_id: int) -> dict:
+    """恢复一条已失效事实，对人工标失效与取代链同样生效。
+
+    :param fact_id: 目标事实 ID。
+    :return: ``ok`` 与本次操作的流水 ``operationId``。
+    :raises fastapi.HTTPException: 事实不存在 404；当前有效无需恢复 409；服务未就绪 503。
+    副作用：清空 facts.superseded_by 并写流水；发 memory_fact_restored 事件。
+    """
+    store = _curate_store_or_503()
+    op_id = await _run_curate_op(
+        curate.restore_fact, store, fact_id, current_time(), action='事实恢复',
+    )
+    return {'ok': True, 'operationId': op_id}
+
+
+@router.post('/api/memory/facts/{fact_id}/pin', dependencies=[Depends(_auth)])
+async def memory_fact_pin(fact_id: int) -> dict:
+    """把一条活跃事实永久保留：强度拉满、半衰期推远，不再衰减。
+
+    :param fact_id: 目标事实 ID。
+    :return: ``ok`` 与本次操作的流水 ``operationId``。
+    :raises fastapi.HTTPException: 事实不存在 404；已失效/已冻结/已 pin 409；服务未就绪 503。
+    副作用：更新 facts 衰减五字段并写流水；发 memory_fact_pinned 事件。
+    """
+    store = _curate_store_or_503()
+    op_id = await _run_curate_op(
+        curate.pin_fact, store, fact_id, current_time(), action='事实永久保留',
+    )
+    return {'ok': True, 'operationId': op_id}
+
+
+@router.post('/api/memory/facts/{fact_id}/unpin', dependencies=[Depends(_auth)])
+async def memory_fact_unpin(fact_id: int) -> dict:
+    """取消一条事实的永久保留，半衰期回到其类型的自然值。
+
+    :param fact_id: 目标事实 ID。
+    :return: ``ok`` 与本次操作的流水 ``operationId``。
+    :raises fastapi.HTTPException: 事实不存在 404；当前未 pin 409；服务未就绪 503。
+    副作用：更新 facts 衰减五字段并写流水；发 memory_fact_unpinned 事件。
+    """
+    store = _curate_store_or_503()
+    op_id = await _run_curate_op(
+        curate.unpin_fact, store, fact_id, current_time(), action='事实取消永久保留',
+    )
+    return {'ok': True, 'operationId': op_id}
+
+
+@router.post('/api/memory/facts/{fact_id}/replace', dependencies=[Depends(_auth)])
+async def memory_fact_replace(fact_id: int, body: MemoryFactReplaceBody) -> dict:
+    """人工取代一条事实：以新正文写新行，旧行标为由新行取代。
+
+    :param fact_id: 被取代的旧事实 ID。
+    :param body: 新正文；去空白后不能为空，且不能与原事实同义。
+    :return: ``ok``、流水 ``operationId``、新行 ``newFactId`` 与同槽冲突
+        ``conflictWith``。
+    :raises fastapi.HTTPException: 事实不存在 404；已失效 409；正文非法 400；
+        服务未就绪 503。
+    副作用：写入 facts/facts_fts 与 op=replace 的流水并提交；发 memory_fact_replaced 事件。
+    """
+    store = _curate_store_or_503()
+    written = await _run_curate_op(
+        curate.replace_fact, store, fact_id, body.content, current_time(),
+        action='事实人工取代',
+    )
+    return {
+        'ok': True,
+        'operationId': written.operation_id,
+        'newFactId': written.fact_id,
+        'conflictWith': written.conflict_with,
+    }
+
+
+@router.get('/api/memory/conflicts', dependencies=[Depends(_auth)])
+async def memory_conflict_groups(personId: int | None = Query(default=None)) -> dict:
+    """聚合槽位冲突组：同一 (人物, 槽位) 下至少两条活跃有效的事实。
+
+    :param personId: 可选人物过滤；缺省时全库聚合。
+    :return: ``groups`` 列表，members 按事实 ID 升序并带当前留存度。
+    :raises fastapi.HTTPException: 聊天服务未初始化时 503；查询失败时 500。
+    副作用：只读 facts 与 identities 表。
+    """
+    store = _curate_store_or_503()
+    groups = await _run_curate_op(
+        curate.conflict_groups, store, personId, current_time(), action='冲突组读取',
+    )
+    return {
+        'groups': [
+            {
+                'personId': group['person_id'],
+                'personName': group['person_name'],
+                'slot': group['slot'],
+                'members': [
+                    {
+                        'id': member['id'],
+                        'kind': member['kind'],
+                        'content': member['content'],
+                        'originKind': member['origin_kind'],
+                        'retention': member['retention'],
+                        'strength': member['strength'],
+                        'halfLifeHours': member['half_life_hours'],
+                        'updatedAt': member['updated_at'],
+                    }
+                    for member in group['members']
+                ],
+            }
+            for group in groups
+        ],
+    }
+
+
+@router.post('/api/memory/conflicts/resolve', dependencies=[Depends(_auth)])
+async def memory_conflict_resolve(body: MemoryConflictResolveBody) -> dict:
+    """裁决一组槽位冲突：保留 keepFactId，把 dropFactId 标为失效。
+
+    :param body: 保留与废弃的事实 ID；两条须同人、同非空槽位且均活跃有效。
+    :return: ``ok`` 与本次操作的流水 ``operationId``。
+    :raises fastapi.HTTPException: 事实不存在 404；状态不允许 409；
+        组合不合法 400；服务未就绪 503。
+    副作用：更新 drop 行 superseded_by 并写流水；发 memory_conflict_resolved 事件。
+    """
+    store = _curate_store_or_503()
+    op_id = await _run_curate_op(
+        curate.adjudicate, store, body.keep_fact_id, body.drop_fact_id, current_time(),
+        action='冲突裁决',
+    )
+    return {'ok': True, 'operationId': op_id}
+
+
+@router.get('/api/memory/operations', dependencies=[Depends(_auth)])
+async def memory_operation_log(
+    personId: int | None = Query(default=None),
+    factId: int | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict:
+    """按时间倒序读取事实操作流水，人工与自动链路的改动都在其中。
+
+    :param personId: 可选人物过滤。
+    :param factId: 可选事实过滤。
+    :param limit: 最多返回的条数，1 到 200，默认 50。
+    :return: ``operations`` 列表；``prev`` 为解析后的字典，``factContent``
+        为被操作事实的正文。
+    :raises fastapi.HTTPException: 聊天服务未初始化时 503；查询失败时 500。
+    副作用：只读 fact_operations 与 facts 表。
+    """
+    store = _curate_store_or_503()
+    operations = await _run_curate_op(
+        curate.operation_log, store, personId, factId, limit, action='操作流水读取',
+    )
+    return {
+        'operations': [
+            {
+                'id': op['id'],
+                'at': op['at'],
+                'actor': op['actor'],
+                'op': op['op'],
+                'personId': op['person_id'],
+                'factId': op['fact_id'],
+                'factContent': op['fact_content'],
+                'relatedFactId': op['related_fact_id'],
+                'prev': op['prev'],
+                'undoneBy': op['undone_by'],
+                'undoOf': op['undo_of'],
+            }
+            for op in operations
+        ],
+    }
+
+
+@router.post('/api/memory/operations/{op_id}/undo', dependencies=[Depends(_auth)])
+async def memory_operation_undo(op_id: int) -> dict:
+    """撤销一条操作流水：把受影响的 facts 行写回操作前的值。
+
+    :param op_id: 被撤销的流水行 ID。
+    :return: ``ok`` 与新写入的 undo 流水 ``operationId``。
+    :raises fastapi.HTTPException: 流水不存在 404；已撤销或本身是撤销 409；
+        服务未就绪 503。
+    副作用：回写 facts 行、写 op=undo 的流水并互链撤销链；发 memory_operation_undone 事件。
+    """
+    store = _curate_store_or_503()
+    op_id_new = await _run_curate_op(
+        curate.undo_operation, store, op_id, current_time(), action='操作撤销',
+    )
+    return {'ok': True, 'operationId': op_id_new}
 
 
 def _emoji_library_or_503() -> Any:

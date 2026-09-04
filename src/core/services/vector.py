@@ -20,6 +20,7 @@ from src.core.memory.quantize import (
     store_fact_quantized,
     store_knowledge_vector_pair,
 )
+from src.core.memory.vector_health import pending_embedding_counts
 
 logger = get_logger(__name__)
 
@@ -75,15 +76,24 @@ class VectorService:
                 reason=self._disabled_reason or 'embedding 客户端未装配',
             )
         else:
-            pending = self._store.facts_without_embedding(limit=1_000_000)
-            if pending:
-                logger.warning('vector_fact_backfill_pending', count=len(pending))
             if self._db is not None:
-                pending_knowledge = knowledge_without_embedding(self._db, limit=1_000_000)
-                if pending_knowledge:
+                pending = pending_embedding_counts(self._db)
+                if pending['facts'] > 0:
+                    logger.warning(
+                        'vector_fact_backfill_pending',
+                        count=pending['facts'],
+                    )
+                if pending['knowledge'] > 0:
                     logger.warning(
                         'vector_knowledge_backfill_pending',
-                        count=len(pending_knowledge),
+                        count=pending['knowledge'],
+                    )
+            else:
+                pending_facts = self._store.facts_without_embedding(limit=1_000_000)
+                if pending_facts:
+                    logger.warning(
+                        'vector_fact_backfill_pending',
+                        count=len(pending_facts),
                     )
         quantize_total = 0
         if self._db is not None:
