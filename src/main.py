@@ -25,6 +25,7 @@ from src.core.common.backend_runtime import create_backend_runtime, runtime_file
 from src.core.common.clock import now as current_time
 from src.core.common.console_layout import print_box
 from src.core.common.logger import get_logger, initialize_logging
+from src.core.common.self_check import announce_startup_self_check
 from src.core.config.loader import load_config
 from src.core.config.schema import (
     BotDocument,
@@ -380,6 +381,12 @@ def main() -> None:
     from src.core.platform_io.types import StreamRef
     db = open_db(db_path)
     run_migrations(db, db_path)
+    announce_startup_self_check(
+        db_path,
+        Path(args.config_path),
+        Path(__file__).resolve().parents[1] / 'adapters',
+        cfg,
+    )
     configure_event_store(
         db_path,
         retention_count=cfg.log.event_retention_count,

@@ -334,6 +334,25 @@ def _load_split_config(directory: Path) -> Config:
     )
 
 
+def read_config(path: Path) -> Config:
+    """只读并校验配置目录，不修改进程级配置缓存。
+
+    运行时自检与启动加载必须共用这一入口，确保版本、字段、模型引用和功能开关
+    的判断不会分成两套。
+
+    :param path: 配置目录路径。
+    :return: 完成全部交叉校验的运行时配置对象。
+    :raises ValueError: 路径不是目录，或配置字段、引用、功能开关不一致。
+    :raises OSError: 配置文件无法读取。
+    副作用：只读配置文件并记录必要的任务继承日志，不修改文件或全局缓存。
+    """
+    if not path.is_dir():
+        raise ValueError(
+            f'{path} 不是配置目录；需要包含 providers/models/bot/features 四份 TOML'
+        )
+    return _load_split_config(path)
+
+
 def load_config(path: Path) -> Config:
     """从配置目录加载并缓存全局配置单例。
 
@@ -355,11 +374,7 @@ def load_config(path: Path) -> Config:
         return _config
 
     try:
-        if not path.is_dir():
-            raise ValueError(
-                f'{path} 不是配置目录；需要包含 providers/models/bot/features 四份 TOML'
-            )
-        _config = _load_split_config(path)
+        _config = read_config(path)
     except Exception as exc:
         print(f'[yueli] 配置错误，请检查 {path}：\n{exc}', file=sys.stderr)
         sys.exit(1)
@@ -512,7 +527,7 @@ def reload_config() -> Tuple[Config, List[str]]:
         raise RuntimeError('配置未初始化，请先调用 load_config(path)')
     previous = _config
     # 先完整构建再替换：这里抛出的任何异常都发生在全局配置被碰之前。
-    fresh = _load_split_config(_config_dir)
+    fresh = read_config(_config_dir)
     changed = [
         line
         for name in type(fresh).model_fields

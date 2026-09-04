@@ -55,6 +55,17 @@ def _unpack_float32(vector: bytes) -> Tuple[float, ...]:
     return values
 
 
+def embedding_dimension(vector: bytes) -> int:
+    """校验原始 float32 向量并返回维度。
+
+    :param vector: 连续小端 float32 字节串。
+    :return: 向量维度。
+    :raises ValueError: 字节长度非法或包含非有限值。
+    副作用：无。
+    """
+    return len(_unpack_float32(vector))
+
+
 def quantize(vector: bytes) -> bytes:
     """把一条 float32 packed 向量编码为自解释 SQ8 blob。
 
@@ -99,6 +110,18 @@ def _decode_q8(blob: bytes) -> Tuple[int, float, Tuple[int, ...]]:
     if any(value < -_INT8_MAX for value in values):
         raise ValueError('SQ8 blob 包含对称量化范围外的 -128')
     return dimension, scale, values
+
+
+def quantized_dimension(blob: bytes) -> int:
+    """校验一条 SQ8 向量并返回其自描述维度。
+
+    :param blob: 带格式头的 SQ8 字节串。
+    :return: 格式头声明的向量维度。
+    :raises ValueError: 格式标识、维度、scale 或载荷不合法。
+    副作用：无。
+    """
+    dimension, _, _ = _decode_q8(blob)
+    return dimension
 
 
 def dequantize(blob: bytes) -> bytes:
