@@ -461,6 +461,25 @@ CREATE TABLE IF NOT EXISTS fact_operations (
 );
 CREATE INDEX IF NOT EXISTS idx_fact_operations_fact ON fact_operations(fact_id);
 CREATE INDEX IF NOT EXISTS idx_fact_operations_person ON fact_operations(person_id, at);
+-- ---------------------------------------------------------- 运行画像（v29 加）
+-- 一台机器自己的运行画像：随机安装 ID、应用版本、启动次数、累计运行时长。
+-- 这是可丢的派生数据，不是第二份真相：整表删掉只丢历史统计，不影响任何功能，
+-- 下次启动由幂等建表重建并从零重新采集（安装 ID 也随之重新生成，它只存在这里）。
+-- 安装 ID 是首次启动生成的随机值，与 QQ 号、机器名、MAC、路径等任何可关联到
+-- 人的标识无派生关系；本表不记路径、不记网络信息、不记配置内容。
+CREATE TABLE IF NOT EXISTS runtime_profile (
+  id               INTEGER PRIMARY KEY CHECK (id = 1),
+  -- 随机安装 ID（secrets 生成）；空串表示尚未生成。
+  install_id       TEXT    NOT NULL DEFAULT '',
+  -- 最近启动时的应用版本，来自 D2 的版本单一来源；来源未落地时为空串。
+  app_version      TEXT    NOT NULL DEFAULT '',
+  launch_count     INTEGER NOT NULL DEFAULT 0,
+  first_launch_at  INTEGER,
+  last_launch_at   INTEGER,
+  -- 已累计落库的运行时长（毫秒）。按心跳周期追加，进程被强杀时损失不超一个间隔。
+  total_runtime_ms INTEGER NOT NULL DEFAULT 0,
+  updated_at       INTEGER
+);
 """
 
 SEED = """

@@ -885,6 +885,19 @@ def main() -> None:
         close_db()
 
     lifecycle.register('storage', _storage_startup, _storage_shutdown)
+
+    # 运行画像：每台机器都在记的本地数据，采集侧无条件运行、必须进发行版，
+    # 因此不挂在 [developer] 开关下；开关只门控读取侧的 /stat（由 D1 通道执行）。
+    # 注册在 storage 之后：逆序关闭时它先于 storage 收尾，关闭期间仍能写库。
+    from src.core.services.runtime_profile import (
+        RuntimeProfileService,
+        read_app_version,
+        register_stat_command,
+    )
+    runtime_profile = RuntimeProfileService(db, app_version=read_app_version())
+    lifecycle.register('runtime_profile', runtime_profile.startup, runtime_profile.shutdown)
+    # D1 接缝：命令通道未落地时内部跳过注册并记日志，绝不影响采集。
+    register_stat_command(db)
     sensor = DesktopSensor(cfg, _push_event, vision_provider)
     awareness = AwarenessService(
         chat=app_state.chat,
