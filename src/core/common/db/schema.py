@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   ended_at   INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   stream_id  INTEGER NOT NULL DEFAULT 1,
-  -- 纠错命中后置 1，等待后台重摘要；待重建期间可选择屏蔽召回（v25 加）。
+  -- 纠错命中后置 1，等待后台重摘要；待重建期间可选择屏蔽召回（v24 加）。
   needs_rebuild INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_episodes_time ON episodes(ended_at DESC);
@@ -414,7 +414,7 @@ CREATE TABLE IF NOT EXISTS activities (
 );
 CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(started_at DESC);
 
--- -------------------------------------------------------------- N4 反馈纠错（v25 加）
+-- -------------------------------------------------------------- N4 反馈纠错（v24 加）
 -- 待观察项：一条事实真的进了提示词时登记一行，窗口内等待用户纠正信号。
 CREATE TABLE IF NOT EXISTS memory_feedback_pending (
   id         INTEGER PRIMARY KEY,
