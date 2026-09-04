@@ -313,6 +313,19 @@ async function startApp(
     dialog.showErrorBox('未连接到 Python 后端', err.message)
     app.quit()
   })
+  // 外壳单独启动时先在终端说明它在等谁。
+  //
+  // - 现象：入口反转后 `npm run dev` 只起外壳，终端停在「starting electron app...」
+  //   一动不动，30 秒后才弹出「未连接到 Python 后端」的对话框。
+  // - 原因：唯一的提示走的是 attach 超时后的 dialog，而在此之前 BackendLink 只是
+  //   静默重试；用户看着静止的终端无法区分「正在等」和「卡住了」。
+  // - 后果：去掉这段会让沿用旧命令的人以为启动挂了——`npm run dev` 在入口反转之前
+  //   是拉起整套应用的命令，肌肉记忆还在。
+  if (!managedByBackend) {
+    console.log('[main] 外壳单独启动，正在等待已在运行的 Python 后端…')
+    console.log('[main] 后端还没起的话，另开一个终端运行：uv run bot.py --data-dir data --config-path config')
+    console.log('[main] 它会按 bot.toml 的 [desktop_pet] enabled 自己拉起外壳，不必再手动跑本命令。')
+  }
   backend.start()
   app.on('before-quit', (event) => {
     // 异步幂等退出：首次触发拦截退出，等清理完成后再真正退出；重入时（quitPrepared
