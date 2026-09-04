@@ -513,8 +513,19 @@ def main() -> None:
     """
 
     parser = argparse.ArgumentParser(description="YueLiBot Python backend")
-    parser.add_argument("--data-dir", required=True)
-    parser.add_argument("--config-path", required=True)
+    # 两个目录默认取仓库根下的同名目录，而不是当前工作目录下的：入口反转后
+    # 进程可能从任意目录启动（systemd、快捷方式、另一个终端），按 cwd 解析会在
+    # 别处建出第二份 data/ 与 config/，两边都「工作正常」只是记忆和配置对不上。
+    parser.add_argument(
+        "--data-dir",
+        default=str(PROJECT_ROOT / 'data'),
+        help="运行时数据目录，默认为仓库根的 data/",
+    )
+    parser.add_argument(
+        "--config-path",
+        default=str(PROJECT_ROOT / 'config'),
+        help="主体配置目录，默认为仓库根的 config/",
+    )
     parser.add_argument("--port", type=int, default=DEFAULT_BACKEND_PORT)
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument(

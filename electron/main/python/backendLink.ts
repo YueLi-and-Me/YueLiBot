@@ -172,7 +172,7 @@ export class BackendLink extends EventEmitter<BackendLinkEvents> {
         this.deadline = null
         this.emit('unavailable', new Error(
           '未找到正在运行的 Python 后端。'
-          + '本应用的进程入口是 Python：请先运行 python bot.py --data-dir data --config-path config，'
+          + '本应用的进程入口是 Python：请先运行 uv run bot.py，'
           + '或让它按 [desktop_pet] enabled 自动拉起桌宠。',
         ))
         return

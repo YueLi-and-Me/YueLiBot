@@ -144,8 +144,10 @@ surfaces = ["desktop"]
 进程入口是 Python，一条命令起全套：
 
 ```bash
-uv run bot.py --data-dir data --config-path config
+uv run bot.py
 ```
+
+数据与配置默认取仓库根的 `data\` 与 `config\`，放在别处时用 `--data-dir` 与 `--config-path` 指过去。
 
 它按顺序做三件事：起后端与管理面板 → 拉起 QQ 适配器（有 `config\adapter.toml` 时）
 → 按 `bot.toml` 的 `[desktop_pet] enabled` 决定要不要拉起 Electron 桌宠外壳。
@@ -187,7 +189,7 @@ Electron 侧只连不拉：它连接已经在跑的后端，连不上会提示�
 
 ```bash
 uv sync
-uv run bot.py --data-dir data --config-path config
+uv run bot.py
 ```
 
 第一次运行会在 `config\` 生成一份初始配置然后退出，控制台列出还差哪几项——最少只需要两处：
@@ -200,7 +202,7 @@ QQ 适配器仍由它拉起和监护。终端里 `Ctrl+C` 走完整收尾，`SIG
 ```ini
 [Service]
 WorkingDirectory=/opt/yueli
-ExecStart=/opt/yueli/.venv/bin/python bot.py --data-dir data --config-path config
+ExecStart=/opt/yueli/.venv/bin/python bot.py
 Restart=on-failure
 KillSignal=SIGTERM
 TimeoutStopSec=60
@@ -300,7 +302,7 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 
 | 命令 | 作用 |
 | :--- | :--- |
-| `uv run bot.py --data-dir data --config-path config` | 正常启动（进程入口，按桌宠开关决定要不要拉外壳） |
+| `uv run bot.py` | 正常启动（进程入口，按桌宠开关决定要不要拉外壳） |
 | `npm run dev` | 只起桌宠外壳；连接已经在跑的后端，配合入口的 `--no-shell` 使用 |
 | `npm run dev:renderer` | 只起渲染层（浏览器里调画面，比重启 Electron 快得多） |
 | `npm run dev:webui` | 只起管理面板前端，需要后端已经在跑 |

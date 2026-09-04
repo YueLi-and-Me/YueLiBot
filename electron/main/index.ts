@@ -323,7 +323,7 @@ async function startApp(
   //   是拉起整套应用的命令，肌肉记忆还在。
   if (!managedByBackend) {
     console.log('[main] 外壳单独启动，正在等待已在运行的 Python 后端…')
-    console.log('[main] 后端还没起的话，另开一个终端运行：uv run bot.py --data-dir data --config-path config')
+    console.log('[main] 后端还没起的话，另开一个终端运行：uv run bot.py')
     console.log('[main] 它会按 bot.toml 的 [desktop_pet] enabled 自己拉起外壳，不必再手动跑本命令。')
   }
   backend.start()
