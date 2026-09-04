@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Set, Tuple
 from urllib.parse import urlsplit
 import asyncio
 
@@ -115,6 +115,11 @@ class OneBot11Runner:
         # 必须查一次协议端才能判断「回应是不是给 Bot 的」；同一条消息往往连着多个
         # 回应，缓存避免反复查询。
         self._own_message_ids: Dict[str, bool] = {}
+        # 群名称只在本进程首次遇到与启动刷新时各尝试一次；失败保持空值并等下次
+        # 进程启动自愈，不在消息热路径里循环重试。
+        self._group_name_attempted: Set[str] = set()
+        self._group_name_tasks: Set[asyncio.Task[None]] = set()
+        self._group_name_startup_scheduled = False
 
     async def run(self) -> None:
         """建立 QQ 协议端和主体连接，并按错误类型维持或终止运行。
@@ -165,6 +170,8 @@ class OneBot11Runner:
                             )
                     # 只回填观察上下文，不触发回复；失败不阻断连接建立。
                     await self._backfill_recent_group_history(self_id, self_name)
+                    # 群名称刷新与消息消费者并发，绝不把协议端延迟叠到首条入站上。
+                    self._schedule_startup_group_name_refresh()
                     self._connected_once = True
                     logger.info(
                         'QQ 适配器已连接',
@@ -179,6 +186,7 @@ class OneBot11Runner:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    await self._finish_group_name_refreshes(cancel=True)
                     await self._backend.close()
                     await self._transport.close()
                     if not _is_retryable(exc):
@@ -214,6 +222,7 @@ class OneBot11Runner:
                         )
                     await asyncio.sleep(delay)
         finally:
+            await self._finish_group_name_refreshes(cancel=True)
             await self._backend.close()
             await self._transport.close()
 
@@ -266,6 +275,69 @@ class OneBot11Runner:
                     groupId=group_id,
                     error=str(exc),
                 )
+
+    def _schedule_startup_group_name_refresh(self) -> None:
+        """在本适配器进程首次连通时，并发刷新全部白名单群名称。"""
+
+        if self._group_name_startup_scheduled:
+            return
+        self._group_name_startup_scheduled = True
+        for group_id in self._config.group.list:
+            self._schedule_group_name_refresh(group_id)
+
+    def _schedule_group_name_refresh(self, group_id: str) -> None:
+        """为本进程尚未尝试过的群安排一次非阻塞名称拉取。"""
+
+        normalized = group_id.strip()
+        if not normalized or normalized in self._group_name_attempted:
+            return
+        # 在创建任务前占位，保证同一批连续消息不会排出重复 action。
+        self._group_name_attempted.add(normalized)
+        self._group_name_tasks.add(asyncio.create_task(
+            self._refresh_group_name(normalized)
+        ))
+
+    async def _refresh_group_name(self, group_id: str) -> None:
+        """拉取一个 QQ 群名称并回传主体；任何业务失败只留可见警告。"""
+
+        try:
+            response = await self._transport.call_action(
+                'get_group_info',
+                {'group_id': int(group_id)},
+            )
+            data = response.get('data')
+            if not isinstance(data, Mapping):
+                raise ValueError('get_group_info 响应缺少 data 对象')
+            display_name = _required_text(
+                data.get('group_name'),
+                'get_group_info 响应缺少 group_name',
+            )
+            await self._backend.report_group_display_name(group_id, display_name)
+            logger.info(
+                'QQ 群名称已同步',
+                groupId=group_id,
+                groupName=display_name,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # 群号始终可作为来源标签；名称是增强元数据，失败不能阻断或丢弃消息。
+            logger.warning(
+                'QQ 群名称拉取失败，继续处理消息',
+                groupId=group_id,
+                error=str(exc),
+            )
+
+    async def _finish_group_name_refreshes(self, *, cancel: bool = False) -> None:
+        """等待或取消当前群名称任务，确保适配器关闭时不遗留后台任务。"""
+
+        tasks = tuple(self._group_name_tasks)
+        self._group_name_tasks.clear()
+        if cancel:
+            for task in tasks:
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _remember_display_name(self, group_id: str, user_id: str, name: str) -> None:
         """把一个已知的 QQ 显示名写入解析缓存，并维持缓存容量上限。
@@ -795,6 +867,10 @@ class OneBot11Runner:
                     reason='群聊不在白名单中',
                 )
                 continue
+            if kind in {'message', 'poke', 'emoji_like'}:
+                group_id = _optional_text(payload.get('group_id'))
+                if group_id:
+                    self._schedule_group_name_refresh(group_id)
             if kind == 'input_status':
                 # 对方正在打字只是一条瞬时事实，提交失败不影响任何消息通路。
                 try:

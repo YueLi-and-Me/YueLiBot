@@ -57,6 +57,8 @@ class StreamRef:
     platform: str
     kind: StreamKind
     external_id: str
+    # 数据库列允许 NULL；注册表在边界处统一规范为空串，业务层无需反复判空。
+    display_name: str = ''
 
 
 @dataclass(frozen=True)

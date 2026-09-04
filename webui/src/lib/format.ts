@@ -406,7 +406,10 @@ export function elapsedLabel(ms: number): string {
 export function streamLabel(stream: ObservabilityStream): string {
   if (stream.kind === 'desktop') return `桌面 · #${stream.id}`
   const kind = stream.kind === 'direct' ? '私聊' : '群聊'
-  return `${stream.platform.toUpperCase()} ${kind} · ${stream.externalId} · #${stream.id}`
+  const name = stream.kind === 'group'
+    ? stream.displayName.trim() || stream.externalId
+    : stream.externalId
+  return `${stream.platform.toUpperCase()} ${kind} · ${name} · #${stream.id}`
 }
 
 /**

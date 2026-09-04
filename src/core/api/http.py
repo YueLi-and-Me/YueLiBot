@@ -755,6 +755,26 @@ class PlatformCapabilitiesBody(BaseModel):
     capabilities: List[str]
 
 
+class PlatformGroupDisplayNameBody(BaseModel):
+    """QQ 适配器拉到群信息后回传的一条 stream 可读名称。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    platform: Literal['qq']
+    stream_external_id: str = Field(alias='streamExternalId')
+    display_name: str = Field(alias='displayName')
+
+    @field_validator('stream_external_id', 'display_name')
+    @classmethod
+    def _require_text(cls, value: str) -> str:
+        """去除首尾空白并拒绝无法落库或展示的空值。"""
+
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError('群标识与群名称不能为空')
+        return normalized
+
+
 class PlatformDeliveryFailureBody(BaseModel):
     """平台适配器上报的一次出站动作在协议端的失败。
 
@@ -813,6 +833,34 @@ async def platform_typing(body: PlatformTypingBody) -> JSONResponse:
         app_state.register_platform_stream(context.stream)
     spoke = await app_state.chat.note_peer_typing(context)
     return JSONResponse({'accepted': True, 'spoke': spoke})
+
+
+@router.post('/platform/group/display-name', dependencies=[Depends(_auth)])
+async def platform_group_display_name(
+    body: PlatformGroupDisplayNameBody,
+) -> JSONResponse:
+    """接收适配器拉到的群名称，并写回对应 group stream。
+
+    启动刷新发生在首条群消息之前，因此这里允许创建尚不存在的 stream；独立接口
+    只承载元数据，不伪造用户入站，也不会触发门控或对话回合。
+
+    :param body: 已校验的平台、群外部标识与可读群名称。
+    :return: 写入成功标记及稳定 stream ID；注册表未就绪时返回 503。
+    :raises fastapi.HTTPException: 鉴权失败时由依赖项返回 401。
+    :raises ValueError: 注册表拒绝空字段时传播。
+    副作用：可能创建 QQ 群 stream，更新展示名，并注册其出站驱动。
+    """
+
+    if app_state.registry is None:
+        return JSONResponse({'detail': '归属注册表未初始化'}, status_code=503)
+    stream = app_state.registry.set_group_display_name(
+        body.platform,
+        body.stream_external_id,
+        body.display_name,
+    )
+    if app_state.register_platform_stream is not None:
+        app_state.register_platform_stream(stream)
+    return JSONResponse({'ok': True, 'streamId': stream.id})
 
 
 @router.post('/platform/capabilities', dependencies=[Depends(_auth)])
@@ -1202,8 +1250,8 @@ async def prompt_record(task: str, name: str) -> dict:
 async def streams() -> dict:
     """列出只读观察面板可选择的全部 stream。
 
-    :return: 包含每个 stream 的数据库 ID、平台、会话类型和外部 ID 的字典；注册表未就绪
-        时返回空列表。
+    :return: 包含每个 stream 的数据库 ID、平台、会话类型、外部 ID 与可读展示名
+        的字典；注册表未就绪时返回空列表。
 
     副作用：
         仅读取注册表，不创建 stream 或修改业务数据。
@@ -1217,6 +1265,7 @@ async def streams() -> dict:
                 'platform': stream.platform,
                 'kind': stream.kind,
                 'externalId': stream.external_id,
+                'displayName': stream.display_name,
             }
             for stream in app_state.registry.list_streams()
         ]

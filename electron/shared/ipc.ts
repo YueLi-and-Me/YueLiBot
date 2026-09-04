@@ -55,6 +55,7 @@ export interface ObservabilityStream {
   platform: string
   kind: 'desktop' | 'direct' | 'group'
   externalId: string
+  displayName: string
 }
 
 export interface ObservabilityStreamsPayload {
