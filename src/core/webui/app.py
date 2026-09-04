@@ -94,6 +94,21 @@ def mount_webui(app: FastAPI) -> None:
             """返回记忆人工管理页共用的 SPA 入口文件。"""
             return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
+        @app.get('/memory/tuning', include_in_schema=False)
+        async def memory_tuning_page() -> FileResponse:
+            """返回检索调优页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
+        @app.get('/memory/import', include_in_schema=False)
+        async def memory_import_page() -> FileResponse:
+            """返回导入中心页共用的 SPA 入口文件。
+
+            SPA 路由在此逐条声明，新增页面必须同步登记：漏登的路径只有从站内跳转
+            才能打开，直接访问或刷新会落到静态挂载并返回 404。检索调优与导入中心
+            两页上线时都漏了这一步。
+            """
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
         @app.get('/', include_in_schema=False)
         async def index_page() -> FileResponse:
             """返回 SPA 根入口，并禁止浏览器缓存这份 HTML。
