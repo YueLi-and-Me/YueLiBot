@@ -60,6 +60,11 @@ export class PythonClient {
    * 导致后端将正常的视觉截止转换为取消异常。
    */
   private static readonly CHAT_GLANCE_TIMEOUT = 20_000
+  /**
+   * 重启与关机请求的超时。这两个端点只置位标记就返回，正常在毫秒级完成；
+   * 用默认的 130 秒会让后端已经死掉时的退出流程白等两分多钟。
+   */
+  private static readonly CONTROL_TIMEOUT = 3_000
 
   /**
    * 创建后端 HTTP/WebSocket 客户端。
@@ -160,6 +165,32 @@ export class PythonClient {
    */
   async interrupt(): Promise<void> {
     await this._fetch('/chat/interrupt', { method: 'POST' })
+  }
+
+  /**
+   * 请求后端重启自己。
+   *
+   * 后端是本应用的进程入口，重启由它自己完成：优雅收尾后重新执行同一份命令行，
+   * 桌面外壳与 QQ 适配器随之收走并由新进程重新拉起。Electron 侧只发请求。
+   *
+   * @returns HTTP 请求完成后的 Promise。
+   * @throws Error 网络、超时或后端返回失败时抛出。
+   */
+  async restart(): Promise<void> {
+    await this._fetch('/system/restart', { method: 'POST' }, PythonClient.CONTROL_TIMEOUT)
+  }
+
+  /**
+   * 请求后端连同整套应用一起优雅退出。
+   *
+   * 仅在本外壳由后端拉起时使用；连接的是用户自己起的后端时不得调用，
+   * 关掉别人的后端不是「退出桌宠」应有的效果。
+   *
+   * @returns HTTP 请求完成后的 Promise。
+   * @throws Error 网络、超时或后端返回失败时抛出。
+   */
+  async shutdownBackend(): Promise<void> {
+    await this._fetch('/runtime/shutdown', { method: 'POST' }, PythonClient.CONTROL_TIMEOUT)
   }
 
   /**

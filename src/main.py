@@ -3,11 +3,16 @@
 命令行参数决定运行时数据目录、配置文件和监听端口；入口负责先校验端口，再创建
 数据库迁移、模型路由、对话服务、可选向量/TTS/日程服务，并将生命周期回调交给
 FastAPI。实际 HTTP/WebSocket 路由由 ``src.core.api`` 提供。
+
+本模块同时是整个应用的进程入口：监听建立之后按配置拉起 QQ 适配器与 Electron
+桌面外壳（``[desktop_pet] enabled`` 为 false 时不拉外壳，进程保持无头形态），
+退出时按相反顺序收走它们。子进程行为见 ``src.core.common.child_process``。
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import FrameType
 from typing import Any, List
 
 import argparse
@@ -21,10 +26,17 @@ import uvicorn
 
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.api.auth import token_manager
+from src.core.api.state import app_state
 from src.core.common.backend_runtime import create_backend_runtime, runtime_file_path
+from src.core.common.child_process import ChildProcess
 from src.core.common.clock import now as current_time
 from src.core.common.console_layout import print_box
 from src.core.common.logger import get_logger, initialize_logging
+from src.core.config.bootstrap import (
+    MAIN_CONFIG_FILES,
+    bootstrap_config_directory,
+    missing_startup_requirements,
+)
 from src.core.config.loader import load_config
 from src.core.config.schema import (
     BotDocument,
@@ -37,12 +49,24 @@ from src.core.config.upgrade import upgrade_config_directory
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
+from src.core.services.adapter_host import build_adapter_process
 from src.core.services.chat_image import ChatImageDescriber
+from src.core.services.desktop_shell import build_desktop_shell_process
 from src.core.services.emoji import EmojiLibrary, VisionEmojiContentFilter
 from src.core.prompts.registry import prompt_metadata
 
 
 DEFAULT_BACKEND_PORT = 7999
+
+# 仓库根目录：``src/main.py`` 的上两层。子进程的工作目录与外壳的应用目录都以它为准，
+# 不用 os.getcwd()——入口反转后进程可能从任意目录启动，用当前工作目录会解析到别处。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# 停止单个子进程的等待秒数，超时后强制终止。适配器与外壳都没有需要落盘的状态，
+# 这里只需覆盖「进程收到终止信号到真正消失」的时间。
+CHILD_STOP_GRACE_SECONDS = 5.0
+
+logger = get_logger('main')
 
 # 初始化计时起点，由 main() 在解析完参数后置位。
 #
@@ -146,9 +170,15 @@ def _bind_backend_socket(port: int) -> socket.socket:
     except OSError as exc:
         sock.close()
         if exc.errno in {98, 10048}:
+            # 排查命令按平台给：无头部署跑在 Linux 上，给一条 PowerShell 命令
+            # 等于没给。
+            inspect = (
+                f'Get-NetTCPConnection -LocalPort {port}' if sys.platform == 'win32'
+                else f'ss -lptn "sport = :{port}"'
+            )
             raise OSError(
                 f'后端端口 {port} 已被占用，Bot 无法启动。'
-                f'请运行 Get-NetTCPConnection -LocalPort {port} '
+                f'请运行 {inspect} '
                 f'查看占用进程，结束冲突进程后重试；'
                 f'如需临时改用其他端口，可传入 --port <端口>。'
             ) from exc
@@ -249,8 +279,141 @@ def _announce_webui_ready(port: int, token: str, runtime_path: Path) -> None:
     )
 
 
+def _bootstrap_config(config_dir: Path) -> bool:
+    """补齐缺失的配置文件，并判断本次是否属于「刚生成、还没填」的首次安装。
+
+    :param config_dir: 主体配置目录。
+    :return: 本次创建了主体配置文件时为 ``True``，调用方应当停止启动。
+    :raises KeyError: schema 新增了必填字段但初始配置模块没有给出初值。
+    :raises OSError: 配置目录或文件无法写入。
+    副作用：创建缺失的配置文件；首次安装时向标准输出打印待填清单。
+    """
+    created = bootstrap_config_directory(config_dir)
+    if not created:
+        return False
+    # 只补出了适配器那两份文件时不算首次安装：QQ 是可选组件，它的连接配置默认
+    # 停用，主体照常能跑。停下来只会拦住一个本来就不接 QQ 的部署。
+    main_created = [path for path in created if path.name in MAIN_CONFIG_FILES]
+    if not main_created:
+        return False
+    rows = [f'配置目录：{config_dir.resolve()}', '']
+    # 配置目录内的文件只写文件名：绝对路径逐行重复一遍会把框撑到换行，反而看不清
+    # 到底生成了哪几份。适配器连接配置不在配置目录里，仍给完整路径。
+    rows.extend(f'已生成：{_display_path(path, config_dir)}' for path in created)
+    rows.append('')
+    rows.extend(f'待填写：{item}' for item in missing_startup_requirements(config_dir))
+    rows.append('')
+    rows.append('填好上面这些之后重新启动；其余选项都有默认值，可以先不动。')
+    print_box('首次启动 · 配置已生成', rows, width=112, publish=False)
+    return True
+
+
+def _display_path(path: Path, config_dir: Path) -> str:
+    """把配置目录内的文件缩写为文件名，目录外的保留完整路径。
+
+    :param path: 待展示的文件路径。
+    :param config_dir: 主体配置目录。
+    :return: 供信息框展示的路径文本。
+    """
+    try:
+        return str(path.resolve().relative_to(config_dir.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
+def _announce_unfilled_config(config_dir: Path) -> None:
+    """在配置加载失败时，补一条「哪些东西还没填」的人话提示。
+
+    :param config_dir: 主体配置目录。
+    :return: ``None``；没有可报告的缺项时不输出。
+    副作用：向标准输出打印待填清单；不抑制调用方要抛出的原始异常。
+    """
+    try:
+        missing = missing_startup_requirements(config_dir)
+    except Exception:
+        # 连读都读不了时说明是更靠前的问题（文件缺失、TOML 语法错），原始异常
+        # 已经说清楚了，这里不必再叠一层。
+        return
+    if not missing:
+        return
+    rows = [f'配置目录：{config_dir.resolve()}', '']
+    rows.extend(f'待填写：{item}' for item in missing)
+    rows.append('')
+    rows.append('上面的报错是同一件事的结构化形式。')
+    print_box('配置还没填完', rows, width=112, publish=False)
+
+
+def _build_children(
+    cfg: Config,
+    config_dir: Path,
+    data_dir: Path,
+    launch_shell: bool,
+) -> List[ChildProcess]:
+    """按配置组装本进程要监护的子进程列表。
+
+    两个组件都是可选的，缺失方式不同：适配器缺配置属于「这台机器不接 QQ」，只告警；
+    外壳解析失败属于「用户开着桌宠却起不来」，打 error 但同样不阻断后端启动——
+    为一个界面组件让 QQ 和 WebUI 一起停掉不成比例。
+
+    :param cfg: 已完成交叉校验的配置对象。
+    :param config_dir: 主体配置目录。
+    :param data_dir: 运行时数据目录。
+    :param launch_shell: 是否允许拉起桌面外壳；``--no-shell`` 时为 ``False``。
+    :return: 按启动顺序排列的子进程列表，可能为空。
+    副作用：读取适配器声明与连接配置，并输出说明本次拉起了什么的日志。
+    """
+    children: List[ChildProcess] = []
+    adapter = build_adapter_process(PROJECT_ROOT, config_dir, data_dir)
+    if adapter is not None:
+        children.append(adapter)
+
+    if not launch_shell:
+        # 开发时两个终端各跑一边（一边 python bot.py，一边 npm run dev）是既有工作流，
+        # 此时外壳已经在别处运行，再拉一个只会出现两个桌宠。
+        logger.info('desktop_shell_suppressed', reason='--no-shell')
+        return children
+    try:
+        shell = build_desktop_shell_process(
+            cfg.desktop_pet.enabled, PROJECT_ROOT, data_dir, config_dir)
+    except RuntimeError as exc:
+        logger.error('desktop_shell_unavailable', error=str(exc))
+        return children
+    if shell is not None:
+        children.append(shell)
+    return children
+
+
+def _reexec_process() -> None:
+    """用同一份命令行重新执行本进程，实现 ``/system/restart``。
+
+    入口反转之前重启由 Electron 的监护器完成：Python 退出后它再拉一个。现在没有
+    外部监护者，重启只能由本进程接手。
+
+    - 现象：Windows 上 ``os.execv`` 之后终端会立刻回到提示符，而新进程仍在往同一个
+      控制台输出。
+    - 原因：Windows 的 exec 语义是「结束当前进程、另起一个新进程」，进程 ID 不保留，
+      等待原进程的 shell 因此认为命令已经结束。
+    - 后果：这只影响终端观感，新进程的监听、子进程与日志都正常；换成先 spawn 再退出
+      也是同一个结果，不值得为此引入一个常驻的父进程。
+
+    :return: 不返回；调用成功后当前进程映像被替换。
+    :raises OSError: 解释器路径不可执行时由 ``os.execv`` 抛出。
+    副作用：刷新标准输出后替换当前进程。
+    """
+    logger.info('backend_reexec', argv=' '.join(sys.argv))
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+
+
 class _ReadyAnnouncingServer(uvicorn.Server):
-    """在端口真正开始监听之后才打印就绪公告与 WebUI 状态框。"""
+    """在端口开始监听之后打印就绪公告，并持有本进程拉起的子进程。
+
+    子进程（QQ 适配器、桌面外壳）的启停时机绑在监听的建立与关闭上，而不是挂进
+    ``lifecycle``：它们要在监听建立**之后**才起（外壳与适配器一上来就要连后端），
+    要在服务器开始收尾**之前**就停（适配器停了才不会再有新的入站消息进来）。
+    ``lifecycle`` 的两个边界都在这个区间之内，装不下它们。
+    """
 
     def __init__(
         self,
@@ -258,27 +421,31 @@ class _ReadyAnnouncingServer(uvicorn.Server):
         port: int,
         token: str,
         runtime_path: Path,
+        children: List[ChildProcess],
     ) -> None:
-        """记录就绪公告所需的监听端口、认证 token 与凭据文件路径。
+        """记录就绪公告所需的连接信息与待监护的子进程。
 
         :param config: Uvicorn 配置。
         :param port: 后端实际监听端口。
         :param token: 当前进程认证 token。
         :param runtime_path: 运行时凭据文件路径。
+        :param children: 监听建立后按顺序拉起的子进程；停止时按相反顺序收走。
         """
 
         super().__init__(config)
         self._entry_port = port
         self._entry_token = token
         self._entry_runtime_path = runtime_path
+        self._children = children
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        """完成 Uvicorn 启动后再输出就绪标记与 WebUI 状态框。
+        """完成 Uvicorn 启动后输出就绪标记，并拉起受监护的子进程。
 
         :param sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入。
 
         副作用：
-            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1`` 与 WebUI 就绪框。
+            先执行父类启动流程，再向标准输出写入 ``YUELI_READY=1`` 与 WebUI 就绪框，
+            最后按顺序创建子进程。
 
         入口框只在这里打一次：地址在监听建立之前是打不开的，提前预告等于给出
         一个当时点了会失败的地址。
@@ -288,6 +455,46 @@ class _ReadyAnnouncingServer(uvicorn.Server):
         _announce_ready()
         _announce_webui_ready(
             self._entry_port, self._entry_token, self._entry_runtime_path)
+        for child in self._children:
+            try:
+                await child.start()
+            except OSError as exc:
+                # 单个子进程拉不起来不该拖垮后端：QQ 适配器起不来时桌宠与 WebUI 仍
+                # 可用，反之亦然。错误整条打出来，不做重试也不静默。
+                logger.error('child_start_failed', child=child.name, error=str(exc))
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        """先收走子进程，再执行 Uvicorn 的优雅关闭。
+
+        :param sockets: 已绑定的监听 socket 列表；由 Uvicorn 传入并在父类中关闭。
+        :return: ``None``。
+        副作用：终止全部子进程树，随后停止监听、等待在飞请求并执行 lifespan 关闭链。
+        """
+
+        for child in reversed(self._children):
+            await child.stop(CHILD_STOP_GRACE_SECONDS)
+        await super().shutdown(sockets=sockets)
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        """处理终止信号；收尾开始之后的重复信号不再升级为强制退出。
+
+        - 现象：Uvicorn 默认的第二次 SIGINT 会置位 ``force_exit``，跳过在飞请求的
+          等待与 lifespan 关闭链。
+        - 原因：收尾链上挂着八个服务与子进程终止，最坏要走完
+          ``timeout_graceful_shutdown`` 的 15 秒，用户很可能在这期间再按一次 Ctrl+C。
+        - 后果：允许升级会让「多按一次」变成丢状态——未落库的回合、未写完的事件账本
+          都在这条链上。收尾本身是有界的，这里只提示，不中断。
+
+        :param sig: 收到的信号编号。
+        :param frame: 信号发生时的栈帧；本实现不使用。
+        :return: ``None``。
+        副作用：首次信号置位 ``should_exit``；重复信号只输出一行提示。
+        """
+
+        if self.should_exit:
+            print('正在收尾，请稍候；强制结束请从任务管理器结束该进程。', flush=True)
+            return
+        super().handle_exit(sig, frame)
 
 
 def main() -> None:
@@ -309,6 +516,11 @@ def main() -> None:
     parser.add_argument("--config-path", required=True)
     parser.add_argument("--port", type=int, default=DEFAULT_BACKEND_PORT)
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument(
+        "--no-shell",
+        action="store_true",
+        help="即使桌宠已开启也不拉起 Electron 外壳；开发时外壳单独跑 npm run dev 用",
+    )
     args = parser.parse_args()
 
     global _init_started_at
@@ -319,10 +531,16 @@ def main() -> None:
 
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
+    config_dir = Path(args.config_path)
+    # 配置文件缺失时先生成一份初始配置，再往下走。这一段此前只有 Electron 有：
+    # 它首次启动弹设置窗口，填完才落盘。桌宠可以整个不在场之后，无头形态下没有
+    # 任何进程会去创建 config/，而它不入版本库，全新签出里就是没有。
+    if _bootstrap_config(config_dir):
+        sys.exit(1)
     # 配置对账必须在解析之前：新增字段先补进文件再读，用户才能在文件里看到它们，
     # 而不是只看到一个「代码里有默认值」的隐形开关。写入前整目录备份。
     upgrade_config_directory(
-        Path(args.config_path),
+        config_dir,
         {
             'providers.toml': ProviderCatalog,
             'models.toml': ModelCatalog,
@@ -331,9 +549,15 @@ def main() -> None:
         },
         data_dir,
     )
-    cfg = load_config(Path(args.config_path))
+    try:
+        cfg = load_config(config_dir)
+    except SystemExit:
+        # load_config 自己把诊断打到 stderr 后 sys.exit(1)，抛的是 SystemExit 而不是
+        # Exception。这里只在它后面补一句人话——「格式都对、就是还没填」这一类在
+        # pydantic 的字段路径里看不出来；原始诊断原样保留，不吞不改。
+        _announce_unfilled_config(config_dir)
+        raise
     initialize_logging(cfg.log, data_dir / 'logs')
-    logger = get_logger("main")
     # 启动日志的开场白：没有它时第一行是模型路由框，读者不知道这份输出从哪开始，
     # 也不知道正在起的是哪个 bot。
     logger.info('startup_begin', bot=cfg.bot.name, dataDir=str(data_dir))
@@ -404,11 +628,10 @@ def main() -> None:
     )
 
     # 先装配归属注册表和 broker，随后创建的聊天服务才能解析并投递外部 stream。
-    from src.core.api.state import app_state
     from src.core.api.ws import push
     from src.core.services.chat import ChatService
 
-    app_state.config_dir = Path(args.config_path)
+    app_state.config_dir = config_dir
     app_state.registry = StreamRegistry(db)
     app_state.group_chat_config = cfg.group_chat
     broker = PlatformBroker()
@@ -859,10 +1082,19 @@ def main() -> None:
         port=port,
         token=backend_runtime.token,
         runtime_path=runtime_file_path(data_dir),
+        children=_build_children(cfg, config_dir, data_dir, not args.no_shell),
     )
     # 关机端点据这句柄置位 should_exit，走与 SIGINT 相同的优雅路径。
     app_state.uvicorn_server = server
-    server.run(sockets=[sock])
+    try:
+        server.run(sockets=[sock])
+    except KeyboardInterrupt:
+        # Uvicorn 的 capture_signals 在优雅收尾跑完之后，会用原处理器重放捕获到的
+        # SIGINT，于是 run() 抛出 KeyboardInterrupt。收尾此时已经全部完成，再让它
+        # 冒泡只会在终端里留下一段与故障无关的 traceback。
+        pass
+    if app_state.restart_requested:
+        _reexec_process()
 
 
 if __name__ == "__main__":

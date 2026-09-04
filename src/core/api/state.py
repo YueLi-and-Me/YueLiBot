@@ -39,6 +39,10 @@ class _AppState:
         self.config_dir: Any = None               # 运行时配置目录，模型工作台读写 TOML 用
         # uvicorn.Server 句柄，由 main.py 在构造后注入；优雅关机端点据此置位 should_exit。
         self.uvicorn_server: Any = None
+        # 本次退出是否由 /system/restart 触发。入口反转后没有外部监护者会重新拉起
+        # 进程，重启与关机的差别只剩这一位：main() 在服务器退出后据此决定是否重新
+        # 执行自己。默认 False，即普通退出。
+        self.restart_requested: bool = False
 
 
 app_state = _AppState()

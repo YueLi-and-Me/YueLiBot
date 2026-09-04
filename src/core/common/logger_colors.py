@@ -50,6 +50,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "common.db.migrations.bootstrap": ("#d7af5f", False),
     "common.db.schema_report": ("#ffaf00", True),
     "config.upgrade": ("#ffaf00", True),
+    "config.bootstrap": ("#ffd787", True),
     "common.db.migrations.manager": ("#ffaf00", True),
     "common.db.migrations.v3_to_v4": ("#ffd75f", False),
     "common.db.migrations.v4_to_v5": ("#ffd75f", False),
@@ -89,6 +90,10 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "services.trace_console": ("#ff87d7", True),
     "agent.expression_learn": ("#ffaf87", False),
     "agent.impression": ("#d7af87", False),
+    # 进程监护：入口拉起的 QQ 适配器与桌面外壳
+    "common.child_process": ("#87d7d7", True),
+    "services.adapter_host": ("#ffafd7", False),
+    "services.desktop_shell": ("#afd7ff", True),
 }
 
 # 模块名 → 控制台上显示的中文别名；控制台输出统一使用简体中文。
@@ -117,6 +122,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "common.db.migrations.manager": "数据库迁移",
     "common.db.schema_report": "数据库结构",
     "config.upgrade": "配置升级",
+    "config.bootstrap": "配置初始化",
     "common.db.migrations.v3_to_v4": "迁移v3→v4",
     "common.db.migrations.v4_to_v5": "迁移v4→v5",
     "common.db.migrations.v5_to_v6": "迁移v5→v6",
@@ -153,6 +159,9 @@ MODULE_ALIASES: Dict[str, str] = {
     "services.trace_console": "追踪面板",
     "agent.expression_learn": "表达学习",
     "agent.impression": "会话印象",
+    "common.child_process": "子进程",
+    "services.adapter_host": "适配器进程",
+    "services.desktop_shell": "桌面外壳",
 }
 
 

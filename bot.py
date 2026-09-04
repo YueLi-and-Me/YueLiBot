@@ -6,7 +6,9 @@ YueLiBot Python 后端入口。
 
     python bot.py --data-dir <dir> --config-path <dir>
 
-Python 会生成运行时 token；Electron 侧只解析启动公告，工作目录为仓库根。
+入口反转后本进程就是整套应用的入口：监听建立后依次拉起 QQ 适配器与 Electron
+桌面外壳（后者受 bot.toml 的 [desktop_pet] enabled 控制），退出时按相反顺序收走。
+Python 生成运行时 token 并写入 data/runtime/backend.json，外壳只读它来连接。
 """
 
 from src.main import main

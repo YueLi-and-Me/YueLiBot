@@ -32,7 +32,7 @@ def runtime_file_path(data_dir: Path) -> Path:
     :return: ``<data_dir>/runtime/backend.json``。
 
     调用方需要展示或读取这个位置时一律走本函数，不要再各自拼一次路径：
-    TS 侧（`supervisor.ts`）和适配器入口已经各持有一份字面量，Python 内部再拼第三份，
+    TS 侧（`backendLink.ts`）和适配器入口已经各持有一份字面量，Python 内部再拼第三份，
     改目录结构时必然漏改其中一处，而漏改的表现是「文件明明在那儿却读不到」。
     """
 

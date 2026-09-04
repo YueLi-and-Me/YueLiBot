@@ -1,7 +1,7 @@
 /**
  * 后端重启指令的共用 hook。
  *
- * `POST /system/restart` 由 Electron supervisor 负责拉起新进程；这里只负责
+ * `POST /system/restart` 之后由 Python 入口自己重新执行同一份命令行；这里只负责
  * 发指令、报结果，并在短暂延迟后刷新页面等新进程就位。重启前的确认弹窗与
  * 未保存改动提示由调用方持有——两个配置页共用同一段发令逻辑，避免两份
  * 行为悄悄漂移。
@@ -11,7 +11,7 @@ import { useCallback, useState } from 'react'
 import { toast } from '@/components/ui'
 import { apiMutate } from '@/lib/api'
 
-/** 刷新页面前的等待毫秒数：给 supervisor 一点拉起新进程的时间。 */
+/** 刷新页面前的等待毫秒数：给后端一点收尾并重新起来的时间。 */
 const RELOAD_DELAY_MS = 2200
 
 /**

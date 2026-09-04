@@ -356,7 +356,9 @@ async def runtime_shutdown() -> JSONResponse:
 
     置位 ``should_exit`` 后 uvicorn 走与 SIGINT 完全相同的优雅路径：停监听、
     对在飞请求只关 keep-alive 并等其完成、跑 lifespan 逆序关闭链后以 0 退出。
-    因此本响应仍能正常发出，Electron supervisor 只需等待子进程退出事件。
+    因此本响应仍能正常发出，调用方只需等待进程退出。
+
+    本进程是应用入口：退出前会先收走 QQ 适配器与桌面外壳，整套应用一起结束。
     """
     server = app_state.uvicorn_server
     if server is None:
@@ -368,10 +370,11 @@ async def runtime_shutdown() -> JSONResponse:
 
 @router.post('/system/restart', dependencies=[Depends(_auth), Depends(_require_loopback)])
 async def system_restart() -> dict:
-    """重启当前 Python 后端进程；Electron supervisor 会重新拉起。
+    """重启当前 Python 后端进程；退出后由入口重新执行自己。
 
-    与 ``/runtime/shutdown`` 同一条优雅路径：进程退出后 supervisor 照旧按
-    ``_scheduleRestart`` 拉起，重启语义不变，只是关闭链有机会收尾。
+    与 ``/runtime/shutdown`` 同一条优雅路径，差别只在多置位一个标记：入口反转后
+    没有外部监护者会重新拉起进程，``src.main`` 在服务器退出后读这个标记决定是关机
+    还是重新执行。QQ 适配器与桌面外壳随本进程一起收走，并由新进程重新拉起。
     """
     server = app_state.uvicorn_server
     if server is None:
@@ -380,6 +383,7 @@ async def system_restart() -> dict:
             detail='关机句柄未注入',
         )
     logger.info('restart_requested')
+    app_state.restart_requested = True
     server.should_exit = True
     return {'ok': True}
 

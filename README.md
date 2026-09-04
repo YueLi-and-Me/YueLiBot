@@ -35,22 +35,22 @@
 
 ## 安装 · INSTALL
 
-**环境要求**：Windows 10/11 · Python 3.11+ · Node.js（Electron 43）
+**环境要求**：Python 3.11+ · Node.js（Electron 43）· 桌宠需要 Windows 10/11
+
+进程入口是 Python。**只跑 QQ 与管理面板的话，Node 与图形环境都不是必需的**，
+Linux 服务器可以直接部署，见[无头部署](#无头部署--headless)。
 
 ### 1. 依赖
 
 ```bash
 uv sync         # Python 后端依赖
-npm install     # Electron 端依赖
+npm install     # 桌宠外壳与管理面板前端，无头部署可跳过
 ```
 
 可选 extra：`--extra vector` 装向量召回用的 faiss 与 numpy，`--extra dev` 装 pytest。
 
-Electron 用 PATH 上的 `python` 拉起后端。用 uv 建的虚拟环境要么先激活，要么用环境变量指过去：
-
-```bash
-$env:YUELI_PYTHON_EXE = ".venv\Scripts\python.exe"
-```
+后端用哪个解释器由启动它的那条命令决定；QQ 适配器跟着后端走，用的是同一个解释器，
+不会退回到 PATH 上那个（PATH 上的解释器往往装不到项目依赖，表现为适配器一起来就 ImportError）。
 
 抠图需要 rembg，只在跑生图管线时用到，日常运行不需要：
 
@@ -60,7 +60,11 @@ uv pip install "rembg[cli]" onnxruntime
 
 ### 2. 配置
 
-第一次运行会打开设置窗口。保存后，运行时配置固定写入项目根目录的 `config\`，按职责拆成五份：
+配置文件不入版本库，第一次运行时才生成：**开着桌宠会弹设置窗口，关着桌宠（或压根没装 Node）
+则由 Python 入口在 `config\` 里生成一份带完整中文注释的初始配置，然后停下来告诉你还差哪几项**。
+两条路写出的是同一份结构，之后都可以在管理面板里改，也可以直接编辑 TOML。
+
+配置按职责拆成五份：
 
 | 文件 | 内容 |
 | :--- | :--- |
@@ -137,11 +141,26 @@ surfaces = ["desktop"]
 
 ### 3. 跑起来
 
+进程入口是 Python，一条命令起全套：
+
 ```bash
-npm run dev
+uv run bot.py --data-dir data --config-path config
 ```
 
+它按顺序做三件事：起后端与管理面板 → 拉起 QQ 适配器（有 `config\adapter.toml` 时）
+→ 按 `bot.toml` 的 `[desktop_pet] enabled` 决定要不要拉起 Electron 桌宠外壳。
+**桌宠开关关掉时不会拉起 Electron**，进程保持无头形态，服务器上不需要图形环境。
+终端里 `Ctrl+C` 走完整的优雅收尾：先收走适配器与外壳，再停服务、落库、退出；
+收尾期间再按一次不会打断它。
+
+桌宠外壳按仓库里实际存在的东西选启动方式：有 `node_modules` 就走 `npm run dev`（源码改动即时生效），
+只有 `npm run build` 的产物就直接跑本地 Electron。两者都没有会报错并给出该执行哪条命令，
+后端本身照常运行。开发时想自己单独开外壳，给入口加 `--no-shell`，再另起一个终端跑 `npm run dev`。
+
+Electron 侧只连不拉：它连接已经在跑的后端，连不上会提示先启动 Python，不会自己起一个。
+
 托盘里有全部入口：显示/隐藏、跟她说话、看她的日记、搬回原位、开机自启、退出。
+由 Python 拉起时「退出」结束整套应用；自己单独开的外壳「退出」只关掉这个客户端，后端不动。
 
 - **点她**开合输入栏，**拖她**移动窗口（4px 位移阈值区分点与拖）
 - 角色轮廓之外全部鼠标穿透，不挡桌面操作
@@ -162,6 +181,41 @@ npm run dev
 
 ---
 
+## 无头部署 · HEADLESS
+
+服务器上只跑 QQ 与管理面板，不要桌宠。进程入口本来就是 Python，所以这条路上没有 Electron：
+
+```bash
+uv sync
+uv run bot.py --data-dir data --config-path config
+```
+
+第一次运行会在 `config\` 生成一份初始配置然后退出，控制台列出还差哪几项——最少只需要两处：
+`bot.toml` 的 `[bot] name`，以及 `models.toml` 的 `model_identifier` 加 `providers.toml` 的
+`base_url`、`api_key`。生成的 TOML 每个字段都带中文说明，直接编辑就行。填好后再启动一次即可。
+
+确认 `bot.toml` 的 `[desktop_pet] enabled = false`（默认就是），入口便不会去找 Electron；
+QQ 适配器仍由它拉起和监护。终端里 `Ctrl+C` 走完整收尾，`SIGTERM` 同理，适合交给 systemd：
+
+```ini
+[Service]
+WorkingDirectory=/opt/yueli
+ExecStart=/opt/yueli/.venv/bin/python bot.py --data-dir data --config-path config
+Restart=on-failure
+KillSignal=SIGTERM
+TimeoutStopSec=60
+```
+
+两件事要知道：
+
+- **管理面板需要构建一次**。它是前端产物，`npm run build` 会写到 `out/webui`；没有这一步时
+  面板页面会明说「尚未构建」，API 与 QQ 不受影响。不想在服务器上装 Node，就在别处构建后把
+  `out/webui` 拷过去，或者干脆只编辑 TOML。
+- **面板只监听 `127.0.0.1`，且不打算改**。远程访问请走 SSH 端口转发
+  （`ssh -L 7999:127.0.0.1:7999 <主机>`），不要把它直接暴露到公网。
+
+---
+
 ## ⚠️ 三个不报错的坑 · PITFALLS
 
 改 Electron 那一侧之前先看这三条。它们的共同点是**没有任何报错，只表现为功能不工作**，不知道的话能查很久：
@@ -174,12 +228,12 @@ npm run dev
 
 ## 🧱 架构 · ARCHITECTURE
 
-业务域已经从 TypeScript 迁到 Python：Electron 只做平台层和进程治理，对话、记忆、人格、日程、主动行为全在 Python 后端。
+业务域已经从 TypeScript 迁到 Python：Electron 只做平台层——窗口、托盘、屏幕采集、键鼠活动，对话、记忆、人格、日程、主动行为全在 Python 后端。**进程治理也在 Python 一侧**：它是入口，拉起并监护 QQ 适配器与可选的桌宠外壳，Electron 只连接后端，不启动也不终止任何进程。这样服务器上不再需要为了跑一个 QQ 机器人先装图形环境。
 
 目录形状：`src/` 是 Python 包根，按「内核 / 桌宠 / 平台适配器」分成三个包，入口在仓库根的 `bot.py`；Electron 那一侧整体收在 `electron/`，管理面板的前端在 `webui/`。
 
 ```
-bot.py              后端入口
+bot.py              进程入口
 
 src/                业务真源（Python 包根）
   main.py           启动装配：读配置、建服务、拉 uvicorn
@@ -190,23 +244,23 @@ src/                业务真源（Python 包根）
     persona/        按人好感度 + 全局精力 → 自然语言行为指令
     awareness/      前台归类、键鼠强度、兴趣值、意图队列、睡眠状态
     schedule/       24h 生成式日程
-    services/       对话编排、主动感知、图片理解、表情包、TTS
+    services/       对话编排、主动感知、图片理解、表情包、TTS、子进程装配
     observe/        管线事件账本、冻结的阶段 ID、事件广播
     platform_io/    出口契约：桌面的流式出口与 QQ 的整句出口共用同一套
     prompts/        外置提示词模板、占位符校验与版本归档
     api/            FastAPI 路由与 WebSocket
     webui/          管理面板的静态资源托管与日志接口
     config/         配置 schema 与多文件 TOML 加载
-    common/         时钟、日志、SQLite 连接与迁移
+    common/         时钟、日志、SQLite 连接与迁移、子进程监护
   desktop/          桌宠专属：前台归类、屏幕视觉、传感器
-  platforms/napcat/ QQ 适配器，由 supervisor 拉成独立进程
+  platforms/onebot11/ QQ 适配器宿主，由入口拉成独立进程
 
 webui/              管理面板前端（React + Vite），构建产物出到 out/webui
 
 electron/           Electron 端（TypeScript）
   main/             主进程（持有 API Key）
     platform/       ★ 系统调用适配层，迁移 Tauri 只需重写这里
-    python/         Python 后端的 supervisor 与 HTTP/WS 客户端
+    python/         Python 后端的连接管理与 HTTP/WS 客户端（只连不拉）
   preload/          最小化 IPC 桥
   renderer/         画面（不可信内容的运行环境，无凭证）
     character/      CharacterView 接口 + 立绘差分实现
@@ -246,7 +300,8 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 
 | 命令 | 作用 |
 | :--- | :--- |
-| `npm run dev` | 开发模式 |
+| `uv run bot.py --data-dir data --config-path config` | 正常启动（进程入口，按桌宠开关决定要不要拉外壳） |
+| `npm run dev` | 只起桌宠外壳；连接已经在跑的后端，配合入口的 `--no-shell` 使用 |
 | `npm run dev:renderer` | 只起渲染层（浏览器里调画面，比重启 Electron 快得多） |
 | `npm run dev:webui` | 只起管理面板前端，需要后端已经在跑 |
 | `npm run build` | 生产构建 |

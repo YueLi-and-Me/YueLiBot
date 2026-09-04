@@ -19,9 +19,15 @@ from src.plugin_system import AdapterManifest, load_manifest
 
 import tomllib
 
-# 声明文件名与其中的字段名；Electron 首次启动时按同名约定创建这份文件。
+# 声明文件名与其中的字段名；两侧首次启动时都按同名约定创建这份文件。
 ADAPTER_SELECTION_FILENAME = 'adapter.toml'
 ADAPTER_SELECTION_FIELD = 'plugin'
+# 新装时写进声明文件的插件目录名，只在创建那一次使用。
+#
+# 它不是 read_active_adapter 的回退值：创建是一次显式初始化，用户随后可以改；
+# 读取时回退才会把「配错了」伪装成「配好了」——猜错的那个适配器读的是另一份配置，
+# 表现为设置页改了参数却不生效。electron/main/config.ts 持有同名同值的常量。
+DEFAULT_ADAPTER_PLUGIN = 'yueli-snowluma-adapter'
 # 适配器的连接配置固定与插件同目录、同名，目录名即适配器身份。
 ADAPTER_CONFIG_FILENAME = 'config.toml'
 # 适配器插件根目录：由本文件位置推出仓库根，避免依赖进程工作目录。
@@ -95,6 +101,7 @@ __all__ = [
     'ADAPTER_CONFIG_FILENAME',
     'ADAPTER_SELECTION_FIELD',
     'ADAPTER_SELECTION_FILENAME',
+    'DEFAULT_ADAPTER_PLUGIN',
     'adapter_config_path',
     'adapter_config_section',
     'adapter_directory',

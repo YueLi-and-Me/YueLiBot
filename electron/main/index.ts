@@ -1,9 +1,11 @@
 /**
- * Electron 主进程入口，负责桌宠窗口、托盘、平台读取权限和 Python 后端生命周期。
+ * Electron 主进程入口，负责桌宠窗口、托盘和平台读取权限。
  *
  * 本模块在应用就绪前设置运行时目录，随后读取拆分 TOML 配置、注册设置与业务 IPC、
- * 创建桌宠窗口，并通过 {@link PythonSupervisor} 启动本机后端。前台窗口轮询、屏幕捕获
- * 和输入活动采集由 Electron 执行，记忆、人格、日程和模型调用由 Python 服务处理。
+ * 创建桌宠窗口，并通过 {@link BackendLink} 连接**已在运行**的 Python 后端。
+ * 进程入口是 Python：它按 `[desktop_pet] enabled` 决定是否拉起本外壳，并监护 QQ
+ * 适配器；本模块不启动也不重启后端进程。前台窗口轮询、屏幕捕获和输入活动采集由
+ * Electron 执行，记忆、人格、日程和模型调用由 Python 服务处理。
  * 渲染器仅经 preload bridge 访问本模块，IPC 类型与消息名称统一由 `shared/ipc.ts` 定义。
  */
 
@@ -37,7 +39,7 @@ import {
 import { IPC, type YueliConfig } from '../shared/ipc.ts'
 import { mentionsScreen } from './screenIntent.ts'
 import { InputActivity } from './inputActivity.ts'
-import { PythonSupervisor } from './python/supervisor.ts'
+import { BackendLink } from './python/backendLink.ts'
 import { PythonClient, windowSink, type EventSink } from './python/client.ts'
 import { resolveRuntimePaths } from './runtimePaths.ts'
 
@@ -52,7 +54,12 @@ const FOREGROUND_POLL_MS = 8_000
 
 if (process.env.YUELI_DISABLE_GPU === '1') app.disableHardwareAcceleration()
 
-const runtimePaths = resolveRuntimePaths(app.getAppPath(), process.env.YUELI_PROJECT_ROOT)
+const runtimePaths = resolveRuntimePaths(
+  app.getAppPath(),
+  process.env.YUELI_PROJECT_ROOT,
+  process.env.YUELI_DATA_DIR,
+  process.env.YUELI_CONFIG_DIR,
+)
 for (const directory of [
   runtimePaths.dataDir,
   runtimePaths.electronUserDataDir,
@@ -70,8 +77,15 @@ app.setPath('temp', runtimePaths.electronTempDir)
 app.setPath('crashDumps', runtimePaths.electronCrashDumpsDir)
 
 let petWindow: BrowserWindow | null = null
-let supervisor: PythonSupervisor | null = null
+let backend: BackendLink | null = null
 let client: PythonClient | null = null
+/**
+ * 本外壳是否由 Python 后端拉起。
+ *
+ * 决定托盘「退出」的语义：由后端拉起时它是整个应用的唯一可见入口，退出应当连同后端
+ * 一起结束；用户自己起的外壳连的是别人的后端，退出只该关掉这个客户端。
+ */
+const managedByBackend = process.env.YUELI_SHELL_MANAGED === '1'
 /** 当前有效配置；后端重启后刷新，保证 Electron 侧按最新功能开关执行轮询和截图。 */
 let currentCfg: YueliConfig | null = null
 let inputActivity: InputActivity | null = null
@@ -87,16 +101,17 @@ let watchScreen = false
 registerAppScheme()
 
 /**
- * 让终端信号走与窗口关闭相同的优雅退出链。
+ * 让终端信号走与窗口关闭相同的退出链。
  *
- * 现象：在终端里按 Ctrl+C 时进程直接结束，后端与 QQ 适配器来不及收尾。
- * 原因：Node 对 SIGINT / SIGTERM 的默认行为是立即终止进程，
- *   `before-quit` 不会触发，于是 `supervisor.shutdown()` 整条被跳过——
- *   后端收不到 `/runtime/shutdown`，适配器也没有被 `_killAdapter` 收走。
- * 后果：移除本注册会让「终端退出」与「窗口退出」两条路径的收尾行为再次分叉，
+ * 现象：在终端里按 Ctrl+C 时进程直接结束，窗口捕获与键鼠钩子来不及释放。
+ * 原因：Node 对 SIGINT / SIGTERM 的默认行为是立即终止进程，`before-quit` 不会触发。
+ * 后果：移除本注册会让「终端退出」与「托盘退出」两条路径的收尾行为再次分叉，
  *   而分叉只在终端里显现，日常从托盘退出时看不出来。
  *
- * 第二次信号强制退出：优雅链内部虽有超时，但用户在它跑完前应当始终能脱身。
+ * 由后端拉起时本外壳在独立进程组中，终端的 Ctrl+C 不会送到这里——那条路径上是后端
+ * 先收尾、再终止本进程树，与本函数无关。
+ *
+ * 第二次信号强制退出：本进程的收尾只涉及本地资源，没有需要保护的落盘操作。
  *
  * @returns 无返回值。
  * @sideEffects 在当前进程注册 SIGINT 与 SIGTERM 监听。
@@ -144,10 +159,8 @@ app.whenReady().then(async () => {
   if (!devUrl) serveAppScheme(resolveRendererRoot())
   // 启用哪个适配器只有 config/adapter.toml 一处声明，主体侧的设置页读同一份；
   // 它的连接配置与插件同目录，换协议端就是换那个文件夹，配置跟着一起走。
-  const adapterPluginDir = ensureAdapterSelection(configDir)
-  const adapterConfigPath = ensureAdapterConfig(
-    join(app.getAppPath(), 'adapters', adapterPluginDir),
-  )
+  // 拉起适配器的是 Python，这里只保证两份文件存在——配置文件的写入方一直是 Electron。
+  ensureAdapterConfig(join(app.getAppPath(), 'adapters', ensureAdapterSelection(configDir)))
 
   // 配置读写 IPC 同时服务首次启动设置窗口和后续编辑。
   ipcMain.handle(IPC.ReadConfig, async () => readConfigDirectory(configDir, legacyConfigPath))
@@ -167,29 +180,23 @@ app.whenReady().then(async () => {
     }
   })
   ipcMain.on(IPC.RestartBackend, () => {
-    if (!supervisor) return
-    console.log('[main] 收到重启指令，重启 Python 后端…')
+    const target = client
+    if (!target) return
+    console.log('[main] 收到重启指令，请求后端重启…')
     currentCfg = readConfigDirectory(configDir, legacyConfigPath)
     syncInputActivity()
-    // 优雅关闭后再拉起：等服务停完（通常 1–3 秒，上限约 10 秒），
-    // 换来不再丢在飞回合与未落库状态。
-    const target = supervisor
-    void (async () => {
-      await target.shutdown()
-      target.start()
-    })()
+    // 重启由后端自己完成：它优雅收尾后重新执行同一份命令行。本外壳会先失联、
+    // 再由 BackendLink 重连；若本外壳也是后端拉起的，它会随后端一起被换掉。
+    void target.restart().catch((error: unknown) => {
+      console.error('[main] 重启请求失败：', error)
+    })
   })
-  // 首次启动缺少模型或 API 密钥时先显示设置窗口，桌宠和 Python 后端延后启动。
+  // 首次启动缺少模型或 API 密钥时先显示设置窗口，桌宠窗口与后端连接延后建立。
   if (!configIsComplete(readConfigDirectory(configDir, legacyConfigPath))) {
     await runFirstRunWizard(devUrl)
   }
 
-  await startApp(
-    devUrl,
-    readConfigDirectory(configDir, legacyConfigPath),
-    adapterConfigPath,
-    adapterPluginDir,
-  )
+  await startApp(devUrl, readConfigDirectory(configDir, legacyConfigPath))
 }).catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
   console.error('[main] 启动初始化失败：', error)
@@ -250,21 +257,17 @@ function runFirstRunWizard(devUrl?: string): Promise<void> {
 }
 
 /**
- * 创建桌宠运行时资源，注册主进程 IPC，并启动 Python 后端及前台感知循环。
+ * 创建桌宠运行时资源，注册主进程 IPC，并连接 Python 后端与前台感知循环。
  *
  * @param devUrl 开发服务器地址；生产模式下为 `undefined`，窗口使用自定义协议加载资源。
  * @param cfg 已读取且通过最小启动条件检查的运行时配置。
- * @param adapterConfigPath 适配器插件目录下的连接配置路径，传给后端监护器。
- * @param adapterPluginDir 当前启用的适配器插件目录名，传给后端监护器。
- * @returns 所有同步初始化完成后的 Promise；后端与轮询器通过事件持续运行。
- * @throws Error 当窗口、后端监护器、配置读取或 IPC 初始化失败时抛出。
+ * @returns 所有同步初始化完成后的 Promise；后端连接与轮询器通过事件持续运行。
+ * @throws Error 当窗口、配置读取或 IPC 初始化失败时抛出。
  * @remarks 方法会创建窗口和定时器、注册应用退出清理逻辑，并对屏幕捕获失败执行隔离处理，避免阻断文本消息发送。
  */
 async function startApp(
   devUrl: string | undefined,
   cfg: YueliConfig,
-  adapterConfigPath: string,
-  adapterPluginDir: string,
 ): Promise<void> {
   currentCfg = cfg
   inputActivity = new InputActivity()
@@ -287,17 +290,9 @@ async function startApp(
   ipcMain.on(IPC.EndDrag, () => endDrag())
   ipcMain.on(IPC.FocusInput, (_e, focus: boolean) => petWindow && focusForInput(petWindow, focus))
 
-  // Python 后端监护：后端就绪后再创建客户端，避免向尚未监听端口的服务发送请求。
-  supervisor = new PythonSupervisor({
-    dataDir,
-    configPath: configDir,
-    cwd: app.getAppPath(),
-    pythonExe: process.env.YUELI_PYTHON_EXE ?? 'python',
-    adapterConfigPath,
-    adapterPluginDir,
-  })
-  supervisor.on('ready', (port, token) => {
-    if (!supervisor) return
+  // 连接后端：只连不拉。进程入口是 Python，后端已经在运行，就绪后再创建客户端。
+  backend = new BackendLink({ dataDir })
+  backend.on('ready', (port, token) => {
     client?.stop()
     // 桌宠关闭时窗口不存在：仍创建客户端让日记窗口走 HTTP 可用，但不建立 WS——
     // 聊天、语音、睡眠推送都没有接收窗口。
@@ -307,22 +302,36 @@ async function startApp(
     })
     if (win) client.connect()
   })
-  // 监护器已经记录详细故障，主进程只更新托盘提示，避免重复输出同一错误。
-  supervisor.on('adapterFailed', (err) => {
-    notifyTray(cfg.bot.name, err.message)
+  // 后端重启期间会短暂失联，客户端先停掉，重连成功后由 ready 建新的。
+  backend.on('lost', () => {
+    client?.stop()
+    client = null
+    notifyTray(cfg.bot.name, '与后端失联，正在重连…')
   })
-  supervisor.start()
+  backend.on('unavailable', (err) => {
+    console.error('[main] 未连接到 Python 后端：', err.message)
+    dialog.showErrorBox('未连接到 Python 后端', err.message)
+    app.quit()
+  })
+  backend.start()
   app.on('before-quit', (event) => {
-    // 异步幂等退出：首次触发拦截退出，等清理与后端优雅关闭完成后再真正退出；
-    // 重入时（quitPrepared 已置位）直接放行。所有等待都有内部超时，不会卡住退出。
+    // 异步幂等退出：首次触发拦截退出，等清理完成后再真正退出；重入时（quitPrepared
+    // 已置位）直接放行。所有等待都有内部超时，不会卡住退出。
     if (quitPrepared) return
     quitPrepared = true
     event.preventDefault()
     void (async () => {
+      // 由后端拉起时本外壳是整个应用唯一的可见入口，「退出」应当连后端一起结束；
+      // 连的是用户自己起的后端时只断开连接——关掉别人的后端不是退出桌宠该有的效果。
+      if (managedByBackend && client) {
+        await client.shutdownBackend().catch((error: unknown) => {
+          console.error('[main] 请求后端退出失败：', error)
+        })
+      }
       client?.stop()
+      backend?.stop()
       inputActivity?.stop()
       disposeWindowCapture()
-      await supervisor?.shutdown()
       app.quit()
     })()
   })
@@ -472,12 +481,11 @@ async function startApp(
         botName: cfg.bot.name,
       }),
     restartBackend: () => {
-      const target = supervisor
+      const target = client
       if (!target) return
-      void (async () => {
-        await target.shutdown()
-        target.start()
-      })()
+      void target.restart().catch((error: unknown) => {
+        console.error('[main] 重启请求失败：', error)
+      })
     },
   })
 

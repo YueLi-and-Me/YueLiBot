@@ -2,7 +2,7 @@
  * 创建系统托盘图标、菜单和桌宠主进程的用户入口。
  *
  * 菜单动作负责打开各窗口、切换前台采集和退出应用；具体窗口创建委托给同目录
- * 模块，后端重启通过主进程的 supervisor 协调。
+ * 模块，后端重启由主进程转成一次 `/system/restart` 请求，由后端自己完成。
  */
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -30,18 +30,18 @@ export interface TrayHandlers {
 let tray: Tray | null = null
 
 /**
- * 显示 QQ 适配器故障通知。
+ * 显示运行时故障通知。
  *
  * @param botName 通知标题中的角色名称；空字符串时使用 ``Bot``。
  * @param message 展示给用户的故障说明文本。
  * @returns {void} 通知提交后不返回值。
  * @sideEffects 优先显示托盘气泡；托盘不可用时创建并显示 Electron Notification。
  *
- * QQ 适配器属于后台子进程，失败时桌宠窗口可能还没创建完成；托盘存在时用
+ * 故障可能发生在桌宠窗口创建完成之前（当前唯一的调用点是与后端失联）；托盘存在时用
  * Windows 气泡通知，否则退回 Electron 系统通知，确保启动期错误也能被看见。
  */
 export function notifyTray(botName: string, message: string): void {
-  const title = `${botName || 'Bot'} QQ 适配器`
+  const title = botName || 'Bot'
   if (process.platform === 'win32' && tray && !tray.isDestroyed()) {
     tray.displayBalloon({ title, content: message, iconType: 'warning' })
     return
