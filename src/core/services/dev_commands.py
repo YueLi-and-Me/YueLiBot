@@ -1,12 +1,11 @@
-"""实现开发者命令 /git、/version、/help 的只读处理函数。
+"""实现开发者命令 /git 与 /version 的只读处理函数。
 
 本模块只负责命令的解析与执行，不负责消息匹配、owner 鉴权与入站拦截——
-那些属于命令通道。对接接缝：命令通道落地后，为下列三条命令各注册一个条目，
-正则命中后把参数原文交给对应处理函数，把返回的字符串原样回复给 owner：
+那些属于 ``src.core.commands`` 的命令通道。两者由 :func:`register_dev_commands`
+对接，它在启动期把两条命令注册进通道的注册表。
 
-    /git     建议 ``^/git(?:\\s+(?P<arg>.+))?$``  → ``handle_git(arg)``
-    /version 建议 ``^/version\\s*$``              → ``handle_version(db_path, config_dir)``
-    /help    建议 ``^/help\\s*$``                 → ``handle_help()``
+``/help`` 不在这里：通道自带的内建 ``/help`` 会枚举注册表当场生成清单。
+本模块曾经有过一份硬编码的命令清单，两份并存必然随命令增减而漂移，合流时已删除。
 
 所有命令只读：不改仓库状态、不写数据库、不出网。/git 是全项目唯一 fork
 外部进程的位置，其安全约束见 :func:`count_recent_commits`，任何改动都不得
@@ -26,6 +25,7 @@ import subprocess
 import tomllib
 
 from src.core.app_meta import APP_VERSION
+from src.core.commands import CommandContext, register_command
 from src.core.common.logger import get_logger
 from src.core.common.self_check import open_readonly_database
 from src.core.config.adapter_selection import read_active_adapter
@@ -144,18 +144,38 @@ def handle_version(db_path: Path, config_dir: Path, repo_dir: Path = PROJECT_ROO
     return f'{first_line}\n{second_line}'
 
 
-def handle_help() -> str:
-    """处理 /help 命令，返回开发者命令清单。"""
-    return '\n'.join(_HELP_LINES)
+def register_dev_commands(db_path: Path, config_dir: Path) -> None:
+    """把 ``/git`` 与 ``/version`` 注册进开发者命令通道。
 
+    在启动期调用而不是模块导入期：``/version`` 要报的是**本次运行实际使用的**
+    数据库与配置目录，那两个值只有入口解析完命令行才知道。写死在模块级会在
+    自定义 ``--data-dir`` / ``--config-path`` 时报出另一份，而两边都「看起来正常」。
 
-_HELP_LINES: Tuple[str, ...] = (
-    '可用命令：',
-    '/git [天数]：统计最近 N 天的提交次数并给出起止日期，默认 7，上限 3650，'
-    '只在 git 签出里可用',
-    '/version：查看应用版本、配置格式、数据库版本、Python/Electron 版本和当前适配器',
-    '/help：显示本清单',
-)
+    :param db_path: 本次运行的 SQLite 文件路径。
+    :param config_dir: 本次运行的主体配置目录。
+    :return: ``None``。
+    :raises ValueError: 命令名重复注册（同一进程内重复调用本函数）。
+    副作用：向命令通道的进程内注册表追加两条只读命令。
+    """
+
+    @register_command(
+        name='/git',
+        pattern=r'/git(?:\s+(?P<arg>.+))?',
+        description='统计最近 N 天的提交次数并给出起止日期，默认 7 天',
+    )
+    def _git(context: CommandContext) -> str:
+        """把正则捕获的天数原文交给处理函数；未给参数时为 None，走默认天数。"""
+        return handle_git(context.match.group('arg'))
+
+    @register_command(
+        name='/version',
+        pattern=r'/version',
+        description='应用、配置、数据库与运行环境的版本，以及当前适配器',
+    )
+    def _version(context: CommandContext) -> str:
+        """版本命令不取参数，上下文只用于满足处理器签名。"""
+        del context
+        return handle_version(db_path, config_dir)
 
 
 def count_recent_commits(window_start: date, repo_dir: Path) -> int:

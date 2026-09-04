@@ -897,8 +897,13 @@ def main() -> None:
     )
     runtime_profile = RuntimeProfileService(db, app_version=read_app_version())
     lifecycle.register('runtime_profile', runtime_profile.startup, runtime_profile.shutdown)
-    # D1 接缝：命令通道未落地时内部跳过注册并记日志，绝不影响采集。
+
+    # 开发者命令的注册集中在这里：三条命令都要拿本次运行的实际路径或连接，
+    # 模块导入期拿不到（自定义 --data-dir / --config-path 时会读到另一份）。
+    # 注册只是往进程内目录里追加条目，是否响应由通道按 [developer] 与 owner 判定。
+    from src.core.services.dev_commands import register_dev_commands
     register_stat_command(db)
+    register_dev_commands(db_path, config_dir)
     sensor = DesktopSensor(cfg, _push_event, vision_provider)
     awareness = AwarenessService(
         chat=app_state.chat,

@@ -26,6 +26,8 @@ import sqlite3
 import time
 from typing import Dict, List, Optional
 
+from src.core.app_meta import APP_VERSION
+from src.core.commands import CommandContext, register_command
 from src.core.common.clock import now as current_time
 from src.core.common.logger import get_logger
 
@@ -63,19 +65,16 @@ CREATE TABLE IF NOT EXISTS runtime_profile (
 '''
 
 
-def read_app_version() -> Optional[str]:
-    """从 D2 建立的应用版本单一来源读取版本号。
+def read_app_version() -> str:
+    """返回应用版本号。
 
-    接缝：D2（本地统计命令包）与本包并行开工，其版本单一来源尚未落地；落地前
-    返回 ``None``，画像里的版本记为空串，合流时由维护者把导入指到真实来源。
-    本函数不自行解析 pyproject.toml / package.json——版本只能有一处来源，
-    各写一份正是 D2 要消灭的现状。
+    只从 :mod:`src.core.app_meta` 这一处读——版本号各写一份正是那个模块要消灭的
+    现状，本模块不解析 pyproject.toml / package.json，也不留兜底分支：那一处不在了
+    就该在导入期直接报错，而不是把画像里的版本悄悄记成空串。
+
+    :return: 单一来源声明的应用版本号。
     """
 
-    try:
-        from src.core.common.version import APP_VERSION  # type: ignore[import-not-found]
-    except ImportError:
-        return None
     return APP_VERSION
 
 
@@ -313,39 +312,25 @@ def build_stat_message(db: sqlite3.Connection) -> str:
     return '\n'.join(lines)
 
 
-def register_stat_command(db: sqlite3.Connection) -> bool:
-    """把 ``/stat`` 注册进 D1 的命令注册表。
+def register_stat_command(db: sqlite3.Connection) -> None:
+    """把 ``/stat`` 注册进命令通道的注册表。
 
-    接缝：D1（命令通道）与本包并行开工，其注册表与入口签名尚未落地；落地前
-    本函数跳过注册并记日志，合流时由维护者按 D1 的真实签名对接。读取侧的
-    ``[developer]`` 门控由 D1 的拦截与鉴权统一执行，本函数不自带开关，
-    也不改动 ``src/core/commands/`` 的任何文件。
+    读取侧的 ``[developer]`` 门控由通道的拦截与鉴权统一执行，本函数不自带开关；
+    采集侧则无条件运行，两者的边界就在这里——注册失败不影响采集，但也不再吞掉：
+    重复注册是编码错误，应当在启动期直接暴露。
 
     :param db: 进程级 SQLite 连接，``/stat`` 处理函数读取画像与库规模用。
-    :return: 注册成功返回 ``True``；通道未落地或签名不匹配时返回 ``False``。
-    副作用：成功时向 D1 注册表写入一条命令条目；任何失败只记日志，不影响启动。
+    :return: ``None``。
+    :raises ValueError: 命令名重复注册（同一进程内重复调用本函数）。
+    副作用：向命令通道的进程内注册表追加一条只读命令。
     """
 
-    def _handler() -> str:
+    @register_command(
+        name='/stat',
+        pattern=r'/stat',
+        description='本机运行画像：安装 ID、启动次数、累计运行时长与库规模',
+    )
+    def _stat(context: CommandContext) -> str:
+        """画像命令不取参数，上下文只用于满足处理器签名。"""
+        del context
         return build_stat_message(db)
-
-    try:
-        from src.core.commands.registry import register_command  # type: ignore[import-not-found]
-    except ImportError:
-        logger.info(
-            'stat_command_deferred',
-            reason='D1 命令通道未落地，/stat 待合流时对接注册表',
-        )
-        return False
-    try:
-        register_command(
-            name='stat',
-            pattern=r'^/stat$',
-            handler=_handler,
-        )
-    except Exception as exc:
-        # 注册签名以 D1 交付为准；不匹配时绝不能拖垮采集侧（采集必须无条件运行）。
-        logger.error('stat_command_register_failed', error=str(exc))
-        return False
-    logger.info('stat_command_registered')
-    return True
