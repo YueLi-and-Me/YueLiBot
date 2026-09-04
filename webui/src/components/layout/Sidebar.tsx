@@ -14,6 +14,7 @@ import {
   FileText,
   LayoutGrid,
   List,
+  ListChecks,
   LogOut,
   MessageSquare,
   Network,
@@ -151,12 +152,13 @@ export function Sidebar() {
   const onExpressions = location.pathname.startsWith('/expressions')
   const onMemoryTuning = location.pathname.startsWith('/memory/tuning')
   const onMemoryImport = location.pathname.startsWith('/memory/import')
+  const onMemoryManage = location.pathname.startsWith('/memory/manage')
   const onMemory =
-    location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport
+    location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport && !onMemoryManage
   const onEmojis = location.pathname.startsWith('/emojis')
   const onHome =
     !onPersons && !onModels && !onSettings && !onJargon && !onExpressions && !onMemory
-    && !onMemoryTuning && !onMemoryImport && !onEmojis
+    && !onMemoryTuning && !onMemoryImport && !onMemoryManage && !onEmojis
 
   return (
     <aside className="m-3 mr-0 hidden w-(--sidebar-width) flex-none flex-col rounded-2xl border border-sidebar-border bg-sidebar shadow-card lg:flex">
@@ -172,6 +174,7 @@ export function Sidebar() {
           <NavLink to="/memory" active={onMemory} icon={<Network />} label="记忆联想网络" />
           <NavLink to="/memory/tuning" active={onMemoryTuning} icon={<SlidersHorizontal />} label="检索调优" />
           <NavLink to="/memory/import" active={onMemoryImport} icon={<PackagePlus />} label="导入中心" />
+          <NavLink to="/memory/manage" active={onMemoryManage} icon={<ListChecks />} label="记忆管理" />
           <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
           {onHome ? (
@@ -215,8 +218,9 @@ export function MobileTopbar() {
   const onExpressions = location.pathname.startsWith('/expressions')
   const onMemoryTuning = location.pathname.startsWith('/memory/tuning')
   const onMemoryImport = location.pathname.startsWith('/memory/import')
+  const onMemoryManage = location.pathname.startsWith('/memory/manage')
   const onMemory =
-    location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport
+    location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport && !onMemoryManage
   const onEmojis = location.pathname.startsWith('/emojis')
 
   return (
@@ -228,7 +232,7 @@ export function MobileTopbar() {
             to="/"
             active={
               !onPersons && !onModels && !onSettings && !onJargon && !onExpressions
-              && !onMemory && !onMemoryTuning && !onMemoryImport && !onEmojis
+              && !onMemory && !onMemoryTuning && !onMemoryImport && !onMemoryManage && !onEmojis
             }
             icon={<Activity />}
             label="会话观察"
@@ -240,6 +244,7 @@ export function MobileTopbar() {
           <NavLink to="/memory" active={onMemory} icon={<Network />} label="记忆联想网络" />
           <NavLink to="/memory/tuning" active={onMemoryTuning} icon={<SlidersHorizontal />} label="检索调优" />
           <NavLink to="/memory/import" active={onMemoryImport} icon={<PackagePlus />} label="导入中心" />
+          <NavLink to="/memory/manage" active={onMemoryManage} icon={<ListChecks />} label="记忆管理" />
           <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
         </nav>

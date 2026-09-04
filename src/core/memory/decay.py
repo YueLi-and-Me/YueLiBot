@@ -33,6 +33,20 @@ DEFAULT_FACT_KIND = '事件'
 DEFAULT_HALF_LIFE = HALF_LIFE_HOURS[DEFAULT_FACT_KIND]
 MS_PER_HOUR = 3_600_000
 
+# 「永久保留」是一种编码而不是状态列：把半衰期推到 100 年量级后，衰减在人的
+# 时间尺度上不再可见，事实因此永远活跃，facts 表无需为此新增列。
+PIN_HALF_LIFE_HOURS = 876_000.0
+
+
+def is_pinned(half_life_hours: float) -> bool:
+    """判断给定半衰期是否属于「永久保留」编码。
+
+    :param half_life_hours: 事实行当前携带的半衰期小时数。
+    :return: 半衰期达到 :data:`PIN_HALF_LIFE_HOURS` 时返回 ``True``。
+    副作用：不修改输入值或衰减配置。
+    """
+    return half_life_hours >= PIN_HALF_LIFE_HOURS
+
 
 def half_life_for(kind: Optional[str]) -> float:
     """返回指定事实类型的半衰期小时数。

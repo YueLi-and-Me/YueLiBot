@@ -119,6 +119,9 @@ class FactInput:
         ``legacy``。由抽取层按本批会话类型声明；默认 ``legacy`` 只兜底
        「调用方未声明来源」的情形——它意味着按改造前的存量口径放行，
         生产路径必须显式传值，不许把默认值写进真实链路。
+    :ivar actor: 本次写入的来源操作者，取值 ``auto``（运行期抽取）/ ``n4``
+        （反馈纠错）/ ``manual``（人工管理）；发生显式取代时落进事实操作流水，
+        默认 ``auto`` 保持既有调用方行为不变。
     """
 
     content: str
@@ -126,6 +129,7 @@ class FactInput:
     slot: str = ''
     supersedes: int = 0
     origin_kind: str = ORIGIN_LEGACY
+    actor: str = 'auto'
 
 
 @dataclass
@@ -141,6 +145,8 @@ class FactWrite:
     :ivar origin_promoted: 本次强化是否把既有行的来源从 ``direct`` 升格为
         ``group``。升格是唯一允许的改写方向——direct 被群聊重说即视为已公开；
         新建行落库不是改写，恒为 ``False``。
+    :ivar operation_id: 本次取代写入的事实操作流水 ID；未发生取代时为 ``0``。
+        人工管理链路靠它把流水号带回给调用方。
     """
 
     fact_id: int
@@ -148,6 +154,7 @@ class FactWrite:
     conflict_with: list[int] = field(default_factory=list)
     superseded: int = 0
     origin_promoted: bool = False
+    operation_id: int = 0
 
 
 @dataclass
@@ -725,11 +732,14 @@ class MemoryStore:
         提交，中途失败不会留下「正文已落库、来源仍是默认值」的行。
 
         :param person_id: 事实所属人物 ID。
-        :param input: 事实正文、类型、账本字段与来源标记。
+        :param input: 事实正文、类型、账本字段与来源标记；``actor`` 在发生显式
+            取代时落进事实操作流水。
         :param now: 可选更新时间戳；省略时读取当前毫秒时钟。
-        :return: 本次写入结果；正文归一化后为空时 ``fact_id`` 为 ``0``。
+        :return: 本次写入结果；正文归一化后为空时 ``fact_id`` 为 ``0``；
+            发生取代时 ``operation_id`` 带回流水行 ID。
         :raises sqlite3.Error: 查询、插入、更新、FTS 写入或提交失败。
-        副作用：可能更新已有事实强度，或写入 facts 与 facts_fts 并提交事务。
+        副作用：可能更新已有事实强度，或写入 facts 与 facts_fts 并提交事务；
+            显式取代成立时同事务写入一条 fact_operations 流水。
         """
         # 先规范化正文和去重键，空内容不创建事实记录。
         now = now if now is not None else current_time()
@@ -765,6 +775,18 @@ class MemoryStore:
                 self._apply_supersede(person_id, supersedes, replaced_by=existing['id'])
                 if supersedes else 0
             )
+            operation_id = (
+                self._insert_fact_operation(
+                    at=now,
+                    actor=input.actor,
+                    op='replace' if input.actor == 'manual' else 'supersede',
+                    person_id=person_id,
+                    fact_id=superseded,
+                    related_fact_id=existing['id'],
+                    prev={'superseded_by': None, 'new_row_created': False},
+                )
+                if superseded else 0
+            )
             # 来源改写只有「既有 direct 被群聊重说升格 group」一个方向：说过即视为
             # 已公开。legacy 与 group 永不降格，其余方向一律保持原值；升格与强化
             # 的 UPDATE 在同一事务里提交。
@@ -783,6 +805,7 @@ class MemoryStore:
                 created=False,
                 superseded=superseded,
                 origin_promoted=origin_promoted,
+                operation_id=operation_id,
             )
 
         # 未命中相似事实时创建新记录；新行、来源标记、取代回填与 FTS 索引在
@@ -805,6 +828,18 @@ class MemoryStore:
             self._apply_supersede(person_id, supersedes, replaced_by=fid)
             if supersedes else 0
         )
+        operation_id = (
+            self._insert_fact_operation(
+                at=now,
+                actor=input.actor,
+                op='replace' if input.actor == 'manual' else 'supersede',
+                person_id=person_id,
+                fact_id=superseded,
+                related_fact_id=fid,
+                prev={'superseded_by': None, 'new_row_created': True},
+            )
+            if superseded else 0
+        )
         conflict_with = (
             self._slot_conflicts_with(person_id, slot, exclude_id=fid)
             if slot else []
@@ -815,6 +850,7 @@ class MemoryStore:
             created=True,
             conflict_with=conflict_with,
             superseded=superseded,
+            operation_id=operation_id,
         )
 
     def _apply_supersede(self, person_id: int, target_id: int, *, replaced_by: int) -> int:
@@ -884,6 +920,365 @@ class MemoryStore:
             for fact_id in wanted & member_ids:
                 result[fact_id] = (slot, members)
         return result
+
+    # ---------------------------------------------------------- 事实人工管理（curate）
+    # 以下方法是 curate.py 的唯一数据库通道：读取方法原样返回行字典，写入方法
+    # 各自把「facts 行改写 + fact_operations 流水」收在同一次 commit 里——操作与
+    # 流水之间不允许出现只落了一半的中间态。
+
+    def _insert_fact_operation(
+        self,
+        *,
+        at: int,
+        actor: str,
+        op: str,
+        person_id: int,
+        fact_id: int,
+        related_fact_id: int | None = None,
+        prev: Optional[dict] = None,
+        undo_of: int | None = None,
+    ) -> int:
+        """插入一条事实操作流水并返回其 ID；不提交事务，由调用方统一提交。
+
+        :param at: 操作发生的 Unix 毫秒时间戳。
+        :param actor: 操作来源，``manual`` / ``n4`` / ``auto``。
+        :param op: 操作类型，如 ``invalidate`` / ``supersede`` / ``undo``。
+        :param person_id: 被操作事实所属人物 ID。
+        :param fact_id: 被操作的 facts 行 ID。
+        :param related_fact_id: 关联行 ID（取代的新行、裁决保留的行）；无则 ``None``。
+        :param prev: 操作前的值快照，序列化为 JSON 落库；``None`` 落 ``'{}'``。
+        :param undo_of: 本条撤销的是哪条流水；非撤销操作留 ``None``。
+        :return: 新插入流水行的主键。
+        :raises sqlite3.Error: 插入失败。
+        副作用：向 fact_operations 写入一行；不提交事务。
+        """
+
+        cur = self._db.execute(
+            '''INSERT INTO fact_operations
+                 (at, actor, op, person_id, fact_id, related_fact_id, prev, undo_of)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (
+                at, actor, op, person_id, fact_id, related_fact_id,
+                json.dumps(prev or {}, ensure_ascii=False), undo_of,
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    def fact_row(self, fact_id: int) -> dict[str, Any] | None:
+        """读取一条事实的完整行，供人工管理判定与快照。
+
+        :param fact_id: facts 表主键。
+        :return: 含全部账本与衰减字段的行字典；不存在时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 facts 表。
+        """
+
+        row = self._db.execute(
+            '''SELECT id, person_id, kind, content, slot, origin_kind,
+                      strength, half_life_hours, updated_at, created_at, due_at,
+                      active, superseded_by, hit_count, last_hit_at
+               FROM facts WHERE id = ?''',
+            (fact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            'id': row[0], 'person_id': row[1], 'kind': row[2], 'content': row[3],
+            'slot': row[4], 'origin_kind': row[5], 'strength': row[6],
+            'half_life_hours': row[7], 'updated_at': row[8], 'created_at': row[9],
+            'due_at': row[10], 'active': row[11], 'superseded_by': row[12],
+            'hit_count': row[13], 'last_hit_at': row[14],
+        }
+
+    def fact_row_by_content_key(self, person_id: int, content_key: str) -> dict[str, Any] | None:
+        """按去重键读取人物的一条事实，供人工取代检测与已失效行撞键。
+
+        :param person_id: 目标人物 ID。
+        :param content_key: ``exact_key(正文)`` 生成的严格去重键。
+        :return: 与 :meth:`fact_row` 同结构的行字典；不存在时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 facts 表。
+        """
+
+        row = self._db.execute(
+            'SELECT id FROM facts WHERE person_id = ? AND content_key = ?',
+            (person_id, content_key),
+        ).fetchone()
+        return self.fact_row(int(row[0])) if row is not None else None
+
+    def list_fact_rows(self, person_id: int) -> list[dict[str, Any]]:
+        """按 ID 升序列出人物的全部事实，含已失效行，供人工管理界面展示。
+
+        :param person_id: 目标人物 ID。
+        :return: 与 :meth:`fact_row` 同结构的行字典列表。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 facts 表。
+        """
+
+        rows = self._db.execute(
+            '''SELECT id, person_id, kind, content, slot, origin_kind,
+                      strength, half_life_hours, updated_at, created_at, due_at,
+                      active, superseded_by, hit_count, last_hit_at
+               FROM facts WHERE person_id = ? ORDER BY id''',
+            (person_id,),
+        ).fetchall()
+        return [
+            {
+                'id': r[0], 'person_id': r[1], 'kind': r[2], 'content': r[3],
+                'slot': r[4], 'origin_kind': r[5], 'strength': r[6],
+                'half_life_hours': r[7], 'updated_at': r[8], 'created_at': r[9],
+                'due_at': r[10], 'active': r[11], 'superseded_by': r[12],
+                'hit_count': r[13], 'last_hit_at': r[14],
+            }
+            for r in rows
+        ]
+
+    def conflict_group_rows(
+        self,
+        now: int,
+        person_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """聚合全库或单人的槽位冲突组，供人工裁决界面列出待决事实。
+
+        分组判据与 :meth:`slot_conflicts` 一致：同一 ``(person_id, slot)`` 下至少
+        两条活跃且未被取代的事实；``slot`` 为空的多值事实永不入组。
+
+        :param now: 计算成员当前留存度的 Unix 毫秒时间戳。
+        :param person_id: 可选人物过滤；``None`` 表示全库聚合。
+        :return: 冲突组列表，每组含 ``person_id`` / ``person_name``（无账号身份时
+            为 ``None``）/ ``slot`` 与按 ID 升序的成员列表。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 facts 与 identities 表。
+        """
+
+        rows = self._db.execute(
+            '''SELECT f.id, f.person_id, f.kind, f.content, f.origin_kind, f.slot,
+                      f.strength, f.half_life_hours, f.updated_at,
+                      (SELECT MIN(i.display_name) FROM identities i
+                        WHERE i.person_id = f.person_id) AS person_name
+               FROM facts f
+               WHERE f.active = 1 AND f.superseded_by IS NULL AND f.slot <> ''
+                 AND (? = 0 OR f.person_id = ?)
+               ORDER BY f.person_id, f.slot, f.id''',
+            (person_id or 0, person_id or 0),
+        ).fetchall()
+        groups: dict[tuple[int, str], dict[str, Any]] = {}
+        for r in rows:
+            key = (int(r[1]), str(r[5]))
+            group = groups.setdefault(key, {
+                'person_id': int(r[1]),
+                'person_name': r[9],
+                'slot': str(r[5]),
+                'members': [],
+            })
+            group['members'].append({
+                'id': int(r[0]),
+                'kind': r[2],
+                'content': r[3],
+                'origin_kind': r[4],
+                'retention': retention(r[6], r[8], r[7], now),
+                'strength': r[6],
+                'half_life_hours': r[7],
+                'updated_at': r[8],
+            })
+        return [group for group in groups.values() if len(group['members']) >= 2]
+
+    def set_fact_superseded_with_log(
+        self,
+        fact_id: int,
+        superseded_by: int | None,
+        *,
+        at: int,
+        actor: str,
+        op: str,
+        person_id: int,
+        related_fact_id: int | None = None,
+        prev: Optional[dict] = None,
+    ) -> int:
+        """改写一条事实的失效标记并写流水，两者在同一事务里提交。
+
+        :param fact_id: 目标 facts 行 ID。
+        :param superseded_by: 新的 ``superseded_by`` 值；``None`` 表示恢复为有效。
+        :param at: 操作发生的 Unix 毫秒时间戳。
+        :param actor: 操作来源，见 :meth:`_insert_fact_operation`。
+        :param op: 操作类型，如 ``invalidate`` / ``restore`` / ``adjudicate``。
+        :param person_id: 目标行所属人物 ID，由已持有该行的调用方给出。
+        :param related_fact_id: 关联行 ID；无则 ``None``。
+        :param prev: 操作前的值快照。
+        :return: 新写入的流水行 ID。
+        :raises sqlite3.Error: 更新、插入或提交失败。
+        副作用：更新 facts.superseded_by、写入 fact_operations 并提交事务。
+        """
+
+        self._db.execute(
+            'UPDATE facts SET superseded_by = ? WHERE id = ?',
+            (superseded_by, fact_id),
+        )
+        op_id = self._insert_fact_operation(
+            at=at, actor=actor, op=op, person_id=person_id,
+            fact_id=fact_id, related_fact_id=related_fact_id, prev=prev,
+        )
+        self._db.commit()
+        return op_id
+
+    def set_fact_decay_with_log(
+        self,
+        fact_id: int,
+        *,
+        strength: float,
+        half_life_hours: float,
+        updated_at: int,
+        due_at: int,
+        active: int,
+        at: int,
+        actor: str,
+        op: str,
+        person_id: int,
+        prev: Optional[dict] = None,
+    ) -> int:
+        """改写一条事实的衰减五字段并写流水，两者在同一事务里提交。
+
+        :param fact_id: 目标 facts 行 ID。
+        :param strength: 新的留存强度。
+        :param half_life_hours: 新的半衰期小时数。
+        :param updated_at: 新的强度更新时间戳。
+        :param due_at: 新的下次衰减评估时间戳。
+        :param active: 新的活跃标记。
+        :param at: 操作发生的 Unix 毫秒时间戳。
+        :param actor: 操作来源，见 :meth:`_insert_fact_operation`。
+        :param op: 操作类型，如 ``pin`` / ``unpin``。
+        :param person_id: 目标行所属人物 ID，由已持有该行的调用方给出。
+        :param prev: 操作前的五字段快照。
+        :return: 新写入的流水行 ID。
+        :raises sqlite3.Error: 更新、插入或提交失败。
+        副作用：更新 facts 衰减字段、写入 fact_operations 并提交事务。
+        """
+
+        self._db.execute(
+            '''UPDATE facts SET strength = ?, half_life_hours = ?, updated_at = ?,
+                                due_at = ?, active = ? WHERE id = ?''',
+            (strength, half_life_hours, updated_at, due_at, active, fact_id),
+        )
+        op_id = self._insert_fact_operation(
+            at=at, actor=actor, op=op, person_id=person_id,
+            fact_id=fact_id, prev=prev,
+        )
+        self._db.commit()
+        return op_id
+
+    def fact_operation_row(self, op_id: int) -> dict[str, Any] | None:
+        """读取一条事实操作流水。
+
+        :param op_id: fact_operations 表主键。
+        :return: 流水行字典（``prev`` 保持 JSON 原文）；不存在时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 fact_operations 表。
+        """
+
+        row = self._db.execute(
+            '''SELECT id, at, actor, op, person_id, fact_id, related_fact_id,
+                      prev, undone_by, undo_of
+               FROM fact_operations WHERE id = ?''',
+            (op_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            'id': row[0], 'at': row[1], 'actor': row[2], 'op': row[3],
+            'person_id': row[4], 'fact_id': row[5], 'related_fact_id': row[6],
+            'prev': row[7], 'undone_by': row[8], 'undo_of': row[9],
+        }
+
+    def list_fact_operations(
+        self,
+        person_id: int | None = None,
+        fact_id: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """按时间倒序列出事实操作流水，附带被操作事实的正文。
+
+        :param person_id: 可选人物过滤。
+        :param fact_id: 可选事实过滤。
+        :param limit: 最多返回的条数。
+        :return: 流水行字典列表；``prev`` 已解析为字典，``fact_content`` 来自
+            facts 表（行不存在时为 ``None``）。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 fact_operations 与 facts 表。
+        """
+
+        rows = self._db.execute(
+            '''SELECT o.id, o.at, o.actor, o.op, o.person_id, o.fact_id,
+                      o.related_fact_id, o.prev, o.undone_by, o.undo_of,
+                      f.content AS fact_content
+               FROM fact_operations o
+               LEFT JOIN facts f ON f.id = o.fact_id
+               WHERE (? = 0 OR o.person_id = ?) AND (? = 0 OR o.fact_id = ?)
+               ORDER BY o.at DESC, o.id DESC LIMIT ?''',
+            (person_id or 0, person_id or 0, fact_id or 0, fact_id or 0, limit),
+        ).fetchall()
+        return [
+            {
+                'id': r[0], 'at': r[1], 'actor': r[2], 'op': r[3],
+                'person_id': r[4], 'fact_id': r[5], 'related_fact_id': r[6],
+                'prev': json.loads(r[7] or '{}'),
+                'undone_by': r[8], 'undo_of': r[9], 'fact_content': r[10],
+            }
+            for r in rows
+        ]
+
+    def apply_operation_undo(
+        self,
+        *,
+        original_op_id: int,
+        at: int,
+        actor: str,
+        person_id: int,
+        fact_id: int,
+        related_fact_id: int | None,
+        prev: dict,
+        superseded_writes: Sequence[tuple[int, int | None]] = (),
+        decay_writes: Sequence[tuple[int, float, float, int, int, int]] = (),
+    ) -> int:
+        """落库一次撤销：回写 facts 行、登记 undo 流水、标记原条已撤销，一次提交。
+
+        逆操作的具体内容由调用方（curate.undo_operation）按原条类型计算后以
+        ``superseded_writes`` / ``decay_writes`` 传入，本方法只做 SQL 执行。
+
+        :param original_op_id: 被撤销的流水行 ID，其 ``undone_by`` 回填为新流水 ID。
+        :param at: 撤销发生的 Unix 毫秒时间戳。
+        :param actor: 撤销操作来源。
+        :param person_id: 原条流水的人物 ID。
+        :param fact_id: 原条流水操作的事实 ID。
+        :param related_fact_id: 原条流水的关联事实 ID。
+        :param prev: 本次被覆盖的值快照，供审计。
+        :param superseded_writes: ``(fact_id, superseded_by 回写值)`` 序列。
+        :param decay_writes: ``(fact_id, strength, half_life_hours, updated_at,
+            due_at, active)`` 序列。
+        :return: 新写入的 undo 流水行 ID。
+        :raises sqlite3.Error: 更新、插入或提交失败。
+        副作用：回写 facts 行、写入并互链 fact_operations 两行，提交事务。
+        """
+
+        for target_id, value in superseded_writes:
+            self._db.execute(
+                'UPDATE facts SET superseded_by = ? WHERE id = ?', (value, target_id)
+            )
+        for target_id, strength, half_life, updated, due, active in decay_writes:
+            self._db.execute(
+                '''UPDATE facts SET strength = ?, half_life_hours = ?, updated_at = ?,
+                                    due_at = ?, active = ? WHERE id = ?''',
+                (strength, half_life, updated, due, active, target_id),
+            )
+        op_id = self._insert_fact_operation(
+            at=at, actor=actor, op='undo', person_id=person_id, fact_id=fact_id,
+            related_fact_id=related_fact_id, prev=prev, undo_of=original_op_id,
+        )
+        self._db.execute(
+            'UPDATE fact_operations SET undone_by = ? WHERE id = ?',
+            (op_id, original_op_id),
+        )
+        self._db.commit()
+        return op_id
 
     def _find_similar(self, person_id: int, content: str, key: str) -> dict[str, Any] | None:
         """按精确键和 FTS 候选查找同一人物的相似事实。
