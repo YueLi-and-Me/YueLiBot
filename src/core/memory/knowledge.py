@@ -73,6 +73,7 @@ def add_knowledge(
     content: str,
     source: str,
     now: int,
+    batch_id: int | None = None,
 ) -> int:
     """写入一条知识并同步建好全文索引，返回其主键。
 
@@ -91,6 +92,8 @@ def add_knowledge(
     :param content: 知识正文；首尾空白会去掉，规范化后为空时返回 0。
     :param source: 来源标识，例如 ``fact_extract``。
     :param now: 当前毫秒时间戳。
+    :param batch_id: 导入来源批次 ID；仅新建行时落库，重复命中既有行不回填——
+        已存在的知识不属于后来导入它的那个批次。
     :return: 新建或既有知识行的 ID；``content`` 为空时返回 0。
     :raises sqlite3.Error: 写入或提交失败。
     副作用：写入 knowledge 与 knowledge_fts 并提交事务。
@@ -103,8 +106,9 @@ def add_knowledge(
     if row is not None:
         return int(row[0])
     cursor = db.execute(
-        'INSERT INTO knowledge (content, content_key, source, created_at) VALUES (?, ?, ?, ?)',
-        (text, key, source, now),
+        '''INSERT INTO knowledge (content, content_key, source, created_at, import_batch_id)
+           VALUES (?, ?, ?, ?, ?)''',
+        (text, key, source, now, batch_id),
     )
     kid = int(cursor.lastrowid)
     tokens = index_tokens(text)

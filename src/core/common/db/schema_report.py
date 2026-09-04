@@ -203,6 +203,24 @@ def _fact_ledger_counts(db: sqlite3.Connection) -> Optional[Tuple[int, int]]:
     return int(slotted), int(superseded)
 
 
+def _import_batch_stats(db: sqlite3.Connection) -> Optional[Tuple[int, int]]:
+    """读取导入来源统计：批次数、无批次的知识条数；缺表缺列时返回 ``None``。
+
+    无批次条数是一次性迁移与运行期抽取写入的存量，随导入与抽取自然稀释；
+    它进报告供「导入中心用起来之后存量还剩多少」可查。
+    """
+
+    if not _table_columns(db, 'import_batches'):
+        return None
+    if 'import_batch_id' not in _table_columns(db, 'knowledge'):
+        return None
+    batches = db.execute('SELECT COUNT(*) FROM import_batches').fetchone()[0]
+    unbatches = db.execute(
+        'SELECT COUNT(*) FROM knowledge WHERE import_batch_id IS NULL'
+    ).fetchone()[0]
+    return int(batches), int(unbatches)
+
+
 def report_schema_changes(
     changes: SchemaChanges,
     version: int,
@@ -223,9 +241,10 @@ def report_schema_changes(
     kind_line: Optional[str] = None
     origin_line: Optional[str] = None
     ledger_counts: Optional[Tuple[int, int]] = None
+    import_stats: Optional[Tuple[int, int]] = None
     if db is not None:
-        # 三个助手各自判列存在性（见模块说明）；返回 None 表示库尚未到达引入
-        # 该列的版本，对应的行与日志整体跳过，与「暂无事实」的零行语义分开。
+        # 各助手自判结构存在性（见模块说明）；返回 None 表示库尚未到达引入
+        # 该结构的版本，对应的行与日志整体跳过，与「暂无事实」的零行语义分开。
         distribution = _fact_kind_distribution(db)
         if distribution is not None:
             kind_line = '、'.join(f'{kind} {amount}' for kind, amount in distribution) or '暂无事实'
@@ -245,6 +264,7 @@ def report_schema_changes(
                 total=sum(amount for _, amount in origin_distribution),
             )
         ledger_counts = _fact_ledger_counts(db)
+        import_stats = _import_batch_stats(db)
     if changes.is_empty():
         return
     rows: List[str] = [f'schema 版本：{version}']
@@ -255,6 +275,8 @@ def report_schema_changes(
     if ledger_counts is not None:
         rows.append(f'带槽位的事实：{ledger_counts[0]}')
         rows.append(f'已被取代的事实：{ledger_counts[1]}')
+    if import_stats is not None:
+        rows.append(f'导入批次：{import_stats[0]}（无批次知识 {import_stats[1]} 条）')
     if changes.created:
         rows.append(f'本次新建的表（{len(changes.created)}）：')
         rows.extend(f'  + {name}' for name in changes.created)

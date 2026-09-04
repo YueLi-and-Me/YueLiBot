@@ -558,6 +558,8 @@ def main() -> None:
         db=db,
     )
     app_state.chat._vector = vector_service
+    # 导入中心需要给新写入的知识补向量；公开引用避免 API 层伸进聊天服务的私有字段。
+    app_state.vector = vector_service
     if vector_service.enabled:
         logger.info(
             "vector_recall_enabled",

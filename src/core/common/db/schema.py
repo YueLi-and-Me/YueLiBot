@@ -176,8 +176,28 @@ CREATE TABLE IF NOT EXISTS knowledge (
   -- 检索调优要的是「哪些知识真的被用到过」，而那份数据只能事后积累，
   -- 补列的窗口在真机建表之前，错过就得为两个整数付一次迁移。
   hit_count   INTEGER NOT NULL DEFAULT 0,
-  last_hit_at INTEGER
+  last_hit_at INTEGER,
+  -- 指向导入来源批次；NULL 表示无批次（存量迁移与运行期抽取），
+  -- 按批次删除的 WHERE 子句不含 NULL 行，撤销永远碰不到它们。
+  import_batch_id INTEGER REFERENCES import_batches(id) ON DELETE CASCADE
 );
+
+-- 导入中心的来源批次：撤销的最小单位。「这批资料过时了」必须能整批撤掉，
+-- 否则导入是单向操作；批次记住谁导的、什么时候、原始名与统计。
+CREATE TABLE IF NOT EXISTS import_batches (
+  id           INTEGER PRIMARY KEY,
+  kind         TEXT    NOT NULL,
+  origin_name  TEXT    NOT NULL DEFAULT '',
+  summary      TEXT    NOT NULL DEFAULT '',
+  submitted    INTEGER NOT NULL DEFAULT 0,
+  added        INTEGER NOT NULL DEFAULT 0,
+  status       TEXT    NOT NULL DEFAULT 'running',
+  created_at   INTEGER NOT NULL,
+  finished_at  INTEGER,
+  error        TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_import_batches_created ON import_batches(created_at);
+CREATE INDEX IF NOT EXISTS idx_knowledge_import_batch ON knowledge(import_batch_id);
 -- 与 facts_fts 同款：content='' 的外部内容表，rowid 必须由写入方显式对齐主键，
 -- 漏对齐会让检索结果指向错误的行。
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(tokens, content='', tokenize='unicode61');

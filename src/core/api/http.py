@@ -40,6 +40,7 @@ from src.core.common.logger import get_logger
 from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
 from src.core.memory import tuning
+from src.core.memory import import_center
 from src.core.memory.decay import retention
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
@@ -2625,6 +2626,138 @@ def _retrieval_eval_run(
         config_fact_limit=config_limit,
     )
     return report.as_dict()
+
+
+class ImportRunBody(BaseModel):
+    """执行一次导入的请求体：粘贴与上传共用（上传在前端解码为文本）。"""
+
+    kind: Literal['paste', 'upload'] = 'paste'
+    text: str
+    origin_name: str = Field(default='', alias='originName', max_length=200)
+
+
+@router.get('/api/memory/import/batches', dependencies=[Depends(_auth)])
+async def import_batches_overview() -> dict:
+    """返回批次列表、导入闸状态与三个上限常量。
+
+    :return: ``batches``（按时间倒序，含实时条数）、``inProgress``、``limits``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503。
+    副作用：只读。
+    """
+    db = _read_db_or_503()
+    try:
+        return {
+            'inProgress': import_center.import_in_progress(),
+            'limits': {
+                'pasteChars': import_center.MAX_PASTE_CHARS,
+                'fileBytes': import_center.MAX_FILE_BYTES,
+                'batchItems': import_center.MAX_BATCH_ITEMS,
+            },
+            'batches': import_center.list_batches(db),
+        }
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'导入批次读取失败：{exc}',
+        ) from exc
+
+
+@router.get('/api/memory/import/batches/{batch_id}', dependencies=[Depends(_auth)])
+async def import_batch_detail(batch_id: int) -> dict:
+    """读取一个批次的详情与条目样本。
+
+    :param batch_id: 批次 ID。
+    :return: 批次字段 + ``live_count`` + ``items`` 样本。
+    :raises fastapi.HTTPException: 批次不存在时 404；数据库未初始化时 503。
+    副作用：只读。
+    """
+    db = _read_db_or_503()
+    try:
+        return import_center.batch_detail(db, batch_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post('/api/memory/import', dependencies=[Depends(_auth)])
+async def import_run(body: ImportRunBody) -> dict:
+    """执行一次导入：分块、去重写入、补向量，同步返回结果。
+
+    上传与粘贴共用本端点：WebUI 把文件解码为文本后提交，服务端不做
+    多格式转换，也不引入 multipart 依赖。导入期间请求保持挂起；
+    进度在 WebUI 日志面板可见（import_started / import_done 事件）。
+
+    :param body: 入口类型、全文与原始文件名。
+    :return: ``{"batch_id", "submitted", "added", "duplicated", "embedded"}``。
+    :raises fastapi.HTTPException: 并发导入 409；超上限或批次问题 400；
+        向量服务未装配时跳过向量化不报错。
+    副作用：写 import_batches / knowledge / knowledge_fts，可选写知识向量。
+    """
+    db = _read_db_or_503()
+    embed = None
+    vector = app_state.vector
+    if vector is not None:
+        embed = vector.embed_knowledge
+    try:
+        result = await import_center.run_import(
+            db,
+            body.text,
+            body.origin_name.strip() or ('粘贴导入' if body.kind == 'paste' else '文件导入'),
+            current_time(),
+            kind=body.kind,
+            embed_knowledge=embed,
+        )
+    except import_center.ImportBusyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return result
+
+
+@router.get(
+    '/api/memory/import/batches/{batch_id}/preview',
+    dependencies=[Depends(_auth)],
+)
+async def import_batch_delete_preview(batch_id: int) -> dict:
+    """预览按批次删除的影响面，只读。
+
+    :param batch_id: 批次 ID。
+    :return: ``{"batch_id", "to_delete", "items"}``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503。
+    副作用：只读。
+    """
+    db = _read_db_or_503()
+    return import_center.delete_preview(db, batch_id)
+
+
+@router.post(
+    '/api/memory/import/batches/{batch_id}/delete',
+    dependencies=[Depends(_auth)],
+)
+async def import_batch_delete(batch_id: int) -> dict:
+    """按批次删除其全部知识条目，返回实际删除数。
+
+    :param batch_id: 批次 ID。
+    :return: ``{"batch_id", "deleted"}``。
+    :raises fastapi.HTTPException: 数据库未初始化时 503。
+    副作用：删除该批次的知识与 FTS 行并提交；发一条 import_batch_deleted 事件。
+    """
+    db = _read_db_or_503()
+    try:
+        return import_center.delete_batch(db, batch_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'批次删除失败：{exc}',
+        ) from exc
 
 
 def _emoji_library_or_503() -> Any:
