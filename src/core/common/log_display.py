@@ -88,6 +88,8 @@ EVENT_LABELS: Dict[str, str] = {
     "jargon_learn_tick_failed": "黑话学习轮次失败",
     "jargon_mine_parse_failed": "黑话提取解析失败",
     "jargon_mined": "黑话提取完成",
+    "edge_decay_frozen": "联想边已冻结",
+    "edge_decay_failed": "联想边衰减失败",
     "knowledge_learned": "学到新知识",
     "memory_extract": "记忆抽取完成",
     "memory_spread": "联想扩散",

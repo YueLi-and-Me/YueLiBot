@@ -1007,6 +1007,11 @@ def main() -> None:
     from src.core.services.jargon_stats import JargonStatsService
     jargon_stats = JargonStatsService(db)
     lifecycle.register('jargon_stats', jargon_stats.startup, jargon_stats.shutdown)
+    # 联想层的边衰减单独走低频任务，不挂回合路径：边没有 due_at 列，冻结判据是
+    # 一次全表扫描，而它的时间尺度以月计（半衰期 720 小时，约 54 天才跌破阈值）。
+    from src.core.services.edge_decay import EdgeDecayService
+    edge_decay = EdgeDecayService(db)
+    lifecycle.register('edge_decay', edge_decay.startup, edge_decay.shutdown)
     lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
