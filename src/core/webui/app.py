@@ -89,6 +89,11 @@ def mount_webui(app: FastAPI) -> None:
             """返回记忆联想网络页共用的 SPA 入口文件。"""
             return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
+        @app.get('/memory/manage', include_in_schema=False)
+        async def memory_manage_page() -> FileResponse:
+            """返回记忆人工管理页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
         @app.get('/', include_in_schema=False)
         async def index_page() -> FileResponse:
             """返回 SPA 根入口，并禁止浏览器缓存这份 HTML。

@@ -25,7 +25,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 27  # 当前 schema 版本：导入中心来源批次、画像信任分级、stream 群聊展示名
+CURRENT_VERSION = 28  # 当前 schema 版本：导入中心来源批次、画像信任分级、stream 群聊展示名、事实操作流水
 
 
 def get_user_version(db: sqlite3.Connection) -> int:
@@ -163,6 +163,7 @@ def run_migrations(db: sqlite3.Connection, db_path: Path | None = None) -> None:
         v24_to_v25,
         v25_to_v26,
         v26_to_v27,
+        v27_to_v28,
     )
 
     registry = get_registry()
