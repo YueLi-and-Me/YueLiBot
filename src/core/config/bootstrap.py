@@ -149,8 +149,14 @@ def _bot_document() -> Dict[str, Any]:
 
 
 def _feature_document() -> Dict[str, Any]:
-    """组装 features.toml 的初始文档；功能开关全部取 schema 默认值。"""
-    return _default_document(FeatureDocument, {'inner': {'version': CONFIG_VERSION}})
+    """组装 features.toml 初始文档，但故意不向全新安装暴露开发者命令段。
+
+    `developer` 在 schema 中有关闭态默认值，因此旧配置与首次安装都能正常加载；
+    只有开发者手写该段并显式开启后，用户机器上才可能命中聊天内命令。
+    """
+    document = _default_document(FeatureDocument, {'inner': {'version': CONFIG_VERSION}})
+    document.pop('developer')
+    return document
 
 
 def _provider_document() -> Dict[str, Any]:

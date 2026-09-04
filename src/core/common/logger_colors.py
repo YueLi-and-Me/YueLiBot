@@ -40,6 +40,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "adapters.yueli_napcat_adapter.plugin": ("#ffd7af", False),
     # 归属解析
     "platform_io.registry": ("#5fffd7", False),
+    "commands.registry": ("#ffaf5f", True),
     # 基础设施
     "common.logger": ("#ffd75f", True),
     "common.logger_colors": ("#ffaf5f", False),
@@ -62,6 +63,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "common.db.migrations.v9_to_v10": ("#ffd75f", False),
     "common.db.migrations.v10_to_v11": ("#ffd75f", False),
     "common.db.migrations.v26_to_v27": ("#ffd75f", False),
+    "common.db.migrations.v28_to_v29": ("#ffd75f", False),
     # 模型
     "llm_models.router": ("#00ffff", True),
     "llm_models.openai": ("#00d7d7", False),
@@ -91,8 +93,11 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "observe.events": ("#ff5fd7", True),
     "observe.source": ("#ff5faf", False),
     "services.trace_console": ("#ff87d7", True),
+    "services.dev_commands": ("#d7ffd7", True),
     "agent.expression_learn": ("#ffaf87", False),
     "agent.impression": ("#d7af87", False),
+    # 运行画像
+    "services.runtime_profile": ("#5fd7af", True),
     # 进程监护：入口拉起的 QQ 适配器与桌面外壳
     "common.child_process": ("#87d7d7", True),
     "services.adapter_host": ("#ffafd7", False),
@@ -115,6 +120,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "plugin_system.registry": "插件注册表",
     "adapters.yueli_napcat_adapter.plugin": "NapCat适配",
     "platform_io.registry": "归属登记",
+    "commands.registry": "开发者命令",
     "common.logger": "日志",
     "common.logger_colors": "日志配色",
     "common.self_check": "运行自检",
@@ -136,6 +142,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "common.db.migrations.v9_to_v10": "迁移v9→v10",
     "common.db.migrations.v10_to_v11": "迁移v10→v11",
     "common.db.migrations.v26_to_v27": "迁移v26→v27",
+    "common.db.migrations.v28_to_v29": "迁移v28→v29",
     "llm_models.router": "模型路由",
     "llm_models.openai": "模型连接",
     "memory.embed": "记忆嵌入",
@@ -163,8 +170,10 @@ MODULE_ALIASES: Dict[str, str] = {
     "observe.events": "追踪",
     "observe.source": "消息来源",
     "services.trace_console": "追踪面板",
+    "services.dev_commands": "开发者命令",
     "agent.expression_learn": "表达学习",
     "agent.impression": "会话印象",
+    "services.runtime_profile": "运行画像",
     "common.child_process": "子进程",
     "services.adapter_host": "适配器进程",
     "services.desktop_shell": "桌面外壳",

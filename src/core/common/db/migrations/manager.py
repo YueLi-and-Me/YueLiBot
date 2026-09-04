@@ -31,7 +31,7 @@ from src.core.common.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 28  # 当前 schema 版本：导入中心来源批次、画像信任分级、stream 群聊展示名、事实操作流水
+CURRENT_VERSION = 29  # 当前 schema 版本：运行画像表（随机安装 ID、启动次数、累计运行时长）
 
 
 def load_migration_registry() -> Dict[int, MigrationFn]:
@@ -70,6 +70,7 @@ def load_migration_registry() -> Dict[int, MigrationFn]:
         v25_to_v26,
         v26_to_v27,
         v27_to_v28,
+        v28_to_v29,
     )
 
     return get_registry()

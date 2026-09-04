@@ -37,9 +37,12 @@ import type {
  * 旧文件按 1.3.0 解析后重写即补齐该字段及默认值。
  * 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关；
  * 旧文件按 1.4.0 解析后重写即补齐该段及默认值。
+ * 1.6.0 新增可选 [developer] 段；缺失时关闭，旧文件升级后显式写出关闭态。
  */
-export const CONFIG_VERSION = '1.5.0'
-const SUPPORTED_VERSIONS = ['1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0'] as const
+export const CONFIG_VERSION = '1.6.0'
+const SUPPORTED_VERSIONS = [
+  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0',
+] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
@@ -242,6 +245,9 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   advanced: {
     https_proxy: '',
+  },
+  developer: {
+    enabled: false,
   },
 }
 
@@ -1283,6 +1289,9 @@ function readSplitConfig(directory: string): YueliConfig {
   const vision = recordAt(features, 'vision', featuresPath)
   const vector = recordAt(features, 'vector', featuresPath)
   const advanced = recordAt(features, 'advanced', featuresPath)
+  const developer = features.developer === undefined
+    ? null
+    : recordAt(features, 'developer', featuresPath)
   const ttsFormat = stringAt(tts, 'format', featuresPath)
   if (!['mp3', 'wav', 'opus'].includes(ttsFormat)) {
     throw new Error(`${featuresPath} 的 tts.format 必须是 mp3、wav 或 opus`)
@@ -1349,6 +1358,11 @@ function readSplitConfig(directory: string): YueliConfig {
     log: parseLog(features, featuresPath),
     advanced: {
       https_proxy: stringAt(advanced, 'https_proxy', featuresPath),
+    },
+    developer: {
+      enabled: developer === null
+        ? DEFAULT_CONFIG.developer.enabled
+        : booleanAt(developer, 'enabled', featuresPath),
     },
   }
 }
@@ -2330,6 +2344,10 @@ surfaces = ${tomlStringArray(cfg.perception.surfaces)}
 [vector]
 # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖
 enabled = ${tomlValue(cfg.vector.enabled)}
+
+[developer]
+# owner 私聊专用开发者命令通道；默认关闭，只有手工确认后才应开启
+enabled = ${tomlValue(cfg.developer.enabled)}
 
 # 反馈纠错（N4）：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
 # 整条链路默认关闭，开启是显式动作。

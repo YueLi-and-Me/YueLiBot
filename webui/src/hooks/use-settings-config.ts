@@ -32,6 +32,8 @@ export interface SettingsObjectSection {
   key: string
   label: string
   description: string
+  /** 保留写盘但不在通用可编辑设置页展示。 */
+  hidden?: boolean
   fields: SettingsFieldSchema[]
 }
 
@@ -41,6 +43,7 @@ export interface SettingsMapSection {
   key: string
   label: string
   description: string
+  hidden?: boolean
   entries: Array<{ key: string; label: string; description: string }>
   fields: SettingsFieldSchema[]
 }
@@ -51,6 +54,7 @@ export interface SettingsTableListSection {
   key: string
   label: string
   description: string
+  hidden?: boolean
   fields: SettingsFieldSchema[]
 }
 

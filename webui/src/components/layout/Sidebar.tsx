@@ -22,6 +22,7 @@ import {
   Quote,
   Settings,
   SlidersHorizontal,
+  SquareTerminal,
   Sticker,
   Terminal,
   Users,
@@ -148,6 +149,7 @@ export function Sidebar() {
   const onPersons = location.pathname.startsWith('/persons')
   const onModels = location.pathname.startsWith('/models')
   const onSettings = location.pathname.startsWith('/settings')
+  const onDeveloperCommands = location.pathname.startsWith('/developer/commands')
   const onJargon = location.pathname.startsWith('/jargon')
   const onExpressions = location.pathname.startsWith('/expressions')
   const onMemoryTuning = location.pathname.startsWith('/memory/tuning')
@@ -157,7 +159,7 @@ export function Sidebar() {
     location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport && !onMemoryManage
   const onEmojis = location.pathname.startsWith('/emojis')
   const onHome =
-    !onPersons && !onModels && !onSettings && !onJargon && !onExpressions && !onMemory
+    !onPersons && !onModels && !onSettings && !onDeveloperCommands && !onJargon && !onExpressions && !onMemory
     && !onMemoryTuning && !onMemoryImport && !onMemoryManage && !onEmojis
 
   return (
@@ -177,6 +179,7 @@ export function Sidebar() {
           <NavLink to="/memory/manage" active={onMemoryManage} icon={<ListChecks />} label="记忆管理" />
           <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
+          <NavLink to="/developer/commands" active={onDeveloperCommands} icon={<SquareTerminal />} label="开发者命令" />
           {onHome ? (
             <div className="mt-1 border-t border-sidebar-border/60 pt-1">
               <SectionTitle>会话分区</SectionTitle>
@@ -214,6 +217,7 @@ export function MobileTopbar() {
   const onPersons = location.pathname.startsWith('/persons')
   const onModels = location.pathname.startsWith('/models')
   const onSettings = location.pathname.startsWith('/settings')
+  const onDeveloperCommands = location.pathname.startsWith('/developer/commands')
   const onJargon = location.pathname.startsWith('/jargon')
   const onExpressions = location.pathname.startsWith('/expressions')
   const onMemoryTuning = location.pathname.startsWith('/memory/tuning')
@@ -231,7 +235,7 @@ export function MobileTopbar() {
           <NavLink
             to="/"
             active={
-              !onPersons && !onModels && !onSettings && !onJargon && !onExpressions
+              !onPersons && !onModels && !onSettings && !onDeveloperCommands && !onJargon && !onExpressions
               && !onMemory && !onMemoryTuning && !onMemoryImport && !onMemoryManage && !onEmojis
             }
             icon={<Activity />}
@@ -247,6 +251,7 @@ export function MobileTopbar() {
           <NavLink to="/memory/manage" active={onMemoryManage} icon={<ListChecks />} label="记忆管理" />
           <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
           <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
+          <NavLink to="/developer/commands" active={onDeveloperCommands} icon={<SquareTerminal />} label="开发者命令" />
         </nav>
       </LayoutGroup>
       <ThemeSwitch dark={dark} onToggle={toggle} className="scale-[0.85]" />

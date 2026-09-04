@@ -575,7 +575,7 @@ export function SettingsConfigPage() {
               {' '}— {selectedFile.description}
             </p>
           </div>
-          {selectedFile.sections.map((section) => {
+          {selectedFile.sections.filter((section) => !section.hidden).map((section) => {
             const fileValues = asRecord(draft[selectedFile.file])
             if (section.kind === 'object') {
               return (
