@@ -647,6 +647,7 @@ def main() -> None:
     app_state.config_dir = config_dir
     app_state.registry = StreamRegistry(db)
     app_state.group_chat_config = cfg.group_chat
+    app_state.developer_config = cfg.developer
     broker = PlatformBroker()
     qq_driver = QqWebSocketDriver(push)
 
@@ -1071,6 +1072,7 @@ def main() -> None:
         副作用：原地重绑各持有方的配置引用，不重建任何服务。
         """
         app_state.group_chat_config = fresh.group_chat
+        app_state.developer_config = fresh.developer
         app_state.chat.apply_config(fresh)
         if app_state.tts is not None:
             app_state.tts.apply_config(fresh)

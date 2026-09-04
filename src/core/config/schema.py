@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 from typing import Any, Dict, List, Literal
+
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 # 配置格式版本的唯一定义处。loader 从这里导入，不再各写一份——两处必须始终
 # 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
-CONFIG_VERSION = '1.5.0'
+CONFIG_VERSION = '1.6.0'
 
 
 class InnerConfig(BaseModel):
@@ -33,12 +34,13 @@ class InnerConfig(BaseModel):
     # 1.3.0 新增 [emoji] 与 [emoji.cleanup] 两段表情包库管理配置。
     # 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊。
     # 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关。
+    # 1.6.0 新增可选 [developer] 段；缺失与 enabled=false 都关闭开发者命令通道。
     #
     # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
     # 所以删除或重命名配置字段时必须同步修改这里与 electron/main/config.ts，
     # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
     # 为它们报一次「配置字段变更」。
-    version: Literal['1.5.0'] = CONFIG_VERSION
+    version: Literal['1.6.0'] = CONFIG_VERSION
 
 
 class BotConfig(BaseModel):
@@ -688,6 +690,12 @@ class AdvancedConfig(BaseModel):
     https_proxy: str = ''
 
 
+class DeveloperConfig(BaseModel):
+    """开发者命令通道开关；缺失配置段时保持关闭。"""
+
+    enabled: StrictBool = False
+
+
 class ApiProviderConfig(BaseModel):
     """providers.toml 中的一条可复用连接定义。"""
 
@@ -998,6 +1006,7 @@ class FeatureDocument(BaseModel):
     memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig
+    developer: DeveloperConfig = Field(default_factory=DeveloperConfig)
 
 
 class Config(BaseModel):
@@ -1041,3 +1050,4 @@ class Config(BaseModel):
     memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
+    developer: DeveloperConfig = Field(default_factory=DeveloperConfig)

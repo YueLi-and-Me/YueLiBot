@@ -393,6 +393,10 @@ def _write_documented_toml(
     for section in schema.get('sections', []):
         kind = section.get('kind', 'object')
         key = section.get('key', '')
+        # 首次安装的开发者命令段必须连空表头都不出现；常规配置段仍保持原先
+        # 的完整模板行为。模型校验后的保存文档含有该段，因此不会被省略。
+        if section.get('omit_when_missing') and not _section_values(document, key):
+            continue
         label = section.get('label', key)
         description = section.get('description', '')
         fields = section.get('fields', [])

@@ -37,6 +37,7 @@ from src.core.common.clock import now as current_time
 from src.core.common.console_layout import print_box
 from src.core.common.db.connection import get_db, run_in_thread
 from src.core.common.logger import get_logger
+from src.core.commands import dispatch_developer_command, registered_commands
 from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
 from src.core.memory import tuning
@@ -49,7 +50,7 @@ from src.core.observe.source import source_label
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
 from src.core.platform_io.forward import forward_tree_from_payload
-from src.core.platform_io.types import InboundMessage
+from src.core.platform_io.types import InboundMessage, OutboundMessage
 from src.core.prompts.registry import (
     delete_prompt_override,
     list_prompts,
@@ -473,6 +474,28 @@ async def runtime_health() -> dict:
     return {'ok': True}
 
 
+@router.get('/api/developer/commands', dependencies=[Depends(_auth)])
+async def developer_commands() -> dict:
+    """返回开发者命令通道状态与只读注册目录。
+
+    :return: 当前开关、统一 owner 要求和注册命令的展示字段。
+    副作用：不执行命令，不读取命令输出，不修改注册表或配置。
+    """
+    return {
+        'enabled': app_state.developer_config.enabled,
+        'ownerRequired': True,
+        'commands': [
+            {
+                'name': item.name,
+                'pattern': item.pattern,
+                'description': item.description,
+                'ownerRequired': item.owner_required,
+            }
+            for item in registered_commands()
+        ],
+    }
+
+
 @router.post("/chat/send", dependencies=[Depends(_auth)])
 async def chat_send(request: Request) -> JSONResponse:
     """接收桌面端聊天文本并把它提交给当前桌面 stream。
@@ -516,10 +539,6 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             status_code=503,
         )
 
-    forward_messages = tuple(
-        forward_tree_from_payload(payload) for payload in body.forward_messages
-    )
-
     now = current_time()
     # 归属解析必须先于门控，后续 trace、记忆和出站路由都依赖稳定 stream/person 引用。
     context = app_state.registry.resolve_inbound(
@@ -533,6 +552,31 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     )
     if app_state.register_platform_stream is not None:
         app_state.register_platform_stream(context.stream)
+    # 命令在归属解析之后、任何回复门控与管线观测之前截断。命中后直接走平台
+    # broker，不调用 ChatService，因此不会写 messages、触发抽取/召回或创建回合。
+    command = await dispatch_developer_command(
+        enabled=app_state.developer_config.enabled,
+        text=body.text,
+        context=context,
+        registry=app_state.registry,
+    )
+    if command is not None:
+        if app_state.broker is None:
+            raise RuntimeError('开发者命令通道缺少平台出站 broker')
+        await app_state.broker.dispatch(OutboundMessage(
+            stream=context.stream,
+            segments=[command.text],
+        ))
+        return JSONResponse({
+            'streamId': context.stream.id,
+            'accepted': True,
+            'reason': 'developer_command',
+            'command': command.command,
+        })
+
+    forward_messages = tuple(
+        forward_tree_from_payload(payload) for payload in body.forward_messages
+    )
     stream_name = source_label(
         context.stream,
         direct_name=context.identity.display_name if context.identity is not None else '',
