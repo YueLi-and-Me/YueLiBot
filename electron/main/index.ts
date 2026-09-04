@@ -87,6 +87,36 @@ let watchScreen = false
 registerAppScheme()
 
 /**
+ * 让终端信号走与窗口关闭相同的优雅退出链。
+ *
+ * 现象：在终端里按 Ctrl+C 时进程直接结束，后端与 QQ 适配器来不及收尾。
+ * 原因：Node 对 SIGINT / SIGTERM 的默认行为是立即终止进程，
+ *   `before-quit` 不会触发，于是 `supervisor.shutdown()` 整条被跳过——
+ *   后端收不到 `/runtime/shutdown`，适配器也没有被 `_killAdapter` 收走。
+ * 后果：移除本注册会让「终端退出」与「窗口退出」两条路径的收尾行为再次分叉，
+ *   而分叉只在终端里显现，日常从托盘退出时看不出来。
+ *
+ * 第二次信号强制退出：优雅链内部虽有超时，但用户在它跑完前应当始终能脱身。
+ *
+ * @returns 无返回值。
+ * @sideEffects 在当前进程注册 SIGINT 与 SIGTERM 监听。
+ */
+function registerTerminationSignals(): void {
+  let quitRequested = false
+  const onSignal = (): void => {
+    if (quitRequested) {
+      app.exit(1)
+      return
+    }
+    quitRequested = true
+    app.quit()
+  }
+  process.on('SIGINT', onSignal)
+  process.on('SIGTERM', onSignal)
+}
+registerTerminationSignals()
+
+/**
  * 根据当前配置启用或停止输入活动采集器。
  *
  * @returns 无返回值。
