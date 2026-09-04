@@ -707,6 +707,22 @@
         },
         {
           "kind": "object",
+          "key": "developer",
+          "label": "开发者命令",
+          "description": "owner 私聊专用命令通道；设置页仅保留该段，不提供开关。",
+          "hidden": true,
+          "omit_when_missing": true,
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用开发者命令",
+              "help": "默认关闭；仅由开发者手工编辑 features.toml 后启用。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
           "key": "memory_feedback",
           "label": "记忆反馈纠错",
           "description": "N4 反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。",

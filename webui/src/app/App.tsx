@@ -27,6 +27,9 @@ const ModelConfigPage = lazy(() =>
 const SettingsConfigPage = lazy(() =>
   import('@/features/settings/SettingsConfigPage').then((m) => ({ default: m.SettingsConfigPage })),
 )
+const DeveloperCommandsPage = lazy(() =>
+  import('@/features/developer/DeveloperCommandsPage').then((m) => ({ default: m.DeveloperCommandsPage })),
+)
 const PersonsPage = lazy(() =>
   import('@/features/persons/PersonsPage').then((m) => ({ default: m.PersonsPage })),
 )
@@ -91,6 +94,7 @@ function AuthGate() {
           <Route index element={<ObservePage />} />
           <Route path="models" element={<ModelConfigPage />} />
           <Route path="settings" element={<SettingsConfigPage />} />
+          <Route path="developer/commands" element={<DeveloperCommandsPage />} />
           <Route path="persons" element={<PersonsPage />} />
           <Route path="persons/:personId" element={<PersonDetailPage />} />
           <Route path="jargon" element={<JargonPage />} />

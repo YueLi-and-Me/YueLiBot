@@ -570,6 +570,10 @@ export interface YueliConfig {
   advanced: {
     https_proxy: string
   }
+  /** owner 私聊专用开发者命令通道；默认关闭。 */
+  developer: {
+    enabled: boolean
+  }
 }
 
 /** 设置窗口的 bridge：首次启动引导和后续编辑共用同一套。 */

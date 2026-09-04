@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from src.core.config.schema import GroupChatConfig
+from src.core.config.schema import DeveloperConfig, GroupChatConfig
 from src.core.platform_io.types import StreamRef
 
 
@@ -33,6 +33,8 @@ class _AppState:
         self.registry: Any = None       # StreamRegistry（stream/person/identity 的唯一入口）
         # 不默认构造 GroupChatConfig：漏赋值必须在入站调用点暴露，而不是安静地用默认窗口跑。
         self.group_chat_config: GroupChatConfig | None = None
+        # 开发者命令必须默认不可达；启动流程只会用已校验配置替换这份关闭态对象。
+        self.developer_config: DeveloperConfig = DeveloperConfig()
         self.foreground_callback: Callable[[dict], None] | None = None
         self.broker: Any = None         # PlatformBroker（非桌面唯一出站接缝）
         self.register_platform_stream: Callable[[StreamRef], None] | None = None

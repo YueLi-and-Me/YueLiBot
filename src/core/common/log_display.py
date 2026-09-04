@@ -45,6 +45,8 @@ EVENT_LABELS: Dict[str, str] = {
     "db_migration_step": "执行数据库迁移步骤",
     "db_ready": "数据库已就绪",
     "db_up_to_date": "数据库已是最新版本",
+    "developer_command_executed": "开发者命令执行完成",
+    "developer_command_failed": "开发者命令执行失败",
     "v26_to_v27_done": "群聊展示名列迁移完成",
     "embed_batch_failed": "批量生成记忆向量失败",
     "embed_fact_failed": "事实向量生成失败",

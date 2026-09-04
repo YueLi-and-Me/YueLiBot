@@ -331,6 +331,7 @@ def _load_split_config(directory: Path) -> Config:
         memory_feedback=features_document.memory_feedback,
         log=features_document.log,
         advanced=features_document.advanced,
+        developer=features_document.developer,
     )
 
 
