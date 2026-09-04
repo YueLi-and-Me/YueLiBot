@@ -304,11 +304,20 @@ CREATE TABLE IF NOT EXISTS memory_edges (
 CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(active, source_id);
 
 -- -------------------------------------------------------------- 人物画像缓存
--- 派生缓存，不是第三份真相：每一句都能追溯到某条 fact 或 episode，整表删掉重建
--- 不丢任何信息。dirty=1 表示有新证据待刷新，由后台任务批量重算，不在回合关键路径上。
+-- 派生缓存，不是第三份真相：确凿档逐条对应某条 fact，印象档能追溯到本地证据，
+-- 整表删掉重建不丢任何信息。dirty=1 表示有新证据待刷新，由后台任务批量重算，
+-- 不在回合关键路径上。
 CREATE TABLE IF NOT EXISTS person_profile (
   person_id      INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+  -- v26 起语义收窄为「印象」档：只存模型收敛出的理解。此前它是唯一的画像正文，
+  -- 存量行不重算，整段视作印象保留（不给已有数据编造出处），确凿档待自然刷新填上。
   summary        TEXT    NOT NULL DEFAULT '',
+  -- 确凿档（v26 加）：facts 账本直接投影的 JSON 数组，每条带 fact_id 可回溯；
+  -- 只有账本投影能写入，模型产出永远进不了这一列。
+  confirmed      TEXT    NOT NULL DEFAULT '',
+  -- 参与上一轮生成的 fact / episode id 的稳定哈希（v26 加）：置脏后指纹没变就只
+  -- 推进 refreshed_at、清脏位，不再调用模型；空串表示还没按指纹口径刷新过。
+  evidence_fingerprint TEXT NOT NULL DEFAULT '',
   evidence_count INTEGER NOT NULL DEFAULT 0,
   refreshed_at   INTEGER NOT NULL DEFAULT 0,
   dirty          INTEGER NOT NULL DEFAULT 1

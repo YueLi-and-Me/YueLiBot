@@ -3583,16 +3583,15 @@ class ChatService:
             # 只注入组装期查得的黑话命中；匹配、打分与截断在 agent/jargon.py，
             # 决策与回复两次渲染共用同一份结果，副作用每回合只发生一次。
             'jargon': prepared.jargon,
-            # 只注入本轮在场者的画像；按亲密度取前 N 与「空画像不算数」都在 profile.py。
-            'impressions': [
-                summary for _, summary in profiles_for_injection(
-                    self._db, self._present_person_ids(prepared.context),
-                    skip_dirty=(
-                        feedback_cfg.enabled
-                        and feedback_cfg.profile_force_refresh_on_read
-                    ),
-                )
-            ],
+            # 只注入本轮在场者的画像；按亲密度取前 N、空画像不算数与确凿/印象
+            # 两档的取数都在 profile.py，渲染分两档呈现在 prompt.py。
+            'impressions': profiles_for_injection(
+                self._db, self._present_person_ids(prepared.context),
+                skip_dirty=(
+                    feedback_cfg.enabled
+                    and feedback_cfg.profile_force_refresh_on_read
+                ),
+            ),
             'render_params': render_params,
             'decision_only': decision_only,
             **prompt_kwargs,
