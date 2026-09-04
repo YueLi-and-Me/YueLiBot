@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, status
 

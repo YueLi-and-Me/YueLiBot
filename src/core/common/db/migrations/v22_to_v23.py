@@ -13,7 +13,7 @@ W9 的事实账本只对增量生效：``slot`` 由抽取模型在写入时给�
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Tuple
 
 import re
 import sqlite3

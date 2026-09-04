@@ -151,7 +151,6 @@ def _write_vision_bool(directory: Path, field: str, enabled: bool) -> None:
 
 def read_versioned_toml_with_text(text: str, name: str) -> Dict[str, Any]:
     """用文本解析 TOML 并校验 inner 版本。"""
-    import io
     import tomllib
     document = tomllib.loads(text)
     version = document.get('inner', {}).get('version')

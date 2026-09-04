@@ -11,14 +11,13 @@ Electron 控制台）和 ``webui_logs``（WebUI 日志面板），因此三端�
 from __future__ import annotations
 
 from typing import Any
-import sys
 import time
 
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
-from src.core.common.log_display import event_label, value_label
+from src.core.common.log_display import value_label
 from src.core.common.logger import get_logger
 from src.core.common.logger_colors import is_color_enabled
 from src.core.services.turn_panel import (

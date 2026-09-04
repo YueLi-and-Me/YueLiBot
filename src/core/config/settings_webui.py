@@ -19,7 +19,6 @@ from typing import Any, Dict, List
 import copy
 import json
 import os
-import shutil
 import tempfile
 
 from .adapter_selection import (

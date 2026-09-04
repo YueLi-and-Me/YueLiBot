@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, Protocol, Sequence
+from typing import Awaitable, Callable, Protocol
 
 import sqlite3
 

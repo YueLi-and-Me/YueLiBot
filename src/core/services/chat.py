@@ -109,7 +109,6 @@ from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_re
 from src.core.memory.tuning import apply_pool_percentile, tuned_value
 from src.core.memory.store import (
     EpisodeInput,
-    FactInput,
     MemoryStore,
     RecalledFact,
     StoredMessage,
