@@ -45,6 +45,15 @@ __pycache__/
 # 和 /config/ 同属运行时配置，不能随插件源码一起入库。
 /adapters/*/config.toml
 
+# 任何位置的 SQLite 文件都不入库。/data/ 已经挡住绝大多数，但迁移链测试之类的
+# 一次性副本会落在别处——2026-08-26 的 backups/.chain-test.v14.db 就是这么进去的，
+# 一个 187 MB 的库文件让 .git 长到 234 MB。按文件类型再兜一层，不依赖目录约定。
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+/backups/
+
 # 测试不入库。文件仍留在工作区，pytest 与 vitest 照常运行；
 # 加这三条是防止一次 `git add .` 把它们重新带进版本库。
 /pytests/
