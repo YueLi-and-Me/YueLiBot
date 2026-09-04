@@ -37,11 +37,14 @@ import type {
  * 旧文件按 1.3.0 解析后重写即补齐该字段及默认值。
  * 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关；
  * 旧文件按 1.4.0 解析后重写即补齐该段及默认值。
- * 1.6.0 新增可选 [developer] 段；缺失时关闭，旧文件升级后显式写出关闭态。
+ *
+ * [developer] 段（开发者命令通道）有意不 bump 版本号：整段可选、缺失即关闭，
+ * 且初始配置生成时会显式剔除它，用户文件里永远不出现，没有内容需要迁移。
+ * 详细理由见 src/core/config/schema.py 的 InnerConfig 注释。
  */
-export const CONFIG_VERSION = '1.6.0'
+export const CONFIG_VERSION = '1.5.0'
 const SUPPORTED_VERSIONS = [
-  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0',
+  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0',
 ] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
