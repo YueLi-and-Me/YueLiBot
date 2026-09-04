@@ -350,7 +350,6 @@ FIELD_LABELS: Dict[str, str] = {
     "memoryKind": "记忆类型",
     "message": "消息",
     "messageId": "消息编号",
-    "messageCount": "消息数量",
     "messages": "提示词消息",
     "messageWatermark": "消息水位",
     "mentionedMe": "提到机器人",
