@@ -92,6 +92,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "observe.events": ("#ff5fd7", True),
     "observe.source": ("#ff5faf", False),
     "services.trace_console": ("#ff87d7", True),
+    "services.dev_commands": ("#d7ffd7", True),
     "agent.expression_learn": ("#ffaf87", False),
     "agent.impression": ("#d7af87", False),
     # 进程监护：入口拉起的 QQ 适配器与桌面外壳
@@ -165,6 +166,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "observe.events": "追踪",
     "observe.source": "消息来源",
     "services.trace_console": "追踪面板",
+    "services.dev_commands": "开发者命令",
     "agent.expression_learn": "表达学习",
     "agent.impression": "会话印象",
     "common.child_process": "子进程",
