@@ -369,6 +369,19 @@ class DayPlanService:
             )
             self._timeline.set_decider(decision.decide)
 
+    def apply_config(self, config: ScheduleConfig) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。本服务只持有日程段，签名因此与其他持有方不同。
+
+        :param config: 重载后的日程配置。
+        :return: ``None``。
+        副作用：重绑日程配置引用；已生成的当日计划不受影响。
+        """
+
+        self._config = config
+
     @property
     def timeline(self) -> ActivityTimeline:
         """返回服务绑定的唯一活动时间线。"""

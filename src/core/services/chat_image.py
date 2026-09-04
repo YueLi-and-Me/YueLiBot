@@ -167,6 +167,19 @@ class ChatImageDescriber:
         self._pending: dict[tuple[str, str], asyncio.Task[str | None]] = {}
         self._protocol_error: str | None = None
 
+    def apply_config(self, cfg: Config) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。进程内的描述缓存按内容哈希建立，与配置无关，因此不清空。
+
+        :param cfg: 重载后的运行时配置。
+        :return: ``None``。
+        副作用：重绑配置引用；不清空缓存、不重建提供者。
+        """
+
+        self._cfg = cfg
+
     async def describe(
         self,
         image_bytes: bytes,

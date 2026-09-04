@@ -254,6 +254,23 @@ class AwarenessService:
 
         return self._sensor.signal if self._sensor else None
 
+    def apply_config(self, cfg: Any) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。传感器不由本服务创建，因此不在这里级联——它由装配
+        方直接持有并各自重绑。
+
+        注意 ``_enabled`` 是装配期一次性算出的开关组合，本方法有意不重算：
+        主动搭话的开关变更需要重建服务，热重载只保证读配置字段的地方拿到新值。
+
+        :param cfg: 重载后的运行时配置。
+        :return: ``None``。
+        副作用：重绑配置引用；不重算启用开关、不重建传感器。
+        """
+
+        self._cfg = cfg
+
     def current_sleep(self, now: int | None = None) -> SleepState:
         """读取由活动时间线派生的当前睡眠状态。
 

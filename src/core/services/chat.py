@@ -735,6 +735,22 @@ class ChatService:
         self._promise_handler: Callable[[int, str], None] | None = None
         self._schedule: DayPlanService | None = None
 
+    def apply_config(self, cfg: Config) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。图片描述器由本服务持有，这里一并换掉，
+        调用方不必知道它的存在。
+
+        :param cfg: 重载后的运行时配置。
+        :return: ``None``。
+        副作用：重绑自身与图片描述器的配置引用；不重建任何对象。
+        """
+
+        self._cfg = cfg
+        if self._image_describer is not None:
+            self._image_describer.apply_config(cfg)
+
     @property
     def ready(self) -> bool:
         """判断普通对话模型是否已经注入。

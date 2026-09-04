@@ -42,6 +42,20 @@ class TtsService:
         self._cache_misses = 0
         self._cache: dict[str, bytes] = {}
 
+    def apply_config(self, cfg: Any) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。熔断计数与音频缓存跨重载保留：它们记录的是运行期
+        健康状况，不是配置。
+
+        :param cfg: 重载后的运行时配置。
+        :return: ``None``。
+        副作用：重绑配置引用；不重置熔断状态。
+        """
+
+        self._cfg = cfg
+
     @property
     def enabled(self) -> bool:
         """判断当前是否允许创建新的 TTS 合成任务。

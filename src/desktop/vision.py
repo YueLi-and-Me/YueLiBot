@@ -139,6 +139,19 @@ class VisionService:
         self._protocol_error: str | None = None
         self._glances = 0
 
+    def apply_config(self, cfg: Any) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。
+
+        :param cfg: 重载后的运行时配置。
+        :return: ``None``。
+        副作用：重绑配置引用；不影响已缓存的描述与统计。
+        """
+
+        self._cfg = cfg
+
     def stats(self) -> dict[str, Any]:
         """返回视觉功能的配置状态和调用次数。
 

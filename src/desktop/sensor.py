@@ -37,6 +37,22 @@ class DesktopSensor:
         self._vision: VisionService | None = None
         self._vision_spoke_count = 0
 
+    def apply_config(self, cfg: Any) -> None:
+        """把本对象持有的配置引用切到重载后的新对象上。
+
+        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
+        下次读到的就是新值。视觉服务由本传感器在 ``startup`` 创建并持有，这里一并
+        换掉；尚未创建时跳过。
+
+        :param cfg: 重载后的运行时配置。
+        :return: ``None``。
+        副作用：重绑自身与视觉服务的配置引用；不重建视觉服务。
+        """
+
+        self._cfg = cfg
+        if self._vision is not None:
+            self._vision.apply_config(cfg)
+
     def startup(self) -> None:
         """按配置创建视觉服务。"""
         if self._cfg.vision.ready and self._vision_provider:

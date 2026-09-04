@@ -1043,9 +1043,10 @@ def main() -> None:
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 
     # 配置热重载的持有方更新：第 1 类字段的使用点都通过下面这些引用读取，
-    # 重载成功后统一换到新对象即生效（第 2/3 类的分类见 loader 的前缀表与
-    # 交付报告）。这里写入私有属性是权宜实现，后续应
-    # 改为公开 setter；届时本回调只换调用形式、语义不变。
+    # 重载成功后统一换到新对象即生效（第 2/3 类的分类见 loader 的前缀表）。
+    # 每个持有方各自提供 apply_config，本回调只负责按装配关系逐个调用；
+    # 各自持有的下级对象（聊天的图片描述器、传感器的视觉服务）由持有方级联，
+    # 这里不再向下伸手。
     def _on_config_reloaded(previous: object, fresh: object) -> None:
         """把装配期创建的服务切到新配置对象上。
 
@@ -1054,16 +1055,13 @@ def main() -> None:
         副作用：原地重绑各持有方的配置引用，不重建任何服务。
         """
         app_state.group_chat_config = fresh.group_chat
-        app_state.chat._cfg = fresh
-        app_state.chat._image_describer._cfg = fresh
+        app_state.chat.apply_config(fresh)
         if app_state.tts is not None:
-            app_state.tts._cfg = fresh
-        app_state.awareness._cfg = fresh
+            app_state.tts.apply_config(fresh)
+        app_state.awareness.apply_config(fresh)
         if schedule is not None:
-            schedule._config = fresh.schedule
-        sensor._cfg = fresh
-        if getattr(sensor, '_vision', None) is not None:
-            sensor._vision._cfg = fresh
+            schedule.apply_config(fresh.schedule)
+        sensor.apply_config(fresh)
 
     from src.core.config.loader import add_config_reload_listener
     add_config_reload_listener(_on_config_reloaded)
