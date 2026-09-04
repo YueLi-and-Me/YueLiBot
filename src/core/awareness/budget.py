@@ -168,20 +168,3 @@ def after_user_spoke(state: ProactiveState) -> ProactiveState:
         return state
     return ProactiveState(day_key=state.day_key, used=state.used,
                           last_at=state.last_at, ignored=0)
-
-
-def describe_budget(state: ProactiveState, now: int) -> dict:
-    """生成供观测面板显示的预算摘要。
-
-    :param state: 当前预算状态。
-    :param now: 当前 Unix 毫秒时间戳，用于处理跨日滚动。
-    :return: 含日期、已用次数、剩余次数和未回应次数的字典。
-    副作用：不修改输入状态。
-    """
-    s = _rollover(state, now)
-    return {
-        'day_key': s.day_key,
-        'used': s.used,
-        'remaining': max(0, DAILY_BUDGET - s.used),
-        'ignored': s.ignored,
-    }

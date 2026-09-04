@@ -106,17 +106,6 @@ class TokenManager:
 
 token_manager = TokenManager()
 
-
-def get_token() -> str:
-    """读取模块级 token 管理器中的当前认证 token。
-
-    :return: 当前进程认证 token。
-    :raises RuntimeError: token 尚未初始化。
-    副作用：不执行 I/O。
-    """
-    return token_manager.get()
-
-
 def verify_token(token: str) -> bool:
     """使用恒定时间比较校验候选认证 token。
 

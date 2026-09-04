@@ -180,22 +180,6 @@ def store_fact_quantized(
     db.execute('UPDATE facts SET embedding_q8 = ? WHERE id = ?', (encoded, fact_id))
     db.commit()
 
-
-def store_knowledge_quantized(
-    db: sqlite3.Connection,
-    knowledge_id: int,
-    embedding: bytes,
-) -> None:
-    """由刚生成的原始知识向量同步写入 SQ8 列。"""
-
-    encoded = quantize(embedding)
-    db.execute(
-        'UPDATE knowledge SET embedding_q8 = ? WHERE id = ?',
-        (encoded, knowledge_id),
-    )
-    db.commit()
-
-
 def store_knowledge_vector_pair(
     db: sqlite3.Connection,
     knowledge_id: int,
