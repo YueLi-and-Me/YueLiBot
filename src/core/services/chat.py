@@ -10,9 +10,9 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
 from html import escape
-from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Sequence
+from pathlib import Path
+from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import asyncio
 import inspect
@@ -343,6 +343,44 @@ class _TurnSink:
     emoji_items: list[tuple[str, str, int]] = field(default_factory=list)
 
 
+@dataclass
+class _RetrievalTrace:
+    """保存一轮事实召回的无损输入、候选池与单次落账状态。
+
+    会话印象不能截断：截断后的文本会改变分词、召回集合与得分，使事件失去重放
+    价值。体积控制留给事件保留策略，不在检索输入上做有损处理。
+    """
+
+    turn_id: int | None
+    stream_id: int
+    current_text: str
+    conversation_impression: str
+    candidate_pool: Tuple[Tuple[int, float], ...]
+    emitted: bool = False
+
+    def emit_once(self, prompt_fact_ids: Sequence[int]) -> None:
+        """记录本轮首份真实生产提示词使用的事实，并保证同轮只写一条。"""
+
+        if self.emitted:
+            return
+        trace.emit(
+            'memory_retrieval_trace',
+            turnId=self.turn_id,
+            streamId=self.stream_id,
+            currentText=self.current_text,
+            conversationImpression=self.conversation_impression,
+            currentTextChars=len(self.current_text),
+            impressionChars=len(self.conversation_impression),
+            candidateCount=len(self.candidate_pool),
+            candidatePool=[
+                {'factId': fact_id, 'score': score}
+                for fact_id, score in self.candidate_pool
+            ],
+            promptFactIds=list(prompt_fact_ids),
+        )
+        self.emitted = True
+
+
 @dataclass(frozen=True)
 class _PreparedTurnContext:
     """保存一次性组装完成、可继续附加模型增强的回合上下文。"""
@@ -352,6 +390,7 @@ class _PreparedTurnContext:
     now: int
     platform_bot_name: str | None
     fact_candidates: list[RecalledFact]
+    retrieval_trace: _RetrievalTrace
     episodes: list[str]
     persona: str
     acquaintance: str
@@ -1234,6 +1273,7 @@ class ChatService:
 
             assistant_raw = ''
             reply_persisted = False
+            prepared_context: _PreparedTurnContext | None = None
             # 默认使用占位符正文；图片任务完成前的异常处理仍需可读的批次文本。
             trimmed = '\n'.join(message.text for message in batch)
             try:
@@ -1280,6 +1320,7 @@ class ChatService:
                         message.message_id for message in materialized_batch
                     ),
                     impression=impression,
+                    turn_id=turn,
                 )
                 render_params: dict[str, dict[str, str]] = {}
                 batch_gate = self._batch_gate(
@@ -1539,6 +1580,11 @@ class ChatService:
                     'chat.error',
                     {'turnId': turn, 'kind': 'error', 'message': str(exc)},
                 )
+            finally:
+                # 召回发生但本轮在门控或动作规划阶段结束时，同样留一条空提示词
+                # 选择记录；这样每个实际执行过事实检索的回合都能一一重放。
+                if prepared_context is not None:
+                    prepared_context.retrieval_trace.emit_once([])
 
         task = asyncio.create_task(_run())
         inflight = _InflightTurn(task=task, cancel_event=cancel_event)
@@ -2346,6 +2392,7 @@ class ChatService:
             now,
             user_message_id_watermark=target.message_id,
             impression=await self._conversation_impression(context, now),
+            turn_id=turn,
         )
         render_params: dict[str, dict[str, str]] = {}
         follow_up_context = '\n'.join((
@@ -3398,6 +3445,7 @@ class ChatService:
         user_message_id_watermark: int | None = None,
         batch_message_ids: tuple[int, ...] | None = None,
         impression: str | None = None,
+        turn_id: int | None = None,
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -3410,6 +3458,7 @@ class ChatService:
             插回当前批之前的正确历史位置。
         :param impression: 调用方在组装前取到的会话印象；作为事实检索的第二
             检索词与当前文本取并集，``None`` 表示本次只用当前文本检索。
+        :param turn_id: 当前回合编号，用于把召回留痕稳定关联到提示词请求。
         :return: 可供动作决策读取、并可在确认回复后继续增强的上下文。
 
         副作用：
@@ -3501,6 +3550,15 @@ class ChatService:
             now=now,
             platform_bot_name=platform_bot_name,
             fact_candidates=fact_candidates,
+            retrieval_trace=_RetrievalTrace(
+                turn_id=turn_id,
+                stream_id=context.stream.id,
+                current_text=query,
+                conversation_impression=impression if impression is not None else '',
+                candidate_pool=tuple(
+                    (fact.id, float(fact.score)) for fact in fact_candidates
+                ),
+            ),
             episodes=[episode.summary for episode in episodes],
             persona=persona_desc,
             acquaintance=acquaintance,
@@ -3522,6 +3580,7 @@ class ChatService:
         reply_length: str | None = None,
         protocol_text: str | None = None,
         decision_only: bool = False,
+        record_retrieval_trace: bool = True,
     ) -> list[dict]:
         """将同一份已组装上下文渲染为模型消息。
 
@@ -3535,6 +3594,8 @@ class ChatService:
             放在末尾。它同时是「本次渲染属于 Agent 路径」的唯一判据。
         :param decision_only: 本次渲染只用于产出动作决策；透传给系统提示词，
             省略回复风格、语调与表达样本三块。
+        :param record_retrieval_trace: 是否把这份提示词选中的事实写入召回留痕；
+            影子决策设为 ``False``，避免它抢先冒充真实生产提示词。
         :return: 首项为 system 消息；传统模式后接裁剪历史，工具模式后接独立的
             运行时上下文 item 与裁剪历史。
         副作用：读取配置和会话语调；反馈纠错链路开启时登记「事实进提示词」锚点，
@@ -3606,6 +3667,10 @@ class ChatService:
                 prepared.agent_history,
                 preserve_items=True,
             )
+            if record_retrieval_trace:
+                prepared.retrieval_trace.emit_once(
+                    [item.fact_id for item in fact_items if item.fact_id]
+                )
             return [
                 {'role': 'system', 'content': system},
                 *({'role': 'user', 'content': item} for item in context_items),
@@ -3626,6 +3691,10 @@ class ChatService:
         )
         # 读取历史时再次规范化，兼容早期中断留下的悬空标签；该操作对干净历史幂等。
         history = normalize_history(source_history)
+        if record_retrieval_trace:
+            prepared.retrieval_trace.emit_once(
+                [item.fact_id for item in fact_items if item.fact_id]
+            )
         return [{'role': 'system', 'content': system}, *fit_char_budget(history)]
 
     async def _enrich_prepared_context(
@@ -4327,6 +4396,7 @@ class ChatService:
                 render_params=render_params,
                 protocol_text=protocol_text,
                 decision_only=self._tool_calling,
+                record_retrieval_trace=False,
             ),
             protocol_text=protocol_text,
         )
@@ -4358,6 +4428,7 @@ class ChatService:
                 render_params=render_params,
                 reply_length=head.length,
                 protocol_text=replyer_protocol,
+                record_retrieval_trace=False,
             )
             replyer_items = self._render_agent_messages(
                 frame,
