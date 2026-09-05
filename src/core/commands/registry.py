@@ -121,10 +121,16 @@ async def dispatch_developer_command(
     context: ConversationContext,
     registry: OwnerRegistry,
 ) -> CommandDispatch | None:
-    """在唯一入口完成开关、私聊面、owner、匹配与执行判定。
+    """在唯一入口完成开关、owner、匹配与执行判定。
 
-    返回 `None` 表示必须继续走普通聊天路径。只有开关已开、消息来自 owner 私聊
-    且完整命中注册规则时才消费消息。这样非 owner、群聊和关闭态都不会泄露命令存在。
+    返回 `None` 表示必须继续走普通聊天路径。只有开关已开、消息来自 owner
+    且完整命中注册规则时才消费消息。非 owner 与关闭态都走普通聊天，
+    不返回任何权限提示——那等于向所有人宣告存在一套隐藏命令。
+
+    会话面不设限：私聊与群聊都可触发（2026-09-05 由私聊限制放开）。
+    代价是**回复会被整群看到**，`/stat` 会广播安装 ID 与库规模；
+    这是权衡后接受的——能触发的只有 owner 一人，群本身又是白名单群。
+    真要收回来只需在这里加回 `context.stream.kind != 'direct'` 一个条件。
 
     :param enabled: `[developer].enabled` 的当前运行值。
     :param text: 平台入站原始正文。
@@ -133,7 +139,7 @@ async def dispatch_developer_command(
     :return: 命中时返回待投递文本，否则返回 `None`。
     副作用：处理器失败时记录结构化错误；不写消息、记忆、召回或管线事件。
     """
-    if not enabled or context.stream.kind != 'direct':
+    if not enabled:
         return None
     owner = registry.owner_person()
     if context.person.id != owner.id:

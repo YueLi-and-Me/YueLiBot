@@ -53,8 +53,9 @@ export function DeveloperCommandsPage() {
                 }
               />
               <p className="text-sm leading-relaxed text-muted-foreground">
-                仅 owner 的直接会话会尝试匹配命令；非 owner、群聊和关闭态都按普通聊天处理，
-                不会收到权限提示，也不会看到隐藏命令的存在。
+                仅 owner 发出的消息会尝试匹配命令，私聊与群聊都可触发；非 owner 与关闭态
+                一律按普通聊天处理，不会收到权限提示，也不会看到隐藏命令的存在。
+                注意群聊里的回复整群可见，/stat 会带出安装 ID 与库规模。
               </p>
             </CardBody>
           </Card>
