@@ -18,44 +18,51 @@
 <!-- Mascot on the Right (Float) -->
 <img src="assets/character/yueli/face/normal.png" align="right" width="30%" alt="月璃">
 
-## 简介 · INTRO
+## ✨ 简介 · INTRO
 
 月璃是一个基于大语言模型的 AI 角色，具备跨会话持续的记忆与随交互演化的人格，当前主要通过 QQ（私聊与白名单群）和浏览器管理面板使用。
+<sub><sup>YueLi is an AI character built on large language models, with memory that persists across sessions and a personality that evolves through interaction — currently accessed via QQ (direct messages and whitelisted groups) and a browser admin panel.</sup></sub>
 
-本项目的核心难点不在「LLM + 立绘」——该组合两小时即可搭建完成——而在持续性：状态须跨重启保留，关系随交互演化；关闭程序数日后再次启动，她仍然是同一个她。
+她不只是一个能完成任务的「有帮助的助手」——她致力于了解你，并以真实人类的风格与你相处；不追求完美，不追求高效，但追求亲切与真实。
+<sub><sup>She is more than a "helpful assistant" that completes tasks: she tries to understand you and interacts in a genuinely human style — pursuing not perfection or efficiency, but warmth and authenticity.</sup></sub>
 
-- 🧠 **持久记忆**：三层记忆结构与遗忘曲线相结合，跨重启保留；记忆随时间衰减，而非定期清零。
-- 🎭 **动态人格**：好感度按对话者隔离、随交互漂移，冷落会使之下降；全局精力状态影响其当前表达。人格由状态驱动，而非一段固定的提示词。
-- 👀 **发言节制**：日程与打扰预算共同决定每一轮是否发言，避免无节制的插话。
-- 🎛 **全程可观察**：管理面板支持模型配置、逐级查看每轮模型调用的输入与输出；修改提示词后，可基于历史事件重放验证。
-- 🌙 **离线补偿**：离线期间她仍会做梦、补偿流逝的时间，所写日记可供查阅。
-- 🖼 **不依赖 Live2D**：角色素材为 AI 生成的立绘差分，依据一张参考图与一句描述即可生成整套表情。
-- 💬 **主要出口为 QQ**：私聊与白名单群共享同一份记忆与同一条关系轴；群聊场景下亦会先行判断当轮是否发言。
-- 💻 **实验性桌宠**：默认关闭的 Windows 10/11 外壳，启用后可能遇到未知问题。
+本项目的核心难点不在「LLM + 立绘」——那个组合两小时即可搭出，两天就会腻；难在持续性：状态须跨重启保留，关系随交互演化。关闭程序数日后再次启动，她仍然是同一个她。
+<sub><sup>The hard part is not the "LLM + sprites" combination, which takes two hours to build and two days to grow stale — it is persistence: state survives restarts and relationships evolve through interaction. Reopen the program days later, and she is still the same person.</sup></sub>
+
+## 🧩 核心特性 · FEATURES
+
+**🧠 心智与记忆**
+
+- **持久记忆**：三层记忆结构与遗忘曲线，跨重启保留，随时间衰减而非定期清零。
+- **动态人格**：好感度按对话者隔离、随交互漂移，冷落会使之下降；全局精力状态影响当前表达。人格由状态驱动，而非一段固定的提示词。
+- **离线补偿**：离线期间仍会做梦、补偿流逝的时间，所写日记可供查阅。
+
+**👀 交互分寸**
+
+- **发言节制**：日程与打扰预算共同决定每一轮是否发言；白名单群中亦会先行判断当轮是否回应，而非有言必答。
+
+**🎛 可观察性**
+
+- **全程可观察**：管理面板支持模型配置、逐级查看每轮模型调用的输入与输出；修改提示词后，可基于历史事件重放验证。
+
+**🖼 角色与出口**
+
+- **主要出口为 QQ**：私聊与白名单群共享同一份记忆与同一条关系轴。
+- **实验性桌宠**：默认关闭的 Windows 10/11 外壳，启用后可能遇到未知问题。
+- **不依赖 Live2D**：角色素材为 AI 生成的立绘差分，一张参考图与一句描述即可生成整套表情。
 
 ---
 
-## 安装 · INSTALL
+## 🚀 安装 · INSTALL
 
-**环境要求**：Python 3.11+ · Node.js（Electron 43）· 桌宠为实验性功能，需要 Windows 10/11
+**环境要求**：Python 3.11+ · Node.js（Electron 43）· 桌宠为实验性功能，需要 Windows 10/11。**若仅运行 QQ 与管理面板，Node 与图形环境均非必需**，Linux 服务器可直接部署。
 
-进程入口为 Python。**若仅运行 QQ 与管理面板，Node 与图形环境均非必需**，Linux 服务器可直接部署。
+1. **初始化依赖**：`uv sync` 安装 Python 后端依赖；`npm install` 安装实验性桌宠外壳与管理面板前端，无头部署可跳过。
+2. **首次启动**：运行 `uv run bot.py`——程序在 `config/` 生成一份带完整中文注释的初始配置后停止，控制台列出缺失的配置项。
+3. **修改配置**：通常仅剩 API Key 一项——厂商地址与六个模型条目已按阿里云百炼的 OpenAI 兼容端点预填，各任务已按档位分配（对话使用质量档，决策与摘要使用快档，视觉与嵌入各有专用模型），默认全部关闭思考。如需接入 QQ，另需填写两个账号，见 [QQ 与群聊接入](docs/manual/adapters/index.md)。
+4. **再次启动**：填写完成后运行 `uv run bot.py` 即可。
 
-```bash
-uv sync         # 安装 Python 后端依赖
-npm install     # 安装实验性桌宠外壳与管理面板前端；无头部署可跳过
-uv run bot.py   # 一条命令启动全部组件
-```
-
-首次运行会在 `config/` 生成一份带完整中文注释的初始配置后停止，并在控制台列出缺失的配置项。
-**通常仅剩一项：API Key**——厂商地址与六个模型条目已按阿里云百炼的 OpenAI 兼容端点预填，
-各任务已按档位分配（对话使用质量档，决策与摘要使用快档，视觉与嵌入各有专用模型），
-默认全部关闭思考。填写完成后再次启动即可。如需接入 QQ，另需填写两个账号，见
-[QQ 与群聊接入](docs/manual/adapters/index.md)。
-若希望在填写前了解配置结构，无需 clone 仓库：[`config.example/`](config.example/README.md)
-即首次运行所生成的配置，每个字段均附中文说明。
-
-初次安装建议从 [从零跑起来](docs/manual/deployment/first-run.md) 开始——共五步，每步说明预期结果与对应的排查位置。
+若希望在填写前了解配置结构，无需 clone 仓库：[`config.example/`](config.example/README.md) 即首次运行所生成的配置，每个字段均附中文说明。初次安装建议从 [从零跑起来](docs/manual/deployment/first-run.md) 开始——共五步，每步说明预期结果与对应的排查位置。
 
 ---
 
@@ -80,12 +87,10 @@ uv run bot.py   # 一条命令启动全部组件
 
 ## 架构一句话 · ARCHITECTURE
 
-业务真源在 Python，Electron 仅承担平台层职责——窗口、托盘、屏幕采集、键鼠活动。
-**进程治理同样位于 Python 一侧**：Python 为入口，负责拉起并监护 QQ 适配器与可选的实验性桌宠外壳；
+业务真源在 Python，Electron 仅承担平台层职责——窗口、托盘、屏幕采集、键鼠活动。**进程治理同样位于 Python 一侧**：Python 为入口，负责拉起并监护 QQ 适配器与可选的实验性桌宠外壳；
 Electron 仅连接后端，不启动、不终止任何进程。因此在服务器上部署 QQ 机器人无需安装图形环境。
 
-三条硬性边界：Python 后端不得依赖任何 Electron API；API Key 仅存在于主进程与
-Python 后端，绝不下发至渲染层；Python 仅监听 `127.0.0.1`，所有接口均经过 token 鉴权。
+三条硬性边界：Python 后端不得依赖任何 Electron API；API Key 仅存在于主进程与 Python 后端，绝不下发至渲染层；Python 仅监听 `127.0.0.1`，所有接口均经过 token 鉴权。
 
 目录形状与依赖方向见[架构总览](docs/dev/architecture/overview.md)。
 
