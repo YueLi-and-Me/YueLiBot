@@ -2294,6 +2294,7 @@ check_interval_hours = ${cfg.emoji.cleanup.check_interval_hours}
 orphan_retention_days = ${cfg.emoji.cleanup.orphan_retention_days}
 
 [desktop_pet]
+# 【实验性功能，默认关闭，开启后可能遇到未知问题】
 # 是否启用桌宠窗口；关闭后不创建窗口与桌面感知，只保留托盘与后端，改动重启应用后生效
 enabled = ${cfg.desktop_pet.enabled}
 `
