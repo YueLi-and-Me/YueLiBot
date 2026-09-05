@@ -118,15 +118,20 @@ def test_已有文件不被覆盖(tmp_path: Path, adapters_root: Path) -> None:
         assert (config_dir / name).read_bytes() == before[name]
 
 
-def test_刚生成时报出待填项(tmp_path: Path, adapters_root: Path) -> None:
-    """产出是故意不完整的：模型 ID 与密钥只能由人填。"""
+def test_刚生成时只报出密钥一项(tmp_path: Path, adapters_root: Path) -> None:
+    """产出是故意不完整的，但只差密钥一项。
+
+    她的名字、厂商地址与模型 ID 都由种子预填，唯独 API Key 别人替不了。
+    这条断言盯的是「待填项恰好只有一条」——多出任何一条都意味着某个本该有
+    默认值的字段又空着了，那是首次安装体验的退化。
+    """
     config_dir = tmp_path / 'config'
     bootstrap_config_directory(config_dir)
 
     missing = missing_startup_requirements(config_dir)
 
-    assert any('name' in item for item in missing)
-    assert any('model_identifier' in item for item in missing)
+    assert len(missing) == 1, missing
+    assert 'api_key' in missing[0]
 
 
 def test_填好之后不再报缺项(tmp_path: Path, adapters_root: Path) -> None:

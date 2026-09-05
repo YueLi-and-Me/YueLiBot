@@ -375,7 +375,7 @@ def _dump_models(
         raw = tasks[task]
         lines.extend([
             f'[model_tasks.{task}]',
-            f'model_list = {_toml_value(raw["model_list"])} # 该任务使用的候选模型名称，对应下方 [[models]] 的 name；顺序即优先级。',
+            f'model_list = {_toml_value(raw["model_list"])} # 该任务使用的候选模型名称，对应下方 [[models]] 的 name；列表顺序只在「顺序优先」策略下决定先后。',
             f'selection_strategy = {_toml_value(raw["selection_strategy"])} # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。',
             f'first_token_timeout_ms = {int(raw["first_token_timeout_ms"])} # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。',
             f'slow_threshold_ms = {int(raw["slow_threshold_ms"])} # 只用于慢响应记账；必须小于首字超时，0 表示关闭。',
@@ -424,7 +424,7 @@ def _dump_models(
             )
         lines.append(f'price_in = {_toml_value(float(model.get("price_in") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
         lines.append(f'price_out = {_toml_value(float(model.get("price_out") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
-        lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))} # 仅嵌入模型需要填写；备用向量模型必须与主力输出同样的维度。')
+        lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))} # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。')
         lines.append('')
     return '\n'.join(lines)
 

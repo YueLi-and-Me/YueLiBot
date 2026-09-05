@@ -42,9 +42,23 @@ function baseConfig(): typeof DEFAULT_CONFIG {
   config.bot.name = '测试角色'
   config.personality.personality = '测试人设'
   config.personality.reply_style = '测试说话方式'
-  config.models[0]!.model_identifier = 'deepseek-chat'
-  config.api_providers[0]!.api_key = FIXTURE_API_KEY
+  // 预填的每个厂商都要给密钥：schema 对目录里所有厂商都要求非空 api_key，
+  // 不区分是否被任务引用，只填第一个会让读回时整份配置被拒。
+  for (const provider of config.api_providers) provider.api_key = FIXTURE_API_KEY
   return config
+}
+
+/**
+ * 清掉所有任务的候选模型。
+ *
+ * 默认配置预填了六个模型并把各任务分别指过去；夹具一旦整体替换 models，
+ * 那些任务就仍指着已经不存在的名字，读回时被引用校验拦下。替换目录之前
+ * 先清空，再按用例需要显式指定。
+ */
+function clearTaskCandidates(config: typeof DEFAULT_CONFIG): void {
+  for (const task of Object.keys(config.model_tasks) as (keyof typeof config.model_tasks)[]) {
+    config.model_tasks[task].model_list = []
+  }
 }
 
 afterEach(() => {
@@ -71,7 +85,11 @@ describe('拆分配置', () => {
     expect(path).toBe(join(directory, 'config.toml'))
     expect(template).toContain('[demoprotocol]')
     expect(template).toContain('enabled = false')
-    expect(template).toContain('qq = ""')
+    // 两个号填同一个占位值是刻意的：谁不改就把 enabled 置为 true，会撞上
+    // self_qq 与 owner.qq 必须不同的互斥校验并被指名道姓地报出来，
+    // 比留空后默默连上一个陌生号安全。
+    expect(template).toContain('self_qq = "114514"')
+    expect(template).toContain('qq = "114514"')
 
     writeFileSync(path, template.replace('enabled = false', 'enabled = true'), 'utf-8')
     expect(ensureAdapterConfig(directory)).toBe(path)
@@ -105,7 +123,7 @@ describe('拆分配置', () => {
     config.generation.chat.temperature = 0.42
     config.models[0]!.extra_body = { reasoning_effort: 'medium' }
     config.generation.proactive.enabled = false
-    config.model_tasks.schedule.model_list = ['chat']
+    config.model_tasks.schedule.model_list = ['deepseek-pro']
     config.vision.capture_mode = 'screen'
 
     writeConfigDirectory(directory, config)
@@ -199,6 +217,7 @@ describe('API 轮询', () => {
       { ...config.api_providers[0]!, name: '主力', kind: 'deepseek', api_key: 'sk-main' },
       { ...config.api_providers[0]!, name: '备用', kind: 'openai', api_key: 'sk-backup' },
     ]
+    clearTaskCandidates(config)
     config.models = [
       { name: '主力对话', model_identifier: 'deepseek-chat', api_provider: '主力', extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
       { name: '备用对话', model_identifier: 'gpt-4o-mini', api_provider: '备用', extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
@@ -358,28 +377,28 @@ embedding = "embedding"
 [[models]]
 name = "chat"
 model_identifier = "deepseek-chat"
-api_provider = "主力"
+api_provider = "dashscope"
 extra_body = {}
 embedding_dim = 0
 
 [[models]]
 name = "vision"
 model_identifier = "vision-pro"
-api_provider = "主力"
+api_provider = "dashscope"
 extra_body = {}
 embedding_dim = 0
 
 [[models]]
 name = "tts"
 model_identifier = ""
-api_provider = "主力"
+api_provider = "dashscope"
 extra_body = {}
 embedding_dim = 0
 
 [[models]]
 name = "embedding"
 model_identifier = "text-embedding-3-small"
-api_provider = "主力"
+api_provider = "dashscope"
 extra_body = {}
 embedding_dim = 1536
 `, 'utf-8')
@@ -471,9 +490,11 @@ describe('旧版 .env 预填', () => {
     existingModel.name = 'chat'
     existingModel.model_identifier = ''
     existingModel.api_provider = '已有服务商'
+    // 用户自己文件里的模型不会带新装种子的关思考参数，清掉才能反映真实场景
+    existingModel.extra_body = {}
     config.api_providers = [existingProvider]
+    clearTaskCandidates(config)
     config.models = [existingModel]
-    config.model_tasks.chat.model_list = []
     writeConfigDirectory(directory, config)
 
     const envPath = writeLegacyEnv(root, [

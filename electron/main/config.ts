@@ -70,7 +70,7 @@ version = "0.1.0"
 
 [${section}]
 enabled = false              # 改成 true 才连 QQ
-self_qq = ""                 # Bot 的号：协议端登录的那个
+self_qq = "114514"           # Bot 的号：协议端登录的那个，占位号必须改
 host = "127.0.0.1"           # 协议端在本机就不用改
 port = 8095                  # 协议端那条正向 WebSocket 的端口
 token = ""                   # 那条连接的令牌，没设就留空
@@ -78,7 +78,7 @@ reconnect_interval_sec = 5   # 断线后几秒重连
 action_timeout_sec = 15      # 请求几秒算超时
 
 [owner]
-qq = ""                      # 你的号：平时发消息用的那个
+qq = "114514"                # 你的号：平时发消息用的那个，占位号必须改
 
 [private]
 mode = "whitelist"           # whitelist 只回名单里的人；blacklist 只不回名单里的人
@@ -90,16 +90,55 @@ list = []                    # 数字 QQ 群号；用户本人在群里也不会
 `
 }
 
-/** 新装时的唯一一条连接。用户可以在设置页继续添加备用厂商。 */
-const DEFAULT_PROVIDER: ApiProviderConfig = {
-  name: '主力', kind: 'ark', base_url: '', api_key: '', client_type: 'openai',
-  auth_type: 'bearer', auth_name: '',
-  app_id: '', model_list_endpoint: '/models', default_headers: {}, default_query: {},
-  timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
+/**
+ * 新装预填的厂商连接。与 src/core/config/bootstrap.py 的种子表保持一致——
+ * 两侧写出的初始配置必须等价，否则「桌宠生成的」和「无头生成的」是两份东西。
+ */
+function seedProvider(name: string, baseUrl: string): ApiProviderConfig {
+  return {
+    // kind 与条目名取同一个值：预设标识和厂商名一致，读配置的人不用两头对。
+    name, kind: name, base_url: baseUrl,
+    api_key: '', client_type: 'openai',
+    auth_type: 'bearer', auth_name: '',
+    app_id: '', model_list_endpoint: '/models', default_headers: {}, default_query: {},
+    timeout_ms: 120_000, max_retries: 2, retry_interval_ms: 800,
+  }
+}
+
+// 六个模型全部走这一条连接：DeepSeek 系列也由百炼托管，不需要单独开账号。
+// 只留一条是刻意的——schema 对目录里每个厂商都要求非空 api_key，多预填一条
+// 就等于多逼用户开一个账号。
+const DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+const DEFAULT_PROVIDER: ApiProviderConfig = seedProvider('dashscope', DASHSCOPE_BASE_URL)
+
+/**
+ * 关掉思考。思考是模型属性，厂商参数原样写进模型条目的 extra_body；
+ * 任务级的 thinking 开关已经取消。这个键拼错时接口通常直接忽略，
+ * 思考照开且不报错，改动前先确认厂商文档。
+ */
+const NO_THINKING = { enable_thinking: false }
+
+/** 嵌入模型的输出维度；声明值必须与接口实际返回的一致，否则索引相似度全错。 */
+const EMBEDDING_DIM = 1024
+
+/** 新装预填的模型条目，与 bootstrap.py 的 _SEED_MODELS 一一对应。 */
+function seedModel(
+  name: string,
+  identifier: string,
+  provider: string,
+  overrides: Partial<ModelDefinitionConfig> = {},
+): ModelDefinitionConfig {
+  return {
+    name, model_identifier: identifier, api_provider: provider,
+    extra_body: { ...NO_THINKING }, reasoning_parse_mode: 'field',
+    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    embedding_dim: 0,
+    ...overrides,
+  }
 }
 
 export const DEFAULT_CONFIG: YueliConfig = {
-  bot: { name: '', aliases: [], user_nickname: '', relationship: '' },
+  bot: { name: '月璃', aliases: [], user_nickname: '', relationship: '' },
   group_chat: {
     at_mention_must_reply: true,
     name_mention_probability: 1,
@@ -186,25 +225,29 @@ export const DEFAULT_CONFIG: YueliConfig = {
     memory: { temperature: 0.1, max_tokens: 1024 },
   },
   api_providers: [DEFAULT_PROVIDER],
-  models: [{
-    name: 'chat', model_identifier: '', api_provider: '主力',
-    extra_body: {}, reasoning_parse_mode: 'field',
-    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
-    embedding_dim: 0,
-  }],
+  models: [
+    seedModel('deepseek-pro', 'deepseek-v4-pro-0813', 'dashscope'),
+    seedModel('deepseek-flash', 'deepseek-v4-flash-0731', 'dashscope'),
+    seedModel('qwen-flash', 'qwen3.8-flash', 'dashscope'),
+    seedModel('qwen-max', 'qwen3.8-max', 'dashscope'),
+    seedModel('qwen-vision', 'qwen3.8-max-0902', 'dashscope', { visual: true }),
+    // 嵌入不带生成参数：extra_body 只用于对话类请求，嵌入端点不读它。
+    seedModel('qwen-embedding', 'qwen3.7-text-embedding', 'dashscope',
+      { extra_body: {}, embedding_dim: EMBEDDING_DIM }),
+  ],
   model_tasks: {
-    chat: { model_list: ['chat'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    proactive: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    summary: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    schedule: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    vision: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    expression: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    planner: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    replyer: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    scene: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    memory: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    chat: { model_list: ['deepseek-pro'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    proactive: { model_list: ['deepseek-pro'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    summary: { model_list: ['deepseek-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    schedule: { model_list: ['qwen-max'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    vision: { model_list: ['qwen-vision'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    expression: { model_list: ['qwen-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    planner: { model_list: ['deepseek-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    replyer: { model_list: ['deepseek-pro'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    scene: { model_list: ['deepseek-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    memory: { model_list: ['qwen-max'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     tts: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
-    embedding: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    embedding: { model_list: ['qwen-embedding'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
   },
   tts: {
     enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
@@ -580,7 +623,13 @@ function parseTaskRouting(
 ): TaskRoutingConfig {
   const defaults = DEFAULT_CONFIG.model_tasks[task]
   const value = taskRecord[task]
-  if (value === undefined) return structuredClone(defaults)
+  // 文件里没有这个任务段 = 该任务没有候选，不能借用新装种子的候选。
+  //
+  // 现象：老用户升级后起不来，报「model_tasks.proactive 引用了不存在的模型」。
+  // 原因：默认配置为新装预填了六个模型并把各任务指过去；那些名字只存在于全新
+  //   生成的目录里，老用户自己的 models.toml 没有它们。
+  // 后果：把种子候选当缺省值填进去就是制造悬空引用，而引用校验会拒绝整份配置。
+  if (value === undefined) return { ...structuredClone(defaults), model_list: [] }
   if (typeof value === 'string') {
     return { ...structuredClone(defaults), model_list: value ? [value] : [] }
   }
@@ -1668,7 +1717,7 @@ function readLegacyConfig(path: string): YueliConfig {
   const vision = isRecord(parsed.vision) ? parsed.vision : {}
   const vector = isRecord(parsed.vector) ? parsed.vector : {}
 
-  const chat = legacyConnection(llm, '主力', null)
+  const chat = legacyConnection(llm, '厂商1', null)
   const providers: ApiProviderConfig[] = []
   const models: ModelDefinitionConfig[] = []
   const tasks = structuredClone(DEFAULT_CONFIG.model_tasks)
@@ -2078,7 +2127,7 @@ function taskBlock(task: ModelTask, routing: TaskRoutingConfig): string {
   return `[model_tasks.${task}]
 # ${TASK_DESCRIPTIONS[task]}使用的模型定义名，按优先级从前往后写
 model_list = ${tomlStringArray(routing.model_list)}
-# 挑选顺序：sequential = 主力优先；random = 随机；balance = 健康候选逐轮分摊
+# 挑选顺序：sequential = 从上往下试；random = 随机；balance = 健康候选逐轮分摊
 # 无论哪种，刚失败过的厂商都会在冷却期内被排到最后
 selection_strategy = ${tomlString(routing.selection_strategy)}
 # 流式任务等待首字的上限，超时后切换候选
@@ -2604,7 +2653,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   }
   if (cfg.tts.enabled && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
 
-  // 候选向量模型必须共享维度，否则备用模型返回的向量无法与既有索引计算相似度。
+  // 候选向量模型必须共享维度，否则换一个候选返回的向量无法与既有索引计算相似度。
   const dims = new Set(cfg.model_tasks.embedding.model_list.map(
     (name) => cfg.models.find((model) => model.name === name)!.embedding_dim,
   ))

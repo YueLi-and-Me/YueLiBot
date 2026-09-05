@@ -58,10 +58,63 @@ logger = get_logger(__name__)
 # 主体配置目录内的四个文件；创建了其中任何一个都意味着本次是首次安装。
 MAIN_CONFIG_FILES = ('bot.toml', 'features.toml', 'providers.toml', 'models.toml')
 
-# 新装时唯一一条模型连接与它绑定的模型条目名。两个名字要一起改：模型条目通过
-# api_provider 指向厂商名，改一处会留下悬空引用，加载期直接报错。
-_SEED_PROVIDER_NAME = '主力'
-_SEED_MODEL_NAME = 'chat'
+# 新装预填的厂商连接。六个模型全部走这一条：DeepSeek 系列也由百炼托管，
+# 不需要单独开一个 DeepSeek 账号。模型条目通过 api_provider 引用这个名字，
+# 改名字要顺着这条链一起改，否则加载期会因悬空引用直接报错退出。
+#
+# 只留一条连接是刻意的：schema 对目录里每个厂商都要求非空 api_key，不区分是否
+# 被任务引用。多预填一条就等于多逼用户开一个账号，而不是「用不到就放着」。
+_DASHSCOPE_PROVIDER = 'dashscope'
+DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+
+# 关掉思考。本项目不设任务级的 thinking 开关：思考是模型属性，厂商参数原样写进
+# 模型条目的 extra_body（见 schema.GenerationConfig._reject_thinking）。两家厂商
+# 目前用同一个键名。注意这个键拼错时接口通常直接忽略，思考照开且不报错，
+# 改动前先确认厂商文档。
+_NO_THINKING: Dict[str, Any] = {'enable_thinking': False}
+
+# 嵌入模型的输出维度。该模型支持 256/512/768/1024/1536/2048，不指定时返回 1024。
+# 这里声明的维度必须与接口实际返回的一致，否则建出来的索引算相似度全错。
+#
+# 注意：嵌入请求体在 memory/embed.py 里写死为 {'input', 'model'}，不带 extra_body，
+# 因此没法在配置里用 dimensions 参数把维度钉死——当前靠的是「厂商默认值恰好是
+# 1024」。厂商改默认值时这里会静默失配。
+_EMBEDDING_DIM = 1024
+
+# 新装预填的模型条目：(条目名, 厂商接口的真实模型 ID, 所属厂商, 额外字段)。
+# 条目名不带版本号：厂商换代时只需改 model_identifier，不必顺着改 model_tasks。
+_SEED_MODELS: List[tuple[str, str, str, Dict[str, Any]]] = [
+    ('deepseek-pro', 'deepseek-v4-pro-0813', _DASHSCOPE_PROVIDER, {}),
+    ('deepseek-flash', 'deepseek-v4-flash-0731', _DASHSCOPE_PROVIDER, {}),
+    ('qwen-flash', 'qwen3.8-flash', _DASHSCOPE_PROVIDER, {}),
+    ('qwen-max', 'qwen3.8-max', _DASHSCOPE_PROVIDER, {}),
+    ('qwen-vision', 'qwen3.8-max-0902', _DASHSCOPE_PROVIDER, {'visual': True}),
+    ('qwen-embedding', 'qwen3.7-text-embedding', _DASHSCOPE_PROVIDER,
+     {'embedding_dim': _EMBEDDING_DIM, 'extra_body': {}}),
+]
+
+# 任务到候选模型的预填分配。分档依据是「这一步值不值得为质量多付钱」：
+#
+# - 对话、回复生成、主动搭话直接产出她说的话，质量档最高。
+# - 决策、摘要、场景观察每回合都跑且不面向用户，走快档。
+# - 表达选择只做短文本判别，用最便宜的一档。
+# - 记忆与日程要长上下文和稳定的结构化输出。
+# - 视觉与嵌入各有专用模型，不与上面共用。
+# - tts 留空：它需要 volcengine 这类专门的语音厂商，预填一个 OpenAI 兼容的
+#   模型 ID 没有意义。任务候选为空时对应功能直接不启用。
+_SEED_TASKS: Dict[str, List[str]] = {
+    'chat': ['deepseek-pro'],
+    'replyer': ['deepseek-pro'],
+    'proactive': ['deepseek-pro'],
+    'planner': ['deepseek-flash'],
+    'summary': ['deepseek-flash'],
+    'scene': ['deepseek-flash'],
+    'expression': ['qwen-flash'],
+    'memory': ['qwen-max'],
+    'schedule': ['qwen-max'],
+    'vision': ['qwen-vision'],
+    'embedding': ['qwen-embedding'],
+}
 
 
 def _default_value(model: type[BaseModel], name: str, seed: Dict[str, Any]) -> Any:
@@ -106,25 +159,50 @@ def _default_document(model: type[BaseModel], seed: Dict[str, Any]) -> Dict[str,
     return {name: _default_value(model, name, seed) for name in model.model_fields}
 
 
-def _seed_provider() -> Dict[str, Any]:
-    """给出新装时唯一一条模型连接的初值。"""
-    return _default_document(ApiProviderConfig, {
-        'name': _SEED_PROVIDER_NAME,
-        # kind 只是给人看的分类标签，填哪个都不影响请求；这里取最常见的一种。
-        'kind': 'ark',
-    })
+def _seed_provider(name: str, base_url: str) -> Dict[str, Any]:
+    """给出一条预填厂商连接的初值。
 
+    ``base_url`` 显式写出而不是靠 ``kind`` 的预设兜底：模板要让人一眼看见地址，
+    换厂商时也知道该改哪一行。``api_key`` 保持为空——那是唯一别人替不了的东西。
 
-def _seed_model() -> Dict[str, Any]:
-    """给出新装时唯一一条模型条目的初值。
-
-    ``model_identifier`` 留空：具体模型 ID 因厂商而异，猜一个只会让用户以为已经
-    配好，直到第一次对话才发现请求被拒。
+    :param name: 厂商条目名，模型条目通过 ``api_provider`` 引用它。
+    :param base_url: 该厂商 OpenAI 兼容端点的基础地址。
+    :return: 可交给带注释 TOML 写入器的字典。
     """
-    return _default_document(ModelDefinitionConfig, {
-        'name': _SEED_MODEL_NAME,
-        'api_provider': _SEED_PROVIDER_NAME,
+    return _default_document(ApiProviderConfig, {
+        'name': name,
+        # kind 与条目名取同一个值：预设标识和厂商名一致，读配置的人不用两头对。
+        'kind': name,
+        'base_url': base_url,
     })
+
+
+def _seed_model(
+    name: str,
+    identifier: str,
+    provider: str,
+    overrides: Dict[str, Any],
+) -> Dict[str, Any]:
+    """给出一个预填模型条目的初值。
+
+    所有条目默认关掉思考：``extra_body`` 里写厂商参数，这是本项目唯一的思考开关
+    （任务级的 ``thinking`` 字段已经取消）。``overrides`` 里若显式给了 ``extra_body``
+    则以它为准，用于嵌入这类不该带生成参数的模型。
+
+    :param name: 条目名，``model_tasks`` 通过它引用本模型。
+    :param identifier: 厂商接口接受的真实模型 ID。
+    :param provider: 所属厂商条目名。
+    :param overrides: 该模型特有的字段，如 ``visual`` 或 ``embedding_dim``。
+    :return: 可交给带注释 TOML 写入器的字典。
+    """
+    seed: Dict[str, Any] = {
+        'name': name,
+        'api_provider': provider,
+        'model_identifier': identifier,
+        'extra_body': dict(_NO_THINKING),
+    }
+    seed.update(overrides)
+    return _default_document(ModelDefinitionConfig, seed)
 
 
 def _bot_document() -> Dict[str, Any]:
@@ -135,7 +213,7 @@ def _bot_document() -> Dict[str, Any]:
     """
     return _default_document(BotDocument, {
         'inner': {'version': CONFIG_VERSION},
-        'bot': {'name': ''},
+        'bot': {'name': '月璃'},
         # 该字段要求显式配置（不接受缺省），初值取「@ 必回」——群里被点名不理人
         # 比多回一句更容易被当成故障。
         'group_chat': {'at_mention_must_reply': True},
@@ -164,21 +242,22 @@ def _provider_document() -> Dict[str, Any]:
     """组装 providers.toml 的初始文档，含一条待填写的连接。"""
     return _default_document(ProviderCatalog, {
         'inner': {'version': CONFIG_VERSION},
-        'api_providers': [_seed_provider()],
+        'api_providers': [_seed_provider(_DASHSCOPE_PROVIDER, DASHSCOPE_BASE_URL)],
     })
 
 
 def _model_document() -> Dict[str, Any]:
     """组装 models.toml 的初始文档。
 
-    只把 chat 任务指向那条种子模型，其余任务的候选留空：任务没有候选时对应功能
-    直接不启用，比指向一个没配好的模型更容易排查。
+    按 :data:`_SEED_TASKS` 给各任务分配候选。不在表里的任务候选留空——任务没有
+    候选时对应功能直接不启用，比指向一个没配好的模型更容易排查。
     """
     document = _default_document(ModelCatalog, {
         'inner': {'version': CONFIG_VERSION},
-        'models': [_seed_model()],
+        'models': [_seed_model(*entry) for entry in _SEED_MODELS],
     })
-    document['model_tasks']['chat']['model_list'] = [_SEED_MODEL_NAME]
+    for task, model_list in _SEED_TASKS.items():
+        document['model_tasks'][task]['model_list'] = list(model_list)
     return document
 
 
@@ -191,12 +270,17 @@ def _adapter_document() -> Dict[str, Any]:
         'inner': {'version': NAPCAT_CONFIG_VERSION},
         'napcat': {
             'enabled': False,
+            # 占位号：显然不是真号，但把格式说清楚了（纯数字，不带任何前缀）。
+            # 与 owner.qq 取同一个值是刻意的——两者相同会在 enabled 置为 true 时
+            # 被互斥校验拦下并指名道姓报错，比留空后默默连上一个陌生号安全。
+            'self_qq': '114514',
             'host': '127.0.0.1',
             'port': 8095,
             'token': '',
             'reconnect_interval_sec': 5.0,
             'action_timeout_sec': 15.0,
         },
+        'owner': {'qq': '114514'},
     })
 
 
@@ -376,6 +460,9 @@ def missing_startup_requirements(config_dir: Path) -> List[str]:
     }
     candidates = models.get('model_tasks', {}).get('chat', {}).get('model_list', [])
     usable = False
+    # 只差密钥的连接名。新装种子已经预填了厂商、地址与模型 ID，绝大多数情况下
+    # 缺的就只有这一项；笼统地把三个字段一起报出来会让人以为还有别的要填。
+    awaiting_key: List[str] = []
     for name in candidates if isinstance(candidates, list) else []:
         model = catalog.get(str(name))
         if not model or not str(model.get('model_identifier', '')).strip():
@@ -391,7 +478,28 @@ def missing_startup_requirements(config_dir: Path) -> List[str]:
         if str(connection.get('api_key', '')).strip():
             usable = True
             break
-    if not usable:
+        awaiting_key.append(str(connection.get('name', '')))
+    # 密钥要一次报全，不能只报对话任务用到的那一条。
+    #
+    # 现象：预填了两家厂商，用户照提示填完其中一个就重启，结果撞上另一家的
+    #   「auth_type=bearer 时 api_key 不能为空」硬报错。
+    # 原因：schema 对目录里每个厂商都要求非空密钥，不区分是否被任务引用；
+    #   而这里原先只顺着 chat 候选那条链找。
+    # 后果：填一次报一次，用户以为配置是坏的。
+    unkeyed = [
+        str(item.get('name', ''))
+        for item in providers.get('api_providers', [])
+        if isinstance(item, dict)
+        and str(item.get('auth_type', 'bearer')) != 'none'
+        and not str(item.get('api_key', '')).strip()
+    ]
+    if unkeyed:
+        names = '」「'.join(dict.fromkeys(unkeyed))
+        missing.append(
+            f'providers.toml 里厂商「{names}」的 api_key：填上你自己的密钥。'
+            '厂商地址与六个模型条目都已预填好，换厂商才需要一起改'
+        )
+    if not usable and not awaiting_key:
         missing.append(
             'models.toml 的 [[models]] model_identifier，'
             '以及 providers.toml 的 [[api_providers]] base_url、api_key：'

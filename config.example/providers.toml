@@ -4,9 +4,9 @@
 version = "1.5.0"
 
 [[api_providers]] # 一个「API 厂商」条目
-name = "主力" # 模型配置引用的唯一名称；不能与其他厂商重复。
-kind = "ark" # 预设标识，如 deepseek、openai、ark；base_url 为空时按预设取官方地址。
-base_url = "" # API 端点基础 URL，通常以 /v1 结尾；留空使用预设官方地址。
+name = "dashscope" # 模型配置引用的唯一名称；不能与其他厂商重复。
+kind = "dashscope" # 预设标识，如 deepseek、openai、ark；base_url 为空时按预设取官方地址。
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1" # API 端点基础 URL，通常以 /v1 结尾；留空使用预设官方地址。
 api_key = "" # 身份验证密钥；编辑时留空表示保持已保存的密钥不变。
 auth_type = "bearer" # Bearer 使用 Authorization 头；header/query 需要填写 auth_name。
 auth_name = "" # header/query 鉴权使用的字段名；Bearer/none 时必须留空。

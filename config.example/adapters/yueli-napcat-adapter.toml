@@ -5,7 +5,7 @@ version = "0.1.0"
 
 [napcat] # 协议端连接：协议端正向 WebSocket 服务端连接参数。
 enabled = false # 安全起点：停用时不会连接协议端；启用前先在协议端创建正向 WebSocket 服务端连接。
-self_qq = "" # 月璃登录的机器人 QQ 号，必须与 owner.qq 不同；启用时必填。
+self_qq = "114514" # 月璃登录的机器人 QQ 号，必须与 owner.qq 不同；启用时必填。
 host = "127.0.0.1" # 协议端 WebSocket 服务端主机名或 IP 地址，通常为 127.0.0.1。
 port = 8095 # 正向 WebSocket 端口；启用前请改成协议端实际监听的端口。
 token = "" # 协议端没有启用访问令牌时留空；启用后必须与协议端保持一致。
@@ -13,7 +13,7 @@ reconnect_interval_sec = 5.0 # 协议端断线后的基础重连间隔。
 action_timeout_sec = 15.0 # 等待协议端 action 响应的超时时间。
 
 [owner] # Owner 身份：用户本人的 QQ 号。
-qq = "" # 启用 QQ 适配器前填写用户本人的数字 QQ 号；owner 在私聊名单中自动放行。
+qq = "114514" # 启用 QQ 适配器前填写用户本人的数字 QQ 号；owner 在私聊名单中自动放行。
 
 [private] # 私聊访问：私聊白名单/黑名单策略。
 mode = "whitelist" # whitelist 只处理名单内的私聊，blacklist 名单内的不处理；默认白名单，配错的表现是朋友没收到回复，而不是陌生人消耗模型额度。

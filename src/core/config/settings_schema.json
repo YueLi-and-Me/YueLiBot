@@ -1349,7 +1349,7 @@
           "kind": "map",
           "key": "model_tasks",
           "label": "任务模型路由",
-          "description": "每个任务按顺序排候选：第一位是主力，后续是故障切换备用。",
+          "description": "每个任务可以排多个候选模型；列表顺序只在「顺序优先」策略下决定先后。",
           "entries": [
             {
               "key": "chat",
@@ -1409,7 +1409,7 @@
             {
               "key": "embedding",
               "label": "向量嵌入",
-              "description": "长期记忆向量化与召回模型；备用模型维度必须一致。"
+              "description": "长期记忆向量化与召回模型；同一任务下的候选模型维度必须一致。"
             }
           ],
           "fields": [
@@ -1417,7 +1417,7 @@
               "key": "model_list",
               "type": "string_list",
               "label": "候选模型",
-              "help": "每行一个 models.toml 中的模型名称；顺序即优先级。"
+              "help": "每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。"
             },
             {
               "key": "selection_strategy",
@@ -1637,7 +1637,7 @@
               "type": "integer",
               "label": "Embedding 维度",
               "min": 0,
-              "help": "仅嵌入模型需要填写；备用向量模型必须与主力输出同样的维度。"
+              "help": "仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。"
             }
           ]
         }
