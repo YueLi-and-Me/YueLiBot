@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 
-from src.core.common.db.migrations.bootstrap import write_user_version
-from src.core.common.db.migrations.manager import (
+from src.core.db.migrations.bootstrap import write_user_version
+from src.core.db.migrations.manager import (
     CURRENT_VERSION,
     get_user_version,
     run_migrations,
 )
-from src.core.common.db.migrations.v27_to_v28 import FROM_VERSION, migrate
-from src.core.common.db.schema import DDL, SEED
+from src.core.db.migrations.v27_to_v28 import FROM_VERSION, migrate
+from src.core.db.schema import DDL, SEED
 
 
 def _existing(db: sqlite3.Connection, kind: str, name: str) -> bool:

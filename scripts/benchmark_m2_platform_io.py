@@ -17,7 +17,7 @@ import asyncio
 import json
 import sqlite3
 
-from src.core.common.logger import initialize_logging
+from src.core.logging.logger import initialize_logging
 from src.core.config.schema import Config, LogConfig
 from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.core.observe.store import event_store

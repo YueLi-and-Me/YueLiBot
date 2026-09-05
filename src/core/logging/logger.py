@@ -650,7 +650,7 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
     global _trace_date_format
 
     if config is None:
-        # 延迟到函数内导入：config 依赖 common.logger，模块层反向依赖会成环
+        # 延迟到函数内导入：config 依赖 logging.logger，模块层反向依赖会成环
         from src.core.config.schema import LogConfig
         config = LogConfig()
     # trace 控制台出口和 structlog 渲染器共用同一份时间戳格式，行首风格保持一致。

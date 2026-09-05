@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Dict, List
 import asyncio
 import json
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.persona.state import PersonaState
 from src.core.schedule.plan import DayPlanService, day_plan_date
 from src.core.config.schema import Config

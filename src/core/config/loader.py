@@ -29,7 +29,7 @@ from .schema import (
 )
 from .toml_io import read_versioned_toml
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.llm_models.openai import resolve_base_url
 
 _config: Config | None = None

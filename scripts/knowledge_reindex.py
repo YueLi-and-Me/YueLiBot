@@ -28,7 +28,7 @@ import asyncio
 import sqlite3
 import sys
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.memory.knowledge import (
     index_knowledge,
     knowledge_without_embedding,

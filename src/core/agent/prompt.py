@@ -14,7 +14,7 @@ from .action_protocol import COGNITIVE_ACTIONS
 from .profile import InjectionProfile
 from .vocab import EXPRESSION_IDS, GESTURE_IDS
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.prompts.registry import (
     CHAT_PROTOCOL_TEMPLATE_ID,
     CHAT_SYSTEM_COMPONENTS,

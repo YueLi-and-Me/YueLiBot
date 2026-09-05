@@ -8,7 +8,7 @@ import asyncio
 import time
 
 from src.core.agent.conversation_gate import ONGOING_TOPIC_MESSAGE_SPAN
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.config.schema import Config
 from src.core.observe.store import event_store
 from src.core.platform_io.forward import (

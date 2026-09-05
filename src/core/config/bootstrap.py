@@ -49,7 +49,7 @@ from .settings_webui import (
     _write_documented_toml,
     file_schema,
 )
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.platforms.onebot11.config import AdapterDocument, NAPCAT_CONFIG_VERSION
 
 logger = get_logger(__name__)

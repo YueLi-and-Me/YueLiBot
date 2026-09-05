@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from src.core.common.db.migrations.manager import (
+from src.core.db.migrations.manager import (
     CURRENT_VERSION,
     get_user_version,
     run_migrations,
 )
-from src.core.common.db.migrations.v20_to_v21 import FROM_VERSION, migrate
-from src.core.common.db.migrations.bootstrap import write_user_version
+from src.core.db.migrations.v20_to_v21 import FROM_VERSION, migrate
+from src.core.db.migrations.bootstrap import write_user_version
 
 
 def _old_shape(db: sqlite3.Connection) -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from src.core.common.db.migrations.v17_to_v18 import migrate
+from src.core.db.migrations.v17_to_v18 import migrate
 
 
 def _columns(db: sqlite3.Connection) -> list[str]:

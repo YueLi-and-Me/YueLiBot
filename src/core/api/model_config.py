@@ -15,7 +15,7 @@ from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Re
 from src.core.api.auth import SESSION_COOKIE_NAME, require_token
 from src.core.api.state import app_state
 from src.core.config import model_webui
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 router = APIRouter(prefix='/models', tags=['models'])
 logger = get_logger(__name__)

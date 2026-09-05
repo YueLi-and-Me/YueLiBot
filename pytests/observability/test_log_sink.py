@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from src.core.common.log_sink import JsonlFileSink, render_json_line
-from src.core.common.logger import current_log_file, get_logger, initialize_logging
+from src.core.logging.log_sink import JsonlFileSink, render_json_line
+from src.core.logging.logger import current_log_file, get_logger, initialize_logging
 from src.core.config.schema import LogConfig
 
 

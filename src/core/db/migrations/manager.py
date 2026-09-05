@@ -21,13 +21,13 @@ from .bootstrap import (
 )
 from .registry import MigrationFn, get_registry
 
-from src.core.common.db.schema import DDL, SEED
-from src.core.common.db.schema_report import (
+from src.core.db.schema import DDL, SEED
+from src.core.db.schema_report import (
     describe_schema_changes,
     report_schema_changes,
     snapshot_shape,
 )
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

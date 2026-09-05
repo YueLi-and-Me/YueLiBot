@@ -18,7 +18,7 @@ import asyncio
 import sqlite3
 import sys
 
-from src.core.common.db.migrations.manager import CURRENT_VERSION, get_user_version
+from src.core.db.migrations.manager import CURRENT_VERSION, get_user_version
 from src.core.memory.quantize import (
     backfill_quantized_embeddings,
     pending_quantization_counts,

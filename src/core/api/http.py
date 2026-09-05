@@ -33,10 +33,10 @@ from src.core.agent.conversation_gate import GateRequest, decide_disposition, me
 from src.core.agent.expression import MIN_POOL_CANDIDATES
 from src.core.agent.jargon import jargon_use_enabled, set_jargon_use
 from src.core.agent.jargon_mine import COMPLETE_SIGHTINGS
-from src.core.common.clock import now as current_time
-from src.core.common.console_layout import print_box
-from src.core.common.db.connection import get_db, run_in_thread
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.console_layout import print_box
+from src.core.db.connection import get_db, run_in_thread
+from src.core.logging.logger import get_logger
 from src.core.commands import dispatch_developer_command, registered_commands
 from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread

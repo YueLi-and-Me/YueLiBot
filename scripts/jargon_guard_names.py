@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import List, Sequence, Set
 
-from src.core.common.db.connection import open_db
+from src.core.db.connection import open_db
 
 
 def _load_identity_names(db: sqlite3.Connection) -> Set[str]:

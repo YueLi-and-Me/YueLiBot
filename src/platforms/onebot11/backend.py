@@ -18,7 +18,7 @@ from websockets.protocol import State
 
 import httpx
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.platform_io.forward import forward_tree_to_payload
 
 from .events import QqInboundEvent

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.schedule.timeline import ActivityTimeline
 
 WAKE_GRACE_MS = 10 * 60_000

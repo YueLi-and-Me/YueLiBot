@@ -15,18 +15,18 @@ import inspect
 import json
 import sqlite3
 
-from src.core.common.console_layout import print_box
-from src.core.common.db.migrations.bootstrap import (
+from src.core.logging.console_layout import print_box
+from src.core.db.migrations.bootstrap import (
     TS_FINAL_SCHEMA_VERSION,
     write_user_version,
 )
-from src.core.common.db.migrations.manager import (
+from src.core.db.migrations.manager import (
     CURRENT_VERSION,
     load_migration_registry,
     migration_chain_errors,
 )
-from src.core.common.db.migrations.registry import MigrationFn
-from src.core.common.logger import get_logger
+from src.core.db.migrations.registry import MigrationFn
+from src.core.logging.logger import get_logger
 from src.core.config.adapter_selection import read_active_adapter
 from src.core.config.loader import read_config
 from src.core.config.schema import CONFIG_VERSION, Config

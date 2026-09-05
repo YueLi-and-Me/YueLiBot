@@ -1,8 +1,8 @@
 """控制台日志中文映射与分层渲染测试。"""
 
-from src.core.common.log_display import display_value, event_label, field_label
-from src.core.common.logger import ModuleColoredConsoleRenderer
-from src.core.common.logger_colors import (
+from src.core.logging.log_display import display_value, event_label, field_label
+from src.core.logging.logger import ModuleColoredConsoleRenderer
+from src.core.logging.logger_colors import (
     EVENT_COLOR,
     FIELD_LABEL_COLOR,
     FIELD_VALUE_COLOR,

@@ -16,7 +16,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import FrozenSet, cast
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 from .capabilities import AdapterCapability
 from .manifest import AdapterManifest

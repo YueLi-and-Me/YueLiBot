@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, List, Mapping, Tuple
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.platform_io.forward import (
     ForwardMessagePart,
     ForwardMessageTree,

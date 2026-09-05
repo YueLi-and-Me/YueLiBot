@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from src.core.awareness.signals import Classified
-from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
 
 from .classify import ForegroundInfo, classify, classify_input, describe_activity

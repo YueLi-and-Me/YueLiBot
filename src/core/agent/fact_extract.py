@@ -35,7 +35,7 @@ import sqlite3
 from .history import strip_say_tags, strip_side_effect_tags
 from .profile import mark_dirty as mark_profiles_dirty
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.memory import FACT_EXTRACT_CURSOR_KEY

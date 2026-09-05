@@ -34,8 +34,8 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
-from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
 from src.core.config.schema import EmojiConfig
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt

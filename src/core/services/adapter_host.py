@@ -3,7 +3,7 @@
 适配器此前由 Electron 的进程监护器拉起，于是「没有图形环境就没有 QQ」。
 入口反转到 Python 之后，协议端进程的归属跟着状态所有权走：谁持有数据库和事件账本，
 谁负责拉起并收走适配器。本模块只做「解析声明 → 组装命令行」，进程行为由
-``src.core.common.child_process.ChildProcess`` 提供。
+``src.core.runtime.child_process.ChildProcess`` 提供。
 
 适配器是可选组件：没有声明文件或连接配置时告警并跳过，主体后端与 WebUI 照常运行。
 被 ``src.main`` 在监听建立之后调用。
@@ -16,9 +16,9 @@ from typing import List
 
 import sys
 
-from src.core.common.backend_runtime import runtime_file_path
-from src.core.common.child_process import ChildProcess
-from src.core.common.logger import get_logger
+from src.core.runtime.backend_runtime import runtime_file_path
+from src.core.runtime.child_process import ChildProcess
+from src.core.logging.logger import get_logger
 from src.core.config.adapter_selection import (
     ADAPTER_SELECTION_FILENAME,
     adapter_config_path,

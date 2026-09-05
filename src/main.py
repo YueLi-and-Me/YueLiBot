@@ -6,7 +6,7 @@ FastAPI。实际 HTTP/WebSocket 路由由 ``src.core.api`` 提供。
 
 本模块同时是整个应用的进程入口：监听建立之后按配置拉起 QQ 适配器与 Electron
 桌面外壳（``[desktop_pet] enabled`` 为 false 时不拉外壳，进程保持无头形态），
-退出时按相反顺序收走它们。子进程行为见 ``src.core.common.child_process``。
+退出时按相反顺序收走它们。子进程行为见 ``src.core.runtime.child_process``。
 """
 
 from __future__ import annotations
@@ -27,12 +27,12 @@ import uvicorn
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.api.auth import token_manager
 from src.core.api.state import app_state
-from src.core.common.backend_runtime import create_backend_runtime, runtime_file_path
-from src.core.common.child_process import ChildProcess
-from src.core.common.clock import now as current_time
-from src.core.common.console_layout import print_box
-from src.core.common.logger import get_logger, initialize_logging
-from src.core.common.self_check import announce_startup_self_check
+from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
+from src.core.runtime.child_process import ChildProcess
+from src.core.runtime.clock import now as current_time
+from src.core.logging.console_layout import print_box
+from src.core.logging.logger import get_logger, initialize_logging
+from src.core.runtime.self_check import announce_startup_self_check
 from src.core.config.bootstrap import (
     MAIN_CONFIG_FILES,
     bootstrap_config_directory,
@@ -607,8 +607,8 @@ def main() -> None:
         cfg.log.max_prompt_records_per_task,
     )
 
-    from src.core.common.db.connection import open_db
-    from src.core.common.db.migrations.manager import run_migrations
+    from src.core.db.connection import open_db
+    from src.core.db.migrations.manager import run_migrations
     from src.core.observe.store import configure as configure_event_store
     from src.core.platform_io.broker import PlatformBroker
     from src.core.platform_io.drivers.qq_ws import QqWebSocketDriver
@@ -882,7 +882,7 @@ def main() -> None:
 
         from src.core.observe.store import close as close_event_store
         close_event_store()
-        from src.core.common.db.connection import close_db
+        from src.core.db.connection import close_db
         close_db()
 
     lifecycle.register('storage', _storage_startup, _storage_shutdown)

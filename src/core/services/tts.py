@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 import httpx
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.config.schema import ModelCandidate
 from src.core.llm_models.router import ModelRouter
 

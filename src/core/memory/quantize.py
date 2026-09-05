@@ -18,7 +18,7 @@ import math
 import sqlite3
 import struct
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

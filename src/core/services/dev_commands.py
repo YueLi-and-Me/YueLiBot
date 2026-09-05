@@ -26,8 +26,8 @@ import tomllib
 
 from src.core.app_meta import APP_VERSION
 from src.core.commands import CommandContext, register_command
-from src.core.common.logger import get_logger
-from src.core.common.self_check import open_readonly_database
+from src.core.logging.logger import get_logger
+from src.core.runtime.self_check import open_readonly_database
 from src.core.config.adapter_selection import read_active_adapter
 from src.core.config.schema import CONFIG_VERSION
 

@@ -20,7 +20,7 @@ import re
 
 import httpx
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.config.schema import Config
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.snapshot import bind_render_params

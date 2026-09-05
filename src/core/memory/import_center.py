@@ -20,7 +20,7 @@ import re
 import sqlite3
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
 
 from .knowledge import add_knowledge

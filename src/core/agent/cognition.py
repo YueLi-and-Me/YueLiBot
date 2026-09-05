@@ -24,7 +24,7 @@ from typing import Awaitable, Callable, Protocol
 
 import sqlite3
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.memory.association import (
     HOPS, ShortTermActivation, SpreadHit, link_together, node_id, spread,
 )

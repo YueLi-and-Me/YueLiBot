@@ -1,4 +1,4 @@
-"""运行时自检（``src.core.common.self_check``）回归。
+"""运行时自检（``src.core.runtime.self_check``）回归。
 
 覆盖任务书的 C-1～C-6 六条验收断言：迁移链空洞、库版本超前、开关与产出矛盾、
 适配器段名错位、健康时只读且退出 0，以及命令入口与启动路径共用同一份判据。
@@ -18,10 +18,10 @@ import sqlite3
 
 import pytest
 
-from src.core.common.db.migrations.manager import CURRENT_VERSION, load_migration_registry
-from src.core.common.db.migrations.registry import MigrationFn
-from src.core.common.db.schema import DDL, SEED
-from src.core.common.self_check import (
+from src.core.db.migrations.manager import CURRENT_VERSION, load_migration_registry
+from src.core.db.migrations.registry import MigrationFn
+from src.core.db.schema import DDL, SEED
+from src.core.runtime.self_check import (
     FAIL,
     PASS,
     announce_startup_self_check,

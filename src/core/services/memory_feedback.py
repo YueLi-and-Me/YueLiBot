@@ -26,8 +26,8 @@ import sqlite3
 
 from src.core.agent import profile
 from src.core.agent.summarize import summarize
-from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
 from src.core.config.schema import MemoryFeedbackConfig
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params

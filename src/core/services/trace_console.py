@@ -4,7 +4,7 @@
 回合的调用在轮末嵌套面板中呈现，视觉理解、摘要、记忆抽取、日程等回合外调用在完成时独立
 成框。渲染出的 rich 面板被捕获为带 ANSI 的字符串后一次写两处——``stdout``（本机终端与
 Electron 控制台）和 ``webui_logs``（WebUI 日志面板），因此三端呈现一致。终端能力判断复用
-``common.logger_colors``：非彩色/非交互场景（如重定向到文件或测试）所有渲染函数保持无
+``logging.logger_colors``：非彩色/非交互场景（如重定向到文件或测试）所有渲染函数保持无
 操作，避免把调试面板混入服务日志。
 """
 
@@ -17,9 +17,9 @@ from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
-from src.core.common.log_display import value_label
-from src.core.common.logger import get_logger
-from src.core.common.logger_colors import is_color_enabled
+from src.core.logging.log_display import value_label
+from src.core.logging.logger import get_logger
+from src.core.logging.logger_colors import is_color_enabled
 from src.core.services.turn_panel import (
     ModelCall,
     begin_turn as begin_turn_capture,

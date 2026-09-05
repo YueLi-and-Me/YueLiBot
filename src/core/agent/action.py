@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Literal, Protocol, Tuple
 
 import random
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 
 
 ActionKind = Literal['reply', 'silent']

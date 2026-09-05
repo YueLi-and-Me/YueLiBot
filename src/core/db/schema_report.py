@@ -27,8 +27,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import sqlite3
 
-from src.core.common.console_layout import print_box
-from src.core.common.logger import get_logger
+from src.core.logging.console_layout import print_box
+from src.core.logging.logger import get_logger
 
 from .schema import DDL
 

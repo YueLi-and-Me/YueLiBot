@@ -13,7 +13,7 @@ import sqlite3
 import pytest
 
 from src.core.awareness.interest import factors_for
-from src.core.common.db.migrations.manager import CURRENT_VERSION, run_migrations
+from src.core.db.migrations.manager import CURRENT_VERSION, run_migrations
 from src.core.persona.state import PersonaState, describe_persona
 
 

@@ -14,7 +14,7 @@ import shutil
 import stat
 
 from src.core.api.auth import token_manager
-from src.core.common.backend_runtime import create_backend_runtime, read_backend_runtime
+from src.core.runtime.backend_runtime import create_backend_runtime, read_backend_runtime
 
 
 def test_python_creates_and_loads_backend_runtime(tmp_path: Path) -> None:

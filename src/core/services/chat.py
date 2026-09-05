@@ -100,8 +100,8 @@ from src.core.agent.reply_necessity import (
 from src.core.agent.segmentation import split_into_bubbles, typing_delay_seconds
 from src.core.agent.summarize import summarize
 from src.core.awareness.sleep import SleepState
-from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
 from src.core.config.schema import Config, ConversationConfig, TypingConfig
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider

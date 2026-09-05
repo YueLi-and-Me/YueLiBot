@@ -12,7 +12,7 @@ from pathlib import Path
 
 import sqlite3
 
-from src.core.common.db.migrations.manager import CURRENT_VERSION, run_migrations
+from src.core.db.migrations.manager import CURRENT_VERSION, run_migrations
 
 
 # 缺口构造中使用的固定时间戳，便于断言 updated_at 取的是最后一条发言时间。

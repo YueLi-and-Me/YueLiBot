@@ -32,8 +32,8 @@ import typing
 
 from pydantic import BaseModel
 
-from src.core.common.console_layout import print_box
-from src.core.common.logger import get_logger
+from src.core.logging.console_layout import print_box
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

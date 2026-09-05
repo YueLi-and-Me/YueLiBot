@@ -17,7 +17,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import InvalidStatus
 from websockets.protocol import State
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 from .config import ProtocolConnectionConfig
 from .events import is_action_response

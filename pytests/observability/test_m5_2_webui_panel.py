@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from src.core.api.auth import SESSION_COOKIE_NAME, token_manager
 from src.core.api.http import router as http_router
 from src.core.api.ws import router as ws_router
-from src.core.common.logger import WebUiLogHandler
+from src.core.logging.logger import WebUiLogHandler
 from src.core.memory.store import FactInput
 from src.core.observe.store import event_store
 from src.core.persona.state import EventDelta

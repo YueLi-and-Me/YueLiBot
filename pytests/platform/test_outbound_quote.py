@@ -13,8 +13,8 @@ import sqlite3
 
 import pytest
 
-from src.core.common.db.migrations.bootstrap import write_user_version
-from src.core.common.db.migrations.manager import CURRENT_VERSION, run_migrations
+from src.core.db.migrations.bootstrap import write_user_version
+from src.core.db.migrations.manager import CURRENT_VERSION, run_migrations
 from src.core.config.schema import Config
 from src.core.memory.store import MemoryStore
 from src.core.platform_io.drivers.qq_ws import QqWebSocketDriver

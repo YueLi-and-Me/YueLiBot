@@ -32,7 +32,7 @@ from src.core.agent.jargon_mine import (
     lock_name_collisions,
     select_inference_targets,
 )
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.llm_models.protocol import LlmProvider
 from src.core.memory.store import MemoryStore
 

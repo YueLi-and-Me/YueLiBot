@@ -14,8 +14,8 @@ import json
 import sqlite3
 import threading
 
-from src.core.common.clock import now as current_time
-from src.core.common.db.schema import EVENTS_DDL
+from src.core.runtime.clock import now as current_time
+from src.core.db.schema import EVENTS_DDL
 from src.core.observe.stages import label_for
 
 

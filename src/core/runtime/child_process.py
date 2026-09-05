@@ -20,7 +20,7 @@ import signal
 import subprocess
 import sys
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

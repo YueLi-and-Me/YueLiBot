@@ -5,8 +5,8 @@
 完整结构化数据仍由各自的日志/事件账本负责保存。
 
 对外暴露 :func:`display_width`（终端显示宽度）、:func:`render_box`（生成框体文本）
-与 :func:`print_box`（写控制台并同步 WebUI 日志面板）。被 ``common.logger`` 的管线
-追踪出口、``common.db.schema_report``、``config.upgrade`` 与 ``main`` 的启动公告使用。
+与 :func:`print_box`（写控制台并同步 WebUI 日志面板）。被 ``logging.logger`` 的管线
+追踪出口、``db.schema_report``、``config.upgrade`` 与 ``main`` 的启动公告使用。
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ def print_box(
     :param width: 目标外框宽度。
     :param source: 调用方模块名，通常直接传 ``__name__``；用于从模块色表取框线颜色，
         使信息框与该模块的普通日志同色。留空表示不着色。着色与否还受
-        :func:`~src.core.common.logger_colors.is_color_enabled` 的全进程裁定约束。
+        :func:`~src.core.logging.logger_colors.is_color_enabled` 的全进程裁定约束。
     :param publish: 是否同时发布到 ``webui_logs``，默认 ``True``。
         框内含密钥时必须显式传 ``False``：WebUI 日志流会把内容推给所有已连接的
         面板并留在内存积压里，而认证 token 的落盘位置受 ``data/runtime/`` 的权限限制，

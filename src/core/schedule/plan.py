@@ -11,8 +11,8 @@ import json
 import re
 import sqlite3
 
-from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
 from src.core.config.schema import ScheduleConfig
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.persona.state import (

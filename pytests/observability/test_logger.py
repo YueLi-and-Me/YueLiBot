@@ -16,13 +16,13 @@ import re
 
 import pytest
 
-from src.core.common.logger import (
+from src.core.logging.logger import (
     ModuleColoredConsoleRenderer,
     emit_console_trace,
     get_logger,
     initialize_logging,
 )
-from src.core.common.logger_colors import (
+from src.core.logging.logger_colors import (
     MODULE_ALIASES,
     MODULE_COLORS,
     hex_to_rgb,

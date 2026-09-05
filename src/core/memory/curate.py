@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 import json
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.observe import events as trace
 
 from .decay import PIN_HALF_LIFE_HOURS, freeze_due_at, half_life_for, is_pinned, retention

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.memory.high_frequency import rebuild_stream_terms
 
 logger = get_logger(__name__)

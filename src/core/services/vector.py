@@ -12,7 +12,7 @@ from typing import Any, Optional
 import asyncio
 import sqlite3
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.memory.knowledge import knowledge_without_embedding
 from src.core.memory.quantize import (
     backfill_quantized_embeddings,

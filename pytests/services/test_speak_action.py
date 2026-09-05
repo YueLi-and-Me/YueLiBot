@@ -193,7 +193,7 @@ class TestConsoleLabels:
         from src.core.agent.action_protocol import (
             ALL_ACTIONS, ALL_REASON_CODES, EventStatus,
         )
-        from src.core.common.log_display import VALUE_LABELS
+        from src.core.logging.log_display import VALUE_LABELS
 
         assert [a for a in sorted(ALL_ACTIONS) if a not in VALUE_LABELS] == []
         assert [s for s in sorted(EventStatus.__args__) if s not in VALUE_LABELS] == []

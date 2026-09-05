@@ -16,7 +16,7 @@ from src.core.api.http import (
     platform_inbound,
 )
 from src.core.api.state import app_state
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.config.schema import Config
 from src.core.observe.store import event_store
 from src.core.platform_io.registry import StreamRegistry

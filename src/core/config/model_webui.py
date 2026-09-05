@@ -25,7 +25,7 @@ from .schema import (
     ProviderCatalog,
 )
 from .toml_io import read_versioned_toml
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

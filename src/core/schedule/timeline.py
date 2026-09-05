@@ -14,7 +14,7 @@ import asyncio
 import json
 import sqlite3
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.persona.state import MOOD_RATE, ElapsedEffect
 from src.core.prompts.registry import get_prompt

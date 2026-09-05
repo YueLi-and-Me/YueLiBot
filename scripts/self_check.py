@@ -7,7 +7,7 @@ from typing import List
 
 import argparse
 
-from src.core.common.self_check import render_report, run_self_check
+from src.core.runtime.self_check import render_report, run_self_check
 
 
 def main(argv: List[str] | None = None) -> int:

@@ -23,7 +23,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .auth import ws_auth
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
 from src.core.observe.events import LIVE_ONLY_KINDS, broadcaster
 from src.core.observe.store import since as events_since

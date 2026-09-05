@@ -20,7 +20,7 @@ import argparse
 import asyncio
 import sys
 
-from src.core.common.logger import get_logger, initialize_logging
+from src.core.logging.logger import get_logger, initialize_logging
 from src.plugin_system import AdapterPlugin, load_adapter_plugin
 
 

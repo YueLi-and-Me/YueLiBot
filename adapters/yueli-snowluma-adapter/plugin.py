@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import FrozenSet
 
-from src.core.common.backend_runtime import read_backend_runtime
+from src.core.runtime.backend_runtime import read_backend_runtime
 from src.platforms.onebot11.backend import BackendClient
 from src.platforms.onebot11.config import read_section_config
 from src.platforms.onebot11.runner import OneBot11Runner

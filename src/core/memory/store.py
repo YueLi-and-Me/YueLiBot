@@ -25,8 +25,8 @@ from .scope import (
 from .tokenize import index_tokens, match_query, words
 from .tuning import blend_score
 
-from src.core.common.clock import now as current_time
-from src.core.common.db.schema import DDL, SCHEMA_VERSION, SEED
+from src.core.runtime.clock import now as current_time
+from src.core.db.schema import DDL, SCHEMA_VERSION, SEED
 from src.core.observe import events as trace
 
 
@@ -252,7 +252,7 @@ class MemoryStore:
     """封装消息、情节、事实和待办约定的 SQLite 读写。
 
     初始化时执行当前 DDL/SEED 并写入 schema 版本；数据库迁移应在构造此类之前由
-    `common.db.migrations.manager` 完成。
+    `db.migrations.manager` 完成。
     """
 
     def __init__(self, db: sqlite3.Connection) -> None:

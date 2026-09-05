@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from .registry import register
 
 logger = get_logger(__name__)

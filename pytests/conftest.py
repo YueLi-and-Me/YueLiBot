@@ -9,8 +9,8 @@ import sqlite3
 
 import pytest
 
-from src.core.common.db.connection import close_db, open_db
-from src.core.common.db.migrations.manager import run_migrations
+from src.core.db.connection import close_db, open_db
+from src.core.db.migrations.manager import run_migrations
 from src.core.api.auth import token_manager
 from src.core.observe.events import reset_for_tests
 from src.core.observe.store import event_store
@@ -20,7 +20,7 @@ from src.core.observe.store import event_store
 def db() -> sqlite3.Connection:
     """每个测试函数拿到一个隔离的 :memory: 数据库，跑完自动关掉。"""
     # 绕过全局单例，直接构造连接
-    import src.core.common.db.connection as conn_mod
+    import src.core.db.connection as conn_mod
     conn_mod._db = None  # 重置单例
 
     connection = open_db(":memory:")

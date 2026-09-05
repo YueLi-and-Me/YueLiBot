@@ -35,8 +35,8 @@ from src.core.agent.profile import (
     refresh_profiles,
     render_evidence,
 )
-from src.core.common.db.connection import open_db
-from src.core.common.db.migrations.manager import get_user_version, run_migrations
+from src.core.db.connection import open_db
+from src.core.db.migrations.manager import get_user_version, run_migrations
 from src.core.config.loader import load_config
 from src.core.llm_models.router import create_routers
 from src.core.observe.store import event_store

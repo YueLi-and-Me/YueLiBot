@@ -28,8 +28,8 @@ from src.core.awareness.interest import (
 )
 from src.core.awareness.signals import Classified
 from src.core.awareness.sleep import SleepState, SleepStateController
-from src.core.common.clock import now as current_time
-from src.core.common.logger import get_logger
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
 from src.core.observe.events import enter_stage
 from src.core.observe.stages import DISPATCHING, FAILED, GENERATING, REPLIED

@@ -35,7 +35,7 @@ from typing import List, Optional, Sequence, Tuple
 import json
 import sqlite3
 
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.observe import events as trace

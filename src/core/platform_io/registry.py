@@ -11,7 +11,7 @@ from typing import List
 
 import sqlite3
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.platform_io.types import (
     ConversationContext,
     GroupMembershipRef,

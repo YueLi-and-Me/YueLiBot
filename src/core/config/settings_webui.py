@@ -37,7 +37,7 @@ from .model_webui import (
 )
 from .schema import BotDocument, FeatureDocument, ModelCatalog, ProviderCatalog
 from .toml_io import read_versioned_toml
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.platforms.onebot11.config import (
     PROTOCOL_SECTION_FIELD,
     AdapterDocument,

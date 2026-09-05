@@ -13,8 +13,8 @@ from typing import Any, Dict, Set
 import asyncio
 import threading
 
-from src.core.common.clock import now as current_time
-from src.core.common.logger import emit_console_trace
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import emit_console_trace
 from src.core.observe.stages import Stage, label_for
 from src.core.observe.store import event_store
 

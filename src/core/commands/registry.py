@@ -8,7 +8,7 @@ from typing import Awaitable, Callable, List, Match, Pattern, Protocol, Set, Tup
 
 import re
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.platform_io.types import ConversationContext, PersonRef
 
 logger = get_logger(__name__)

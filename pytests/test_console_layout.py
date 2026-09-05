@@ -1,6 +1,6 @@
 """信息框排版的宽度和结构回归测试。"""
 
-from src.core.common.console_layout import display_width, render_box
+from src.core.logging.console_layout import display_width, render_box
 
 
 def test_信息框保留边界并按中文显示宽度对齐() -> None:

@@ -10,8 +10,8 @@ import sqlite3
 
 import pytest
 
-from src.core.common.db.migrations.bootstrap import write_user_version
-from src.core.common.db.migrations.manager import CURRENT_VERSION, get_user_version, run_migrations
+from src.core.db.migrations.bootstrap import write_user_version
+from src.core.db.migrations.manager import CURRENT_VERSION, get_user_version, run_migrations
 from src.core.memory import import_center
 from src.core.memory.knowledge import add_knowledge, search_knowledge
 

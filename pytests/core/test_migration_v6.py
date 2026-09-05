@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from src.core.common.db.migrations.manager import CURRENT_VERSION, run_migrations
+from src.core.db.migrations.manager import CURRENT_VERSION, run_migrations
 
 
 FIRST_SEEN_AT = 1_700_000_000_000

@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

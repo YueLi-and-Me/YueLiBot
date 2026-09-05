@@ -11,7 +11,7 @@ Python 子进程而先装一套图形环境。
 - 构建外壳：只有构建产物 ``out/main/index.js`` 时，直接用本地 Electron 可执行文件。
 
 被 ``src.main`` 在监听建立之后调用；进程行为由
-``src.core.common.child_process.ChildProcess`` 提供。
+``src.core.runtime.child_process.ChildProcess`` 提供。
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from typing import Dict, List
 import shutil
 import sys
 
-from src.core.common.child_process import ChildProcess
-from src.core.common.logger import get_logger
+from src.core.runtime.child_process import ChildProcess
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -20,9 +20,9 @@ import pytest
 from src.core.agent.action_protocol import GateInputFacts
 from src.core.agent.conversation_gate import GateRequest, decide_disposition
 from src.core.awareness.budget import InterruptContext, ProactiveState, decide
-from src.core.common.db import schema as db_schema
-from src.core.common.db.migrations import manager as migration_manager
-from src.core.common.db.migrations.manager import run_migrations
+from src.core.db import schema as db_schema
+from src.core.db.migrations import manager as migration_manager
+from src.core.db.migrations.manager import run_migrations
 from src.core.config.schema import ScheduleConfig
 from src.core.persona.state import PersonaState, status_label
 from src.core.schedule import plan as schedule_plan

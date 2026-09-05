@@ -35,7 +35,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
 
 logger = get_logger(__name__)

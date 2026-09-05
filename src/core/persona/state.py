@@ -16,7 +16,7 @@ from math import exp
 import sqlite3
 
 from src.core.agent.relationship import relationship_tier
-from src.core.common.clock import now as current_time, snapshot_date
+from src.core.runtime.clock import now as current_time, snapshot_date
 from src.core.platform_io.registry import StreamRegistry
 from src.core.platform_io.types import PersonRef
 

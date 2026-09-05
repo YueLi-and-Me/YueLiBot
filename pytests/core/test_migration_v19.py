@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from src.core.common.db.migrations.v18_to_v19 import KIND_MAPPING, migrate
+from src.core.db.migrations.v18_to_v19 import KIND_MAPPING, migrate
 from src.core.memory.decay import FACT_KINDS, freeze_due_at, half_life_for
 from src.core.memory.store import MemoryStore
 

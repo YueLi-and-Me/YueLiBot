@@ -2,7 +2,7 @@
 
 本模块属于后端观测与自检测试，覆盖事件账本未配置时的显式错误、临时账本的创建与关闭、
 阶段事件持久化以及无可用模型时内部请求快照的记录。测试依赖 src.selftest、src.observe、
-src.core.common.db.connection 和 src.core.llm_models 的实际实现，并通过 pytest 临时目录隔离数据库。
+src.core.db.connection 和 src.core.llm_models 的实际实现，并通过 pytest 临时目录隔离数据库。
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from src.core.api.http import router as http_router
-from src.core.common.db.connection import close_db
+from src.core.db.connection import close_db
 from src.core.config.schema import Config
 from src.core.llm_models import snapshot
 from src.core.llm_models.openai import LlmError

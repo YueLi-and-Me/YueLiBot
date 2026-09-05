@@ -16,8 +16,8 @@ import sqlite3
 
 import pytest
 
-from src.core.common.clock import now as current_time
-from src.core.common.db.schema import DDL, SEED
+from src.core.runtime.clock import now as current_time
+from src.core.db.schema import DDL, SEED
 from src.core.memory.association import EDGE_BOOST, EDGE_HALF_LIFE_HOURS
 from src.core.memory.decay import FREEZE
 from src.core.services.edge_decay import EdgeDecayService

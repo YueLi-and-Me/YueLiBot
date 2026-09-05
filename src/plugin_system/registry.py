@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Sequence
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 from .loader import MANIFEST_FILENAME, load_tool_plugin
 from .manifest import load_manifest

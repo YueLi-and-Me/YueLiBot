@@ -11,8 +11,8 @@ from PIL import Image
 
 from src.core.agent.action_protocol import DecisionHead
 from src.core.agent.parser import EmojiEvent, ResponseParser
-from src.core.common.db.migrations.manager import CURRENT_VERSION, run_migrations
-from src.core.common.db.schema import DDL
+from src.core.db.migrations.manager import CURRENT_VERSION, run_migrations
+from src.core.db.schema import DDL
 from src.core.config.schema import Config, VisionConfig
 from src.core.platform_io.drivers.qq_ws import QqWebSocketDriver
 from src.core.platform_io.types import OutboundMessage, StreamRef

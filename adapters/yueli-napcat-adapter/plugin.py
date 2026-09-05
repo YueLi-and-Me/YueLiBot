@@ -16,8 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import FrozenSet, Optional
 
-from src.core.common.backend_runtime import read_backend_runtime
-from src.core.common.logger import get_logger
+from src.core.runtime.backend_runtime import read_backend_runtime
+from src.core.logging.logger import get_logger
 from src.platforms.onebot11.config import read_config
 from src.platforms.onebot11.runner import OneBot11Runner
 from src.platforms.onebot11.transport import OneBot11Transport

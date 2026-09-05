@@ -10,7 +10,7 @@
 之外的外部工具；两类工具在注册表里共用同一套登记与解析命名空间。
 
 依赖：``src.core.agent.action_protocol`` 的回合固定快照、``src.core.platform_io.types``
-的会话类型、``src.core.common.clock`` 的毫秒时钟；被 ``registry`` / ``executor``
+的会话类型、``src.core.runtime.clock`` 的毫秒时钟；被 ``registry`` / ``executor``
 及后续外部工具实现消费，不反向依赖聊天服务或模型层。
 """
 
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, FrozenSet, Literal
 
 from src.core.agent.action_protocol import DecisionFrame
-from src.core.common.clock import now as current_time
+from src.core.runtime.clock import now as current_time
 from src.core.platform_io.types import StreamKind
 
 # 工具语义分类：终局工具结束回合（与动作协议的 TERMINAL_ACTIONS 同域），

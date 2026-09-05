@@ -19,7 +19,7 @@ import asyncio
 
 import httpx
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 from src.core.platform_io.forward import ForwardMessageTree
 
 from .backend import BackendClient, BackendOutbound, BackendPoke, BackendReaction

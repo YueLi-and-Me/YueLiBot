@@ -10,10 +10,10 @@ from __future__ import annotations
 import sqlite3
 from typing import List
 
-from src.core.common.db import schema_report
-from src.core.common.db.migrations.bootstrap import write_user_version
-from src.core.common.db.schema import DDL
-from src.core.common.db.schema_report import (
+from src.core.db import schema_report
+from src.core.db.migrations.bootstrap import write_user_version
+from src.core.db.schema import DDL
+from src.core.db.schema_report import (
     SchemaChanges,
     describe_schema_changes,
     report_schema_changes,

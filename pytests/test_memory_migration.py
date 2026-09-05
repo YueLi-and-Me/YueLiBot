@@ -12,7 +12,7 @@ from scripts.migrate.episodes import migrate as migrate_episodes
 from scripts.migrate.expressions import migrate as migrate_expressions
 from scripts.migrate.jargon import migrate as migrate_jargon
 from scripts.migrate.profile_seeds import migrate as migrate_profile_seeds
-from src.core.common.db.schema import DDL, SEED
+from src.core.db.schema import DDL, SEED
 
 
 def _sha256(path: Path) -> str:

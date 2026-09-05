@@ -14,7 +14,7 @@ import sqlite3
 
 from .registry import register
 
-from src.core.common.logger import get_logger
+from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
