@@ -100,6 +100,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "observe.source": ("#ff5faf", False),
     "services.console.trace_console": ("#ff87d7", True),
     "services.dev.dev_commands": ("#d7ffd7", True),
+    "services.dev.install_stats": ("#afffaf", True),
     "agent.expression_learn": ("#ffaf87", False),
     "agent.impression": ("#d7af87", False),
     # 运行画像
@@ -182,6 +183,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "observe.source": "消息来源",
     "services.console.trace_console": "追踪面板",
     "services.dev.dev_commands": "开发者命令",
+    "services.dev.install_stats": "安装统计",
     "agent.expression_learn": "表达学习",
     "agent.impression": "会话印象",
     "runtime.child_process": "子进程",

@@ -903,6 +903,10 @@ def main() -> None:
     # 注册只是往进程内目录里追加条目，是否响应由通道按 [developer] 与 owner 判定。
     from src.core.services.dev.dev_commands import register_dev_commands
     register_dev_commands(db_path, config_dir)
+    # /inst 只在遥测服务端与令牌都就位时才注册：没有服务端就没有这条命令，
+    # 比「注册了但一问就报错」诚实，也不会在 /help 里挂一条注定失败的条目。
+    from src.core.services.dev.install_stats import register_install_stats_command
+    register_install_stats_command(data_dir)
     sensor = DesktopSensor(cfg, _push_event, vision_provider)
     awareness = AwarenessService(
         chat=app_state.chat,

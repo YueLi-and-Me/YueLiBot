@@ -33,6 +33,11 @@ dev = [
     "pytest-asyncio>=0.24",
     "anyio[trio]>=4.0",
 ]
+# 只有开发者命令 /inst 画折线图用得上，不进主依赖：普通用户装了也不会触发。
+# 缺这一项时 /inst 退回文字输出，不报错。
+chart = [
+    "matplotlib>=3.9",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
