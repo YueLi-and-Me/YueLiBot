@@ -29,9 +29,9 @@ npm ci
 npm run build
 ```
 
-将完整的 `out/webui` 目录复制到服务器项目的 `out/` 下。
-目标应为 `/opt/yueli/out/webui/index.html`，其下资源目录也必须完整。
-须保留完整资源目录，并避免生成额外的 `webui/webui` 嵌套层级。
+将完整的 `out/webui` 目录复制到服务器项目的 `out/` 下，连同其下的资源目录一起。
+拷完的结果应当是 `/opt/yueli/out/webui/index.html`——注意别多套一层，
+拷成 `out/webui/webui/` 面板就打不开。
 例如在有 SSH 工具的构建机运行：
 
 ```bash
