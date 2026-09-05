@@ -1,0 +1,47 @@
+# 发布：推 v 开头的 tag 时构建代码产物并挂到 GitHub Release。
+#
+# 这里只打包代码，不产出 Windows 安装包。装机分发要把 Python 运行时一起塞进去，
+# 那是一个独立课题，尚未立项；在它落地之前，Release 提供的是「解压后按 README
+# 装依赖即可运行」的源码与构建产物。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # electron-vite 编译桌宠外壳，vite 编译管理面板，两者都落 out/
+      - run: npm run build
+
+      # 源码包：用 git archive 取 tag 的干净快照，不含 node_modules 与本地产物
+      - name: 打源码包
+        shell: bash
+        run: git archive --format=zip --prefix=yueli/ -o "yueli-${GITHUB_REF_NAME}-source.zip" "${GITHUB_REF_NAME}"
+
+      # 构建包：仅 out/，供不想装 Node 工具链的人直接取编译结果
+      - name: 打构建包
+        shell: bash
+        run: 7z a "yueli-${GITHUB_REF_NAME}-build.zip" out/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            yueli-*-source.zip
+            yueli-*-build.zip
+          generate_release_notes: true

@@ -1,0 +1,67 @@
+# 持续集成：四条门（pytest / vitest / tsc / 配置对齐）在 windows-latest 上跑。
+#
+# 选 Windows 而不是 Linux，是因为桌宠与协议端都在 Windows 上运行，路径分隔符、
+# 文件锁与控制台编码的差异只在这个平台上暴露；公开仓库的标准 runner 不计费，
+# 没有省 Linux 分钟数的必要。
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+# 项目的日志、控制台框与断言消息全是简体中文。runner 的默认 locale 不是 UTF-8，
+# 不设这两项时 print 中文会抛 UnicodeEncodeError，且异常发生在子进程或读取线程里，
+# 表现为「测试通过但进程退出码非零」这类难查的红。
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  backend:
+    name: pytest
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      # vector extra 装 faiss 与 numpy：不装会让向量召回相关用例整片跳过，
+      # 绿灯就失去意义。
+      - run: uv sync --extra dev --extra vector
+      - run: uv run pytest -q
+
+  frontend:
+    name: vitest + tsc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # 开发机跑 Node 24，CI 钉 LTS：sharp 与 uiohook-napi 这类原生模块的
+          # 预编译产物对 LTS 覆盖最全，非 LTS 上会退回本地编译，慢且易碎。
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+  config-parity:
+    name: 配置写入器与 schema 对齐
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: uv sync --extra dev
+      - run: npm ci
+      # 这一项跨语言：用 Electron 写入器导出全默认配置，再与 Python schema 比对。
+      # 漂移时退出码 1。新增或退休配置字段忘了同步两侧，只有这条门拦得住。
+      - run: uv run python scripts/check/config_parity.py
