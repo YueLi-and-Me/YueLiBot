@@ -2,132 +2,94 @@
 
   <h1>月璃 · YueLiBot</h1>
 
-  <!-- Badges Row -->
   <p>
     <img src="https://img.shields.io/badge/Python-3.11+-blue" alt="Python">
     <img src="https://img.shields.io/badge/Electron-TypeScript-47848F" alt="Electron">
-    <img src="https://img.shields.io/badge/Backend-Windows%20%7C%20Linux-blue" alt="Backend: Windows | Linux">
-    <img src="https://img.shields.io/badge/Live2D-not%20required-brightgreen" alt="No Live2D">
-    <img src="https://img.shields.io/badge/License-AGPL--3.0-blue" alt="License: AGPL-3.0">
+    <img src="https://img.shields.io/badge/%E5%90%8E%E7%AB%AF-Windows%20%7C%20Linux-0078D6" alt="后端：Windows | Linux">
+    <img src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-AGPL--3.0-orange" alt="许可证">
   </p>
 
 </div>
 
 <br>
 
-<!-- Mascot on the Right (Float) -->
 <img src="assets/character/yueli/face/normal.png" align="right" width="30%" alt="月璃">
 
-## ✨ 简介 · INTRO
+## 🌟 什么是月璃
 
-月璃是一个基于大语言模型的 AI 角色，具备跨会话持续的记忆与随交互演化的人格，当前主要通过 QQ（私聊与白名单群）和浏览器管理面板使用。
-<sub><sup>YueLi is an AI character built on large language models, with memory that persists across sessions and a personality that evolves through interaction — currently accessed via QQ (direct messages and whitelisted groups) and a browser admin panel.</sup></sub>
+月璃是一个由 LLM 驱动的可交互智能体。
 
-她不只是一个能完成任务的「有帮助的助手」——她致力于了解你，并以真实人类的风格与你相处；不追求完美，不追求高效，但追求亲切与真实。
-<sub><sup>She is more than a "helpful assistant" that completes tasks: she tries to understand you and interacts in a genuinely human style — pursuing not perfection or efficiency, but warmth and authenticity.</sup></sub>
+她不仅仅是一个机器人，也不仅仅是一个帮你完成任务的「有帮助的助手」——
+她有记忆、有性格、有自己的日程和作息，是一个以真实人类的方式与你相处的数字生命。
+不追求完美，不追求高效，追求的是亲切和真实：关掉程序、隔几天再打开，她仍然是同一个她。
 
-本项目的核心难点不在「LLM + 立绘」——那个组合两小时即可搭出，两天就会腻；难在持续性：状态须跨重启保留，关系随交互演化。关闭程序数日后再次启动，她仍然是同一个她。
-<sub><sup>The hard part is not the "LLM + sprites" combination, which takes two hours to build and two days to grow stale — it is persistence: state survives restarts and relationships evolve through interaction. Reopen the program days later, and she is still the same person.</sup></sub>
+## ✨ 特性
 
-## 🧩 核心特性 · FEATURES
+- 💬 **她说话像真人打字**：或长或短，一条一条地来；不会甩给你一篇分点罗列的答卷。
+- 👂 **她看气氛**：群里聊得热闹时不抢话，没人搭理时也不会一直刷存在感；该开口时开口，该安静时安静。
+- 🧠 **关掉再打开，她还记得**：你随口提过的事她会记住很久，也会像人一样慢慢淡忘；
+  哪天再提起，她又想得起来。
+- ❤️ **她越来越了解你**：你的喜恶、习惯和说过的话，她都放在心里；关系随相处变化，冷落她也有代价。
+- 🎭 **她会学你们说话**：群里流行的句式和口癖她会悄悄学，等你点头认可之后才会真的用。
+- 💭 **黑话她听得懂，但不卖弄**：你们圈里才懂的词她明白意思，只为听懂你们聊天，不会挂在嘴边。
 
-**🧠 心智与记忆**
+## 🚀 部署
 
-- **持久记忆**：三层记忆结构与遗忘曲线，跨重启保留，随时间衰减而非定期清零。
-- **动态人格**：好感度按对话者隔离、随交互漂移，冷落会使之下降；全局精力状态影响当前表达。人格由状态驱动，而非一段固定的提示词。
-- **离线补偿**：离线期间仍会做梦、补偿流逝的时间，所写日记可供查阅。
+**环境要求**：Python 3.11+；管理面板的前端产物要用 Node.js 构建一次，
+可以在别的机器上构建好再拷过去；桌宠外壳另需 Windows 10/11。
+只跑 QQ 和管理面板的话，一台 Linux 服务器就够了。
 
-**👀 交互分寸**
+```bash
+uv sync         # 安装后端依赖
+npm install     # 桌宠外壳与面板前端，无头部署可跳过
+uv run bot.py   # 一条命令起全套
+```
 
-- **发言节制**：日程与打扰预算共同决定每一轮是否发言；白名单群中亦会先行判断当轮是否回应，而非有言必答。
+首次运行会生成一份带完整中文注释的配置，然后停下，告诉你还差什么——通常只差一个 API Key，
+模型厂商与默认值都已预填好。填好后再次启动即可。接入 QQ 需另外配置协议端（NapCat 或 SnowLuma），
+见[接入总览](docs/manual/adapters/index.md)。
 
-**🎛 可观察性**
+- 首次安装：[从零跑起来](docs/manual/deployment/first-run.md)，五个环节，每步都写明了该看到什么、没看到先查哪里。
+- 服务器部署：[无头部署](docs/manual/deployment/headless.md)，只跑 QQ 和面板。
+- 配置预览：[`config.example/`](config.example/README.md) 就是首次运行会生成的那份配置，每个字段都有中文说明，可以先看看再决定。
 
-- **全程可观察**：管理面板支持模型配置、逐级查看每轮模型调用的输入与输出；修改提示词后，可基于历史事件重放验证。
-
-**🖼 角色与出口**
-
-- **主要出口为 QQ**：私聊与白名单群共享同一份记忆与同一条关系轴。
-- **实验性桌宠**：默认关闭的 Windows 10/11 外壳，启用后可能遇到未知问题。
-- **不依赖 Live2D**：角色素材为 AI 生成的立绘差分，一张参考图与一句描述即可生成整套表情。
-
----
-
-## 🚀 安装 · INSTALL
-
-**环境要求**：Python 3.11+ · Node.js（Electron 43）· 桌宠为实验性功能，需要 Windows 10/11。**若仅运行 QQ 与管理面板，Node 与图形环境均非必需**，Linux 服务器可直接部署。
-
-1. **初始化依赖**：`uv sync` 安装 Python 后端依赖；`npm install` 安装实验性桌宠外壳与管理面板前端，无头部署可跳过。
-2. **首次启动**：运行 `uv run bot.py`——程序在 `config/` 生成一份带完整中文注释的初始配置后停止，控制台列出缺失的配置项。
-3. **修改配置**：通常仅剩 API Key 一项——厂商地址与六个模型条目已按阿里云百炼的 OpenAI 兼容端点预填，各任务已按档位分配（对话使用质量档，决策与摘要使用快档，视觉与嵌入各有专用模型），默认全部关闭思考。如需接入 QQ，另需填写两个账号，见 [QQ 与群聊接入](docs/manual/adapters/index.md)。
-4. **再次启动**：填写完成后运行 `uv run bot.py` 即可。
-
-若希望在填写前了解配置结构，无需 clone 仓库：[`config.example/`](config.example/README.md) 即首次运行所生成的配置，每个字段均附中文说明。初次安装建议从 [从零跑起来](docs/manual/deployment/first-run.md) 开始——共五步，每步说明预期结果与对应的排查位置。
-
----
-
-## 📚 文档 · DOCS
+## 📚 文档
 
 | | |
 | :--- | :--- |
-| [从零跑起来](docs/manual/deployment/first-run.md) | **新手从这里开始**：五步走完，每步写清该看到什么 |
-| [安装与配置](docs/manual/deployment/install.md) | 依赖、五份 TOML 的生成与填写、启动方式 |
+| [从零跑起来](docs/manual/deployment/first-run.md) | 新手入口：五个环节，每步写清预期现象 |
+| [安装与配置](docs/manual/deployment/install.md) | 依赖、配置文件的生成与填写、启动方式 |
+| [功能总览](docs/manual/features/index.md) | 各项功能的默认开关、前提与依赖 |
 | [QQ 与群聊接入](docs/manual/adapters/index.md) | 协议端选择、必改项、群聊白名单与回复触发 |
-| [管理面板](docs/manual/webui/index.md) | 浏览器里的观察与配置入口 |
-| [无头部署](docs/manual/deployment/headless.md) | 服务器上只跑 QQ 与面板 |
-| [数据库迁移与恢复](docs/manual/deployment/upgrade.md) | 备份位置与回退旧库的正确步骤 |
-| [生图管线](docs/manual/features/sprite.md) | 从一张参考图跑出整套角色素材 |
-| [架构总览](docs/dev/architecture/overview.md) | 分层、目录形状、进程关系与硬性边界 |
-| [常见问题](docs/manual/troubleshooting.md) | 按症状查：启动、面板、模型调用、QQ、桌宠（实验性）、数据 |
-| [开发与验证](docs/dev/guide/testing.md) | 常用命令、四条状态门、启动探针 |
+| [管理面板](docs/manual/webui/index.md) | 浏览器内的观察与配置入口 |
+| [无头部署](docs/manual/deployment/headless.md) | 服务器上仅运行 QQ 与面板 |
+| [升级与回退](docs/manual/deployment/upgrade.md) | 配置升级、数据库迁移与备份回退 |
+| [常见问题](docs/manual/troubleshooting.md) | 按症状排查：启动、面板、模型调用、QQ、桌宠、数据 |
 
-全部文档的索引在 [`docs/`](docs/README.md)。
+完整索引见 [`docs/`](docs/README.md)（含面向开发者的架构与模块手册）。
 
----
-
-## 架构一句话 · ARCHITECTURE
-
-业务真源在 Python，Electron 仅承担平台层职责——窗口、托盘、屏幕采集、键鼠活动。**进程治理同样位于 Python 一侧**：Python 为入口，负责拉起并监护 QQ 适配器与可选的实验性桌宠外壳；
-Electron 仅连接后端，不启动、不终止任何进程。因此在服务器上部署 QQ 机器人无需安装图形环境。
-
-三条硬性边界：Python 后端不得依赖任何 Electron API；API Key 仅存在于主进程与 Python 后端，绝不下发至渲染层；Python 仅监听 `127.0.0.1`，所有接口均经过 token 鉴权。
-
-目录形状与依赖方向见[架构总览](docs/dev/architecture/overview.md)。
-
----
-
-## 💡 设计理念 · IDEA
+## 💡 设计理念
 
 > **最像，而不是最好。**
 >
-> 一个完美的助手不需要人格——你不会在意计算器今天心情如何。而一旦目标是陪伴，
-> 「像人」就压倒一切：她可以答得不够全，可以有起伏，可以在你冷落她之后闹一点别扭，
-> 但不能在你说了一句话之后表现得像刚认识你。
->
-> 这条原则有具体后果：凡是「机械定时」的地方都应该换成连续量；新加的行为优先挂到
-> 已有的人格轴上，而不是新开一个开关；随机不等于像人——掷骰子只会显得神经质。
+> 完美的助手不需要人格——没有人在意计算器今天的心情。可一旦目标是陪伴，
+> 「像人」便压倒一切：回答可以不够全面，情绪可以有起伏，被冷落后可以闹一点别扭；
+> 唯独不能在你说了一句话之后，表现得像初次见面。
 
----
+## 🌟 致谢
 
-## 💬 反馈 · FEEDBACK
+QQ 接入依赖独立安装的协议端，两者互斥、同时只能启用一个：
 
-- 如有问题，欢迎提交 issue：请附症状描述、复现步骤与相关日志。
-- 暂不接受外部贡献。
+- **[NapCat](https://github.com/NapNeko/NapCatQQ)**
+- **[SnowLuma](https://github.com/SnowLuma/SnowLuma)**
 
----
-
-## 🌟 致谢 · THANKS
-
-- **[NapCat](https://github.com/NapNeko/NapCatQQ)**：现代化的 NTQQ 协议实现。
-- **[SnowLuma](https://github.com/SnowLuma/SnowLuma)**：OneBot 11 正向 WebSocket 协议端，与 NapCat 二选一。
-
----
-
-## 📌 注意事项 & License
+## 📌 注意事项与许可
 
 > [!IMPORTANT]
-> 用生图管线做自己的角色时，参考图的来源要自己把关：若参考的是他人的角色设计或成品画作，
-> 生成结果仍可能构成侵权——这与「是否 AI 生成」无关。仓库内自带的立绘是本项目自己生成的。
+> 使用生图管线制作自己的角色时，参考图来源需自行把关：参考他人的角色设计或成品画作，
+> 生成结果仍可能构成侵权，与是否由 AI 生成无关。仓库自带的立绘素材由本项目自行生成。
 
-**License**：[AGPL-3.0](LICENSE)。你可以自由使用、修改和分发本项目，但衍生作品必须以同一许可证开源；
-**通过网络提供服务也算分发**——把改过的月璃挂成在线服务时，需要向使用者提供对应源码。
+**许可证**：[AGPL-3.0](LICENSE)。可以自由使用、修改和分发本项目，但衍生作品必须以同一许可证开源；
+通过网络提供服务同样构成分发——把改过的月璃部署为在线服务时，需向使用者提供对应源码。
+
+暂不接受外部贡献，问题与建议请开 issue。
