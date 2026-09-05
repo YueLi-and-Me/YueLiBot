@@ -28,14 +28,14 @@ import random
 import re
 import sqlite3
 
-from ..chat_image import (
+from ..media.chat_image import (
     ChatImageDescriber,
     merge_emoji_descriptions,
     merge_image_descriptions,
 )
-from ..emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
-from ..trace_console import mark_turn_start, render_action_decision, render_turn, render_turn_error
-from ..vector import VectorService
+from ..media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
+from ..console.trace_console import mark_turn_start, render_action_decision, render_turn, render_turn_error
+from ..maintenance.vector import VectorService
 
 from src.core.agent.character import pick_tone
 from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy, TurnPlanner
@@ -120,7 +120,7 @@ from src.core.persona.state import (
 )
 from src.core.platform_io.broker import PlatformBroker
 from src.core.platform_io.registry import StreamRegistry
-from src.core.services.memory_feedback import register_prompt_entries
+from src.core.services.maintenance.memory_feedback import register_prompt_entries
 from src.core.platform_io.types import (
     ConversationContext,
     InboundMessage,

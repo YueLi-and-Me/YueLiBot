@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from src.core.config.schema import Config
-from src.core.services.chat_image import (
+from src.core.services.media.chat_image import (
     ChatImageDescriber,
     _read_image_source,
     merge_image_descriptions,

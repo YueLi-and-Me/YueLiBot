@@ -5,7 +5,7 @@ Python 成为进程入口之后，QQ 适配器与桌面外壳（Electron）都�
 的进程原语：按 argv 启动、把子进程 stdout/stderr 按行加标签转发到本进程输出、异常退出后
 按指数退避重启、停止时结束整棵进程树。
 
-拉起谁由 ``src.core.services.adapter_host`` 与 ``src.core.services.desktop_shell``
+拉起谁由 ``src.core.services.host.adapter_host`` 与 ``src.core.services.host.desktop_shell``
 决定；启动与收尾的时机由 ``src.main`` 在监听建立之后、服务器关闭之前编排。
 """
 

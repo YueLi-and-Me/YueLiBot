@@ -11,8 +11,8 @@ import re
 
 import pytest
 
-import src.core.services.trace_console as console
-from src.core.services.turn_panel import (
+import src.core.services.console.trace_console as console
+from src.core.services.console.turn_panel import (
     ModelCall,
     begin_turn,
     note_model_call,

@@ -10,7 +10,7 @@
 并发的多个会话之间也不会互相混淆。
 
 对外暴露 ``begin_turn`` / ``note_model_call`` / ``take_calls`` 与 ``render_stage_panel``，
-被 ``src.core.llm_models.router``（写入）与 ``src.core.services.trace_console``
+被 ``src.core.llm_models.router``（写入）与 ``src.core.services.console.trace_console``
 （渲染）使用。
 """
 

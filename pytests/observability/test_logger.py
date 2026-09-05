@@ -174,9 +174,9 @@ def test_未登记的模块原样打印不报错() -> None:
 
 
 def test_模块名去掉src前缀() -> None:
-    assert normalize_logger_name("src.core.services.tts") == "services.tts"
+    assert normalize_logger_name("src.core.services.media.tts") == "services.media.tts"
     assert normalize_logger_name("main") == "main"
-    assert module_alias("services.tts") == "语音"
+    assert module_alias("services.media.tts") == "语音"
 
 
 def test_十六进制转rgb与256色近邻() -> None:
@@ -199,7 +199,7 @@ def test_初始化前创建的日志代理会使用最新渲染器(
 ) -> None:
     """模块级 logger 不应把启动前的 structlog 默认排版带进正式日志。"""
     monkeypatch.setenv('YUELI_FORCE_COLOR', '1')
-    logger = get_logger('src.core.services.emoji')
+    logger = get_logger('src.core.services.media.emoji')
     initialize_logging(LogConfig(level='INFO', color_scope='full', to_file=False))
 
     logger.info('emoji_integrity_verified', count=1)

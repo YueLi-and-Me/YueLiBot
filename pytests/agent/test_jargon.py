@@ -191,7 +191,7 @@ def test_j2_rebuild_writes_rank_and_replaces_snapshot(db) -> None:
 
 async def test_j2_stats_service_rebuilds_on_lifecycle(db) -> None:
     """后台服务的 startup 全量重建、增量刷新与 shutdown 全链路可用。"""
-    from src.core.services.jargon_stats import JargonStatsService
+    from src.core.services.maintenance.jargon_stats import JargonStatsService
 
     _seed_stream(db, STREAM_ID)
     now = int(time.time() * 1000)

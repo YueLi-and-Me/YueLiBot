@@ -40,7 +40,7 @@ from src.core.prompts.registry import (
     update_prompt,
 )
 from src.core.services.chat import ChatService
-from src.core.services.replay import replay_event
+from src.core.services.dev.replay import replay_event
 
 
 class _WakeProvider:
@@ -675,7 +675,7 @@ async def test_replay_rejects_event_before_current_prompt_structure(db) -> None:
 
 
 def test_replay_placeholder_error_keeps_category_and_missing_name() -> None:
-    from src.core.services.replay import _rebuild_messages
+    from src.core.services.dev.replay import _rebuild_messages
 
     render_params: dict[str, dict[str, str]] = {}
     prompt = build_system_prompt(

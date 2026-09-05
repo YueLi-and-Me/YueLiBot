@@ -24,7 +24,7 @@ from src.core.agent.segmentation import split_into_bubbles
 from src.core.config.schema import TypingConfig
 from src.core.memory.store import MemoryStore, RecalledFact
 from src.core.schedule.plan import DayPlan
-from src.core.services.memory_feedback import marked_fact_ids
+from src.core.services.maintenance.memory_feedback import marked_fact_ids
 
 
 def _facts_for_prompt(

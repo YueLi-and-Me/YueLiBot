@@ -50,10 +50,10 @@ from src.core.config.upgrade import upgrade_config_directory
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
-from src.core.services.adapter_host import build_adapter_process
-from src.core.services.chat_image import ChatImageDescriber
-from src.core.services.desktop_shell import build_desktop_shell_process
-from src.core.services.emoji import EmojiLibrary, VisionEmojiContentFilter
+from src.core.services.host.adapter_host import build_adapter_process
+from src.core.services.media.chat_image import ChatImageDescriber
+from src.core.services.host.desktop_shell import build_desktop_shell_process
+from src.core.services.media.emoji import EmojiLibrary, VisionEmojiContentFilter
 from src.core.prompts.registry import prompt_metadata
 
 
@@ -781,7 +781,7 @@ def main() -> None:
 
     # 向量服务依赖 ChatService 已创建的 MemoryStore，因此必须在聊天服务之后装配。
     # 无论开关状态都创建并注册服务：关闭或候选缺失必须在生命周期启动期明确说出来。
-    from src.core.services.vector import VectorService
+    from src.core.services.maintenance.vector import VectorService
     vector_client = embed_client if cfg.vector.enabled else None
     vector_disabled_reason = (
         'vector.enabled=false'
@@ -806,7 +806,7 @@ def main() -> None:
 
     # TTS 只在配置启用且至少有一个可用候选时装配，避免创建永远失败的后台任务。
     if cfg.tts.enabled and routers.tts.ready:
-        from src.core.services.tts import TtsService
+        from src.core.services.media.tts import TtsService
         tts = TtsService(cfg, _push_event, routers.tts)
         app_state.chat._speak_audio = tts.speak
         app_state.chat._cancel_audio = tts.cancel
@@ -868,7 +868,7 @@ def main() -> None:
 
     # 主动感知依赖聊天、日程和视觉服务；这里只登记生命周期回调，实际启动在
     # FastAPI lifespan 的事件循环中执行。
-    from src.core.services.lifecycle import lifecycle
+    from src.core.services.host.lifecycle import lifecycle
     from src.core.services.proactive import AwarenessService
     from src.desktop.sensor import DesktopSensor
 
@@ -890,7 +890,7 @@ def main() -> None:
     # 开发者命令的注册集中在这里：/version 要拿本次运行的实际路径，模块导入期拿不到
     # （自定义 --data-dir / --config-path 时会读到另一份）。
     # 注册只是往进程内目录里追加条目，是否响应由通道按 [developer] 与 owner 判定。
-    from src.core.services.dev_commands import register_dev_commands
+    from src.core.services.dev.dev_commands import register_dev_commands
     register_dev_commands(db_path, config_dir)
     sensor = DesktopSensor(cfg, _push_event, vision_provider)
     awareness = AwarenessService(
@@ -1011,18 +1011,18 @@ def main() -> None:
     )
     # 高频词表是黑话召回打分的输入，首轮全量重建必须在首个回合前完成，
     # 因此排在 chat 之前注册。
-    from src.core.services.jargon_stats import JargonStatsService
+    from src.core.services.maintenance.jargon_stats import JargonStatsService
     jargon_stats = JargonStatsService(db)
     lifecycle.register('jargon_stats', jargon_stats.startup, jargon_stats.shutdown)
     # 联想层的边衰减单独走低频任务，不挂回合路径：边没有 due_at 列，冻结判据是
     # 一次全表扫描，而它的时间尺度以月计（半衰期 720 小时，约 54 天才跌破阈值）。
-    from src.core.services.edge_decay import EdgeDecayService
+    from src.core.services.maintenance.edge_decay import EdgeDecayService
     edge_decay = EdgeDecayService(db)
     lifecycle.register('edge_decay', edge_decay.startup, edge_decay.shutdown)
     lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
-    from src.core.services.jargon_learn import JargonLearnService
+    from src.core.services.maintenance.jargon_learn import JargonLearnService
     if routers.memory.ready:
         jargon_learn = JargonLearnService(
             db,
@@ -1041,7 +1041,7 @@ def main() -> None:
     # 反馈纠错（N4）整条链路默认关闭；开启时才装配服务。判定走 memory 路由，
     # 情节重建重摘要走 summary 路由，路由不可用时对应循环空转而不是报错。
     if cfg.memory_feedback.enabled:
-        from src.core.services.memory_feedback import MemoryFeedbackService
+        from src.core.services.maintenance.memory_feedback import MemoryFeedbackService
         memory_feedback = MemoryFeedbackService(
             db,
             cfg.memory_feedback,

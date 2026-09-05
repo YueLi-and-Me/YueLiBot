@@ -18,7 +18,7 @@ import pytest
 
 from src.core.app_meta import APP_VERSION
 from src.core.config.schema import CONFIG_VERSION
-from src.core.services import dev_commands
+from src.core.services.dev import dev_commands
 
 # B-2：逐类非法天数。前八类是格式错误，其后是越界，最后是 shell 元字符注入尝试。
 REJECTED_DAY_INPUTS = [

@@ -10,7 +10,7 @@ import json
 import pytest
 
 from src.core.llm_models import snapshot
-from src.core.services.prompt_records import (
+from src.core.services.dev.prompt_records import (
     RecordsDisabled,
     list_records,
     list_tasks,

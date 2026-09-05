@@ -1,6 +1,6 @@
 """黑话学习的纯逻辑层：提取候选、累积证据、按阶梯阈值做三步推断。
 
-本模块与 :mod:`src.core.services.jargon_learn` 分工：服务层负责调度与游标，
+本模块与 :mod:`src.core.services.maintenance.jargon_learn` 分工：服务层负责调度与游标，
 本层只做单批语料与单条词条的操作，可独立单测。
 
 - 提取：模型从一批带行号的语料里挑选候选词条。候选不从 ``high_frequency_terms``

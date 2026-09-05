@@ -20,9 +20,9 @@ import pytest
 from src.core.config.schema import CONFIG_VERSION, Config, ModelCandidate
 from src.core.llm_models.router import ModelRouter
 from src.core.memory.store import MemoryStore
-from src.core.services import tts as tts_module
+from src.core.services.media import tts as tts_module
 from src.core.services.chat import ChatService, InboundMessage
-from src.core.services.tts import TtsService
+from src.core.services.media.tts import TtsService
 
 
 # ── 假 provider / 假 HTTP ──────────────────────────────────────────────

@@ -58,15 +58,15 @@ from src.core.prompts.registry import (
     prompt_history,
     update_prompt,
 )
-from src.core.services.chat_image import merge_image_descriptions
-from src.core.services.prompt_records import (
+from src.core.services.media.chat_image import merge_image_descriptions
+from src.core.services.dev.prompt_records import (
     RecordsDisabled,
     list_records as list_prompt_records,
     list_tasks as list_record_tasks,
     read_record as read_prompt_record,
 )
-from src.core.services.replay import replay_event, replay_task_for_seq
-from src.core.services.trace_console import render_action_decision
+from src.core.services.dev.replay import replay_event, replay_task_for_seq
+from src.core.services.console.trace_console import render_action_decision
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -3249,7 +3249,7 @@ async def emoji_entries(
     :param offset: 偏移量，从 0 起。
     :param banned: ``true`` 只看已封禁、``false`` 只看未封禁、省略则不筛选。
     :param order: 排序口径，默认 ``time_desc``；取值见
-        :data:`src.core.services.emoji._PAGE_ORDER_CLAUSES`。
+        :data:`src.core.services.media.emoji._PAGE_ORDER_CLAUSES`。
     :return: entries 表情包记录列表、total 当前筛选下的条数与 stats 容量
         总览。``total`` 跟着筛选走（否则翻页会翻出空白页），而 stats 里的数
         始终是全库口径。

@@ -33,7 +33,7 @@ from src.core.config.schema import CONFIG_VERSION
 
 logger = get_logger(__name__)
 
-# 本模块文件位置是 src/core/services/dev_commands.py，上推三级即仓库根。
+# 本模块文件位置是 src/core/services/dev/dev_commands.py，上推三级即仓库根。
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_GIT_DAYS = 7

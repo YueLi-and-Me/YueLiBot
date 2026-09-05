@@ -20,7 +20,7 @@ from src.core.runtime.clock import now as current_time
 from src.core.db.schema import DDL, SEED
 from src.core.memory.association import EDGE_BOOST, EDGE_HALF_LIFE_HOURS
 from src.core.memory.decay import FREEZE
-from src.core.services.edge_decay import EdgeDecayService
+from src.core.services.maintenance.edge_decay import EdgeDecayService
 
 MS_PER_HOUR = 3_600_000
 

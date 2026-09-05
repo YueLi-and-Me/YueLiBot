@@ -18,7 +18,7 @@ from src.core.api.http import router
 from src.core.api.state import app_state
 from src.core.observe.store import EventStore, event_store
 from src.core.prompts.registry import configure_prompts, reset_prompts_for_tests
-from src.core.services.replay import replay_event
+from src.core.services.dev.replay import replay_event
 
 
 

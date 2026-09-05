@@ -21,7 +21,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from src.core.services.emoji import EmojiLibrary
+from src.core.services.media.emoji import EmojiLibrary
 
 _MB = 1024 * 1024
 

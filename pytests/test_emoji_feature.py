@@ -16,12 +16,12 @@ from src.core.db.schema import DDL
 from src.core.config.schema import Config, VisionConfig
 from src.core.platform_io.drivers.qq_ws import QqWebSocketDriver
 from src.core.platform_io.types import OutboundMessage, StreamRef
-from src.core.services.chat_image import (
+from src.core.services.media.chat_image import (
     ChatImageDescriber,
     DescribedEmoji,
     merge_emoji_descriptions,
 )
-from src.core.services.emoji import EmojiIntegrityError, EmojiLibrary
+from src.core.services.media.emoji import EmojiIntegrityError, EmojiLibrary
 from src.platforms.onebot11.backend import _parse_outbound
 from src.platforms.onebot11.config import GroupAccessConfig, PrivateAccessConfig
 from src.platforms.onebot11.events import parse_inbound_event

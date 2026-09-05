@@ -12,7 +12,7 @@ from typing import Any
 import asyncio
 import json
 
-from ..trace_console import render_observation
+from ..console.trace_console import render_observation
 
 from src.core.logging.logger import get_logger
 from src.core.observe import events as trace

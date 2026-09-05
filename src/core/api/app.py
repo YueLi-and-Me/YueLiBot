@@ -15,7 +15,7 @@ from .model_config import router as model_config_router
 from .settings_config import router as settings_config_router
 from .ws import router as ws_router
 
-from src.core.services.lifecycle import lifecycle
+from src.core.services.host.lifecycle import lifecycle
 from src.core.webui.app import mount_webui
 
 

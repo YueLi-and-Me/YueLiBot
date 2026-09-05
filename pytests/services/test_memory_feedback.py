@@ -9,7 +9,7 @@ import pytest
 from src.core.agent.profile import profiles_for_injection
 from src.core.config.schema import MemoryFeedbackConfig
 from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
-from src.core.services.memory_feedback import (
+from src.core.services.maintenance.memory_feedback import (
     MemoryFeedbackService,
     has_correction_signal,
     marked_fact_ids,

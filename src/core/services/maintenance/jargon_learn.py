@@ -1,6 +1,6 @@
 """黑话学习的后台服务：游标轮询、批次调度与推断节流。
 
-形态照 :class:`src.core.services.jargon_stats.JargonStatsService`：生命周期
+形态照 :class:`src.core.services.maintenance.jargon_stats.JargonStatsService`：生命周期
 回调只负责起停一个后台任务，``startup`` 里 ``create_task`` 后立即返回——
 把无限循环本身注册成 startup 钩子会让生命周期永久 ``await`` 下去，其后所有
 服务都起不来。

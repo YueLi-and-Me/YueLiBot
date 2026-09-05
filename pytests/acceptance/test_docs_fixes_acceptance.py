@@ -22,7 +22,7 @@ from src.core.prompts.registry import (
 )
 from src.core.services.proactive import AwarenessService
 from src.core.schedule.timeline import ActivityTimeline
-from src.core.services.replay import (
+from src.core.services.dev.replay import (
     _rebuild_messages,
     _render_current_prompt,
     replay_event,
@@ -297,7 +297,7 @@ def test_replay_derives_new_chat_component_from_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import src.core.prompts.registry as registry_module
-    import src.core.services.replay as replay_module
+    import src.core.services.dev.replay as replay_module
 
     original_system = get_prompt('chat.system')
     temporary_templates = {

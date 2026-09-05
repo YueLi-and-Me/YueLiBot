@@ -2,9 +2,9 @@
 
 覆盖入口反转之后新增的三块：
 
-- ``src.core.services.desktop_shell``：桌宠关闭时不产出任何外壳进程（无头形态），
+- ``src.core.services.host.desktop_shell``：桌宠关闭时不产出任何外壳进程（无头形态），
   开启时按仓库里实际存在的东西解析启动命令，解析不出来直接报错。
-- ``src.core.services.adapter_host``：缺声明或缺连接配置时跳过适配器，不阻断后端。
+- ``src.core.services.host.adapter_host``：缺声明或缺连接配置时跳过适配器，不阻断后端。
 - ``src.core.runtime.child_process``：输出按行贴标签转发、返回码 0 不重启、异常退出
   重启、``stop()`` 真的把进程收走。
 
@@ -22,8 +22,8 @@ import pytest
 
 from src.core.runtime.child_process import ChildProcess
 from src.core.config.schema import Config
-from src.core.services.adapter_host import adapter_log_tag, build_adapter_process
-from src.core.services.desktop_shell import build_desktop_shell_process, resolve_shell_command
+from src.core.services.host.adapter_host import adapter_log_tag, build_adapter_process
+from src.core.services.host.desktop_shell import build_desktop_shell_process, resolve_shell_command
 
 import src.main as entry
 

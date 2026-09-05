@@ -33,8 +33,8 @@ from src.core.llm_models.snapshot import (
     select_candidate,
 )
 from src.core.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
-from src.core.services.trace_console import render_model_call
-from src.core.services.turn_panel import ModelCall, note_model_call
+from src.core.services.console.trace_console import render_model_call
+from src.core.services.console.turn_panel import ModelCall, note_model_call
 
 logger = get_logger(__name__)
 

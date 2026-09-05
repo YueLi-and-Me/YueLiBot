@@ -20,7 +20,7 @@ from rich.text import Text
 from src.core.logging.log_display import value_label
 from src.core.logging.logger import get_logger
 from src.core.logging.logger_colors import is_color_enabled
-from src.core.services.turn_panel import (
+from src.core.services.console.turn_panel import (
     ModelCall,
     begin_turn as begin_turn_capture,
     render_stage_panel,

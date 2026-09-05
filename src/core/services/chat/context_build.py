@@ -39,7 +39,7 @@ from src.core.persona.state import describe_acquaintance, describe_persona
 from src.core.platform_io.types import ConversationContext
 from src.core.runtime.clock import now as current_time
 from src.core.schedule.plan import asks_about_activity
-from src.core.services.memory_feedback import register_prompt_entries
+from src.core.services.maintenance.memory_feedback import register_prompt_entries
 
 from .helpers import _facts_for_prompt
 from .state import _PreparedTurnContext, _RetrievalTrace

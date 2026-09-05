@@ -154,7 +154,7 @@ def test_emoji_order_and_batch_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.core.config.schema import EmojiConfig
-    from src.core.services.emoji import EmojiLibrary
+    from src.core.services.media.emoji import EmojiLibrary
 
     directory = tmp_path / 'emoji'
     directory.mkdir()

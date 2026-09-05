@@ -16,7 +16,7 @@ from src.core.memory.embed import cosine, _pack, _unpack
 from src.core.memory.knowledge import add_knowledge
 from src.core.memory.quantize import dequantize
 from src.core.memory.store import RecalledFact
-from src.core.services.vector import VectorService
+from src.core.services.maintenance.vector import VectorService
 
 OWNER_PERSON_ID = 1
 
@@ -287,7 +287,7 @@ class TestVectorServiceLifecycle:
                 pass
 
         warnings = []
-        monkeypatch.setattr('src.core.services.vector.logger', _Logger())
+        monkeypatch.setattr('src.core.services.maintenance.vector.logger', _Logger())
         add_knowledge(store._db, '启动期缺失向量的知识', 'fact_extract', 1)
         service = VectorService(store, _Client(), db=store._db)
 
@@ -311,7 +311,7 @@ class TestVectorServiceLifecycle:
                 warnings.append((event, fields))
 
         warnings = []
-        monkeypatch.setattr('src.core.services.vector.logger', _Logger())
+        monkeypatch.setattr('src.core.services.maintenance.vector.logger', _Logger())
         knowledge_id = add_knowledge(store._db, '无法生成向量的知识', 'fact_extract', 1)
         service = VectorService(store, _Client(), db=store._db)
 
@@ -364,7 +364,7 @@ class TestVectorServiceLifecycle:
 
         warnings = []
         monkeypatch.setattr(
-            'src.core.services.vector.logger',
+            'src.core.services.maintenance.vector.logger',
             _Logger(),
         )
         service = VectorService(None, None, disabled_reason='vector.enabled=false')

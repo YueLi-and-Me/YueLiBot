@@ -24,7 +24,7 @@ from src.core.observe.store import event_store
 from src.core.platform_io.registry import StreamRegistry
 from src.core.platform_io.types import ConversationContext, InboundMessage
 from src.core.services.chat import ChatService
-from src.core.services.vector import VectorService
+from src.core.services.maintenance.vector import VectorService
 
 
 _FACT_COUNT = 24

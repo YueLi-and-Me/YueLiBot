@@ -10,7 +10,7 @@
   单位的量没有意义，为它加一列和一条迁移则是过度设计。
 
 因此这里用一个低频轮询任务承载它。被 ``src.main`` 通过生命周期注册，
-形态与 ``src.core.services.jargon_stats`` 一致。
+形态与 ``src.core.services.maintenance.jargon_stats`` 一致。
 """
 
 from __future__ import annotations
