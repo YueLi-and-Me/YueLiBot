@@ -29,6 +29,7 @@ from src.core.api.auth import token_manager
 from src.core.api.state import app_state
 from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
 from src.core.runtime.child_process import ChildProcess
+from src.core.runtime.consent import require_consent
 from src.core.runtime.clock import now as current_time
 from src.core.logging.console_layout import print_box
 from src.core.logging.logger import get_logger, initialize_logging
@@ -527,6 +528,11 @@ def main() -> None:
         help="主体配置目录，默认为仓库根的 config/",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_BACKEND_PORT)
+    parser.add_argument(
+        "--accept-agreement",
+        action="store_true",
+        help="接受用户协议后启动。无头部署无法在终端交互询问，用这一项接受一次即可。",
+    )
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument(
         "--no-shell",
@@ -543,6 +549,10 @@ def main() -> None:
 
     data_dir = Path(args.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
+    # 同意闸门必须在生成配置与建库之前：协议讲的是「这个程序会替你存别人的什么、
+    # 会把内容发给谁、接入 QQ 有什么账号风险」。放到后面问，用户已经在不知情的
+    # 情况下让程序动了盘。
+    require_consent(data_dir, PROJECT_ROOT, preaccepted=args.accept_agreement)
     config_dir = Path(args.config_path)
     # 配置文件缺失时先生成一份初始配置，再往下走。这一段此前只有 Electron 有：
     # 它首次启动弹设置窗口，填完才落盘。桌宠可以整个不在场之后，无头形态下没有

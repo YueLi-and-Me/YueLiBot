@@ -137,8 +137,12 @@ def main() -> int:
     with log.open("wb") as fh:
         proc = subprocess.Popen(
             # 端口交给系统分配：写死 7999 会在桌宠已经开着的时候直接撞端口退出。
+            # --accept-agreement 是必须的：探针在全新临时数据目录里起进程，
+            # 没有同意记录；而它的 stdin 不是终端，同意闸门会按无头处理直接退出。
+            # 这不是绕过闸门——闸门本身另有用例覆盖，这里只是让探针能走到启动链路。
             [sys.executable, "bot.py", "--data-dir", str(data_dir),
-             "--config-path", str(config_dir), "--port", "0"],
+             "--config-path", str(config_dir), "--port", "0",
+             "--accept-agreement"],
             cwd=str(REPO), stdout=fh, stderr=subprocess.STDOUT,
         )
 

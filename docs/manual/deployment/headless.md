@@ -13,7 +13,18 @@ uv sync
 uv run bot.py
 ```
 
-首次生成 `config/` 后会退出，先完成终端列出的待填项。
+**首次启动要先接受用户协议。** 无头环境无法在终端询问，用 `--accept-agreement`
+接受一次：
+
+```bash
+uv run bot.py --accept-agreement
+```
+
+协议正文在仓库根目录的 [`AGREEMENT.md`](../../../AGREEMENT.md)，接受前请先读。
+记录写在数据目录的 `consent.json`，之后照常 `uv run bot.py` 启动。
+交给 systemd 之前必须先完成这一步，否则服务会在启动时退出。
+
+接受之后首次生成 `config/` 会退出，先完成终端列出的待填项。
 默认百炼连接通常仅需补充 `providers.toml` 的 `api_key`。
 换厂商需同步修改模型引用，见[配置总览](../configuration/index.md)。
 确认 `bot.toml` 中 `[desktop_pet] enabled = false`，再次启动。
