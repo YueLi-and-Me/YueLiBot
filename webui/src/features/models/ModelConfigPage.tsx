@@ -1119,7 +1119,7 @@ export function ModelConfigPage() {
   )
 }
 
-/** 提供商弹窗：外壳为 Dialog 原语（ESC/遮罩关闭、焦点陷阱），表单对齐 MaiBot ProviderForm 的模板搜索、锁定字段、密钥显示与校验。 */
+/** 提供商弹窗：外壳为 Dialog 原语（ESC/遮罩关闭、焦点陷阱），表单提供模板搜索、锁定字段、密钥显示与校验。 */
 function ProviderDialog({
   dialog,
   providers,
