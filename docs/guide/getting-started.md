@@ -51,9 +51,8 @@ uv run bot.py
 
 ```
 配置已生成，但还差这些才能启动：
-  - bot.toml 的 [bot] name：她叫什么
-  - models.toml 的 [[models]] model_identifier，以及 providers.toml 的
-    [[api_providers]] base_url、api_key：对话任务至少要有一条填好的模型连接
+  - providers.toml 里厂商「dashscope」的 api_key：填上你自己的密钥。
+    厂商地址与六个模型条目都已预填好，换厂商才需要一起改
 ```
 
 **没看到的话**：
@@ -62,36 +61,45 @@ uv run bot.py
 - 如果你开着桌宠：外壳会拒绝把运行时根目录解析到 C 盘（避免运行数据写进系统盘），
   把仓库挪到别的盘，或用 `YUELI_PROJECT_ROOT` 指定其它位置。无头运行没有这道限制。
 
-## 第三步：把那两处填上
+## 第三步：把 API Key 填上
 
 用任何文本编辑器打开 `config/` 下的文件。**每个字段都带一行中文说明**，不用去翻文档。
 
-`config/bot.toml`：
-
-```toml
-[bot]
-name = "月璃"     # 改成你想让她叫的名字
-```
-
-`config/providers.toml`：
+打开 `config/providers.toml`，把密钥填进去——**这是唯一非填不可的一项**：
 
 ```toml
 [[api_providers]]
-name = "主力"                          # 这个名字下一步要引用，改了两处要一起改
-base_url = "https://.../v1"            # 你的 API 端点
-api_key = "填你的密钥"
+name = "dashscope"
+kind = "dashscope"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"   # 已预填
+api_key = ""                                                     # 填你自己的密钥
 ```
 
-`config/models.toml`：
+`config/models.toml` 已经预填了六个模型条目，并按任务分好了档，不用动：
 
-```toml
-[[models]]
-name = "chat"
-api_provider = "主力"                  # 必须与 providers.toml 里的 name 完全一致
-model_identifier = "填模型 ID"          # 例如 deepseek-chat
-```
+| 任务 | 预填模型 | 为什么是它 |
+| :--- | :--- | :--- |
+| 对话 / 回复生成 / 主动搭话 | `deepseek-v4-pro-0813` | 直接产出她说的话，质量档最高 |
+| 决策 / 摘要 / 情景分析 | `deepseek-v4-flash-0731` | 每回合都跑且不面向用户，走快档 |
+| 表达选择 | `qwen3.8-flash` | 只做短文本判别，用最便宜的一档 |
+| 记忆抽取 / 日程 | `qwen3.8-max` | 要长上下文和稳定的结构化输出 |
+| 屏幕视觉 | `qwen3.8-max-0902` | 多模态专用 |
+| 向量嵌入 | `qwen3.7-text-embedding` | 嵌入专用，维度声明为 1024 |
+| 语音合成 | 留空 | 需要专门的语音厂商，预填 OpenAI 兼容的模型 ID 没有意义 |
 
-> **这三份之间的引用是单向的**：模型条目通过 `api_provider` 指向厂商名，任务再引用
+六个模型全部走同一条连接——DeepSeek 系列也由百炼托管，不需要单独开账号，
+所以只有一个 API Key 要填。所有模型的 `extra_body` 都写了 `enable_thinking = false`，
+默认关闭思考。
+
+**用别的厂商怎么办**：改 `providers.toml` 的 `kind` 与 `base_url`，再把
+`models.toml` 里各条目的 `model_identifier` 换成那家接口接受的真实模型 ID。
+`kind` 填 `deepseek` / `openai` / `ark` 这类预设标识，填对了 `base_url` 甚至可以留空
+（按预设取官方地址）。
+
+其余字段都有默认值，包括她的名字（默认「月璃」，在 `config/bot.toml` 的
+`[bot] name` 改）。要接 QQ 的话还要填两个号，见 [QQ 与群聊接入](qq-setup.md)。
+
+> **三份配置之间的引用是单向的**：模型条目通过 `api_provider` 指向厂商名，任务再引用
 > 一串模型名作为候选。改名字要顺着这条链一起改，否则启动时会直接报错退出——加载期
 > 做完整的交叉校验，不会带着一个悬空引用继续跑。
 
@@ -111,8 +119,8 @@ uv run bot.py
 ╰────────────────────────────────────────────────────╯
 ```
 
-看到这个框就说明后端起来了。浏览器打开那个地址，用框里的 token 登录，就能进
-[管理面板](webui.md)。
+看到这个框就说明后端起来了。浏览器打开那个地址就能进[管理面板](webui.md)——
+**本机访问会自动登录，不用手输 token**。框里那个 token 是给 API 调用用的（下一步会用到）。
 
 **没看到的话**：
 

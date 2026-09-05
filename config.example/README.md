@@ -16,11 +16,16 @@
 注意最后一行的落点：适配器的连接配置和插件源码同目录，**不在 `config/` 下**。模板里改成
 按插件名平铺，是为了让两种协议端各要填什么一眼可见；真实安装只会生成当前启用的那一个。
 
-最少要填的只有两处：
+**最少要填的只有一处**：`providers.toml` 的 `api_key`。
 
-1. `bot.toml` 的 `[bot] name` —— 她叫什么。
-2. `models.toml` 的 `[[models]] model_identifier`，加上 `providers.toml` 的
-   `[[api_providers]]` 的 `base_url` 与 `api_key` —— 对话任务至少要有一条能用的模型连接。
+厂商地址、六个模型条目与各任务的分档都已预填：对话与回复生成走质量档，决策、摘要与
+情景分析走快档，表达选择用最便宜的一档，记忆与日程要长上下文，视觉与嵌入各有专用
+模型；语音合成留空（它需要专门的语音厂商）。所有模型的 `extra_body` 都写了
+`enable_thinking = false`，默认关闭思考。
+
+六个模型全部走同一条连接——DeepSeek 系列也由百炼托管，不需要单独开账号。换别的厂商
+要改 `providers.toml` 的 `kind` 与 `base_url`，再把各模型条目的 `model_identifier`
+换成那家接受的真实 ID。
 
 接 QQ 还要填适配器那份，见[QQ 与群聊接入](../docs/guide/qq-setup.md)。
 

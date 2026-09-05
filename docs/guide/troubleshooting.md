@@ -46,10 +46,15 @@
 前端产物没生成。跑一次 `npm run build`（产物落 `out/webui`）。API 与 QQ 不受影响，
 只是没有界面。不想在服务器上装 Node，可以在别处构建后把 `out/webui` 拷过去。
 
-### token 在哪拿
+### 面板要我输 token
 
-启动时控制台打印的「WebUI 已就绪」框里有；也可以从 `data/runtime/backend.json` 读。
-**每次启动重新生成**，所以上次那个不能用了。它不进日志文件，也不进 WebUI 日志流。
+本机访问本来是自动登录的（请求来自回环地址时后端直接建会话）。要你手输，说明自动
+登录那一步失败了——多半是通过非回环地址访问的。
+
+token 在启动时控制台打印的「WebUI 已就绪」框里，也可以从 `data/runtime/backend.json`
+读。**每次启动重新生成**，所以上次那个不能用了。它不进日志文件，也不进 WebUI 日志流。
+
+直接调 API 时用 `Authorization: Bearer <token>`。
 
 ### 面板打不开 / 想远程访问
 

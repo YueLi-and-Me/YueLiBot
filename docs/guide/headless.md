@@ -9,10 +9,10 @@ uv sync
 uv run bot.py
 ```
 
-第一次运行会在 `config\` 生成一份初始配置然后退出，控制台列出还差哪几项——最少只需要两处：
-`bot.toml` 的 `[bot] name`，以及 `models.toml` 的 `model_identifier` 加 `providers.toml` 的
-`base_url`、`api_key`。生成的 TOML 每个字段都带中文说明，直接编辑就行。填好后再启动一次即可。
-
+第一次运行会生成一份初始配置然后退出，控制台列出还差哪几项——**通常只有一项：
+`providers.toml` 的 `api_key`**。厂商地址与六个模型条目已按阿里云百炼的 OpenAI 兼容
+端点预填并分好档，换厂商才需要连着改。生成的 TOML 每个字段都带中文说明，直接编辑
+就行。填好后再启动一次即可。
 确认 `bot.toml` 的 `[desktop_pet] enabled = false`（默认就是），入口便不会去找 Electron；
 QQ 适配器仍由它拉起和监护。终端里 `Ctrl+C` 走完整收尾，`SIGTERM` 同理，适合交给 systemd：
 

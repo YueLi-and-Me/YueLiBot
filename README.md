@@ -46,10 +46,11 @@ npm install     # 桌宠外壳与管理面板前端，无头部署可跳过
 uv run bot.py   # 一条命令起全套
 ```
 
-第一次运行会在 `config\` 生成一份带完整中文注释的初始配置然后停下，控制台列出还差哪几项——
-最少只需要两处：`bot.toml` 的 `[bot] name`，以及 `models.toml` 的 `model_identifier`
-加 `providers.toml` 的 `base_url`、`api_key`。填好后再启动一次即可。
-
+第一次运行会在 `config/` 生成一份带完整中文注释的初始配置然后停下，控制台列出还差哪几项。
+**通常只有一项：API Key**——厂商地址与六个模型条目都按阿里云百炼的 OpenAI 兼容端点
+预填好了，各任务也已分档（对话走质量档、决策与摘要走快档、视觉与嵌入各有专用模型），
+默认全部关闭思考。填好后再启动一次即可。要接 QQ 的话另外填两个号，见
+[QQ 与群聊接入](docs/guide/qq-setup.md)。
 想在填之前先看清配置长什么样，不必 clone：[`config.example/`](config.example/README.md)
 就是首次运行会生成的那一份，每个字段都带中文说明。
 
