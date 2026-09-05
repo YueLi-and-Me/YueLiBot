@@ -54,11 +54,12 @@ __pycache__/
 *.sqlite3
 /backups/
 
-# 测试不入库。文件仍留在工作区，pytest 与 vitest 照常运行；
-# 加这三条是防止一次 `git add .` 把它们重新带进版本库。
-/pytests/
-/tests/
-*.test.ts
+# 验收产物不入库。pytests/evidence/ 里是拿真机库跑出来的评估结果，
+# jargon-name-guard.txt 直接列着 169 个真实人名（identities 与群名片），
+# 公开仓库不能带。目录里的 .py 跑数工具已移到 scripts/eval/。
+/pytests/evidence/
+# uv 在测试目录留下的锁文件，随运行生成
+/pytests/*.lock
 
 # 文档不入库。docs/ 整个目录、以及给 agent 的规范约定，都只留在开发机工作区；
 # README.md 是唯一随代码分发的文档，所以它得自己把话说完整。

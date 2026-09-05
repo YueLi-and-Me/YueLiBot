@@ -1,0 +1,154 @@
+"""月璃设置 WebUI 配置快照与原子保存回归。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+import shutil
+
+import pytest
+
+from src.core.config import adapter_selection, settings_webui
+
+
+# 主体配置目录内的文件；适配器连接配置在 adapters/ 下，由 fixture 单独复制。
+_MAIN_FILES = ('bot.toml', 'features.toml', 'providers.toml', 'models.toml')
+_ADAPTER_PLUGIN = 'yueli-snowluma-adapter'
+
+
+@pytest.fixture()
+def config_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """复制一整套配置到临时目录，并把适配器根目录改指到副本。
+
+    适配器根目录是 ``adapter_selection`` 的模块常量（由文件位置推出仓库根）。
+    不改指它，保存用例就会直接写工作区里那份真实的适配器连接配置。
+    """
+    config_dir = tmp_path / 'config'
+    config_dir.mkdir()
+    for name in _MAIN_FILES:
+        shutil.copy2(Path('config') / name, config_dir / name)
+    shutil.copy2(Path('config') / 'adapter.toml', config_dir / 'adapter.toml')
+
+    adapters_root = tmp_path / 'adapters'
+    shutil.copytree(
+        Path('adapters') / _ADAPTER_PLUGIN,
+        adapters_root / _ADAPTER_PLUGIN,
+        ignore=shutil.ignore_patterns('__pycache__'),
+    )
+    monkeypatch.setattr(adapter_selection, 'ADAPTERS_ROOT', adapters_root)
+    return config_dir
+
+
+def _adapter_config(config_dir: Path) -> Path:
+    """给出该临时环境里适配器连接配置的路径。"""
+    return adapter_selection.adapter_config_path(
+        adapter_selection.read_active_adapter(config_dir)
+    )
+
+
+def test_snapshot_covers_five_files_and_masks_keys(config_copy: Path) -> None:
+    snap = settings_webui.snapshot(config_copy)
+    assert [item['file'] for item in snap['schema']['files']] == [
+        'bot.toml', 'features.toml', 'adapter.toml', 'providers.toml', 'models.toml',
+    ]
+    assert set(snap['values']) == {
+        'bot.toml', 'features.toml', 'adapter.toml', 'providers.toml', 'models.toml',
+    }
+    adapter_schema = next(
+        item for item in snap['schema']['files'] if item['file'] == 'adapter.toml'
+    )
+    # 逻辑标识不等于磁盘文件名，说明里必须给出真正写的是哪份文件。
+    assert str(_adapter_config(config_copy)) in adapter_schema['description']
+    bot_schema = next(item for item in snap['schema']['files'] if item['file'] == 'bot.toml')
+    agent_schema = next(
+        section for section in bot_schema['sections']
+        if section['key'] == 'conversation_agent'
+    )
+    assert any(field['key'] == 'tool_calling' for field in agent_schema['fields'])
+    providers = snap['values']['providers.toml']['api_providers']
+    assert providers
+    assert all(item.get('api_key') == '' for item in providers)
+
+
+def test_save_round_trip_keeps_values_and_writes_comments(config_copy: Path) -> None:
+    before = settings_webui.snapshot(config_copy)
+    result = settings_webui.save(config_copy, before['values'])
+    assert result['ok'] is True
+    after = settings_webui.snapshot(config_copy)
+    assert before['values'] == after['values']
+    for name in _MAIN_FILES:
+        assert '# ' in (config_copy / name).read_text(encoding='utf-8')
+    adapter_text = _adapter_config(config_copy).read_text(encoding='utf-8')
+    assert '# ' in adapter_text
+    # 连接段名取自适配器清单，不是模型字段名。
+    assert '[snowluma]' in adapter_text
+    assert '[napcat]' not in adapter_text
+
+
+def test_save_rejects_empty_bot_name_without_touching_files(config_copy: Path) -> None:
+    snap = settings_webui.snapshot(config_copy)
+    original = {
+        path: path.read_bytes()
+        for path in [config_copy / name for name in _MAIN_FILES] + [_adapter_config(config_copy)]
+    }
+    snap['values']['bot.toml']['bot']['name'] = ''
+    result = settings_webui.save(config_copy, snap['values'])
+    assert result['ok'] is False
+    assert 'bot.name' in result['detail']
+    for path, content in original.items():
+        assert path.read_bytes() == content
+
+
+def test_save_keeps_newly_added_task_slots(config_copy: Path) -> None:
+    """设置页保存不能清掉新增模型槽的配置。
+
+    写盘是 schema 驱动的，只写 entries 里列出的键；漏登记时那一整段会在保存后
+    消失，而且不报错——已经配好的候选被清空，看起来像「没保存成功」。
+    """
+    before = settings_webui.snapshot(config_copy)
+    tasks = before['values']['models.toml']['model_tasks']
+    for slot in ('planner', 'replyer', 'scene'):
+        tasks[slot]['model_list'] = ['gemini-2.5-pro']
+        tasks[slot]['selection_strategy'] = 'random'
+
+    assert settings_webui.save(config_copy, before['values'])['ok'] is True
+
+    after = settings_webui.snapshot(config_copy)['values']['models.toml']['model_tasks']
+    for slot in ('planner', 'replyer', 'scene'):
+        assert after[slot]['model_list'] == ['gemini-2.5-pro'], slot
+        assert after[slot]['selection_strategy'] == 'random', slot
+
+
+def test_balance_strategy_is_exposed_and_round_trips(config_copy: Path) -> None:
+    snapshot = settings_webui.snapshot(config_copy)
+    models_schema = next(
+        item for item in snapshot['schema']['files'] if item['file'] == 'models.toml'
+    )
+    task_schema = next(
+        section for section in models_schema['sections'] if section['key'] == 'model_tasks'
+    )
+    strategy_field = next(
+        field for field in task_schema['fields'] if field['key'] == 'selection_strategy'
+    )
+    assert any(option['value'] == 'balance' for option in strategy_field['options'])
+
+    tasks = snapshot['values']['models.toml']['model_tasks']
+    tasks['chat']['selection_strategy'] = 'balance'
+    assert settings_webui.save(config_copy, snapshot['values'])['ok'] is True
+
+    restored = settings_webui.snapshot(config_copy)['values']['models.toml']['model_tasks']
+    assert restored['chat']['selection_strategy'] == 'balance'
+
+
+def test_schema_entries_must_match_config_model() -> None:
+    """schema 的任务条目与配置模型不一致时必须在加载期失败，而不是静默丢配置。"""
+    from src.core.config.settings_webui import _require_task_entries_match_config
+
+    broken = {
+        'files': [{
+            'file': 'models.toml',
+            'sections': [{'key': 'model_tasks', 'kind': 'map', 'entries': [{'key': 'chat'}]}],
+        }],
+    }
+
+    with pytest.raises(ValueError, match='与配置模型不一致'):
+        _require_task_entries_match_config(broken)
