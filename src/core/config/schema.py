@@ -799,8 +799,9 @@ class ModelDefinitionConfig(BaseModel):
 class TaskRoutingConfig(BaseModel):
     """一个任务的候选模型与轮询策略。
 
-    model_list 排第一的是主力，其余为主模型故障后依次启用的备用。
-    sequential = 永远优先第一条；random = 每次随机起点，把流量摊到多家。
+    model_list 是这个任务可用的模型候选，彼此平级；列表顺序只在 sequential
+    策略下决定尝试先后，另外两种策略下顺序不参与挑选。
+    sequential = 从上往下试，失败才顶下一个；random = 每次随机起点，把流量摊到多家。
     balance = 在健康候选之间逐轮轮询，稳定地分摊请求。
     """
 

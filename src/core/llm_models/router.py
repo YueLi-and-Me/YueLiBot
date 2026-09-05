@@ -259,8 +259,8 @@ class ProviderHealth:
 class ModelRouter:
     """管理一个任务的模型候选序列和流式/非流式切换。
 
-    对外提供与 provider 兼容的 `stream` 方法；候选配置顺序决定主力和备用，
-    厂商健康状态决定当前轮次的实际尝试顺序。
+    对外提供与 provider 兼容的 `stream` 方法；候选彼此平级，挑选策略与厂商
+    健康状态共同决定当前轮次的实际尝试顺序。
     """
 
     def __init__(self, task: str, candidates: Sequence[ModelCandidate],
@@ -637,7 +637,7 @@ class ModelRouter:
                     self._health.recover(candidate.provider)
                     return
             except LlmError as exc:
-                # 用户主动打断不属于服务商故障，不记录为失败，也不切换到备用服务商。
+                # 用户主动打断不属于服务商故障，不记录为失败，也不切换到其它候选。
                 if exc.kind != 'aborted':
                     record_attempt(
                         model=candidate.name,

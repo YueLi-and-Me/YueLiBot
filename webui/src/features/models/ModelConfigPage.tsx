@@ -995,7 +995,7 @@ export function ModelConfigPage() {
               icon={<Cpu className="size-4.5" aria-hidden="true" />}
               tint="plum"
               title={`功能分配 · ${taskLabel(selectedTask)}`}
-              subtitle={`任务字段 ${selectedTask} · ${taskDescription(selectedTask)}；第一位是主力模型，后续是故障切换备用`}
+              subtitle={`任务字段 ${selectedTask} · ${taskDescription(selectedTask)}；列表顺序只在「顺序优先」策略下决定先后`}
             />
             <CardBody>
               {/* 选型建议单独成行：它是「照着做」的信息，塞进副标题会和字段说明糊在一起。 */}
@@ -1045,7 +1045,7 @@ export function ModelConfigPage() {
                       </Select>
                     </div>
                     <div className="grid gap-3 md:grid-cols-3">
-                      <Field label="模型选择策略" help="顺序优先适合主力加备用；随机选择会打乱候选；负载均衡按轮次稳定分摊给健康模型。">
+                      <Field label="模型选择策略" help="顺序优先从上往下试，挂了才顶下一个；随机选择每次打乱候选；负载均衡按轮次稳定分摊给健康模型。后两种策略下候选之间没有先后。">
                         <Select value={taskConfig.selection_strategy} onChange={(event) => updateTask(selectedTask, { selection_strategy: event.target.value as TaskConfig['selection_strategy'] })}>
                           <option value="sequential">按顺序优先（sequential）</option>
                           <option value="random">随机选择（random）</option>

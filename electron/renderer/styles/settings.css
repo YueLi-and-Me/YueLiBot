@@ -170,7 +170,7 @@ select:focus {
   gap: var(--space-2);
 }
 
-/* 主力/备用标签宽度固定，候选顺序一眼能看出来 */
+/* 序号标签宽度固定，候选顺序一眼能看出来 */
 .candidate-rank {
   color: hsl(var(--muted-foreground));
   flex: none;

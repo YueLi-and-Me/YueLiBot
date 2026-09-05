@@ -421,7 +421,7 @@ def dump_exchange(
             'toolCalls': deepcopy(tool_calls) if tool_calls else None,
             'chunks': chunk_count,
         },
-        # 候选切换过程；成功记录里非空说明这次是靠备用服务商救回来的。
+        # 候选切换过程；成功记录里非空说明这次是换了候选才成的。
         'attempts': deepcopy(state.get('attempts') or []),
         'providerRequest': deepcopy(state.get('provider_request')),
         'error': {'type': error_type, 'message': error} if error_type else None,

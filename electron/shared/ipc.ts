@@ -357,7 +357,7 @@ export interface ModelDefinitionConfig {
   embedding_dim: number
 }
 
-/** 一个任务的候选模型列表与轮询策略。列表里排第一的是主力。 */
+/** 一个任务的候选模型列表与挑选策略。列表顺序只在 sequential 策略下决定先后。 */
 export interface TaskRoutingConfig {
   model_list: string[]
   selection_strategy: SelectionStrategy

@@ -57,7 +57,7 @@ const TASK_LABELS: Array<[keyof YueliConfig['model_tasks'], string, string]> = [
   ['schedule', '每日生活计划', '留空时继承对话候选，也可以单独指定结构化输出模型。'],
   ['vision', '看屏幕', '必须是能接受图片输入的多模态模型。'],
   ['tts', '语音合成', '协议由所属服务商决定：OpenAI 兼容或豆包语音。'],
-  ['embedding', '向量记忆', '备用模型必须和主力输出同样的向量维度。'],
+  ['embedding', '向量记忆', '同一任务下的候选模型必须输出同样的向量维度。'],
 ]
 
 // DOM 构造工具。
@@ -435,7 +435,7 @@ function renderTask(
     select.addEventListener('change', () => {
       routing.model_list[position] = select.value
     })
-    row.append(el('span', 'candidate-rank', position === 0 ? '主力' : `备${position}`))
+    row.append(el('span', 'candidate-rank', `#${position + 1}`))
     row.append(select)
     row.append(iconButton('↑', '往前排一位', () => {
       if (position === 0) return
@@ -463,7 +463,7 @@ function renderTask(
   const addButton = el('button', 'button secondary small')
   addButton.type = 'button'
   addButton.textContent = '添加候选'
-  // 已在候选中的模型不再提供添加选项，避免重复候选改变轮询顺序和备用切换行为。
+  // 已在候选中的模型不再提供添加选项，避免重复候选改变挑选顺序和故障切换行为。
   const available = cfg.models.filter((model) => !routing.model_list.includes(model.name))
   addButton.disabled = available.length === 0
   addButton.addEventListener('click', () => {
@@ -476,7 +476,7 @@ function renderTask(
 
   if (routing.model_list.length > 1) {
     card.append(selectField('挑选顺序', routing.selection_strategy, [
-      ['sequential', '按顺序（主力优先，挂了才顶上）'],
+      ['sequential', '按顺序（从上往下试，挂了才顶下一个）'],
       ['random', '随机（每次打乱候选）'],
       ['balance', '负载均衡（健康模型逐轮分摊）'],
     ], (value) => { routing.selection_strategy = value as SelectionStrategy }))
