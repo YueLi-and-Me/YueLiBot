@@ -13,8 +13,8 @@
 
 用法示例：
 
-    python scripts/knowledge_reindex.py data/memory.db
-    python scripts/knowledge_reindex.py data/memory.db --config config
+    python scripts/maintain/knowledge_reindex.py data/memory.db
+    python scripts/maintain/knowledge_reindex.py data/memory.db --config config
 """
 
 from __future__ import annotations

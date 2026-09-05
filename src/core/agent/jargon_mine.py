@@ -211,7 +211,7 @@ class MineOutcome:
 def _load_known_names(db: sqlite3.Connection, bot_names: Sequence[str]) -> Set[str]:
     """汇总全部已知人名：平台显示名、各群名片与 bot 名字族。
 
-    判据与 ``scripts/jargon_guard_names.py`` 一致：词条面与已知人名精确撞名的
+    判据与 ``scripts/maintain/jargon_guard_names.py`` 一致：词条面与已知人名精确撞名的
     候选不入库；存量词条由 :func:`lock_name_collisions` 处理。
 
     :param db: 进程级 SQLite 连接。
@@ -697,7 +697,7 @@ def lock_name_collisions(
     重新推断：词条仍会随出现次数达到阶梯阈值，而三步推断无法识别人名（群内
     称呼与字面含义的上下文差异真实存在），会被再次判定为黑话转回 confirmed。
 
-    - 现象：``scripts/jargon_guard_names.py`` 降级过的名字在学习服务运行后
+    - 现象：``scripts/maintain/jargon_guard_names.py`` 降级过的名字在学习服务运行后
       陆续转回 confirmed。
     - 原因：守卫写在提取路径上，存量走的是推断路径，两条路径此前不共享判据。
     - 后果：不锁定则只能反复运行守卫脚本；注入侧的 ``protected_names`` 只

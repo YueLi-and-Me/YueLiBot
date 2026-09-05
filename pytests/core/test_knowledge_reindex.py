@@ -23,7 +23,7 @@ from src.core.memory.knowledge import (
 from src.core.memory.similarity import exact_key
 from src.core.memory.store import MemoryStore
 
-from scripts.knowledge_reindex import recompute_embeddings, reindex
+from scripts.maintain.knowledge_reindex import recompute_embeddings, reindex
 
 _NOW = 1_750_000_000_000
 

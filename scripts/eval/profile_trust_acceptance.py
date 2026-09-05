@@ -12,7 +12,7 @@
 
 用法（在仓库根目录）：
 
-    uv run python scripts/profile_trust_acceptance.py \
+    uv run python scripts/eval/profile_trust_acceptance.py \
         --db data/memory.db --config config
 
 临时目录的路径会打印出来，里面的副本与事件账本可留作复查。

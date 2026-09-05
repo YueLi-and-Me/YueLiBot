@@ -29,7 +29,7 @@ import sqlite3
 
 import pytest
 
-from scripts.fix_expression_style_prefix import fix as fix_style_prefix
+from scripts.maintain.fix_expression_style_prefix import fix as fix_style_prefix
 from src.core.agent.expression import fetch_expression_pool
 from src.core.api.http import _delete_expressions
 from src.core.observe.store import search_events

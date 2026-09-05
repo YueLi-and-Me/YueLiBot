@@ -190,7 +190,7 @@ def test_c5_healthy_run_exits_zero_and_writes_nothing(tmp_path: Path) -> None:
 
 def test_c6_command_and_startup_share_one_implementation() -> None:
     """C-6：命令入口与启动路径引用同一份判据，不是两份实现。"""
-    import scripts.self_check as command_entry
+    import scripts.check.self_check as command_entry
     import src.main as entry
 
     assert command_entry.run_self_check is run_self_check

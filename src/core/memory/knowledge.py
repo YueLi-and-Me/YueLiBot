@@ -82,7 +82,7 @@ def add_knowledge(
     而是整行检索不到，且该缺失不易察觉。
 
     向量由上层写入链路在本函数返回 ID 后生成；启动期补算与
-    ``scripts/knowledge_reindex.py`` 负责历史缺口。缺向量时检索仍可使用 BM25。
+    ``scripts/maintain/knowledge_reindex.py`` 负责历史缺口。缺向量时检索仍可使用 BM25。
 
     去重靠 ``content_key`` 唯一约束，与 ``facts.content_key`` 同口径
     （``similarity.exact_key``）。重复内容直接返回既有行 ID，不新增、不报错——

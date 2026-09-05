@@ -10,8 +10,8 @@ emoji 表里没有对应哈希的孤儿对它完全不可见，可以无限期�
 --dry-run 不修改任何文件。
 
 用法（仓库根目录）：
-    python scripts/emoji_orphan_cleanup.py --dry-run
-    python scripts/emoji_orphan_cleanup.py
+    python scripts/maintain/emoji_orphan_cleanup.py --dry-run
+    python scripts/maintain/emoji_orphan_cleanup.py
 """
 
 from __future__ import annotations

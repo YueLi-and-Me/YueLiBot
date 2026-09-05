@@ -4,7 +4,7 @@
 （Electron 负责写、Python 负责校验），schema 加了字段而 TS 模板没跟上的漂移
 曾让整份重写静默毁掉约 30 个字段。本脚本让漂移当场红灯：
 
-1. 用 Electron 写入器把「全默认值配置目录」写进临时目录（scripts/config_defaults.ts）；
+1. 用 Electron 写入器把「全默认值配置目录」写进临时目录（scripts/check/config_defaults.ts）；
 2. 用 tomllib 解析四个文件，抽取每个配置表的字段集与字典表的键集；
 3. 与 src/core/config/schema.py 各文档模型的字段集做差集；
 4. 任一方向的差集非空即失败，逐字段报告。
@@ -15,7 +15,7 @@
 模板只在有值时写出，因此这两个字段允许缺席。
 
 用法（在仓库根目录）：
-    python scripts/config_parity.py     # 校验，漂移时退出码 1
+    python scripts/check/config_parity.py     # 校验，漂移时退出码 1
 """
 
 from __future__ import annotations
@@ -28,9 +28,10 @@ import tomllib
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# scripts/check/ 下沉两层，parents[2] 才是仓库根
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
-    # 直接以 python scripts/config_parity.py 运行时仓库根不在导入路径上。
+    # 直接以 python scripts/check/config_parity.py 运行时仓库根不在导入路径上。
     sys.path.insert(0, str(REPO_ROOT))
 
 from pydantic import BaseModel
@@ -176,10 +177,16 @@ def collect_problems() -> list[str]:
         return ['未找到 npx，无法运行 Electron 写入器；先在仓库根目录执行 npm install']
     with tempfile.TemporaryDirectory(prefix='config-parity-') as temp:
         result = subprocess.run(
-            [npx, 'tsx', 'scripts/config_defaults.ts', temp],
+            [npx, 'tsx', 'scripts/check/config_defaults.ts', temp],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            # 不指定编码时 text=True 按系统 locale 解码（Windows 简中为 GBK），
+            # npx 输出里的非 GBK 字节会让 subprocess 的读取线程抛
+            # UnicodeDecodeError。异常发生在线程里不会终止本进程，表现为
+            # 一段无人认领的 traceback，而校验结果照常打印——排查成本极高。
+            encoding='utf-8',
+            errors='replace',
         )
         if result.returncode != 0:
             return [f'生成默认配置目录失败：\n{result.stdout}\n{result.stderr}']

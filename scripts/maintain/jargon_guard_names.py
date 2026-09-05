@@ -16,8 +16,8 @@
 
 用法示例：
 
-    python scripts/jargon_guard_names.py data/memory.db
-    python scripts/jargon_guard_names.py data/memory.db --names 月璃 小璃 璃宝 凌白
+    python scripts/maintain/jargon_guard_names.py data/memory.db
+    python scripts/maintain/jargon_guard_names.py data/memory.db --names 月璃 小璃 璃宝 凌白
 """
 
 from __future__ import annotations

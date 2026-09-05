@@ -28,7 +28,7 @@
 - :func:`strip_style_prefix` / :func:`validate_pairs`：落库前的前缀剥离与
   合法性检查。旧迁移存量 42% 的 style 为「使用反问句加强语气」这类指令句式，
   源于旧提示词示例；新学条目剥离同类前缀（口径与
-  ``scripts/fix_expression_style_prefix.py`` 同源）。
+  ``scripts/maintain/fix_expression_style_prefix.py`` 同源）。
 - :func:`parse_learning`：严格校验模型输出，结构非法即整批丢弃。
 - :func:`persist_pairs`：去重完全交给 ``UNIQUE(situation, style, stream_id)``
   + ``INSERT OR IGNORE``；字面不同但语义重复的条目会堆积，由淘汰兜住，

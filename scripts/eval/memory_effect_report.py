@@ -15,8 +15,8 @@
 
 用法::
 
-    python scripts/memory_effect_report.py
-    python scripts/memory_effect_report.py --split "2026-09-03 11:48"
+    python scripts/eval/memory_effect_report.py
+    python scripts/eval/memory_effect_report.py --split "2026-09-03 11:48"
 
 ``--split`` 给定时刻后，提示词统计会分成该时刻前后两段并列输出，
 用于「改造前 vs 改造后」这类对照；不给则只统计全窗口。

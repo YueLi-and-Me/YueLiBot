@@ -12,7 +12,8 @@ from src.core.runtime.self_check import render_report, run_self_check
 
 def main(argv: List[str] | None = None) -> int:
     """解析可选路径并把自检健康结论作为进程退出码返回。"""
-    project_root = Path(__file__).resolve().parents[1]
+    # scripts/check/ 下沉两层，parents[2] 才是仓库根
+    project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
         description='只读检查 YueLiBot 迁移、数据库、向量、配置和后台积压',
     )

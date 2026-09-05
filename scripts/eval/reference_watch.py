@@ -15,9 +15,9 @@
 
 用法：
 
-    python scripts/reference_watch.py                 # 最近 6 小时
-    python scripts/reference_watch.py --hours 24
-    python scripts/reference_watch.py --hash d4102a35 # 只看指定提示词版本的决策
+    python scripts/eval/reference_watch.py                 # 最近 6 小时
+    python scripts/eval/reference_watch.py --hours 24
+    python scripts/eval/reference_watch.py --hash d4102a35 # 只看指定提示词版本的决策
 """
 
 from __future__ import annotations

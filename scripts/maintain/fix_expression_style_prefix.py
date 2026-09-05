@@ -13,8 +13,8 @@ style，命中只报告不处理，是否清理由人决定。
 
 用法示例：
 
-    python scripts/fix_expression_style_prefix.py data/memory.db --dry-run
-    python scripts/fix_expression_style_prefix.py data/memory.db
+    python scripts/maintain/fix_expression_style_prefix.py data/memory.db --dry-run
+    python scripts/maintain/fix_expression_style_prefix.py data/memory.db
 """
 
 from __future__ import annotations

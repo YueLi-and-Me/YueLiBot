@@ -11,11 +11,11 @@ promptHash 样本混入解析失败率与非法动作率。
 
 用法示例：
 
-    python scripts/shadow_watch.py                  # 全量累计统计，并从当前最新序号继续观察
-    python scripts/shadow_watch.py --once           # 只统计现有全部事件并退出
-    python scripts/shadow_watch.py --full           # 从 seq=0 重放并逐条打印全部历史事件
-    python scripts/shadow_watch.py --interval 5     # 每 5 秒检查一次
-    python scripts/shadow_watch.py --hash f18ffc34  # 只统计指定提示词版本，观察当前版本建议必填
+    python scripts/eval/shadow_watch.py                  # 全量累计统计，并从当前最新序号继续观察
+    python scripts/eval/shadow_watch.py --once           # 只统计现有全部事件并退出
+    python scripts/eval/shadow_watch.py --full           # 从 seq=0 重放并逐条打印全部历史事件
+    python scripts/eval/shadow_watch.py --interval 5     # 每 5 秒检查一次
+    python scripts/eval/shadow_watch.py --hash f18ffc34  # 只统计指定提示词版本，观察当前版本建议必填
 
 指标口径与 shadow 验收文档一致：解析失败率、非法动作率、目标合法率、
 reply/silent 分布、危险沉默、natural_reply_window 过度触发、旧管线分歧
@@ -36,7 +36,8 @@ import sqlite3
 import sys
 import time
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# scripts/eval/ 下沉两层，parents[2] 才是仓库根
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB = PROJECT_ROOT / 'data' / 'memory.db'
 DEFAULT_REPORT = PROJECT_ROOT / 'data' / 'logs' / 'shadow-watch.md'
 DEFAULT_CURSOR = PROJECT_ROOT / 'data' / 'logs' / 'shadow-watch.cursor'

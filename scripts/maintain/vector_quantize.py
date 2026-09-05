@@ -2,7 +2,7 @@
 
 用法：
 
-    python scripts/vector_quantize.py data/memory.db
+    python scripts/maintain/vector_quantize.py data/memory.db
 
 脚本只处理 ``embedding IS NOT NULL AND embedding_q8 IS NULL`` 的行，可中断重跑；
 不会创建数据库、推进迁移或改写原 ``embedding`` 列。

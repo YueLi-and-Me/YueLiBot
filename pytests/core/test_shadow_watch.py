@@ -7,7 +7,7 @@ from pathlib import Path
 import json
 import sqlite3
 
-from scripts import shadow_watch
+from scripts.eval import shadow_watch
 
 
 def _event_payload(model_task: str, prompt_hash: str, watermark: int) -> str:
