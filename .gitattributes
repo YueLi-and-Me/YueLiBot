@@ -1,0 +1,22 @@
+# 库里统一存 LF，检出时按各人的 core.autocrlf / core.eol 决定工作区形态。
+#
+# 现状本来就是 LF：开发机的 core.autocrlf=true 一直在提交时做转换。写下这一条是
+# 把它从「依赖每个人的本机设置」变成仓库自己的规定——贡献者若把 autocrlf 关掉，
+# 提交上来的就是 CRLF，那条 PR 的 diff 会是整个文件每一行都变了，没法审。
+#
+# 不写 eol=lf：那会强制所有平台的工作区都用 LF。本项目在 Windows 上开发，
+# 强制 LF 会与编辑器和部分工具链的默认期待冲突。库里存什么才是这里要管的事。
+* text=auto
+
+# 二进制资源不做任何换行转换。text=auto 会按内容嗅探，这里再显式钉一遍：
+# 嗅探失手把 PNG 当文本处理会直接把文件改坏，且改坏之后看不出来。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.db binary
+*.sqlite3 binary
+
+# 锁文件标为生成物：GitHub 的语言统计不计入它们，diff 默认折叠。
+package-lock.json linguist-generated=true
+uv.lock linguist-generated=true
