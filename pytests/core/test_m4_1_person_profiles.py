@@ -237,3 +237,25 @@ def test_person_list_api_returns_503_when_service_is_uninitialized() -> None:
 
     assert response.status_code == 503
     assert response.json()['detail'] == '人物画像服务未初始化'
+
+
+def test_人物画像的会话条目必须带显示名(db: sqlite3.Connection) -> None:
+    """streams 里每一项都要有 displayName，群名为空时给空串而不是缺键。
+
+    前端契约把 displayName 声明成必填字符串，streamLabel() 对群会话直接
+    .trim()。漏发这一项时 TypeScript 查不出来（类型说有、运行时没有），
+    人物详情页在渲染时抛 TypeError 整树卸载，表现为白屏——只要这个人在
+    任何群里出现过就必现。这条断言盯的就是「键必须在」。
+    """
+    registry = StreamRegistry(db)
+    chat = ChatService(db, None, None, None, _noop, cfg=Config())
+    _stream_id, person_id = _add_group_message(
+        chat, registry, '10086', '群友甲', '在群里说了句话', NOW,
+    )
+
+    profile = chat.person_profile(person_id, now=NOW + 1)
+
+    assert profile['streams'], '这个人在群里发过言，会话列表不该为空'
+    for stream in profile['streams']:
+        assert 'displayName' in stream, f'会话 {stream["id"]} 缺 displayName'
+        assert isinstance(stream['displayName'], str)
