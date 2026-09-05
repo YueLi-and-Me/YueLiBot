@@ -1,0 +1,20 @@
+# 模型厂商：API 厂商与连接策略；文件由 WebUI 保存时整体重写。密钥只保存到本机，WebUI 读取时不会回传明文。
+
+[inner]
+version = "1.5.0"
+
+[[api_providers]] # 一个「API 厂商」条目
+name = "主力" # 模型配置引用的唯一名称；不能与其他厂商重复。
+kind = "ark" # 预设标识，如 deepseek、openai、ark；base_url 为空时按预设取官方地址。
+base_url = "" # API 端点基础 URL，通常以 /v1 结尾；留空使用预设官方地址。
+api_key = "" # 身份验证密钥；编辑时留空表示保持已保存的密钥不变。
+auth_type = "bearer" # Bearer 使用 Authorization 头；header/query 需要填写 auth_name。
+auth_name = "" # header/query 鉴权使用的字段名；Bearer/none 时必须留空。
+client_type = "openai" # OpenAI 兼容支持对话、视觉、向量和 TTS；volcengine 只允许绑定 TTS 任务。
+app_id = "" # 豆包语音的服务接口认证信息；仅 client_type=volcengine 时生效。
+model_list_endpoint = "/models" # 用于 WebUI 连通性测试与模型拉取的路径；OpenAI 兼容默认 /models。
+default_headers = {} # 中转头等需要额外 HTTP 头的厂商在这里写键值，每行 Header=Value；认证头仍由 auth_type/auth_name 负责。
+default_query = {} # 中转头等需要固定查询参数的厂商在这里写键值，每行 key=value。
+timeout_ms = 120000 # 单次 HTTP 连接与流式读取超时；首字阶段的内部重试仍受任务级首字超时整体截断。
+max_retries = 2 # 同一连接内尚未输出内容时的重试次数；需要跑满重试应调大任务级首字超时。
+retry_interval_ms = 800 # 两次重试之间的等待时间。

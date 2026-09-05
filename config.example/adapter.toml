@@ -1,0 +1,3 @@
+# 当前启用的 QQ 适配器：adapters/ 下的插件目录名。
+# 两个协议端后端互斥，同时只能开一个；桌宠与主体都读这一处声明。
+plugin = "yueli-snowluma-adapter"

@@ -27,6 +27,7 @@ from pydantic_core import PydanticUndefined
 import tomllib
 
 from .adapter_selection import (
+    ADAPTERS_ROOT,
     ADAPTER_SELECTION_FIELD,
     ADAPTER_SELECTION_FILENAME,
     DEFAULT_ADAPTER_PLUGIN,
@@ -216,15 +217,28 @@ def _ensure_adapter_selection(config_dir: Path) -> tuple[str, bool]:
     if path.is_file():
         return read_active_adapter(config_dir), False
     config_dir.mkdir(parents=True, exist_ok=True)
-    # 这份声明只有一个字段，不套 [inner].version：它不随配置结构演进，
-    # 加一层版本壳只会多一处需要同步升级的地方。
-    path.write_text('\n'.join([
+    path.write_text(_adapter_selection_text(DEFAULT_ADAPTER_PLUGIN), encoding='utf-8')
+    return DEFAULT_ADAPTER_PLUGIN, True
+
+
+def _adapter_selection_text(plugin_dir: str) -> str:
+    """渲染适配器声明文件的完整正文。
+
+    这份声明只有一个字段，不套 ``[inner].version``：它不随配置结构演进，
+    加一层版本壳只会多一处需要同步升级的地方。
+
+    抽成独立函数是为了让首次启动的创建路径与 ``render_example_configs`` 渲染的
+    入库模板共用同一份正文——两处各写一份必然漂移。
+
+    :param plugin_dir: 要写入声明的插件目录名。
+    :return: 含尾随换行的完整文件内容。
+    """
+    return '\n'.join([
         '# 当前启用的 QQ 适配器：adapters/ 下的插件目录名。',
         '# 两个协议端后端互斥，同时只能开一个；桌宠与主体都读这一处声明。',
-        f'{ADAPTER_SELECTION_FIELD} = "{DEFAULT_ADAPTER_PLUGIN}"',
+        f'{ADAPTER_SELECTION_FIELD} = "{plugin_dir}"',
         '',
-    ]), encoding='utf-8')
-    return DEFAULT_ADAPTER_PLUGIN, True
+    ])
 
 
 def bootstrap_config_directory(config_dir: Path) -> List[Path]:
@@ -272,6 +286,65 @@ def bootstrap_config_directory(config_dir: Path) -> List[Path]:
     for path in created:
         logger.info('config_file_created', path=str(path))
     return created
+
+
+def render_example_configs(dest: Path) -> List[Path]:
+    """把一份全新安装会生成的配置渲染到指定目录，作为随代码分发的配置模板。
+
+    与 :func:`bootstrap_config_directory` 的差别只在落点与覆盖策略：那个函数写进
+    真实配置目录、且只补缺失文件（覆盖会冲掉用户已经填好的密钥）；本函数总是重写
+    目标目录下的全部文件，并把 ``adapters/`` 下每个适配器的连接配置都渲染出来——
+    真实安装只生成当前启用的那一个，而模板要让人看全两种协议端各自需要填什么。
+
+    渲染复用同一套 schema 与带注释 TOML 写入器，模板因此不可能与代码漂移；
+    ``pytests/core/test_config_example.py`` 会重新渲染一次并要求与入库副本逐字一致，
+    字段增删忘了重新生成模板时那条用例会红。
+
+    :param dest: 模板输出目录；不存在时递归创建，已存在的同名文件会被覆盖。
+    :return: 本次写出的文件路径列表。
+    :raises KeyError: schema 新增了必填字段但本模块没有给出初值。
+    :raises ValueError: 某个适配器目录的清单不是适配器清单。
+    :raises OSError: 目录或文件无法写入。
+    副作用：只写 dest 下的文件；不触碰真实配置目录，也不触碰 adapters/ 下的任何文件。
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    written: List[Path] = []
+
+    selection = dest / ADAPTER_SELECTION_FILENAME
+    selection.write_text(_adapter_selection_text(DEFAULT_ADAPTER_PLUGIN), encoding='utf-8')
+    written.append(selection)
+
+    documents = {
+        'bot.toml': _bot_document(),
+        'features.toml': _feature_document(),
+        'providers.toml': _provider_document(),
+        'models.toml': _model_document(),
+    }
+    for name in MAIN_CONFIG_FILES:
+        path = dest / name
+        _write_documented_toml(path, file_schema(name), documents[name], CONFIG_VERSION)
+        written.append(path)
+
+    # 适配器的连接配置与插件同目录，模板里改为按插件名平铺在 adapters/ 下：
+    # 模板目录不是可运行的配置目录，照搬 adapters/<名>/config.toml 的嵌套只会
+    # 让人误以为可以整个拷进 adapters/ 覆盖掉插件源码。
+    adapters_dir = dest / 'adapters'
+    adapters_dir.mkdir(exist_ok=True)
+    for plugin_dir in sorted(
+        entry.name for entry in ADAPTERS_ROOT.iterdir()
+        if (entry / '_manifest.json').is_file()
+    ):
+        section = adapter_config_section(plugin_dir)
+        path = adapters_dir / (plugin_dir + '.toml')
+        _write_documented_toml(
+            path,
+            _adapter_write_schema(section),
+            _adapter_document_with_section(_adapter_document(), section),
+            NAPCAT_CONFIG_VERSION,
+        )
+        written.append(path)
+
+    return written
 
 
 def missing_startup_requirements(config_dir: Path) -> List[str]:
@@ -331,4 +404,5 @@ __all__ = [
     'MAIN_CONFIG_FILES',
     'bootstrap_config_directory',
     'missing_startup_requirements',
+    'render_example_configs',
 ]

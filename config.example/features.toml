@@ -1,0 +1,64 @@
+# 功能开关：语音合成、屏幕视觉、感知出口、向量召回、日志与代理等运行参数；文件由 WebUI 保存时整体重写。
+
+[inner]
+version = "1.5.0"
+
+[tts] # 语音合成：TTS 功能开关与音色；服务地址和密钥在 providers.toml 中维护。
+enabled = false # 关闭时保持纯文字回复。
+voice = "" # 厂商提供的音色 ID；不是显示名称。豆包语音这里填 voice_type。
+format = "mp3" # 返回音频格式：mp3 / wav / opus。
+speed = 0.95 # 语速倍率；陪伴场景建议略低于 1。
+cluster = "volcano_tts" # 仅 client_type=volcengine 时生效：豆包语音的集群名。
+
+[vision] # 屏幕视觉：屏幕截图与视觉模型的隐私控制。
+enabled = false # 用户询问屏幕内容时截取一帧发送给视觉模型；未询问时不截取。默认关闭。
+chat_image_enabled = false # 是否允许 QQ 聊天图片调用视觉模型描述；与桌面屏幕视觉独立开关。
+fullscreen_silent = true # 检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报。
+capture_mode = "window" # window 只截前台那一个窗口；screen 截整个主屏，可能包含其他窗口和隐私内容。
+
+[perception] # 屏幕情境出口：允许 Bot 在哪些会话出口提及前台程序和屏幕内容。
+surfaces = ["desktop"] # 留空表示不在任何出口提及；群聊不允许，配置 group 会在加载期直接报错。
+
+[vector] # 向量召回：长期记忆的向量混合召回开关。
+enabled = false # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖。
+
+[memory_feedback] # 记忆反馈纠错：N4 反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。
+enabled = false # 总开关；事实进过提示词后被用户纠正时按事实账本取代机制改库，关闭时整条链路零写入。
+window_hours = 12.0 # 从记忆进提示词起算的反馈观察窗口，单位小时；必须大于 0。
+check_interval_minutes = 30 # 两次纠错轮询之间的间隔，单位分钟。
+batch_size = 20 # 每轮最多处理的待观察项数量。
+auto_apply_threshold = 0.85 # 自动应用取代的最低置信度，范围 0~1。
+max_feedback_messages = 30 # 每个待观察项最多读取的窗口内用户消息数。
+prefilter_enabled = true # 纠正信号先过关键词预筛再调模型判定；关闭会显著增加模型调用。
+mark_enabled = true # 是否给受影响事实写「已被纠正」标记。
+hard_filter_enabled = true # 是否把带标记的事实硬过滤出召回。
+profile_refresh_enabled = true # 纠错后是否把相关人物画像置脏。
+profile_force_refresh_on_read = true # 画像脏时读取是否强制刷新而非复用旧快照。
+episode_rebuild_enabled = true # 纠错后是否把受影响情节排进重建。
+episode_query_block_enabled = true # 情节待重建期间是否屏蔽它的召回。
+reconcile_interval_minutes = 5 # 二阶段一致性协调任务的轮询间隔，单位分钟。
+reconcile_batch_size = 20 # 协调任务每轮的批大小。
+
+[log] # 日志：日志等级、文件轮转、控制台样式与事件保留策略。
+level = "INFO" # 全局日志等级：DEBUG / INFO / WARNING / ERROR / CRITICAL。
+console_level = "" # 终端日志等级，留空跟随全局 level。
+file_level = "" # 日志文件等级，留空跟随全局 level。
+level_style = "lite" # 控制台等级列：lite 只体现在时间戳颜色上，compact 显示单字母，full 显示全称。
+color_scope = "full" # 着色范围：none 不着色，title 只染时间戳与模块名，full 连正文一起染。
+date_format = "%m-%d %H:%M:%S" # 控制台时间戳格式，strftime 语法。
+to_file = true # 是否把日志写进数据目录 logs/app_*.log.jsonl；关闭后只剩控制台和 WebUI 推流。
+file_max_bytes = 5242880 # 单个日志文件上限，超过就换新文件。
+max_files = 30 # 最多保留几个日志文件，超出的从最旧的删起。
+cleanup_days = 14 # 超过这些天的日志文件直接清掉；0 表示只按数量。
+library_levels = { httpx = "WARNING", httpcore = "WARNING", PIL = "WARNING" } # 按库名压噪音，每行一条 library=LEVEL；没列出的库跟随全局 level。
+suppress_libraries = ["urllib3"] # 完全不要的库，每行一个，一行都不输出。
+request_snapshots = true # 模型调用失败时，把实际发出的请求体存进 logs/llm_request/（密钥已隐去）。
+max_snapshot_files = 50 # 最多保留几份请求快照。
+prompt_records = true # 每次模型调用（成功也算）按任务分目录存进 logs/prompt/，用于回看每一级 Agent 收到什么、答了什么。
+max_prompt_records_per_task = 200 # 每个任务子目录最多保留几份调用记录，按任务分别计数。
+event_retention_count = 20000 # 管线事件最多保留多少条。
+event_retention_hours = 72 # 管线事件最多保留多少小时。
+
+[advanced] # 高级：全局代理等高级运行参数。
+https_proxy = "" # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连。
+

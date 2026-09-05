@@ -1,0 +1,128 @@
+# 模型与任务：模型定义、八类任务候选与按任务拆分的生成参数；文件由 WebUI 保存时整体重写。
+
+[inner]
+version = "1.5.0"
+
+[model_tasks.chat] # 日常对话：回复用户普通消息的对话模型；至少要有一个。
+model_list = ["chat"] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.planner] # 行动决策：决定这一轮做什么动作的模型；留空继承对话候选。首字延迟主要由它决定。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.replyer] # 回复生成：把决策写成她实际说出口那句话的模型；留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.scene] # 情景分析：把一段聊天概括成「此刻是什么情况」的模型；留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.proactive] # 主动搭话：主动搭话消息的模型；留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.summary] # 对话摘要：压缩长对话为角色记忆的模型；留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.memory] # 记忆抽取：回合结束后回看一段对话、抽出值得长期记住的事实的模型；后台任务，不在回复关键路径上，可以用便宜快的模型。留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.schedule] # 日程安排：生成角色每日日程的模型；留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.vision] # 屏幕视觉：识别屏幕画面的多模态模型；留空不可用。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.expression] # 表达选择：为当前语境挑选表达习惯的模型；留空继承对话候选。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.tts] # 语音合成：语音合成模型；协议由所属服务商决定。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.embedding] # 向量嵌入：长期记忆向量化与召回模型；备用模型维度必须一致。
+model_list = [] # 每行一个 models.toml 中的模型名称；顺序即优先级。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[generation.chat] # 聊天回复：普通聊天的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.planner] # 行动决策：决策那一次调用的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.replyer] # 回复生成：写正文那一次调用的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.scene] # 情景分析：情景概括的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.proactive] # 主动搭话：主动搭话消息的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+enabled = true # 关闭后 Electron 不安装全局键鼠钩子，也不会主动发起互动。
+
+[generation.summary] # 长期记忆摘要：摘要任务的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.memory] # 记忆抽取：事实抽取要稳定的结构化输出，温度取最低一档；上限给足，截断会让 JSON 不可解析而整批丢弃。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.schedule] # 每日日程：日程 JSON 生成的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.expression] # 表达方式挑选：表达习惯选择的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[generation.vision] # 视觉描述：屏幕画面描述的采样参数。
+temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
+[[models]] # 一个「模型目录」条目
+name = "chat" # 任务候选引用的唯一名称；不能与其他模型重复。
+model_identifier = "" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
+api_provider = "主力" # 必须引用 providers.toml 中存在的厂商名称。
+extra_body = {} # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
+visual = false # 标记该模型可用于 vision / 图片描述任务。
+price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
+price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
+embedding_dim = 0 # 仅嵌入模型需要填写；备用向量模型必须与主力输出同样的维度。
