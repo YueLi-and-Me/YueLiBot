@@ -41,7 +41,9 @@ class BackendOutbound:
     segments: List[str]
     emoji_refs: tuple[str, ...] = ()
     emoji_sub_types: tuple[int, ...] = ()
-    # 主体算好的逐批停顿，与「文字在前、表情包在后」的发送批次对齐；缺省表示不等待。
+    # 普通图片路径，与表情包分属两个字段：带 sub_type 的图片段会被客户端当成表情显示。
+    image_refs: tuple[str, ...] = ()
+    # 主体算好的逐批停顿，与「文字、表情包、图片」的发送批次对齐；缺省表示不等待。
     batch_delays_ms: tuple[int, ...] = ()
     # 第一条气泡要引用的平台消息编号；为空表示不引用。
     quote_external_message_id: str = ''
@@ -525,6 +527,14 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     emoji_sub_types = tuple(raw_emoji_sub_types)
     if len(emoji_refs) != len(emoji_sub_types):
         raise ValueError('主体 qq.send 的 emojiRefs 与 emojiSubTypes 数量必须一致')
+    raw_image_refs = body.get('imageRefs', [])
+    if not isinstance(raw_image_refs, list) or not all(
+        isinstance(item, str) for item in raw_image_refs
+    ):
+        raise ValueError('主体 qq.send 的 imageRefs 必须是字符串数组')
+    image_refs = tuple(item.strip() for item in raw_image_refs)
+    if not all(image_refs):
+        raise ValueError('主体 qq.send 的 imageRefs 不能包含空字符串')
     raw_delays = body.get('batchDelaysMs', [])
     if not isinstance(raw_delays, list) or not all(
         isinstance(item, int) and not isinstance(item, bool) and item >= 0
@@ -532,10 +542,12 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     ):
         raise ValueError('主体 qq.send 的 batchDelaysMs 必须是非负整数数组')
     batch_delays_ms = tuple(raw_delays)
-    if batch_delays_ms and len(batch_delays_ms) != len(segments) + len(emoji_refs):
+    if batch_delays_ms and len(batch_delays_ms) != (
+        len(segments) + len(emoji_refs) + len(image_refs)
+    ):
         raise ValueError('主体 qq.send 的 batchDelaysMs 与发送批次数量必须一致')
-    if not segments and not emoji_refs:
-        raise ValueError('主体 qq.send 必须包含文本或表情包')
+    if not segments and not emoji_refs and not image_refs:
+        raise ValueError('主体 qq.send 必须包含文本、表情包或图片')
     raw_quote = body.get('quoteExternalMessageId', '')
     if not isinstance(raw_quote, str):
         raise ValueError('主体 qq.send 的 quoteExternalMessageId 必须是字符串')
@@ -546,6 +558,7 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         segments=segments,
         emoji_refs=emoji_refs,
         emoji_sub_types=emoji_sub_types,
+        image_refs=image_refs,
         batch_delays_ms=batch_delays_ms,
         quote_external_message_id=raw_quote.strip(),
         turn_id=_parse_turn_id(body, 'qq.send'),

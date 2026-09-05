@@ -566,6 +566,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         await app_state.broker.dispatch(OutboundMessage(
             stream=context.stream,
             segments=[command.text],
+            image_refs=command.image_refs,
         ))
         if command.succeeded:
             # 投递失败会在上方抛出，处理器错误提示也不记入历史。两条普通角色消息

@@ -17,7 +17,7 @@ import pytest
 from src.core.agent.fact_extract import advance_cursor, read_cursor
 from src.core.api.http import PlatformInboundBody, platform_inbound
 from src.core.api.state import app_state
-from src.core.commands import register_command, registered_commands
+from src.core.commands import CommandReply, register_command, registered_commands
 from src.core.config.schema import Config, DeveloperConfig, GroupChatConfig
 from src.core.memory.store import MemoryStore
 from src.core.observe.store import event_store
@@ -409,3 +409,50 @@ async def test_V6_追问生成期间收到命令阻止追问投递(
     # 命令后再次尝试同一追问也应被抑制，既有状态不生成新回合。
     assert await chat._attempt_direct_follow_up(state) is False
     decide.assert_awaited_once()
+
+
+async def test_处理器返回的图片随文字一并直投(
+    db: sqlite3.Connection,
+    command_app: Tuple[StreamRegistry, _ChatSpy, _BrokerSpy],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CommandReply 的 image_refs 要透传到 OutboundMessage，历史仍只补文字两条。
+
+    图是 /inst 的折线图。落库的助手消息只记文字：历史给后续对话与摘要看，
+    存一串本地路径对它们没有意义，而那些文件还会被同名覆盖。
+    """
+    import src.core.commands.registry as registry_module
+
+    monkeypatch.setattr(registry_module, '_commands', [])
+    monkeypatch.setattr(registry_module, '_command_names', set())
+
+    @register_command('/chart', r'/chart', '带图的命令')
+    def _chart(context: Any) -> CommandReply:
+        del context
+        return CommandReply(text='装机量 1284', image_refs=('D:/data/charts/inst-d.png',))
+
+    _, _, broker = command_app
+    before = db.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
+
+    body = _body()
+    body.text = '/chart'
+    response = await platform_inbound(body)
+
+    assert json.loads(response.body)['command'] == '/chart'
+    assert broker.dispatched[0].segments == ['装机量 1284']
+    assert broker.dispatched[0].image_refs == ('D:/data/charts/inst-d.png',)
+    assert db.execute('SELECT COUNT(*) FROM messages').fetchone()[0] == before + 2
+    assert db.execute(
+        "SELECT content FROM messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0] == '装机量 1284'
+
+
+async def test_返回纯字符串的命令不带图(
+    command_app: Tuple[StreamRegistry, _ChatSpy, _BrokerSpy],
+) -> None:
+    """既有命令一个都不用改：str 归一成 CommandReply 后 image_refs 为空。"""
+    _, _, broker = command_app
+
+    await platform_inbound(_body())
+
+    assert broker.dispatched[0].image_refs == ()

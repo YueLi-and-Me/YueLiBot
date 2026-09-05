@@ -84,6 +84,10 @@ class QqWebSocketDriver(PlatformDriver):
         if message.emoji_refs:
             payload['emojiRefs'] = list(message.emoji_refs)
             payload['emojiSubTypes'] = list(message.emoji_sub_types)
+        if message.image_refs:
+            # 普通图片与表情包各占一个字段：适配器据字段名决定要不要带 sub_type，
+            # 不必靠有无 sub_type 反推这一项是什么。
+            payload['imageRefs'] = list(message.image_refs)
         if message.turn_id:
             # 只在有回合上下文时下发：缺省不发新字段，保持既有精确载荷断言不变。
             payload['turnId'] = message.turn_id

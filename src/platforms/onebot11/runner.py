@@ -1074,6 +1074,7 @@ class OneBot11Runner:
                     outbound.emoji_refs,
                     outbound.emoji_sub_types,
                     outbound.quote_external_message_id,
+                    outbound.image_refs,
                 )
                 target = _qq_number(outbound.stream_external_id, target_label)
                 delays = _batch_delays_seconds(outbound)
@@ -1260,14 +1261,14 @@ def _optional_text(value: Any) -> str:
 def _batch_delays_seconds(outbound: BackendOutbound) -> List[float]:
     """把主体下发的逐条停顿对齐到实际的发送批次顺序。
 
-    主体按「文字在前、表情包在后」的批次顺序下发停顿；未下发时按 0 处理，
+    主体按「文字、表情包、图片」的批次顺序下发停顿；未下发时按 0 处理，
     保证适配器在协议缺省下仍能发出全部消息。
 
     :param outbound: 主体下发的一条出站消息。
     :return: 与发送批次等长的等待秒数列表；主体未下发停顿时全为 0。
     """
     delays = [value / 1000 for value in outbound.batch_delays_ms]
-    total = len(outbound.segments) + len(outbound.emoji_refs)
+    total = len(outbound.segments) + len(outbound.emoji_refs) + len(outbound.image_refs)
     return delays + [0.0] * (total - len(delays))
 
 

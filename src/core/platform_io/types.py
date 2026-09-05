@@ -115,8 +115,15 @@ class OutboundMessage:
     segments: List[str]
     emoji_refs: tuple[str, ...] = ()
     emoji_sub_types: tuple[int, ...] = ()
-    # 每个发送批次（每条文字一批、每张表情包一批）发出前的停顿，按「文字在前、
-    # 表情包在后」的顺序逐项对齐；首项恒为 0，因为模型生成本身已经占用了十几秒。
+    # 普通图片的本地路径，与表情包分开走。
+    #
+    # 不复用 emoji_refs 把 sub_type 做成可选：
+    # - 现象：带 sub_type 的 OneBot 图片段会被客户端当成贴纸／表情显示，不带才是普通图片。
+    # - 原因：两者只差一个字段，合并后「这一项是表情还是图片」就成了一个可为空的隐含状态。
+    # - 后果：出错时表现为「图片莫名其妙变成了表情」，从现象根本看不出是哪一层填错。
+    image_refs: tuple[str, ...] = ()
+    # 每个发送批次（每条文字一批、每张表情包一批、每张图片一批）发出前的停顿，按
+    # 「文字、表情包、图片」的顺序逐项对齐；首项恒为 0，因为模型生成本身已经占用了十几秒。
     # 节奏由主体按人格配置算好，适配器只负责照做，避免打字速度这类角色行为参数
     # 散落到各平台适配器里各算一套。
     batch_delays_ms: tuple[int, ...] = ()
@@ -135,7 +142,8 @@ class OutboundMessage:
         if len(self.emoji_refs) != len(self.emoji_sub_types):
             raise ValueError('出站表情包引用与 sub_type 数量必须一致')
         if self.batch_delays_ms and (
-            len(self.batch_delays_ms) != len(self.segments) + len(self.emoji_refs)
+            len(self.batch_delays_ms)
+            != len(self.segments) + len(self.emoji_refs) + len(self.image_refs)
         ):
             raise ValueError('出站发送批次与打字停顿数量必须一致')
 

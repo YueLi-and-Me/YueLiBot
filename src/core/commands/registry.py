@@ -30,7 +30,23 @@ class CommandContext:
     conversation: ConversationContext
 
 
-CommandHandler = Callable[[CommandContext], str | Awaitable[str]]
+@dataclass(frozen=True)
+class CommandReply:
+    """处理器的富返回值：一段文本，外加若干张要一并发出的本地图片。
+
+    存在的理由只有一个——``/inst`` 要发折线图。处理器仍可直接返回 ``str``，
+    :func:`dispatch_developer_command` 会把它归一成本类型，既有命令一个都不用改。
+
+    :ivar text: 给人看的回复正文，不能为空；图再多也要有一句话说明数字。
+    :ivar image_refs: 本地图片路径，按顺序各成一个气泡；空元组表示纯文本回复。
+    """
+
+    text: str
+    image_refs: Tuple[str, ...] = ()
+
+
+CommandResult = str | CommandReply
+CommandHandler = Callable[[CommandContext], CommandResult | Awaitable[CommandResult]]
 
 
 @dataclass(frozen=True)
@@ -60,6 +76,8 @@ class CommandDispatch:
     command: str
     text: str
     succeeded: bool
+    # 随回复一起发出的本地图片路径；投递侧填进 OutboundMessage.image_refs。
+    image_refs: Tuple[str, ...] = ()
 
 
 _commands: List[CommandSpec] = []
@@ -158,9 +176,10 @@ async def dispatch_developer_command(
         )
         try:
             result = spec.handler(command_context)
-            rendered = await result if isawaitable(result) else result
-            if not isinstance(rendered, str) or not rendered.strip():
-                raise ValueError('命令处理器必须返回非空字符串')
+            resolved = await result if isawaitable(result) else result
+            reply = resolved if isinstance(resolved, CommandReply) else CommandReply(text=resolved)
+            if not isinstance(reply.text, str) or not reply.text.strip():
+                raise ValueError('命令处理器必须返回非空文本')
         except Exception:
             logger.exception(
                 'developer_command_failed',
@@ -172,7 +191,12 @@ async def dispatch_developer_command(
                 text=f'开发者命令 {spec.name} 执行失败，请查看主体日志。',
                 succeeded=False,
             )
-        return CommandDispatch(command=spec.name, text=rendered.strip(), succeeded=True)
+        return CommandDispatch(
+            command=spec.name,
+            text=reply.text.strip(),
+            succeeded=True,
+            image_refs=reply.image_refs,
+        )
     return None
 
 

@@ -346,23 +346,31 @@ def outbound_message_segments(
     text_segments: Sequence[str],
     emoji_refs: Sequence[str],
     emoji_sub_types: Sequence[int],
+    image_refs: Sequence[str] = (),
 ) -> list[Dict[str, Any]]:
-    """按“文本在前、表情包在后”组装 OneBot 消息段序列。
+    """按“文本、表情包、图片”的顺序组装 OneBot 消息段序列。
 
     每条文本各自成段，不再拼接成一段：``outbound_message_batches`` 会把每个段
     发成一条独立消息，拼接会让整轮回复挤成一个气泡。历史上这里做 ``''.join``，
     结果是模型分好的 ``<say>`` 在最后一公里被还原成一大段，且连换行都没有。
 
+    表情包与普通图片分属两个参数：
+    - 现象：带 ``sub_type`` 的图片段会被 QQ 客户端当成贴纸／表情显示。
+    - 原因：OneBot 靠 ``sub_type`` 有无区分两者，段结构本身完全相同。
+    - 后果：合并成一个参数后，漏填 ``sub_type`` 的表情会变成普通图片，多填的
+      图片会变成表情，而两种错都只能从聊天窗口的呈现上看出来。
+
     :param text_segments: 已按打字习惯切分的气泡文本，顺序即发送顺序。
-    :param emoji_refs: 已通过启动哈希校验的本地 ``file://`` 图片引用。
-    :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
-    :return: 与输入顺序一致的消息段序列，文字在前、表情包在后。
-    :raises ValueError: 文本和表情包同时为空、引用与子类型数量不一致，或字段不合法。
+    :param emoji_refs: 已通过启动哈希校验的本地 ``file://`` 表情包引用。
+    :param emoji_sub_types: 与表情包引用逐项对齐的 OneBot 表情包子类型。
+    :param image_refs: 普通图片的本地路径，不带 ``sub_type``。
+    :return: 与输入顺序一致的消息段序列，文字、表情包、图片依次排列。
+    :raises ValueError: 三者同时为空、表情包引用与子类型数量不一致，或字段不合法。
     """
 
     texts = [segment for segment in text_segments if segment]
-    if not texts and not emoji_refs:
-        raise ValueError('QQ 出站消息必须包含文本或表情包')
+    if not texts and not emoji_refs and not image_refs:
+        raise ValueError('QQ 出站消息必须包含文本、表情包或图片')
     if len(emoji_refs) != len(emoji_sub_types):
         raise ValueError('QQ 出站表情包引用与 sub_type 数量必须一致')
     normalized_sub_types = tuple(_required_emoji_sub_type(value) for value in emoji_sub_types)
@@ -376,6 +384,7 @@ def outbound_message_segments(
                 strict=True,
             )
         ],
+        *[file_image_segment(reference) for reference in image_refs],
     ]
 
 
@@ -394,21 +403,23 @@ def outbound_message_batches(
     emoji_refs: Sequence[str],
     emoji_sub_types: Sequence[int],
     quote_message_id: str = '',
+    image_refs: Sequence[str] = (),
 ) -> list[list[Dict[str, Any]]]:
-    """把每条文字和每张表情包拆成独立的 OneBot 消息段数组。
+    """把每条文字、每张表情包和每张图片拆成独立的 OneBot 消息段数组。
 
-    先完整校验全部字段，再返回“每条文字各一条、每张表情包各一条”的发送批次，
-    避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为每条文字和
-    表情包分别创建消息气泡，这正是 Bot 的分句在聊天窗口里表现为多条消息的原因。
+    先完整校验全部字段，再返回“每条文字各一条、每张表情包各一条、每张图片各一条”
+    的发送批次，避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为
+    每条文字和图片分别创建消息气泡，这正是 Bot 的分句在聊天窗口里表现为多条消息的原因。
 
     引用只加在第一个批次上：整轮回复在 QQ 里是连续的多条气泡，逐条都挂引用会
     避免聊天窗口被引用框占满，首条点明在回谁就够了。
 
     :param text_segments: 已按打字习惯切分的气泡文本。
-    :param emoji_refs: 已通过启动哈希校验的本地图片引用。
-    :param emoji_sub_types: 与引用逐项对齐的 OneBot 表情包子类型。
+    :param emoji_refs: 已通过启动哈希校验的本地表情包引用。
+    :param emoji_sub_types: 与表情包引用逐项对齐的 OneBot 表情包子类型。
     :param quote_message_id: 第一个批次要引用的平台消息编号；空字符串表示不引用。
-    :return: 按文字、表情包原始顺序排列的非空消息段数组。
+    :param image_refs: 普通图片的本地路径，不带 ``sub_type``。
+    :return: 按文字、表情包、图片原始顺序排列的非空消息段数组。
     :raises ValueError: 消息为空、字段数量不一致或图片字段不合法。
     """
 
@@ -416,6 +427,7 @@ def outbound_message_batches(
         text_segments,
         emoji_refs,
         emoji_sub_types,
+        image_refs,
     )
     batches = [[segment] for segment in segments]
     if quote_message_id and batches:
