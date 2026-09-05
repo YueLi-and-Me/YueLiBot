@@ -46,6 +46,9 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
+      # 生产构建是独立的一条门：tsc --noEmit 只查类型，拦不住「类型过了但打包塌了」。
+      # electron-vite 与 webui 的 vite 各构建一次，产物都落 out/。
+      - run: npm run build
 
   config-parity:
     name: 配置写入器与 schema 对齐

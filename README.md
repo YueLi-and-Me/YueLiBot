@@ -92,4 +92,6 @@ QQ 接入依赖独立安装的协议端，两者互斥、同时只能启用一�
 **许可证**：[AGPL-3.0](LICENSE)。可以自由使用、修改和分发本项目，但衍生作品必须以同一许可证开源；
 通过网络提供服务同样构成分发——把改过的月璃部署为在线服务时，需向使用者提供对应源码。
 
-暂不接受外部贡献，问题与建议请开 issue。
+欢迎 issue 与 PR。提 PR 前请确认[四条状态门](docs/dev/guide/testing.md)全绿——
+`uv run pytest`、`npm run typecheck`、`npm test`、`npm run build`；
+CI 会在 PR 上把这四条连同配置对齐校验一起再跑一遍。
