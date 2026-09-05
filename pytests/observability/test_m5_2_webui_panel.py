@@ -165,7 +165,7 @@ def test_webui_log_stream_keeps_module_color_and_chinese_alias(web_client: TestC
     WebUiLogHandler()(None, 'warning', {
         'timestamp': '08-08 15:00:00',
         'level': 'warning',
-        'logger': 'src.core.services.chat',
+        'logger': 'src.core.services.chat.service',
         'event': '测试日志',
     })
     web_client.post('/auth/login', json={'token': 'browser-test-token'}).raise_for_status()

@@ -109,7 +109,7 @@ def test_star_02_proactive_registers_full_stage_sequence() -> None:
 
 
 def test_desktop_dispatches_before_marking_replied() -> None:
-    source = _source("src/core/services/chat.py")
+    source = _source("src/core/services/chat/service.py")
     desktop_branch = source.index(
         "if context.stream.platform == 'desktop':",
         source.index("trace.emit('llm_final'"),

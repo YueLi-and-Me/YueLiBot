@@ -456,7 +456,7 @@ async def test_message_wakes_poll_loop_without_waiting_for_heartbeat(
     db,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.core.services.chat as chat_module
+    import src.core.services.chat.service as chat_module
 
     monkeypatch.setattr(chat_module, 'CHAT_POLL_INTERVAL_S', 5.0)
     provider = _WakeProvider()

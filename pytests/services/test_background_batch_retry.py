@@ -43,7 +43,8 @@ def _seed_messages(chat: ChatService, count: int = 40) -> list[int]:
 @pytest.mark.asyncio
 async def test_fact_format_failures_advance_after_retry_limit(db: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """事实抽取返回 None 也应计为失败，第三次后推进游标。"""
-    import src.core.services.chat as chat_module
+# run_extraction / run_learning 现在由 chat.background 持有绑定，补丁要打在实现模块上
+    import src.core.services.chat.background as chat_module
 
     async def fail_format(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -68,7 +69,8 @@ async def test_expression_format_failures_advance_after_retry_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """表达学习返回 None 也应计为失败，第三次后推进游标。"""
-    import src.core.services.chat as chat_module
+# run_extraction / run_learning 现在由 chat.background 持有绑定，补丁要打在实现模块上
+    import src.core.services.chat.background as chat_module
 
     async def fail_format(*_args: Any, **_kwargs: Any) -> None:
         return None

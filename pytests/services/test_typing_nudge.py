@@ -18,7 +18,10 @@ from src.core.platform_io.registry import StreamRegistry
 from src.core.platform_io.types import DeliveryReceipt, InboundMessage, OutboundMessage
 from src.core.services.chat import ChatService
 import src.core.memory.store as store_module
-import src.core.services.chat as chat_module
+# 补丁必须打在实现模块 chat.service 上而不是 chat 包上：ChatService 的代码在
+# service 的命名空间里解析 current_time 等名字，改包的属性对它不生效。
+import src.core.services.chat.follow_up as follow_up_module
+import src.core.services.chat.service as chat_module
 
 
 class _DecisionProvider:
@@ -119,12 +122,16 @@ def _service(
 
 
 def _freeze(monkeypatch, clock: dict) -> None:
-    """冻结聊天服务与记忆层共同使用的时钟。
+    """冻结聊天服务、私聊跟进与记忆层共同使用的时钟。
 
-    两处都是 ``from ... import now as current_time`` 的绑定式导入，只打一处补丁
-    会让助手消息写入真实时间戳，静默时长计算随即失真。
+    三处都是 ``from ... import now as current_time`` 的绑定式导入，各自持有独立的
+    函数引用，打补丁必须逐个模块打：漏掉任何一处，那一处就仍读真实时间，助手消息
+    的时间戳与静默时长计算随即失真，表现为定时追问不触发（``proactive.calls`` 为空）。
+    ``follow_up`` 这一处是 ChatService 拆包后新增的——跟进逻辑从 ``service`` 搬进
+    ``chat.follow_up`` 时带走了它自己的绑定。
     """
     monkeypatch.setattr(chat_module, 'current_time', lambda: clock['now'])
+    monkeypatch.setattr(follow_up_module, 'current_time', lambda: clock['now'])
     monkeypatch.setattr(store_module, 'current_time', lambda: clock['now'])
 
 

@@ -616,7 +616,7 @@ def test_all_asleep_consumers_share_sleep_kind_and_rest_is_awake() -> None:
             'src/core/agent/conversation_gate.py': 'request.asleep',
             'src/core/awareness/budget.py': 'ctx.asleep',
             'src/core/api/http.py': 'current_sleep().asleep',
-            'src/core/services/chat.py': 'current_sleep().asleep',
+            'src/core/services/chat/service.py': 'current_sleep().asleep',
             'src/core/agent/action_protocol.py': "'asleep': self.asleep",
         }
         for relative, marker in consumers.items():
