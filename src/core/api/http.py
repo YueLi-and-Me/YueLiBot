@@ -693,7 +693,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             GATED, context.stream.id, stream_name,
             f'未回复：{reason}',
         )
-        message_id = app_state.chat.record_group_observation(
+        message_id = app_state.chat.record_silent_inbound(
             InboundMessage(
                 text=body.text,
                 context=context,

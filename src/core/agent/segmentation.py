@@ -5,7 +5,7 @@
 打字停顿决定间隔多久，二者共用同一套节奏参数。模块只做纯计算，不执行 I/O；
 全部数量级参数由 ``src.core.config.schema.TypingConfig`` 提供，不在此处写死。
 
-``split_into_bubbles`` 由 ``src.core.services.chat._collect_outbound_segment``
+``split_into_bubbles`` 由 ``src.core.services.chat.helpers._collect_outbound_segment``
 在收束 ``<say>`` 边界时调用；``typing_delay_seconds`` 由同一服务在组装出站消息
 时逐条调用，结果随出站载荷下发给平台适配器执行，适配器不重算节奏。
 """

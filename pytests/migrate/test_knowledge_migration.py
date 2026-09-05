@@ -17,7 +17,7 @@ import pytest
 from src.core.memory.similarity import exact_key
 from src.core.memory.store import MemoryStore
 
-from scripts.migrate.m4_knowledge import main, migrate_graph, migrate_knowledge
+from scripts.migrate.knowledge import main, migrate_graph, migrate_knowledge
 
 
 # 旧库三张先生表的形状，按 2025-07 真库勘察结果逐列复刻（含我们绝不读取的列）。

@@ -1,4 +1,4 @@
-"""N4 反馈纠错存储表迁移（v23 -> v24）回归。"""
+"""反馈纠错存储表迁移（v23 -> v24）回归。"""
 
 from __future__ import annotations
 

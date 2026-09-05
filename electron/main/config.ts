@@ -35,7 +35,7 @@ import type {
  * 重写即补齐两段及默认值。
  * 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊；
  * 旧文件按 1.3.0 解析后重写即补齐该字段及默认值。
- * 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关；
+ * 1.5.0 新增 [memory_feedback] 段：反馈纠错链路，15 项默认全关；
  * 旧文件按 1.4.0 解析后重写即补齐该段及默认值。
  *
  * [developer] 段（开发者命令通道）有意不 bump 版本号：整段可选、缺失即关闭，
@@ -1550,7 +1550,7 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
 }
 
 /**
- * 解析反馈纠错（N4）链路配置段，并为缺失字段合并默认值。
+ * 解析反馈纠错链路配置段，并为缺失字段合并默认值。
  *
  * @param features 已解析的功能配置文档。
  * @param path 用于错误信息的配置文件路径。
@@ -2402,7 +2402,7 @@ enabled = ${tomlValue(cfg.vector.enabled)}
 # owner 私聊专用开发者命令通道；默认关闭，只有手工确认后才应开启
 enabled = ${tomlValue(cfg.developer.enabled)}
 
-# 反馈纠错（N4）：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
+# 反馈纠错：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
 # 整条链路默认关闭，开启是显式动作。
 [memory_feedback]
 # 总开关；关闭时整条链路零写入

@@ -17,6 +17,11 @@ from src.core.agent.action_protocol import (
     PlatformCapabilities,
     available_actions,
 )
+from src.core.agent.conversation_gate import (
+    POKE_SIGNAL_LIMIT,
+    GateRequest,
+    decide_disposition,
+)
 from src.core.config.schema import Config
 from src.core.observe.store import event_store
 from src.core.platform_io.types import (
@@ -348,3 +353,47 @@ class TestPoke:
             broken = {**payload, 'payload': {**payload['payload'], missing: ''}}
             with pytest.raises(ValueError):
                 _parse_poke(broken)
+
+
+class Test私聊连戳不再打崩入站:
+    """门控把私聊连戳判成 drop 之后，落库这一步必须撑得住。
+
+    门控次序是有意的：poke_repeat 排在私聊 FORCE 之前（见
+    conversation_gate.decide_disposition 的次序说明），所以私聊会拿到 drop。
+    早先落库走的是群聊专用方法，开头就拒绝非群聊，于是对方连戳几下就能让
+    /platform/inbound 抛 ValueError 返 500。这两条断言分别盯住那条链的两端。
+    """
+
+    def test_私聊连戳的门控结果是丢弃(self) -> None:
+        """poke_repeat 先于私聊 FORCE 生效，这是设计次序，不是缺陷。"""
+        result = decide_disposition(GateRequest(
+            stream_kind='direct',
+            mentioned_me=False,
+            name_mentioned=False,
+            asleep=False,
+            at_mention_must_reply=True,
+            replies_in_window=0,
+            max_replies_in_window=3,
+            poked_me=True,
+            pokes_in_window=POKE_SIGNAL_LIMIT + 1,
+        ))
+
+        assert result.disposition == 'drop'
+        assert result.reason_codes == ('poke_repeat',)
+
+    async def test_私聊的静默消息照样落库(self, db) -> None:
+        """非群聊出口写入不得抛异常，也不得走群聊专属的观察事件。"""
+        chat = ChatService(
+            db, _ScriptedProvider([['嗯']]), None, None, _noop,
+            cfg=_config(), broker=_RecordingBroker(),
+        )
+        context = _direct(chat._registry)
+
+        message_id = chat.record_silent_inbound(
+            InboundMessage(text='[戳了戳月璃]', context=context),
+            'poke_repeat',
+        )
+
+        assert message_id > 0
+        history = chat.memory.working_memory(context.stream.id, 10)
+        assert any(item.content == '[戳了戳月璃]' for item in history), '静默消息必须进历史'

@@ -60,7 +60,7 @@ def migrate(db: sqlite3.Connection) -> None:
     # knowledge 可能尚未建表（早期形态的库一路走上来）：ALTER 无表可改会炸，
     # 缺表时跳过，由链尾 DDL 的 CREATE TABLE IF NOT EXISTS 建出全形态。
     if 'knowledge' in existing and 'import_batch_id' not in _knowledge_columns(db):
-        # NULL 表示无批次：W2 迁移进来的存量与运行期抽取写入的知识都没有批次，
+        # NULL 表示无批次：历史迁移进来的存量与运行期抽取写入的知识都没有批次，
         # 按批次删除的 WHERE 子句不含 NULL 行，撤销操作永远碰不到它们。
         db.execute(
             'ALTER TABLE knowledge ADD COLUMN import_batch_id INTEGER'

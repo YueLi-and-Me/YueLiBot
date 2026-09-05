@@ -230,7 +230,7 @@ def related_concepts(db: sqlite3.Connection, concept: str, limit: int) -> list[s
     """沿 ``knowledge_edges`` 走一跳，返回与概念直接相连的相邻概念。
 
     边在库里是有向存储，但「相关」的语义不看方向——A→B 与 B→A 都让两者相邻，
-    因此两个方向都走，同一邻居按最强的一条边计。多跳扩散归 W6，这里不做。
+    因此两个方向都走，同一邻居按最强的一条边计。多跳扩散由联想层负责，这里不做。
 
     :param db: 当前库连接。
     :param concept: 起点概念名；不在 ``knowledge_nodes`` 里时返回空列表。

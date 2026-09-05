@@ -31,26 +31,34 @@ logger = get_logger(__name__)
 
 class GroupObservationMixin:
 
-    def record_group_observation(self, inbound: InboundMessage, reason: str = '') -> int:
-        """保存被群聊回复门控拒绝的入站消息及原因。
+    def record_silent_inbound(self, inbound: InboundMessage, reason: str = '') -> int:
+        """保存一条被门控拒绝、不会触发回合的入站消息及原因。
 
-        :param inbound: 已完成 stream、人物和身份解析的群聊消息。
+        任何出口都可能走到这里，不只是群聊。
+        - 现象：私聊在信号窗口内被连戳超过上限时，入站接口抛
+          ``ValueError`` 返 500，而不是按门控语义静默落库。
+        - 原因：门控的 ``poke_repeat`` 判定排在私聊 FORCE 之前（见
+          ``conversation_gate.decide_disposition`` 的次序说明），私聊因此会拿到
+          ``drop``；而本方法早先叫 ``record_group_observation`` 并在开头拒绝非群聊。
+        - 后果：对方连戳几下就能让接口 500。群聊专属的动作（观察事件、场景画像
+          推进）现在按会话类型分流，其余步骤所有出口共用。
+
+        :param inbound: 已完成 stream、人物和身份解析的入站消息。
         :param reason: 门控拒绝原因，默认空字符串。
 
         :return: 新写入的用户消息 ID。
 
-        :raises ValueError: 入站消息不是群聊，或正文为空。
+        :raises ValueError: 消息正文为空。
         :raises sqlite3.Error: 消息写入失败。
 
         副作用：
-            将消息写入 L1 历史，登记 observation 事件并渲染观察输出；不启动模型生成。
+            将消息写入 L1 历史并通知插件；群聊另外登记 observation 事件、渲染观察
+            输出并推进场景画像。任何出口都不启动模型生成。
         """
         context = inbound.context
-        if context.stream.kind != 'group':
-            raise ValueError('record_group_observation 只接受群聊消息')
         text = inbound.text.strip()
         if not text:
-            raise ValueError('群聊消息正文不能为空')
+            raise ValueError('入站消息正文不能为空')
         message_id = self.memory.append_message(
             context.stream.id,
             context.person.id,
@@ -70,9 +78,10 @@ class GroupObservationMixin:
                 inbound.emoji_sub_types,
             ))
             self._track_background_task(task)
-        self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
-        # 只观察不回复的群消息同样推进场景：Bot 对群里的理解不该只在自己开口时才更新。
-        self._schedule_scene_observation(context)
+        if context.stream.kind == 'group':
+            self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
+            # 只观察不回复的群消息同样推进场景：Bot 对群里的理解不该只在自己开口时才更新。
+            self._schedule_scene_observation(context)
         return message_id
 
     def _external_group_message_seen(self, stream_id: int, external_id: str) -> bool:

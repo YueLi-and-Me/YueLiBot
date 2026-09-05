@@ -1,4 +1,4 @@
-"""W2-M2：把已审核的历史表达方式迁入 expressions。"""
+"""把已审核的历史表达方式迁入 expressions。"""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def migrate(source_path: Path, target_path: Path, dry_run: bool) -> MigrationRep
     ``(situation, style, stream_id)`` 内容键识别，重跑不会重复新增。
     """
 
-    report = MigrationReport("W2-M2 表达迁移", dry_run, _REASONS)
+    report = MigrationReport("表达迁移", dry_run, _REASONS)
     with open_databases(source_path, target_path, dry_run) as (source_db, target_db):
         _validate_schema(source_db, target_db)
         stream_mapping = load_stream_mapping(source_db, target_db)

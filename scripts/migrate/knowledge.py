@@ -1,11 +1,10 @@
-"""W2-M4：把旧库的知识正文与图谱结构迁进当前库。
+"""把旧库的知识正文与图谱结构迁进当前库。
 
-三张子步骤，必须按顺序：正文入 ``knowledge``（``embedding`` 一律留空，重算归
-W4）、``graph_nodes`` 按 concept 去重入 ``knowledge_nodes``、``graph_edges`` 按
+三张子步骤，必须按顺序：正文入 ``knowledge``（``embedding`` 一律留空，重算另有脚本）、``graph_nodes`` 按 concept 去重入 ``knowledge_nodes``、``graph_edges`` 按
 concept 名解析成新 id 后入 ``knowledge_edges``。旧节点上的 ``memory_items``
-第一版不导——W6 的联想边会重新长出来，不依赖旧库那一列。
+第一版不导——联想边会重新长出来，不依赖旧库那一列。
 
-纪律（与 W2 总规格一致）：
+纪律（与迁移总规格一致）：
 
 - **只读旧库**：以 ``file:...?mode=ro`` 打开，任何情况下不写旧库；
 - **可 dry-run**：``--dry-run`` 只统计不写入，计数报告与实际写入完全一致——
@@ -23,8 +22,8 @@ concept 名解析成新 id 后入 ``knowledge_edges``。旧节点上的 ``memory
 
 用法示例：
 
-    python scripts/migrate/m4_knowledge.py 旧库.db data/memory.db
-    python scripts/migrate/m4_knowledge.py 旧库.db data/memory.db --dry-run
+    python scripts/migrate/knowledge.py 旧库.db data/memory.db
+    python scripts/migrate/knowledge.py 旧库.db data/memory.db --dry-run
 """
 
 from __future__ import annotations
@@ -267,7 +266,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     :return: 进程退出码；正常完成为 0。
     """
     parser = argparse.ArgumentParser(
-        description='W2-M4：旧库知识正文与图谱结构迁移（只读旧库，可 dry-run）',
+        description='旧库知识正文与图谱结构迁移（只读旧库，可 dry-run）',
     )
     parser.add_argument('old_db', type=Path, help='旧库文件路径（只读打开）')
     parser.add_argument('target_db', type=Path, help='当前库文件路径（不存在则创建）')
@@ -287,7 +286,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     target.close()
 
     mode = 'dry-run，未写入' if args.dry_run else '实际写入'
-    print(f'W2-M4 知识与图谱迁移报告（{mode}）')
+    print(f'知识与图谱迁移报告（{mode}）')
     print(_render(knowledge_report, 'knowledge'))
     print(_render(graph_report, 'knowledge_nodes + knowledge_edges'))
     return 0

@@ -14,7 +14,8 @@
 - 写入任何字节之前先整目录备份到 ``data/backups/config/<时间戳>/``。``config/``
   含明文密钥且没有版本控制。
 
-对外暴露 :func:`upgrade_config_directory`，由 ``loader.load_config`` 在解析之前调用。
+对外暴露 :func:`upgrade_config_directory`，由 ``src.main`` 在加载配置之前调用；
+不是 ``loader.load_config`` 内部调用的——加载器只管解析与交叉校验，补字段发生在它之前。
 """
 
 from __future__ import annotations

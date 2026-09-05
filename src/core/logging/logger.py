@@ -706,7 +706,9 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
     shared_processors.append(_webui_log_handler)
     shared_processors.append(_ConsoleLevelGate(console_level))
 
-    # 三条支路取最低门槛，各自再按自己的等级筛
+    # 三条支路取最低门槛，但只有两条会再筛一次：文件支路按 file_level、控制台
+    # 支路按 console_level，而 WebUI 支路不做等级过滤，拿到的是最低门槛之上的
+    # 全部事件——面板上的实时日志因此可能比终端更全。
     structlog.configure(
         processors=shared_processors + [renderer],
         wrapper_class=structlog.make_filtering_bound_logger(

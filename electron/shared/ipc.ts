@@ -518,7 +518,7 @@ export interface YueliConfig {
   vector: {
     enabled: boolean
   }
-  /** 反馈纠错链路（N4）的开关与节拍；整条链路默认关闭，开启是显式动作。 */
+  /** 反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。 */
   memory_feedback: {
     /** 总开关；关闭时整条链路零写入 */
     enabled: boolean

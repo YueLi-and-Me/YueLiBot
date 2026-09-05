@@ -1,4 +1,4 @@
-"""W4：把迁进来的知识变成可检索的——全文索引补齐 + 向量重算（可断点续跑）。
+"""把迁进来的知识变成可检索的——全文索引补齐 + 向量重算（可断点续跑）。
 
 两个阶段，顺序执行：
 
@@ -132,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     :raises SystemExit: 向量开关打开但 embedding 任务没有可用候选时直接报错。
     """
     parser = argparse.ArgumentParser(
-        description='W4：知识全文索引补齐与向量重算（可断点续跑）',
+        description='知识全文索引补齐与向量重算（可断点续跑）',
     )
     parser.add_argument('target_db', type=Path, help='当前库文件路径（不存在则创建）')
     parser.add_argument(

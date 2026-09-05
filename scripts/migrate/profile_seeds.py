@@ -1,4 +1,4 @@
-"""W2-M5：把历史人物 impression 作为待刷新的画像种子迁入。"""
+"""把历史人物 impression 作为待刷新的画像种子迁入。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def migrate(source_path: Path, target_path: Path, dry_run: bool) -> MigrationRep
     可能已经由本地证据刷新，因此无论内容是否相同都只计为已存在，不做覆盖或合并。
     """
 
-    report = MigrationReport("W2-M5 画像种子迁移", dry_run, _REASONS)
+    report = MigrationReport("画像种子迁移", dry_run, _REASONS)
     with open_databases(source_path, target_path, dry_run) as (source_db, target_db):
         _validate_schema(source_db, target_db)
         identity_mapping = load_qq_identity_mapping(target_db)

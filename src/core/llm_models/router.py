@@ -843,7 +843,7 @@ class ModelRouters:
         :param task: chat、proactive、summary、schedule、vision、expression、tts
                 或 embedding。
         :return: 对应的任务级模型路由。
-        :raises ValueError: 任务名不在已声明的八类任务中。
+        :raises ValueError: 任务名不在已声明的任务集合中。
         副作用：只读取路由映射，不创建客户端或发起模型请求。
         """
         try:

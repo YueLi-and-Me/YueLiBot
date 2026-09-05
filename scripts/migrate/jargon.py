@@ -1,4 +1,4 @@
-"""W2-M3：把已确认且有释义的历史黑话迁入 jargon。"""
+"""把已确认且有释义的历史黑话迁入 jargon。"""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def migrate(source_path: Path, target_path: Path, dry_run: bool) -> MigrationRep
     全局词重复执行同样幂等。
     """
 
-    report = MigrationReport("W2-M3 黑话迁移", dry_run, _REASONS)
+    report = MigrationReport("黑话迁移", dry_run, _REASONS)
     with open_databases(source_path, target_path, dry_run) as (source_db, target_db):
         _validate_schema(source_db, target_db)
         stream_mapping = load_stream_mapping(source_db, target_db)

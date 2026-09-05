@@ -1,8 +1,12 @@
 """定义 QQ 适配器配置模型，并负责版本化 TOML 的读取与校验。
 
-本模块把 `config/napcat.toml` 解析为 Pydantic 模型，统一校验协议端连接、
-机器人与 owner 的 QQ 号、私聊访问策略和群聊白名单；`load_config` 负责把
-结构化校验错误转换为命令行可读的修复提示。
+本模块把适配器的连接配置解析为 Pydantic 模型，统一校验协议端连接、机器人与
+owner 的 QQ 号、私聊访问策略和群聊白名单；`load_config` 负责把结构化校验错误
+转换为命令行可读的修复提示。
+
+配置文件位于 `adapters/<插件目录>/config.toml`，与插件源码同目录，由插件自己读取。
+适配器插件化之前它在 `config/napcat.toml`、由桌宠启动时创建，那条路径已经作废——
+当前启用哪个适配器由 `config/adapter.toml` 声明，段名取自该插件的清单。
 """
 
 from __future__ import annotations
@@ -19,8 +23,8 @@ from src.core.config.toml_io import read_versioned_toml
 
 NAPCAT_CONFIG_VERSION = '0.1.0'
 _CONFIG_HINT = (
-    'napcat.self_qq 填机器人的号（NapCat 登录的那个），owner.qq 填你自己的号，两个不能一样。'
-    '桌宠启动时会自动创建 config/napcat.toml，每项都有注释。'
+    'self_qq 填机器人的号（协议端登录的那个），owner.qq 填你自己的号，两个不能一样。'
+    '配置在 adapters/<插件目录>/config.toml，首次启动自动创建，每项都有注释。'
 )
 
 

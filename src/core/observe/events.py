@@ -228,7 +228,7 @@ def emit(event_kind: str, **fields: Any) -> Dict[str, Any]:
     副作用：
         可能写入事件账本，向全部订阅者队列投递事件，并记录调试日志。
     """
-    # W7 当前唯一会被场合边界挡下的是 direct 来源事实进入 group。事实存储层的
+    # 当前唯一会被场合边界挡下的是 direct 来源事实进入 group。事实存储层的
     # 既有事件只传目标 streamKind 与数量；这里把稳定的不变量补成事件字段，让观测
     # 消费方无需反推。若可见性规则以后扩展，调用方可显式传 factOriginKind 覆盖它。
     event_defaults = (

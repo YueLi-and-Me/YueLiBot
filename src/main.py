@@ -1038,7 +1038,7 @@ def main() -> None:
         # 没有 memory 路由时学习整条功能是关的，这句必须在启动时说出来：
         # 静默关掉在外部看来与「正常但这段对话没什么可学的」完全一样。
         logger.warning('jargon_learn_disabled', reason='memory 模型路由不可用')
-    # 反馈纠错（N4）整条链路默认关闭；开启时才装配服务。判定走 memory 路由，
+    # 反馈纠错整条链路默认关闭；开启时才装配服务。判定走 memory 路由，
     # 情节重建重摘要走 summary 路由，路由不可用时对应循环空转而不是报错。
     if cfg.memory_feedback.enabled:
         from src.core.services.maintenance.memory_feedback import MemoryFeedbackService

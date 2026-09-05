@@ -2144,7 +2144,7 @@ class ChatService(
             ),
             hard_filter_marked=feedback_cfg.enabled and feedback_cfg.hard_filter_enabled,
         )
-        # N4 锚点：主动消息注入的事实同样进入观察；链路默认关闭，关闭时零写入。
+        # 反馈纠错锚点：主动消息注入的事实同样进入观察；链路默认关闭，关闭时零写入。
         if feedback_cfg.enabled and proactive_facts:
             register_prompt_entries(
                 self._db,

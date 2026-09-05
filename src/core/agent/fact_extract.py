@@ -230,7 +230,7 @@ class Extraction:
     两者由同一次模型往返产出，不各跑一次：同一段对话读两遍开销翻倍，
     且两次读的结果可能互相矛盾。
 
-    :ivar facts: 关于具体某个人的稳定事实，写入 L2 ``facts``。
+    :ivar facts: 关于具体某个人的稳定事实，写入 L3 ``facts``。
     :ivar knowledge: 与人无关的客观信息，写入 L3 ``knowledge``。
     """
 

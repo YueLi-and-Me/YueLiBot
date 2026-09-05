@@ -4,13 +4,13 @@
 出站引用与目标合规读 ``pipeline_events``（``kind=action_decision``）。脚本只读，
 不写库、不联网。
 
-四项指标与 开发文档 live-quality-fixes-4.md（不随代码分发） 的 R-1～R-4 一一对应：
+四项指标：
 
-- R-1 引用还原：正文里 ``[回复 某人：…]`` 与残留 ``[引用消息]`` 的比例；
-- R-2 提及显示名：``@名字`` 与残留 ``@裸号`` 的比例；
-- R-3 出站引用：按投递期判据重算每条 committed 回复本应挂引用与否，
+- 引用还原：正文里 ``[回复 某人：…]`` 与残留 ``[引用消息]`` 的比例；
+- 提及显示名：``@名字`` 与残留 ``@裸号`` 的比例；
+- 出站引用：按投递期判据重算每条 committed 回复本应挂引用与否，
   并指出目标是否缺平台编号（迁移前的旧消息挂不上）；
-- R-4 目标合规：按 promptHash 分组的 committed / silent / illegal_action 分布，
+- 目标合规：按 promptHash 分组的 committed / silent / illegal_action 分布，
   以及每条 illegal_action 的目标是否属于本回合批次人物（跨人物越界）。
 
 用法：
@@ -70,12 +70,12 @@ def _inbound_stats(db: sqlite3.Connection, since: int) -> None:
     named = sum(1 for text in texts if '@' in text and not _BARE_MENTION.search(text))
     bare = sum(1 for text in texts if _BARE_MENTION.search(text))
 
-    print(f'\n=== R-1 引用还原（{len(texts)} 条入站消息）===')
+    print(f'\n=== 引用还原（{len(texts)} 条入站消息）===')
     print(f'  含引用：{quoted}')
     print(f'    已还原原文：{_percent(restored, quoted)}')
     print(f'    仍是占位符：{_percent(unresolved, quoted)}  ← 只应是撤回或超出协议端保留窗口')
 
-    print(f'\n=== R-2 提及显示名（{len(texts)} 条入站消息）===')
+    print(f'\n=== 提及显示名（{len(texts)} 条入站消息）===')
     print(f'  含 @ 的消息：{named + bare}')
     print(f'    已解析成名字：{_percent(named, named + bare)}')
     print(f'    仍是裸号：{_percent(bare, named + bare)}  ← 应趋近 0')
@@ -145,7 +145,7 @@ def _outbound_stats(db: sqlite3.Connection, payloads: List[Dict[str, Any]]) -> N
             reply = ' '.join(str((decision.get('reply') or {}).get('text', '')).split())[:28]
             samples.append(f'    引用 {external_id}「{text}」→ 回复「{reply}」')
 
-    print(f'\n=== R-3 出站引用（{len(committed)} 条 committed 回复）===')
+    print(f'\n=== 出站引用（{len(committed)} 条 committed 回复）===')
     print(f'  按判据应挂引用：{_percent(should_quote, len(committed))}')
     print(f'  其中目标缺平台编号、挂不上：{missing_id}  ← 迁移前落库的旧消息，会随时间归零')
     if samples:
@@ -168,7 +168,7 @@ def _compliance_stats(db: sqlite3.Connection, payloads: List[Dict[str, Any]]) ->
     )
     illegal = [item for item in payloads if item.get('eventStatus') in ('illegal_action', 'parse_error')]
 
-    print(f'\n=== R-4 目标合规（{len(payloads)} 条决策事件）===')
+    print(f'\n=== 目标合规（{len(payloads)} 条决策事件）===')
     for name, count in status.most_common():
         print(f'  {name}: {count}')
     print(f'  真正调用模型的回合：{attempted}，其中失败 {_percent(len(illegal), attempted)}')

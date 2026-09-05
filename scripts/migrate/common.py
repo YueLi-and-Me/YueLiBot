@@ -153,7 +153,7 @@ def validate_query(db: sqlite3.Connection, sql: str, label: str) -> None:
     try:
         db.execute(sql).fetchone()
     except sqlite3.Error as exc:
-        raise MigrationError(f"{label}结构不符合 W2 规格：{exc}") from exc
+        raise MigrationError(f"{label}结构不符合迁移规格：{exc}") from exc
 
 
 def load_stream_mapping(
@@ -162,7 +162,7 @@ def load_stream_mapping(
 ) -> Dict[str, Optional[int]]:
     """把源库哈希会话映射为当前库既有 group/direct stream。
 
-    映射只使用 W2 已拍板的 ``kind + external_id`` 关系，不创建 stream。若当前库在不同
+    映射只使用迁移规格已拍板的 ``kind + external_id`` 关系，不创建 stream。若当前库在不同
     平台存在同 kind、同 external_id 的歧义，直接报错，避免把历史挂错会话。
     """
 

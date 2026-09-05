@@ -62,7 +62,7 @@ class _ChatSpy:
     async def send(self, inbound: Any) -> None:
         self.inbound.append(inbound)
 
-    def record_group_observation(self, inbound: Any, reason: str = '') -> int:
+    def record_silent_inbound(self, inbound: Any, reason: str = '') -> int:
         self.observed.append((inbound, reason))
         return 1
 

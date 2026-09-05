@@ -9,7 +9,7 @@ due_at 按行自身半衰期重算），无需特判。
 
 每一次人工操作都在 ``fact_operations`` 留一条流水：``prev`` 记操作前的值，
 ``undone_by`` / ``undo_of`` 构成撤销链。自动链路的显式取代（运行期抽取与
-N4 反馈纠错）经由 ``MemoryStore.add_fact`` 落同一张流水表，人工界面因此能
+反馈纠错）经由 ``MemoryStore.add_fact`` 落同一张流水表，人工界面因此能
 看到全部改动，也能撤销自动操作。
 
 SQL 全部落在 ``MemoryStore`` 的方法里，本模块只做状态判定、快照与事件。
@@ -108,7 +108,7 @@ def invalidate_fact(store: MemoryStore, fact_id: int, now: int) -> int:
 def restore_fact(store: MemoryStore, fact_id: int, now: int) -> int:
     """恢复一条已失效事实：``superseded_by`` 清回 NULL。
 
-    对取代链与自指哨兵同样生效——救回 N4 或抽取置的失效是特性而非漏洞。
+    对取代链与自指哨兵同样生效——救回反馈纠错或抽取置的失效是特性而非漏洞。
 
     :param store: 记忆存储实例。
     :param fact_id: 目标事实 ID。

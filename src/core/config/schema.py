@@ -4,7 +4,10 @@
 组合为本文件末尾的 Config 运行时视图，业务服务不需要知道磁盘布局。
 
 启动时一次性校验，字段缺失/类型错在进入任何业务逻辑之前就报错。
-每个字段在 TOML 中的写入模板由 Electron 主进程维护；本模块只负责类型、范围、
+每个字段在 TOML 中的写入模板由两个写入器各自维护——Electron 主进程的
+``electron/main/config.ts`` 与管理面板的 ``settings_webui``（由 ``settings_schema.json``
+驱动）；两者与本模块的字段集合是否仍然一致，由 ``scripts/check/config_parity.py``
+守着。本模块只负责类型、范围、
 字段关系和废弃字段校验。
 """
 
@@ -33,7 +36,7 @@ class InnerConfig(BaseModel):
     # 1.2.0 移除日程时刻表遗留字段，它们已被活动时间线取代。
     # 1.3.0 新增 [emoji] 与 [emoji.cleanup] 两段表情包库管理配置。
     # 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊。
-    # 1.5.0 新增 [memory_feedback] 段：N4 反馈纠错链路，15 项默认全关。
+    # 1.5.0 新增 [memory_feedback] 段：反馈纠错链路，15 项默认全关。
     #
     # [developer] 段（开发者命令通道）**有意不 bump 版本号**：它整段可选、缺失即关闭，
     # 而且 bootstrap 生成初始配置时会显式剔除它——用户文件里永远不会出现这一段，
@@ -610,7 +613,7 @@ class VectorConfig(BaseModel):
 
 
 class MemoryFeedbackConfig(BaseModel):
-    """反馈纠错链路（N4）的开关与节拍。
+    """反馈纠错链路的开关与节拍。
 
     整条链路默认关闭，开启是显式动作；关闭时对 facts 及相关表零写入。
     锚点是「这条记忆真的进了提示词」，纠正信号先过关键词预筛再调模型判定，
@@ -842,7 +845,7 @@ class TaskRoutingConfig(BaseModel):
 
 
 class ModelTaskConfig(BaseModel):
-    """保存八类任务各自的模型候选和选择策略。
+    """保存各类任务各自的模型候选和选择策略。
 
     `extra='forbid'` 确保拼写错误的任务段在加载期直接失败，不会意外继承 chat 配置。
     """
@@ -1051,7 +1054,7 @@ class Config(BaseModel):
     emoji: EmojiConfig = Field(default_factory=EmojiConfig)
     desktop_pet: DesktopPetConfig = Field(default_factory=DesktopPetConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
-    # 八类任务的候选模型与轮询策略；连接细节都收在候选里
+    # 各任务的候选模型与挑选策略；连接细节都收在候选里
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)

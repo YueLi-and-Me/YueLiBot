@@ -475,7 +475,7 @@ class ContextBuildMixin:
             selected_facts,
             hard_filter_marked=feedback_cfg.enabled and feedback_cfg.hard_filter_enabled,
         )
-        # N4 锚点：事实真的进了提示词才登记待观察；链路默认关闭，关闭时零写入。
+        # 反馈纠错锚点：事实真的进了提示词才登记待观察；链路默认关闭，关闭时零写入。
         if feedback_cfg.enabled and fact_items:
             register_prompt_entries(
                 self._db,
