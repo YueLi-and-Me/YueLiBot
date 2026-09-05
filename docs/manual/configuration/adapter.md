@@ -2,7 +2,7 @@
 
 QQ 接入分两层：主体选择一个插件，插件再连接独立运行的协议端。
 安装协议端不会自动把月璃接进去。
-先读[接入总览](../adapters/index.md)决定使用哪一个，再填写连接参数。
+协议端选择依据见[接入总览](../adapters/index.md)，确定插件后填写对应连接参数。
 
 ## 主体选择文件
 
@@ -20,7 +20,7 @@ plugin = "yueli-napcat-adapter"
 读取时不会因拼错名字而自动尝试另一个插件。
 缺选择文件、插件目录、清单或连接配置时，查看后端启动诊断；
 后端和面板还能运行，不意味着 QQ 已连接成功。
-首装会显式创建默认选择，之后应由你维护。
+首次安装会显式创建默认选择，后续变更由用户配置。
 
 ## 插件目录与段名必须一致
 
@@ -29,9 +29,9 @@ plugin = "yueli-napcat-adapter"
 | `yueli-napcat-adapter` | `adapters/yueli-napcat-adapter/config.toml` | `[napcat]` |
 | `yueli-snowluma-adapter` | `adapters/yueli-snowluma-adapter/config.toml` | `[snowluma]` |
 
-不要把两个插件的连接文件直接互相覆盖后保留旧段名。
+切换插件连接配置时，须同步修改连接段名。
 除连接段外，两者都有 `[owner]`、`[private]`、`[group]`。
-段名、插件清单与目录对不上时，没有可用协议连接，主体不会猜测你想选谁。
+段名、插件清单与目录不一致时，协议连接不可用，主体不会自动选择其他插件。
 换用自定义主体配置目录，也不会改变插件连接文件的落点。
 
 ## 从模板准备连接
@@ -43,7 +43,7 @@ plugin = "yueli-napcat-adapter"
 - [NapCat 连接模板](../../../config.example/adapters/yueli-napcat-adapter.toml)。
 - [SnowLuma 连接模板](../../../config.example/adapters/yueli-snowluma-adapter.toml)。
 
-保留模板自己的 `[inner]` 版本，不要改成主体配置版本。
+应保留适配器模板的 `[inner]` 版本，不应改为主体配置版本。
 把 `host`、`port`、`token` 对齐协议端的正向 WebSocket 服务端。
 `host` 只填主机名或 IP，不加 `ws://`、端口或路径。
 协议端按根路径提供服务；当前连接配置没有自定义路径或 TLS 开关。
@@ -78,6 +78,6 @@ uv run python scripts/check/self_check.py
 未使用插件缺连接文件的报告，要与当前插件连接故障分开判断。
 
 自检通过不是网络握手成功，也不是 QQ 消息投递成功。
-启动后看实际连接日志，再由本人 QQ 私聊机器人发一句短消息验证收发。
+启动后检查实际连接日志，并使用本人 QQ 向机器人发送私聊短消息验证收发。
 收发失败按所选协议端篇排查：[NapCat](../adapters/napcat.md)、[SnowLuma](../adapters/snowluma.md)。
 实现边界见[开发手册：平台与适配器](../../dev/architecture/platform-io.md)。

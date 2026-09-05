@@ -1,7 +1,7 @@
 # 无头部署
 
-服务器只运行 QQ 与管理面板时，Python 就是入口，不需要桌宠外壳。
-QQ 协议端独立运行；月璃负责拉起适配器，见[接入总览](../adapters/index.md)。
+服务器仅运行 QQ 与管理面板时，使用 Python 入口，无需桌宠外壳。
+QQ 协议端独立运行；月璃负责启动适配器，见[接入总览](../adapters/index.md)。
 下文以项目放在 `/opt/yueli`、专用运行用户为 `yueli` 为例。
 
 ## 安装与首次配置
@@ -14,13 +14,13 @@ uv run bot.py
 ```
 
 首次生成 `config/` 后会退出，先完成终端列出的待填项。
-默认百炼连接通常只差 `providers.toml` 的 `api_key`。
+默认百炼连接通常仅需补充 `providers.toml` 的 `api_key`。
 换厂商需同步修改模型引用，见[配置总览](../configuration/index.md)。
 确认 `bot.toml` 中 `[desktop_pet] enabled = false`，再次启动。
-看到「WebUI 已就绪」后，再把前台运行改为服务托管。
-不要让首次缺配置的退出一直被服务管理器重启。
+确认「WebUI 已就绪」后，可将前台进程改为服务托管。
+服务托管前须完成首次配置，避免因配置缺失导致反复重启。
 
-## 把面板构建产物带到服务器
+## 部署面板构建产物
 
 在另一台构建机检出与服务器相同版本的代码，在根目录执行：
 
@@ -29,9 +29,9 @@ npm ci
 npm run build
 ```
 
-把整个 `out/webui` 目录复制到服务器项目的 `out/` 下。
+将完整的 `out/webui` 目录复制到服务器项目的 `out/` 下。
 目标应为 `/opt/yueli/out/webui/index.html`，其下资源目录也必须完整。
-不能只复制 `index.html`，也不要多套一层 `webui/webui`。
+须保留完整资源目录，并避免生成额外的 `webui/webui` 嵌套层级。
 例如在有 SSH 工具的构建机运行：
 
 ```bash
@@ -89,10 +89,10 @@ journalctl -u yueli -n 100 --no-pager
 journalctl -u yueli -f
 ```
 
-journal 包含标准输出、错误与启动入口框；分享前去掉其中的 token。
+journal 包含标准输出、错误与启动入口框；对外提供日志前须移除其中的 token。
 默认文件日志位于 `data/logs/app_*.log.jsonl`，受数量、大小和保留天数限制。
 模型失败请求在 `data/logs/llm_request/`，调用记录在 `data/logs/prompt/`。
-改过 `--data-dir` 时，以上日志都跟随新数据目录。
+使用 `--data-dir` 时，以上日志均位于指定数据目录内。
 
 后端只监听 `127.0.0.1`，从本机建立隧道：
 

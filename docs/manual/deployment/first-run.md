@@ -1,10 +1,10 @@
 # 从零跑起来
 
-装好依赖，填一个 API Key，先验证一轮对话。
+完成依赖安装和 API Key 配置后，验证基础对话功能。
 
-**要准备的**：Python 3.11+、uv、百炼 API Key；换厂商见[安装与配置](install.md)。本机构建面板需 Node.js，桌宠另需 Windows 10/11；服务器可接收已构建的面板。
+**环境与凭据**：Python 3.11+、uv、百炼 API Key；更换厂商见[安装与配置](install.md)。本机构建面板需 Node.js，桌宠另需 Windows 10/11；服务器可部署已构建的面板。
 
-## 装依赖
+## 安装依赖
 
 ```bash
 uv sync                    # 后端本体
@@ -12,35 +12,35 @@ npm ci                    # 安装前端依赖；只用命令行或 QQ 可跳过
 npm run build             # 构建管理面板与桌宠
 ```
 
-## 首次启动，让它生成配置
+## 首次启动并生成配置
 
 ```bash
 uv run bot.py
 ```
 
-**它生成 `config/` 后会主动停下来，这是正常流程**，不是报错。控制台用中文说明还差什么，看到这段提示即完成。
+首次启动会生成 `config/` 并退出，属于正常初始化流程。控制台会列出待填写的配置项；出现该提示表示配置文件已生成。
 
-## 填 API Key
+## 配置 API Key
 
-打开 `config/providers.toml`，唯一要填的一项：
+打开 `config/providers.toml`，填写唯一必需的凭据字段：
 
 ```toml
-api_key = ""    # 填你的密钥
+api_key = ""    # 填写实际密钥
 ```
 
-厂商地址、六个模型条目、各任务的分档都已预填，六个模型走同一条百炼连接；名字默认「月璃」，不用改。字段逐个的说明见 [`config.example/`](../../../config.example/README.md)。保存即完成。
+厂商地址、六个模型条目和任务分档均已预填，六个模型共用百炼连接；默认名称为「月璃」。字段说明见 [`config.example/`](../../../config.example/README.md)。保存即完成。
 
-## 再跑一次
+## 重新启动
 
 ```bash
 uv run bot.py
 ```
 
-看到「WebUI 已就绪」信息框即完成。浏览器打开框里的地址进[管理面板](../webui/index.md)——**本机访问自动登录**，不用手输 token。
+出现「WebUI 已就绪」信息框表示后端监听已建立。通过浏览器打开所示地址进入[管理面板](../webui/index.md)；本机访问自动登录，无需手动输入 token。
 
-## 说第一句话
+## 发送首条消息
 
-**管理面板里没有对话框**，它是观察和配置入口。真正说话有三条路：
+管理面板提供观察与配置功能，不包含对话输入框。可通过以下三种方式发送消息：
 
 **命令行**：后端保持运行，另开 Bash 终端（Windows 可用 Git Bash），替换 token 后执行：
 
@@ -51,12 +51,12 @@ curl -X POST http://127.0.0.1:7999/chat/send \
   -d '{"text":"你好"}'
 ```
 
-它只返回 `{"accepted":true}`——**回复不在 HTTP 响应里**，经 WebSocket 推送，同时打在后端终端的回合面板上，管理面板的「会话观察」页也能翻。看到她的回复即完成。
+请求接收成功后返回 `{"accepted":true}`，HTTP 响应不包含回复正文。回复通过 WebSocket 推送，并显示在后端终端及管理面板的「会话观察」页；确认正文后即完成基础验证。
 
 **桌宠**：依赖就绪后，在 `config/bot.toml` 里设 `[desktop_pet] enabled = true` 并重启，详见 [Windows 上带桌宠](windows.md)。
 
-**QQ**：先装一个协议端，见 [QQ 与群聊接入](../adapters/index.md)。
+**QQ**：须独立安装协议端，具体要求见 [QQ 与群聊接入](../adapters/index.md)。
 
-## 卡住了
+## 故障排查
 
-按症状查[常见问题](../troubleshooting.md)。
+按故障现象查阅[常见问题](../troubleshooting.md)。
