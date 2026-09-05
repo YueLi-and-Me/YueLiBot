@@ -1,6 +1,6 @@
 """consult 认知动作验收。
 
-对应 docs/memory-w4-knowledge.md 第四节与第五节：
+对应 开发文档 memory-w4-knowledge.md（不随代码分发） 第四节与第五节：
 - ★W4-5：consult 在轮次预算耗尽时不出现在动作空间里；
 - consult 与 recall / inspect 并列走既有 ReAct 回环：执行后观察作为消息回灌，
   认知轮不放出任何用户可见事件；

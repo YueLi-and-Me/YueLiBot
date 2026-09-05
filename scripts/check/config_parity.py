@@ -1,6 +1,6 @@
 """配置写入器对齐校验：Python schema 与 Electron 模板必须字段级一致。
 
-起因见 docs/config-writer-parity.md：两个运行时对同一份配置文件的所有权分裂
+起因见 开发文档 config-writer-parity.md（不随代码分发）：两个运行时对同一份配置文件的所有权分裂
 （Electron 负责写、Python 负责校验），schema 加了字段而 TS 模板没跟上的漂移
 曾让整份重写静默毁掉约 30 个字段。本脚本让漂移当场红灯：
 

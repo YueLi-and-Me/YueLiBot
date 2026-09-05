@@ -1,6 +1,6 @@
 """W4 知识检索验收。
 
-对应 docs/memory-w4-knowledge.md 第三节与第五节：
+对应 开发文档 memory-w4-knowledge.md（不随代码分发） 第三节与第五节：
 - ★W4-3：向量服务整批失败（embedding 留 NULL）时 search_knowledge 仍能靠
   BM25 返回结果，不抛异常、不中断调用方；
 - ★W4-4：knowledge_fts 的 rowid 与 knowledge.id 对齐——按第二条的关键词检索，

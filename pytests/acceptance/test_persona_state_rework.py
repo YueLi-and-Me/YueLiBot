@@ -1,6 +1,6 @@
 """精力、心情与统一状态重做的可执行验收断言。
 
-本文件对应 ``docs/persona-state-rework.md`` 的单元、迁移、提示词和跨语言合同。
+本文件对应 开发文档 persona-state-rework.md（不随代码分发） 的单元、迁移、提示词和跨语言合同。
 """
 
 from __future__ import annotations

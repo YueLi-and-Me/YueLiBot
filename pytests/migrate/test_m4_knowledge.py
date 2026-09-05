@@ -1,6 +1,6 @@
 """W2-M4 知识迁移验收：知识正文 + 图谱结构。
 
-对应 docs/memory-w2-migration.md 的 M-4 块与第五节断言：
+对应 开发文档 memory-w2-migration.md（不随代码分发） 的 M-4 块与第五节断言：
 - ★M-0：dry-run 计数报告与实际写入逐块一致；
 - ★M-2：重复执行不产生重复行；
 - ★M-4：迁入的 knowledge 行 embedding 全部为 NULL，一个旧向量数值都不搬；

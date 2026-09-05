@@ -4,7 +4,7 @@
 出站引用与目标合规读 ``pipeline_events``（``kind=action_decision``）。脚本只读，
 不写库、不联网。
 
-四项指标与 ``docs/live-quality-fixes-4.md`` 的 R-1～R-4 一一对应：
+四项指标与 开发文档 live-quality-fixes-4.md（不随代码分发） 的 R-1～R-4 一一对应：
 
 - R-1 引用还原：正文里 ``[回复 某人：…]`` 与残留 ``[引用消息]`` 的比例；
 - R-2 提及显示名：``@名字`` 与残留 ``@裸号`` 的比例；

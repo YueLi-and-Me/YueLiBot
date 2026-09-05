@@ -1,6 +1,6 @@
 """生活循环重做的本地可执行验收断言。
 
-本文件对应 ``docs/life-loop-rework.md`` §七中所有无需真实模型的星标条目。
+本文件对应 开发文档 life-loop-rework.md（不随代码分发） §七中所有无需真实模型的星标条目。
 """
 
 from __future__ import annotations

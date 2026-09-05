@@ -1,6 +1,6 @@
 """ReAct 认知循环验收。
 
-对应 docs/multiagent-react-cognition.md 第六节的六条验收：
+对应 开发文档 multiagent-react-cognition.md（不随代码分发） 第六节的六条验收：
 1. 预算为 0 时退回单轮，行为与引入 ReAct 之前一致；
 2. 认知轮不放出任何用户可见事件；
 3. 末轮动作集不含认知动作，模型再选记为 illegal_action 而非降级；
