@@ -29,7 +29,7 @@ uv run bot.py
 api_key = ""    # 填你的密钥
 ```
 
-厂商地址、六个模型条目、各任务的分档都已预填，六个模型走同一条百炼连接；名字默认「月璃」，不用改。字段逐个的说明见 [`config.example/`](../../config.example/README.md)。保存即完成。
+厂商地址、六个模型条目、各任务的分档都已预填，六个模型走同一条百炼连接；名字默认「月璃」，不用改。字段逐个的说明见 [`config.example/`](../../../config.example/README.md)。保存即完成。
 
 ## 4. 再跑一次
 
@@ -37,7 +37,7 @@ api_key = ""    # 填你的密钥
 uv run bot.py
 ```
 
-看到「WebUI 已就绪」信息框即完成。浏览器打开框里的地址进[管理面板](webui.md)——**本机访问自动登录**，不用手输 token。
+看到「WebUI 已就绪」信息框即完成。浏览器打开框里的地址进[管理面板](../webui/index.md)——**本机访问自动登录**，不用手输 token。
 
 ## 5. 说第一句话
 
@@ -56,8 +56,8 @@ curl -X POST http://127.0.0.1:7999/chat/send \
 
 **桌宠**：`config/bot.toml` 里 `[desktop_pet] enabled = true`，重新启动即可。
 
-**QQ**：先装一个协议端，见 [QQ 与群聊接入](qq-setup.md)。
+**QQ**：先装一个协议端，见 [QQ 与群聊接入](../adapters/index.md)。
 
 ## 卡住了
 
-按症状查[常见问题](troubleshooting.md)。
+按症状查[常见问题](../troubleshooting.md)。

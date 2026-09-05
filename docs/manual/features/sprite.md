@@ -13,6 +13,6 @@ npm run sprite:preview                                     # 逐张 diff 挑图
 npm run sprite:process                                     # 抠图 + 对齐 + 烘焙 + manifest
 ```
 
-详见 [`scripts/sprite/README.md`](../../scripts/sprite/README.md)。
+详见 [`scripts/sprite/README.md`](../../../scripts/sprite/README.md)。
 
 > Windows 下 `npm run xxx -- --flag` 会被 npm 吞掉参数，带参数一律用 `npx tsx` 直调。

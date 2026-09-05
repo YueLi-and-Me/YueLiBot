@@ -54,7 +54,7 @@ owner 的 QQ 号不是猜出来的。适配器每次连上主体后调 `link_own
 
 主体不持有任何 QQ 协议连接。主体侧的 QQ 出站驱动 `QqWebSocketDriver`（`src/core/platform_io/drivers/qq_ws.py:20`）只是一个回调封装：构造时注入主体的 WS 推送函数（装配在 `src/main.py:651-652`），`send` 把载荷交给这个回调就结束。推送按 stream 分区：固定桌面 stream 进 `desktop` 分区，其余全进 `platform` 分区（`src/core/api/ws.py:104`），每条推送是 `{'stream_id', 'channel', 'payload'}` 的 JSON 信封（ws.py:113-117），QQ 的三个通道 `qq.send` / `qq.react` / `qq.poke` 各占一个 channel，不共用——协议端那边是三个不同的 action，共用一个通道会让适配器靠字段有无猜意图（qq_ws.py:103-107）。分区里没有订阅者时推送返回 0，驱动据此抛 `DeliveryError`（qq_ws.py:91-95）——不能在没有接收端时回成功回执，否则上层会以为消息已送达。
 
-适配器进程由主体拉起并监护：`build_adapter_process`（`src/core/services/host/adapter_host.py:43`）按 `config/adapter.toml` 的声明组装 `python -m src.platforms.onebot11 --adapter <插件目录>` 命令行，解释器用 `sys.executable` 而不是 PATH 里的 python（adapter_host.py:75-82），避免虚拟环境分叉。启动时机绑在监听建立之后（`src/main.py:413-416` 的说明）：适配器一上来就要连后端；停止顺序相反，先收走适配器，保证不会再有新入站消息进来。适配器与桌面外壳都是可选子进程，缺声明只告警不阻断（`_build_children`，`src/main.py:352`）——无头部署形态见[无头部署](../guide/headless.md)。
+适配器进程由主体拉起并监护：`build_adapter_process`（`src/core/services/host/adapter_host.py:43`）按 `config/adapter.toml` 的声明组装 `python -m src.platforms.onebot11 --adapter <插件目录>` 命令行，解释器用 `sys.executable` 而不是 PATH 里的 python（adapter_host.py:75-82），避免虚拟环境分叉。启动时机绑在监听建立之后（`src/main.py:413-416` 的说明）：适配器一上来就要连后端；停止顺序相反，先收走适配器，保证不会再有新入站消息进来。适配器与桌面外壳都是可选子进程，缺声明只告警不阻断（`_build_children`，`src/main.py:352`）——无头部署形态见[无头部署](../../manual/deployment/headless.md)。
 
 独立进程买来的东西：
 

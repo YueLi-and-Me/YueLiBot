@@ -9,8 +9,8 @@ src/core/config/schema.py 一份 Pydantic schema 上——类型、范围、字�
 一条配置从磁盘走到业务代码经过哪些关卡、版本升级如何不要求用户手改，
 以及为什么需要一条专门的校验门把两个运行时的写入器钉在一起。
 
-用户向的字段说明不在本文范围内，见[安装与配置](../guide/install.md)与
-[config.example/README.md](../../config.example/README.md)。
+用户向的字段说明不在本文范围内，见[安装与配置](../../manual/deployment/install.md)与
+[config.example/README.md](../../../config.example/README.md)。
 
 ## 1. 五份 TOML 的职责划分
 
@@ -190,7 +190,7 @@ tomllib 抽出每个表的字段集、每个字典表的键集，与 Python sche
 少写一个任务槽，等同于把用户已配好的那段从模板里抹掉（planner 等槽位
 正是这样丢过的，config_parity.py:73-76 与 92-97）。这条校验挂在
 pytests/core/test_config_parity.py 里随正常测试跑，是四条状态门之外的
-跨语言补充门（见[开发与验证](../development/testing.md)）。注意它只比
+跨语言补充门（见[开发与验证](../guide/testing.md)）。注意它只比
 字段集与键集、不比默认值：TS 的 `DEFAULT_CONFIG` 与 bootstrap 种子表
 的取值对齐目前靠两处相互引用的注释约定（config.ts:93-96），不在门内。
 
@@ -235,5 +235,5 @@ pytests/core/test_config_example.py 重新渲染一遍并要求与入库副本�
 理由见 adapter_selection.py:27-30 与 bootstrap.py:287-305 的注释。
 
 相关阅读：[架构总览](overview.md)（进程与目录边界）、
-[安装与配置](../guide/install.md)（用户向的填写说明）、
-[QQ 与群聊接入](../guide/qq-setup.md)（适配器那份配置怎么填）。
+[安装与配置](../../manual/deployment/install.md)（用户向的填写说明）、
+[QQ 与群聊接入](../../manual/adapters/index.md)（适配器那份配置怎么填）。

@@ -239,5 +239,5 @@ observe.events.emit(kind, **fields)          src/core/observe/events.py
 ```
 
 相关配置集中在 `features.toml` 的 `[log]` 段（等级、着色、文件轮转、事件保留、两类
-提示词落盘开关，见[配置示例](../../config.example/features.toml)）；面板侧的页面入口
-见[管理面板](../guide/webui.md)。
+提示词落盘开关，见[配置示例](../../../config.example/features.toml)）；面板侧的页面入口
+见[管理面板](../../manual/webui/index.md)。

@@ -50,11 +50,11 @@ uv run bot.py   # 一条命令起全套
 **通常只有一项：API Key**——厂商地址与六个模型条目都按阿里云百炼的 OpenAI 兼容端点
 预填好了，各任务也已分档（对话走质量档、决策与摘要走快档、视觉与嵌入各有专用模型），
 默认全部关闭思考。填好后再启动一次即可。要接 QQ 的话另外填两个号，见
-[QQ 与群聊接入](docs/guide/qq-setup.md)。
+[QQ 与群聊接入](docs/manual/adapters/index.md)。
 想在填之前先看清配置长什么样，不必 clone：[`config.example/`](config.example/README.md)
 就是首次运行会生成的那一份，每个字段都带中文说明。
 
-**第一次装的话走这篇**：[从零跑起来](docs/guide/getting-started.md)——五步，每步写清楚你应该看到什么、没看到先查哪里。
+**第一次装的话走这篇**：[从零跑起来](docs/manual/deployment/first-run.md)——五步，每步写清楚你应该看到什么、没看到先查哪里。
 
 ---
 
@@ -62,16 +62,16 @@ uv run bot.py   # 一条命令起全套
 
 | | |
 | :--- | :--- |
-| [从零跑起来](docs/guide/getting-started.md) | **新手从这里开始**：五步走完，每步写清该看到什么 |
-| [安装与配置](docs/guide/install.md) | 依赖、五份 TOML 的生成与填写、启动方式 |
-| [QQ 与群聊接入](docs/guide/qq-setup.md) | 协议端选择、必改项、群聊白名单与回复触发 |
-| [管理面板](docs/guide/webui.md) | 浏览器里的观察与配置入口 |
-| [无头部署](docs/guide/headless.md) | 服务器上只跑 QQ 与面板 |
-| [数据库迁移与恢复](docs/guide/database.md) | 备份位置与回退旧库的正确步骤 |
-| [生图管线](docs/guide/sprite.md) | 从一张参考图跑出整套角色素材 |
-| [架构总览](docs/architecture/overview.md) | 分层、目录形状、进程关系与硬性边界 |
-| [常见问题](docs/guide/troubleshooting.md) | 按症状查：启动、面板、模型调用、QQ、桌宠、数据 |
-| [开发与验证](docs/development/testing.md) | 常用命令、四条状态门、启动探针 |
+| [从零跑起来](docs/manual/deployment/first-run.md) | **新手从这里开始**：五步走完，每步写清该看到什么 |
+| [安装与配置](docs/manual/deployment/install.md) | 依赖、五份 TOML 的生成与填写、启动方式 |
+| [QQ 与群聊接入](docs/manual/adapters/index.md) | 协议端选择、必改项、群聊白名单与回复触发 |
+| [管理面板](docs/manual/webui/index.md) | 浏览器里的观察与配置入口 |
+| [无头部署](docs/manual/deployment/headless.md) | 服务器上只跑 QQ 与面板 |
+| [数据库迁移与恢复](docs/manual/deployment/upgrade.md) | 备份位置与回退旧库的正确步骤 |
+| [生图管线](docs/manual/features/sprite.md) | 从一张参考图跑出整套角色素材 |
+| [架构总览](docs/dev/architecture/overview.md) | 分层、目录形状、进程关系与硬性边界 |
+| [常见问题](docs/manual/troubleshooting.md) | 按症状查：启动、面板、模型调用、QQ、桌宠、数据 |
+| [开发与验证](docs/dev/guide/testing.md) | 常用命令、四条状态门、启动探针 |
 
 全部文档的索引在 [`docs/`](docs/README.md)。
 
@@ -87,7 +87,7 @@ QQ 机器人先装图形环境。
 三条硬性边界：Python 后端不得依赖任何 Electron API；API Key 只存在于主进程和
 Python 后端，绝不下发到渲染层；Python 只监听 `127.0.0.1`，所有接口都过 token 鉴权。
 
-目录形状与依赖方向见[架构总览](docs/architecture/overview.md)。
+目录形状与依赖方向见[架构总览](docs/dev/architecture/overview.md)。
 
 ---
 

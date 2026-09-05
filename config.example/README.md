@@ -27,7 +27,7 @@
 要改 `providers.toml` 的 `kind` 与 `base_url`，再把各模型条目的 `model_identifier`
 换成那家接受的真实 ID。
 
-接 QQ 还要填适配器那份，见[QQ 与群聊接入](../docs/guide/qq-setup.md)。
+接 QQ 还要填适配器那份，见[QQ 与群聊接入](../docs/manual/adapters/index.md)。
 
 > 本目录由 `src.core.config.bootstrap.render_example_configs` 从 Pydantic schema 渲染，
 > 与首次运行走同一套代码和同一个写入器。**不要手改这里的文件**——改了会被

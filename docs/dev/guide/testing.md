@@ -14,7 +14,7 @@
 | `npm test` | Electron 端单元测试 |
 | `uv run pytest pytests/ -q` | Python 后端测试，业务逻辑主要在这边 |
 | `npm run test:integration` | 真实拉起 Python 后端的集成测试。**手动验收项**，不在任何默认门里 |
-| `npm run sprite:*` | 生图管线，见[生图管线](../guide/sprite.md) |
+| `npm run sprite:*` | 生图管线，见[生图管线](../../manual/features/sprite.md) |
 | `uv run python pytests/boot_probe.py` | 端到端启动探针。拉真进程验证启动链路，**不在默认门里** |
 
 ## 四条状态门
