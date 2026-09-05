@@ -56,7 +56,7 @@ class LlmError(Exception):
 # 照着做的话，日志与失败面板共用同一份措辞，避免两处各写一套说法。
 LLM_ERROR_HINTS: dict[str, str] = {
     'auth': '鉴权没过：API Key 无效或过期，也可能是这个 Key 没有该模型的权限',
-    'billing': '账户余额不足：请充值，或从任务候选中移除这个服务商的模型',
+    'billing': '账户余额不足或免费额度用尽：请检查余额与仅用免费额度设置，或移除对应候选模型',
     'quota': '额度或频率受限：余额不足、免费额度用尽，或撞上服务商限流',
     'model': '模型不可用：模型名在该服务商不存在，或渠道没开通',
     'network': '网络不通：连不上服务商，先看代理和 base_url',
@@ -107,7 +107,7 @@ def _classify_code(code: str) -> str:
     """根据服务端错误码文本归类模型请求错误。
 
     :param code: 服务端返回的 code 或 type 文本。
-    :return: `blocked`、`quota`、`auth`、`model` 或 `unknown` 类别。
+    :return: `blocked`、`billing`、`quota`、`auth`、`model` 或 `unknown` 类别。
     副作用：不修改输入文本。
     """
     # `prompt_blocked` 是兼容网关转发 Gemini 输入侧拦截时用的 code/type，正文形如
@@ -116,6 +116,10 @@ def _classify_code(code: str) -> str:
     if re.search(r'SensitiveContent|Sensitive|Risk|Policy|content_filter|prompt_blocked|prohibited',
                  code, re.I):
         return 'blocked'
+    # 免费额度用尽且禁止付费调用时，重复请求无法恢复；必须先于泛化 Quota
+    # 匹配识别，否则重试等待会耗尽首字窗口，把账务拒绝覆盖成超时。
+    if code.casefold() == 'allocationquota.freetieronly':
+        return 'billing'
     if re.search(r'Quota|RateLimit|TPM|RPM|Throttl|insufficient', code, re.I): return 'quota'
     if re.search(r'Auth|ApiKey|Credential|Permission|invalid_api_key', code, re.I): return 'auth'
     if code.casefold() == 'get_channel_failed':
