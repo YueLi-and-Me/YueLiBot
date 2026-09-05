@@ -1008,6 +1008,22 @@ class BotDocument(BaseModel):
         return value
 
 
+class TelemetryConfig(BaseModel):
+    """匿名安装量统计的开关。
+
+    默认开启：载荷固定为应用版本、系统类型与 Python 版本三项，不含聊天内容、
+    不含任何身份信息，也不采集 IP。首次启动会在控制台明说传什么、怎么关——
+    默认开启的功能埋在文档里不算说过。
+
+    服务端尚未立起时整条链路保持惰性：开关为真也不会发出任何请求。
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    # 是否上报匿名安装统计。关闭后不注册、不心跳，本机统计不受影响。
+    enabled: bool = True
+
+
 class FeatureDocument(BaseModel):
     """表示 features.toml 的顶层结构及各功能开关。"""
 
@@ -1017,6 +1033,7 @@ class FeatureDocument(BaseModel):
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig
     memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig
     developer: DeveloperConfig = Field(default_factory=DeveloperConfig)
@@ -1061,6 +1078,7 @@ class Config(BaseModel):
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     vector: VectorConfig = Field(default_factory=VectorConfig)
     memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
     developer: DeveloperConfig = Field(default_factory=DeveloperConfig)

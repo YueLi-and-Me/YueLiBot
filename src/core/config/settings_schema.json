@@ -829,6 +829,20 @@
         },
         {
           "kind": "object",
+          "key": "telemetry",
+          "label": "匿名统计",
+          "description": "统计全球有多少个安装、分别是什么版本；只上报三项，不含聊天内容与任何身份信息。",
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用匿名统计",
+              "help": "默认开启。只上报应用版本、系统类型与 Python 版本三项，不含聊天内容、不含任何身份信息，也不采集 IP。关闭后不注册、不心跳；本机统计不受影响。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
           "key": "log",
           "label": "日志",
           "description": "日志等级、文件轮转、控制台样式与事件保留策略。",

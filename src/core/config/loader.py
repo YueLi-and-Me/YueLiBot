@@ -329,6 +329,7 @@ def _load_split_config(directory: Path) -> Config:
         perception=features_perception,
         vector=features_vector,
         memory_feedback=features_document.memory_feedback,
+        telemetry=features_document.telemetry,
         log=features_document.log,
         advanced=features_document.advanced,
         developer=features_document.developer,

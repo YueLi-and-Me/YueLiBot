@@ -152,9 +152,16 @@ def test_逐字输入同意词后放行(
     assert document['channel'] == 'console'
 
 
-def test_协议正文随代码分发() -> None:
-    """协议必须在仓库里，否则闸门指向的位置是空的。"""
+def test_协议正文随代码分发并声明由AI生成() -> None:
+    """协议必须在仓库里，且必须自陈由 AI 生成、提示读者甄别。
+
+    这两句是用户明确要求的，改写协议时最容易被「润色」掉——「AI 辅助生成」
+    这类措辞暗示有人执笔而 AI 只是帮忙，与事实不符。断言盯住的是这层含义，
+    不是具体排版。
+    """
     agreement = Path(consent.AGREEMENT_FILENAME)
 
     assert agreement.is_file()
-    assert 'AI 生成' in agreement.read_text(encoding='utf-8')
+    text = agreement.read_text(encoding='utf-8')
+    assert 'AI 生成' in text, '协议必须声明由 AI 生成'
+    assert '甄别' in text, '协议必须提示读者甄别'

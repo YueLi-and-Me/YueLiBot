@@ -519,6 +519,11 @@ export interface YueliConfig {
     enabled: boolean
   }
   /** 反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。 */
+  /** 匿名安装量统计：只上报版本与系统类型，不含聊天内容与任何身份信息。 */
+  telemetry: {
+    /** 是否上报匿名安装统计；默认开启，服务端未立起时保持惰性 */
+    enabled: boolean
+  }
   memory_feedback: {
     /** 总开关；关闭时整条链路零写入 */
     enabled: boolean

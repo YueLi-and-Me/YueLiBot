@@ -30,6 +30,7 @@ from src.core.api.state import app_state
 from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
 from src.core.runtime.child_process import ChildProcess
 from src.core.runtime.consent import require_consent
+from src.core.runtime.telemetry import TelemetryService, describe_for_console
 from src.core.runtime.clock import now as current_time
 from src.core.logging.console_layout import print_box
 from src.core.logging.logger import get_logger, initialize_logging
@@ -1029,6 +1030,12 @@ def main() -> None:
     from src.core.services.maintenance.edge_decay import EdgeDecayService
     edge_decay = EdgeDecayService(db)
     lifecycle.register('edge_decay', edge_decay.startup, edge_decay.shutdown)
+
+    # 匿名统计默认开启，因此必须在控制台当面讲清楚传什么、怎么关——
+    # 默认开启的功能埋在文档里不算说过。服务端未立起时它自己保持惰性。
+    telemetry = TelemetryService(data_dir, enabled=cfg.telemetry.enabled)
+    print_box('匿名统计', describe_for_console(cfg.telemetry.enabled), publish=False)
+    lifecycle.register('telemetry', telemetry.startup, telemetry.shutdown)
     lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。

@@ -83,6 +83,14 @@ QQ 接入依赖独立安装的协议端，两者互斥、同时只能启用一�
 - **[NapCat](https://github.com/NapNeko/NapCatQQ)**
 - **[SnowLuma](https://github.com/SnowLuma/SnowLuma)**
 
+## 📊 匿名统计
+
+默认开启，用于统计共有多少个安装、分别是什么版本。上报内容固定三项：应用版本、
+系统类型、Python 版本。**不含聊天内容、不含任何身份信息，也不采集 IP。**
+
+关闭：把 `config/features.toml` 的 `[telemetry] enabled` 改成 `false`。
+首次启动时控制台也会把这几句念一遍。完整说明见[用户协议](AGREEMENT.md)第四节。
+
 ## 📌 注意事项与许可
 
 > [!IMPORTANT]

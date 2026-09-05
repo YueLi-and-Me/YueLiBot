@@ -261,6 +261,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   vector: {
     enabled: false,
   },
+  telemetry: { enabled: true },
   memory_feedback: {
     enabled: false,
     window_hours: 12,
@@ -1406,6 +1407,7 @@ function readSplitConfig(directory: string): YueliConfig {
     vector: {
       enabled: booleanAt(vector, 'enabled', featuresPath),
     },
+    telemetry: parseTelemetry(features, featuresPath),
     memory_feedback: parseMemoryFeedback(features, featuresPath),
     log: parseLog(features, featuresPath),
     advanced: {
@@ -1558,6 +1560,26 @@ function parseLog(features: Record<string, unknown>, path: string): YueliConfig[
  * @throws Error 当配置段不是表、布尔字段类型无效或数值越界时抛出。
  * @remarks 该段由 1.5.0 引入：旧版本文件没有它，按默认值补齐后由整目录重写写回。
  */
+/**
+ * 解析匿名统计段，段缺失时回落到默认值。
+ *
+ * @param features features.toml 解析出的顶层记录。
+ * @param featuresPath 文件路径，用于错误信息定位。
+ * @returns 匿名统计配置。
+ * @throws Error 段存在但 enabled 不是布尔值时抛出。
+ */
+function parseTelemetry(
+  features: Record<string, unknown>, featuresPath: string,
+): YueliConfig['telemetry'] {
+  const fallback = structuredClone(DEFAULT_CONFIG.telemetry)
+  if (features.telemetry === undefined) return fallback
+  const section = features.telemetry
+  if (!isRecord(section)) throw new Error(`${featuresPath} 的 [telemetry] 必须是配置段`)
+  const path = `${featuresPath} 的 [telemetry]`
+  return { enabled: section.enabled === undefined ? fallback.enabled : booleanAt(section, 'enabled', path) }
+}
+
+
 function parseMemoryFeedback(
   features: Record<string, unknown>, path: string,
 ): YueliConfig['memory_feedback'] {
@@ -2401,6 +2423,12 @@ enabled = ${tomlValue(cfg.vector.enabled)}
 [developer]
 # owner 私聊专用开发者命令通道；默认关闭，只有手工确认后才应开启
 enabled = ${tomlValue(cfg.developer.enabled)}
+
+# 匿名统计：统计全球有多少个安装、分别是什么版本。
+# 只上报应用版本、系统类型与 Python 版本三项，不含聊天内容、不含任何身份信息。
+[telemetry]
+# 默认开启；关闭后不注册、不心跳，本机统计不受影响
+enabled = ${tomlValue(cfg.telemetry.enabled)}
 
 # 反馈纠错：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
 # 整条链路默认关闭，开启是显式动作。

@@ -39,6 +39,9 @@ episode_query_block_enabled = true # 情节待重建期间是否屏蔽它的召�
 reconcile_interval_minutes = 5 # 二阶段一致性协调任务的轮询间隔，单位分钟。
 reconcile_batch_size = 20 # 协调任务每轮的批大小。
 
+[telemetry] # 匿名统计：统计全球有多少个安装、分别是什么版本；只上报三项，不含聊天内容与任何身份信息。
+enabled = true # 默认开启。只上报应用版本、系统类型与 Python 版本三项，不含聊天内容、不含任何身份信息，也不采集 IP。关闭后不注册、不心跳；本机统计不受影响。
+
 [log] # 日志：日志等级、文件轮转、控制台样式与事件保留策略。
 level = "INFO" # 全局日志等级：DEBUG / INFO / WARNING / ERROR / CRITICAL。
 console_level = "" # 终端日志等级，留空跟随全局 level。
