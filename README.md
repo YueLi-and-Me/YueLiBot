@@ -50,7 +50,10 @@ uv run bot.py   # 一条命令起全套
 最少只需要两处：`bot.toml` 的 `[bot] name`，以及 `models.toml` 的 `model_identifier`
 加 `providers.toml` 的 `base_url`、`api_key`。填好后再启动一次即可。
 
-完整步骤见[安装与配置](docs/guide/install.md)。
+想在填之前先看清配置长什么样，不必 clone：[`config.example/`](config.example/README.md)
+就是首次运行会生成的那一份，每个字段都带中文说明。
+
+**第一次装的话走这篇**：[从零跑起来](docs/guide/getting-started.md)——五步，每步写清楚你应该看到什么、没看到先查哪里。
 
 ---
 
@@ -58,6 +61,7 @@ uv run bot.py   # 一条命令起全套
 
 | | |
 | :--- | :--- |
+| [从零跑起来](docs/guide/getting-started.md) | **新手从这里开始**：五步走完，每步写清该看到什么 |
 | [安装与配置](docs/guide/install.md) | 依赖、五份 TOML 的生成与填写、启动方式 |
 | [QQ 与群聊接入](docs/guide/qq-setup.md) | 协议端选择、必改项、群聊白名单与回复触发 |
 | [管理面板](docs/guide/webui.md) | 浏览器里的观察与配置入口 |
@@ -65,6 +69,7 @@ uv run bot.py   # 一条命令起全套
 | [数据库迁移与恢复](docs/guide/database.md) | 备份位置与回退旧库的正确步骤 |
 | [生图管线](docs/guide/sprite.md) | 从一张参考图跑出整套角色素材 |
 | [架构总览](docs/architecture/overview.md) | 分层、目录形状、进程关系与硬性边界 |
+| [常见问题](docs/guide/troubleshooting.md) | 按症状查：启动、面板、模型调用、QQ、桌宠、数据 |
 | [开发与验证](docs/development/testing.md) | 常用命令、四条状态门、启动探针 |
 
 全部文档的索引在 [`docs/`](docs/README.md)。

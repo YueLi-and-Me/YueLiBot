@@ -7,12 +7,14 @@
 
 | 文档 | 内容 |
 | :--- | :--- |
+| [从零跑起来](guide/getting-started.md) | **新手从这里开始**：五步走完，每步写清该看到什么 |
 | [安装与配置](guide/install.md) | 环境要求、依赖安装、五份 TOML 的生成与填写 |
 | [QQ 与群聊接入](guide/qq-setup.md) | 协议端选择、正向 WebSocket 必改项、群聊白名单与回复触发 |
 | [管理面板](guide/webui.md) | 浏览器里的观察与配置入口，各页面用途 |
 | [无头部署](guide/headless.md) | 服务器上只跑 QQ 与面板，含 systemd 单元 |
 | [数据库迁移与恢复](guide/database.md) | 自动备份位置、迁移的单向性、回退旧库的正确步骤 |
 | [生图管线](guide/sprite.md) | 从一张参考图跑出整套角色素材 |
+| [常见问题](guide/troubleshooting.md) | 按症状查：启动、面板、模型调用、QQ、桌宠、数据 |
 
 ## 架构
 
