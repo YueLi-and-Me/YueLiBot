@@ -76,22 +76,26 @@ def _check_webui_entry(output: str, port: int, token: str, runtime_path: Path) -
     :return: 失败描述列表；全部通过时为空。
 
     入口框是给人看的，不带 ``YUELI_`` 前缀——supervisor 只吞协议行，其余原样转发。
-    启动顶部先显示“正在初始化”的地址与 token；监听建立后再显示“WebUI 已就绪”，
-    这样用户既能尽早复制入口，也不会把预告误判为已经可访问。
+
+    入口信息只在监听建立之后打印一次，出现在 ``YUELI_READY=1`` 之后。早期曾在启动
+    顶部先打一个「正在初始化」的预告框，已被移除：那一刻端口还没监听，用户照着地址
+    点只会失败，而同一份信息出现两次、先出现的那次还是错的。因此这里断言的是
+    「就绪框在 READY 之后」，不要反过来要求它出现在顶部。
     """
     failures: list[str] = []
+    # 逐条都要能在 112 字宽的信息框内单行放下，否则会被框边界截断而匹配不上：
+    # runtime_path 在临时目录下可以长到几十字符，整行连路径一起比对必然失败。
+    # 首行文案由 main.py 的就绪框决定，那里从「WebUI 观察面板」改成过「地址」，
+    # 改文案时这里要跟着改——探针不进四条门，没有别的东西会提醒它过期。
     expected = [
-        f"WebUI 观察面板：http://127.0.0.1:{port}",
+        f"地址：http://127.0.0.1:{port}",
         f"登录 token：{token}",
-        f"token 每次启动重新生成，也可从 {runtime_path} 读取",
+        "token 每次启动重新生成",
     ]
     for line in expected:
         if line not in output:
             failures.append(f"stdout 里没有这一行：{line}")
     ready_index = output.find("YUELI_READY=1")
-    entry_index = output.find(expected[0])
-    if ready_index >= 0 and entry_index >= 0 and entry_index > ready_index:
-        failures.append("WebUI 入口框没有出现在启动顶部，用户要等到后端完成后才能找到")
     ready_entry = "╭─ WebUI 已就绪 "
     ready_entry_index = output.find(ready_entry)
     if ready_index >= 0 and ready_entry_index >= 0 and ready_entry_index < ready_index:
