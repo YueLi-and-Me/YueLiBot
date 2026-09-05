@@ -1,0 +1,15 @@
+name = "yueli-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-09-05"
+
+# 每日 UTC 00:05 写一行快照。折线图的历史维度全靠它。
+[triggers]
+crons = ["5 0 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "yueli-installs"
+database_id = "3fc9f58b-1765-4cb9-845d-a77470a34f48"
+
+# STATS_TOKEN 不写在这里，用 `npx wrangler secret put STATS_TOKEN` 单独设置：
+# 这个文件要入库，令牌不能跟着进版本控制。
