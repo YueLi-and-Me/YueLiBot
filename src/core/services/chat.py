@@ -210,7 +210,7 @@ SESSION_GAP_MS = ConversationConfig().session_gap_minutes * 60_000
 
 _HINTS: dict[str, str] = {
     'auth': 'API Key 无效，检查 providers.toml',
-    'billing': '服务商账户余额不足，请充值或移除对应候选模型',
+    'billing': '服务商余额不足或免费额度用尽，请检查余额与仅用免费额度设置，或移除对应候选模型',
     'model': '模型 ID 不对，检查 models.toml',
     'quota': '限流或余额不足，稍等一下',
     'network': '连不上模型接口，检查网络或代理',
