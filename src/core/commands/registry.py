@@ -59,6 +59,7 @@ class CommandDispatch:
 
     command: str
     text: str
+    succeeded: bool
 
 
 _commands: List[CommandSpec] = []
@@ -169,13 +170,9 @@ async def dispatch_developer_command(
             return CommandDispatch(
                 command=spec.name,
                 text=f'开发者命令 {spec.name} 执行失败，请查看主体日志。',
+                succeeded=False,
             )
-        logger.info(
-            'developer_command_executed',
-            command=spec.name,
-            stream_id=context.stream.id,
-        )
-        return CommandDispatch(command=spec.name, text=rendered.strip())
+        return CommandDispatch(command=spec.name, text=rendered.strip(), succeeded=True)
     return None
 
 

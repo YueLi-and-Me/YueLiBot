@@ -10,12 +10,12 @@ from __future__ import annotations
 from ipaddress import ip_address
 from typing import Any, Dict, List, Literal
 
-import asyncio
-import sqlite3
-
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+import asyncio
+import sqlite3
 
 from .auth import (
     SESSION_COOKIE_NAME,
@@ -553,7 +553,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     if app_state.register_platform_stream is not None:
         app_state.register_platform_stream(context.stream)
     # 命令在归属解析之后、任何回复门控与管线观测之前截断。命中后直接走平台
-    # broker，不调用 ChatService，因此不会写 messages、触发抽取/召回或创建回合。
+    # broker，不进聊天缓冲、不发 user_input、不创建回合；成功回复仅补入历史。
     command = await dispatch_developer_command(
         enabled=app_state.developer_config.enabled,
         text=body.text,
@@ -567,6 +567,31 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             stream=context.stream,
             segments=[command.text],
         ))
+        if command.succeeded:
+            # 投递失败会在上方抛出，处理器错误提示也不记入历史。两条普通角色消息
+            # 只在成功直投后顺序落库，让后续对话、抽取与摘要都能看到先问后答。
+            user_message_id = app_state.chat.memory.append_message(
+                stream_id=context.stream.id,
+                sender_person_id=context.person.id,
+                role='user',
+                content=body.text,
+                now=now,
+                external_message_id=body.external_message_id,
+            )
+            assistant_message_id = app_state.chat.memory.append_message(
+                stream_id=context.stream.id,
+                sender_person_id=None,
+                role='assistant',
+                content=command.text,
+                now=max(now, current_time()),
+            )
+            logger.info(
+                'developer_command_executed',
+                command=command.command,
+                stream_id=context.stream.id,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
         return JSONResponse({
             'streamId': context.stream.id,
             'accepted': True,
