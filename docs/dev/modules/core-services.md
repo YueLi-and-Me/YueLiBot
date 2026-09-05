@@ -150,6 +150,10 @@
   开发者命令 `/git` 与 `/version` 的只读处理：只负责解析与执行，匹配与鉴权
   属于 `src/core/commands/` 的命令通道。`/git` 是全项目唯一 fork 外部进程的
   位置，「用户文本不进入子进程」的边界不得放宽。
+- `src/core/services/dev/install_stats.py`
+  开发者命令 `/inst`：读遥测服务端的 `GET /stats`，用 matplotlib 画折线图，
+  经出站图片契约发到聊天里。绘图依赖在可选 extra `chart`，缺失时退回纯文字；
+  服务端地址或 `YUELI_STATS_TOKEN` 为空时命令不注册。
 - `src/core/services/dev/prompt_records.py`
   分阶段模型调用记录的读取侧：把落盘目录扫成可分页摘要、按任务读单份完整
   内容；写入方是 `src/core/llm_models/snapshot.py`。
