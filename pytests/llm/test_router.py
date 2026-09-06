@@ -3,12 +3,14 @@
 覆盖三件事：
   · 失败切换：主力抛错就换备用，用户这一轮照样有回复；
   · 熔断降序：刚失败过的厂商在冷却期内排到最后，不用每轮都先撞一次；
-  · 不可重放：已经吐字之后不许换模型，否则同一句话会被说两遍。
+  · 不可重放：已经吐字之后不许换模型，否则同一句话会被说两遍；
+  · 推理不算吐字：只产生过 reasoning 的候选失败仍要切换，备用候选不能被白白跳过。
 """
 
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, List
+from unittest import mock
 
 import asyncio
 import json
@@ -17,6 +19,7 @@ import pytest
 from src.core.config.schema import Config, ModelCandidate
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.router import ModelRouter, ModelRouters, ProviderHealth
+from src.core.services.console.turn_panel import ModelCall
 
 
 def _candidate(name: str, provider: str) -> ModelCandidate:
@@ -68,10 +71,11 @@ class _ClosingClient(_FakeClient):
 
 
 class _ReasoningClient(_FakeClient):
-    """先返回推理，可选地再返回正文，用于视觉正文门槛回归。"""
+    """先返回推理，可选地再返回正文或抛错，用于正文门槛与切换门槛回归。"""
 
-    def __init__(self, reasoning: str, text: str = '') -> None:
-        super().__init__()
+    def __init__(self, reasoning: str, text: str = '',
+                 error: LlmError | None = None) -> None:
+        super().__init__(error=error)
         self._reasoning = reasoning
         self._text = text
 
@@ -81,11 +85,14 @@ class _ReasoningClient(_FakeClient):
         temperature=0.85,
         max_tokens=None,
         signal=None,
+        **_options: Any,
     ) -> AsyncIterator[dict]:
         self.calls += 1
         yield {'reasoning': self._reasoning}
         if self._text:
             yield {'text': self._text}
+        if self._error:
+            raise self._error
 
 
 def _router_with(clients: dict[str, _FakeClient], strategy: str = 'sequential',
@@ -279,6 +286,44 @@ async def test_content_already_sent_is_never_replayed() -> None:
         await _collect(router)
 
     assert clients['备用'].calls == 0, '已经开口了就不能换人重说一遍'
+
+
+async def test_reasoning_only_output_still_switches_to_backup() -> None:
+    """只吐过推理就断流的候选没有对外副作用，备用候选必须接手。
+
+    真实故障形态：候选在 2.9 秒返回一段思考后连续 30 秒无字节，provider 读超时转成
+    network 错误。推理增量不触发调用方的任何解析与副作用，此时切换候选不会
+    造成重复台词。
+    """
+    clients = {
+        '主力': _ReasoningClient('先想想', error=LlmError('network', '请求超时（30.0s）')),
+        '备用': _FakeClient(chunks=['我在']),
+    }
+    router = _router_with(clients)
+
+    assert await _collect(router) == '我在'
+    assert clients['主力'].calls == 1
+    assert clients['备用'].calls == 1
+
+
+async def test_switched_candidate_record_drops_the_failed_reasoning() -> None:
+    """失败候选的思考已经流给调用方，不能挂到接手候选的模型名下。"""
+    clients = {
+        '主力': _ReasoningClient('主力的思考', error=LlmError('network', '中途断了')),
+        '备用': _ReasoningClient('备用的思考', text='我在'),
+    }
+    router = _router_with(clients)
+    calls: List[ModelCall] = []
+
+    with mock.patch(
+        'src.core.llm_models.router.note_model_call',
+        side_effect=lambda call: calls.append(call) or True,
+    ):
+        assert await _collect(router) == '我在'
+
+    assert len(calls) == 1
+    assert calls[0].reasoning == '备用的思考'
+    assert calls[0].text == '我在'
 
 
 async def test_closing_router_stream_closes_selected_client_immediately() -> None:

@@ -24,7 +24,7 @@ from src.core.llm_models.openai import (
     error_hint,
     resolve_base_url,
 )
-from src.core.llm_models.protocol import ResponseValidator
+from src.core.llm_models.protocol import ResponseValidator, is_committing_chunk
 from src.core.llm_models.snapshot import (
     current_render_params,
     dump_exchange,
@@ -114,9 +114,18 @@ class _ExchangeRecord:
         self._error = ''
 
     def select(self, model: str, provider: str) -> None:
-        """记录本次实际选中的候选；候选切换时以最后一次为准。"""
+        """记录本次实际选中的候选；候选切换时以最后一次为准。
+
+        选定新候选时清空已累积的产出：失败候选可能已经吐出 reasoning 并流到调用
+        方，不清空会让它的思考文本挂在下一个候选的模型名下，面板与落盘记录都会
+        把两个模型的输出拼成一段。总耗时起点不重置，仍覆盖全部尝试。
+        """
         self._model = model
         self._provider = provider
+        self._text.clear()
+        self._reasoning.clear()
+        self._tool_calls.clear()
+        self._chunks = 0
 
     def first_token(self, elapsed_ms: int) -> None:
         """记录首字耗时；候选切换后以真正产出的那一次为准。"""
@@ -402,8 +411,9 @@ class ModelRouter:
                      ) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到一个候选产生首个可用输出增量。
 
-        一旦向调用方产生内容就不再切换候选，避免同一请求重复输出；首 token 超时
-        包含下层 provider 的内部重试时间。要求正文时，推理增量会暂存到首段正文
+        一旦向调用方产生正文或工具调用就不再切换候选，避免同一请求重复输出；只产生
+        过 reasoning 的候选失败仍可切换，推理增量不触发任何调用方副作用。首 token
+        超时包含下层 provider 的内部重试时间。要求正文时，推理增量会暂存到首段正文
         到达；只有推理或明确拒绝图片输入的候选不会抢占本轮成功位置。
 
         :param messages: OpenAI 兼容消息列表。
@@ -515,6 +525,8 @@ class ModelRouter:
                     reason='同族模型已被内容策略拒绝，重试必然同样被拒',
                 )
                 continue
+            # 是否已把不可重放的输出交给调用方。判据只认正文与工具调用：
+            # reasoning 只进观测面板，此时切换候选不会造成重复台词或重复副作用。
             yielded = False
             try:
                 client = self.client(candidate)
@@ -625,14 +637,17 @@ class ModelRouter:
                                 f'结构化输出校验失败：{exc}',
                             ) from exc
                         for chunk in buffered_chunks:
-                            yielded = True
+                            if is_committing_chunk(chunk):
+                                yielded = True
                             yield chunk
                     else:
                         for initial_chunk in initial_chunks:
-                            yielded = True
+                            if is_committing_chunk(initial_chunk):
+                                yielded = True
                             yield initial_chunk
                         async for chunk in iterator:
-                            yielded = True
+                            if is_committing_chunk(chunk):
+                                yielded = True
                             yield chunk
                     self._health.recover(candidate.provider)
                     return

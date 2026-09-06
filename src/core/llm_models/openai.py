@@ -4,7 +4,8 @@
 `POST {baseUrl}/chat/completions`，一个实现即可覆盖全部厂商。
 
 客户端负责鉴权参数组装、SSE 增量解析、HTTP 200 诊断正文识别、思考字段/标签
-分流和请求级重试；在已经向上游产生正文后不重放请求，以避免重复输出和副作用。
+分流和请求级重试；在已经向上游产生正文或工具调用后不重放请求，以避免重复输出
+和副作用，仅产生过 reasoning 的失败仍可重试。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import re
 
 import httpx
 
-from .protocol import ResponseValidator
+from .protocol import ResponseValidator, is_committing_chunk
 from .snapshot import current_candidate, record_provider_request
 
 from src.core.logging.logger import get_logger
@@ -415,11 +416,13 @@ class OpenAiChatProvider:
 
         :yield: 解析后的增量字典，顺序与服务端流式响应一致。
 
-        :raises LlmError: 网络、配额、HTTP、协议或主动取消错误；输出产生后不再重试。
+        :raises LlmError: 网络、配额、HTTP、协议或主动取消错误；正文或工具调用产生后
+            不再重试。
         :raises asyncio.CancelledError: 调用方取消异步生成器时传播。
 
         副作用：
-            发起一次或多次 HTTP 流式请求，记录请求快照和重试日志；输出后失败不会重放。
+            发起一次或多次 HTTP 流式请求，记录请求快照和重试日志；正文或工具调用产生后
+            失败不会重放。
         """
         for attempt in range(self._max_retries + 1):
             yielded_content = False
@@ -447,7 +450,8 @@ class OpenAiChatProvider:
                     async for chunk in request_stream:
                         for guarded_chunk in policy_guard.push(chunk):
                             if response_validator is None:
-                                yielded_content = True
+                                if is_committing_chunk(guarded_chunk):
+                                    yielded_content = True
                                 yield guarded_chunk
                             else:
                                 buffered_chunks.append(guarded_chunk)
@@ -456,7 +460,8 @@ class OpenAiChatProvider:
                                     buffered_text.append(text)
                     for guarded_chunk in policy_guard.flush():
                         if response_validator is None:
-                            yielded_content = True
+                            if is_committing_chunk(guarded_chunk):
+                                yielded_content = True
                             yield guarded_chunk
                         else:
                             buffered_chunks.append(guarded_chunk)
@@ -472,12 +477,14 @@ class OpenAiChatProvider:
                             f'结构化输出校验失败：{exc}',
                         ) from exc
                     for buffered_chunk in buffered_chunks:
-                        yielded_content = True
+                        if is_committing_chunk(buffered_chunk):
+                            yielded_content = True
                         yield buffered_chunk
                 return
             except LlmError as exc:
                 retryable = exc.kind in ('network', 'quota')
-                # 已产生内容后禁止重放，否则上层会收到重复文本和重复副作用。
+                # 已产生正文或工具调用后禁止重放，否则上层会收到重复文本和重复副作用；
+                # 只产生过 reasoning 的失败没有对外副作用，重试预算照常可用。
                 if yielded_content or not retryable or attempt >= self._max_retries:
                     raise
                 logger.warning(

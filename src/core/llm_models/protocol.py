@@ -2,6 +2,9 @@
 
 业务服务只依赖 `LlmProvider.stream` 的参数和增量字典结构，不直接依赖具体厂商
 客户端，从而可以在测试中注入替身 provider。
+
+增量字典的语义判据也放在这里：``is_committing_chunk`` 定义哪些字段一旦交给调用
+方就不可重放，供 provider 内部重试与候选路由共用同一份标准。
 """
 
 from __future__ import annotations
@@ -12,6 +15,25 @@ import asyncio
 
 
 ResponseValidator = Callable[[str], None]
+
+
+def is_committing_chunk(chunk: dict) -> bool:
+    """判断一个增量是否已构成不可重放的对外输出。
+
+    重试与候选切换用它取代「产生过任何增量」这一过宽的判据：
+
+    - 现象：候选先返回一段 ``reasoning``、随后流中途断开时，路由层按「已经开口」
+      处理，直接终局，配置好的备用候选一个都不尝试。
+    - 原因：``reasoning`` 只进观测面板，回复生成与决策链路都按空文本跳过它，
+      既不触发协议解析也不放行事件；把它计入已产出内容等于把无副作用的失败
+      误判成不可挽回。
+    - 后果：判据放宽到全部字段会让正文重放，同一句话说两遍、事件与工具副作用
+      各生效一次，因此只有 ``text`` 与 ``tool_calls`` 才封锁重试。
+
+    :param chunk: provider 产出的增量字典。
+    :return: 携带非空 ``text`` 或非空 ``tool_calls`` 时为 ``True``。
+    """
+    return bool(chunk.get('text')) or bool(chunk.get('tool_calls'))
 
 
 class LlmProvider(Protocol):

@@ -58,6 +58,24 @@ class PartialOutputProvider(FlakyProvider):
         raise LlmError('network', '模拟断流')
 
 
+class ReasoningThenFailProvider(FlakyProvider):
+    """先返回推理再断流：推理不构成对外输出，重试预算应当照常可用。"""
+
+    async def _stream_once(
+        self,
+        messages: List[Dict],
+        temperature: float,
+        max_tokens: int | None,
+        signal: asyncio.Event | None,
+        tools: List[Dict] | None = None,
+    ) -> AsyncIterator[Dict]:
+        self.attempts += 1
+        yield {'reasoning': '先想想'}
+        if self.attempts <= self.failures:
+            raise LlmError('network', '模拟断流')
+        yield {'text': '成功'}
+
+
 class ClosingProvider(OpenAiChatProvider):
     """首片后保持连接，用于验证外层关闭是否传到单次请求流。"""
 
@@ -109,6 +127,20 @@ async def test_error_after_partial_output_is_not_retried() -> None:
         _ = [chunk async for chunk in provider.stream(messages=[])]
 
     assert provider.attempts == 1
+
+
+async def test_error_after_reasoning_only_is_still_retried() -> None:
+    """推理增量不触发上层副作用，断流后重发不会造成重复输出，重试必须照常发生。"""
+    provider = ReasoningThenFailProvider(failures=1)
+
+    chunks = [chunk async for chunk in provider.stream(messages=[])]
+
+    assert chunks == [
+        {'reasoning': '先想想'},
+        {'reasoning': '先想想'},
+        {'text': '成功'},
+    ]
+    assert provider.attempts == 2
 
 
 async def test_response_validator_rejects_before_any_chunk_is_exposed() -> None:
