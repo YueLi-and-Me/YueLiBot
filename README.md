@@ -4,8 +4,6 @@
 
   <p>
     <img src="https://img.shields.io/badge/Python-3.11+-blue" alt="Python">
-    <img src="https://img.shields.io/badge/Electron-TypeScript-47848F" alt="Electron">
-    <img src="https://img.shields.io/badge/%E5%90%8E%E7%AB%AF-Windows%20%7C%20Linux-0078D6" alt="后端：Windows | Linux">
     <img src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-AGPL--3.0-orange" alt="许可证">
   </p>
 
