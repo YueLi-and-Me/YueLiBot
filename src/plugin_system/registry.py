@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Sequence
+from typing import Any, Dict, FrozenSet, Iterable, List, Sequence
 
 from src.core.logging.logger import get_logger
 
@@ -46,17 +46,27 @@ class PluginRegistry:
         self._origins: Dict[str, Path] = {}
         # 已成功 on_load 的插件；unload_all 只卸载它们，据此保证自身幂等。
         self._loaded: List[ToolPlugin] = []
+        # 本轮发现要跳过的插件 id，由 discover 传入。
+        self._disabled: FrozenSet[str] = frozenset()
 
-    def discover(self, roots: Sequence[Path]) -> None:
-        """按序扫描插件根目录，加载全部合法的工具插件。
+    def discover(
+        self,
+        roots: Sequence[Path],
+        disabled: Iterable[str] = (),
+    ) -> None:
+        """按序扫描插件根目录，加载全部未被禁用的合法工具插件。
 
         :param roots: 插件根目录，按优先级从高到低排列——同 id 冲突时先扫描到的
             生效，后者被忽略并记 warning；内置根目录因此应排在第三方之前。不存在
             的根目录直接跳过（用户可能从未放置第三方插件）。
+        :param disabled: 禁用的插件 id，取自 ``features.toml`` 的 ``[plugins] disabled``。
+            命中者**不执行其入口模块**：跳过发生在读完清单之后、加载之前，
+            所以一个代码有问题的插件可以靠禁用名单彻底绕开，而不必删目录。
         :return: ``None``。
         副作用：读取各插件目录的清单与入口文件，执行入口模块顶层代码；单个插件
             的任何失败只记 error 并跳过，不中断其余插件的发现。
         """
+        self._disabled = frozenset(disabled)
         for root in roots:
             self._discover_root(root)
 
@@ -175,6 +185,15 @@ class PluginRegistry:
                 '插件清单加载失败，已跳过该插件',
                 directory=str(directory),
                 error=str(exc),
+            )
+            return
+        if manifest.plugin_id in self._disabled:
+            # 记 info 而不是静默跳过：配置里关掉的东西必须在控制台看得见，
+            # 否则「工具怎么没出现」只能靠翻配置猜。
+            logger.info(
+                '工具插件已被配置禁用，跳过加载',
+                plugin=manifest.plugin_id,
+                directory=str(directory),
             )
             return
         if manifest.plugin_type != 'tool':

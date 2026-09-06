@@ -101,4 +101,5 @@
 [scripts](dev/modules/scripts.md)
 
 开发流程：[开发与验证](dev/guide/testing.md) ·
+[写一个工具插件](dev/guide/plugins.md) ·
 [Electron 侧的三个坑](dev/guide/electron-pitfalls.md)

@@ -330,6 +330,7 @@ def _load_split_config(directory: Path) -> Config:
         vector=features_vector,
         memory_feedback=features_document.memory_feedback,
         telemetry=features_document.telemetry,
+        plugins=features_document.plugins,
         log=features_document.log,
         advanced=features_document.advanced,
         developer=features_document.developer,

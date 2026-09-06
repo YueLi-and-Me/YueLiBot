@@ -1,0 +1,8 @@
+{
+  "manifest_version": 1,
+  "id": "example.hello-yueli",
+  "plugin_type": "tool",
+  "name": "Hello-YueLi",
+  "version": "0.1.0",
+  "description": "最小可运行的工具插件示例：演示清单、基类、@tool 装饰器与生命周期这四件必要的事；默认在 features.toml 的 [plugins] disabled 里关着"
+}

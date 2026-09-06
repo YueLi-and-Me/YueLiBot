@@ -474,3 +474,60 @@ def test_load_tool_plugin_ignores_adapter_classes_in_entry(tmp_path: Path) -> No
 
     assert type(plugin).__name__ == 'ToolSidePlugin'
     assert plugin.manifest.plugin_id == 'test.mixed-tool'
+
+
+# ------------------------------------------------------------ 禁用名单
+
+def test_disabled_plugin_is_skipped_and_others_still_load(tmp_path: Path) -> None:
+    """禁用名单命中者不进注册表，同目录下的其余插件照常加载。"""
+    root = tmp_path / 'plugins'
+    _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    _write_plugin(root, 'beta-tool', 'test.beta-tool', _HISTORY_PLUGIN)
+    registry = _registry()
+
+    registry.discover([root], ['test.alpha-tool'])
+
+    assert [
+        plugin.manifest.plugin_id for plugin in registry.tool_plugins()
+    ] == ['test.beta-tool']
+
+
+def test_disabled_plugin_entry_module_is_never_executed(tmp_path: Path) -> None:
+    """跳过发生在加载之前：入口代码有语法错误的插件也能靠禁用名单绕开。
+
+    这是禁用名单相对「删目录」的实际价值——第三方插件写坏了，用户不必删文件，
+    改一行配置就能让主体正常启动。
+    """
+    root = tmp_path / 'plugins'
+    _write_plugin(root, 'broken-tool', 'test.broken-tool', 'this is not valid python (')
+    registry = _registry()
+
+    with capture_logs() as logs:
+        registry.discover([root], ['test.broken-tool'])
+
+    assert registry.tool_plugins() == ()
+    # 只应有「已被禁用」这条 info，不应出现加载失败的 error。
+    assert not [entry for entry in logs if entry['log_level'] == 'error'], logs
+    assert any('禁用' in str(entry.get('event', '')) for entry in logs), logs
+
+
+def test_disabled_list_defaults_to_empty(tmp_path: Path) -> None:
+    """不传禁用名单时行为与改造前一致，扫到的插件全部加载。"""
+    root = tmp_path / 'plugins'
+    _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    registry = _registry()
+
+    registry.discover([root])
+
+    assert len(registry.tool_plugins()) == 1
+
+
+def test_unknown_id_in_disabled_list_is_not_an_error(tmp_path: Path) -> None:
+    """写了不存在的 id 不报错：第三方插件可能随时被删，为此让主体起不来不划算。"""
+    root = tmp_path / 'plugins'
+    _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    registry = _registry()
+
+    registry.discover([root], ['test.nonexistent'])
+
+    assert len(registry.tool_plugins()) == 1

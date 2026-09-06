@@ -1008,6 +1008,25 @@ class BotDocument(BaseModel):
         return value
 
 
+class PluginsConfig(BaseModel):
+    """工具插件的启用控制。
+
+    用「禁用名单」而不是「启用名单」，是为了升级安全：内置插件随程序发布且默认
+    应当可用，改成启用名单会让所有既有配置在升级后静默失去这些能力，而能力消失
+    只在模型「不会用某个工具」时才被察觉，极难归因。列出 id 即跳过该插件，
+    它的入口模块根本不会被执行。
+
+    插件 id 取自各插件 ``_manifest.json`` 的 ``id`` 字段；启动日志里
+    「工具插件已加载」那行会打印它。
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    # 禁用的工具插件 id 列表。写错或写了不存在的 id 不报错——第三方插件可能
+    # 随时被删除，为此让主体起不来不划算；真正的反馈是启动日志里该插件没出现。
+    disabled: List[str] = Field(default_factory=list)
+
+
 class TelemetryConfig(BaseModel):
     """匿名安装量统计的开关。
 
@@ -1034,6 +1053,7 @@ class FeatureDocument(BaseModel):
     vector: VectorConfig
     memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig
     developer: DeveloperConfig = Field(default_factory=DeveloperConfig)
@@ -1079,6 +1099,7 @@ class Config(BaseModel):
     vector: VectorConfig = Field(default_factory=VectorConfig)
     memory_feedback: MemoryFeedbackConfig = Field(default_factory=MemoryFeedbackConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
     developer: DeveloperConfig = Field(default_factory=DeveloperConfig)

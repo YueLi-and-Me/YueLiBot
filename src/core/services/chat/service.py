@@ -361,7 +361,7 @@ class ChatService(
         # ConversationAgent 拿到注册表之前完成，而 on_load 可能要做 I/O，只能等到
         # startup。因此 tools() 不得依赖 on_load 建立的状态，该约束写在契约里。
         self._plugins = PluginRegistry()
-        self._plugins.discover(PLUGIN_ROOTS)
+        self._plugins.discover(PLUGIN_ROOTS, cfg.plugins.disabled)
         for plugin in self._plugins.tool_plugins():
             for spec, executor in plugin.tools():
                 self._tool_registry.register_tool(spec, executor)
