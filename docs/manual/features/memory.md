@@ -9,7 +9,7 @@
 ## 三层记忆的内容
 
 **工作记忆**：当前会话的原始消息，逐条保存。每轮回复取最近若干条送入模型，
-条数由 `bot.toml` 的 `conversation.working_memory_messages` 决定（默认 40）。
+条数由 `bot.toml` 的 `conversation.working_memory_messages` 决定（初始配置 24）。
 消息被摘要归档后退出该窗口，原文保留不删除。
 
 **情节记忆**：一段时期内对话的摘要。未摘要消息累计到 `conversation.summarize_trigger_messages`
@@ -17,7 +17,7 @@
 情节不随时间衰减。
 
 **事实记忆**：关于某个人物的结构化事实，涵盖身份、偏好、关系、习惯、事件、状态。
-累计 `conversation.fact_extract_trigger_messages`（默认 32 条）消息后回看一次并抽取。
+累计 `conversation.fact_extract_trigger_messages`（初始配置 36 条）消息后回看一次并抽取。
 每条事实带有强度、半衰期与来源场合，随时间淡化（见下节）。
 
 **知识层**不属于记忆：存放经导入中心导入的资料（设定、文档、笔记）。
@@ -28,12 +28,12 @@
 每轮回复前，以当前消息与会话印象作为检索词，在「在场者」（当前说话人与最近发言者）的事实中检索，
 再按相关性与新鲜度排序。以下四个键控制写入提示词的数量（均在 `bot.toml` `[conversation]`）：
 
-- `fact_recall_limit`：每轮最多召回的事实条数，默认 6。
-- `recalled_episode_limit`：按当前输入相关性召回的情节条数，默认 2。
-- `recent_episode_limit`：无论相关性均补充的最近情节条数，默认 2。
-- `episode_context_limit`：两路情节去重后写入提示词的总上限，默认 3。
+- `fact_recall_limit`：每轮最多召回的事实条数，初始配置 10。
+- `recalled_episode_limit`：按当前输入相关性召回的情节条数，初始配置 10。
+- `recent_episode_limit`：无论相关性均补充的最近情节条数，初始配置 5。
+- `episode_context_limit`：两路情节去重后写入提示词的总上限，初始配置 8。
 
-开启向量召回后（`features.toml` `vector.enabled`，另需安装 vector 可选依赖与 embedding 任务档，
+向量召回开启时（`features.toml` `vector.enabled`，初始配置即为开启，需要 embedding 任务档，
 见[功能总览](index.md)），在既有候选上叠加语义排序：相关性按词面匹配与向量余弦以 0.4/0.6 加权融合。
 关闭或向量不可用时退回纯词面匹配，事实仍可召回，仅排序精度下降。
 

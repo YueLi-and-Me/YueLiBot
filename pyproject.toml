@@ -11,7 +11,6 @@ dependencies = [
     "fastapi>=0.116.0",
     "uvicorn[standard]>=0.35.0",
     "pydantic>=2.11.0",
-    "pydantic-settings>=2.4.0",
     "structlog>=25.4.0",
     # 自写的控制台渲染器要自己开 Windows 的 VT 处理（原先由 structlog 的
     # ConsoleRenderer 在背后 init colorama 代劳），所以从传递依赖提为直接依赖
@@ -24,14 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-vector = [
-    "faiss-cpu>=1.11.0",
-    "numpy>=2.2.0",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
-    "anyio[trio]>=4.0",
+    # scripts/eval/system_perf_watch.py 用它读进程与内存占用，正常运行时不需要。
+    "psutil>=6.0",
 ]
 # 只有开发者命令 /inst 画折线图用得上，不进主依赖：普通用户装了也不会触发。
 # 缺这一项时 /inst 退回文字输出，不报错。

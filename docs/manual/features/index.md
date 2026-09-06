@@ -24,7 +24,7 @@
 
 - 私聊跟进（静默追问、久等催促）：`bot.toml` 的 `typing.follow_up` / `typing.nudge` 默认开，
   仅在 Conversation 行动核心启用（`conversation_agent.mode` 为 `enabled`，或会话列入 `selected_streams`）的私聊中生效；
-  行动核心默认为 `off`。
+  行动核心初始配置为 `enabled`。
 - 桌面主动搭话：`models.toml` 的 `generation.proactive.enabled` 默认开，
   但主动搭话的唯一出口为桌宠窗口，还要求 `bot.toml` 的 `desktop_pet.enabled = true`；桌宠默认关闭。
 
@@ -36,8 +36,8 @@
 | 语音合成 | `features.toml` `[tts]` | tts 任务档与对应厂商；改动需重启 |
 | 屏幕视觉 | `features.toml` `vision.enabled` | vision 任务档与桌宠；改动需重启 |
 | QQ 聊天图片描述 | `features.toml` `vision.chat_image_enabled` | vision 任务档；与屏幕视觉相互独立 |
-| 向量混合召回 | `features.toml` `vector.enabled` | vector 可选依赖与 embedding 任务档；改动需重启 |
-| 记忆反馈纠错 | `features.toml` `[memory_feedback]` | memory 任务档；默认整条链路零写入；改动需重启 |
+| 向量混合召回 | `features.toml` `vector.enabled` | embedding 任务档；初始配置即开启；改动需重启 |
+| 记忆反馈纠错 | `features.toml` `[memory_feedback]` | memory 任务档；初始配置即开启，关闭后整条链路零写入；改动需重启 |
 | 群聊戳一戳 | `bot.toml` `group_chat.pokes_enabled` | 无 |
 
 ## 模型任务档与功能的对应关系

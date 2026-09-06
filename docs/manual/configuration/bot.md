@@ -53,7 +53,7 @@ QQ 的本人身份由适配器 `owner.qq` 绑定，修改昵称不能替代 QQ �
 事实抽取另按默认 32 条触发、每批 12 条执行，批次也必须小于触发数。
 调摘要频率不会同步改变事实抽取频率。
 
-`session_gap_minutes` 默认 30，超过该空闲时间算新会话并重新考虑临时语调。
+`session_gap_minutes` 初始配置 120，超过该空闲时间算新会话并重新考虑临时语调。
 它不会删除数据库里的旧消息。
 `fact_recall_limit = 0` 停止每轮事实召回，不是清空已保存事实。
 相关情节和最近情节分别取候选，去重后还受 `episode_context_limit` 总量限制。
@@ -83,7 +83,7 @@ QQ 的本人身份由适配器 `owner.qq` 绑定，修改昵称不能替代 QQ �
 
 ## 行动模式与调用成本
 
-`[conversation_agent] mode` 默认 `off`，保留普通对话路径。
+`[conversation_agent] mode` 初始配置为 `enabled`；置 `off` 可退回普通对话路径。
 `shadow` 记录行动决策，实际发言仍走原路径，因此会增加观察调用。
 `selected_streams` 仅对指定会话启用，`enabled` 对全部真实候选启用。
 指定会话应填写当前会话的外部标识，不得使用人物 ID 替代。

@@ -80,12 +80,12 @@ max_replies_in_window = 3
 
 ## 行动模式与动作开关
 
-`bot.toml` 的 `[conversation_agent]` 默认关闭。
+`bot.toml` 的 `[conversation_agent]` 初始配置为开启（`mode = "enabled"`）。
 启用后可由信号、发言频率或必要性评分产生候选，再决定回复、等待或沉默。
 只对指定会话启用时，其他会话保持原有触发方式。
 模式与调用成本见 [bot.toml 配置](../configuration/bot.md)。
 
-`reactions_enabled` 允许贴表情，`pokes_enabled` 允许主动戳人，后者默认关闭。
+`reactions_enabled` 允许贴表情，`pokes_enabled` 允许主动戳人；初始配置里前者关闭、后者开启。
 `self_started_topics` 允许行动核心在合适候选里自发起话题，不新增发言额度。
 接收戳一戳事件与允许机器人主动戳人属于不同控制项。
 

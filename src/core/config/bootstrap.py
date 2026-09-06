@@ -270,7 +270,7 @@ def _feature_document() -> Dict[str, Any]:
 
     识图、记忆反馈与向量召回默认开启：模板的模型表已经预填了 vision 与
     embedding 两条路由，配置校验能过，装完就能用。三者都会产生额外的模型调用，
-    这是「开箱即用」的代价，不想要的在 features.toml 里各改一行即可关掉。
+    不想要的在 features.toml 里各改一行即可关掉。
 
     视觉的两项**不跟随实际配置**：`capture_mode` 保持 `window`、
     `fullscreen_silent` 保持 `true`。整屏截取会把当时可见的桌面、任务栏和其他

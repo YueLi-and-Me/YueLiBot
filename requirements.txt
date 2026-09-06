@@ -46,18 +46,13 @@ pillow==12.3.0
 pydantic==2.13.4
     # via
     #   fastapi
-    #   pydantic-settings
     #   yueli
 pydantic-core==2.46.4
     # via pydantic
-pydantic-settings==2.14.2
-    # via yueli
 pygments==2.20.0
     # via rich
 python-dotenv==1.2.2
-    # via
-    #   pydantic-settings
-    #   uvicorn
+    # via uvicorn
 pyyaml==6.0.3
     # via uvicorn
 rich==15.0.0
@@ -78,7 +73,6 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
-    #   pydantic-settings
 uvicorn==0.52.1
     # via yueli
 uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'

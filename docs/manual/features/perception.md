@@ -5,7 +5,7 @@
 - `[vision]` 控制「看」：何时截屏、截取范围、发送至哪个模型。
 - `[perception]` 控制「说」：已获得的屏幕情境允许出现在哪些会话出口的提示词中。
 
-默认状态：`vision.enabled = false`、`vision.chat_image_enabled = false`、`perception.surfaces = ["desktop"]`。
+初始配置：`vision.enabled = false`、`vision.chat_image_enabled = true`、`perception.surfaces = ["desktop"]`。
 依赖：截屏仅发生在桌宠外壳中，桌面屏幕视觉因此还要求 `desktop_pet.enabled = true`；
 两类视觉功能均要求 `models.toml` 的 vision 任务档配置具备视觉能力的模型，否则配置加载期直接报错。
 

@@ -27,9 +27,9 @@ jobs:
         with:
           python-version: '3.13'
           enable-cache: true
-      # vector extra 装 faiss 与 numpy：不装会让向量召回相关用例整片跳过，
-      # 绿灯就失去意义。chart extra 同理，不装则 /inst 的出图路径只跑退化分支。
-      - run: uv sync --extra dev --extra vector --extra chart
+      # chart extra 装 matplotlib：不装则 /inst 的出图路径只跑退化分支，
+      # 绿灯就失去意义。
+      - run: uv sync --extra dev --extra chart
       - run: uv run pytest -q
 
   frontend:
