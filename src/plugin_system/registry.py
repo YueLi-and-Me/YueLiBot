@@ -5,7 +5,8 @@
     src/plugins/built_in/<插件名>/     内置插件，随程序发布
     plugins/<插件名>/                  第三方插件，用户自行放置
 
-每个插件目录含 ``_manifest.json`` 与 ``plugin.py``，与适配器一致。两个根目录都扫，
+每个插件目录含 ``_manifest.json`` 与 ``plugin.py``，与适配器一致；可选的
+``config.toml`` 携带该插件自己的启用开关与配置项，见 ``switch`` 模块。两个根目录都扫，
 调用方把内置根目录排在前：同 id 冲突时先扫描到的生效，后者被忽略并记 warning。
 
 注册表是主体与工具插件之间的唯一界面：主体只调 ``discover`` / ``load_all`` /
@@ -19,11 +20,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Iterable, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 from src.core.logging.logger import get_logger
 
 from .loader import MANIFEST_FILENAME, load_tool_plugin
+from .switch import plugin_enabled
 from .manifest import load_manifest
 from .tools import ToolPlugin
 
@@ -46,27 +48,21 @@ class PluginRegistry:
         self._origins: Dict[str, Path] = {}
         # 已成功 on_load 的插件；unload_all 只卸载它们，据此保证自身幂等。
         self._loaded: List[ToolPlugin] = []
-        # 本轮发现要跳过的插件 id，由 discover 传入。
-        self._disabled: FrozenSet[str] = frozenset()
 
-    def discover(
-        self,
-        roots: Sequence[Path],
-        disabled: Iterable[str] = (),
-    ) -> None:
-        """按序扫描插件根目录，加载全部未被禁用的合法工具插件。
+    def discover(self, roots: Sequence[Path]) -> None:
+        """按序扫描插件根目录，加载全部已启用的合法工具插件。
+
+        插件的启用开关在它自己的目录里（``config.toml`` 的 ``[plugin] enabled``），
+        不在主体配置里——开关随插件一起装、一起删，主配置里不会留下指向已删插件
+        的孤儿项，用户也不必为了开一个插件去改另一个文件。
 
         :param roots: 插件根目录，按优先级从高到低排列——同 id 冲突时先扫描到的
             生效，后者被忽略并记 warning；内置根目录因此应排在第三方之前。不存在
             的根目录直接跳过（用户可能从未放置第三方插件）。
-        :param disabled: 禁用的插件 id，取自 ``features.toml`` 的 ``[plugins] disabled``。
-            命中者**不执行其入口模块**：跳过发生在读完清单之后、加载之前，
-            所以一个代码有问题的插件可以靠禁用名单彻底绕开，而不必删目录。
         :return: ``None``。
-        副作用：读取各插件目录的清单与入口文件，执行入口模块顶层代码；单个插件
-            的任何失败只记 error 并跳过，不中断其余插件的发现。
+        副作用：读取各插件目录的清单、开关与入口文件，执行入口模块顶层代码；单个
+            插件的任何失败只记 error 并跳过，不中断其余插件的发现。
         """
-        self._disabled = frozenset(disabled)
         for root in roots:
             self._discover_root(root)
 
@@ -187,11 +183,11 @@ class PluginRegistry:
                 error=str(exc),
             )
             return
-        if manifest.plugin_id in self._disabled:
+        if not plugin_enabled(directory):
             # 记 info 而不是静默跳过：配置里关掉的东西必须在控制台看得见，
             # 否则「工具怎么没出现」只能靠翻配置猜。
             logger.info(
-                '工具插件已被配置禁用，跳过加载',
+                '工具插件已在自身配置中关闭，跳过加载',
                 plugin=manifest.plugin_id,
                 directory=str(directory),
             )

@@ -843,20 +843,6 @@
         },
         {
           "kind": "object",
-          "key": "plugins",
-          "label": "工具插件",
-          "description": "控制哪些工具插件不参与加载；插件 id 见各插件的 _manifest.json。",
-          "fields": [
-            {
-              "key": "disabled",
-              "type": "string_list",
-              "label": "禁用的插件 id",
-              "help": "每行一个插件 id，命中者不会被加载，其入口代码也不会执行。留空表示扫描到的插件全部启用。"
-            }
-          ]
-        },
-        {
-          "kind": "object",
           "key": "log",
           "label": "日志",
           "description": "日志等级、文件轮转、控制台样式与事件保留策略。",

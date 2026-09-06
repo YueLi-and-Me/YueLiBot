@@ -262,7 +262,6 @@ export const DEFAULT_CONFIG: YueliConfig = {
     enabled: false,
   },
   telemetry: { enabled: true },
-  plugins: { disabled: [] as string[] },
   memory_feedback: {
     enabled: false,
     window_hours: 12,
@@ -1409,7 +1408,6 @@ function readSplitConfig(directory: string): YueliConfig {
       enabled: booleanAt(vector, 'enabled', featuresPath),
     },
     telemetry: parseTelemetry(features, featuresPath),
-    plugins: parsePlugins(features, featuresPath),
     memory_feedback: parseMemoryFeedback(features, featuresPath),
     log: parseLog(features, featuresPath),
     advanced: {
@@ -1579,30 +1577,6 @@ function parseTelemetry(
   if (!isRecord(section)) throw new Error(`${featuresPath} 的 [telemetry] 必须是配置段`)
   const path = `${featuresPath} 的 [telemetry]`
   return { enabled: section.enabled === undefined ? fallback.enabled : booleanAt(section, 'enabled', path) }
-}
-
-
-/**
- * 解析 [plugins] 段：被禁用的工具插件 id 列表。
- *
- * @param features features.toml 解析出的顶层记录。
- * @param featuresPath 文件路径，用于错误信息定位。
- * @returns 工具插件配置；段缺失时返回默认值（不禁用任何插件）。
- * @throws Error 段存在但 disabled 不是字符串数组时抛出。
- */
-function parsePlugins(
-  features: Record<string, unknown>, featuresPath: string,
-): YueliConfig['plugins'] {
-  const fallback = structuredClone(DEFAULT_CONFIG.plugins)
-  if (features.plugins === undefined) return fallback
-  const section = features.plugins
-  if (!isRecord(section)) throw new Error(`${featuresPath} 的 [plugins] 必须是配置段`)
-  const disabled = section.disabled
-  if (disabled === undefined) return fallback
-  if (!Array.isArray(disabled) || !disabled.every((value) => typeof value === 'string')) {
-    throw new Error(`${featuresPath} 的 [plugins].disabled 必须是字符串数组`)
-  }
-  return { disabled: [...disabled] }
 }
 
 
@@ -2455,12 +2429,6 @@ enabled = ${tomlValue(cfg.developer.enabled)}
 [telemetry]
 # 默认开启；关闭后不注册、不心跳，本机统计不受影响
 enabled = ${tomlValue(cfg.telemetry.enabled)}
-
-# 工具插件：控制哪些插件不参与加载。
-# 用禁用名单而不是启用名单，升级时新增的内置插件才不会被静默挡在门外。
-[plugins]
-# 每行一个插件 id（见各插件的 _manifest.json）；命中者不加载，其入口代码也不执行
-disabled = ${tomlStringArray(cfg.plugins.disabled)}
 
 # 反馈纠错：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
 # 整条链路默认关闭，开启是显式动作。

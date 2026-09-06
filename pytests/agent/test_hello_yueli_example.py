@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import shutil
+
 import pytest
 
 from src.core.agent.action_protocol import (
@@ -18,10 +20,10 @@ from src.core.agent.action_protocol import (
     PlatformCapabilities,
     available_actions,
 )
-from src.core.config.bootstrap import render_example_configs
 from src.core.tooling.spec import ToolContext, ToolInvocation
 from src.plugin_system import PluginRegistry, load_manifest
 from src.plugin_system.loader import load_tool_plugin
+from src.plugin_system.switch import plugin_enabled
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DIR = PROJECT_ROOT / 'src' / 'plugins' / 'built_in' / 'hello-yueli'
@@ -119,23 +121,35 @@ async def test_生命周期钩子幂等() -> None:
     await plugin.on_unload()
 
 
-def test_示例插件在模板配置里默认关闭(tmp_path: Path) -> None:
+def test_示例插件自带的开关是关闭的() -> None:
     """全新安装不该被一份教学素材占用模型的工具声明预算。"""
-    render_example_configs(tmp_path)
-
-    import tomllib
-
-    document = tomllib.loads((tmp_path / 'features.toml').read_text(encoding='utf-8'))
-
-    assert EXAMPLE_ID in document['plugins']['disabled']
+    assert plugin_enabled(EXAMPLE_DIR) is False
 
 
-def test_禁用名单确实挡住了示例插件() -> None:
-    """把模板那份名单交给真实注册表，示例不应出现在已加载列表里。"""
+def test_开关确实挡住了示例插件() -> None:
+    """把真实的内置根交给真实注册表，示例不应出现在已加载列表里。"""
     registry = PluginRegistry()
 
-    registry.discover([EXAMPLE_DIR.parent], [EXAMPLE_ID])
+    registry.discover([EXAMPLE_DIR.parent])
 
     assert EXAMPLE_ID not in [
+        plugin.manifest.plugin_id for plugin in registry.tool_plugins()
+    ]
+
+
+def test_打开开关后示例能被加载(tmp_path: Path) -> None:
+    """把示例整份复制出去、开关改成 true，它必须真的能被发现并加载。
+
+    这一条守的是「照抄就能跑」——示例的全部价值所在。
+    """
+    root = tmp_path / 'plugins'
+    destination = root / 'hello-yueli'
+    shutil.copytree(EXAMPLE_DIR, destination, ignore=shutil.ignore_patterns('__pycache__'))
+    (destination / 'config.toml').write_text('[plugin]\nenabled = true\n', encoding='utf-8')
+    registry = PluginRegistry()
+
+    registry.discover([root])
+
+    assert EXAMPLE_ID in [
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
     ]

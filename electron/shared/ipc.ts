@@ -524,11 +524,6 @@ export interface YueliConfig {
     /** 是否上报匿名安装统计；默认开启，服务端未立起时保持惰性 */
     enabled: boolean
   }
-  /** 工具插件的启用控制；用禁用名单，升级时新增的内置插件不会被静默挡在门外。 */
-  plugins: {
-    /** 禁用的插件 id（见各插件的 _manifest.json）；命中者不加载，入口代码也不执行 */
-    disabled: string[]
-  }
   memory_feedback: {
     /** 总开关；关闭时整条链路零写入 */
     enabled: boolean

@@ -262,11 +262,6 @@ def _bot_document() -> Dict[str, Any]:
     })
 
 
-# 示例工具插件的 id，与 src/plugins/built_in/hello-yueli/_manifest.json 一致。
-# 改名或删除那个插件时记得同步这里，否则模板里会留下一个指向不存在插件的禁用项。
-_EXAMPLE_PLUGIN_ID = 'example.hello-yueli'
-
-
 def _feature_document() -> Dict[str, Any]:
     """组装 features.toml 初始文档，但故意不向全新安装暴露开发者命令段。
 
@@ -284,9 +279,6 @@ def _feature_document() -> Dict[str, Any]:
     document = _default_document(FeatureDocument, {
         'inner': {'version': CONFIG_VERSION},
         'memory_feedback': {'enabled': True},
-        # 示例插件默认关着：它是教学素材，没有理由占用模型
-        # 每一轮的工具声明预算。想试就把这一行删掉再重启。
-        'plugins': {'disabled': [_EXAMPLE_PLUGIN_ID]},
         'vector': {'enabled': True},
         'vision': {'chat_image_enabled': True},
     })

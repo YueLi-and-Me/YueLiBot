@@ -42,9 +42,6 @@ reconcile_batch_size = 20 # 协调任务每轮的批大小。
 [telemetry] # 匿名统计：统计全球有多少个安装、分别是什么版本；只上报三项，不含聊天内容与任何身份信息。
 enabled = true # 默认开启。只上报应用版本、系统类型与 Python 版本三项，不含聊天内容、不含任何身份信息，也不采集 IP。关闭后不注册、不心跳；本机统计不受影响。
 
-[plugins] # 工具插件：控制哪些工具插件不参与加载；插件 id 见各插件的 _manifest.json。
-disabled = ["example.hello-yueli"] # 每行一个插件 id，命中者不会被加载，其入口代码也不会执行。留空表示扫描到的插件全部启用。
-
 [log] # 日志：日志等级、文件轮转、控制台样式与事件保留策略。
 level = "INFO" # 全局日志等级：DEBUG / INFO / WARNING / ERROR / CRITICAL。
 console_level = "" # 终端日志等级，留空跟随全局 level。

@@ -476,43 +476,45 @@ def test_load_tool_plugin_ignores_adapter_classes_in_entry(tmp_path: Path) -> No
     assert plugin.manifest.plugin_id == 'test.mixed-tool'
 
 
-# ------------------------------------------------------------ 禁用名单
+# ------------------------------------------------------------ 插件自带开关
 
-def test_disabled_plugin_is_skipped_and_others_still_load(tmp_path: Path) -> None:
-    """禁用名单命中者不进注册表，同目录下的其余插件照常加载。"""
+def _write_switch(directory: Path, body: str) -> None:
+    """在插件目录里写一份 config.toml。"""
+    (directory / 'config.toml').write_text(body, encoding='utf-8')
+
+
+def test_关闭的插件不进注册表而同目录其余插件照常加载(tmp_path: Path) -> None:
+    """开关是每个插件自己的事，关掉一个不影响另一个。"""
     root = tmp_path / 'plugins'
-    _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    alpha = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     _write_plugin(root, 'beta-tool', 'test.beta-tool', _HISTORY_PLUGIN)
+    _write_switch(alpha, '[plugin]\nenabled = false\n')
     registry = _registry()
 
-    registry.discover([root], ['test.alpha-tool'])
+    registry.discover([root])
 
     assert [
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
     ] == ['test.beta-tool']
 
 
-def test_disabled_plugin_entry_module_is_never_executed(tmp_path: Path) -> None:
-    """跳过发生在加载之前：入口代码有语法错误的插件也能靠禁用名单绕开。
-
-    这是禁用名单相对「删目录」的实际价值——第三方插件写坏了，用户不必删文件，
-    改一行配置就能让主体正常启动。
-    """
+def test_关闭的插件入口模块不会被执行(tmp_path: Path) -> None:
+    """跳过发生在加载之前：入口写坏的插件也能靠开关绕开，不必删目录。"""
     root = tmp_path / 'plugins'
-    _write_plugin(root, 'broken-tool', 'test.broken-tool', 'this is not valid python (')
+    broken = _write_plugin(root, 'broken-tool', 'test.broken-tool', 'this is not valid python (')
+    _write_switch(broken, '[plugin]\nenabled = false\n')
     registry = _registry()
 
     with capture_logs() as logs:
-        registry.discover([root], ['test.broken-tool'])
+        registry.discover([root])
 
     assert registry.tool_plugins() == ()
-    # 只应有「已被禁用」这条 info，不应出现加载失败的 error。
     assert not [entry for entry in logs if entry['log_level'] == 'error'], logs
-    assert any('禁用' in str(entry.get('event', '')) for entry in logs), logs
+    assert any('关闭' in str(entry.get('event', '')) for entry in logs), logs
 
 
-def test_disabled_list_defaults_to_empty(tmp_path: Path) -> None:
-    """不传禁用名单时行为与改造前一致，扫到的插件全部加载。"""
+def test_没有配置文件的插件视为启用(tmp_path: Path) -> None:
+    """向后兼容：先于本机制存在的插件都没有 config.toml，不能因此失能。"""
     root = tmp_path / 'plugins'
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     registry = _registry()
@@ -522,12 +524,31 @@ def test_disabled_list_defaults_to_empty(tmp_path: Path) -> None:
     assert len(registry.tool_plugins()) == 1
 
 
-def test_unknown_id_in_disabled_list_is_not_an_error(tmp_path: Path) -> None:
-    """写了不存在的 id 不报错：第三方插件可能随时被删，为此让主体起不来不划算。"""
+def test_显式写_true_的插件加载(tmp_path: Path) -> None:
+    """开关的正向路径。"""
     root = tmp_path / 'plugins'
-    _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    alpha = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    _write_switch(alpha, '[plugin]\nenabled = true\n')
     registry = _registry()
 
-    registry.discover([root], ['test.nonexistent'])
+    registry.discover([root])
+
+    assert len(registry.tool_plugins()) == 1
+
+
+@pytest.mark.parametrize('body', [
+    'this is not toml [[[',
+    '[plugin]\nenabled = "no"\n',
+    '[other]\nenabled = false\n',
+    '[plugin]\nname = "x"\n',
+])
+def test_坏配置按启用处理并记警告(tmp_path: Path, body: str) -> None:
+    """读不懂不等于要关掉——把笔误当成关闭意图，等于让它悄悄拿掉一项能力。"""
+    root = tmp_path / 'plugins'
+    alpha = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    _write_switch(alpha, body)
+    registry = _registry()
+
+    registry.discover([root])
 
     assert len(registry.tool_plugins()) == 1
