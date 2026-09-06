@@ -14,6 +14,7 @@ from typing import Dict
 
 import hashlib
 import json
+import shutil
 import sqlite3
 
 import pytest
@@ -30,13 +31,72 @@ from src.core.runtime.self_check import (
     open_readonly_database,
     run_self_check,
 )
+from src.core.config.bootstrap import render_example_configs
 from src.core.config.loader import read_config
 from src.core.memory.vector_health import inspect_vector_health
 from src.platforms.onebot11.config import NAPCAT_CONFIG_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-REAL_CONFIG_DIR = PROJECT_ROOT / 'config'
-REAL_ADAPTERS_DIR = PROJECT_ROOT / 'adapters'
+
+# 模板里 api_key 一定为空（那是唯一必须用户自己填的东西），而配置加载器会因此拒绝
+# 整份文档。用例要的是「一份能加载的全新安装配置」，所以补一个假密钥。
+_FAKE_API_KEY = 'sk-self-check-fixture'
+
+
+@pytest.fixture
+def fresh_config_dir(tmp_path: Path) -> Path:
+    """渲染一份全新安装会得到的配置目录，并补上假 api_key 使其可加载。
+
+    :param tmp_path: pytest 提供的临时目录。
+    :return: 可直接交给 :func:`read_config` 与 :func:`run_self_check` 的配置目录。
+
+    本包过去读的是开发者本机的 ``config/``：
+    - 现象：全新签出（含 CI）上该目录不存在，用例 ValueError 或因错误的原因通过。
+    - 原因：``config/`` 是 gitignore 的运行时配置，不随代码分发。
+    - 后果：本机常绿而 CI 必红；更糟的是期望失败的那几条照样「通过」，
+      绿灯反映的是这台机器的配置，不是代码。
+    """
+    config_dir = tmp_path / 'config'
+    render_example_configs(config_dir)
+    providers = config_dir / 'providers.toml'
+    providers.write_text(
+        providers.read_text(encoding='utf-8').replace(
+            'api_key = ""', f'api_key = "{_FAKE_API_KEY}"',
+        ),
+        encoding='utf-8',
+    )
+    return config_dir
+
+
+@pytest.fixture
+def fresh_adapters_dir(tmp_path: Path) -> Path:
+    """造一份两个适配器齐全、段名与清单一致的插件根目录。
+
+    :param tmp_path: pytest 提供的临时目录。
+    :return: 可交给 :func:`run_self_check` 的适配器根目录。
+
+    不指向仓库里的 ``adapters/``：插件源码入库，但每个插件的 ``config.toml``
+    是不入库的连接配置，而自检恰恰要读它。
+    - 现象：全新签出上自检报「找不到 config.toml」，用例失败。
+    - 原因：连接配置含协议端地址与令牌，按仓库规矩不得入库。
+    - 后果：指向真实目录的用例只在开发者本机为绿，CI 上必红。
+    """
+    rendered = tmp_path / 'rendered'
+    render_example_configs(rendered)
+    root = tmp_path / 'adapters'
+    for source in sorted((PROJECT_ROOT / 'adapters').iterdir()):
+        manifest = source / '_manifest.json'
+        if not manifest.is_file():
+            continue
+        destination = root / source.name
+        destination.mkdir(parents=True)
+        # 清单入库，直接复用真实的那份；配置由模板渲染，与全新安装拿到的逐字一致。
+        shutil.copyfile(manifest, destination / '_manifest.json')
+        shutil.copyfile(
+            rendered / 'adapters' / f'{source.name}.toml',
+            destination / 'config.toml',
+        )
+    return root
 
 
 def _build_database(path: Path, user_version: int) -> None:
@@ -94,15 +154,19 @@ def _holed_registry() -> Dict[int, MigrationFn]:
     return registry
 
 
-def test_c1_migration_hole_is_reported_with_the_missing_version(tmp_path: Path) -> None:
+def test_c1_migration_hole_is_reported_with_the_missing_version(
+    tmp_path: Path,
+    fresh_config_dir: Path,
+    fresh_adapters_dir: Path,
+) -> None:
     """C-1：注册表有空洞时自检失败，并指出断在哪个版本。"""
     database = tmp_path / 'memory.db'
     _build_database(database, CURRENT_VERSION)
 
     report = run_self_check(
         database,
-        REAL_CONFIG_DIR,
-        REAL_ADAPTERS_DIR,
+        fresh_config_dir,
+        fresh_adapters_dir,
         migration_registry=_holed_registry(),
     )
 
@@ -111,19 +175,26 @@ def test_c1_migration_hole_is_reported_with_the_missing_version(tmp_path: Path) 
     assert any('缺少从版本 22 到 23 的迁移函数' in detail for detail in details), details
 
 
-def test_c2_database_ahead_of_code_fails(tmp_path: Path) -> None:
+def test_c2_database_ahead_of_code_fails(
+    tmp_path: Path,
+    fresh_config_dir: Path,
+    fresh_adapters_dir: Path,
+) -> None:
     """C-2：``user_version`` 超前于 ``CURRENT_VERSION`` 时自检失败。"""
     database = tmp_path / 'memory.db'
     _build_database(database, CURRENT_VERSION + 1)
 
-    report = run_self_check(database, REAL_CONFIG_DIR, REAL_ADAPTERS_DIR)
+    report = run_self_check(database, fresh_config_dir, fresh_adapters_dir)
 
     assert report.exit_code == 1
     failures = [item for item in report.items if item.status == FAIL]
     assert any(str(CURRENT_VERSION + 1) in item.detail for item in failures), failures
 
 
-def test_c3_enabled_switch_without_output_fails(tmp_path: Path) -> None:
+def test_c3_enabled_switch_without_output_fails(
+    tmp_path: Path,
+    fresh_config_dir: Path,
+) -> None:
     """C-3：``vector.enabled=true`` 而事实向量覆盖率为 0 时失败（G8 那一类）。"""
     database = tmp_path / 'memory.db'
     _build_database(database, CURRENT_VERSION)
@@ -139,9 +210,10 @@ def test_c3_enabled_switch_without_output_fails(tmp_path: Path) -> None:
     finally:
         db.close()
 
-    config = read_config(REAL_CONFIG_DIR)
-    if not config.vector.enabled:
-        pytest.skip('本机 vector.enabled 为 false，该矛盾组合不成立')
+    config = read_config(fresh_config_dir)
+    # 断言而不是 skip：模板种子把向量召回设为默认开启，这条矛盾组合因此恒成立。
+    # 哪天种子改回关闭，这里要红给人看，而不是悄悄跳过整条断言。
+    assert config.vector.enabled, '模板种子的 vector.enabled 变成了 false，本用例前提不再成立'
 
     readonly = open_readonly_database(database)
     try:
@@ -155,24 +227,31 @@ def test_c3_enabled_switch_without_output_fails(tmp_path: Path) -> None:
     assert any('facts=1 条' in item.detail for item in failures), failures
 
 
-def test_c4_adapter_section_directory_mismatch_fails(tmp_path: Path) -> None:
+def test_c4_adapter_section_directory_mismatch_fails(
+    tmp_path: Path,
+    fresh_config_dir: Path,
+) -> None:
     """C-4：目录名对、段名却是另一个协议端时失败（9/03 配置被覆盖那次）。"""
     adapters_root = tmp_path / 'adapters'
     _write_adapter(adapters_root, 'yueli-napcat-adapter', 'napcat', 'snowluma')
 
-    items = check_adapter_configs(REAL_CONFIG_DIR, adapters_root)
+    items = check_adapter_configs(fresh_config_dir, adapters_root)
 
     failures = [item for item in items if item.status == FAIL]
     assert any('napcat' in item.detail for item in failures), items
 
 
-def test_c5_healthy_run_exits_zero_and_writes_nothing(tmp_path: Path) -> None:
+def test_c5_healthy_run_exits_zero_and_writes_nothing(
+    tmp_path: Path,
+    fresh_config_dir: Path,
+    fresh_adapters_dir: Path,
+) -> None:
     """C-5：健康时退出码 0；检查前后库文件哈希一致，只读连接拒绝 DDL。"""
     database = tmp_path / 'memory.db'
     _build_database(database, CURRENT_VERSION)
     before = hashlib.sha256(database.read_bytes()).hexdigest()
 
-    report = run_self_check(database, REAL_CONFIG_DIR, REAL_ADAPTERS_DIR)
+    report = run_self_check(database, fresh_config_dir, fresh_adapters_dir)
 
     assert report.exit_code == 0, [
         item.render() for item in report.items if item.status != PASS
