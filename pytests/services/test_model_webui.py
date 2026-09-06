@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import re
-import shutil
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,13 +12,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from src.core.config import model_webui
+from src.core.config.bootstrap import render_example_configs
+
+# 模板里 api_key 恒为空（那是唯一必须用户自己填的东西），而 model_webui.save 会因此拒绝整份配置。
+_FAKE_API_KEY = 'sk-model-webui-fixture'
 
 
 @pytest.fixture()
 def config_copy(tmp_path: Path) -> Path:
-    source = Path('config')
-    for name in ('providers.toml', 'models.toml', 'bot.toml', 'features.toml'):
-        shutil.copy2(source / name, tmp_path / name)
+    """渲染一份全新安装会得到的配置目录，供读写往返用例改写。
+
+    :param tmp_path: pytest 提供的临时目录。
+    :return: 含四份主 TOML 的配置目录，可直接交给 ``model_webui``。
+
+    过去这里拷的是仓库根的 ``config/``：
+    - 现象：全新签出（含 CI）上该目录不存在，整包用例在 setup 阶段 FileNotFoundError。
+    - 原因：``config/`` 是 gitignore 的运行时配置，不随代码分发。
+    - 后果：本机常绿而 CI 必红；且断言实际校验的是这台机器填了什么，
+      而不是代码在标准配置下的行为。
+
+    模板里 api_key 恒为空，这正是 ``test_save_reuses_blank_api_key`` 要的形态。
+    """
+    render_example_configs(tmp_path)
+    providers = tmp_path / 'providers.toml'
+    providers.write_text(
+        providers.read_text(encoding='utf-8').replace(
+            'api_key = ""', f'api_key = "{_FAKE_API_KEY}"',
+        ),
+        encoding='utf-8',
+    )
     return tmp_path
 
 
