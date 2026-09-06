@@ -9,30 +9,42 @@ import pytest
 
 from src.core.config import adapter_selection, settings_webui
 
+from pytests.conftest import render_loadable_config
 
-# 主体配置目录内的文件；适配器连接配置在 adapters/ 下，由 fixture 单独复制。
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# 主体配置目录内的四份 TOML；适配器连接配置在 adapters/ 下，单独处理。
 _MAIN_FILES = ('bot.toml', 'features.toml', 'providers.toml', 'models.toml')
 _ADAPTER_PLUGIN = 'yueli-snowluma-adapter'
 
 
 @pytest.fixture()
 def config_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """复制一整套配置到临时目录，并把适配器根目录改指到副本。
+    """造一套全新安装形态的配置，并把适配器根目录改指到临时副本。
+
+    :param tmp_path: pytest 提供的临时目录。
+    :param monkeypatch: 用于改指适配器根目录常量。
+    :return: 主体配置目录。
 
     适配器根目录是 ``adapter_selection`` 的模块常量（由文件位置推出仓库根）。
     不改指它，保存用例就会直接写工作区里那份真实的适配器连接配置。
+
+    配置来自模板渲染而不是拷贝仓库根的 ``config/``：那个目录与
+    ``adapters/*/config.toml`` 都不入库，全新签出（含 CI）上并不存在。
+    插件的 ``_manifest.json`` 与源码入库，直接复用真实的那份。
     """
-    config_dir = tmp_path / 'config'
-    config_dir.mkdir()
-    for name in _MAIN_FILES:
-        shutil.copy2(Path('config') / name, config_dir / name)
-    shutil.copy2(Path('config') / 'adapter.toml', config_dir / 'adapter.toml')
+    config_dir = render_loadable_config(tmp_path / 'config')
 
     adapters_root = tmp_path / 'adapters'
+    plugin_dir = adapters_root / _ADAPTER_PLUGIN
     shutil.copytree(
-        Path('adapters') / _ADAPTER_PLUGIN,
-        adapters_root / _ADAPTER_PLUGIN,
-        ignore=shutil.ignore_patterns('__pycache__'),
+        PROJECT_ROOT / 'adapters' / _ADAPTER_PLUGIN,
+        plugin_dir,
+        ignore=shutil.ignore_patterns('__pycache__', 'config.toml'),
+    )
+    # 连接配置取模板渲染出的那份，与全新安装拿到的逐字一致。
+    shutil.copyfile(
+        config_dir / 'adapters' / f'{_ADAPTER_PLUGIN}.toml',
+        plugin_dir / 'config.toml',
     )
     monkeypatch.setattr(adapter_selection, 'ADAPTERS_ROOT', adapters_root)
     return config_dir
@@ -105,16 +117,22 @@ def test_save_keeps_newly_added_task_slots(config_copy: Path) -> None:
     消失，而且不报错——已经配好的候选被清空，看起来像「没保存成功」。
     """
     before = settings_webui.snapshot(config_copy)
+    # 候选名从当前配置里现取，不写死某个具体模型：保存路径会校验候选必须已定义，
+    # 写死的名字会把用例绑在某一份配置上，换一份种子就红。
+    available = [entry['name'] for entry in before['values']['models.toml']['models']]
+    assert available, '配置里没有任何模型条目，用例前提不成立'
+    chosen = available[-1]
+
     tasks = before['values']['models.toml']['model_tasks']
     for slot in ('planner', 'replyer', 'scene'):
-        tasks[slot]['model_list'] = ['gemini-2.5-pro']
+        tasks[slot]['model_list'] = [chosen]
         tasks[slot]['selection_strategy'] = 'random'
 
     assert settings_webui.save(config_copy, before['values'])['ok'] is True
 
     after = settings_webui.snapshot(config_copy)['values']['models.toml']['model_tasks']
     for slot in ('planner', 'replyer', 'scene'):
-        assert after[slot]['model_list'] == ['gemini-2.5-pro'], slot
+        assert after[slot]['model_list'] == [chosen], slot
         assert after[slot]['selection_strategy'] == 'random', slot
 
 

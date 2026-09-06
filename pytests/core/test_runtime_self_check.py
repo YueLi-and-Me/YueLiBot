@@ -19,6 +19,8 @@ import sqlite3
 
 import pytest
 
+from pytests.conftest import render_loadable_config
+
 from src.core.db.migrations.manager import CURRENT_VERSION, load_migration_registry
 from src.core.db.migrations.registry import MigrationFn
 from src.core.db.schema import DDL, SEED
@@ -31,17 +33,11 @@ from src.core.runtime.self_check import (
     open_readonly_database,
     run_self_check,
 )
-from src.core.config.bootstrap import render_example_configs
 from src.core.config.loader import read_config
 from src.core.memory.vector_health import inspect_vector_health
 from src.platforms.onebot11.config import NAPCAT_CONFIG_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-# 模板里 api_key 一定为空（那是唯一必须用户自己填的东西），而配置加载器会因此拒绝
-# 整份文档。用例要的是「一份能加载的全新安装配置」，所以补一个假密钥。
-_FAKE_API_KEY = 'sk-self-check-fixture'
-
 
 @pytest.fixture
 def fresh_config_dir(tmp_path: Path) -> Path:
@@ -56,16 +52,7 @@ def fresh_config_dir(tmp_path: Path) -> Path:
     - 后果：本机常绿而 CI 必红；更糟的是期望失败的那几条照样「通过」，
       绿灯反映的是这台机器的配置，不是代码。
     """
-    config_dir = tmp_path / 'config'
-    render_example_configs(config_dir)
-    providers = config_dir / 'providers.toml'
-    providers.write_text(
-        providers.read_text(encoding='utf-8').replace(
-            'api_key = ""', f'api_key = "{_FAKE_API_KEY}"',
-        ),
-        encoding='utf-8',
-    )
-    return config_dir
+    return render_loadable_config(tmp_path / 'config')
 
 
 @pytest.fixture
@@ -81,8 +68,7 @@ def fresh_adapters_dir(tmp_path: Path) -> Path:
     - 原因：连接配置含协议端地址与令牌，按仓库规矩不得入库。
     - 后果：指向真实目录的用例只在开发者本机为绿，CI 上必红。
     """
-    rendered = tmp_path / 'rendered'
-    render_example_configs(rendered)
+    rendered = render_loadable_config(tmp_path / 'rendered')
     root = tmp_path / 'adapters'
     for source in sorted((PROJECT_ROOT / 'adapters').iterdir()):
         manifest = source / '_manifest.json'

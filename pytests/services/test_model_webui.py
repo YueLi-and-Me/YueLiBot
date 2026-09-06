@@ -12,10 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from src.core.config import model_webui
-from src.core.config.bootstrap import render_example_configs
-
-# 模板里 api_key 恒为空（那是唯一必须用户自己填的东西），而 model_webui.save 会因此拒绝整份配置。
-_FAKE_API_KEY = 'sk-model-webui-fixture'
+from pytests.conftest import render_loadable_config
 
 
 @pytest.fixture()
@@ -33,15 +30,7 @@ def config_copy(tmp_path: Path) -> Path:
 
     模板里 api_key 恒为空，这正是 ``test_save_reuses_blank_api_key`` 要的形态。
     """
-    render_example_configs(tmp_path)
-    providers = tmp_path / 'providers.toml'
-    providers.write_text(
-        providers.read_text(encoding='utf-8').replace(
-            'api_key = ""', f'api_key = "{_FAKE_API_KEY}"',
-        ),
-        encoding='utf-8',
-    )
-    return tmp_path
+    return render_loadable_config(tmp_path)
 
 
 def test_snapshot_and_save_round_trip(config_copy: Path) -> None:
