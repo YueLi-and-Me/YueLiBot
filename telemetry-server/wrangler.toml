@@ -2,6 +2,17 @@ name = "yueli-telemetry"
 main = "src/index.js"
 compatibility_date = "2026-09-05"
 
+# workers.dev 是这个服务唯一的对外入口，客户端常量指的就是它，必须开着。
+workers_dev = true
+
+# 预览地址逐版本再开一组公网 URL（形如 <版本前缀>-yueli-telemetry.<子域>.workers.dev）。
+# 这里显式关掉：
+# - 现象：不关时每次部署都多出一个可访问的写入端点。
+# - 原因：wrangler 在未声明该字段时默认随 workers.dev 一起开启。
+# - 后果：/register 是匿名写入，多一个入口就多一处要一起盯的攻击面，而这个服务
+#   从来不需要灰度预览——它只有一个版本在跑。
+preview_urls = false
+
 # 每日 UTC 00:05 写一行快照。折线图的历史维度全靠它。
 [triggers]
 crons = ["5 0 * * *"]

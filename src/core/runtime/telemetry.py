@@ -33,9 +33,11 @@ from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 服务端地址。空字符串表示服务端尚未立起，此时整条链路保持惰性。
-# 立起来之后只需在这里填上根地址（不带尾斜杠），其余代码不动。
-TELEMETRY_ENDPOINT = ''
+# 服务端地址，不带尾斜杠。空字符串表示服务端尚未立起，此时整条链路保持惰性。
+#
+# 这个值一旦发布就等于定死：已装机的实例只认它，改地址意味着所有在跑的实例
+# 心跳全断，只能靠用户升级才能接回来。服务端实现见 telemetry-server/。
+TELEMETRY_ENDPOINT = 'https://yueli-telemetry.yuelibot.workers.dev'
 
 # 身份文件名，落在数据目录下。
 IDENTITY_FILENAME = 'telemetry.json'
