@@ -12,7 +12,7 @@ cluster = "volcano_tts" # 仅 client_type=volcengine 时生效：豆包语音的
 
 [vision] # 屏幕视觉：屏幕截图与视觉模型的隐私控制。
 enabled = false # 用户询问屏幕内容时截取一帧发送给视觉模型；未询问时不截取。默认关闭。
-chat_image_enabled = false # 是否允许 QQ 聊天图片调用视觉模型描述；与桌面屏幕视觉独立开关。
+chat_image_enabled = true # 是否允许 QQ 聊天图片调用视觉模型描述；与桌面屏幕视觉独立开关。
 fullscreen_silent = true # 检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报。
 capture_mode = "window" # window 只截前台那一个窗口；screen 截整个主屏，可能包含其他窗口和隐私内容。
 
@@ -20,10 +20,10 @@ capture_mode = "window" # window 只截前台那一个窗口；screen 截整个�
 surfaces = ["desktop"] # 留空表示不在任何出口提及；群聊不允许，配置 group 会在加载期直接报错。
 
 [vector] # 向量召回：长期记忆的向量混合召回开关。
-enabled = false # 是否启用向量混合召回；还需要安装项目的 vector 可选依赖。
+enabled = true # 是否启用向量混合召回；关闭后长期记忆只走关键词召回。
 
 [memory_feedback] # 记忆反馈纠错：反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。
-enabled = false # 总开关；事实进过提示词后被用户纠正时按事实账本取代机制改库，关闭时整条链路零写入。
+enabled = true # 总开关；事实进过提示词后被用户纠正时按事实账本取代机制改库，关闭时整条链路零写入。
 window_hours = 12.0 # 从记忆进提示词起算的反馈观察窗口，单位小时；必须大于 0。
 check_interval_minutes = 30 # 两次纠错轮询之间的间隔，单位分钟。
 batch_size = 20 # 每轮最多处理的待观察项数量。

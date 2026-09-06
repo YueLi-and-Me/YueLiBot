@@ -210,13 +210,47 @@ def _bot_document() -> Dict[str, Any]:
 
     人格与称呼全部留空：它们是这个项目最个人化的部分，预填一份别人的设定，
     用户多半不会逐条清空，而是带着它跑起来。
+
+    除此之外的数值取自长期运行的实际配置，而不是 schema 默认值。两者角色不同：
+    schema 默认值是「配置里缺这一项时的兜底」，必须保守——老配置没有某个键时
+    退回关闭态，不能被静默升级；模板种子是「全新安装该从什么状态起步」，
+    应当直接给出验证过的配置，否则新用户看到的是一个各项能力都半开的版本。
     """
     return _default_document(BotDocument, {
         'inner': {'version': CONFIG_VERSION},
         'bot': {'name': '月璃'},
-        # 该字段要求显式配置（不接受缺省），初值取「@ 必回」——群里被点名不理人
-        # 比多回一句更容易被当成故障。
-        'group_chat': {'at_mention_must_reply': True},
+        # 上下文与记忆的容量：schema 默认值偏小，装出来的实例记不住几轮，
+        # 而「关掉再打开她还记得」正是这个项目的主要能力。代价是每轮提示词更长。
+        'conversation': {
+            'episode_context_limit': 8,
+            'fact_extract_batch_messages': 24,
+            'fact_extract_trigger_messages': 36,
+            'fact_recall_limit': 10,
+            'recalled_episode_limit': 10,
+            'recent_episode_limit': 5,
+            'session_gap_minutes': 120,
+            'summarize_batch_messages': 48,
+            'summarize_trigger_messages': 60,
+            'working_memory_messages': 24,
+        },
+        # 多 Agent 路径默认开启。selected_streams 不预填：mode 为 enabled 时
+        # 全部候选都交给 Agent，那份清单只在 selected_streams 模式下才有意义，
+        # 而它在实际配置里装的是具体的 QQ 号与群号。
+        'conversation_agent': {
+            'mode': 'enabled',
+            'trigger_mode': 'reply_necessity',
+            'max_cognitive_rounds': 4,
+        },
+        # at_mention_must_reply 要求显式配置（不接受缺省），初值取「@ 必回」——
+        # 群里被点名不理人比多回一句更容易被当成故障。
+        'group_chat': {
+            'at_mention_must_reply': True,
+            'max_replies_in_window': 15,
+            'persona_weight': 0.8,
+            'pokes_enabled': True,
+            'presence_decay_strength': 17.0,
+            'reactions_enabled': False,
+        },
         'personality': {
             'birthday': '',
             'personality': '',
@@ -224,6 +258,7 @@ def _bot_document() -> Dict[str, Any]:
             'tone_probability': 0.0,
             'tone_variants': [],
         },
+        'typing': {'max_bubbles_per_say': 5},
     })
 
 
@@ -232,8 +267,21 @@ def _feature_document() -> Dict[str, Any]:
 
     `developer` 在 schema 中有关闭态默认值，因此旧配置与首次安装都能正常加载；
     只有开发者手写该段并显式开启后，用户机器上才可能命中聊天内命令。
+
+    识图、记忆反馈与向量召回默认开启：模板的模型表已经预填了 vision 与
+    embedding 两条路由，配置校验能过，装完就能用。三者都会产生额外的模型调用，
+    这是「开箱即用」的代价，不想要的在 features.toml 里各改一行即可关掉。
+
+    视觉的两项**不跟随实际配置**：`capture_mode` 保持 `window`、
+    `fullscreen_silent` 保持 `true`。整屏截取会把当时可见的桌面、任务栏和其他
+    窗口一并发给远程模型，这个隐私边界不该由模板替新用户默认放宽。
     """
-    document = _default_document(FeatureDocument, {'inner': {'version': CONFIG_VERSION}})
+    document = _default_document(FeatureDocument, {
+        'inner': {'version': CONFIG_VERSION},
+        'memory_feedback': {'enabled': True},
+        'vector': {'enabled': True},
+        'vision': {'chat_image_enabled': True},
+    })
     document.pop('developer')
     return document
 

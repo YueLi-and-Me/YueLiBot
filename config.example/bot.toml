@@ -12,12 +12,12 @@ relationship = "" # Bot 和用户的关系，例如“哥哥”“姐姐”“�
 [group_chat] # 群聊策略：群聊中 @、名字触发和回复频率的控制参数。
 at_mention_must_reply = true # 开启时协议 @ 提及不受睡眠与群聊回复窗口限制。
 name_mention_probability = 1.0 # 名字、别名或非必回 @ 命中后的回复概率，范围 0~1。
-presence_decay_strength = 3.0 # 数值越大，Bot 在群里说得越多时越倾向于让别人先说；范围 0~20。
-persona_weight = 0.05 # 群聊里人格增量的折算系数；一句一答的消耗远小于面对面长聊。
+presence_decay_strength = 17.0 # 数值越大，Bot 在群里说得越多时越倾向于让别人先说；范围 0~20。
+persona_weight = 0.8 # 群聊里人格增量的折算系数；一句一答的消耗远小于面对面长聊。
 reply_window_minutes = 10 # 在这段时间窗口内统计 Bot 已经回复了多少次。
-max_replies_in_window = 3 # 非必回消息在时间窗口内允许的最大回复次数；0 表示不限制。
-reactions_enabled = true # 开启后她可以在别人的消息上点一个 QQ 表情，不发新消息。关闭后 react 不进入动作集。
-pokes_enabled = false # 开启后她可以戳一戳群里某个人；戳一戳会给对方推送提醒，扰动比表情回应大，默认关闭。
+max_replies_in_window = 15 # 非必回消息在时间窗口内允许的最大回复次数；0 表示不限制。
+reactions_enabled = false # 开启后她可以在别人的消息上点一个 QQ 表情，不发新消息。关闭后 react 不进入动作集。
+pokes_enabled = true # 开启后她可以戳一戳群里某个人；戳一戳会给对方推送提醒，扰动比表情回应大。
 self_started_topics = true # 开启后她可以在没有可回应消息时主动发起话题；受同一条回复频率闸门约束，不会额外增加开口次数。
 scene_refresh_messages = 15 # 群里每积累这么多条新消息就在后台重算一次场景画像；0 表示关闭观察，系统提示词里不再有场景块。
 
@@ -34,31 +34,31 @@ tone_probability = 0.0 # 新会话抽取临时语调的概率；0 表示始终�
 tone_variants = [] # 候选的会话级语调，每行一条，只在新会话开始时至多抽取一条。
 
 [conversation] # 对话与记忆：工作记忆窗口、摘要节奏和记忆召回数量。
-working_memory_messages = 40 # 每轮送进模型的最近消息条数，不含系统提示词。
-summarize_trigger_messages = 48 # 未摘要消息达到此数量后触发一次长期记忆摘要。
-summarize_batch_messages = 16 # 每次摘要消化的最老消息条数；必须小于触发数量。
-fact_extract_trigger_messages = 32 # 累计多少条消息后回看一次并抽取长期事实；比摘要更密，因为事实的时效性更强。
-fact_extract_batch_messages = 12 # 每次抽取回看的最旧消息条数，必须小于触发消息数。
-session_gap_minutes = 30 # 超过此空闲时长视为新会话，并重新抽取临时语调。
-fact_recall_limit = 6 # 每轮最多召回的事实记忆数量；0 表示不召回事实。
-recalled_episode_limit = 2 # 按当前输入相关性召回的情节数量。
-recent_episode_limit = 2 # 无论相关性如何都补充的最近情节数量。
-episode_context_limit = 3 # 去重后最终写入系统提示词的情节总上限。
+working_memory_messages = 24 # 每轮送进模型的最近消息条数，不含系统提示词。
+summarize_trigger_messages = 60 # 未摘要消息达到此数量后触发一次长期记忆摘要。
+summarize_batch_messages = 48 # 每次摘要消化的最老消息条数；必须小于触发数量。
+fact_extract_trigger_messages = 36 # 累计多少条消息后回看一次并抽取长期事实；比摘要更密，因为事实的时效性更强。
+fact_extract_batch_messages = 24 # 每次抽取回看的最旧消息条数，必须小于触发消息数。
+session_gap_minutes = 120 # 超过此空闲时长视为新会话，并重新抽取临时语调。
+fact_recall_limit = 10 # 每轮最多召回的事实记忆数量；0 表示不召回事实。
+recalled_episode_limit = 10 # 按当前输入相关性召回的情节数量。
+recent_episode_limit = 5 # 无论相关性如何都补充的最近情节数量。
+episode_context_limit = 8 # 去重后最终写入系统提示词的情节总上限。
 private_facts_in_group = false # 私聊里听到的人物事实能否出现在群聊提示词中；默认关闭，事实只在被听见的场合可见。
 
 [conversation_agent] # Conversation 行动核心：多智能体行动核心的灰度开关、触发口径与测试流清单。
-mode = "off" # off 保留旧管线；shadow 只记录决策；selected_streams 只对清单内会话生效；enabled 对全部真实候选生效。
+mode = "enabled" # off 保留旧管线；shadow 只记录决策；selected_streams 只对清单内会话生效；enabled 对全部真实候选生效。
 selected_streams = [] # mode=selected_streams 时生效的 stream ID 清单，每行一个。
 split_replyer = true # 打开后发言要跑两次模型：先定动作，再写正文，首字延迟明显上升。想压延迟就在模型配置里给「行动决策」单独指一个快模型。沉默、等待、贴表情、戳一戳不受影响。
 tool_calling = true # 默认开启，且依赖决策与表达分开调用。行动决策模型必须支持工具调用；开启时同时使用扁平 item 上下文，关闭后改用旧 XML 动作协议。
-trigger_mode = "signal" # signal 沿用原口径；frequency 按发言频率给候选；reply_necessity 按回复必要性评分。
+trigger_mode = "reply_necessity" # signal 沿用原口径；frequency 按发言频率给候选；reply_necessity 按回复必要性评分。
 frequency_talk_value = 0.6 # frequency 模式的消息条数尺度，必须大于 0 且不超过 1。
 reply_necessity_threshold = 80 # reply_necessity 模式的评分阈值，0~100。
-max_cognitive_rounds = 2 # 一个回合内允许的认知轮次上限；每一轮都可能发起一次模型调用。
+max_cognitive_rounds = 4 # 一个回合内允许的认知轮次上限；每一轮都可能发起一次模型调用。
 
 [typing] # 打字节奏：一段话切成几条气泡、每条之间隔多久。
 bubble_target_chars = 18 # 先按标点切成最小片段，再合并到接近该长度为止；必须大于 0。
-max_bubbles_per_say = 3 # 话越长每条也越长，条数不随长度无限增长；至少为 1。
+max_bubbles_per_say = 5 # 话越长每条也越长，条数不随长度无限增长；至少为 1。
 delay_enabled = true # 关闭后多条气泡会连续发出。
 chinese_char_seconds = 0.28 # 中文按整字输入计价。
 latin_char_seconds = 0.12 # 字母与数字连打明显快于中文。

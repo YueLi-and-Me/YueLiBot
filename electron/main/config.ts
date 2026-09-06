@@ -2239,7 +2239,7 @@ reply_window_minutes = ${cfg.group_chat.reply_window_minutes}
 max_replies_in_window = ${cfg.group_chat.max_replies_in_window}
 # 允许对群消息贴表情回应（在别人消息上点一个表情，不发新消息）
 reactions_enabled = ${cfg.group_chat.reactions_enabled}
-# 允许使用 QQ 戳一戳；它比贴表情吵得多，默认关闭
+# 允许使用 QQ 戳一戳；它比贴表情吵得多
 pokes_enabled = ${cfg.group_chat.pokes_enabled}
 # 允许她主动起话头（不接任何人的话）；没什么非说不可的仍然该选沉默
 self_started_topics = ${cfg.group_chat.self_started_topics}
@@ -2417,7 +2417,7 @@ capture_mode = ${tomlValue(cfg.vision.capture_mode)}
 surfaces = ${tomlStringArray(cfg.perception.surfaces)}
 
 [vector]
-# 是否启用向量混合召回；还需要安装项目的 vector 可选依赖
+# 是否启用向量混合召回；关闭后长期记忆只走关键词召回
 enabled = ${tomlValue(cfg.vector.enabled)}
 
 [developer]

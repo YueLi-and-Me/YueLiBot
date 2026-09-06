@@ -607,7 +607,7 @@ class VectorConfig(BaseModel):
     :ivar enabled: 是否启用向量召回；具体 embedding 模型由任务路由配置。
     """
 
-    # 向量混合召回，默认关；还需 pip install yueli[vector]
+    # 向量混合召回。schema 默认关（配置缺该键时的兜底），模板种子里是开的
     # 用哪个 embedding 模型由 model_tasks.embedding 决定，不在这里重复。
     enabled: bool = False
 
