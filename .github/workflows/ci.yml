@@ -29,6 +29,14 @@ jobs:
         with:
           python-version: '3.13'
           enable-cache: true
+      # 部分用例会 shell out 调 electron/main/config.ts（配置写入器往返）与装配桌宠外壳，
+      # 两者都需要 node_modules。不装的话它们在全新签出上必然 ERROR，而本机因为
+      # node_modules 一直在，绿灯是假的。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
       # chart extra 装 matplotlib：不装则 /inst 的出图路径只跑退化分支，
       # 绿灯就失去意义。
       - run: uv sync --extra dev --extra chart
