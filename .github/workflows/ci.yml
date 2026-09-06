@@ -9,6 +9,8 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  # 手动触发：转移仓库或改动工作流之后，需要一条不依赖推送的方式确认四条门还活着。
+  workflow_dispatch:
 
 # 项目的日志、控制台框与断言消息全是简体中文。runner 的默认 locale 不是 UTF-8，
 # 不设这两项时 print 中文会抛 UnicodeEncodeError，且异常发生在子进程或读取线程里，
