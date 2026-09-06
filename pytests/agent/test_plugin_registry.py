@@ -478,17 +478,45 @@ def test_load_tool_plugin_ignores_adapter_classes_in_entry(tmp_path: Path) -> No
 
 # ------------------------------------------------------------ 插件自带开关
 
+_DISABLED_PLUGIN = '''
+from pydantic import Field
+
+from src.plugin_system import PluginConfig, ToolPlugin
+
+
+class Config(PluginConfig):
+    enabled: bool = Field(default=False, description='默认关闭')
+
+
+class DisabledPlugin(ToolPlugin):
+    config_model = Config
+'''
+
+_CONFIGURED_PLUGIN = '''
+from pydantic import Field
+
+from src.plugin_system import PluginConfig, ToolPlugin
+
+
+class Config(PluginConfig):
+    greeting: str = Field(default='默认问候', description='问候语')
+
+
+class ConfiguredPlugin(ToolPlugin):
+    config_model = Config
+'''
+
+
 def _write_switch(directory: Path, body: str) -> None:
-    """在插件目录里写一份 config.toml。"""
+    """在插件目录里写一份 config.toml，模拟已经生成过的情形。"""
     (directory / 'config.toml').write_text(body, encoding='utf-8')
 
 
-def test_关闭的插件不进注册表而同目录其余插件照常加载(tmp_path: Path) -> None:
-    """开关是每个插件自己的事，关掉一个不影响另一个。"""
+def test_声明里默认关闭的插件不进注册表(tmp_path: Path) -> None:
+    """默认值写在 config_model 里，首次发现生成配置后即被挡下。"""
     root = tmp_path / 'plugins'
-    alpha = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    _write_plugin(root, 'off-tool', 'test.off-tool', _DISABLED_PLUGIN)
     _write_plugin(root, 'beta-tool', 'test.beta-tool', _HISTORY_PLUGIN)
-    _write_switch(alpha, '[plugin]\nenabled = false\n')
     registry = _registry()
 
     registry.discover([root])
@@ -498,8 +526,34 @@ def test_关闭的插件不进注册表而同目录其余插件照常加载(tmp_
     ] == ['test.beta-tool']
 
 
-def test_关闭的插件入口模块不会被执行(tmp_path: Path) -> None:
-    """跳过发生在加载之前：入口写坏的插件也能靠开关绕开，不必删目录。"""
+def test_首次发现按声明生成配置文件(tmp_path: Path) -> None:
+    """目录里没有手写 TOML，宿主据模型生成一份，字段说明落成注释。"""
+    root = tmp_path / 'plugins'
+    directory = _write_plugin(root, 'cfg-tool', 'test.cfg-tool', _CONFIGURED_PLUGIN)
+    registry = _registry()
+
+    registry.discover([root])
+
+    text = (directory / 'config.toml').read_text(encoding='utf-8')
+    assert '[plugin]' in text
+    assert 'greeting = "默认问候"' in text
+    assert '# 问候语' in text
+
+
+def test_插件能读到配置文件里的值(tmp_path: Path) -> None:
+    """配置读出来注入 self.config，插件在 on_load 及之后可用。"""
+    root = tmp_path / 'plugins'
+    directory = _write_plugin(root, 'cfg-tool', 'test.cfg-tool', _CONFIGURED_PLUGIN)
+    _write_switch(directory, '[plugin]\nenabled = true\ngreeting = "改过的"\n')
+    registry = _registry()
+
+    registry.discover([root])
+
+    assert registry.tool_plugins()[0].config.greeting == '改过的'
+
+
+def test_已生成配置的插件关闭时入口不会被执行(tmp_path: Path) -> None:
+    """第一阶段只读文件不导入：入口写坏的插件也能靠开关绕开，不必删目录。"""
     root = tmp_path / 'plugins'
     broken = _write_plugin(root, 'broken-tool', 'test.broken-tool', 'this is not valid python (')
     _write_switch(broken, '[plugin]\nenabled = false\n')
@@ -513,8 +567,8 @@ def test_关闭的插件入口模块不会被执行(tmp_path: Path) -> None:
     assert any('关闭' in str(entry.get('event', '')) for entry in logs), logs
 
 
-def test_没有配置文件的插件视为启用(tmp_path: Path) -> None:
-    """向后兼容：先于本机制存在的插件都没有 config.toml，不能因此失能。"""
+def test_没有声明配置模型的插件默认启用(tmp_path: Path) -> None:
+    """向后兼容：既有插件不声明 config_model，基类给的默认开关是启用。"""
     root = tmp_path / 'plugins'
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     registry = _registry()
@@ -524,31 +578,36 @@ def test_没有配置文件的插件视为启用(tmp_path: Path) -> None:
     assert len(registry.tool_plugins()) == 1
 
 
-def test_显式写_true_的插件加载(tmp_path: Path) -> None:
-    """开关的正向路径。"""
-    root = tmp_path / 'plugins'
-    alpha = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
-    _write_switch(alpha, '[plugin]\nenabled = true\n')
-    registry = _registry()
-
-    registry.discover([root])
-
-    assert len(registry.tool_plugins()) == 1
-
-
 @pytest.mark.parametrize('body', [
     'this is not toml [[[',
-    '[plugin]\nenabled = "no"\n',
+    '[plugin]\nenabled = "maybe"\n',
     '[other]\nenabled = false\n',
     '[plugin]\nname = "x"\n',
 ])
-def test_坏配置按启用处理并记警告(tmp_path: Path, body: str) -> None:
+def test_坏配置按启用处理(tmp_path: Path, body: str) -> None:
     """读不懂不等于要关掉——把笔误当成关闭意图，等于让它悄悄拿掉一项能力。"""
     root = tmp_path / 'plugins'
-    alpha = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
-    _write_switch(alpha, body)
+    directory = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    _write_switch(directory, body)
     registry = _registry()
 
     registry.discover([root])
 
     assert len(registry.tool_plugins()) == 1
+
+
+@pytest.mark.parametrize('literal', ['"no"', '"false"', '"off"', '0'])
+def test_可强转的假值仍然关闭插件(tmp_path: Path, literal: str) -> None:
+    """用户写 enabled = "no" 显然是想关掉，Pydantic 的强转把这个意图接住了。
+
+    第一阶段的快路径只认布尔字面量，因此这类写法会多付一次导入；第二阶段的完整
+    校验给出最终结论。两边不写同一套判据是刻意的——抄一份强转表就是第二份真相源。
+    """
+    root = tmp_path / 'plugins'
+    directory = _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
+    _write_switch(directory, f'[plugin]\nenabled = {literal}\n')
+    registry = _registry()
+
+    registry.discover([root])
+
+    assert registry.tool_plugins() == ()

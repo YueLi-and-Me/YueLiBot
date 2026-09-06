@@ -5,9 +5,13 @@
 别的必需品——没有注册调用，也不需要改动任何主体代码：宿主扫到目录、读清单、导入
 本文件、找出其中唯一的 ToolPlugin 子类，接线就完成了。
 
-**本插件默认关闭**，开关在同目录的 ``config.toml``（``[plugin] enabled``）。
-它只是教学素材，没有理由占用模型每一轮的工具声明预算。
-想试就把那一行改成 ``true`` 再重启。
+配置是第五件可选的事：声明一个 :class:`PluginConfig` 子类挂到 ``config_model``，
+宿主会据此在本目录生成带注释的 ``config.toml``。**目录里没有手写的 TOML**——
+声明只有模型这一份，两份声明必然随演进漂移。
+
+**本插件默认关闭**（``HelloConfig.enabled`` 的默认值是 ``False``）。它只是教学素材，
+没有理由占用模型每一轮的工具声明预算。想试就把生成出的 ``config.toml`` 里那一行改成
+``true`` 再重启。
 
 本文件刻意只做一件事（把参数拼成一句问候），因为它的用途是让人看清骨架。真实工具
 的写法参考同目录下的 ``forward-message``：那里演示了有状态缓存、``observe_inbound``
@@ -24,7 +28,9 @@ from src.core.tooling.spec import (
     ToolExecutionResult,
     ToolInvocation,
 )
-from src.plugin_system import PluginManifest, ToolPlugin, tool
+from pydantic import Field
+
+from src.plugin_system import PluginConfig, PluginManifest, ToolPlugin, tool
 
 # 未提供 name 参数时的称呼。
 DEFAULT_GREETING_TARGET = '你'
@@ -32,6 +38,23 @@ DEFAULT_GREETING_TARGET = '你'
 # 单次问候允许的最大称呼长度，单位为字符。参数来自模型输出，长度必须自己兜住：
 # observation 会原样回灌进下一轮提示词，不设上限等于把提示词预算交给模型决定。
 MAX_NAME_LENGTH = 32
+
+
+class HelloConfig(PluginConfig):
+    """本插件的配置。
+
+    每个字段的 ``description`` 会原样成为生成出的 TOML 里的注释——那是用户唯一能
+    看到的字段解释，所以要写成给人看的话，不是复述字段名。
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description='是否启用示例插件；它只是教学素材，默认关着',
+    )
+    greeting_suffix: str = Field(
+        default='好',
+        description='跟在称呼后面的问候词，例如「好」会拼成「月璃好」',
+    )
 
 
 class HelloYueLiPlugin(ToolPlugin):
@@ -42,19 +65,23 @@ class HelloYueLiPlugin(ToolPlugin):
     最费劲的一类问题。
     """
 
+    # 声明配置模型。宿主据此生成 config.toml，并把读到的实例注入 self.config。
+    config_model = HelloConfig
+
     def __init__(self, manifest: PluginManifest) -> None:
         """保存清单并初始化调用计数。
 
         :param manifest: 已由宿主校验的插件清单；基类存下它，供 ``self.manifest`` 读取。
 
         构造函数只接受清单一个参数——工具插件由加载器统一构造，不像适配器那样可以
-        接收额外关键字参数。需要可调参数时在 :meth:`on_load` 里读配置。
+        接收额外关键字参数。配置不走构造函数，由宿主在 ``on_load`` 之前注入。
         """
         super().__init__(manifest)
         self._greeted = 0
+        self._suffix = HelloConfig().greeting_suffix
 
     async def on_load(self) -> None:
-        """插件加载时的准备工作。
+        """插件加载时的准备工作：把配置读进运行期字段。
 
         :return: ``None``。
         :raises Exception: 配置缺失或非法时原样上抛；后果是本插件被移出注册表，
@@ -63,9 +90,11 @@ class HelloYueLiPlugin(ToolPlugin):
         **此时不应发起网络 I/O。** 加载失败应当是纯粹的配置问题，混进网络故障会让
         「配置写错」与「对端没起来」在现场分不出来。
 
-        示例本身无事可做，只把计数归零，顺带说明这个钩子存在。
+        ``self.config`` 由宿主在本方法之前注入，类型就是 :attr:`config_model`。
         """
         self._greeted = 0
+        assert isinstance(self.config, HelloConfig)
+        self._suffix = self.config.greeting_suffix
 
     async def on_unload(self) -> None:
         """释放插件持有的资源。
@@ -137,7 +166,7 @@ class HelloYueLiPlugin(ToolPlugin):
             tool_name=invocation.tool_name,
             success=True,
             observation=(
-                f'{name}好，我是示例插件 {self.manifest.name}。'
+                f'{name}{self._suffix}，我是示例插件 {self.manifest.name}。'
                 f'当前是{scene}，本次进程内第 {self._greeted} 次调用。'
             ),
             # metadata 不进模型视野，用于把结构化信息交给调用方与日志。
@@ -148,5 +177,6 @@ class HelloYueLiPlugin(ToolPlugin):
 __all__ = [
     'DEFAULT_GREETING_TARGET',
     'MAX_NAME_LENGTH',
+    'HelloConfig',
     'HelloYueLiPlugin',
 ]

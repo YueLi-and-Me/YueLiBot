@@ -44,6 +44,10 @@ __pycache__/
 # 适配器的连接配置与插件同目录，但它带着协议端访问令牌和真实 QQ 号，
 # 和 /config/ 同属运行时配置，不能随插件源码一起入库。
 /adapters/*/config.toml
+# 插件配置由宿主按插件声明的模型生成，属于运行时产物；
+# 默认值的真相源是插件代码里的 config_model，不是这份文件。
+/plugins/*/config.toml
+/src/plugins/built_in/*/config.toml
 
 # 任何位置的 SQLite 文件都不入库。/data/ 已经挡住绝大多数，但迁移链测试之类的
 # 一次性副本会落在别处——2026-08-26 的 backups/.chain-test.v14.db 就是这么进去的，

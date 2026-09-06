@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 from abc import ABC
+from typing import ClassVar
 
+from .config import PluginConfig
 from .manifest import PluginManifest
 
 
@@ -21,6 +23,10 @@ class Plugin(ABC):
     覆写只会逼出一堆空方法，反而让真正做了事的实现淹没在噪声里。
     """
 
+    #: 本插件的配置模型。子类按需覆写并追加字段；不覆写时只有一个启用开关。
+    #: 宿主据此在插件目录里生成带注释的 config.toml，声明因此只有这一份。
+    config_model: ClassVar[type[PluginConfig]] = PluginConfig
+
     def __init__(self, manifest: PluginManifest) -> None:
         """保存清单。
 
@@ -28,11 +34,34 @@ class Plugin(ABC):
             加载器负责，构造函数不重复校验。
         """
         self._manifest = manifest
+        # 配置由宿主在发现阶段读好后注入，构造期还拿不到。
+        self._config: PluginConfig = self.config_model()
 
     @property
     def manifest(self) -> PluginManifest:
         """返回本插件的清单。"""
         return self._manifest
+
+    @property
+    def config(self) -> PluginConfig:
+        """返回本插件的配置。
+
+        :return: :attr:`config_model` 的实例。宿主注入之前是一份全默认值，
+            因此在 ``on_load`` 及之后读它总是安全的。
+        """
+        return self._config
+
+    def bind_config(self, config: PluginConfig) -> None:
+        """由宿主在 ``on_load`` 之前注入已读取的配置。
+
+        :param config: 已校验的配置实例。
+        :return: ``None``。
+        副作用：替换实例持有的配置；插件自身不应调用本方法。
+
+        不走构造函数是因为构造签名是插件契约的一部分：加载器统一以
+        ``plugin_class(manifest)`` 构造，加一个位置参数会让所有既有插件失效。
+        """
+        self._config = config
 
     async def on_load(self) -> None:
         """读取配置、构造运行期对象。

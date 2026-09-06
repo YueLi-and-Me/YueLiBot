@@ -6,6 +6,7 @@
 """
 
 from .adapter import AdapterPlugin
+from .config import PluginConfig
 from .capabilities import (
     ALL_CAPABILITIES,
     AdapterCapability,
@@ -38,6 +39,7 @@ __all__ = [
     'CapabilityError',
     'ManifestError',
     'Plugin',
+    'PluginConfig',
     'PluginLoadError',
     'PluginManifest',
     'PluginRegistry',

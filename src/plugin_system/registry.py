@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Sequence
 from src.core.logging.logger import get_logger
 
 from .loader import MANIFEST_FILENAME, load_tool_plugin
-from .switch import plugin_enabled
+from .config import ensure_plugin_config, read_enabled_flag
 from .manifest import load_manifest
 from .tools import ToolPlugin
 
@@ -171,6 +171,18 @@ class PluginRegistry:
         for directory in directories:
             self._discover_one(directory)
 
+    def _log_disabled(self, plugin_id: str, directory: Path) -> None:
+        """记录一条「已被关闭」。
+
+        记 info 而不是静默跳过：配置里关掉的东西必须在控制台看得见，否则
+        「工具怎么没出现」只能靠翻配置猜。
+        """
+        logger.info(
+            '工具插件已在自身配置中关闭，跳过加载',
+            plugin=plugin_id,
+            directory=str(directory),
+        )
+
     def _discover_one(self, directory: Path) -> None:
         """发现并加载单个插件目录；任何失败都只影响该插件自身。"""
         try:
@@ -183,14 +195,10 @@ class PluginRegistry:
                 error=str(exc),
             )
             return
-        if not plugin_enabled(directory):
-            # 记 info 而不是静默跳过：配置里关掉的东西必须在控制台看得见，
-            # 否则「工具怎么没出现」只能靠翻配置猜。
-            logger.info(
-                '工具插件已在自身配置中关闭，跳过加载',
-                plugin=manifest.plugin_id,
-                directory=str(directory),
-            )
+        # 第一阶段：只读文件，不导入插件代码。已生成过配置的插件在这里就能被挡下，
+        # 因此入口写坏了的插件可以靠把 enabled 改成 false 彻底绕开，不必删目录。
+        if read_enabled_flag(directory) is False:
+            self._log_disabled(manifest.plugin_id, directory)
             return
         if manifest.plugin_type != 'tool':
             # 适配器互斥且跑在独立进程，由进程入口按名字加载，刻意不并入扫目录
@@ -223,6 +231,22 @@ class PluginRegistry:
                 error=str(exc),
             )
             return
+        # 第二阶段：配置文件尚不存在时按插件声明的模型生成它。这一步要拿到插件类，
+        # 所以必须在导入之后——首次安装因此会执行一次入口模块，之后走不到这里。
+        try:
+            config = ensure_plugin_config(directory, type(plugin).config_model)
+        except Exception as exc:
+            logger.error(
+                '工具插件配置处理失败，已跳过该插件',
+                directory=str(directory),
+                plugin=manifest.plugin_id,
+                error=str(exc),
+            )
+            return
+        if not config.enabled:
+            self._log_disabled(manifest.plugin_id, directory)
+            return
+        plugin.bind_config(config)
         self._origins[manifest.plugin_id] = directory
         self._plugins.append(plugin)
         logger.info(
