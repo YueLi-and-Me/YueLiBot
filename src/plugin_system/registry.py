@@ -50,11 +50,11 @@ class PluginRegistry:
 
     def __init__(
         self,
-        context_factory: Optional[Callable[[str], PluginContext]] = None,
+        context_factory: Optional[Callable[[str, Path], PluginContext]] = None,
     ) -> None:
         """初始化空注册表。
 
-        :param context_factory: 按插件 id 构造宿主入口的工厂；传入时每个已启用
+        :param context_factory: 按插件 id 与插件目录构造宿主入口的工厂；传入时每个已启用
             插件在 ``bind_config`` 之后、``on_load`` 之前得到自己的入口实例
             （日志器绑定插件 id，因此必须每插件一个）。缺省 ``None`` 表示本表
             不注入入口，供宿主接线尚未就位的装配路径使用。
@@ -339,7 +339,7 @@ class PluginRegistry:
         if self._context_factory is not None:
             # 时序固定：bind_config 之后、on_load 之前。入口构造失败属于宿主接线
             # 问题而不是插件缺陷，让它当场抛出，不按单插件失败隔离。
-            plugin.bind_context(self._context_factory(manifest.plugin_id))
+            plugin.bind_context(self._context_factory(manifest.plugin_id, directory))
         self._origins[manifest.plugin_id] = directory
         self._plugins.append(plugin)
         logger.info(

@@ -829,9 +829,10 @@ class ContextualPlugin(ToolPlugin):
     )
     stubs: List[_StubContext] = []
 
-    def factory(plugin_id: str) -> _StubContext:
-        """构造桩件并登记。"""
+    def factory(plugin_id: str, plugin_dir: Path) -> _StubContext:
+        """构造桩件并登记；工厂签名带插件目录，与生产工厂一致。"""
         stub = _StubContext(plugin_id)
+        stub.plugin_dir = plugin_dir
         stubs.append(stub)
         return stub
 

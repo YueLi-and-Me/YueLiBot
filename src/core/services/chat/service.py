@@ -141,7 +141,7 @@ from src.core.schedule.plan import DayPlanService, ScheduleSleepState, asks_abou
 from src.core.tooling.cognitive import CognitiveToolExecutor
 from src.core.tooling.registry import build_builtin_action_registry
 from src.core.tooling.spec import ToolContext
-from src.plugin_system import PluginRegistry
+from src.plugin_system import PluginContext, PluginRegistry
 
 logger = get_logger(__name__)
 
@@ -216,6 +216,7 @@ class ChatService(
         push_event: Callable[[str, Any, int], Any],
         *,
         cfg: Config,
+        data_dir: Path = Path('data'),
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
         broker: PlatformBroker | None = None,
@@ -360,7 +361,15 @@ class ChatService(
         # 插件在构造期发现并登记工具与命令，与 on_load 的先后是刻意的：登记必须在
         # ConversationAgent 拿到注册表之前完成，而 on_load 可能要做 I/O，只能等到
         # startup。因此 tools() 不得依赖 on_load 建立的状态，该约束写在契约里。
-        self._plugins = PluginRegistry()
+        # 宿主入口工厂必须在 discover 之前就位：注册表在发现阶段（bind_config 之后、
+        # on_load 之前）注入它。漏传不会报错，只会让插件在真正用到 ctx 的那一刻才炸
+        # ——真机上就是这么暴露的：链接插件取 ctx.host.https_proxy 时抛
+        # 「宿主入口尚未注入」，而三条线的用例各自注入桩件，全绿。
+        self._plugins = PluginRegistry(
+            context_factory=lambda plugin_id, plugin_dir: PluginContext(
+                plugin_id, plugin_dir, data_dir, cfg,
+            ),
+        )
         self._plugins.discover(PLUGIN_ROOTS)
         for plugin in self._plugins.tool_plugins():
             for spec, executor in plugin.tools():

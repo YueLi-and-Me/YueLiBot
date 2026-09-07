@@ -770,6 +770,7 @@ def main() -> None:
         summary_provider=summary_provider,
         push_event=_push_event,
         cfg=cfg,
+        data_dir=data_dir,
         broker=broker,
         expression_provider=routers.expression if routers.expression.ready else None,
         planner_provider=routers.planner if routers.planner.ready else None,
