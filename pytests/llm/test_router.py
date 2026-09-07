@@ -4,7 +4,9 @@
   · 失败切换：主力抛错就换备用，用户这一轮照样有回复；
   · 熔断降序：刚失败过的厂商在冷却期内排到最后，不用每轮都先撞一次；
   · 不可重放：已经吐字之后不许换模型，否则同一句话会被说两遍；
-  · 推理不算吐字：只产生过 reasoning 的候选失败仍要切换，备用候选不能被白白跳过。
+  · 推理不算吐字：只产生过 reasoning 的候选失败仍要切换，备用候选不能被白白跳过；
+  · 交白卷换候选：工具调用参数整段缺失按 toolcall 切换下一候选，同厂商同族
+    本轮直接跳过，且不给厂商记冷却。
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import asyncio
 import json
 import pytest
 
+from src.core.agent.conversation import _structural_tool_call_fault
 from src.core.config.schema import Config, ModelCandidate
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.router import ModelRouter, ModelRouters, ProviderHealth
@@ -102,6 +105,44 @@ def _router_with(clients: dict[str, _FakeClient], strategy: str = 'sequential',
     router = ModelRouter('chat', candidates, strategy, health)
     router.client = lambda candidate: clients[candidate.name]   # type: ignore[method-assign]
     return router
+
+
+class _ToolCallClient(_FakeClient):
+    """按脚本在流末产出一条工具调用增量的假客户端。"""
+
+    def __init__(self, calls: List[dict]) -> None:
+        super().__init__()
+        self._tool_calls = calls
+
+    async def stream(self, messages, temperature=0.85, max_tokens=None,
+                     signal=None, **_options: Any) -> AsyncIterator[dict]:
+        self.calls += 1
+        yield {'tool_calls': self._tool_calls}
+
+
+# reply 动作的真实必填字段，与 tool_schema 的动作声明保持一致。
+_REPLY_REQUIRED = ['reasons', 'target', 'length', 'reference']
+_REPLY_ARGS = (
+    '{"target": 101, "reasons": ["directly_addressed"], "length": "brief", '
+    '"reference": "对方在叫她，回应这条消息"}'
+)
+
+
+def _structural_validator(required_by_tool: dict[str, List[str]]):
+    """把会话层的交白卷判据绑定到一份必填字段映射，模拟真实调用点的闭包。"""
+    def validate(calls: List[dict]) -> None:
+        _structural_tool_call_fault(calls, required_by_tool)
+    return validate
+
+
+async def _collect_tool_calls(router: ModelRouter, validator) -> List[dict]:
+    seen: List[dict] = []
+    async for chunk in router.stream(
+        [{'role': 'user', 'content': '在吗'}],
+        tool_call_validator=validator,
+    ):
+        seen.extend(chunk.get('tool_calls') or [])
+    return seen
 
 
 async def _collect(router: ModelRouter, *, require_text: bool = False) -> str:
@@ -577,3 +618,108 @@ async def test_prompt_records_pruned_per_task(tmp_path) -> None:
         assert len(list((tmp_path / 'chat').glob('*.json'))) == 2
     finally:
         snapshot.configure_exchanges(None)
+
+
+async def test_blank_tool_call_switches_to_backup_candidate() -> None:
+    """工具调用交白卷（必填字段整段缺失）必须切到下一候选，且不给厂商记冷却。"""
+    health = ProviderHealth()
+    clients = {
+        '主力': _ToolCallClient([{'id': 'call_1', 'name': 'reply', 'arguments': '{}'}]),
+        '备用': _ToolCallClient([{'id': 'call_2', 'name': 'reply', 'arguments': _REPLY_ARGS}]),
+    }
+    router = _router_with(clients, health=health)
+
+    seen = await _collect_tool_calls(
+        router, _structural_validator({'reply': _REPLY_REQUIRED}),
+    )
+
+    assert [call['id'] for call in seen] == ['call_2']
+    assert clients['主力'].calls == 1
+    assert clients['备用'].calls == 1
+    # 交白卷是模型与网关的组合故障，不该让同厂商其它模型和任务跟着进冷却。
+    assert health.available('厂商主力') is True
+
+
+async def test_blank_tool_call_skips_same_family_same_provider() -> None:
+    """同厂商同族的后续候选本轮直接跳过：交白卷在它身上必然重演。"""
+    primary = _candidate('主力', '厂商甲')
+    primary.identifier = 'gemini-3.6-flash'
+    sibling = _candidate('姊妹', '厂商甲')
+    sibling.identifier = 'gemini-3.7-flash'
+    backup = _candidate('备用', '厂商乙')
+    backup.identifier = 'qwen3.8-flash'
+    clients = {
+        '主力': _ToolCallClient([{'id': 'call_1', 'name': 'reply', 'arguments': '{}'}]),
+        '姊妹': _ToolCallClient([{'id': 'call_2', 'name': 'reply', 'arguments': _REPLY_ARGS}]),
+        '备用': _ToolCallClient([{'id': 'call_3', 'name': 'reply', 'arguments': _REPLY_ARGS}]),
+    }
+    router = ModelRouter('planner', [primary, sibling, backup], 'sequential')
+    router.client = lambda candidate: clients[candidate.name]  # type: ignore[method-assign]
+
+    seen = await _collect_tool_calls(
+        router, _structural_validator({'reply': _REPLY_REQUIRED}),
+    )
+
+    assert [call['id'] for call in seen] == ['call_3']
+    assert clients['主力'].calls == 1
+    assert clients['姊妹'].calls == 0, '同厂商同族候选必须在本轮被跳过'
+    assert clients['备用'].calls == 1
+
+
+async def test_blank_tool_call_still_tries_same_family_from_another_provider() -> None:
+    """跳过规则的作用域是「同厂商同族」：另一厂商的同族模型仍是有效兜底。"""
+    primary = _candidate('主力', '厂商甲')
+    primary.identifier = 'gemini-3.6-flash'
+    backup = _candidate('备用', '厂商乙')
+    backup.identifier = 'gemini-3.7-flash'
+    clients = {
+        '主力': _ToolCallClient([{'id': 'call_1', 'name': 'reply', 'arguments': '{}'}]),
+        '备用': _ToolCallClient([{'id': 'call_2', 'name': 'reply', 'arguments': _REPLY_ARGS}]),
+    }
+    router = ModelRouter('planner', [primary, backup], 'sequential')
+    router.client = lambda candidate: clients[candidate.name]  # type: ignore[method-assign]
+
+    seen = await _collect_tool_calls(
+        router, _structural_validator({'reply': _REPLY_REQUIRED}),
+    )
+
+    assert [call['id'] for call in seen] == ['call_2']
+    assert clients['主力'].calls == 1
+    assert clients['备用'].calls == 1
+
+
+async def test_valid_and_parameterless_tool_calls_pass_validation() -> None:
+    """校验通过时不影响正常产出；没有必填字段的工具带空参数不算交白卷。"""
+    clients = {
+        '主力': _ToolCallClient([
+            {'id': 'call_1', 'name': 'ping', 'arguments': '{}'},
+            {'id': 'call_2', 'name': 'reply', 'arguments': _REPLY_ARGS},
+        ]),
+        '备用': _ToolCallClient([{'id': 'call_3', 'name': 'reply', 'arguments': _REPLY_ARGS}]),
+    }
+    router = _router_with(clients)
+
+    seen = await _collect_tool_calls(
+        router,
+        _structural_validator({'ping': [], 'reply': _REPLY_REQUIRED}),
+    )
+
+    assert [call['id'] for call in seen] == ['call_1', 'call_2']
+    assert clients['主力'].calls == 1
+    assert clients['备用'].calls == 0, '校验通过不该触发候选切换'
+
+
+async def test_all_candidates_blank_raises_toolcall_error() -> None:
+    """所有候选都交白卷时按 toolcall 错误抛出，调用层据此归 provider_error。"""
+    clients = {
+        '主力': _ToolCallClient([{'id': 'call_1', 'name': 'reply', 'arguments': '{}'}]),
+        '备用': _ToolCallClient([{'id': 'call_2', 'name': 'reply', 'arguments': '{}'}]),
+    }
+    router = _router_with(clients)
+
+    with pytest.raises(LlmError) as excinfo:
+        await _collect_tool_calls(
+            router, _structural_validator({'reply': _REPLY_REQUIRED}),
+        )
+
+    assert excinfo.value.kind == 'toolcall'

@@ -33,7 +33,7 @@ class LlmError(Exception):
     """表示模型请求失败及其可供路由层判断的错误类别。
 
     :ivar kind: 错误类别，例如 `auth`、`billing`、`quota`、`network`、`timeout`
-        、`format` 或 `aborted`。
+        、`format`、`toolcall` 或 `aborted`。
     :ivar detail: 可选的原始错误详情，默认值为空字符串。
     """
 
@@ -46,7 +46,7 @@ class LlmError(Exception):
         副作用：初始化异常属性，不执行网络操作。
         """
         super().__init__(message)
-        self.kind = kind   # auth | billing | quota | model | network | timeout | blocked | format | aborted | unknown
+        self.kind = kind   # auth | billing | quota | model | network | timeout | blocked | format | toolcall | aborted | unknown
         self.detail = detail
 
 
@@ -64,6 +64,7 @@ LLM_ERROR_HINTS: dict[str, str] = {
     'timeout': '等首字超时：服务商在窗口内一个字都没返回',
     'blocked': '内容被拦截：服务商的安全策略拒了这次请求',
     'format': '结构化输出不合格：当前模型没有遵守任务要求的 JSON 协议',
+    'toolcall': '工具调用交白卷：服务商只返回了函数名，参数整段丢失',
     'aborted': '调用被主动中断',
     'unknown': '未归类的失败，看底层错误原文',
 }

@@ -1,6 +1,6 @@
 """动作工具调用纠错回路验收。
 
-覆盖七件事：
+覆盖八件事：
 1. 网关丢弃参数（空对象直达校验层）时，回灌拒绝原因重发一次即可自愈，
    回合正常 committed；
 2. 重试仍不合法按 illegal_action 终局，且模型调用次数恰好是原始一次加纠错一次；
@@ -8,7 +8,9 @@
 4. 工具模式下模型只输出正文（不调任何工具）时回灌纠错重发一次即可自愈；
 5. 纠错后仍不调工具按 parse_error 终局，且正文不流向用户；
 6. 正文先于工具调用流出时正文被丢弃、调用照常结算，不触发纠错重发；
-7. 理由码被写成整句散文时，回灌带上该动作的可用取值，模型据此改对。
+7. 理由码被写成整句散文时，回灌带上该动作的可用取值，模型据此改对；
+8. 必填字段只缺一部分属于模型笔误：仍走纠错回灌自愈，交白卷判据不得把它
+   当成结构性故障去切候选。
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from src.core.agent.action_protocol import (
 )
 from src.core.agent.conversation import ConversationAgent
 from src.core.agent.parser import ParseEvent
+from src.core.llm_models.openai import LlmError
 
 
 class _ToolCallProvider:
@@ -45,6 +48,29 @@ class _ToolCallProvider:
             'name': name,
             'arguments': arguments,
         }]}
+
+
+class _ValidatingToolCallProvider(_ToolCallProvider):
+    """在产出前执行调用方传入的工具调用校验器，复刻路由层的挂载方式。
+
+    校验器抛 ``ValueError`` 时按路由层语义转成 ``LlmError('toolcall')``，
+    使「判据写宽会误切候选」在会话层表现为可断言的失败状态。
+    """
+
+    async def stream(self, **kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        index = len(self.seen_messages)
+        self.seen_messages.append(list(kwargs.get('messages') or []))
+        if index >= len(self.calls):
+            raise AssertionError(f'工具脚本只准备了 {len(self.calls)} 次，第 {index + 1} 次无输出')
+        name, arguments = self.calls[index]
+        call = {'id': f'call_{index + 1}', 'name': name, 'arguments': arguments}
+        validator = kwargs.get('tool_call_validator')
+        if validator is not None:
+            try:
+                validator([call])
+            except ValueError as exc:
+                raise LlmError('toolcall', f'工具调用不合协议：{exc}') from exc
+        yield {'tool_calls': [call]}
 
 
 class _TextProvider:
@@ -372,3 +398,37 @@ async def test_free_text_reason_repair_carries_the_available_values() -> None:
     assert '枚举字段只能填' in correction
     # 整段散文不得原样回灌：控制台错误框与回灌都会被它挤爆。
     assert prose not in correction
+
+
+async def test_partial_missing_fields_are_repaired_without_candidate_switch() -> None:
+    """必填字段只缺一部分是模型笔误：走纠错回灌自愈，交白卷判据不得出手。
+
+    这条是防止结构性判据写宽的护栏：判据若把部分缺失也当交白卷，替身
+    provider 会在产出前把它转成 toolcall 错误，回合按 provider_error 终局，
+    本用例随之变红。
+    """
+    planner = _ValidatingToolCallProvider([
+        ('reply', '{"target": 101, "reasons": ["directly_addressed"], "length": "brief"}'),
+        ('reply', _VALID_REPLY),
+    ])
+    replyer = _TextProvider([['<say emotion="normal">嗯，在呢。</say>']])
+    agent = ConversationAgent(
+        planner, temperature=0.7, replyer=replyer, tool_calling=True,
+    )
+
+    outcome = await agent.run(
+        _frame(),
+        [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': '小璃别睡了'}],
+        _gate_inputs(),
+        ('name_mentioned',),
+        replyer_messages=_replyer_messages,
+    )
+
+    assert outcome.event_status == 'committed'
+    assert outcome.decision is not None and outcome.decision.action == 'reply'
+    # 部分缺失走的是纠错回灌：恰好两次模型调用，拒绝原因随回灌带出。
+    assert len(planner.seen_messages) == 2
+    correction = planner.seen_messages[1][-1]
+    assert correction['role'] == 'user'
+    assert '缺少必填字段' in correction['content']
+    assert '1 次工具调用纠错' in outcome.action_event.detail

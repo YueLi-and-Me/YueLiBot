@@ -24,7 +24,11 @@ from src.core.llm_models.openai import (
     error_hint,
     resolve_base_url,
 )
-from src.core.llm_models.protocol import ResponseValidator, is_committing_chunk
+from src.core.llm_models.protocol import (
+    ResponseValidator,
+    ToolCallValidator,
+    is_committing_chunk,
+)
 from src.core.llm_models.snapshot import (
     current_render_params,
     dump_exchange,
@@ -52,12 +56,13 @@ def _remaining(
 ) -> int:
     """统计当前候选之后还有几个真正会被尝试的候选。
 
-    同族已被内容策略拒绝的候选会被跳过，计入「剩余」会让失败日志高估补救机会。
+    同族已被判定确定性失败（内容策略拒绝或工具调用交白卷）的候选会被跳过，
+    计入「剩余」会让失败日志高估补救机会。
 
     :param order: 本轮候选顺序。
     :param index: 当前候选在 ``order`` 中的下标。
-    :param blocked_scopes: 已被内容策略拒绝的 ``(厂商, 模型族)`` 集合。
-    :return: 下标之后未被同族拒绝规则排除的候选数量。
+    :param blocked_scopes: 已被判定确定性失败的 ``(厂商, 模型族)`` 集合。
+    :return: 下标之后未被同族跳过规则排除的候选数量。
     副作用：只读入参。
     """
     return sum(
@@ -81,10 +86,11 @@ def _model_family(candidate: ModelCandidate) -> str:
 
 
 def _policy_scope(candidate: ModelCandidate) -> tuple[str, str]:
-    """返回内容策略跳过规则的最小安全作用域。
+    """返回同族跳过规则的最小安全作用域。
 
-    同一模型族经不同厂商或网关提供时，安全策略与参数可能不同，不能因一个厂商
-    拒绝就跳过另一个明确配置的兜底候选。因此作用域必须同时包含厂商与模型族。
+    同一模型族经不同厂商或网关提供时，内容策略与工具调用转换可能不同，不能因
+    一个厂商的确定性失败就跳过另一个明确配置的兜底候选。因此作用域必须同时
+    包含厂商与模型族。
 
     :param candidate: 待归类的模型候选。
     :return: 小写的 ``(厂商名, 模型族名)`` 二元组。
@@ -408,6 +414,7 @@ class ModelRouter:
                      tools: List[dict] | None = None,
                      require_text: bool = False,
                      response_validator: ResponseValidator | None = None,
+                     tool_call_validator: ToolCallValidator | None = None,
                      ) -> AsyncIterator[dict]:
         """依次尝试候选模型，直到一个候选产生首个可用输出增量。
 
@@ -425,6 +432,9 @@ class ModelRouter:
         :param require_text: 是否要求候选至少产生一段非空正文；视觉描述应启用。
         :param response_validator: 可选完整正文校验器。结构化请求会先缓冲候选的完整
             输出，校验失败时不向调用方吐出坏正文，而是继续尝试下一候选。
+        :param tool_call_validator: 可选工具调用校验器，接收一次响应里全部已拼装的
+            工具调用。提供后同样先缓冲完整输出：校验抛出 ``ValueError`` 时按
+            ``toolcall`` 错误切换下一候选，不向调用方吐出交白卷的工具调用。
 
         :yield: 底层 provider 返回的增量字典，顺序与实际模型流一致。
 
@@ -461,6 +471,7 @@ class ModelRouter:
                 signal=signal,
                 response_format=response_format,
                 response_validator=response_validator,
+                tool_call_validator=tool_call_validator,
                 tools=tools,
                 require_text=require_text,
                 exchange=exchange,
@@ -485,6 +496,7 @@ class ModelRouter:
                                  signal: asyncio.Event | None,
                                  response_format: Dict[str, str] | None,
                                  response_validator: ResponseValidator | None,
+                                 tool_call_validator: ToolCallValidator | None,
                                  tools: List[dict] | None,
                                  require_text: bool,
                                  exchange: '_ExchangeRecord',
@@ -503,12 +515,15 @@ class ModelRouter:
             raise self._no_candidate_error()
 
         last_error: LlmError | None = None
-        # 已被内容策略拒绝的模型族。
+        # 同厂商同族已被判定为确定性失败的模型族：内容策略拒绝（blocked）或
+        # 工具调用交白卷（toolcall）。
         #
         # - 现象：一次摘要请求连续切换 gemini-3.7-flash 与 gemini-3.6-flash，两次
-        #   都以 blocked 失败，候选耗尽。
+        #   都以 blocked 失败，候选耗尽；同族相邻的 gemini 候选经同一网关做
+        #   function calling 时同样接连交白卷（参数整段丢失）。
         # - 原因：输入侧内容分类器按模型族部署，同族不同版本共用同一套判定，
-        #   同一段提示词在其中一个上被判 PROHIBITED_CONTENT，在另一个上必然同判。
+        #   同一段提示词在其中一个上被判 PROHIBITED_CONTENT，在另一个上必然同判；
+        #   交白卷则是模型族与网关转换层的组合故障，同族同网关重发必然同样丢参数。
         # - 后果：不跳过则每个同族候选都要承担一次完整请求的延迟与费用，而候选
         #   列表整族同厂时，切换等于没有备份。
         blocked_scopes: set[tuple[str, str]] = set()
@@ -522,7 +537,7 @@ class ModelRouter:
                     skipped_model=candidate.name,
                     skipped_provider=candidate.provider,
                     family=family,
-                    reason='同族模型已被内容策略拒绝，重试必然同样被拒',
+                    reason='同族模型已出现确定性失败（内容策略拒绝或工具调用交白卷），重试必然同样失败',
                 )
                 continue
             # 是否已把不可重放的输出交给调用方。判据只认正文与工具调用：
@@ -565,7 +580,11 @@ class ModelRouter:
                     started = time.monotonic()
                     initial_chunks: list[dict] = []
                     initial_reasoning = ''
-                    should_validate = response_format is not None or response_validator is not None
+                    should_validate = (
+                        response_format is not None
+                        or response_validator is not None
+                        or tool_call_validator is not None
+                    )
                     try:
                         # 任务级首字窗口包含下层内部重试。视觉描述要求真正的正文，
                         # 不能让 reasoning 增量或空流被当作候选成功而阻断故障切换。
@@ -631,6 +650,19 @@ class ModelRouter:
                                     raise ValueError('结构化输出必须是 JSON 对象')
                             if response_validator is not None:
                                 response_validator(text)
+                            if tool_call_validator is not None:
+                                # 工具调用在流末尾一次性产出，缓冲后逐片交给校验器，
+                                # 才能在任何增量交给调用方之前发现交白卷。
+                                for chunk in buffered_chunks:
+                                    calls = chunk.get('tool_calls')
+                                    if calls:
+                                        try:
+                                            tool_call_validator(calls)
+                                        except ValueError as exc:
+                                            raise LlmError(
+                                                'toolcall',
+                                                f'工具调用不合协议：{exc}',
+                                            ) from exc
                         except (json.JSONDecodeError, ValueError) as exc:
                             raise LlmError(
                                 'format',
@@ -663,11 +695,14 @@ class ModelRouter:
                 if yielded or exc.kind == 'aborted':
                     raise
                 last_error = exc
-                # 结构化格式不合格只说明当前模型与本任务协议不匹配，不应让同厂商
-                # 其它模型和任务一起进入网络故障冷却。
-                if exc.kind != 'format':
+                # 结构化格式不合格与工具调用交白卷都不是网络故障：前者是模型与本
+                # 任务协议不匹配，后者是模型与网关的组合故障，不应让同厂商其它
+                # 模型和任务一起进入冷却。
+                if exc.kind not in ('format', 'toolcall'):
                     self._health.penalize(candidate.provider)
-                if exc.kind == 'blocked':
+                # 交白卷与内容拒绝同属同族同厂商的确定性失败，后续同族候选本轮
+                # 不再尝试。
+                if exc.kind in ('blocked', 'toolcall'):
                     blocked_scopes.add(scope)
                 logger.warning(
                     'model_switch',
@@ -724,7 +759,7 @@ class ModelRouter:
                     skipped_model=candidate.name,
                     skipped_provider=candidate.provider,
                     family=family,
-                    reason='同族模型已被内容策略拒绝，重试必然同样被拒',
+                    reason='同族模型已出现确定性失败（内容策略拒绝或工具调用交白卷），重试必然同样失败',
                 )
                 continue
             try:

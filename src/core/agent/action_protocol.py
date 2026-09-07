@@ -48,6 +48,9 @@ GateDisposition = Literal['drop', 'force', 'deliberate']
 # 行动事件状态。committed / silent_by_choice / cognitive_step 为 Agent 自主结论，
 # gate_dropped 及其余为失败或拦截状态；两类禁止合并。
 # cognitive_step 表示本回合以一次认知检索结束，尚未给出终局动作。
+# 工具调用交白卷（必填字段整段缺失）是模型与网关组合的结构性故障，由路由层
+# 切换候选处理，全部候选都交白卷时归 provider_error；illegal_action 只记录
+# 模型自己给出的不合法决策（含部分必填字段缺失的笔误）。
 EventStatus = Literal[
     'committed',
     'silent_by_choice',

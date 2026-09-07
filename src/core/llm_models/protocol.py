@@ -9,12 +9,17 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Callable, Protocol
+from typing import Any, AsyncIterator, Callable, Dict, List, Protocol
 
 import asyncio
 
 
 ResponseValidator = Callable[[str], None]
+
+# 一次响应里全部已拼装工具调用的校验器。判定为结构性故障（例如参数整段
+# 丢失、只剩函数名）时抛出 ``ValueError``，消息进入候选切换日志；语义对错
+# （填错、漏填个别字段）不在此处判定，仍由调用方的既有校验处理。
+ToolCallValidator = Callable[[List[Dict[str, Any]]], None]
 
 
 def is_committing_chunk(chunk: dict) -> bool:

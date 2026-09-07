@@ -20,9 +20,12 @@
   （整条响应只有正文，或既无正文也无工具调用）同属此类，先按
   ``_ACTION_CALL_REPAIR_LIMIT`` 纠错重发，重发仍不调工具才落此状态；
 - 动作头违反协议或回合帧（非法枚举、自由理由码、目标越界、引用能力缺失、
-  FORCE 禁默、认知动作缺 query、动作头之后没有正文）→ illegal_action；
-  工具调用模式下的此类错误先按 ``_ACTION_CALL_REPAIR_LIMIT`` 纠错重试，
-  把拒绝原因回灌给模型重发，重试仍不合法才落此状态；
+  FORCE 禁默、认知动作缺 query、动作头之后没有正文、部分必填字段缺失）
+  → illegal_action；工具调用模式下的此类错误先按 ``_ACTION_CALL_REPAIR_LIMIT``
+  纠错重试，把拒绝原因回灌给模型重发，重试仍不合法才落此状态；
+- 工具调用必填字段整段缺失（交白卷）不是模型笔误，而是模型与网关组合的
+  结构性故障：由路由层按 ``LlmError(kind=toolcall)`` 切换候选，不进入纠错
+  回灌；所有候选都交白卷时才随其余 LlmError 落 provider_error；
 - LlmError(kind=timeout) → timeout，其余 LlmError 与未知异常 → provider_error；
 - LlmError(kind=aborted) 原样上抛且不写行动决策事件：用户主动中断不属于
   八种行动事件状态，由调用方沿用既有中断语义处理；
@@ -94,11 +97,13 @@ _OUTPUT_REQUIREMENT = (
 _FINAL_ROUND_NOTICE = (
     '你已经用完这一轮可以查东西的次数，接下来必须直接给出最终动作，不能再检索。'
 )
-# 工具调用协议错误的纠错重试上限，两类模型侧错误共用同一份预算：
-# - 兼容网关把工具参数整段丢弃，到达校验层的是空对象（illegal_action）；
+# 工具调用协议错误的纠错重试上限，两类模型侧语义错误共用同一份预算：
+# - 模型填错或漏填部分必填字段，到达校验层的是不完整参数（illegal_action）；
 # - 模型完全不走工具通道，直接输出正文或什么都不给（parse_error）。
-# 两类都把原因回灌重发一次即可恢复；重发仍不合法才按对应状态失败。重试只重发
-# 模型调用，不替模型补写任何参数。
+# 必填字段整段缺失的交白卷不在此列：那是模型与网关组合的结构性故障，回灌
+# 再多次也不会变，由路由层按 toolcall 切换候选。两类语义错误都把原因回灌
+# 重发一次即可恢复；重发仍不合法才按对应状态失败。重试只重发模型调用，
+# 不替模型补写任何参数。
 _ACTION_CALL_REPAIR_LIMIT = 1
 
 
@@ -134,6 +139,44 @@ class _RepairableCallFault(Exception):
         """保存纠错消息，由回合驱动层追加进下一次尝试的消息序列。"""
         self.correction = correction
         super().__init__('工具调用协议错误，等待纠错重试')
+
+
+def _structural_tool_call_fault(
+    calls: list[dict],
+    required_by_tool: dict[str, list[str]],
+) -> None:
+    """检出工具调用的结构性故障：参数整段丢失，只能靠切换候选解决。
+
+    只判「这个模型与网关的组合能不能用」，不判「这次决策对不对」：必填字段
+    只缺一部分是模型笔误，继续走纠错回灌；整段缺失说明网关没把参数送过来，
+    回灌再多次也不会变，抛 ``ValueError`` 让路由层切换候选。
+
+    :param calls: 一次响应里全部已拼装的工具调用。
+    :param required_by_tool: 工具名到必填字段列表的映射，来自本轮下发的工具声明。
+    :raises ValueError: 命中任一结构性判据时抛出：参数不是 JSON 文本、JSON
+        解析失败、解析结果不是对象，或确有必填字段的工具其必填字段全部缺失。
+        未在映射中出现的工具名不做判断，交给下游既有校验。
+    """
+    for call in calls:
+        if not isinstance(call, Mapping):
+            continue
+        name = call.get('name')
+        if not isinstance(name, str) or name not in required_by_tool:
+            continue
+        arguments = call.get('arguments')
+        if not isinstance(arguments, str):
+            raise ValueError(f'工具 {name} 的参数不是 JSON 文本')
+        try:
+            payload = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'工具 {name} 的参数不是合法 JSON：{exc}') from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f'工具 {name} 的参数必须是 JSON 对象')
+        required = required_by_tool[name]
+        if required and all(field not in payload for field in required):
+            raise ValueError(
+                f'工具 {name} 的必填字段全部缺失：{", ".join(required)}'
+            )
 
 
 async def _execute_external_tool(
@@ -566,9 +609,10 @@ class ConversationAgent:
         执行放在本轮之内而不是交回 run()，是为了让事件的 ``latency_ms`` 覆盖
         「模型想 + 实际查」的完整耗时，也让观察摘要能与它所属的那一轮写进同一条事件。
 
-        工具调用被判协议错误时不直接终局：网关会把工具参数整段丢弃，这类错误
-        回灌拒绝原因重发一次即可恢复。驱动层只重发模型调用，不补写参数；预算
-        见 ``_ACTION_CALL_REPAIR_LIMIT``，由 ``_run_attempt`` 自身执行并终局。
+        工具调用被判语义错误时不直接终局：回灌拒绝原因重发一次即可恢复。参数
+        整段缺失的交白卷不在此列，那属于模型与网关组合的结构性故障，已由路由层
+        按 toolcall 切换候选。驱动层只重发模型调用，不补写参数；预算见
+        ``_ACTION_CALL_REPAIR_LIMIT``，由 ``_run_attempt`` 自身执行并终局。
 
         :param frame: 已按本轮剩余预算收窄动作集的回合帧。
         :param messages: 本轮实际提交模型的消息序列；纠错消息追加在其副本尾部，
@@ -757,13 +801,29 @@ class ConversationAgent:
                 )
             else:
                 tools = None
+            stream_options: dict[str, Any] = {}
+            if tools:
+                stream_options['tools'] = tools
+                # 必填字段映射取自本轮实际下发的工具声明；交白卷判据由路由层在
+                # 任何增量交给本层之前执行，命中即切换候选，不占用纠错预算。
+                required_by_tool = {
+                    tool['function']['name']: list(
+                        tool['function']['parameters'].get('required') or []
+                    )
+                    for tool in tools
+                }
+
+                def _validate_tool_calls(calls: list[dict]) -> None:
+                    _structural_tool_call_fault(calls, required_by_tool)
+
+                stream_options['tool_call_validator'] = _validate_tool_calls
             async with aclosing(
                 self._provider.stream(
                     messages=messages,
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                     signal=signal,
-                    **({'tools': tools} if tools else {}),
+                    **stream_options,
                 )
             ) as stream:
                 async for chunk in stream:
