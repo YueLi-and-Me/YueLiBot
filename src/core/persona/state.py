@@ -92,6 +92,16 @@ _RANGE: dict[str, tuple[float, float]] = {
 
 MOOD_RATE = 2.0
 MOOD_TAU = 6.0
+# 活动对精力的速率基准：时间线按 ENERGY_RATE * (energy_pace - 1) 每小时积分，
+# pace 1 为不增不减的中性点。取 2.5 而不是更高，是为了让一夜八小时睡眠（pace 3）
+# 给出 +40——足以兜住一个聊得多的白天（六十个私聊回合 -18 加上清醒活动的消耗），
+# 而不至于让她整天贴在上限。数值与 TURN_ENERGY_COST 是一个比例的两端，改一个就要
+# 重算另一个，别单独调。
+ENERGY_RATE = 2.5
+# 单个对话回合的精力消耗，群聊再乘 group_chat.persona_weight。
+# 说话是要花精力的——这条不取消；但 0.4 会让一晚五十个回合吃掉一整夜睡眠的六成，
+# 对一个以聊天为本职的角色过重，收到 0.3。
+TURN_ENERGY_COST = 0.3
 
 
 def _clamp(key: str, v: float) -> float:
@@ -435,7 +445,7 @@ class Persona:
         state = self.get(person_id)
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + 0.35 * weight),
-            energy=_clamp('energy', state.energy - 0.4 * weight),
+            energy=_clamp('energy', state.energy - TURN_ENERGY_COST * weight),
             mood=state.mood,
             updated_at=now,
         )
@@ -479,7 +489,10 @@ class Persona:
         if hours < 1:
             return state
         # 日程层决定精力曲线的形状；未装配日程时才退回原有的全清醒线性消耗。
-        energy_delta = effect.energy_delta if effect is not None else -hours * 2
+        energy_delta = (
+            effect.energy_delta if effect is not None
+            else -hours * ENERGY_RATE
+        )
         mood_delta = effect.mood_delta if effect is not None else 0.0
         mood = state.mood + mood_delta
         mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
