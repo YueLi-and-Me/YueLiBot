@@ -133,3 +133,91 @@ def test_settle_cursor_advances_only_when_applied(db: sqlite3.Connection) -> Non
     persona.apply_elapsed(person_id, full_hour, _rest_effect(1.0))
     assert persona.settled_at() == full_hour
     assert persona.get(person_id).energy == 50.0 + REST_ENERGY_PER_HOUR
+
+
+# --------------------------------------------------------- 离线空缺的结算边界
+
+def _insert_activity(
+    db: sqlite3.Connection,
+    *,
+    kind: str,
+    energy_pace: int,
+    started_at: int,
+    expected_until: int,
+    ended_at: int | None,
+    source: str,
+) -> None:
+    """直接写一行活动，用来摆出「离线前留下一段未结束活动」的现场。"""
+    db.execute(
+        """INSERT INTO activities
+           (kind, doing, mood, energy_pace, mood_pace, advances,
+            started_at, expected_until, ended_at, source)
+           VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)""",
+        (kind, f'{kind} 活动', '', energy_pace, started_at,
+         expected_until, ended_at, source),
+    )
+    db.commit()
+
+
+def test_decided_until_stops_at_open_activity_horizon(db: sqlite3.Connection) -> None:
+    """进行中的活动只算到 expected_until，之后的空缺不算已决策。"""
+    from src.core.schedule.timeline import ActivityTimeline
+
+    start = 10 * HOUR_MS
+    _insert_activity(
+        db, kind='awake', energy_pace=0, started_at=start,
+        expected_until=start + HOUR_MS, ended_at=None, source='decided',
+    )
+    timeline = ActivityTimeline(db)
+
+    # 离线九小时之后回来：已决策的终点仍然是那条活动的 expected_until。
+    assert timeline.decided_until(start + 10 * HOUR_MS) == start + HOUR_MS
+    # 还没走到边界时，终点就是当下。
+    assert timeline.decided_until(start + HOUR_MS // 2) == start + HOUR_MS // 2
+
+
+def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> None:
+    """离线整夜的睡眠必须在补写之后仍能入账。
+
+    改动前这一段永久丢失：结算同步跑在回合开头，把整段空缺按离线前那条清醒活动
+    算掉并推进游标；补写是后台任务，等它把睡眠写进来时游标早已越过。
+    """
+    from src.core.schedule.timeline import ActivityTimeline
+
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    start = 10 * HOUR_MS
+    _reset(db, person_id, 10.0, start)
+
+    # 离线前：一段清醒活动，预计只到一小时后。
+    _insert_activity(
+        db, kind='awake', energy_pace=0, started_at=start,
+        expected_until=start + HOUR_MS, ended_at=None, source='decided',
+    )
+    timeline = ActivityTimeline(db)
+
+    # 九小时后回来，此刻补写尚未发生：只结算到已决策的终点。
+    back = start + 10 * HOUR_MS
+    frontier = timeline.decided_until(back)
+    assert frontier == start + HOUR_MS
+    persona.apply_elapsed(
+        person_id, frontier, timeline.integrate_between(persona.settled_at(), frontier)
+    )
+    # 那一小时清醒 pace=0，扣两点。
+    assert persona.get(person_id).energy == 8.0
+    assert persona.settled_at() == frontier
+
+    # 后台补写落地：空缺被填成整夜睡眠。
+    db.execute('UPDATE activities SET ended_at = ? WHERE ended_at IS NULL',
+               (start + HOUR_MS,))
+    _insert_activity(
+        db, kind='sleep', energy_pace=3, started_at=start + HOUR_MS,
+        expected_until=back, ended_at=back, source='backfilled',
+    )
+
+    # 下一次结算读到补写结果，九小时睡眠按 +4/小时入账。
+    persona.apply_elapsed(
+        person_id, back, timeline.integrate_between(persona.settled_at(), back)
+    )
+    assert persona.get(person_id).energy == 8.0 + 4.0 * 9
+    assert persona.settled_at() == back

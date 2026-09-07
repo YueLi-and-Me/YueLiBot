@@ -443,6 +443,40 @@ class ActivityTimeline:
         except Exception:
             logger.exception('外部唤醒写入活动时间线失败', now=now)
 
+    def decided_until(self, now: int) -> int:
+        """返回活动时间线已经「定下来」的终点，供状态结算裁剪区间。
+
+        :param now: 当前毫秒时间戳。
+        :return: 不晚于 ``now`` 的时刻；进行中的活动只算到它的 ``expected_until``，
+            再往后属于尚未决策的空缺。没有任何活动时返回 ``now``。
+
+        **为什么结算不能一路推到 now。**
+
+        - 现象：离线一整夜再上线，精力不但没有因为睡眠回升，反而更低。
+        - 原因：越过 ``expected_until`` 的那段时间还没有被决策。``current()`` 只在
+          后台任务里调模型补写它（``_advance`` → ``_apply_transition``），而状态结算
+          是同步跑在回合开头的。结算先发生时，``integrate_between`` 会把整段空缺按
+          离线前那条活动的 pace 算掉（``COALESCE(ended_at, to_ms)`` 让未结束的活动
+          一直延伸到区间末端），随后游标推过这一段。
+        - 后果：后台补写进来的真实活动——整夜睡眠是其中最大的一笔——再也不会被任何
+          一次结算读到，那份恢复永久丢失；而空缺本身还被按清醒活动扣了分。
+
+        因此结算只推进到本方法给出的终点，空缺留给下一次——等后台把它补写成真实
+        活动之后再积分。
+        """
+        row = self._db.execute(
+            """SELECT expected_until FROM activities
+               WHERE ended_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1"""
+        ).fetchone()
+        if row is not None:
+            return min(now, int(row[0]))
+        row = self._db.execute(
+            'SELECT MAX(ended_at) FROM activities WHERE ended_at IS NOT NULL'
+        ).fetchone()
+        if row is None or row[0] is None:
+            return now
+        return min(now, int(row[0]))
+
     def integrate_between(self, from_ms: int, to_ms: int) -> ElapsedEffect:
         """按活动与目标区间的真实交集积分精力和心情变化。"""
 

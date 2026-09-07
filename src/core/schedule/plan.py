@@ -462,6 +462,11 @@ class DayPlanService:
             lines.append('你正在休息，精力不会继续下降，但仍然清醒并会正常回应。')
         return '\n'.join(lines)
 
+    def decided_until(self, now: int) -> int:
+        """把「时间线已决策到哪一刻」透传给状态结算。"""
+
+        return self._timeline.decided_until(now)
+
     def integrate_between(
         self,
         from_ms: int,
