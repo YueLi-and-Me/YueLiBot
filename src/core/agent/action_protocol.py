@@ -121,6 +121,24 @@ ALL_REASON_CODES: frozenset[str] = (
 # 候选过多会降低模型选择的速度与准确性。扩充时必须显式修改本表。
 REACTION_IDS: tuple[str, ...] = ('赞', '笑哭', '无奈', '爱心', '惊讶', '吃瓜')
 
+# 非法取值进错误信息时的保留长度（字符）。取值本该是十余字符的标识符，超出即
+# 说明模型写的是自由文本；截断只影响错误信息展示，原值仍在请求存档中。
+_CODE_QUOTE_LIMIT = 24
+
+
+def _quote_code(code: str) -> str:
+    """把模型给出的取值渲染成适合进错误信息的短引用。
+
+    自由字符串常是一整句理由散文，原样拼进错误信息会挤爆控制台错误框，也让
+    纠错回灌里「哪一段是非法取值」失去边界；完整原值仍保留在 data/logs/prompt
+    的请求存档中，诊断不受影响。
+
+    :param code: 模型给出的原始取值。
+    :return: 折叠空白并在超长时截断的带引号文本。
+    """
+    flat = ' '.join(code.split())
+    return f'「{flat}」' if len(flat) <= _CODE_QUOTE_LIMIT else f'「{flat[:_CODE_QUOTE_LIMIT]}…」'
+
 
 def _validate_reason_codes(
     action: ConversationAction,
@@ -151,13 +169,19 @@ def _validate_reason_codes(
         domain = SPEAK_REASON_CODES
     else:
         domain = REPLY_REASON_CODES
+    # 错误信息必须带上本动作的可用取值：这条文案会被工具调用纠错原样回灌给模型，
+    # 只说「不允许自由字符串」等于让它再猜一次，而模型这类错误恰恰是不知道该填什么。
+    available = f'{action} 可用取值：{"、".join(sorted(domain))}'
     for code in reason_codes:
         if code not in ALL_REASON_CODES:
             raise IllegalActionError(
-                f'未知 reason_code：{code}（封闭枚举，不允许自由字符串）'
+                f'未知 reason_code：{_quote_code(code)}'
+                f'（封闭枚举，不允许自由字符串）；{available}'
             )
         if code not in domain:
-            raise IllegalActionError(f'reason_code {code} 不能与动作 {action} 组合')
+            raise IllegalActionError(
+                f'reason_code {_quote_code(code)} 不能与动作 {action} 组合；{available}'
+            )
 
 
 def _validate_cognitive_shape(
