@@ -36,7 +36,7 @@ def _load_tool_plugin(directory: Path, manifest: Any) -> Any:
 # ------------------------------------------------------------ 插件目录素材
 
 _OBSERVER_PLUGIN = '''
-from src.plugin_system import ToolPlugin
+from src.plugin_system import ToolPlugin, inbound_observe
 
 
 class ObserverPlugin(ToolPlugin):
@@ -54,6 +54,7 @@ class ObserverPlugin(ToolPlugin):
     async def on_unload(self):
         self.unload_calls += 1
 
+    @inbound_observe()
     def observe_inbound(self, stream_id, message_id, inbound):
         self.seen.append((stream_id, message_id))
 
@@ -73,12 +74,13 @@ class HistoryPlugin(ToolPlugin):
 '''
 
 _RAISING_OBSERVER_PLUGIN = '''
-from src.plugin_system import ToolPlugin
+from src.plugin_system import ToolPlugin, inbound_observe
 
 
 class RaisingObserverPlugin(ToolPlugin):
-    """observe_inbound 恒定抛异常，模拟第三方插件的 bug。"""
+    """观察组件恒定抛异常，模拟第三方插件的 bug。"""
 
+    @inbound_observe()
     def observe_inbound(self, stream_id, message_id, inbound):
         raise RuntimeError('插件内部错误')
 '''

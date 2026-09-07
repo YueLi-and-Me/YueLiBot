@@ -1,8 +1,8 @@
 """插件契约层。
 
-对外暴露四样东西：能力封闭枚举、清单模型与加载函数、插件基类（适配器与工具）、
-插件注册表。具体适配器包（``adapters/``）与工具插件依赖本包，本包不反向依赖任何
-插件，也不含协议实现。
+对外暴露五样东西：能力封闭枚举、清单模型与加载函数、插件基类（适配器与工具）、
+插件注册表、组件声明装饰器（``@tool`` 等）。具体适配器包（``adapters/``）与
+工具插件依赖本包，本包不反向依赖任何插件，也不含协议实现。
 """
 
 from .adapter import AdapterPlugin
@@ -26,7 +26,8 @@ from .manifest import (
 )
 from .plugin import Plugin
 from .registry import PluginRegistry
-from .tools import ToolPlugin, tool
+from .tools import ToolPlugin
+from .components import command, inbound_observe, inbound_rewrite, tool
 
 
 __all__ = [
@@ -51,4 +52,7 @@ __all__ = [
     'manifest_from_payload',
     'parse_capabilities',
     'tool',
+    'command',
+    'inbound_observe',
+    'inbound_rewrite',
 ]

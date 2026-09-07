@@ -1,4 +1,4 @@
-"""扫描插件根目录、按类型分派，并把工具插件聚合成主体可查询的集合。
+"""扫描插件根目录、按类型分派，并把插件聚合成主体可查询、可分发的集合。
 
 目录约定::
 
@@ -10,20 +10,27 @@
 调用方把内置根目录排在前：同 id 冲突时先扫描到的生效，后者被忽略并记 warning。
 
 注册表是主体与工具插件之间的唯一界面：主体只调 ``discover`` / ``load_all`` /
-``unload_all`` / ``observe_inbound`` / ``stream_capabilities``，不直接接触单个插件。
-隔离原则贯穿全表：第三方插件目录里混着一个坏插件时，整个 Bot 起不来是不可接受的，
-因此发现、加载、入站观察、能力查询任何一步的单插件失败都只影响该插件自身。
+``unload_all`` / ``rewrite_inbound`` / ``observe_inbound`` /
+``stream_capabilities`` / ``register_commands``，不直接接触单个插件。隔离原则
+贯穿全表：第三方插件目录里混着一个坏插件时，整个 Bot 起不来是不可接受的，
+因此发现、加载、入站改写、入站观察、能力查询任何一步的单组件失败都只影响该
+组件自身。命令注册是例外：重名命令会让调用当场抛错而不是跳过，因为静默丢掉
+一条命令与「命令怎么没出现」的排障成本远高于启动失败一次。
 
-依赖 ``loader`` 与 ``tools``；被主体（聊天服务）在启动期驱动。
+依赖 ``loader``、``tools`` 与 ``context``；被主体（聊天服务）在启动期驱动。
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from src.core.commands.registry import register_command
 from src.core.logging.logger import get_logger
+from src.core.platform_io.types import InboundMessage
 
+from .context import PluginContext
 from .loader import MANIFEST_FILENAME, load_tool_plugin
 from .config import ensure_plugin_config, read_enabled_flag
 from .manifest import load_manifest
@@ -34,20 +41,30 @@ logger = get_logger(__name__)
 
 
 class PluginRegistry:
-    """工具插件的注册表：发现、生命周期驱动与聚合查询。
+    """工具插件的注册表：发现、生命周期驱动与聚合分发。
 
     生命周期固定为 ``discover`` → ``load_all`` → 运行期聚合调用 → ``unload_all``，
     由主体按序驱动。``load_all`` 失败的插件会从注册表移除，此后的聚合调用只覆盖
     加载成功的插件。
     """
 
-    def __init__(self) -> None:
-        """初始化空注册表。"""
+    def __init__(
+        self,
+        context_factory: Optional[Callable[[str], PluginContext]] = None,
+    ) -> None:
+        """初始化空注册表。
+
+        :param context_factory: 按插件 id 构造宿主入口的工厂；传入时每个已启用
+            插件在 ``bind_config`` 之后、``on_load`` 之前得到自己的入口实例
+            （日志器绑定插件 id，因此必须每插件一个）。缺省 ``None`` 表示本表
+            不注入入口，供宿主接线尚未就位的装配路径使用。
+        """
         self._plugins: List[ToolPlugin] = []
         # 插件 id → 来源目录，用于同 id 冲突时指出被保留者与后来者各自的位置。
         self._origins: Dict[str, Path] = {}
         # 已成功 on_load 的插件；unload_all 只卸载它们，据此保证自身幂等。
         self._loaded: List[ToolPlugin] = []
+        self._context_factory = context_factory
 
     def discover(self, roots: Sequence[Path]) -> None:
         """按序扫描插件根目录，加载全部已启用的合法工具插件。
@@ -115,10 +132,60 @@ class PluginRegistry:
                     error=str(exc),
                 )
 
-    def observe_inbound(self, stream_id: int, message_id: int, inbound: Any) -> None:
-        """把一条已入库的入站消息分发给全部工具插件观察。
+    async def rewrite_inbound(self, inbound: InboundMessage, text: str) -> str:
+        """串行驱动全部入站改写器，返回落库前应使用的最终正文。
 
-        入站是主链路：单个插件抛异常时记 error 并继续下一个，插件的 bug 不该让
+        改写器按 ``(order, 插件 id)`` 升序接力：后一个收到的是前一个改写后的
+        正文（以替换 ``text`` 字段的方式传递）。顺序必须确定——顺序不确定意味着
+        同一条消息两次运行得到不同结果，那类问题无法复现也就无法修。单个改写器
+        抛异常、返回非字符串或返回空白正文时记 error、保留上一步正文并继续
+        下一个：入站是主链路，插件的 bug 既不该让消息进不来，也不该把消息变没。
+
+        组件集合随插件的增删变化（``load_all`` 会移除加载失败的插件），聚合不缓存、
+        每次分发重算。
+
+        :param inbound: 原始入站消息；其 ``text`` 不被本方法读取，正文以 ``text``
+            参数为准（调用方已完成首尾空白规整）。
+        :param text: 当前正文，作为第一个改写器的输入。
+        :return: 最终正文；没有任何改写器时原样返回 ``text``。
+        """
+        entries: List[Tuple[int, str, Any]] = []
+        for plugin in self._plugins:
+            for spec, handler in plugin.inbound_rewrites():
+                entries.append((spec.order, plugin.manifest.plugin_id, handler))
+        entries.sort(key=lambda entry: (entry[0], entry[1]))
+        for _order, plugin_id, handler in entries:
+            try:
+                result = await handler(replace(inbound, text=text))
+            except Exception as exc:
+                logger.error(
+                    '插件改写入站正文失败，保留上一步正文',
+                    plugin=plugin_id,
+                    error=str(exc),
+                )
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, str):
+                logger.error(
+                    '插件改写器返回了非字符串结果，保留上一步正文',
+                    plugin=plugin_id,
+                    result_type=type(result).__name__,
+                )
+                continue
+            if not result.strip():
+                logger.error(
+                    '插件改写器把正文改成了空白，保留上一步正文',
+                    plugin=plugin_id,
+                )
+                continue
+            text = result
+        return text
+
+    def observe_inbound(self, stream_id: int, message_id: int, inbound: Any) -> None:
+        """把一条已入库的入站消息分发给全部观察组件。
+
+        入站是主链路：单个观察器抛异常时记 error 并继续下一个，插件的 bug 不该让
         消息进不来。
 
         :param stream_id: 会话编号。
@@ -127,14 +194,36 @@ class PluginRegistry:
         :return: ``None``。
         """
         for plugin in self._plugins:
-            try:
-                plugin.observe_inbound(stream_id, message_id, inbound)
-            except Exception as exc:
-                logger.error(
-                    '工具插件观察入站消息失败，已跳过该插件本次调用',
-                    plugin=plugin.manifest.plugin_id,
-                    error=str(exc),
-                )
+            for handler in plugin.inbound_observers():
+                try:
+                    handler(stream_id, message_id, inbound)
+                except Exception as exc:
+                    logger.error(
+                        '插件观察入站消息失败，已跳过该观察器本次调用',
+                        plugin=plugin.manifest.plugin_id,
+                        error=str(exc),
+                    )
+
+    def register_commands(self) -> None:
+        """把全部插件的命令组件注册进开发者命令目录。
+
+        在发现之后由宿主一次性调用。已关闭的插件不会被发现，其命令因此不进
+        目录。重名与非法声明由 ``register_command`` 当场抛错，调用方不捕获：
+        静默跳过会让「命令怎么没出现」无从排障，而启动失败一次就把确切原因
+        给出来了。
+
+        :return: ``None``。
+        :raises ValueError: 命令名已注册（含与内置命令重名）或声明非法。
+        :raises re.error: 正则模式无法编译。
+        副作用：向进程内命令目录追加条目；重复调用同一批插件会因重名抛错。
+        """
+        for plugin in self._plugins:
+            for declaration, handler in plugin.commands():
+                register_command(
+                    declaration.name,
+                    declaration.pattern,
+                    declaration.description,
+                )(handler)
 
     def stream_capabilities(self, stream_id: int) -> FrozenSet[str]:
         """合并全部工具插件为该会话贡献的能力。
@@ -247,6 +336,10 @@ class PluginRegistry:
             self._log_disabled(manifest.plugin_id, directory)
             return
         plugin.bind_config(config)
+        if self._context_factory is not None:
+            # 时序固定：bind_config 之后、on_load 之前。入口构造失败属于宿主接线
+            # 问题而不是插件缺陷，让它当场抛出，不按单插件失败隔离。
+            plugin.bind_context(self._context_factory(manifest.plugin_id))
         self._origins[manifest.plugin_id] = directory
         self._plugins.append(plugin)
         logger.info(

@@ -389,7 +389,7 @@ class Test私聊连戳不再打崩入站:
         )
         context = _direct(chat._registry)
 
-        message_id = chat.record_silent_inbound(
+        message_id = await chat.record_silent_inbound(
             InboundMessage(text='[戳了戳月璃]', context=context),
             'poke_repeat',
         )

@@ -113,7 +113,7 @@ class _Chat:
         self.inbound.append(inbound)
         return 42
 
-    def record_silent_inbound(self, inbound: Any, reason: str = '') -> int:
+    async def record_silent_inbound(self, inbound: Any, reason: str = '') -> int:
         self.observed.append((inbound, reason))
         return 1
 

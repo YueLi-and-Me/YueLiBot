@@ -104,7 +104,9 @@ def _deep_tree(depth: int) -> ForwardMessageTree:
 
 
 def _context(stream_id: int = 7, message_watermark: int = 101) -> ToolContext:
-    caps = PlatformCapabilities(forward_message=True)
+    caps = PlatformCapabilities(
+        plugin_capabilities=frozenset({'forward_message'}),
+    )
     frame = DecisionFrame(
         turn_id=3,
         snapshot_id='turn-3',

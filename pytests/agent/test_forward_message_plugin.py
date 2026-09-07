@@ -155,7 +155,8 @@ def test_observe_inbound_gates_capability_per_stream() -> None:
     """观察过转发消息的会话贡献 forward_message 能力，未观察过的为空集合。"""
     plugin = ForwardMessagePlugin(_manifest())
 
-    plugin.observe_inbound(7, 101, _inbound(7, (_single_tree(),)))
+    for handler in plugin.inbound_observers():
+        handler(7, 101, _inbound(7, (_single_tree(),)))
 
     assert plugin.stream_capabilities(7) == frozenset({'forward_message'})
     assert plugin.stream_capabilities(8) == frozenset()
@@ -165,6 +166,7 @@ def test_observe_inbound_without_forward_trees_contributes_nothing() -> None:
     """入站消息没有转发根树时不建缓存条目，会话能力保持空集合。"""
     plugin = ForwardMessagePlugin(_manifest())
 
-    plugin.observe_inbound(7, 101, _inbound(7, ()))
+    for handler in plugin.inbound_observers():
+        handler(7, 101, _inbound(7, ()))
 
     assert plugin.stream_capabilities(7) == frozenset()

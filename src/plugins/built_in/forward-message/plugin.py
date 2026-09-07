@@ -1,9 +1,9 @@
 """按消息编号与路径逐层浏览合并转发内容的内置工具插件。
 
-本模块承载工具本体与 ``ToolPlugin`` 的三个挂载点：``@tool`` 装饰的方法同时
-给出模型可见声明与执行体；``observe_inbound`` 在入站路径把完整转发树写入
-有界会话缓存；``stream_capabilities`` 只在缓存里确有转发内容的会话贡献
-``forward_message`` 能力，让工具声明按会话收窄。除挂载点外不依赖聊天服务，
+本模块承载工具本体与两类组件声明：``@tool`` 装饰的方法同时给出模型可见声明与
+执行体；``@inbound_observe`` 装饰的观察组件在入站落库之后把完整转发树写入
+有界会话缓存。``stream_capabilities`` 按会话贡献 ``forward_message`` 能力名，
+让工具声明按会话收窄——它不是组件，是能力贡献。除这些挂载点外不依赖聊天服务，
 宿主经清单加载本插件后把收集到的工具登记进 ToolRegistry。
 
 工具缓存只保存当前进程已经接收的完整转发树，以 ``(stream_id, message_id)``
@@ -20,12 +20,13 @@ import json
 import re
 
 from src.core.platform_io.forward import ForwardMessageTree
+from src.core.platform_io.types import InboundMessage
 from src.core.tooling.spec import (
     ToolContext,
     ToolExecutionResult,
     ToolInvocation,
 )
-from src.plugin_system import PluginManifest, ToolPlugin, tool
+from src.plugin_system import PluginManifest, ToolPlugin, inbound_observe, tool
 
 
 DEFAULT_FORWARD_CACHE_LIMIT = 128
@@ -161,15 +162,16 @@ class ForwardMessagePlugin(ToolPlugin):
             },
         )
 
+    @inbound_observe()
     def observe_inbound(
         self,
         stream_id: int,
         message_id: int,
-        inbound: Any,
+        inbound: InboundMessage,
     ) -> None:
         """把一条已落库入站消息的转发根树写入有界会话缓存。
 
-        入站消息不含转发根树时本方法没有任何效果；容量超限时按最旧条目
+        入站消息不含转发根树时本组件没有任何效果；容量超限时按最旧条目
         淘汰。
         """
         self._remember(stream_id, message_id, inbound.forward_messages)

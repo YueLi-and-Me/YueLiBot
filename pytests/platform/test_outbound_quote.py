@@ -294,7 +294,7 @@ async def test_observation_only_message_also_stores_platform_id(db) -> None:
     chat = ChatService(db, None, None, None, _noop, cfg=_agent_config())
     context = _group_context(chat._registry)
 
-    message_id = chat.record_silent_inbound(InboundMessage(
+    message_id = await chat.record_silent_inbound(InboundMessage(
         text='别玩大禹了',
         context=context,
         external_message_id='2145541857',
