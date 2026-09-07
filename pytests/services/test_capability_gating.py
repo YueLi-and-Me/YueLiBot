@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from src.plugin_system import PluginLoadError, load_adapter_plugin
+from src.plugin_system import SUPPORTED_MANIFEST_VERSION, PluginLoadError, load_adapter_plugin
 
 
 _ADAPTERS = Path('adapters')
@@ -28,7 +28,7 @@ def _write_adapter(root: Path, name: str, entry_source: str) -> Path:
     directory = root / name
     directory.mkdir(parents=True)
     (directory / '_manifest.json').write_text(json.dumps({
-        'manifest_version': 1,
+        'manifest_version': SUPPORTED_MANIFEST_VERSION,
         'id': f'test.{name}',
         'plugin_type': 'adapter',
         'name': name,
@@ -160,7 +160,7 @@ async def test_host_does_not_exit_while_run_loop_is_alive() -> None:
             pass
 
     manifest = manifest_from_payload({
-        'manifest_version': 1,
+        'manifest_version': SUPPORTED_MANIFEST_VERSION,
         'id': 'test.blocking-adapter',
         'plugin_type': 'adapter',
         'name': 'blocking',

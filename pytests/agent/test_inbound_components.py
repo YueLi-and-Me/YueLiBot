@@ -29,7 +29,7 @@ from src.core.platform_io.types import (
     StreamRef,
 )
 from src.core.services.chat import ChatService
-from src.plugin_system import PluginRegistry
+from src.plugin_system import SUPPORTED_MANIFEST_VERSION, PluginRegistry
 
 
 # ------------------------------------------------------------ 插件目录素材
@@ -47,7 +47,7 @@ def _write_plugin(
     directory.mkdir(parents=True)
     (directory / '_manifest.json').write_text(
         json.dumps({
-            'manifest_version': 1,
+            'manifest_version': SUPPORTED_MANIFEST_VERSION,
             'id': plugin_id,
             'plugin_type': 'tool',
             'name': dirname,

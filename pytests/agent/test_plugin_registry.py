@@ -18,7 +18,7 @@ import json
 import pytest
 from structlog.testing import capture_logs
 
-from src.plugin_system import PluginLoadError, load_manifest
+from src.plugin_system import SUPPORTED_MANIFEST_VERSION, PluginLoadError, load_manifest
 
 
 def _registry() -> Any:
@@ -156,7 +156,7 @@ def _write_plugin(
     directory = root / dirname
     directory.mkdir(parents=True)
     payload = {
-        'manifest_version': 1,
+        'manifest_version': SUPPORTED_MANIFEST_VERSION,
         'id': plugin_id,
         'plugin_type': 'tool',
         'name': dirname,
@@ -177,7 +177,7 @@ def _write_broken_manifest(root: Path, dirname: str) -> Path:
     directory = root / dirname
     directory.mkdir(parents=True)
     (directory / '_manifest.json').write_text(
-        json.dumps({'manifest_version': 1, 'plugin_type': 'tool'}, ensure_ascii=False),
+        json.dumps({'manifest_version': SUPPORTED_MANIFEST_VERSION, 'plugin_type': 'tool'}, ensure_ascii=False),
         encoding='utf-8',
     )
     (directory / 'plugin.py').write_text(_OBSERVER_PLUGIN, encoding='utf-8')

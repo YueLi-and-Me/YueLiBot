@@ -36,6 +36,7 @@ from src.core.runtime.self_check import (
 from src.core.config.loader import read_config
 from src.core.memory.vector_health import inspect_vector_health
 from src.platforms.onebot11.config import NAPCAT_CONFIG_VERSION
+from src.plugin_system import SUPPORTED_MANIFEST_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -115,7 +116,7 @@ def _write_adapter(root: Path, directory: str, section: str, config_section: str
     adapter_dir.mkdir(parents=True)
     (adapter_dir / '_manifest.json').write_text(
         json.dumps({
-            'manifest_version': 1,
+            'manifest_version': SUPPORTED_MANIFEST_VERSION,
             'id': f'yueli.{section}-adapter',
             'plugin_type': 'adapter',
             'name': f'YueLi-{section}-Adapter',

@@ -13,6 +13,7 @@ from typing import FrozenSet
 import pytest
 
 from src.plugin_system import (
+    SUPPORTED_MANIFEST_VERSION,
     AdapterCapability,
     AdapterManifest,
     AdapterPlugin,
@@ -25,7 +26,7 @@ from src.plugin_system import (
 def _payload(**overrides: object) -> dict:
     """构造一份合法清单，便于逐字段构造反例。"""
     payload = {
-        'manifest_version': 1,
+        'manifest_version': SUPPORTED_MANIFEST_VERSION,
         'id': 'yueli.sample-adapter',
         'plugin_type': 'adapter',
         'name': 'YueLi-Sample-Adapter',
@@ -99,7 +100,7 @@ def test_manifest_rejects_static_and_probed_overlap() -> None:
 def test_manifest_rejects_wrong_version() -> None:
     """清单格式版本必须逐字相等：语义变化不允许静默按旧版运行。"""
     with pytest.raises(ManifestError, match='清单格式版本'):
-        manifest_from_payload(_payload(manifest_version=2))
+        manifest_from_payload(_payload(manifest_version=SUPPORTED_MANIFEST_VERSION + 1))
 
 
 def test_manifest_requires_config_section() -> None:
