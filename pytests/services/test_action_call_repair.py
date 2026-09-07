@@ -1,18 +1,21 @@
 """动作工具调用纠错回路验收。
 
-覆盖六件事：
+覆盖七件事：
 1. 网关丢弃参数（空对象直达校验层）时，回灌拒绝原因重发一次即可自愈，
    回合正常 committed；
 2. 重试仍不合法按 illegal_action 终局，且模型调用次数恰好是原始一次加纠错一次；
 3. XML 动作头路径的协议错误保持直接终局，不进入纠错回路；
 4. 工具模式下模型只输出正文（不调任何工具）时回灌纠错重发一次即可自愈；
 5. 纠错后仍不调工具按 parse_error 终局，且正文不流向用户；
-6. 正文先于工具调用流出时正文被丢弃、调用照常结算，不触发纠错重发。
+6. 正文先于工具调用流出时正文被丢弃、调用照常结算，不触发纠错重发；
+7. 理由码被写成整句散文时，回灌带上该动作的可用取值，模型据此改对。
 """
 
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, List
+
+import json
 
 from src.core.agent.action_protocol import (
     DecisionFrame,
@@ -323,3 +326,49 @@ async def test_prose_before_tool_call_does_not_trigger_repair() -> None:
     assert len(planner.seen_messages) == 1
     assert '好的，我来' not in outcome.body_text
     assert '纠错' not in outcome.action_event.detail
+
+
+async def test_free_text_reason_repair_carries_the_available_values() -> None:
+    """理由码写成散文时，回灌必须带上可用取值，模型才可能改对。
+
+    - 现象：主动跟进回合里 reasons 填成一整句理由说明，纠错重发后模型换一句
+      散文继续被拒，一次预算空耗后按 illegal_action 终局，用户侧是无声失败。
+    - 原因：回灌指引只说「完整填写全部必填字段」，而这类错误字段并不缺失，
+      缺的是合法取值；模型拿不到取值列表，重发只能再猜一次。
+    - 后果：取值由校验层写进拒绝原因随回灌带出，两处各拼一份必然口径分叉。
+    """
+    prose = '已对哥发布的开源项目表达过恭喜，对方尚未回复，可能正在忙于项目发布的相关事宜。'
+    planner = _ToolCallProvider([
+        ('reply', json.dumps(
+            {
+                'target': 101,
+                'reasons': [prose],
+                'length': 'brief',
+                'reference': '散文理由',
+            },
+            ensure_ascii=False,
+        )),
+        ('reply', _VALID_REPLY),
+    ])
+    replyer = _TextProvider([['<say emotion="normal">嗯，在呢。</say>']])
+    agent = ConversationAgent(
+        planner, temperature=0.7, replyer=replyer, tool_calling=True,
+    )
+
+    outcome = await agent.run(
+        _frame(),
+        [{'role': 'system', 'content': 's'}, {'role': 'user', 'content': '小璃别睡了'}],
+        _gate_inputs(),
+        ('name_mentioned',),
+        replyer_messages=_replyer_messages,
+    )
+
+    assert outcome.event_status == 'committed'
+    correction = planner.seen_messages[1][-1]['content']
+    # 模型要能从回灌里直接读到该动作的全部合法取值。
+    assert 'directly_addressed' in correction
+    assert 'topic_continuation' in correction
+    # 指引不能再把方向指到「字段没填全」上。
+    assert '枚举字段只能填' in correction
+    # 整段散文不得原样回灌：控制台错误框与回灌都会被它挤爆。
+    assert prose not in correction
