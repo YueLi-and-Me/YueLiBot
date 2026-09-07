@@ -9,7 +9,7 @@
 由 ``ChatService`` 继承，依赖它的 ``_memory`` / ``_models`` 等属性。
 """
 
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import sqlite3
 
@@ -101,8 +101,20 @@ class BackgroundTaskMixin:
             )
             if len(batch) < 4:
                 return
-            # 摘要输入只保留 role/content，避免将内部消息 ID 暴露给模型。
-            msgs = [{'role': m['role'], 'content': m['content']} for m in batch]
+            # 摘要输入保留 role/content 与发言人 ID：ID 只用于把 user 行渲染成带
+            # 名字的前缀，不进提示词正文；内部消息 ID 依然不交给模型。
+            msgs = [
+                {
+                    'role': m['role'],
+                    'content': m['content'],
+                    'sender_person_id': m['sender_person_id'],
+                }
+                for m in batch
+            ]
+            # 名单为空时不能 return：事实抽取没名单必须放弃（归属只认编号），
+            # 摘要不同——没有名单仍可退回「对方」照常生成。这里若提前返回，
+            # 待摘要数永远超过触发阈值，整条摘要队列会钉死在这一批上。
+            participants = self._resolve_participants(m['sender_person_id'] for m in batch)
             episode = await summarize(
                 self._summary_provider,
                 msgs,
@@ -110,6 +122,7 @@ class BackgroundTaskMixin:
                 max_tokens=self._summary_max_tokens,
                 character_name=self._bot_display_name,
                 character_personality=self._summary_personality,
+                participants=participants,
             )
             if not episode:
                 # 模型没抛异常但也没给出合法摘要 JSON。这与抛异常同属「这一批没能
@@ -218,22 +231,26 @@ class BackgroundTaskMixin:
         finally:
             self._refreshing_profiles = False
 
-    def _extraction_participants(self, batch: Sequence[StoredMessage]) -> list[Participant]:
-        """从待抽取的这批消息里解析出在场者名单。
+    def _resolve_participants(self, sender_person_ids: Iterable[Optional[int]]) -> list[Participant]:
+        """按发言人 ID 序列解析在场者名单，供摘要与两个记忆队列共用。
 
-        必须按批解析，不能用最近发言名单：抽取游标从 0 起步，第一批取的是这个
-        会话最早的消息，当时的发言者未必在最近发言名单中。名单不匹配不会报错，
-        模型抽出的事实会全部按归属不明丢弃，静默失败。
+        三条队列消费同一批消息时都要把 ``sender_person_id`` 还原成有名字的人：
+        摘要靠名单区分群聊里的多个说话人，事实抽取与表达学习靠名单渲染带编号的
+        对话行。名单必须按批解析，不能用最近发言名单：游标从 0 起步时第一批取的
+        是会话最早的消息，当时的发言者未必在最近发言名单中；名单不匹配不会报错，
+        抽取的事实会全部按归属不明丢弃，摘要会把多个人的发言按到一个人头上，
+        都是静默失败。
 
-        :param batch: 本次交给模型的消息批，按 ID 正序。
+        :param sender_person_ids: 按批内出现顺序排列的发言人 ``persons.id``；
+            ``None`` 表示该消息没有归属（如助手消息），跳过。
         :return: 至多 :data:`_EXTRACTION_PARTICIPANT_LIMIT` 个在场者，按批内首次发言
-            顺序排列；解析不出平台身份的人会被跳过——归属仅依据编号，昵称不参与判定。
+            顺序排列；解析不出平台身份的人会被跳过——抽取的归属仅依据编号，
+            昵称不参与判定，摘要渲染查不到名字时退回「对方」。
         副作用：只读 identities，不写任何表。
         """
 
         seen: list[int] = []
-        for message in batch:
-            person_id = message.sender_person_id
+        for person_id in sender_person_ids:
             if person_id is not None and person_id not in seen:
                 seen.append(person_id)
         people: list[Participant] = []
@@ -248,6 +265,22 @@ class BackgroundTaskMixin:
                 person_id=person_id,
             ))
         return people
+
+    def _extraction_participants(self, batch: Sequence[StoredMessage]) -> list[Participant]:
+        """从待抽取的这批消息里解析出在场者名单。
+
+        :meth:`_resolve_participants` 的转发壳：摘要批的消息形态是
+        ``oldest_pending`` 返回的字典而不是 :class:`StoredMessage`，按
+        ``sender_person_id`` 序列解析的内核让几条路径共用同一套名单语义。
+        该名字被 ``pytests/services/test_background_batch_retry.py`` monkeypatch，
+        改名会使补丁落空、测试误跑真实解析。
+
+        :param batch: 本次交给模型的消息批，按 ID 正序。
+        :return: 见 :meth:`_resolve_participants`。
+        副作用：见 :meth:`_resolve_participants`。
+        """
+
+        return self._resolve_participants(m.sender_person_id for m in batch)
 
     def _skip_stuck_batch(
         self,

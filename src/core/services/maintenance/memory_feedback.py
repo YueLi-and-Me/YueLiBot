@@ -25,6 +25,7 @@ import json
 import sqlite3
 
 from src.core.agent import profile
+from src.core.agent.fact_extract import Participant
 from src.core.agent.summarize import summarize
 from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
@@ -505,18 +506,58 @@ class MemoryFeedbackService:
                 stats['rebuilt'] += 1
         return stats
 
+    def _rebuild_participants(self, rows: Sequence[Tuple[str, str, Optional[int]]]) -> List[Participant]:
+        """按首次发言顺序解析被重建情节的原始发言人名单。
+
+        本服务没有人物注册表依赖，直接查 ``identities`` 表取展示名；身份选取
+        序与注册表 ``list_identities`` 一致（platform、external_id 升序），让
+        重建与首轮摘要尽量落到同一身份。没有身份的人跳过，重摘要的对应行
+        退回「对方」，与首轮摘要的降级口径一致——重建若不带名单，会把群聊
+        多人的发言重新压回同一个匿名说话人，用好端端的首轮摘要换来一份
+        归属错误的替换品。
+
+        :param rows: 本情节的消息行，``(role, content, sender_person_id)``。
+        :return: 按批内首次发言顺序排列的在场者列表。
+        副作用：只读 identities 表。
+        """
+
+        seen: List[int] = []
+        for row in rows:
+            person_id = row[2]
+            if person_id is not None and person_id not in seen:
+                seen.append(person_id)
+        participants: List[Participant] = []
+        for person_id in seen:
+            identity = self._db.execute(
+                '''SELECT external_id, display_name FROM identities
+                   WHERE person_id = ? ORDER BY platform ASC, external_id ASC LIMIT 1''',
+                (person_id,),
+            ).fetchone()
+            if identity is None:
+                continue
+            participants.append(Participant(
+                external_id=str(identity[0]),
+                display_name=str(identity[1]),
+                person_id=person_id,
+            ))
+        return participants
+
     async def _rebuild_episode(self, episode_id: int) -> bool:
         """用原始消息重摘要一条情节；失败保留标记等下一轮。
 
         消息太短不足以成摘要时认为没有更好的版本可写：保留旧摘要、清掉标记，
-        否则这批会永久卡在重建队列里。
+        否则这批会永久卡在重建队列里。重摘要与首轮摘要同样带发言人名单，
+        渲染口径见 :meth:`_rebuild_participants`。
         """
 
         messages = self._db.execute(
-            "SELECT role, content FROM messages WHERE episode_id = ? ORDER BY id",
+            "SELECT role, content, sender_person_id FROM messages WHERE episode_id = ? ORDER BY id",
             (episode_id,),
         ).fetchall()
-        msgs = [{'role': str(m[0]), 'content': str(m[1])} for m in messages]
+        msgs = [
+            {'role': str(m[0]), 'content': str(m[1]), 'sender_person_id': m[2]}
+            for m in messages
+        ]
         try:
             episode = await summarize(
                 self._summary_provider,
@@ -525,6 +566,7 @@ class MemoryFeedbackService:
                 max_tokens=self._summary_max_tokens,
                 character_name=self._bot_name,
                 character_personality=self._bot_personality,
+                participants=self._rebuild_participants(messages),
             )
         except Exception as exc:
             logger.error('memory_feedback_episode_rebuild_failed',

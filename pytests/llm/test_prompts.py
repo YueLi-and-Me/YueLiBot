@@ -9,6 +9,7 @@ import random
 
 from src.core.agent.character import pick_tone
 from src.core.agent.expression import ExpressionSample, render_expression_habits
+from src.core.agent.fact_extract import Participant
 from src.core.agent.prompt import build_proactive_prompt, build_system_prompt
 from src.core.agent.summarize import summarize
 from src.core.config.schema import Config
@@ -140,13 +141,18 @@ async def test_summary_agent_uses_memory_voice_instead_of_meeting_minutes() -> N
     episode = await summarize(
         provider,
         [
-            {'role': 'user', 'content': '折腾了一晚上，那个项目终于跑通了，原来只是配置文件里少写了一个字段。'},
+            {
+                'role': 'user',
+                'content': '折腾了一晚上，那个项目终于跑通了，原来只是配置文件里少写了一个字段。',
+                'sender_person_id': 1,
+            },
             {'role': 'assistant', 'content': '<say emotion="happy">真的？难怪你卡了这么久……这下我也跟着松口气了。</say>'},
         ],
         temperature=Config().generation.summary.temperature,
         max_tokens=Config().generation.summary.token_limit,
         character_name=TEST_NAME,
         character_personality=TEST_PERSONALITY,
+        participants=[Participant(external_id='10001', display_name='阿澈', person_id=1)],
     )
 
     assert episode is not None
@@ -154,6 +160,112 @@ async def test_summary_agent_uses_memory_voice_instead_of_meeting_minutes() -> N
     assert '不是会议纪要' in provider.messages[0]['content']
     assert '我们围绕某话题进行了交流' in provider.messages[0]['content']
     assert provider.messages[1]['role'] == 'user'
+    assert '阿澈：折腾了一晚上' in provider.messages[1]['content']
+
+
+def test_summary_prompt_assigns_speech_to_present_speakers_only() -> None:
+    """群聊归属规则：不合并到一个人，转发块里的名字不算在场发言者。"""
+    from src.core.prompts.registry import get_prompt
+
+    text = get_prompt('summary').text
+    assert '不同人的发言不得合并或归到同一个人身上' in text
+    assert '不算任何在场者的主张' in text
+    assert '名字末尾带编号的是不同的人' in text
+
+
+async def test_summary_render_keeps_group_speakers_separate() -> None:
+    """群聊里两个不同 person 的发言必须渲染出两个不同前缀且都不是「对方」。"""
+    provider = _SummaryProvider()
+    await summarize(
+        provider,
+        [
+            {
+                'role': 'user',
+                'content': '我将购入猫娘洗面奶，链接放这了，大半夜的别睡',
+                'sender_person_id': 1,
+            },
+            {
+                'role': 'user',
+                'content': '[戳了戳 月璃] 那月璃可以给我一张你的腿照吗',
+                'sender_person_id': 2,
+            },
+            {'role': 'assistant', 'content': '<say>想得美……大半夜的要什么腿照</say>'},
+        ],
+        temperature=Config().generation.summary.temperature,
+        max_tokens=Config().generation.summary.token_limit,
+        character_name=TEST_NAME,
+        character_personality=TEST_PERSONALITY,
+        participants=[
+            Participant(external_id='10001', display_name='凌白', person_id=1),
+            Participant(external_id='10002', display_name='龙之啸风', person_id=2),
+        ],
+    )
+
+    user_content = provider.messages[1]['content']
+    assert '在场的人：' in user_content
+    assert '凌白：我将购入猫娘洗面奶' in user_content
+    assert '龙之啸风：[戳了戳 月璃]' in user_content
+    assert '对方：' not in user_content
+    assert '某人' not in user_content
+    assert '我：想得美' in user_content
+
+
+async def test_summary_render_numbers_duplicate_display_names() -> None:
+    """同名不同人靠末尾编号区分：渲染成相同前缀等于没有区分。"""
+    provider = _SummaryProvider()
+    await summarize(
+        provider,
+        [
+            {
+                'role': 'user',
+                'content': '今晚一起上线打素材本吗，缺个奶',
+                'sender_person_id': 1,
+            },
+            {
+                'role': 'user',
+                'content': '我这边周日才有空，周末要回家一趟',
+                'sender_person_id': 2,
+            },
+        ],
+        temperature=Config().generation.summary.temperature,
+        max_tokens=Config().generation.summary.token_limit,
+        character_name=TEST_NAME,
+        character_personality=TEST_PERSONALITY,
+        participants=[
+            Participant(external_id='20001', display_name='小明', person_id=1),
+            Participant(external_id='20002', display_name='小明', person_id=2),
+        ],
+    )
+
+    user_content = provider.messages[1]['content']
+    assert '小明1：今晚一起上线打素材本吗' in user_content
+    assert '小明2：我这边周日才有空' in user_content
+
+
+async def test_summary_render_falls_back_to_counterpart_without_participants() -> None:
+    """解析不出名单的链路保持「对方」渲染且不出现「某人」。"""
+    provider = _SummaryProvider()
+    await summarize(
+        provider,
+        [
+            {
+                'role': 'user',
+                'content': '折腾了一晚上，那个项目终于跑通了，原来只是配置文件里少写了一个字段。',
+                'sender_person_id': 7,
+            },
+            {'role': 'assistant', 'content': '<say>真的？这下我也跟着松口气了。</say>'},
+        ],
+        temperature=Config().generation.summary.temperature,
+        max_tokens=Config().generation.summary.token_limit,
+        character_name=TEST_NAME,
+        character_personality=TEST_PERSONALITY,
+        participants=[],
+    )
+
+    user_content = provider.messages[1]['content']
+    assert '对方：折腾了一晚上' in user_content
+    assert '在场的人' not in user_content
+    assert '某人' not in user_content
 
 
 def test_schedule_agent_builds_a_life_instead_of_a_duty_roster() -> None:
