@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 class GroupObservationMixin:
 
-    def record_silent_inbound(self, inbound: InboundMessage, reason: str = '') -> int:
+    async def record_silent_inbound(self, inbound: InboundMessage, reason: str = '') -> int:
         """保存一条被门控拒绝、不会触发回合的入站消息及原因。
 
         任何出口都可能走到这里，不只是群聊。
@@ -43,6 +43,9 @@ class GroupObservationMixin:
         - 后果：对方连戳几下就能让接口 500。群聊专属的动作（观察事件、场景画像
           推进）现在按会话类型分流，其余步骤所有出口共用。
 
+        异步是因为改写器是异步执行体：改写必须先于落库（改后的正文要进历史与
+        摘要），无法在同步方法里完成，调用方因此必须 ``await`` 本方法。
+
         :param inbound: 已完成 stream、人物和身份解析的入站消息。
         :param reason: 门控拒绝原因，默认空字符串。
 
@@ -52,13 +55,16 @@ class GroupObservationMixin:
         :raises sqlite3.Error: 消息写入失败。
 
         副作用：
-            将消息写入 L1 历史并通知插件；群聊另外登记 observation 事件、渲染观察
-            输出并推进场景画像。任何出口都不启动模型生成。
+            将消息写入 L1 历史；插件改写器先于落库执行，观察组件在落库后拿到
+            与落库行一致的 ``message_id``；群聊另外登记 observation 事件、渲染
+            观察输出并推进场景画像。任何出口都不启动模型生成。
         """
         context = inbound.context
         text = inbound.text.strip()
         if not text:
             raise ValueError('入站消息正文不能为空')
+        # 改写先于落库；分发侧保证拿回非空正文（改写为空时保留上一步）。
+        text = await self._plugins.rewrite_inbound(inbound, text)
         message_id = self.memory.append_message(
             context.stream.id,
             context.person.id,

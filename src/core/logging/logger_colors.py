@@ -38,6 +38,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     # 插件宿主
     "plugin_system.registry": ("#87d787", False),
     "plugin_system.config": ("#afd7af", False),
+    "plugin_system.components": ("#d7d787", False),
     # 适配器插件
     "adapters.yueli_napcat_adapter.plugin": ("#ffd7af", False),
     # 归属解析
@@ -128,6 +129,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "plugin_system.context": "插件",
     "plugin_system.registry": "插件注册表",
     "plugin_system.config": "插件配置",
+    "plugin_system.components": "插件组件",
     "adapters.yueli_napcat_adapter.plugin": "NapCat适配",
     "platform_io.registry": "归属登记",
     "commands.registry": "开发者命令",

@@ -1,7 +1,7 @@
 """最小可运行的工具插件示例，演示写一个插件必须做的四件事。
 
-四件事：一份 ``_manifest.json`` 清单、一个继承 :class:`ToolPlugin` 的类、至少一个用
-``@tool`` 装饰的 async 方法、以及按需覆写的 ``on_load`` / ``on_unload``。除此之外没有
+四件事：一份 ``_manifest.json`` 清单、一个继承 :class:`ToolPlugin` 的类、至少一个
+用 ``@tool`` 装饰的 async 方法、以及按需覆写的 ``on_load`` / ``on_unload``。除此之外没有
 别的必需品——没有注册调用，也不需要改动任何主体代码：宿主扫到目录、读清单、导入
 本文件、找出其中唯一的 ToolPlugin 子类，接线就完成了。
 
@@ -13,12 +13,14 @@
 没有理由占用模型每一轮的工具声明预算。想试就把生成出的 ``config.toml`` 里那一行改成
 ``true`` 再重启。
 
-本文件刻意只做一件事（把参数拼成一句问候），因为它的用途是让人看清骨架。真实工具
-的写法参考同目录下的 ``forward-message``：那里演示了有状态缓存、``observe_inbound``
-入站观察，以及用 ``stream_capabilities`` 按会话收窄工具可见性。
+本文件刻意只做小事（把参数拼成一句问候、回一句固定话），因为它的用途是让人看清
+骨架。真实工具的写法参考同目录下的 ``forward-message``：那里演示了有状态缓存、
+``@inbound_observe`` 入站观察，以及用 ``stream_capabilities`` 按会话收窄工具
+可见性。
 
-依赖 ``src.plugin_system`` 的基类与装饰器、``src.core.tooling.spec`` 的协议数据结构；
-被 ``PluginRegistry`` 在启动期发现并加载，不被任何主体代码直接引用。
+依赖 ``src.plugin_system`` 的基类与装饰器、``src.core.tooling.spec`` 与
+命令协议的数据结构；被 ``PluginRegistry`` 在启动期发现并加载，
+不被任何主体代码直接引用。
 """
 
 from __future__ import annotations
@@ -26,12 +28,14 @@ from __future__ import annotations
 from pydantic import Field
 
 from src.plugin_system import (
+    CommandContext,
     PluginConfig,
     PluginManifest,
     ToolContext,
     ToolExecutionResult,
     ToolInvocation,
     ToolPlugin,
+    command,
     tool,
 )
 
@@ -174,6 +178,25 @@ class HelloYueLiPlugin(ToolPlugin):
             ),
             # metadata 不进模型视野，用于把结构化信息交给调用方与日志。
             metadata={'greeted': self._greeted, 'streamId': context.stream_id},
+        )
+
+    @command(
+        name='/hello',
+        pattern=r'/hello',
+        description='演示插件命令：回一句问候，确认插件命令链路已经打通',
+    )
+    async def hello_command(self, ctx: CommandContext) -> str:
+        """作为命令被 owner 触发时回一句问候。
+
+        命令组件与工具组件走不同的通道：命令不进模型的工具声明，而是由命令
+        通道在入站时直接匹配执行，因此只对 owner 生效、受 ``[developer]
+        enabled`` 开关控制——这两道门控继承自命令通道，插件无法放宽。
+        返回的文本经命令通道直投，不进入对话回合。
+        """
+        self._greeted += 1
+        return (
+            f'你好，我是示例插件 {self.manifest.name}，'
+            f'本次进程内第 {self._greeted} 次问好。'
         )
 
 

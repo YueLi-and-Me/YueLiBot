@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, Literal, Set, Tuple
+from typing import Any, Dict, FrozenSet, Literal, Tuple
 
 from src.core.platform_io.types import StreamKind
 
@@ -200,8 +200,9 @@ class PlatformCapabilities:
     模型只能在这些真实能力内选择：``quote`` 关闭时决策不能携带
     ``quote_message_id``；平台未验证 reaction 执行能力时 ``react`` 不进入
     动作集，且可用反应标识封闭给出；``emoji`` 表示当前平台、表情包库和
-    频率窗口共同允许产生表情包可见产物；``forward_message`` 表示当前会话
-    有可供只读工具逐层展开的合并转发缓存，不改变动作集。
+    频率窗口共同允许产生表情包可见产物；``plugin_capabilities`` 汇总工具插件
+    按会话贡献的能力名（例如 ``forward_message`` 表示当前会话有可供只读工具
+    逐层展开的合并转发缓存），不改变动作集。
 
     ``quote`` 只管「模型能否自己指定引用目标」。QQ 群聊投递时按目标消息是否
     已被后续发言冲开自动挂引用，那条路径由代码强制，不受本开关影响——目标已经
@@ -213,9 +214,9 @@ class PlatformCapabilities:
     available_reactions: tuple[str, ...] = ()
     emoji: bool = False
     poke: bool = False
-    # 当前会话缓存中存在可按路径读取的合并转发。它只控制外部只读工具声明，
-    # 不改变终局动作集，也不表示平台能发送合并转发。
-    forward_message: bool = False
+    # 插件按会话贡献的能力名集合。它只控制外部只读工具声明，不改变终局动作集，
+    # 也不表示平台本身具备同名协议能力。
+    plugin_capabilities: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         """拒绝空反应标识，防止资源 ID 空洞进入动作集。"""
@@ -223,14 +224,11 @@ class PlatformCapabilities:
             raise ValueError('react 能力开启时必须给出可用的反应标识')
         for reaction_id in self.available_reactions:
             if not reaction_id.strip():
-                raise ValueError('可用反应标识不能为空字符串')
+                raise ValueError('可用反应标识不能是空字符串')
 
     def tool_capabilities(self) -> FrozenSet[str]:
         """返回可用于外部工具过滤的显式能力名集合。"""
-        capabilities: Set[str] = set()
-        if self.forward_message:
-            capabilities.add('forward_message')
-        return frozenset(capabilities)
+        return self.plugin_capabilities
 
 
 @dataclass(frozen=True)

@@ -98,7 +98,11 @@ class _WrongNameExecutor:
 
 
 def _frame(*, forward_message: bool, rounds: int) -> DecisionFrame:
-    caps = PlatformCapabilities(forward_message=forward_message)
+    caps = PlatformCapabilities(
+        plugin_capabilities=(
+            frozenset({'forward_message'}) if forward_message else frozenset()
+        ),
+    )
     return DecisionFrame(
         turn_id=7,
         snapshot_id='snap-7',

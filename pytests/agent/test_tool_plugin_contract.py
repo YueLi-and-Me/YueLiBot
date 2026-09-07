@@ -1,9 +1,9 @@
-"""验证工具插件契约：@tool 声明、收集顺序与三个挂载点的默认行为。
+"""验证工具插件契约：@tool 声明、收集顺序与挂载点的默认行为。
 
 这是后续所有工具插件的唯一依据，因此锁死的是语义：装饰器产出的仍是 ToolSpec、
-被装饰的方法本身即执行体、插件内重名当场暴露、未覆写的挂载点必须是安全默认值。
+被装饰的方法本身即执行体、插件内重名当场暴露、未声明的挂载点必须是安全默认值。
 
-依赖 ``src.plugin_system.tools``。
+依赖 ``src.plugin_system.tools`` 与 ``src.plugin_system.components``。
 """
 
 from __future__ import annotations
@@ -18,7 +18,12 @@ from src.core.agent.action_protocol import (
     available_actions,
 )
 from src.core.tooling.spec import ToolContext, ToolExecutionResult, ToolInvocation
-from src.plugin_system import PluginManifest, ToolPlugin, tool
+from src.plugin_system import (
+    PluginManifest,
+    ToolPlugin,
+    inbound_observe,
+    tool,
+)
 
 
 def _manifest() -> PluginManifest:
@@ -56,7 +61,7 @@ def _context() -> ToolContext:
 
 
 class _SamplePlugin(ToolPlugin):
-    """声明两个工具，其中一个带参数与能力要求。"""
+    """声明两个工具与一个观察组件。"""
 
     def __init__(self) -> None:
         """记录执行与观察调用，供断言检查。"""
@@ -91,6 +96,7 @@ class _SamplePlugin(ToolPlugin):
         """空实现，只用于检查声明。"""
         return ToolExecutionResult(tool_name=invocation.tool_name, success=True)
 
+    @inbound_observe()
     def observe_inbound(self, stream_id: int, message_id: int, inbound: object) -> None:
         """记录观察到的消息。"""
         self.seen.append((stream_id, message_id))
@@ -101,7 +107,7 @@ class _SamplePlugin(ToolPlugin):
 
 
 class _BarePlugin(ToolPlugin):
-    """不声明任何工具，也不覆写挂载点，用于验证默认值。"""
+    """不声明任何组件，也不覆写挂载点，用于验证默认值。"""
 
 
 def test_decorator_collects_specs_sorted_by_name() -> None:
@@ -144,12 +150,25 @@ def test_plugin_without_tools_returns_empty() -> None:
 
 
 def test_default_mount_points_are_inert() -> None:
-    """未覆写的两个挂载点必须是安全默认值：不观察、不贡献任何能力。"""
+    """未声明组件的插件必须是安全默认值：不观察、不贡献任何能力。"""
     plugin = _BarePlugin(_manifest())
 
-    plugin.observe_inbound(3, 9, object())
-
+    assert plugin.tools() == []
+    assert plugin.inbound_observers() == []
+    assert plugin.inbound_rewrites() == []
+    assert plugin.commands() == []
     assert plugin.stream_capabilities(3) == frozenset()
+
+
+def test_inbound_observer_component_is_collected_and_bound() -> None:
+    """``@inbound_observe`` 声明的方法被收集为组件，调用时 self 已就位。"""
+    plugin = _SamplePlugin()
+
+    observers = plugin.inbound_observers()
+
+    assert len(observers) == 1
+    observers[0](3, 9, object())
+    assert plugin.seen == [(3, 9)]
 
 
 def test_duplicate_tool_name_within_plugin_is_rejected() -> None:

@@ -357,7 +357,7 @@ class ChatService(
         # 工具注册表按进程装配一次：动作声明按回合帧动态生成，外部工具也按
         # 当前会话能力与剩余认知预算过滤后再下发。
         self._tool_registry = build_builtin_action_registry()
-        # 插件在构造期发现并登记工具，与 on_load 的先后是刻意的：登记必须在
+        # 插件在构造期发现并登记工具与命令，与 on_load 的先后是刻意的：登记必须在
         # ConversationAgent 拿到注册表之前完成，而 on_load 可能要做 I/O，只能等到
         # startup。因此 tools() 不得依赖 on_load 建立的状态，该约束写在契约里。
         self._plugins = PluginRegistry()
@@ -365,6 +365,8 @@ class ChatService(
         for plugin in self._plugins.tool_plugins():
             for spec, executor in plugin.tools():
                 self._tool_registry.register_tool(spec, executor)
+        # 命令与工具同批注册：重名当场抛错终止启动，而不是静默丢一条命令。
+        self._plugins.register_commands()
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
         self._conversation_agent = (
             ConversationAgent(
@@ -779,6 +781,7 @@ class ChatService(
 
         副作用：
             按到达顺序将非空消息追加到对应 stream 缓冲区，不打断在飞回合；
+            插件改写器先于落库执行，落库与回合缓冲用的都是改写后的正文；
             带图片来源时会创建后台描述任务，描述成功后再回写已落库正文。
 
         :raises ValueError: 入站上下文或平台归属不满足下游约束时由依赖服务抛出。
@@ -796,14 +799,18 @@ class ChatService(
         self._typing_opportunities_considered.discard(stream_id)
         accepted_at = current_time()
         previous_message_at = self.memory.last_message_at(stream_id)
+        # 改写必须先于落库：改后的正文要进历史、记忆与摘要。改写失败或改写为空时
+        # 分发侧保留上一步正文，这里拿到的总是非空结果。
+        text = await self._plugins.rewrite_inbound(inbound, trimmed)
         message_id = self.memory.append_message(
             stream_id,
             inbound.context.person.id,
             'user',
-            trimmed,
+            text,
             accepted_at,
             inbound.external_message_id,
         )
+        # 观察必须后于落库：它要拿与落库行一致的 message_id。
         self._plugins.observe_inbound(stream_id, message_id, inbound)
         image_task: asyncio.Task[str] | None = None
         if inbound.image_sources or inbound.emoji_sources:
@@ -812,14 +819,14 @@ class ChatService(
             image_task = asyncio.create_task(self._describe_image_message(
                 stream_id,
                 message_id,
-                trimmed,
+                text,
                 inbound.image_sources,
                 inbound.emoji_sources,
                 inbound.emoji_sub_types,
             ))
             self._track_background_task(image_task)
         self._buffers.setdefault(stream_id, []).append(_BufferedMessage(
-            text=trimmed,
+            text=text,
             context=inbound.context,
             mentioned_me=inbound.mentioned_me,
             external_message_id=inbound.external_message_id,
@@ -2329,10 +2336,7 @@ class ChatService(
             react=react_enabled,
             available_reactions=REACTION_IDS if react_enabled else (),
             poke=self._poke_available(context),
-            forward_message=(
-                'forward_message'
-                in self._plugins.stream_capabilities(context.stream.id)
-            ),
+            plugin_capabilities=self._plugins.stream_capabilities(context.stream.id),
         )
         return DecisionFrame(
             turn_id=turn,
