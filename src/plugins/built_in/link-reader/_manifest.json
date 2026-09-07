@@ -1,0 +1,8 @@
+{
+  "manifest_version": 2,
+  "id": "yueli.link-reader",
+  "plugin_type": "tool",
+  "name": "链接读取",
+  "version": "0.1.0",
+  "description": "读取当前会话中出现过的网页链接，按回合水位校验并分页返回正文"
+}

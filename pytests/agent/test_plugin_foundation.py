@@ -204,9 +204,9 @@ async def test_context_is_available_in_on_load(tmp_path: Path) -> None:
 
 
 def test_all_shipped_manifests_use_supported_version() -> None:
-    """四份随程序分发的清单必须共同升级，适配器不能被遗漏。"""
+    """随程序分发的清单必须共同升级，适配器与新增工具不能被遗漏。"""
     paths = [*ROOT.glob('adapters/*/_manifest.json'), *ROOT.glob('src/plugins/built_in/*/_manifest.json')]
-    assert len(paths) == 4
+    assert len(paths) == 5
     for path in paths:
         assert load_manifest(path).plugin_id
 
