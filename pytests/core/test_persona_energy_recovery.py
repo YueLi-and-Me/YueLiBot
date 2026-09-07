@@ -1,0 +1,135 @@
+"""锁死「对话不得吞掉休息」：精力的时间结算游标与回合结算互不干扰。
+
+这条回归对应一个真机故障：精力跌到 0 之后再不回升，而当时所有用例都是绿的。
+根因是时间结算与回合结算共用 ``persona_bond.updated_at`` 一个游标——
+:meth:`Persona.apply_elapsed` 在不足一小时时刻意早退、不推进游标，靠的是「没有别人
+动它」，而 ``apply_turn`` 每个回合都把它推到当前时刻，于是累积窗口永远到不了一小时，
+两次对话之间的休息被整段丢弃。
+
+既有用例看不见这个缺陷，是因为它们只驱动时间、从不产生对话回合。本文件的两个场景
+必须成对存在：只有把「有对话」与「无对话」放在一起比，游标被谁重置才有判据。
+
+依赖 ``src.core.persona.state``。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+
+from src.core.persona.state import ElapsedEffect, Persona
+
+HOUR_MS = 3_600_000
+TEN_MINUTES_MS = 10 * 60_000
+# 休息类活动的精力速率：时间线按 2.0 * (energy_pace - 1) 积分，pace=2 即每小时 +2。
+REST_ENERGY_PER_HOUR = 2.0
+# 单个回合的精力消耗，与 apply_turn 中的系数一致。
+TURN_ENERGY_COST = 0.4
+
+
+def _owner_id(db: sqlite3.Connection) -> int:
+    """取出 owner 的稳定主键。"""
+    row = db.execute("SELECT id FROM persons WHERE kind = 'owner'").fetchone()
+    assert row is not None, 'owner 人物不存在，确认迁移已完整执行'
+    return int(row[0])
+
+
+def _reset(db: sqlite3.Connection, person_id: int, energy: float, at: int) -> None:
+    """把精力与两个游标都放到同一起点，使两个场景可比。"""
+    db.execute(
+        'UPDATE persona_self SET energy = ?, mood = 50, updated_at = ?', (energy, at)
+    )
+    db.execute(
+        'UPDATE persona_bond SET updated_at = ? WHERE person_id = ?', (at, person_id)
+    )
+    db.commit()
+
+
+def _rest_effect(hours: float) -> ElapsedEffect:
+    """构造一段纯休息的积分结果，替代日程时间线。"""
+    return ElapsedEffect(energy_delta=REST_ENERGY_PER_HOUR * hours, mood_delta=0.0)
+
+
+def _simulate(
+    persona: Persona,
+    person_id: int,
+    start: int,
+    steps: int,
+    *,
+    with_turns: bool,
+) -> float:
+    """按十分钟一步推进，返回结束时的精力。
+
+    :param with_turns: 每一步是否附带一次回合结算，用于区分两个场景。
+
+    积分区间的起点取 ``settled_at()``，与聊天服务的 ``settle_elapsed`` 同口径——
+    用 ``persona.get().updated_at`` 会把本文件要锁的那个缺陷一起复制进用例。
+    """
+    now = start
+    for _ in range(steps):
+        now += TEN_MINUTES_MS
+        hours = (now - persona.settled_at()) / HOUR_MS
+        persona.apply_elapsed(person_id, now, _rest_effect(hours))
+        if with_turns:
+            persona.apply_turn(person_id, now, weight=1.0)
+    return persona.get(person_id).energy
+
+
+def test_rest_accumulates_without_conversation(db: sqlite3.Connection) -> None:
+    """无对话时休息照常入账：两小时 +4 点。"""
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    start = 10 * HOUR_MS
+    _reset(db, person_id, 20.0, start)
+
+    energy = _simulate(persona, person_id, start, 12, with_turns=False)
+
+    assert energy == 20.0 + REST_ENERGY_PER_HOUR * 2
+
+
+def test_conversation_does_not_swallow_rest(db: sqlite3.Connection) -> None:
+    """有对话时休息同样入账，回合只扣自己那一份。
+
+    改动前这里是 15.2——两小时休息的 +4 点被十二个回合逐次重置游标全部丢掉，
+    只剩下回合自身的消耗。
+    """
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    start = 10 * HOUR_MS
+    _reset(db, person_id, 20.0, start)
+
+    energy = _simulate(persona, person_id, start, 12, with_turns=True)
+
+    expected = 20.0 + REST_ENERGY_PER_HOUR * 2 - TURN_ENERGY_COST * 12
+    assert abs(energy - expected) < 1e-6
+
+
+def test_turn_does_not_advance_settle_cursor(db: sqlite3.Connection) -> None:
+    """回合结算不得推进时间结算游标——这是上一条能成立的机制判据。"""
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    start = 10 * HOUR_MS
+    _reset(db, person_id, 50.0, start)
+
+    persona.apply_turn(person_id, start + TEN_MINUTES_MS, weight=1.0)
+
+    assert persona.settled_at() == start
+    # 而人物侧的 updated_at 仍然跟随互动推进，profiles 面板依赖这条语义。
+    assert persona.get(person_id).updated_at == start + TEN_MINUTES_MS
+
+
+def test_settle_cursor_advances_only_when_applied(db: sqlite3.Connection) -> None:
+    """不足一小时时早退且不推进游标，区间留给下一次累积。"""
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    start = 10 * HOUR_MS
+    _reset(db, person_id, 50.0, start)
+
+    half_hour = start + HOUR_MS // 2
+    persona.apply_elapsed(person_id, half_hour, _rest_effect(0.5))
+    assert persona.settled_at() == start, '不足一小时不应推进游标'
+    assert persona.get(person_id).energy == 50.0
+
+    full_hour = start + HOUR_MS
+    persona.apply_elapsed(person_id, full_hour, _rest_effect(1.0))
+    assert persona.settled_at() == full_hour
+    assert persona.get(person_id).energy == 50.0 + REST_ENERGY_PER_HOUR

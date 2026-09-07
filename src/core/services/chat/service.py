@@ -649,10 +649,12 @@ class ChatService(
 
         now = now or current_time()
         person_id = context.person.id
-        before = self.persona.get(person_id)
         if self._schedule:
+            # 积分区间的起点必须是全局结算游标，不能用 persona.get() 的 updated_at：
+            # 后者取自 persona_bond，每个对话回合都会把它推到当前时刻，于是两次对话
+            # 之间的休息与睡眠会被整段丢弃（见 Persona.settled_at 的说明）。
             effect = self._schedule.integrate_between(
-                before.updated_at,
+                self.persona.settled_at(),
                 now,
                 earlier_resting,
             )

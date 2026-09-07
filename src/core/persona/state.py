@@ -244,12 +244,42 @@ class Persona:
                WHERE person_id = ?''',
             (state.intimacy, state.updated_at, person_id),
         )
+        # 刻意不写 persona_self.updated_at：那一列是「全局精力与心情结算到哪一刻」的
+        # 游标，只有 apply_elapsed 推进（见 settled_at 的说明）。本方法被回合结算与
+        # 事件结算共用，在这里顺手推进游标会把尚未结算的休息区间抹掉。
         self._db.execute(
-            '''UPDATE persona_self SET energy = ?, mood = ?, updated_at = ?
-               WHERE id = 1''',
-            (state.energy, state.mood, state.updated_at),
+            'UPDATE persona_self SET energy = ?, mood = ? WHERE id = 1',
+            (state.energy, state.mood),
         )
         self._db.commit()
+
+    def settled_at(self) -> int:
+        """返回全局精力与心情已经结算到的毫秒时刻。
+
+        :return: ``persona_self.updated_at``，即上一次 :meth:`apply_elapsed` 真正
+            应用变化的时刻；调用方据此计算下一段积分区间的起点。
+
+        :raises RuntimeError: 主体状态记录缺失。
+
+        **为什么游标不能用 ``PersonaState.updated_at``。**
+
+        - 现象：真机上精力跌到 0 之后再不回升，而只驱动时间、不产生对话的验收
+          用例始终是对的。
+        - 原因：``PersonaState.updated_at`` 取自 ``persona_bond``，而 ``apply_turn``
+          与 ``apply_event`` 每次都把它推到当前时刻。:meth:`apply_elapsed` 在不足一
+          小时时直接返回、刻意不推进游标，靠的就是「没有别人动它」——一旦对话把它
+          重置，累积窗口永远到不了一小时，那一段休息就被整段丢弃。
+        - 后果：只要对话间隔短于一小时，精力就是单向递减，休息与睡眠一点都不生效。
+
+        因此游标改用 ``persona_self.updated_at``：精力和心情本就是主体全局状态，
+        它们结算到哪一刻与「哪个人物最后互动」无关，只有本类的时间结算路径推进它。
+        """
+        row = self._db.execute(
+            'SELECT updated_at FROM persona_self WHERE id = 1'
+        ).fetchone()
+        if row is None:
+            raise RuntimeError('persona_self 行不存在，确认 v6 迁移已完整执行')
+        return int(row[0])
 
     def snapshot_daily(self, person_id: int, now: int | None = None) -> None:
         """保存 owner 当日首次状态快照。
@@ -440,7 +470,12 @@ class Persona:
         # 只有 owner 的共享精力和心情参与时间结算，contact 的状态只随交互事件变化。
         if person.kind != 'owner':
             return state
-        hours = max(0.0, (now - state.updated_at) / 3_600_000)
+        # 区间起点取全局结算游标而不是 state.updated_at：后者会被对话回合重置，
+        # 理由与后果见 settled_at 的说明。
+        settled_at = self.settled_at()
+        hours = max(0.0, (now - settled_at) / 3_600_000)
+        # 不足一小时不结算，把区间留给下一次。这条早退依赖「只有本方法推进游标」——
+        # 游标一旦被别处重置，累积窗口就永远到不了一小时。
         if hours < 1:
             return state
         # 日程层决定精力曲线的形状；未装配日程时才退回原有的全清醒线性消耗。
@@ -456,6 +491,12 @@ class Persona:
             updated_at=now,
         )
         self._write(person.id, next_state)
+        # 游标只在真正应用了变化之后推进，与上面的早退是一对：早退不推进，
+        # 区间才能累积到下一次。
+        self._db.execute(
+            'UPDATE persona_self SET updated_at = ? WHERE id = 1', (now,)
+        )
+        self._db.commit()
         return next_state
 
     def _require_owner(self, person_id: int) -> PersonRef:
