@@ -92,6 +92,8 @@ async def validate_url(url: str) -> None:
         raise FetchRejected('链接主机未解析出可用地址')
     for raw in addresses:
         address = ipaddress.ip_address(raw)
+        if _is_transparent_proxy_placeholder(address):
+            continue
         if (address.is_loopback or address.is_private or address.is_link_local
                 or address.is_reserved or address.is_multicast or address.is_unspecified
                 or not address.is_global):
@@ -99,6 +101,34 @@ async def validate_url(url: str) -> None:
     # DNS 校验通过后，实际连接仍会再次解析，两个时刻之间存在时间窗。
     # 攻击者切换 DNS 记录仍可能绕过检查；纯 Python 侧 httpx 无法闭合该窗口，
     # 代理也可能使用不同的解析结果，因此这里不能宣称防住了 DNS 重绑定。
+
+
+# TUN 模式代理客户端为被代理域名分配的 fake-IP 占位网段。
+#
+# - 现象：开着 TUN 代理时，公网域名解析成 198.18.x.x，地址校验按「私有地址」整段拒绝，
+#   于是一条外链都读不了。
+# - 原因：这一段是 RFC 2544 的基准测试保留段，``ipaddress`` 判定为 is_private 且
+#   非 is_global；而代理客户端正是挑这种「不会出现在真实网络里」的段做占位，
+#   应用连上去之后由 TUN 驱动劫持并按域名走代理出网。
+# - 后果：把它算进内网会让本机的可用性归零；不算进内网也不产生新风险——这一段
+#   按 RFC 不得出现在公网，也不是任何常规局域网的取值，没有代理时根本不会有域名
+#   解析到这里。守卫要挡的是「读本机的 WebUI、协议端端口或局域网设备」，那些落在
+#   127/8、10/8、172.16/12、192.168/16 与 link-local，逐条仍然拒绝。
+#
+# 再遇到别的客户端用其它占位段（例如 Class E 240/4）时按同样判据往这里加，
+# 不要改上面那串通用判定。
+_PROXY_PLACEHOLDER_NETWORKS = (
+    ipaddress.ip_network('198.18.0.0/15'),
+)
+
+
+def _is_transparent_proxy_placeholder(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """判断地址是否落在透明代理的 fake-IP 占位段。
+
+    :param address: 已解析出的目标地址。
+    :return: 命中占位段返回 ``True``，此时跳过内网判定；其余一律返回 ``False``。
+    """
+    return any(address in network for network in _PROXY_PLACEHOLDER_NETWORKS)
 
 
 async def fetch_url(

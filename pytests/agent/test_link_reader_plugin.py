@@ -541,3 +541,42 @@ def test_config_has_only_requested_fields_and_positive_limits(plugin):
     for field in ('observation_max_chars', 'cache_ttl_minutes'):
         with pytest.raises(ValueError):
             plugin.config_model(**{field: 0})
+
+
+# ------------------------------------------------- 透明代理的 fake-IP 占位段
+
+async def test_transparent_proxy_placeholder_is_not_treated_as_intranet(
+    modules, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """域名解析到 198.18.x.x 时不按内网拒绝。
+
+    真机故障：开着 TUN 模式代理的机器上，公网域名被客户端分配了 RFC 2544
+    基准测试段（198.18.0.0/15）里的 fake-IP，地址守卫按「私有地址」整段拒绝，
+    结果一条外链都读不了。那一段既不是本机也不是局域网，挡它挡不住任何真实
+    风险——没有代理时根本不会有域名解析到那里。
+    """
+    _, module, _ = modules
+
+    async def _resolve(_host: str, _port: int) -> list[str]:
+        return ['198.18.0.102']
+
+    monkeypatch.setattr(module, 'resolve_addresses', _resolve)
+    await module.validate_url('https://docs.example.org/page')
+
+
+@pytest.mark.parametrize(
+    'address',
+    ['127.0.0.1', '10.0.0.1', '172.16.0.1', '192.168.1.1', '169.254.1.1', '::1'],
+)
+async def test_real_intranet_addresses_remain_rejected(
+    modules, monkeypatch: pytest.MonkeyPatch, address: str,
+) -> None:
+    """放行占位段不得放松真实内网判定——守卫要挡的正是这几类。"""
+    _, module, _ = modules
+
+    async def _resolve(_host: str, _port: int) -> list[str]:
+        return [address]
+
+    monkeypatch.setattr(module, 'resolve_addresses', _resolve)
+    with pytest.raises(module.FetchRejected):
+        await module.validate_url('https://docs.example.org/page')
