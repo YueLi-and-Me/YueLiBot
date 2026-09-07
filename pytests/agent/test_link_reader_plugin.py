@@ -197,7 +197,7 @@ async def test_actual_decode_error_is_contained(plugin, monkeypatch):
 
 
 async def test_binary_and_empty_pages_are_successful_observations(plugin, monkeypatch):
-    stub = stub_fetch(plugin, monkeypatch, b'x' * 1024, 'application/pdf')
+    stub = stub_fetch(plugin, monkeypatch, b'x' * 12_900_000, 'application/pdf')
     observe(plugin)
     result = await execute(plugin)
     assert result.success and 'PDF' in result.observation and 'MB' in result.observation
