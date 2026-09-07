@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Mapping, Sequence
 
+from .cards import render_card_placeholder
 from .qq_faces import face_id_by_name, face_name
 
 from src.core.agent.action_protocol import REACTION_IDS
@@ -134,16 +135,19 @@ def segment_to_text(
         preview = (quote_previews or {}).get(quoted_id, '')
         return f'[{preview}]' if preview else '[引用消息]'
 
+    if segment_type in ('share', 'json'):
+        # 分享卡片的标题、摘要与跳转地址本来就随消息段到达，渲染进正文而不出网；
+        # 结构不认识时扫描器自己退回原占位符，主链路不受影响。
+        return render_card_placeholder(segment_type, data)
+
     # 未知段类型也保留类型名称，便于模型知道消息存在而不臆造具体内容。
     placeholders = {
         'face': '[表情]',
         'record': '[语音]',
         'video': '[视频]',
         'file': '[文件]',
-        'share': '[分享]',
         'location': '[位置]',
         'contact': '[联系人]',
-        'json': '[JSON 消息]',
         'xml': '[XML 消息]',
         'forward': FORWARD_PLACEHOLDER,
     }
