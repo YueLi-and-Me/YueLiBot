@@ -649,17 +649,25 @@ class ChatService(
 
         now = now or current_time()
         person_id = context.person.id
-        before = self.persona.get(person_id)
+        # 结算区间的两端都不能想当然：
+        # - 起点必须是全局结算游标，不能用 persona.get() 的 updated_at——后者取自
+        #   persona_bond，每个对话回合都会把它推到当前时刻，两次对话之间的休息
+        #   与睡眠会被整段丢弃（见 Persona.settled_at）。
+        # - 终点必须是活动时间线已决策到的时刻，不能直接用 now——越过它的那段空缺
+        #   由后台任务事后补写，此刻结算等于把它按离线前的活动算掉，之后补进来的
+        #   真实活动（整夜睡眠是最大一笔）再也不会被读到（见 decided_until）。
+        settled = now
         if self._schedule:
+            settled = min(now, self._schedule.decided_until(now))
             effect = self._schedule.integrate_between(
-                before.updated_at,
-                now,
+                self.persona.settled_at(),
+                settled,
                 earlier_resting,
             )
         else:
             effect = None
         if context.relationship_signals_enabled:
-            self.persona.apply_elapsed(person_id, now, effect)
+            self.persona.apply_elapsed(person_id, settled, effect)
             self.persona.snapshot_daily(person_id, now)
 
     async def startup(self) -> None:

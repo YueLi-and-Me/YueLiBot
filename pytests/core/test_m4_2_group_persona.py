@@ -13,7 +13,12 @@ import pytest
 
 from src.core.awareness.sleep import SleepStateController
 from src.core.config.schema import Config
-from src.core.persona.state import EventDelta, Persona, PersonaState
+from src.core.persona.state import (
+    TURN_ENERGY_COST,
+    EventDelta,
+    Persona,
+    PersonaState,
+)
 from src.core.platform_io.types import ConversationContext, IdentityRef
 from src.core.services.chat import ChatService
 from src.core.schedule.timeline import ActivityTimeline
@@ -153,7 +158,7 @@ def test_weight_one_matches_documented_deltas(db: sqlite3.Connection) -> None:
 
     turn = persona.apply_turn(person_id, NOW, weight=1.0)
     assert turn.intimacy - before.intimacy == pytest.approx(0.35)
-    assert turn.energy - before.energy == pytest.approx(-0.4)
+    assert turn.energy - before.energy == pytest.approx(-TURN_ENERGY_COST)
 
     _restore_state(db, before, person_id)
     mood = persona.apply_event(
@@ -176,7 +181,7 @@ def test_weight_one_matches_documented_deltas(db: sqlite3.Connection) -> None:
                 weight=GROUP_WEIGHT,
             ),
             0.35 * GROUP_WEIGHT,
-            -0.4 * GROUP_WEIGHT,
+            -TURN_ENERGY_COST * GROUP_WEIGHT,
         ),
         (
             lambda persona, person_id: persona.apply_event(
