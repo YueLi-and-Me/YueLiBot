@@ -1,5 +1,5 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "id": "yueli.forward-message",
   "plugin_type": "tool",
   "name": "YueLi-Forward-Message",

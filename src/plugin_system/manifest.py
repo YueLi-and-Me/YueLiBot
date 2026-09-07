@@ -9,18 +9,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, FrozenSet, Literal, Mapping
+from types import MappingProxyType
+from typing import Any, Dict, FrozenSet, Literal, Mapping, Optional, Tuple, Union
 
 import json
+import re
+
+from src.core.app_meta import APP_VERSION
 
 from .capabilities import AdapterCapability, parse_capabilities
 
 
 # 当前支持的清单格式版本。宿主与清单必须逐字相等而不是「大于等于」：
 # 格式变更意味着字段语义变化，静默接受旧版本会让插件按旧语义运行而无人察觉。
-SUPPORTED_MANIFEST_VERSION = 1
+SUPPORTED_MANIFEST_VERSION = 2
 
 
 class ManifestError(ValueError):
@@ -43,6 +47,10 @@ class PluginManifest:
     :ivar name: 人类可读名称，出现在日志与控制台。
     :ivar version: 插件自身版本，与主体版本无关。
     :ivar description: 一句话说明这个插件是做什么的。
+    :ivar host_application: 可选 min_version / max_version，闭区间且在解析时校验。
+    :ivar author: 作者字符串或含 name、可选 url 的只读映射；未声明时为 None。
+    :ivar license: SPDX 标识字符串；未声明时为 None，不内置许可证目录。
+    :ivar urls: 可选 repository 地址的只读映射。
     """
 
     plugin_id: str
@@ -50,6 +58,13 @@ class PluginManifest:
     name: str
     version: str
     description: str
+    # 元数据只接受关键字参数，保持 AdapterManifest 原有位置参数的含义不变。
+    host_application: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({}), kw_only=True,
+    )
+    author: Optional[Union[str, Mapping[str, str]]] = field(default=None, kw_only=True)
+    license: Optional[str] = field(default=None, kw_only=True)
+    urls: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}), kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -108,7 +123,7 @@ def _parse_plugin_type(payload: Mapping[str, Any]) -> PluginType:
 
 def _parse_adapter_capabilities(
     payload: Mapping[str, Any],
-) -> tuple[FrozenSet[AdapterCapability], FrozenSet[AdapterCapability]]:
+) -> Tuple[FrozenSet[AdapterCapability], FrozenSet[AdapterCapability]]:
     """解析适配器清单的能力声明。
 
     :param payload: 清单顶层映射。
@@ -134,6 +149,90 @@ def _parse_adapter_capabilities(
     return static, probed
 
 
+def _version_tuple(value: str, field_name: str) -> Tuple[int, int, int]:
+    """把严格的 x.y.z 版本号变成可比较的非负整数三元组。
+
+    :param value: 不带前缀、前导零、预发布或构建后缀的三个十进制分量。
+    :param field_name: 错误信息中的字段路径。
+    :return: (主版本, 次版本, 补丁版本)。
+    :raises ManifestError: 不满足上述格式；不猜测 SemVer 或 PEP 440 后缀的顺序。
+    项目未声明 packaging 为运行依赖，因此不用开发环境偶然安装的包作版本判据。
+    """
+    if re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', value) is None:
+        raise ManifestError(f'{field_name} 只支持 x.y.z 三段非负整数版本号，实际为 {value!r}')
+    major, minor, patch = value.split('.')
+    return int(major), int(minor), int(patch)
+
+
+def _optional_text_map(payload: Mapping[str, Any], key: str) -> Mapping[str, str]:
+    """复制可选元数据对象为只读字符串映射，拒绝显式的空值或非法字段类型。
+
+    :param payload: 清单顶层映射。
+    :param key: host_application、author 或 urls。
+    :return: 缺失时为空映射，存在时各字段为非空字符串。
+    :raises ManifestError: 对象或其字段类型不符。
+    """
+    raw = payload.get(key, {})
+    if not isinstance(raw, Mapping):
+        raise ManifestError(f'清单的 {key} 必须是对象')
+    result: Dict[str, str] = {}
+    for name in raw:
+        try:
+            result[name] = _require_text(raw, name)
+        except ManifestError as exc:
+            raise ManifestError(f'清单的 {key}.{name} 必须是非空字符串') from exc
+    return MappingProxyType(result)
+
+
+def _host_compatibility(payload: Mapping[str, Any]) -> Mapping[str, str]:
+    """校验宿主版本闭区间，避免不兼容插件执行任何入口代码。
+
+    :param payload: 可选含 host_application 的清单映射。
+    :return: 已复制且不可变的版本声明。
+    :raises ManifestError: 版本格式非法、上下界倒置或当前宿主不在区间内。
+    """
+    bounds = _optional_text_map(payload, 'host_application')
+    minimum = (
+        _version_tuple(bounds['min_version'], 'host_application.min_version')
+        if 'min_version' in bounds else None
+    )
+    maximum = (
+        _version_tuple(bounds['max_version'], 'host_application.max_version')
+        if 'max_version' in bounds else None
+    )
+    if minimum is not None and maximum is not None and minimum > maximum:
+        raise ManifestError('host_application 版本区间非法：min_version 高于 max_version')
+    if minimum is not None or maximum is not None:
+        current = _version_tuple(APP_VERSION, '宿主版本')
+        if (
+            (minimum is not None and current < minimum)
+            or (maximum is not None and current > maximum)
+        ):
+            raise ManifestError(
+                f'插件与宿主版本不匹配：当前宿主 {APP_VERSION}，'
+                f'要求 min_version={bounds.get("min_version", "不限")}，'
+                f'max_version={bounds.get("max_version", "不限")}'
+            )
+    return bounds
+
+
+def _parse_author(payload: Mapping[str, Any]) -> Optional[Union[str, Mapping[str, str]]]:
+    """校验两种作者声明，避免原始可变 JSON 对象进入清单。
+
+    :param payload: 清单顶层映射，author 可缺失。
+    :return: 作者字符串或含 name、可选 url 的只读映射；未声明时为 None。
+    :raises ManifestError: 作者不是非空字符串或合法作者对象。
+    """
+    if 'author' not in payload:
+        return None
+    if isinstance(payload['author'], str):
+        return _require_text(payload, 'author')
+    author = _optional_text_map(payload, 'author')
+    if 'name' not in author:
+        raise ManifestError('清单的 author.name 必须是非空字符串')
+    return author
+
+
 def manifest_from_payload(payload: Mapping[str, Any]) -> PluginManifest:
     """把已解析的清单映射校验并转换为对应类型的清单对象。
 
@@ -146,7 +245,7 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> PluginManifest:
     :raises CapabilityError: 能力标识不在封闭枚举内。
     """
     version = payload.get('manifest_version')
-    if version != SUPPORTED_MANIFEST_VERSION:
+    if type(version) is not int or version != SUPPORTED_MANIFEST_VERSION:
         raise ManifestError(
             f'清单格式版本必须是 {SUPPORTED_MANIFEST_VERSION}，实际为 {version!r}'
         )
@@ -158,6 +257,10 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> PluginManifest:
         'name': _require_text(payload, 'name'),
         'version': _require_text(payload, 'version'),
         'description': _require_text(payload, 'description'),
+        'host_application': _host_compatibility(payload),
+        'author': _parse_author(payload),
+        'license': _require_text(payload, 'license') if 'license' in payload else None,
+        'urls': _optional_text_map(payload, 'urls'),
     }
     if plugin_type != 'adapter':
         return PluginManifest(**common)

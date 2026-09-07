@@ -1,5 +1,5 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "id": "yueli.napcat-adapter",
   "plugin_type": "adapter",
   "name": "YueLi-NapCat-Adapter",
