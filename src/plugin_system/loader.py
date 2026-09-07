@@ -20,6 +20,7 @@ from typing import List, Type, TypeVar
 
 import importlib.util
 import inspect
+import sys
 
 from .adapter import AdapterPlugin
 from .manifest import AdapterManifest, PluginManifest, load_manifest
@@ -50,11 +51,24 @@ def _load_module(path: Path, module_name: str) -> ModuleType:
     """
     if not path.is_file():
         raise PluginLoadError(f'插件入口不存在：{path}')
-    spec = importlib.util.spec_from_file_location(module_name, path)
+    spec = importlib.util.spec_from_file_location(
+        module_name, path, submodule_search_locations=[str(path.parent)],
+    )
     if spec is None or spec.loader is None:
         raise PluginLoadError(f'无法为插件入口构造模块规格：{path}')
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # 相对导入需要可查到的父包；不先登记会报父包不存在，兄弟模块无法加载。
+    # 入口自身作为包根，避免再执行目录 __init__.py 造成入口有两个模块身份。
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # 执行中断后留下入口或兄弟模块，会让重试复用半执行状态，表现为改代码不生效。
+        # 清理本次包命名空间后原样上抛，确保下一次加载重新执行入口及其相对导入。
+        for name in list(sys.modules):
+            if name == module_name or name.startswith(module_name + '.'):
+                del sys.modules[name]
+        raise
     return module
 
 
