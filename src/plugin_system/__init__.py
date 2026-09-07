@@ -1,12 +1,33 @@
 """插件契约层。
 
-对外暴露四样东西：能力封闭枚举、清单模型与加载函数、插件基类（适配器与工具）、
-插件注册表。具体适配器包（``adapters/``）与工具插件依赖本包，本包不反向依赖任何
-插件，也不含协议实现。
+对外暴露能力封闭枚举、清单模型与加载函数、插件基类（适配器与工具）、插件注册表，
+以及工具协议、入站引用、转发树和宿主上下文。具体适配器包（``adapters/``）与工具
+插件依赖本包，本包不反向依赖任何插件，也不含协议实现。
+
+只从本包获取宿主类型的边界目前覆盖工具插件。adapters/ 在独立进程中运行，
+依赖协议核心，适配器的导入边界不在此约束内。
 """
+
+from src.core.platform_io.forward import ForwardMessagePart, ForwardMessageTree, ForwardNode
+from src.core.platform_io.types import (
+    ConversationContext,
+    InboundMessage,
+    PersonRef,
+    StreamKind,
+    StreamRef,
+)
+from src.core.tooling.spec import (
+    DEFAULT_TOOL_TIMEOUT_MS,
+    ToolContext,
+    ToolExecutionResult,
+    ToolInvocation,
+    ToolSideEffect,
+    ToolSpec,
+)
 
 from .adapter import AdapterPlugin
 from .config import PluginConfig
+from .context import HostView, PluginContext, PluginPaths
 from .capabilities import (
     ALL_CAPABILITIES,
     AdapterCapability,
@@ -32,19 +53,36 @@ from .tools import ToolPlugin, tool
 __all__ = [
     'ALL_CAPABILITIES',
     'ALL_PLUGIN_TYPES',
+    'DEFAULT_TOOL_TIMEOUT_MS',
     'SUPPORTED_MANIFEST_VERSION',
     'AdapterCapability',
     'AdapterManifest',
     'AdapterPlugin',
     'CapabilityError',
+    'ConversationContext',
+    'ForwardMessagePart',
+    'ForwardMessageTree',
+    'ForwardNode',
+    'HostView',
+    'InboundMessage',
     'ManifestError',
+    'PersonRef',
     'Plugin',
     'PluginConfig',
+    'PluginContext',
     'PluginLoadError',
     'PluginManifest',
+    'PluginPaths',
     'PluginRegistry',
     'PluginType',
+    'StreamKind',
+    'StreamRef',
+    'ToolContext',
+    'ToolExecutionResult',
+    'ToolInvocation',
     'ToolPlugin',
+    'ToolSideEffect',
+    'ToolSpec',
     'load_adapter_plugin',
     'load_manifest',
     'load_tool_plugin',

@@ -19,13 +19,15 @@ from typing import Any, Dict, FrozenSet, List, Tuple
 import json
 import re
 
-from src.core.platform_io.forward import ForwardMessageTree
-from src.core.tooling.spec import (
+from src.plugin_system import (
+    ForwardMessageTree,
+    PluginManifest,
     ToolContext,
     ToolExecutionResult,
     ToolInvocation,
+    ToolPlugin,
+    tool,
 )
-from src.plugin_system import PluginManifest, ToolPlugin, tool
 
 
 DEFAULT_FORWARD_CACHE_LIMIT = 128

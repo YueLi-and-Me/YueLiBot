@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import ClassVar
+from typing import ClassVar, Optional, Type
 
 from .config import PluginConfig
+from .context import PluginContext
 from .manifest import PluginManifest
 
 
@@ -25,7 +26,7 @@ class Plugin(ABC):
 
     #: 本插件的配置模型。子类按需覆写并追加字段；不覆写时只有一个启用开关。
     #: 宿主据此在插件目录里生成带注释的 config.toml，声明因此只有这一份。
-    config_model: ClassVar[type[PluginConfig]] = PluginConfig
+    config_model: ClassVar[Type[PluginConfig]] = PluginConfig
 
     def __init__(self, manifest: PluginManifest) -> None:
         """保存清单。
@@ -36,6 +37,7 @@ class Plugin(ABC):
         self._manifest = manifest
         # 配置由宿主在发现阶段读好后注入，构造期还拿不到。
         self._config: PluginConfig = self.config_model()
+        self._ctx: Optional[PluginContext] = None
 
     @property
     def manifest(self) -> PluginManifest:
@@ -62,6 +64,33 @@ class Plugin(ABC):
         ``plugin_class(manifest)`` 构造，加一个位置参数会让所有既有插件失效。
         """
         self._config = config
+
+    @property
+    def ctx(self) -> PluginContext:
+        """返回宿主在 bind_config 之后、on_load 之前注入的上下文。
+
+        :return: 已绑定本插件日志与路径的上下文；on_load 里可以直接使用 self.ctx。
+        :raises AttributeError: 宿主尚未注入上下文，或插件在构造期提前访问。
+        """
+        if self._ctx is None:
+            # 工具收集会反射实例属性；未注入表示此属性尚不可用，因此使用 AttributeError。
+            # 若改为 RuntimeError，inspect.getmembers 会中断，尚不需要 ctx 的工具也无法收集。
+            # 直接访问仍携带插件标识与注入时序报错，不返回 None 或虚构上下文。
+            raise AttributeError(
+                f'插件 {self.manifest.plugin_id} 的上下文尚未注入：'
+                '宿主必须在 bind_config 之后、on_load 之前调用 bind_context'
+            )
+        return self._ctx
+
+    def bind_context(self, context: PluginContext) -> None:
+        """由宿主在 bind_config 之后、on_load 之前注入上下文。
+
+        :param context: 宿主为本插件构造的 PluginContext。
+        :return: None。
+        副作用：替换实例持有的上下文；插件自身不应调用此方法。
+        on_load 里可以直接用 self.ctx，无需改变既有插件的构造签名。
+        """
+        self._ctx = context
 
     async def on_load(self) -> None:
         """读取配置、构造运行期对象。

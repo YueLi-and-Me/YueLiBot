@@ -34,6 +34,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "platforms.onebot11.transport": ("#afafff", True),
     # 插件契约
     "plugin_system.adapter": ("#87d7af", True),
+    "plugin_system.context": ("#87d7af", True),
     # 插件宿主
     "plugin_system.registry": ("#87d787", False),
     "plugin_system.config": ("#afd7af", False),
@@ -124,6 +125,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "platforms.onebot11.runner": "QQ运行器",
     "platforms.onebot11.transport": "QQ传输",
     "plugin_system.adapter": "插件契约",
+    "plugin_system.context": "插件",
     "plugin_system.registry": "插件注册表",
     "plugin_system.config": "插件配置",
     "adapters.yueli_napcat_adapter.plugin": "NapCat适配",
@@ -378,6 +380,9 @@ def module_color(logger_name: str) -> str:
 
     :return: 已登记模块的 ANSI 颜色序列；未登记模块返回空字符串。
     """
+    # 插件标识由清单决定，无法逐个登记；同一契约命名空间使用统一颜色。
+    if logger_name.startswith('plugin_system.context.'):
+        return CONVERTED_MODULE_COLORS['plugin_system.context']
     return CONVERTED_MODULE_COLORS.get(logger_name, "")
 
 
@@ -388,6 +393,9 @@ def module_alias(logger_name: str) -> str:
 
     :return: 已登记模块的中文别名；未登记模块返回原始模块名。
     """
+    if logger_name.startswith('plugin_system.context.'):
+        plugin_id = logger_name[len('plugin_system.context.'):]
+        return f'{MODULE_ALIASES["plugin_system.context"]}·{plugin_id}'
     return MODULE_ALIASES.get(logger_name, logger_name)
 
 

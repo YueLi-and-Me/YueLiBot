@@ -23,14 +23,17 @@
 
 from __future__ import annotations
 
-from src.core.tooling.spec import (
+from pydantic import Field
+
+from src.plugin_system import (
+    PluginConfig,
+    PluginManifest,
     ToolContext,
     ToolExecutionResult,
     ToolInvocation,
+    ToolPlugin,
+    tool,
 )
-from pydantic import Field
-
-from src.plugin_system import PluginConfig, PluginManifest, ToolPlugin, tool
 
 # 未提供 name 参数时的称呼。
 DEFAULT_GREETING_TARGET = '你'
