@@ -527,11 +527,17 @@ async def test_truncation_is_explained_in_observation(plugin, monkeypatch):
     assert result.observation.endswith('中')
 
 
-async def test_unexpected_compression_is_rejected_without_reading(fetch_module):
+async def test_undecodable_compression_is_rejected_without_reading(fetch_module):
+    """解不了的编码在读正文之前拒掉。
+
+    判据从「拒绝一切压缩」收窄到「拒绝解不了的压缩」：Accept-Encoding 是协商不是
+    强制，站点返回 gzip 是合规行为，把它判成错误会让一整类链接读不了（真机上
+    B 站即如此）。gzip/deflate 现在照常解码，见 test_gzip_response_is_decoded。
+    """
     stream = RecordingStream([b'compressed'])
     with pytest.raises(fetch_module.FetchError, match='内容编码'):
         await fetch_module.fetch_url(URL, transport=httpx.MockTransport(lambda request: httpx.Response(
-            200, headers={'content-type': 'text/html', 'content-encoding': 'gzip'}, stream=stream,
+            200, headers={'content-type': 'text/html', 'content-encoding': 'br'}, stream=stream,
         )))
     assert stream.read_bytes == 0 and stream.closed
 
@@ -580,3 +586,54 @@ async def test_real_intranet_addresses_remain_rejected(
     monkeypatch.setattr(module, 'resolve_addresses', _resolve)
     with pytest.raises(module.FetchRejected):
         await module.validate_url('https://docs.example.org/page')
+
+
+# ------------------------------------------------------- 压缩响应与解压上限
+
+async def test_gzip_response_is_decoded(plugin, modules, monkeypatch) -> None:
+    """站点无视 Accept-Encoding 返回 gzip 时照常读取。
+
+    真机故障：早先只接受 identity，B 站返回 gzip 就报「不支持的内容编码」，
+    一整类最常被分享的链接读不了。Accept-Encoding 是协商不是强制，服务器有权
+    忽略；压缩炸弹的闸门应当是解压后的累计字节，而不是拒绝压缩。
+    """
+    import gzip as gziplib
+
+    _, fetch_module, extract_module = modules
+    payload = gziplib.compress(b'<html><title>compressed</title><p>hello</p></html>')
+
+    def handler(_request):
+        return httpx.Response(
+            200, content=payload,
+            headers={'content-type': 'text/html', 'content-encoding': 'gzip'},
+        )
+
+    async def _resolve(_host, _port):
+        return ['93.184.216.34']
+
+    monkeypatch.setattr(fetch_module, 'resolve_addresses', _resolve)
+    result = await fetch_module.fetch_url(
+        'https://example.org/page', transport=httpx.MockTransport(handler),
+    )
+    text = extract_module.decode_body(result.body, result.content_type)
+    assert 'hello' in text
+
+
+async def test_undecodable_encoding_is_reported(plugin, modules, monkeypatch) -> None:
+    """我们没有声明、也解不了的编码明确报错，不把压缩字节当文本回灌。"""
+    _, fetch_module, _ = modules
+
+    def handler(_request):
+        return httpx.Response(
+            200, content=b'\x00\x01\x02',
+            headers={'content-type': 'text/html', 'content-encoding': 'br'},
+        )
+
+    async def _resolve(_host, _port):
+        return ['93.184.216.34']
+
+    monkeypatch.setattr(fetch_module, 'resolve_addresses', _resolve)
+    with pytest.raises(fetch_module.FetchError):
+        await fetch_module.fetch_url(
+            'https://example.org/page', transport=httpx.MockTransport(handler),
+        )

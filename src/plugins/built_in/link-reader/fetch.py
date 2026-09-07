@@ -31,6 +31,12 @@ READABLE_TYPES = frozenset({
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
+# 只声明我们确实能解码的压缩方式；br 需要额外依赖，不声明就不该收到。
+ACCEPT_ENCODING = 'gzip, deflate'
+# httpx 能在流式读取中逐块解码的内容编码；identity 与空值表示未压缩。
+DECODABLE_ENCODINGS = frozenset({'gzip', 'x-gzip', 'deflate', 'identity'})
+
+
 class FetchRejected(ValueError):
     """URL 或重定向违反出站安全边界；尚未向被拒地址发送 HTTP 请求。"""
 
@@ -161,7 +167,7 @@ async def fetch_url(
                 async with httpx.AsyncClient(
                     proxy=proxy if proxy else None, transport=transport,
                     follow_redirects=False, trust_env=False, timeout=remaining,
-                    headers={'User-Agent': USER_AGENT, 'Accept-Encoding': 'identity'},
+                    headers={'User-Agent': USER_AGENT, 'Accept-Encoding': ACCEPT_ENCODING},
                 ) as client:
                     async with client.stream('GET', current) as response:
                         if response.status_code in REDIRECT_STATUSES:
@@ -179,11 +185,19 @@ async def fetch_url(
                         size = int(raw_size) if raw_size.isascii() and raw_size.isdigit() else None
                         if content_type.partition(';')[0].strip().lower() not in READABLE_TYPES:
                             return FetchResult(str(response.url), content_type, b'', size, False)
-                        # identity 避免压缩炸弹在 httpx 自动解压时先膨胀再触发大小闸门。
-                        # 站点若无视协商继续压缩，明确报错，不能把压缩字节当文本回灌。
-                        encoding = response.headers.get('content-encoding', 'identity').strip().lower()
-                        if encoding != 'identity':
-                            raise FetchError(f'网页忽略未压缩传输要求，返回了不支持的内容编码：{encoding}')
+                        # 压缩炸弹的闸门是「解压后累计字节」，不是「拒绝压缩」。
+                        #
+                        # - 现象：早先只接受 identity，站点无视协商照常返回 gzip 就报错。
+                        #   真机上 B 站正是如此，一类最常被分享的链接整类读不了。
+                        # - 原因：Accept-Encoding 是协商不是强制，服务器有权忽略；把
+                        #   合规响应判成错误，判据本身就站不住。
+                        # - 后果：下面的累计上限作用在 aiter_bytes 产出的**解压后**字节上，
+                        #   达到上限即停止读取，炸弹不会被完整展开——这比拒绝压缩更严格，
+                        #   因为它与压缩比无关。残留风险：单个解码块可能瞬时超过上限，
+                        #   量级为原始块大小乘以压缩比，无法在纯 httpx 侧消除。
+                        encoding = response.headers.get('content-encoding', '').strip().lower()
+                        if encoding and encoding not in DECODABLE_ENCODINGS:
+                            raise FetchError(f'网页返回了无法解码的内容编码：{encoding}')
                         body = bytearray()
                         truncated = False
                         async for chunk in response.aiter_bytes(chunk_size=READ_CHUNK_BYTES):
