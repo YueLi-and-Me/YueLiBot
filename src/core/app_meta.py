@@ -10,4 +10,4 @@ pyproject.toml 与 package.json 的 ``version`` 字段都必须与本模块的
 
 from __future__ import annotations
 
-APP_VERSION = '0.1.0'
+APP_VERSION = '0.1.1'

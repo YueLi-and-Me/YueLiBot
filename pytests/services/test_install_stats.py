@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -32,6 +33,7 @@ from src.core.services.dev.install_stats import (
     render_charts,
     summary_text,
     version_series,
+    with_live_point,
 )
 
 
@@ -227,10 +229,19 @@ async def test_连不上时不抛原始异常(monkeypatch: pytest.MonkeyPatch) -
     assert str(excinfo.value) == '连不上遥测服务端，稍后再试。'
 
 
-def test_历史不足两天不画图(tmp_path: Path) -> None:
-    """一个点连不成线，直接不出图，由调用方只发文字。"""
-    assert render_charts(MODE_ALL, _stats(daily_count=1), tmp_path / 'charts') == ()
+def test_一个快照都没有时不画图(tmp_path: Path) -> None:
+    """只剩实时点一个点，连不成线，直接不出图，由调用方只发文字。"""
+    assert render_charts(MODE_ALL, _stats(daily_count=0), tmp_path / 'charts') == ()
     assert not (tmp_path / 'charts').exists()
+
+
+def test_一天快照加实时点就能出图(tmp_path: Path) -> None:
+    """服务端 Cron 只跑过一次时也该出图——第二个点由实时值补上。"""
+    pytest.importorskip('matplotlib', reason='chart extra 未安装')
+
+    paths = render_charts(MODE_INSTALLS, _stats(daily_count=1), tmp_path / 'charts')
+
+    assert [Path(path).name for path in paths] == ['inst-d.png']
 
 
 def test_缺可选依赖时退回文字而不是报错(
@@ -285,6 +296,79 @@ def test_图的尺寸是约定的八百乘四百(tmp_path: Path) -> None:
     assert len(paths) == 1
     with Image.open(paths[0]) as image:
         assert image.size == (800, 400)
+
+
+def test_实时点取代当天快照() -> None:
+    """当天那行快照已是几小时前的旧值，由实时点原地替换，不并列成两个同日点。"""
+    stats = parse_stats(_document(_days(3)))
+    now = datetime(2026, 9, 3, 15, 30, tzinfo=timezone.utc)
+
+    daily = with_live_point(stats, now)
+
+    assert [point.day for point in daily] == ['2026-09-01', '2026-09-02', '2026-09-03']
+    assert daily[-1].installs == stats.installs
+    assert daily[-1].online == stats.online
+    assert daily[-1].versions == dict(stats.versions)
+
+
+def test_当天还没写快照时实时点接在末尾() -> None:
+    """Cron 尚未跑到今天（刚部署、或补跑失败）时，实时点是新增的一天。"""
+    stats = parse_stats(_document(_days(3)))
+    now = datetime(2026, 9, 4, 2, 0, tzinfo=timezone.utc)
+
+    daily = with_live_point(stats, now)
+
+    assert [point.day for point in daily] == [
+        '2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04',
+    ]
+    assert daily[-1].installs == stats.installs
+
+
+def test_实时点按UTC取日期() -> None:
+    """快照的 day 是服务端按 UTC 写的，实时点必须同一口径，否则会多出一天。"""
+    stats = parse_stats(_document(_days(3)))
+    # 东八区 9 月 4 日 07:00 仍属 UTC 的 9 月 3 日，应替换当天快照而非新增一天。
+    now = datetime.fromisoformat('2026-09-04T07:00:00+08:00')
+
+    daily = with_live_point(stats, now)
+
+    assert [point.day for point in daily] == ['2026-09-01', '2026-09-02', '2026-09-03']
+
+
+def test_计数纵轴只出整数刻度(tmp_path: Path) -> None:
+    """装机数与在线数是实例个数，纵轴不该出现「零点几台」。
+
+    只有一台安装时，默认刻度会在 0 与 1 之间插出 0.2/0.4/0.6/0.8，读图的人会
+    以为统计口径出了问题。用 pyplot 代理截下 axes，直接读回刻度值。
+    """
+    pytest.importorskip('matplotlib', reason='chart extra 未安装')
+    pyplot = install_stats._load_pyplot()
+    captured: List[Any] = []
+
+    class _RecordingPyplot:
+        """转发 pyplot 的两个调用，顺带留下 axes 引用。"""
+
+        def subplots(self, **kwargs: Any) -> Any:
+            figure, axes = pyplot.subplots(**kwargs)
+            captured.append(axes)
+            return figure, axes
+
+        def close(self, figure: Any) -> None:
+            pyplot.close(figure)
+
+    stats = parse_stats(_document([
+        {'day': f'2026-09-{index + 1:02d}', 'installs': 1, 'online': 1, 'versions': {'0.1.0': 1}}
+        for index in range(3)
+    ]))
+    charts_dir = tmp_path / 'charts'
+    charts_dir.mkdir()
+
+    install_stats._draw_one(_RecordingPyplot(), MODE_INSTALLS, stats.daily, charts_dir)
+
+    bottom, top = captured[0].get_ylim()
+    visible = [tick for tick in captured[0].get_yticks() if bottom <= tick <= top]
+    assert visible
+    assert all(float(tick).is_integer() for tick in visible)
 
 
 async def test_取数失败时只回一句话不带图(monkeypatch: pytest.MonkeyPatch) -> None:

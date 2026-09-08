@@ -9,13 +9,17 @@
 因为该文件会被 WebUI 整体重写并展示。端点或令牌任一为空时命令**不注册**：
 没有服务端就没有这条命令，而不是「有但一问就报错」。
 
+折线的末端是此刻的实时值而非当日快照：快照由服务端 Cron 在 UTC 00:05 写入，
+之后一整天的新增都不在里面，只画快照会让图与同一条回复里的文字对不上。
+
 绘图依赖 matplotlib，装在可选 extra ``chart`` 里。依赖缺失、绘图抛异常、
-历史不足两天，三种情形都退回纯文字，不让 ``/inst`` 因为少装一个包而失败。
+可画的点不足两个，三种情形都退回纯文字，不让 ``/inst`` 因为少装一个包而失败。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
@@ -35,7 +39,7 @@ STATS_TOKEN_ENV = 'YUELI_STATS_TOKEN'
 
 # 图默认覆盖的天数；服务端按同名参数裁剪，不足这么多天时有几天画几天。
 CHART_DAYS = 30
-# 少于两个数据点画不出线，此时只发文字。
+# 少于两个数据点画不出线，此时只发文字。实时点计入其中，所以有一天快照就能出图。
 MIN_CHART_POINTS = 2
 # 图尺寸：800×400 像素，由 figsize 英寸乘 dpi 得到。发到群里要一眼能读，不做成大图。
 CHART_DPI = 100
@@ -219,19 +223,48 @@ def chart_modes(mode: str) -> Tuple[str, ...]:
     return (mode,)
 
 
+def with_live_point(stats: InstallStats, now: datetime | None = None) -> Tuple[DailyPoint, ...]:
+    """在快照序列末尾接上「此刻」的实时值。
+
+    服务端 Cron 在 UTC 00:05 写当天那行快照，此后一整天的新增安装都不在里面。
+    只画快照时，图的末端与同一条回复里的文字（取自 ``/stats`` 的实时计数）会对不上，
+    读图的人无从判断哪个数才算数。今天那行由实时点**取代**而非并列：同一天两个点
+    会在横轴上留下重复日期。
+
+    实时点的版本构成取自 ``/stats`` 顶层字段，服务端已按前十折叠，长尾并成「其它」。
+    该词与本模块 :data:`OTHER_VERSION` 相同——存活版本超过十个时，服务端折出的那一桶
+    会作为普通版本参与 :func:`version_series` 的排序与再折叠。
+
+    :param stats: 聚合数据。
+    :param now: 当前时刻；缺省取系统 UTC 时间，测试从此处注入固定时刻。
+    :return: 按日期升序的序列，末项为实时点；快照为空时只有实时点一项。
+    """
+    moment = datetime.now(timezone.utc) if now is None else now.astimezone(timezone.utc)
+    today = moment.strftime('%Y-%m-%d')
+    live = DailyPoint(
+        day=today,
+        installs=stats.installs,
+        online=stats.online,
+        versions=dict(stats.versions),
+    )
+    history = tuple(point for point in stats.daily if point.day != today)
+    return history + (live,)
+
+
 def render_charts(mode: str, stats: InstallStats, charts_dir: Path) -> Tuple[str, ...]:
     """画图并落盘，返回图片路径。
 
     三种情形返回空元组而不是抛异常，由调用方退回纯文字：可选依赖没装、
-    历史不足两天、绘图过程出错。**少装一个可选依赖不该让命令失败**。
+    可画的点不足两个、绘图过程出错。**少装一个可选依赖不该让命令失败**。
 
     :param mode: 子命令标识。
-    :param stats: 聚合数据。
+    :param stats: 聚合数据；画的是 :func:`with_live_point` 处理过的序列。
     :param charts_dir: 图片目录；不存在时递归创建。
     :return: 按发送顺序排列的 PNG 绝对路径；不出图时为空元组。
     副作用：写入 ``<charts_dir>/inst-<模式>.png``，同名覆盖。
     """
-    if len(stats.daily) < MIN_CHART_POINTS:
+    daily = with_live_point(stats)
+    if len(daily) < MIN_CHART_POINTS:
         return ()
     try:
         pyplot = _load_pyplot()
@@ -242,7 +275,7 @@ def render_charts(mode: str, stats: InstallStats, charts_dir: Path) -> Tuple[str
         charts_dir.mkdir(parents=True, exist_ok=True)
         paths: List[str] = []
         for single in chart_modes(mode):
-            paths.append(str(_draw_one(pyplot, single, stats, charts_dir)))
+            paths.append(str(_draw_one(pyplot, single, daily, charts_dir)))
         return tuple(paths)
     except Exception as exc:  # noqa: BLE001 - 出图失败退回文字，不影响命令本身
         logger.warning('inst_chart_failed', mode=mode, error=str(exc))
@@ -289,25 +322,44 @@ def _apply_chinese_font(matplotlib: Any) -> None:
     logger.info('inst_chart_no_cjk_font')
 
 
-def _draw_one(pyplot: Any, mode: str, stats: InstallStats, charts_dir: Path) -> Path:
+def _integer_locator() -> Any:
+    """构造只在整数处出刻度的纵轴定位器。
+
+    :return: ``matplotlib.ticker.MaxNLocator`` 实例。
+
+    在函数内导入：matplotlib 属于可选 extra ``chart``，模块顶层导入会让未装该
+    extra 的部署在 import 阶段就失败，而这里的调用路径已由 :func:`_load_pyplot`
+    保证依赖存在。
+    """
+    from matplotlib.ticker import MaxNLocator
+
+    return MaxNLocator(integer=True)
+
+
+def _draw_one(
+    pyplot: Any,
+    mode: str,
+    daily: Sequence[DailyPoint],
+    charts_dir: Path,
+) -> Path:
     """画一张图并保存。
 
     :param pyplot: 已确定后端的 pyplot 模块。
     :param mode: 单张图的模式，只接受 ``d`` / ``n`` / ``v``。
-    :param stats: 聚合数据。
+    :param daily: 按日期升序的序列，末项为实时点；由 :func:`with_live_point` 给出。
     :param charts_dir: 图片目录，调用方保证已存在。
     :return: 落盘后的 PNG 路径。
 
     图上不写标题、不加图例框，每条线在末端直接标名字——发到群里的图要一眼能读，
     图例框会把本就不大的画布再切掉一角。
     """
-    days = [point.day for point in stats.daily]
+    days = [point.day for point in daily]
     if mode == MODE_INSTALLS:
-        series: List[Tuple[str, List[int]]] = [('装机量', [p.installs for p in stats.daily])]
+        series: List[Tuple[str, List[int]]] = [('装机量', [p.installs for p in daily])]
     elif mode == MODE_ONLINE:
-        series = [('在线', [p.online for p in stats.daily])]
+        series = [('在线', [p.online for p in daily])]
     else:
-        series = version_series(stats.daily)
+        series = version_series(daily)
 
     figure, axes = pyplot.subplots(figsize=CHART_FIGSIZE_INCHES, dpi=CHART_DPI)
     try:
@@ -326,6 +378,12 @@ def _draw_one(pyplot: Any, mode: str, stats: InstallStats, charts_dir: Path) -> 
         axes.set_xticks(_tick_positions(len(days)))
         axes.set_xticklabels([days[index] for index in _tick_positions(len(days))], fontsize=8)
         axes.set_ylim(bottom=0)
+        # 纵轴画的是实例个数，刻度必须落在整数上。
+        # - 现象：装机量只有 1 时，默认刻度算出 0.0/0.2/…/1.0，图上出现「零点几台」。
+        # - 原因：MaxNLocator 默认按数值区间取整齐的间距，不知道这条序列是计数。
+        # - 后果：去掉 integer=True 会在小样本期重新出现小数刻度；量级上去后现象自行消失，
+        #   容易被误判为已修复。
+        axes.yaxis.set_major_locator(_integer_locator())
         axes.grid(True, axis='y', linewidth=0.4, alpha=0.4)
         axes.spines['top'].set_visible(False)
         axes.spines['right'].set_visible(False)
@@ -520,4 +578,5 @@ __all__ = [
     'stats_token',
     'summary_text',
     'version_series',
+    'with_live_point',
 ]
