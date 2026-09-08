@@ -38,7 +38,12 @@ _ANSI = re.compile(r'\x1b\[[0-9;]*m')
 
 
 def _png_bytes(color: str = 'red') -> bytes:
-    """生成可被 Pillow 完整校验的小型 PNG 测试素材。"""
+    """生成可被 Pillow 完整校验的小型 PNG 测试素材。
+
+    需要互不相同的素材时必须挑**灰度差异明显**的颜色：视觉身份按 32×32 灰度
+    缩略图比对，PIL 的 red(255,0,0) 与 green(0,128,0) 灰度分别是 76 与 75，
+    会被判为同一张图而合并成一条记录。
+    """
 
     stream = BytesIO()
     Image.new('RGB', (2, 2), color=color).save(stream, format='PNG')
@@ -235,7 +240,7 @@ async def test_capacity_check_excludes_banned_rows(
     library = EmojiLibrary(db, tmp_path / 'emojis')
     red = hashlib.sha256(_png_bytes('red')).hexdigest()
     await library.register(_png_bytes('red'), '开心', 'image/png')
-    await library.register(_png_bytes('green'), '高兴', 'image/png')
+    await library.register(_png_bytes('white'), '高兴', 'image/png')
     await library.register(_png_bytes('blue'), '无语', 'image/png')
     assert library.ban(red) is True
 
