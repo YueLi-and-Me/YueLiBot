@@ -63,6 +63,8 @@ EVENT_LABELS: Dict[str, str] = {
     "emoji_registered": "表情包已登记",
     "emoji_selected": "已选择表情包",
     "emoji_selection_missed": "表情包未命中库",
+    "emoji_use_record_missed": "表情包使用未落账",
+    "emoji_use_recorded": "表情包已记使用",
     "scene_observed": "已更新群里的情况",
     "emit_failed": "事件发送失败",
     "expression_select": "表达方式选择",

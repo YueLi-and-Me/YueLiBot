@@ -17,6 +17,7 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   emoji_registration_rejected: '表情包拒绝入库',
   emoji_selected: '选择表情包',
   emoji_selection_missed: '表情包未命中库',
+  emoji_use_recorded: '表情包已记使用',
   expression_select: '表达方式选择',
   expression_learned: '表达方式学习完成',
   expression_learn_failed: '表达方式学习失败',
