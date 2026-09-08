@@ -344,6 +344,7 @@ CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_utterances(delivered_at, d
 -- 分开：淘汰判据只读前者。
 CREATE TABLE IF NOT EXISTS emoji (
   hash          TEXT PRIMARY KEY,
+  visual_key    TEXT    NOT NULL DEFAULT '',
   send_ref      TEXT    NOT NULL,
   emotion_tags  TEXT    NOT NULL,
   emotion_vec   BLOB,
@@ -354,10 +355,11 @@ CREATE TABLE IF NOT EXISTS emoji (
   first_seen_at INTEGER NOT NULL
 );
 
--- 封禁按内容哈希独立存在，不以 emoji 行为宿主：行被淘汰或文件被删之后
--- 封禁必须仍然生效，同一张图不能因为删了一次就又进得来。
+-- 视觉身份保存尺寸与未量化灰度缩略图；封禁不以 emoji 行为宿主，原文件被删
+-- 之后仍能拒绝重编码副本。缺失原图的历史封禁保留空 key，仅能识别原字节哈希。
 CREATE TABLE IF NOT EXISTS emoji_banned (
   hash      TEXT PRIMARY KEY,
+  visual_key TEXT NOT NULL DEFAULT '',
   banned_at INTEGER NOT NULL,
   reason    TEXT
 );

@@ -6,7 +6,7 @@ verify_integrity 重算全部文件哈希，任何缺失、越界或内容不一
 服务继续启动，避免把损坏文件静默交给平台发送。
 
 除启动校验外，本模块还承担表情包库的三道入库闸门与两条后台维护：
-- 封禁表按内容哈希独立存在，入库第一件事就是查它（行被淘汰后封禁依然生效）；
+- 封禁表按视觉身份独立存在，入库先查封禁（行被删除后重编码仍不能绕过）；
 - max_file_size_mb 拒绝超大文件；content_filtration 开启时先过视觉模型
   审查，模型不可用或审查不过都拒绝入库；
 - 后台维护按 max_count 淘汰最冷条目（use_count 升序、last_used_at 升序，
@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 from urllib.parse import unquote
 
+from PIL import Image, UnidentifiedImageError
+
 import base64
 import hashlib
 import math
@@ -31,8 +33,6 @@ import re
 import sqlite3
 import struct
 import warnings
-
-from PIL import Image, UnidentifiedImageError
 
 from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
@@ -128,8 +128,8 @@ class EmojiIntegrityError(RuntimeError):
 class EmojiBannedError(RuntimeError):
     """入库内容命中封禁表。
 
-    封禁表以内容哈希为键独立于 emoji 行存在，因此这张图即使行被淘汰、
-    文件被删除后仍不允许入库。
+    封禁表保留视觉身份并独立于 emoji 行存在，因此这张图即使文件被删除，
+    重新编码后仍不允许入库；内容哈希用于定位管理操作和错误来源。
     """
 
     def __init__(self, content_hash: str, reason: str = '') -> None:
@@ -335,7 +335,9 @@ class EmojiLibrary:
     def has_sendable(self) -> bool:
         """判断库中是否至少存在一条可发送记录。"""
 
-        row = self._db.execute('SELECT 1 FROM emoji LIMIT 1').fetchone()
+        row = self._db.execute(
+            f'SELECT 1 FROM emoji WHERE {_banned_predicate(banned_only=False)} LIMIT 1'
+        ).fetchone()
         return row is not None
 
     def emotion_tags_for_hash(self, content_hash: str) -> str | None:
@@ -374,7 +376,9 @@ class EmojiLibrary:
         if limit < 1:
             raise ValueError('表情包高频标签 limit 必须大于零')
         counts: dict[str, int] = {}
-        for (tags,) in self._db.execute('SELECT emotion_tags FROM emoji'):
+        for (tags,) in self._db.execute(
+            f'SELECT emotion_tags FROM emoji WHERE {_banned_predicate(banned_only=False)}'
+        ):
             for tag in str(tags).split(','):
                 tag = tag.strip()
                 if tag:
@@ -499,12 +503,12 @@ class EmojiLibrary:
         content_hash: str | None = None,
         sub_type: int = 1,
     ) -> str:
-        """保存一张识别成功的表情包并按内容哈希 upsert。
+        """保存识别成功的表情包，同尺寸且缩略图 MSE < 20 时复用最早记录。
 
         入库闸门按顺序执行：先查封禁表，再按 max_file_size_mb
         拒绝超大文件，最后在开启 content_filtration 时过视觉模型审查。
         全部通过后文件先以临时名写入，再在同一目录原子替换为哈希文件；
-        数据库引用只有在文件可用后才提交。相同内容再次出现时 seen_count
+        数据库引用只有在文件可用后才提交。同图再次出现时 seen_count
         自增，并刷新标签和可用向量。
 
         :param sub_type: 入站 OneBot 表情包子类型；本地导入素材默认使用 1。
@@ -526,23 +530,8 @@ class EmojiLibrary:
             raise ValueError('调用方提供的表情包哈希与图片内容不一致')
         normalized_sub_type = _validate_emoji_sub_type(sub_type)
 
-        # 封禁按内容哈希独立存在，入库第一件事就查它；行被淘汰后封禁依然生效。
-        banned = self._db.execute(
-            'SELECT reason FROM emoji_banned WHERE hash = ?', (digest,),
-        ).fetchone()
-        if banned is not None:
-            logger.warning(
-                'emoji_banned_rejected',
-                hash=digest,
-                reason=banned[0] or '',
-            )
-            trace.emit(
-                'emoji_banned',
-                hash=digest,
-                outcome='blocked',
-                reason=banned[0] or '',
-            )
-            raise EmojiBannedError(digest, str(banned[0] or ''))
+        # 旧封禁可能只有哈希且原图已丢失；原内容再次出现时补齐视觉身份。
+        self._reject_banned(digest)
 
         if self._max_file_size_bytes and len(image_bytes) > self._max_file_size_bytes:
             limit_mb = self._config.max_file_size_mb
@@ -561,6 +550,9 @@ class EmojiLibrary:
             raise EmojiContentRejectedError(
                 f'图片超过 max_file_size_mb = {limit_mb} MB 上限'
             )
+
+        visual_key = emoji_visual_key(image_bytes)
+        self._reject_banned(digest, visual_key)
 
         if self._config.content_filtration:
             verdict = None
@@ -593,6 +585,36 @@ class EmojiLibrary:
                 )
                 raise EmojiContentRejectedError('内容审查未通过')
 
+        vector = await self._embed_tags(tags)
+        # 所有 await 结束后重新查封禁和视觉身份；到提交之间不再让出执行权，
+        # 防止两个入库协程各自看到空库，或审查期间发生的封禁被绕过。
+        self._reject_banned(digest, visual_key)
+        for existing_hash, existing_ref, existing_key in self._db.execute(
+            'SELECT hash, send_ref, visual_key FROM emoji ORDER BY first_seen_at, hash'
+        ).fetchall():
+            if existing_hash == digest or same_emoji_visual(visual_key, existing_key):
+                # 复用既有引用也必须保持原入库路径的完整性检查，不能把失踪或
+                # 被改写的文件当成一次成功登记返回。
+                try:
+                    existing_path = _file_ref_path(existing_ref).resolve(strict=True)
+                    if not existing_path.is_relative_to(self._directory):
+                        raise ValueError('文件引用越出表情包目录')
+                    if hashlib.sha256(existing_path.read_bytes()).hexdigest() != existing_hash:
+                        raise ValueError('同名文件内容与哈希不一致')
+                except (OSError, ValueError) as exc:
+                    raise EmojiIntegrityError((EmojiIntegrityIssue(
+                        content_hash=existing_hash, send_ref=existing_ref, reason=str(exc),
+                    ),)) from exc
+                self._db.execute(
+                    '''UPDATE emoji SET emotion_tags = ?,
+                           emotion_vec = COALESCE(?, emotion_vec), sub_type = ?,
+                           seen_count = seen_count + 1 WHERE hash = ?''',
+                    (tags, vector, normalized_sub_type, existing_hash),
+                )
+                self._db.commit()
+                logger.info('emoji_registered', hash=existing_hash, tags=tags)
+                return str(existing_ref)
+
         extension = _media_extension(media_type)
         target = self._directory / f'{digest}{extension}'
         if not target.exists():
@@ -608,23 +630,47 @@ class EmojiLibrary:
                     reason='同名文件内容与哈希不一致',
                 ),))
 
-        vector = await self._embed_tags(tags)
         send_ref = target.resolve().as_uri()
         self._db.execute(
             """INSERT INTO emoji (
-                   hash, send_ref, emotion_tags, emotion_vec, sub_type, seen_count, first_seen_at
-               ) VALUES (?, ?, ?, ?, ?, 1, ?)
+                   hash, send_ref, emotion_tags, emotion_vec, sub_type, seen_count,
+                   first_seen_at, visual_key
+               ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
                ON CONFLICT(hash) DO UPDATE SET
                    send_ref = excluded.send_ref,
                    emotion_tags = excluded.emotion_tags,
                    emotion_vec = COALESCE(excluded.emotion_vec, emoji.emotion_vec),
                    sub_type = excluded.sub_type,
                    seen_count = emoji.seen_count + 1""",
-            (digest, send_ref, tags, vector, normalized_sub_type, current_time()),
+            (digest, send_ref, tags, vector, normalized_sub_type, current_time(), visual_key),
         )
         self._db.commit()
         logger.info('emoji_registered', hash=digest, tags=tags)
         return send_ref
+
+    def _reject_banned(self, digest: str, visual_key: str = '') -> None:
+        """检查独立封禁身份；视觉数据留在封禁表，删除原文件不影响判断。"""
+        for banned_hash, banned_key, reason in self._db.execute(
+            'SELECT hash, visual_key, reason FROM emoji_banned ORDER BY banned_at, hash'
+        ).fetchall():
+            if banned_hash != digest and not (
+                visual_key and banned_key and same_emoji_visual(visual_key, banned_key)
+            ):
+                continue
+            if not banned_key:
+                # 只有原字节哈希可确认身份时才补数据，绝不猜测已丢失图片的特征。
+                if visual_key:
+                    self._db.execute(
+                        'UPDATE emoji_banned SET visual_key = ? WHERE hash = ?',
+                        (visual_key, banned_hash),
+                    )
+                    self._db.commit()
+                else:
+                    return
+            reason_text = str(reason or '')
+            logger.warning('emoji_banned_rejected', hash=digest, reason=reason_text)
+            trace.emit('emoji_banned', hash=digest, outcome='blocked', reason=reason_text)
+            raise EmojiBannedError(digest, reason_text)
 
     def record_use(self, send_ref: str) -> bool:
         """发送成功后回写一次使用记录。
@@ -644,7 +690,7 @@ class EmojiLibrary:
         return row.rowcount > 0
 
     def ban(self, content_hash: str, reason: str = '') -> bool:
-        """按内容哈希封禁一张图，封禁与 emoji 行解耦。
+        """按内容哈希定位视觉身份并封禁，封禁与 emoji 行解耦。
 
         :param content_hash: 图片 SHA-256；必须为 64 位十六进制。
         :param reason: 可选封禁原因，随封禁记录保留。
@@ -653,9 +699,18 @@ class EmojiLibrary:
         """
 
         normalized = _normalize_hash(content_hash)
+        existing = self._db.execute(
+            'SELECT visual_key FROM emoji WHERE LOWER(hash) = ?', (normalized,),
+        ).fetchone()
+        visual_key = str(existing[0]) if existing is not None else ''
+        if visual_key and self._db.execute(
+            'SELECT 1 FROM emoji_banned WHERE visual_key = ?', (visual_key,),
+        ).fetchone() is not None:
+            return False
         row = self._db.execute(
-            'INSERT OR IGNORE INTO emoji_banned (hash, banned_at, reason) VALUES (?, ?, ?)',
-            (normalized, current_time(), reason.strip()),
+            'INSERT OR IGNORE INTO emoji_banned (hash, banned_at, reason, visual_key) '
+            'VALUES (?, ?, ?, ?)',
+            (normalized, current_time(), reason.strip(), visual_key),
         )
         self._db.commit()
         banned = row.rowcount > 0
@@ -674,7 +729,11 @@ class EmojiLibrary:
 
         normalized = _normalize_hash(content_hash)
         row = self._db.execute(
-            'DELETE FROM emoji_banned WHERE hash = ?', (normalized,),
+            'DELETE FROM emoji_banned WHERE hash = ? OR '
+            '(visual_key != \'\' AND visual_key IN ('
+            'SELECT visual_key FROM emoji WHERE LOWER(hash) = ? '
+            'UNION SELECT visual_key FROM emoji_banned WHERE hash = ?))',
+            (normalized, normalized, normalized),
         )
         self._db.commit()
         if row.rowcount > 0:
@@ -755,7 +814,7 @@ class EmojiLibrary:
         :param offset: 起始偏移，必须非负。
         :param banned_only: ``True`` 只取已封禁、``False`` 只取未封禁、
             ``None``（默认）不筛选。封禁记录独立于 emoji 行存在，因此筛选按
-            两表的哈希交集判断，而不是 emoji 表上的某一列。
+            两表的视觉身份判断，历史上缺失原图的封禁仍按原字节哈希识别。
         :param order: 排序口径，取值见 :data:`_PAGE_ORDER_CLAUSES`：
             ``time_desc``（默认，最新入库在前）、``time_asc``、``use_desc``、
             ``use_asc``。``use_asc`` 与后台淘汰同口径，此时页面顺序即淘汰顺序。
@@ -770,12 +829,9 @@ class EmojiLibrary:
         order_clause = _PAGE_ORDER_CLAUSES.get(order)
         if order_clause is None:
             raise ValueError(f'不支持的表情包排序口径：{order}')
-        banned = {
-            str(row).lower()
-            for (row,) in self._db.execute('SELECT hash FROM emoji_banned').fetchall()
-        }
         rows = self._db.execute(
-            'SELECT hash, send_ref, emotion_tags, sub_type, seen_count, use_count, last_used_at '
+            'SELECT hash, send_ref, emotion_tags, sub_type, seen_count, use_count, last_used_at, '
+            f'{_banned_predicate(banned_only=True)} '
             f'FROM emoji WHERE {_banned_predicate(banned_only)} '
             f'ORDER BY {order_clause} '
             'LIMIT ? OFFSET ?',
@@ -790,9 +846,9 @@ class EmojiLibrary:
                 'seenCount': int(seen_count),
                 'useCount': int(use_count),
                 'lastUsedAt': int(last_used_at) if last_used_at is not None else None,
-                'banned': str(raw_hash).lower() in banned,
+                'banned': bool(banned),
             }
-            for raw_hash, send_ref, tags, sub_type, seen_count, use_count, last_used_at in rows
+            for raw_hash, send_ref, tags, sub_type, seen_count, use_count, last_used_at, banned in rows
         ]
 
     def file_path(self, content_hash: str) -> Path | None:
@@ -1014,14 +1070,16 @@ class EmojiLibrary:
             raise ValueError('表情包目标情绪不能为空')
         if top_k < 1:
             raise ValueError('表情包 top_k 必须大于零')
+        # 嵌入期间管理端仍可封禁；候选查询放在最后一个 await 之后。
+        query_vec = await self._embed_tags(query)
         rows = self._db.execute(
             'SELECT send_ref, emotion_tags, emotion_vec, sub_type '
-            'FROM emoji ORDER BY first_seen_at, hash'
+            f'FROM emoji WHERE {_banned_predicate(banned_only=False)} '
+            'ORDER BY first_seen_at, hash'
         ).fetchall()
         if not rows:
             return None
 
-        query_vec = await self._embed_tags(query)
         if query_vec is not None:
             # 维度必须从查询向量的实际字节数推导，不能读配置的
             # embedding_dim（float32 每分量 4 字节，与事实召回 store 侧同口径）。
@@ -1144,15 +1202,48 @@ def _delete_emoji_file(path: Path, directory: Path) -> int:
         return 0
 
 
+def emoji_visual_key(image_bytes: bytes) -> str:
+    """保存原始尺寸及 32×32 灰度缩略图，不以量化或摘要代替逐像素比较。
+
+    动图沿用解码后的首帧。先转灰度再以 LANCZOS 缩放，序列化仅用于持久化；
+    是否同图必须调用 :func:`same_emoji_visual`，不能把字符串相等当作判据。
+    :raises ValueError: 图片无法解码或超出 Pillow 的安全尺寸。
+    """
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(BytesIO(image_bytes)) as image:
+                width, height = image.size
+                pixels = image.convert('L').resize(
+                    (32, 32), Image.Resampling.LANCZOS,
+                ).tobytes()
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombWarning,
+            Image.DecompressionBombError) as exc:
+        raise ValueError(f'表情包视觉身份计算失败：{exc}') from exc
+    return f'{width}:{height}:{base64.b64encode(pixels).decode("ascii")}'
+
+
+def same_emoji_visual(left: str, right: str) -> bool:
+    """唯一同图判据：尺寸完全相同，32×32 灰度缩略图逐像素 MSE < 20。"""
+    left_width, left_height, left_pixels = left.split(':', 2)
+    right_width, right_height, right_pixels = right.split(':', 2)
+    if (left_width, left_height) != (right_width, right_height):
+        return False
+    a = base64.b64decode(left_pixels, validate=True)
+    b = base64.b64decode(right_pixels, validate=True)
+    if len(a) != 1024 or len(b) != 1024:
+        raise ValueError('表情包视觉身份的缩略图必须包含 1024 个灰度像素')
+    return sum((x - y) ** 2 for x, y in zip(a, b)) / 1024 < 20
+
+
 def _banned_predicate(banned_only: bool | None) -> str:
     """按封禁筛选生成 WHERE 子句片段，供 emoji 表的查询拼接。
 
     返回的是固定字面量，不含任何调用方数据，拼进 SQL 文本没有注入面；
     参数化做不到这件事——要变的是子句结构而不是值。
 
-    哈希两侧都套 ``LOWER``：封禁表的键由 ``_normalize_hash`` 归一化过，而
-    emoji 表的 hash 是入库时原样写的，直接比较会漏掉大小写不同的行。表只有
-    千级，放弃索引换取判定正确是合理的取舍。
+    视觉身份在迁移和入库时归一到保留行的 key。历史上已丢失原图的封禁无法
+    重建特征，保留原哈希精确匹配；哈希两侧 LOWER 避免漏掉旧数据的大小写差异。
 
     :param banned_only: ``True`` 只要已封禁、``False`` 只要未封禁、``None``
         不筛选。
@@ -1161,8 +1252,12 @@ def _banned_predicate(banned_only: bool | None) -> str:
 
     if banned_only is None:
         return '1 = 1'
-    op = 'IN' if banned_only else 'NOT IN'
-    return f'LOWER(hash) {op} (SELECT LOWER(hash) FROM emoji_banned)'
+    op = 'EXISTS' if banned_only else 'NOT EXISTS'
+    return (
+        f'{op} (SELECT 1 FROM emoji_banned AS banned WHERE '
+        '(emoji.visual_key != \'\' AND banned.visual_key = emoji.visual_key) '
+        'OR LOWER(banned.hash) = LOWER(emoji.hash))'
+    )
 
 
 def _normalize_hash(content_hash: str) -> str:
