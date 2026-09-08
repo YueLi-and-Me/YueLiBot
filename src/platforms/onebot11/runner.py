@@ -120,6 +120,9 @@ class OneBot11Runner:
         self._group_name_attempted: Set[str] = set()
         self._group_name_tasks: Set[asyncio.Task[None]] = set()
         self._group_name_startup_scheduled = False
+        # 已记过一次拒绝日志的会话键（``group:<群号>`` / ``private:<QQ 号>``）。
+        # 访问名单是配置事实，同一个会话被挡多少次都不带新信息。
+        self._denied_logged: Set[str] = set()
 
     async def run(self) -> None:
         """建立 QQ 协议端和主体连接，并按错误类型维持或终止运行。
@@ -824,6 +827,26 @@ class OneBot11Runner:
             )
             return source
 
+    def _log_access_denied(self, event: str, target_key: str, **fields: Any) -> None:
+        """按会话去重记录访问被拒日志：同一会话首次记 info，其后降为 debug。
+
+        名单外的会话是配置事实而非事件：一个活跃群每分钟能推几十条消息，逐条记
+        info 会刷满控制台并淹没其他日志。首次仍记 info，保证「这个群被挡住了」
+        在现场可见；此后降为 debug，控制台与文件都不再输出。
+
+        :param event: 日志事件正文，决定控制台渲染出的中文事件名。
+        :param target_key: 去重键；群聊传 ``group:<群号>``，私聊传 ``private:<QQ 号>``，
+            两类标识的数字可能相同，必须带前缀区分命名空间。
+        :param fields: 附加的结构化字段，原样透传给 logger。
+        :return: 无返回值。
+        副作用：写一条日志，并把 ``target_key`` 记入进程内去重集合。
+        """
+        if target_key in self._denied_logged:
+            logger.debug(event, **fields)
+            return
+        self._denied_logged.add(target_key)
+        logger.info(event, **fields)
+
     async def _consume_protocol_events(self, self_id: str, self_name: str) -> None:
         """消费协议端事件并提交通过访问策略的入站消息。
 
@@ -852,16 +875,20 @@ class OneBot11Runner:
                 logger.info('忽略 QQ 自发消息', messageId=payload.get('message_id'))
                 continue
             if kind == 'private_denied':
-                logger.info(
+                denied_user_id = _optional_text(payload.get('user_id'))
+                self._log_access_denied(
                     'QQ 私聊访问被拒',
+                    f'private:{denied_user_id}',
                     userId=payload.get('user_id'),
                     mode=self._config.private.mode,
                     reason='不在私聊访问名单中',
                 )
                 continue
             if kind == 'group_denied':
-                logger.info(
+                denied_group_id = _optional_text(payload.get('group_id'))
+                self._log_access_denied(
                     'QQ 群聊访问被拒',
+                    f'group:{denied_group_id}',
                     groupId=payload.get('group_id'),
                     mode=self._config.group.mode,
                     reason='群聊不在白名单中',

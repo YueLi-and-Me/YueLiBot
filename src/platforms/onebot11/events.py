@@ -361,6 +361,14 @@ def classify_event(
                 return 'group_denied'
             return 'emoji_like'
         if not is_input_status(payload):
+            # 名单外群聊的其余通知（撤回、进退群等）与群消息同口径归为拒绝：
+            # 归入 'other' 会让一个根本不处理的群持续刷「忽略未处理的 QQ 事件」，
+            # 而拒绝分支按会话去重，同一个群只记一次。
+            group_id = payload.get('group_id')
+            if group_id is not None and not group_access.allows(
+                _required_identifier(group_id, 'group_id 不能为空'),
+            ):
+                return 'group_denied'
             return 'other'
         # 输入状态只有私聊会推送，访问名单与私聊消息完全一致。
         if not private_access.allows(
