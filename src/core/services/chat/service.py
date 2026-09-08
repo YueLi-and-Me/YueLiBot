@@ -164,7 +164,7 @@ from .context_build import ContextBuildMixin
 from .follow_up import DirectFollowUpMixin
 from .gating import BatchGateMixin
 from .group_observe import GroupObservationMixin
-from .outbound import OutboundDispatchMixin
+from .outbound import OutboundDispatchMixin, _send_ref_content_hash
 from .profiles import PersonProfileMixin
 from .scene import SceneObservationMixin
 from .helpers import (
@@ -3255,6 +3255,7 @@ class ChatService(
             写入事实、人格和 promise 状态，推送桌面解析事件，或向非桌面 sink
             聚合按 ``<say>`` 边界切分的出站文本；取消信号会提前结束消费。
             分句收集不区分平台，控制台摘要面板始终能拿到剥掉标签后的可见正文。
+            表情包命中与落空同样进 sink.side_effects，由轮末面板呈现那一行。
         """
         context = sink.context
         for event in events:
@@ -3274,6 +3275,15 @@ class ChatService(
                         selection.send_ref,
                         selection.sub_type,
                     ))
+                    content_hash = _send_ref_content_hash(selection.send_ref)
+                    # 面板行要能指认「选中了哪张」：哈希前 8 位定位记录，
+                    # 目标情绪与库内标签并排，检索是否贴题一眼可判。
+                    sink.side_effects.append({
+                        'kind': 'emoji_selected',
+                        'hash': content_hash[:8],
+                        'emotion': event.emotion,
+                        'tags': self._emoji_library.emotion_tags_for_hash(content_hash) or '',
+                    })
                     trace.emit(
                         'emoji_selected',
                         turnId=sink.turn,
@@ -3284,6 +3294,10 @@ class ChatService(
                     # 落空此前完全静默：模型写了 <emoji> 但检索没有可用候选时，
                     # 终端与观察面板都看不到任何痕迹，现场只能表现为「发不出」。
                     # 这里留一条与命中对称的事件，便于区分「没写」和「写了没中」。
+                    sink.side_effects.append({
+                        'kind': 'emoji_selection_missed',
+                        'emotion': event.emotion,
+                    })
                     trace.emit(
                         'emoji_selection_missed',
                         turnId=sink.turn,

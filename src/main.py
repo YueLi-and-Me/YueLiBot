@@ -154,6 +154,21 @@ class _LLMGenerator:
         return raw
 
 
+def _emoji_capacity_exceeded(stats: dict[str, Any], max_count: int) -> bool:
+    """按不含封禁行的口径判断表情包库容量是否超过上限。
+
+    容量比较必须用 ``countedCount``：已封禁的记录不占容量也不参与淘汰
+    （见 ``EmojiLibrary.stats`` 与 ``evict_to_limit``），按 ``count`` 判定会把
+    封禁行虚增成容量占用，表现为「看着快满了其实还早」甚至误触淘汰。
+
+    :param stats: ``EmojiLibrary.stats()`` 的返回值。
+    :param max_count: 配置的容量上限；0 或负值表示不设限。
+    :return: 计入容量的记录数超过上限时返回 ``True``。
+    """
+
+    return max_count > 0 and int(stats['countedCount']) > max_count
+
+
 def _bind_backend_socket(port: int) -> socket.socket:
     """绑定并持有本地后端端口，避免探测完成后被其他进程抢占。
 
@@ -955,7 +970,8 @@ def main() -> None:
         淘汰与清理不进入表情收集的入站路径：容量按
         check_interval_minutes 检查，孤儿文件按 cleanup.check_interval_hours
         检查，两次检查共用同一个等待循环。max_count 为 0 表示不设限；
-        auto_evict 关闭时只告警不删除。
+        auto_evict 关闭时只告警不删除。容量判定用不含封禁行的 countedCount，
+        与 evict_to_limit 的淘汰口径一致。
         """
         emoji_cfg = cfg.emoji
         now_ms = current_time()
@@ -964,8 +980,8 @@ def main() -> None:
         while not emoji_maintenance_stop.is_set():
             now_ms = current_time()
             if emoji_cfg.max_count > 0 and now_ms >= next_evict_ms:
-                count = emoji_library.stats()['count']
-                if count > emoji_cfg.max_count:
+                stats = emoji_library.stats()
+                if _emoji_capacity_exceeded(stats, emoji_cfg.max_count):
                     if emoji_cfg.auto_evict:
                         evicted = emoji_library.evict_to_limit(emoji_cfg.max_count)
                         logger.info(
@@ -976,7 +992,7 @@ def main() -> None:
                     else:
                         logger.warning(
                             'emoji_over_limit',
-                            count=count,
+                            count=stats['countedCount'],
                             maxCount=emoji_cfg.max_count,
                         )
                 next_evict_ms = now_ms + emoji_cfg.check_interval_minutes * 60_000

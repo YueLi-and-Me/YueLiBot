@@ -153,11 +153,12 @@ def _reply_text(segments: list[str]) -> str:
 
 
 def _side_effect_lines(side_effects: list[dict]) -> list[str]:
-    """将记忆、情绪和约定副作用转换为面板行文本。
+    """将记忆、情绪、约定和表情包副作用转换为面板行文本。
 
     :param side_effects: 解析事件产生的副作用字典列表。
 
-    :return: 当前支持的 ``mood_delta`` 与 ``promise_stashed`` 副作用行；未知类型被忽略。
+    :return: 当前支持的 ``mood_delta``、``promise_stashed``、``emoji_selected``
+        与 ``emoji_selection_missed`` 副作用行；未知类型被忽略。
         记忆写入不在其中——它已改由回合之后的后台抽取产出独立的 ``memory_fact``
         观察事件，不再经过本轮的副作用 sink。
     """
@@ -170,6 +171,16 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
             )
         elif effect.get('kind') == 'promise_stashed':
             lines.append(f"约定：{effect.get('subject', '')} → {effect.get('at')}")
+        elif effect.get('kind') == 'emoji_selected':
+            lines.append(
+                f"表情包：{effect.get('hash', '')} · 目标情绪 {effect.get('emotion', '')}"
+                f" · 标签 {effect.get('tags', '')}"
+            )
+        elif effect.get('kind') == 'emoji_selection_missed':
+            lines.append(
+                f"表情包落空：目标情绪 {effect.get('emotion', '')}，"
+                "写了 <emoji> 但库里没命中"
+            )
     return lines
 
 

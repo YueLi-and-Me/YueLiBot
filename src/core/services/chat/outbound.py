@@ -30,6 +30,20 @@ from src.core.platform_io.types import ConversationContext, OutboundMessage
 logger = get_logger(__name__)
 
 
+def _send_ref_content_hash(send_ref: str) -> str:
+    """从 ``file://`` 发送引用还原内容哈希。
+
+    库内文件以 ``<SHA-256>.<扩展名>`` 命名，文件名去扩展名即哈希；引用由
+    ``EmojiLibrary.register`` 统一生成，形态受控，无需再做 URL 归一化。
+
+    :param send_ref: emoji 表 ``send_ref`` 列的本地文件引用。
+    :return: 64 位十六进制内容哈希；引用不含斜杠或扩展名时返回原样切分结果。
+    """
+
+    file_name = send_ref.rsplit('/', 1)[-1]
+    return file_name.split('.', 1)[0]
+
+
 class OutboundDispatchMixin:
 
     def _handle_side_effects(
@@ -211,6 +225,8 @@ class OutboundDispatchMixin:
 
         副作用：
             可能调用平台驱动并写入投递观察事件；空列表只记录警告并返回。
+            投递成功后逐张回写使用记录，未命中库行的引用记警告，命中则发
+            ``emoji_use_recorded`` 观察事件。
 
         :raises RuntimeError: 桌面 stream 误走 broker，或非桌面 stream 未配置 broker。
         :raises DeliveryError: 平台驱动未注册或投递失败时由 broker 传播。
@@ -236,10 +252,26 @@ class OutboundDispatchMixin:
             turn_id=turn,
         ))
         # 只有拿到投递回执（发送成功）才回写使用记录；发送失败不动两列，
-        # 淘汰判据不允许把「没发出去」记成「用过」。
+        # 淘汰判据不允许把「没发出去」记成「用过」。引用刚被 select 选中却又
+        # 回写不到一行，说明库在选中与投递之间被并发改写（淘汰或删除），
+        # 属于缺陷而非正常竞态，必须留警告而不是静默丢账。
         if self._emoji_library is not None:
-            for reference in emoji_refs:
-                self._emoji_library.record_use(reference)
+            for emotion, reference, _sub_type in emoji_items:
+                content_hash = _send_ref_content_hash(reference)
+                if not self._emoji_library.record_use(reference):
+                    logger.warning(
+                        'emoji_use_record_missed',
+                        turnId=turn,
+                        sendRef=reference,
+                        hash=content_hash[:8],
+                    )
+                else:
+                    trace.emit(
+                        'emoji_use_recorded',
+                        turnId=turn,
+                        hash=content_hash[:8],
+                        emotion=emotion,
+                    )
         trace.emit(
             'outbound_delivered',
             platform=receipt.platform,
