@@ -408,6 +408,11 @@ function StatsOverview({ stats }: { stats: EmojiStats }) {
             <Progress value={capacityPercent} max={100} label="表情包库容量" />
           </div>
         ) : null}
+        {/* use_count / last_used_at 两列自 2026-08-25 才开始落账，库里更早的发送
+            天然记为 0；不说明的话，「她发过很多次」和卡片上的小数字对不上。 */}
+        <p className="col-span-2 md:col-span-4 text-xs text-muted-foreground">
+          使用次数自 2026-08-25 起统计，此前的发送不计入。
+        </p>
       </CardBody>
     </Card>
   )
