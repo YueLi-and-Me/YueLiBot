@@ -31,7 +31,14 @@ from src.core.prompts.registry import get_prompt, prompt_metadata
 # 近义词之间摇摆，下游无法利用这些差别。
 ATMOSPHERES: tuple[str, ...] = ('热闹', '玩闹', '认真', '平淡', '低落', '冷场')
 # 话题一句话的字符上限。该内容会进系统提示词，超长相当于在提示词中复制一份聊天记录。
-TOPIC_MAX_CHARS = 40
+#
+# 取值依据（2026-09-08 按真机 58 次观察调整，原值 40）：提示词要求话题写成
+# 「主要在聊 X，另有人在聊 Y」的双线句式，光骨架就三十几个字，成功观察的长度
+# 落在 25-40（中位 34、47% 不低于 35），上限压在分布中间，26% 的观察因越界被
+# 整份丢弃——连带丢掉本来正确的 atmosphere。上限必须落在模型自然输出之外，
+# 越界才重新意味着「模型吐了一段分析」而不是「这句话稍微长了点」。
+# 输出总长另有 _MAX_OUTPUT_CHARS 兜底，本上限只约束进提示词的那一句。
+TOPIC_MAX_CHARS = 100
 # 允许模型返回的最大原文长度，防止模型输出整段分析文本而非 JSON。
 _MAX_OUTPUT_CHARS = 512
 
@@ -54,7 +61,9 @@ class SceneSnapshot:
         if not self.topic.strip():
             raise ValueError('场景话题不能为空')
         if len(self.topic) > TOPIC_MAX_CHARS:
-            raise ValueError(f'场景话题超过 {TOPIC_MAX_CHARS} 字')
+            raise ValueError(
+                f'场景话题超过 {TOPIC_MAX_CHARS} 字（实际 {len(self.topic)} 字）'
+            )
         if self.atmosphere not in ATMOSPHERES:
             raise ValueError(f'未知气氛：{self.atmosphere}（封闭枚举）')
 
