@@ -1205,6 +1205,11 @@ def _delete_emoji_file(path: Path, directory: Path) -> int:
 def emoji_visual_key(image_bytes: bytes) -> str:
     """保存原始尺寸及 32×32 灰度缩略图，不以量化或摘要代替逐像素比较。
 
+    本函数与 :func:`same_emoji_visual` 被迁移 ``v30_to_v31`` 直接引用，
+    等同于被冻结的历史判据：改动尺寸、缩放算法或 MSE 阈值，会让旧库重放该
+    迁移得到与当初不同的合并结果。确需调整时，先把当前实现复制进迁移文件，
+    再改这里。
+
     动图沿用解码后的首帧。先转灰度再以 LANCZOS 缩放，序列化仅用于持久化；
     是否同图必须调用 :func:`same_emoji_visual`，不能把字符串相等当作判据。
     :raises ValueError: 图片无法解码或超出 Pillow 的安全尺寸。

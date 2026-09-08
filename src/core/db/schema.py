@@ -342,6 +342,9 @@ CREATE INDEX IF NOT EXISTS idx_pending_due ON pending_utterances(delivered_at, d
 -- 文件保存在运行数据目录并以内容哈希命名；启动时按 send_ref 重算哈希。
 -- use_count / last_used_at 记录「她自己发过几次」，与 seen_count（入站又见到）
 -- 分开：淘汰判据只读前者。
+-- visual_key 在这里排第二列，而 v30_to_v31 的 ALTER TABLE 只能追加到末尾：
+-- 全新库与升级库的列序因此不同。当前没有任何按位置解包的 SELECT *，
+-- 若以后要加，必须显式列出列名，否则两种来源的库行为会不一致。
 CREATE TABLE IF NOT EXISTS emoji (
   hash          TEXT PRIMARY KEY,
   visual_key    TEXT    NOT NULL DEFAULT '',
