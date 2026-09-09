@@ -29,6 +29,7 @@ from src.core.memory.association import (
     HOPS, ShortTermActivation, SpreadHit, link_together, node_id, spread,
 )
 from src.core.memory.knowledge import search_knowledge, touch_knowledge
+from src.core.memory.scope import fact_visible_in_stream
 from src.core.memory.store import MemoryStore, StoredMessage
 from src.core.observe import events as trace
 from src.core.platform_io.types import StreamKind
@@ -199,6 +200,73 @@ class RecallAction:
         ).fetchone()
         return f'还想到：{_clip(str(row[0]), _ITEM_MAX_CHARS)}' if row else ''
 
+    def _filter_spread_visible(
+        self,
+        hits: list[SpreadHit],
+        stream_id: int,
+        stream_kind: StreamKind,
+    ) -> tuple[list[SpreadHit], int, int]:
+        """按会话可见性过滤扩散命中，返回可见子集与两类被挡计数。
+
+        扩散沿「一起被点亮过」的边走，边本身不分场合；可见性必须在读取侧补回，
+        否则私聊事实与别的会话的情节能经两跳进入当前提示词。三种节点各自的
+        判据：事实走与三个读取入口相同的 ``fact_visible_in_stream``；情节严格
+        限定 ``episodes.stream_id`` 等于当前 stream（情节永不跨会话）；知识层
+        全局，不过滤。指向行已不存在的命中原样保留——那是数据已删，由
+        ``_describe_node`` 渲染为空串处理，与可见性是两回事。
+
+        批量取数：事实的 ``origin_kind`` 与情节的 ``stream_id`` 各一次 IN
+        查询，不在循环里逐条查库。
+
+        :param hits: ``spread()`` 的原始命中。
+        :param stream_id: 当前会话 ID。
+        :param stream_kind: 当前会话类型。
+        :return: ``(可见命中, 被挡事实数, 被挡情节数)``；可见命中保持原顺序。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读。
+        """
+        fact_ids = [hit.ref_id for hit in hits if hit.ref_kind == 'fact']
+        episode_ids = [hit.ref_id for hit in hits if hit.ref_kind == 'episode']
+        fact_origins: dict[int, str] = {}
+        if fact_ids:
+            placeholders = ','.join('?' * len(fact_ids))
+            fact_origins = {
+                int(row[0]): str(row[1])
+                for row in self._db.execute(
+                    f'SELECT id, origin_kind FROM facts WHERE id IN ({placeholders})',
+                    fact_ids,
+                )
+            }
+        episode_streams: dict[int, int] = {}
+        if episode_ids:
+            placeholders = ','.join('?' * len(episode_ids))
+            episode_streams = {
+                int(row[0]): int(row[1])
+                for row in self._db.execute(
+                    f'SELECT id, stream_id FROM episodes WHERE id IN ({placeholders})',
+                    episode_ids,
+                )
+            }
+        visible: list[SpreadHit] = []
+        blocked_facts = 0
+        blocked_episodes = 0
+        for hit in hits:
+            if hit.ref_kind == 'fact':
+                origin = fact_origins.get(hit.ref_id)
+                if origin is not None and not fact_visible_in_stream(
+                    origin, stream_kind, private_in_group=self._private_in_group,
+                ):
+                    blocked_facts += 1
+                    continue
+            elif hit.ref_kind == 'episode':
+                episode_stream = episode_streams.get(hit.ref_id)
+                if episode_stream is not None and episode_stream != stream_id:
+                    blocked_episodes += 1
+                    continue
+            # knowledge 节点不过滤：知识层本来就是全局的。
+            visible.append(hit)
+        return visible, blocked_facts, blocked_episodes
+
     async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
         """按检索词召回事实与情节并渲染为观察文本。
 
@@ -245,15 +313,28 @@ class RecallAction:
         )
         now = current_time()
         spread_hits = spread(self._db, seeds, now, activation=self._activation)
-        if spread_hits:
+        # 扩散沿边跨场合，可见性在这里补回：被挡下的节点既不渲染也不进
+        # adopted——进 adopted 会被 link_together 加强，每次拦截都会让这条
+        # 泄漏路径变得更强。
+        visible_hits, blocked_facts, blocked_episodes = self._filter_spread_visible(
+            spread_hits, request.stream_id, request.stream_kind,
+        )
+        if blocked_facts:
+            # 与三个读取入口同一条规则，记进同一个账本，四条通道的计数才可比较。
+            trace.emit(
+                'memory_fact_scope_blocked',
+                streamKind=request.stream_kind,
+                blocked=blocked_facts,
+            )
+        if visible_hits:
             lines.append('顺带想起来的：')
-            for hit in spread_hits:
+            for hit in visible_hits:
                 text = self._describe_node(hit, request.stream_id)
                 if text:
                     lines.append(f'- {text}')
 
         adopted = [(kind, ref) for kind, ref, _ in seeds]
-        adopted += [(hit.ref_kind, hit.ref_id) for hit in spread_hits]
+        adopted += [(hit.ref_kind, hit.ref_id) for hit in visible_hits]
         # 只有真正进了这段观察文本的才加强边——被检索到不等于被用到，
         # 这个区分是边质量的全部来源。
         link_together(self._db, adopted, now)
@@ -264,14 +345,17 @@ class RecallAction:
             'memory_spread',
             query=request.query,
             seeds=len(seeds),
-            spread=len(spread_hits),
+            spread=len(visible_hits),
             hops=HOPS,
+            # 情节被挡走会话隔离规则，与事实的场合规则不是同一条，分开计数；
+            # 事实被挡的条数在 memory_fact_scope_blocked 账本上。
+            blockedEpisodes=blocked_episodes,
             # 真机上靠它区分「跨人生效了但没命中」与「门没开」两种零命中。
             crossPerson=request.cross_person,
         )
         return CognitiveObservation(
             text='\n'.join(lines),
-            hit_count=len(facts) + len(episodes) + len(spread_hits),
+            hit_count=len(facts) + len(episodes) + len(visible_hits),
         )
 
 
