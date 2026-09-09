@@ -1,4 +1,4 @@
-"""声明应用版本号的唯一来源。
+"""声明应用版本号与项目对外标识的唯一来源。
 
 pyproject.toml 与 package.json 的 ``version`` 字段都必须与本模块的
 :data:`APP_VERSION` 相等，该约束由机检（pytests/core/test_app_version.py）
@@ -10,4 +10,8 @@ pyproject.toml 与 package.json 的 ``version`` 字段都必须与本模块的
 
 from __future__ import annotations
 
-APP_VERSION = '0.1.1'
+APP_VERSION = '0.1.2'
+
+# 官方交流群的 QQ 群号。启动开场白与 README 都引用它，改群号只改这一处代码；
+# README 里的那份是面向读者的纯文本，无法从这里取值，两处要一起改。
+OFFICIAL_GROUP = '424949962'

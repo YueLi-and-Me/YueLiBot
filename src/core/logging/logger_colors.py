@@ -377,6 +377,10 @@ EVENT_COLOR = hex_to_ansi("#ffffff", True)
 FIELD_LABEL_COLOR = hex_to_ansi("#5fd7ff", True)
 FIELD_VALUE_COLOR = hex_to_ansi("#d7e4f5")
 SEPARATOR_COLOR = hex_to_ansi("#5f87af")
+# 启动期需要被一眼看到的独立公告行用它整行着色。选亮金色而非层级色系里的任何
+# 一色：那四色刻意保持接近，用于区分同一行内的成分；公告行要的是从整屏日志里
+# 跳出来，必须落在层级色之外。
+HIGHLIGHT_COLOR = hex_to_ansi("#ffd75f", True)
 
 
 def module_color(logger_name: str) -> str:

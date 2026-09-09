@@ -25,6 +25,7 @@ import time
 import uvicorn
 
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
+from src.core.app_meta import OFFICIAL_GROUP
 from src.core.api.auth import token_manager
 from src.core.api.state import app_state
 from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
@@ -32,7 +33,8 @@ from src.core.runtime.child_process import ChildProcess
 from src.core.runtime.consent import require_consent
 from src.core.runtime.telemetry import TelemetryService, describe_for_console
 from src.core.runtime.clock import now as current_time
-from src.core.logging.console_layout import print_box
+from src.core.logging.console_layout import print_box, print_line
+from src.core.logging.logger_colors import HIGHLIGHT_COLOR, is_color_enabled
 from src.core.logging.logger import get_logger, initialize_logging
 from src.core.runtime.self_check import announce_startup_self_check
 from src.core.config.bootstrap import (
@@ -236,6 +238,23 @@ def _announce_ready() -> None:
     """
 
     print("YUELI_READY=1", flush=True)
+
+
+def _announce_official_group() -> None:
+    """在启动开场白之后单独打一行官方群号。
+
+    不并进 ``startup_begin`` 的字段列，也不套信息框：并进字段列会和「名字」
+    「数据目录」同色同层级，在整屏日志里扫不到；套框则是给一行内容加四条框线。
+    独占一行加整行高亮是这两者之间唯一能让它被看见的形态。
+
+    :return: 无返回值。
+    副作用：向标准输出写一行并同步发布到 WebUI 日志面板；不进日志文件。
+    """
+
+    print_line(
+        f'官方群：{OFFICIAL_GROUP}',
+        tint=HIGHLIGHT_COLOR if is_color_enabled() else '',
+    )
 
 
 def _announce_model_routing(cfg: Config) -> None:
@@ -599,6 +618,7 @@ def main() -> None:
     # 启动日志的开场白：没有它时第一行是模型路由框，读者不知道这份输出从哪开始，
     # 也不知道正在起的是哪个 bot。
     logger.info('startup_begin', bot=cfg.bot.name, dataDir=str(data_dir))
+    _announce_official_group()
     _announce_model_routing(cfg)
 
     from src.core.prompts.registry import configure_prompts

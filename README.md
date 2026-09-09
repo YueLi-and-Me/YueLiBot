@@ -7,6 +7,8 @@
     <img src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-AGPL--3.0-orange" alt="许可证">
   </p>
 
+  <p>官方群：<b>424949962</b></p>
+
 </div>
 
 <br>
