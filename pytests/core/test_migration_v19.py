@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from src.core.db.migrations.v18_to_v19 import KIND_MAPPING, migrate
-from src.core.memory.decay import FACT_KINDS, freeze_due_at, half_life_for
+from src.core.memory.decay import freeze_due_at, half_life_for
 from src.core.memory.store import MemoryStore
 
 NOW = 1_800_000_000_000
@@ -49,7 +49,9 @@ def test_kind_migration_maps_literal_table_and_recomputes_decay() -> None:
         '''SELECT id, kind, strength, half_life_hours, updated_at, due_at
            FROM facts ORDER BY id'''
     ).fetchall()
-    assert {row['kind'] for row in rows} <= FACT_KINDS
+    # v19 的产出集是它写作时代的七类（含「状态」）；「状态」在 v32 退役，
+    # 由 v31->v32 在链条更后面重判为「事件」，本用例钉的是 v19 自身的映射。
+    assert {row['kind'] for row in rows} <= set(KIND_MAPPING.values())
     for row in rows:
         strength, updated_at, source_kind = original[row['id']]
         expected_kind = KIND_MAPPING.get(source_kind, '事件')

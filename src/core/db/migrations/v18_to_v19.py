@@ -17,7 +17,6 @@ import sqlite3
 from .registry import register
 from src.core.memory.decay import (
     DEFAULT_FACT_KIND,
-    FACT_KINDS,
     freeze_due_at,
     half_life_for,
 )
@@ -62,15 +61,26 @@ KIND_MAPPING: Dict[str, str] = {
     '开发进度': '状态',
 }
 
+# 本迁移写作时代的事实类别全集：映射表能产出什么，自检就认什么。不读活的
+# ``FACT_KINDS``——v32 退役「状态」后活枚举只剩六类，而 ≤v18 的存量库必须先过
+# 本迁移、再由 v31->v32 把「状态」重判为「事件」，读活枚举会让链条中段误报。
+_V19_FACT_KINDS = frozenset(KIND_MAPPING.values())
+
 
 def _validate(db: sqlite3.Connection) -> None:
-    """确认所有事实都属于枚举，且两项衰减派生值逐行一致。"""
+    """确认所有事实都属于枚举，且两项衰减派生值逐行一致。
+
+    类别枚举按本迁移写作时代的口径校验——即映射表的全部目标值——而不是读活的
+    ``FACT_KINDS``：v32 退役「状态」之后活枚举只剩六类，而从 ≤v18 一路升级的库
+    必须先过本迁移，再由 v31->v32 把「状态」重判为「事件」；这里若读活枚举，
+    这种库会在链条中段报自检失败，尽管链尾能把数据修正到正确形态。
+    """
 
     rows = db.execute(
         'SELECT id, kind, strength, half_life_hours, updated_at, due_at FROM facts'
     ).fetchall()
     for fact_id, kind, strength, half_life_hours, updated_at, due_at in rows:
-        if kind not in FACT_KINDS:
+        if kind not in _V19_FACT_KINDS:
             raise RuntimeError(f'v19 迁移自检失败：facts.id={fact_id} 的类别是 {kind!r}')
         expected_half_life = half_life_for(kind)
         if float(half_life_hours) != expected_half_life:

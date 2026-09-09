@@ -106,6 +106,29 @@ class TestParseFacts:
             {'rawKind': '喜好', 'normalizedKind': '事件'},
         )]
 
+    def test_retired_status_kind_is_normalized_and_traced(self, monkeypatch):
+        """★K1-5：已退役的「状态」类归一到「事件」并留下 trace。
+
+        旧提示词喂出来的存量抽取结果仍会带这个类别；归一让它落到默认曲线，
+        而不是撞进枚举外分支之外的黑洞。
+        """
+
+        emitted = []
+        monkeypatch.setattr(
+            'src.core.agent.fact_extract.trace.emit',
+            lambda event, **fields: emitted.append((event, fields)),
+        )
+
+        got = parse_extraction(
+            '{"facts":[{"person":"1","kind":"状态","content":"他目前读大三"}]}'
+        )
+
+        assert got.facts == [ExtractedFact('1', '事件', '他目前读大三')]
+        assert emitted == [(
+            'memory_fact_kind_normalized',
+            {'rawKind': '状态', 'normalizedKind': '事件'},
+        )]
+
     def test_knowledge_is_extracted_alongside_facts(self):
         """知识候选与事实同一次往返产出，不为知识再读一遍同样的对话。"""
         got = parse_extraction(

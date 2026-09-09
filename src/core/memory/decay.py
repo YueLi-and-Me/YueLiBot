@@ -25,7 +25,6 @@ HALF_LIFE_HOURS: Dict[str, float] = {
     '习惯': 24 * 60,
     '关系': 24 * 90,
     '事件': 24 * 21,    # 发生过的具体事，会淡
-    '状态': 12,         # 临时状态，本来就该很快过期
 }
 
 FACT_KINDS: FrozenSet[str] = frozenset(HALF_LIFE_HOURS)

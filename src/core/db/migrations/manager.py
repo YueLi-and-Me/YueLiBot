@@ -31,7 +31,7 @@ from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 31  # 当前 schema 版本：表情包视觉去重与封禁身份迁移
+CURRENT_VERSION = 32  # 当前 schema 版本：「状态」事实类别退役，存量重判为「事件」
 
 
 def load_migration_registry() -> Dict[int, MigrationFn]:
@@ -73,6 +73,7 @@ def load_migration_registry() -> Dict[int, MigrationFn]:
         v28_to_v29,
         v29_to_v30,
         v30_to_v31,
+        v31_to_v32,
     )
 
     return get_registry()

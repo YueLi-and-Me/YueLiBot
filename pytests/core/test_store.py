@@ -142,8 +142,8 @@ class TestMemoryStore:
         assert after.retention > before.retention
 
     def test_forgotten_fact_still_recalled(self, store):
-        store.add_fact(OWNER_PERSON_ID, FactInput(kind='状态', content='玩家今天心情不好'), 0)
-        later = 10 * DAY
+        store.add_fact(OWNER_PERSON_ID, FactInput(kind='事件', content='玩家今天心情不好'), 0)
+        later = 100 * DAY
         assert store.sweep(later) == 1
         fc = store.fact_count(OWNER_PERSON_ID)
         assert fc['total'] == 1 and fc['active'] == 0
@@ -152,19 +152,19 @@ class TestMemoryStore:
 
     def test_sweep_leaves_long_term_facts(self, store):
         store.add_fact(OWNER_PERSON_ID, FactInput(kind='身份', content='玩家是后端工程师'), 0)
-        store.add_fact(OWNER_PERSON_ID, FactInput(kind='状态', content='玩家现在很累'), 0)
-        assert store.sweep(30 * DAY) == 1
+        store.add_fact(OWNER_PERSON_ID, FactInput(kind='事件', content='玩家现在很累'), 0)
+        assert store.sweep(100 * DAY) == 1
         fc = store.fact_count(OWNER_PERSON_ID)
         assert fc['total'] == 2 and fc['active'] == 1
-        assert store.top_facts(OWNER_PERSON_ID, 5, 30 * DAY, stream_kind='direct')[0].content == '玩家是后端工程师'
+        assert store.top_facts(OWNER_PERSON_ID, 5, 100 * DAY, stream_kind='direct')[0].content == '玩家是后端工程师'
 
     def test_first_seen_at_recorded(self, store):
         assert store.first_seen_at(OWNER_PERSON_ID) > 0
 
     def test_frozen_fact_in_all_facts(self, store):
-        store.add_fact(OWNER_PERSON_ID, FactInput(kind='状态', content='玩家今天心情不好'), 0)
-        store.sweep(10 * DAY)
-        all_f = store.all_facts(OWNER_PERSON_ID, 10 * DAY)
+        store.add_fact(OWNER_PERSON_ID, FactInput(kind='事件', content='玩家今天心情不好'), 0)
+        store.sweep(100 * DAY)
+        all_f = store.all_facts(OWNER_PERSON_ID, 100 * DAY)
         assert len(all_f) == 1 and all_f[0].frozen is True
 
 
