@@ -126,6 +126,7 @@ from src.core.platform_io.types import (
     InboundMessage,
     OutboundPoke,
     OutboundReaction,
+    StreamKind,
 )
 from src.core.prompts.registry import (
     CHAT_CONVERSATION_TEMPLATE_IDS,
@@ -454,7 +455,10 @@ class ChatService(
                 'recall',
                 CognitiveToolExecutor(
                     RecallAction(
-                        self.memory, self._registry.stream_display_name, db,
+                        # 跨人物召回会带回从未在本平台出现的人物，显示名解析
+                        # 需要「本平台查不到就退回任一平台身份」的宽容变体，
+                        # 否则桌面端问到只有 QQ 身份的人会让整次检索抛错。
+                        self.memory, self._registry.stream_display_name_or_any, db,
                         private_in_group=self._private_facts_in_group,
                     )
                 ),
@@ -2373,14 +2377,27 @@ class ChatService(
             capabilities=capabilities,
         )
 
-    def _cognitive_scope(self, frame: DecisionFrame, stream_id: int) -> CognitiveScope:
+    def _cognitive_scope(
+        self,
+        frame: DecisionFrame,
+        stream_id: int,
+        stream_kind: StreamKind,
+        person_kind: str,
+    ) -> CognitiveScope:
         """按本回合水位冻结认知检索的会话与人物范围。
 
         范围在回合开始时定死：水位之后新到的发言者不进入检索范围，使 Bot 这一回合
         「能想起谁的事」不随批次外消息漂移。
 
+        主动检索的人物范围只在「非群聊会话 + 当前对话者是 owner」时放开到跨在场者：
+        群聊里放开会让 A 群能问出 B 群的事（两边都是 group 来源，可见性规则不拦，
+        必须由这个门拦）；非 owner 的私聊里放开等于让任何人查任何人。被动注入
+        不经过这里，仍按在场者取。
+
         :param frame: 本回合固定快照。
         :param stream_id: 当前会话 ID。
+        :param stream_kind: 当前会话类型；群聊永不放开人物范围。
+        :param person_kind: 当前对话者的人物类型；只有 ``owner`` 放开。
         :return: 供本回合全部认知动作共用的检索范围。
         """
         return CognitiveScope(
@@ -2388,6 +2405,7 @@ class ChatService(
             person_ids=tuple(
                 self.memory.recent_speakers(stream_id, frame.message_watermark)
             ),
+            cross_person=stream_kind != 'group' and person_kind == 'owner',
         )
 
     def _present_person_ids(self, context: ConversationContext) -> list[int]:
@@ -2760,6 +2778,15 @@ class ChatService(
                     observation=observation,
                 )
 
+        # 关闭 ReAct 时连范围都不算：那是一次真实的数据库查询，
+        # 为一个永远不会被消费的字段付账没有意义。
+        cognitive_scope = (
+            self._cognitive_scope(
+                frame, context.stream.id, context.stream.kind, context.person.kind,
+            )
+            if self._cognitive_rounds > 0
+            else None
+        )
         outcome = await self._conversation_agent.run(
             frame,
             messages,
@@ -2769,13 +2796,7 @@ class ChatService(
             model_task='chat.conversation',
             provider_name=getattr(self._chat_provider, 'provider', ''),
             model_name=getattr(self._chat_provider, 'model', ''),
-            # 关闭 ReAct 时连范围都不算：那是一次真实的数据库查询，
-            # 为一个永远不会被消费的字段付账没有意义。
-            cognitive_scope=(
-                self._cognitive_scope(frame, context.stream.id)
-                if self._cognitive_rounds > 0
-                else None
-            ),
+            cognitive_scope=cognitive_scope,
             cognitive_rounds=self._cognitive_rounds,
             tool_context=(
                 ToolContext(
@@ -2784,6 +2805,9 @@ class ChatService(
                     frame=frame,
                     turn_id=frame.turn_id,
                     snapshot_id=frame.snapshot_id,
+                    cross_person=(
+                        cognitive_scope.cross_person if cognitive_scope else False
+                    ),
                 )
                 if self._tool_calling
                 else None

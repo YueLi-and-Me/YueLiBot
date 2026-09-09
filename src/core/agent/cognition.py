@@ -68,10 +68,14 @@ class CognitiveScope:
 
     :ivar stream_id: 当前会话 ID；检索不跨会话，与既有隐私硬隔离同一条边界。
     :ivar person_ids: 事实检索覆盖的人物范围，通常是本回合上下文里的在场者。
+    :ivar cross_person: 主动检索是否放开人物范围（跨在场者）。只有非群聊会话
+        且当前对话者是 owner 时才放开；被动注入不受此字段影响。放开后可见性
+        规则（``origin_kind`` × ``stream_kind``）照旧逐条生效。
     """
 
     stream_id: int
     person_ids: tuple[int, ...]
+    cross_person: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,8 @@ class CognitiveRequest:
     :ivar person_ids: 检索事实时的人物范围，通常是本回合上下文里的在场者。
     :ivar message_watermark: 本回合消息水位；历史检索只看水位之前的消息，
         使认知轮看到的东西不会随批次外新消息漂移。
+    :ivar cross_person: 事实检索是否放开人物范围；由回合开始时的范围快照透传，
+        一轮之内不变。
     """
 
     action: str
@@ -93,6 +99,7 @@ class CognitiveRequest:
     stream_kind: StreamKind
     person_ids: tuple[int, ...]
     message_watermark: int
+    cross_person: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,11 +207,20 @@ class RecallAction:
         :raises sqlite3.Error: 底层检索失败时原样上抛，由 Agent 记为失败状态。
         副作用：只读记忆库；不回补事实强度，检索本身不应改写遗忘曲线。
         """
-        facts = self._store.recall_facts_in_scope(
-            request.person_ids, request.query, limit=self._fact_limit,
-            stream_kind=request.stream_kind,
-            private_in_group=self._private_in_group,
-        )
+        if request.cross_person:
+            # 人物范围的门在会话层（非群聊 + owner 对话者），这里只忠实执行；
+            # 可见性规则仍在读取入口逐条生效。
+            facts = self._store.recall_facts_across_persons(
+                request.query, limit=self._fact_limit,
+                stream_kind=request.stream_kind,
+                private_in_group=self._private_in_group,
+            )
+        else:
+            facts = self._store.recall_facts_in_scope(
+                request.person_ids, request.query, limit=self._fact_limit,
+                stream_kind=request.stream_kind,
+                private_in_group=self._private_in_group,
+            )
         episodes = self._store.recall_episodes(
             request.stream_id, request.query, limit=self._episode_limit,
         )
@@ -250,6 +266,8 @@ class RecallAction:
             seeds=len(seeds),
             spread=len(spread_hits),
             hops=HOPS,
+            # 真机上靠它区分「跨人生效了但没命中」与「门没开」两种零命中。
+            crossPerson=request.cross_person,
         )
         return CognitiveObservation(
             text='\n'.join(lines),

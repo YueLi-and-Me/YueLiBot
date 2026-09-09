@@ -1540,6 +1540,85 @@ class MemoryStore:
         scored.sort(key=lambda fact: fact.score, reverse=True)
         return scored if return_candidates else scored[:limit]
 
+    def recall_facts_across_persons(
+        self,
+        query: str,
+        limit: int = 6,
+        now: int | None = None,
+        *,
+        stream_kind: str,
+        private_in_group: bool = False,
+        return_candidates: bool = False,
+    ) -> list[ScopedFact]:
+        """不按人物过滤的事实召回，供 owner 非群聊会话里的主动检索使用。
+
+        与 :meth:`recall_facts_in_scope` 的唯一差别是没有 ``person_id IN`` 条件：
+        模型明确写下检索词去查一个不在场的人时，边界由可见性规则
+        （``origin_kind`` × ``stream_kind``）而不是「这个人此刻在不在场」来管。
+        放行的人物范围由调用方的会话门（非群聊 + owner 对话者）决定，本入口
+        不自判；``superseded_by IS NULL`` 与可见性过滤照旧全过，被挡条数照常
+        发 ``memory_fact_scope_blocked``。
+
+        :param query: 待检索的自然语言文本。
+        :param limit: 最多返回的事实数量，默认 ``6``。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :param stream_kind: 当前读取发生的会话类型；必填，漏传会让
+            ``direct`` 事实无声地出现在群聊提示词里。
+        :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+        :param return_candidates: 是否返回截取前的候选池；候选随 ``embedding``
+            一并带回。
+
+        :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
+
+        :raises sqlite3.Error: FTS 查询失败。
+
+        副作用：只读 facts_fts 与 facts 表，不写任何列、不提交事务；
+            有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
+
+        性能：单次 FTS 查询，最多读取 ``limit * 3`` 个候选。
+        """
+        match = match_query(query)
+        if not match:
+            return []
+        now = now if now is not None else current_time()
+        rows = self._db.execute(
+            '''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
+                      f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
+                      f.origin_kind, f.embedding
+               FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
+               WHERE facts_fts MATCH ? AND f.superseded_by IS NULL
+               ORDER BY bm ASC LIMIT ?''',
+            (match, limit * 3),
+        ).fetchall()
+        blocked = 0
+        visible_rows = []
+        for r in rows:
+            if fact_visible_in_stream(
+                r[8], stream_kind, private_in_group=private_in_group,
+            ):
+                visible_rows.append(r)
+            else:
+                blocked += 1
+        if blocked:
+            self._emit_scope_blocked(stream_kind, blocked)
+        scored: list[ScopedFact] = []
+        for r in visible_rows:
+            ret = retention(r[3], r[4], r[5], now)
+            relevance = relevance_from_bm25(r[7])
+            scored.append(ScopedFact(
+                id=r[0],
+                kind=r[1],
+                content=r[2],
+                retention=ret,
+                score=blend_score(relevance, ret),
+                lexical_relevance=relevance,
+                embedding=r[9],
+                half_life_hours=r[5],
+                person_id=r[6],
+            ))
+        scored.sort(key=lambda fact: fact.score, reverse=True)
+        return scored if return_candidates else scored[:limit]
+
     def message_count_after(self, stream_id: int, since_id: int) -> int:
         """统计某条消息之后该 stream 又落库了多少条消息。
 

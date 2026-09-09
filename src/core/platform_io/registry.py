@@ -493,6 +493,37 @@ class StreamRegistry:
                 return row[0]
         return self.display_name(person_id, stream.platform)
 
+    def stream_display_name_or_any(self, person_id: int, stream_id: int) -> str:
+        """会话内显示名的宽容变体：本平台没有身份时退回任一平台身份的显示名。
+
+        跨人物召回会把从未在本会话平台出现过的人物带进观察文本（owner 在私聊
+        或桌面端问起第三人），严格变体此时抛 ``ValueError``，整次检索按本机
+        故障失败。显示名在这里只是事实的归属标注，退回该人物任一平台身份名
+        不扩大可见范围——名字本来就会随被可见性规则放行的事实正文一起被读到。
+
+        :param person_id: 目标人物 ID。
+        :param stream_id: 目标 stream ID。
+
+        :return: 群名片或本平台账号显示名；都没有时退回任一平台身份的显示名。
+
+        :raises ValueError: stream 或人物不存在，或人物在任何平台都没有身份。
+        :raises sqlite3.Error: 查询失败。
+        """
+        try:
+            return self.stream_display_name(person_id, stream_id)
+        except ValueError:
+            pass
+        self.person(person_id)
+        row = self._db.execute(
+            '''SELECT display_name FROM identities
+               WHERE person_id = ?
+               ORDER BY platform ASC, external_id ASC LIMIT 1''',
+            (person_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"person {person_id} 在任何平台都没有可用显示名")
+        return row[0]
+
     def set_group_card(
         self,
         person: PersonRef,

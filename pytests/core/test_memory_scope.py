@@ -197,7 +197,88 @@ class TestStreamKindRequired:
         with pytest.raises(TypeError):
             store.recall_facts_in_scope((OWNER_PERSON_ID,), '咖啡', 6, NOW + 1)
         with pytest.raises(TypeError):
+            store.recall_facts_across_persons('咖啡', 6, NOW + 1)
+        with pytest.raises(TypeError):
             store.top_facts(OWNER_PERSON_ID, 8, NOW + 1)
+
+
+class TestCrossPersonRecallEntry:
+    """★K2：跨人物读取入口只认可见性，不认「在不在场」。
+
+    放开人物范围的会话门在服务层（非群聊 + owner）；入口本身必须保证
+    ``superseded_by`` 与可见性过滤一道不缺，被挡条数照常落账。
+    """
+
+    def _absent_person_with_fact(
+        self, db, store: MemoryStore, content: str, origin: str,
+    ) -> int:
+        """构造一个只在群里出现过的人物及其一条事实，返回事实 ID。"""
+
+        registry = StreamRegistry(db)
+        context = registry.resolve_inbound(
+            platform='qq',
+            stream_kind='group',
+            stream_external_id='629201002',
+            sender_external_id='3209184542',
+            sender_nickname='不思量デス',
+            sender_group_card='不思量',
+            first_seen_at=NOW,
+        )
+        fact_id = store.add_fact(
+            context.person.id, FactInput(kind='事件', content=content), NOW,
+        ).fact_id
+        db.execute(
+            'UPDATE facts SET origin_kind = ? WHERE id = ?', (origin, fact_id)
+        )
+        return fact_id
+
+    def test_cross_person_entry_hits_absent_person_group_fact(self, db):
+        """★K2-1 正例：私聊里不在场人物的 group 来源事实能被命中。"""
+
+        store = MemoryStore(db)
+        self._absent_person_with_fact(db, store, '3209184542 玩《原神》这款游戏', ORIGIN_GROUP)
+
+        hits = store.recall_facts_across_persons('原神', 6, NOW + 1, stream_kind='direct')
+
+        assert [fact.content for fact in hits] == ['3209184542 玩《原神》这款游戏']
+        assert hits[0].person_id != OWNER_PERSON_ID
+        # 对照：同一查询按在场者范围取，命中数为 0。
+        assert store.recall_facts_in_scope(
+            (OWNER_PERSON_ID,), '原神', 6, NOW + 1, stream_kind='direct',
+        ) == []
+
+    def test_cross_person_entry_keeps_visibility_rules_in_group(self, db, monkeypatch):
+        """★K2-2：跨人物入口在群聊里仍挡 direct 来源，W7 不回退。"""
+
+        store = MemoryStore(db)
+        self._absent_person_with_fact(db, store, '3209184542 玩《原神》这款游戏', ORIGIN_DIRECT)
+        emitted = []
+        monkeypatch.setattr(
+            'src.core.memory.store.trace.emit',
+            lambda kind, **fields: emitted.append((kind, fields)),
+        )
+
+        blocked_hits = store.recall_facts_across_persons('原神', 6, NOW + 1, stream_kind='group')
+
+        assert blocked_hits == []
+        blocked = [fields for kind, fields in emitted if kind == 'memory_fact_scope_blocked']
+        assert blocked == [{'streamKind': 'group', 'blocked': 1}]
+        # 同一条事实换到非群聊会话就可见：挡它的是场合，不是人物范围。
+        assert store.recall_facts_across_persons('原神', 6, NOW + 1, stream_kind='direct')
+
+    def test_cross_person_entry_excludes_superseded_facts(self, db):
+        """已被取代的事实不进入跨人物候选，与在场者入口同口径。"""
+
+        store = MemoryStore(db)
+        fact_id = self._absent_person_with_fact(
+            db, store, '3209184542 玩《原神》这款游戏', ORIGIN_GROUP,
+        )
+        replacement = store.add_fact(
+            OWNER_PERSON_ID, FactInput(kind='事件', content='他改玩别的游戏了'), NOW,
+        ).fact_id
+        db.execute('UPDATE facts SET superseded_by = ? WHERE id = ?', (replacement, fact_id))
+
+        assert store.recall_facts_across_persons('原神', 6, NOW + 1, stream_kind='direct') == []
 
 
 class TestEpisodeIsolation:

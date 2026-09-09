@@ -255,6 +255,7 @@ def _emit_tool_execution(
     duration_ms: int,
     observation: str = '',
     tool_kind: str = 'cognitive',
+    cross_person: bool = False,
 ) -> None:
     """把一次已执行工具的账目写进观察账本。
 
@@ -269,6 +270,8 @@ def _emit_tool_execution(
     :param observation: 观察摘要，按账本上限截断。
     :param tool_kind: 工具类别；内置认知动作为 cognitive，外部只读工具为
         readonly。账本据此区分 Bot 查询记忆与读取会话内容。
+    :param cross_person: 本回合事实检索是否放开了人物范围；逐条带上，
+        真机上才能区分「跨人生效了但没命中」与「门没开」。
     """
     trace.emit(
         'tool_execution',
@@ -281,6 +284,7 @@ def _emit_tool_execution(
         durationMs=duration_ms,
         eventStatus=event_status,
         observation=_truncate(observation, OBSERVATION_EVENT_MAX_CHARS),
+        crossPerson=cross_person,
     )
 
 
@@ -915,6 +919,10 @@ class ConversationAgent:
                                     call, frame, round_index,
                                     event_status='failed',
                                     duration_ms=int((time.monotonic() - tool_started_at) * 1000),
+                                    cross_person=(
+                                        cognitive_scope.cross_person
+                                        if cognitive_scope else False
+                                    ),
                                 )
                                 # 内置认知工具的本机故障原样上抛：它会被外层
                                 # 异常分类捕获，这里用标记让它原样穿过，不转成
@@ -931,6 +939,10 @@ class ConversationAgent:
                                         event_status='committed',
                                         duration_ms=tool_duration_ms,
                                         observation=step_observation,
+                                        cross_person=(
+                                            cognitive_scope.cross_person
+                                            if cognitive_scope else False
+                                        ),
                                     )
                                     steps.append(
                                         (
@@ -1180,6 +1192,7 @@ class ConversationAgent:
             duration_ms=duration_ms,
             observation=result.observation if result.success else '',
             tool_kind='readonly',
+            cross_person=tool_context.cross_person,
         )
         observation = (
             result.observation
@@ -1230,6 +1243,7 @@ class ConversationAgent:
                     turn_id=frame.turn_id,
                     snapshot_id=frame.snapshot_id,
                     person_ids=cognitive_scope.person_ids,
+                    cross_person=cognitive_scope.cross_person,
                 ),
             )
             if not result.success:

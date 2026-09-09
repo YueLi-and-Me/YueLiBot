@@ -256,6 +256,7 @@ FIELD_LABELS: Dict[str, str] = {
     "conversationImpression": "会话印象检索词",
     "contextMeaning": "语境含义",
     "count": "数量",
+    "crossPerson": "跨人物检索",
     "currentText": "当前文本检索词",
     "currentTextChars": "当前文本字数",
     "cues": "线索数",

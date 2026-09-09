@@ -61,6 +61,7 @@ class CognitiveToolExecutor:
                 stream_kind=context.stream_kind,
                 person_ids=context.person_ids,
                 message_watermark=context.frame.message_watermark,
+                cross_person=context.cross_person,
             ),
         )
         return ToolExecutionResult(

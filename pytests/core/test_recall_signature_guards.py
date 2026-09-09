@@ -1,4 +1,4 @@
-"""三个事实读取入口的调用纪律守卫（★S-6）。
+"""四个事实读取入口的调用纪律守卫（★S-6）。
 
 用 AST 扫描 src/ 下全部调用点：漏传 ``stream_kind`` 的裸调用会让可见性过滤
 形同虚设；旁路值 ``'all'`` 只允许出现在事实抽取的去重清单那一个调用点。
@@ -10,7 +10,12 @@ import ast
 from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parents[2] / 'src'
-_ENTRY_POINTS = {'recall_facts', 'recall_facts_in_scope', 'top_facts'}
+_ENTRY_POINTS = {
+    'recall_facts',
+    'recall_facts_in_scope',
+    'recall_facts_across_persons',
+    'top_facts',
+}
 _ALL_BYPASS_FILE = 'fact_extract.py'
 
 
@@ -28,7 +33,7 @@ def _iter_entry_calls():
 
 
 def test_no_call_site_omits_stream_kind() -> None:
-    """★S-6：全项目没有裸调用三个入口的地方。"""
+    """★S-6：全项目没有裸调用四个入口的地方。"""
     missing = []
     for rel, node in _iter_entry_calls():
         has = any(kw.arg == 'stream_kind' for kw in node.keywords)
