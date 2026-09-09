@@ -33,8 +33,10 @@ from src.core.config.schema import CONFIG_VERSION
 
 logger = get_logger(__name__)
 
-# 本模块文件位置是 src/core/services/dev/dev_commands.py，上推三级即仓库根。
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# 本模块位于 src/core/services/dev/dev_commands.py，向上第四级才是仓库根。
+# 曾误写为 parents[3]，那一级是 src/：/version 据此去找 src/package.json 必然落空，
+# Electron 版本在所有平台恒显示「不可用」；/git 因为 git 会自行向上查找 .git 而侥幸未暴露。
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 DEFAULT_GIT_DAYS = 7
 MIN_GIT_DAYS = 1
@@ -137,6 +139,7 @@ def handle_version(db_path: Path, config_dir: Path, repo_dir: Path = PROJECT_ROO
         f'数据库 {_read_user_version_text(db_path)}'
     )
     second_line = (
+        f'系统 {_read_system_text()}；'
         f'Python {platform.python_version()}；'
         f'Electron {_read_electron_version_text(repo_dir)}；'
         f'适配器 {_read_adapter_text(config_dir)}'
@@ -251,6 +254,15 @@ def _clip(text: str, limit: int = 200) -> str:
     """把日志里的 stderr 截到给定长度，避免长报错刷屏。"""
     text = (text or '').strip()
     return text if len(text) <= limit else text[:limit] + '…'
+
+
+def _read_system_text() -> str:
+    """运行所在的操作系统与其版本，形如 ``Linux 6.8.0-48-generic``、``Windows 11``。
+
+    主体可同时部署在 Windows 桌宠机与无头 Linux 服务器上，同一个 owner 收到的回复
+    需要能一眼区分来自哪一台，因此这项排在第二行最前。
+    """
+    return f'{platform.system()} {platform.release()}'
 
 
 def _read_user_version_text(db_path: Path) -> str:

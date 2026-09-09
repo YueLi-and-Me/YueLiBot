@@ -254,6 +254,20 @@ def test_b5_fields_trace_to_real_sources(tmp_path: Path) -> None:
     assert platform.python_version() in reply
     assert '43.2.1' in reply
     assert 'yueli-test-adapter' in reply
+    # 同一个 owner 会同时收到桌宠机与服务器的回复，系统名是区分来源的唯一字段。
+    assert f'系统 {platform.system()} {platform.release()}' in reply
+
+
+def test_b5_project_root_points_at_repository_root() -> None:
+    """PROJECT_ROOT 必须落在仓库根，而不是 src/。
+
+    这里断言的是目录层级本身：曾经少推一级落到 src/，``/version`` 因此永远找不到
+    package.json、Electron 版本恒为「不可用」，而所有既有用例都没覆盖这一级，
+    缺陷只能靠人肉观察发现。
+    """
+    assert (dev_commands.PROJECT_ROOT / 'pyproject.toml').is_file()
+    assert (dev_commands.PROJECT_ROOT / 'package.json').is_file()
+    assert dev_commands.PROJECT_ROOT.name != 'src'
 
 
 def test_b5_electron_falls_back_to_declared_range_and_marks_unavailable(
