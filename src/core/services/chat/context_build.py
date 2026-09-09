@@ -293,6 +293,37 @@ class ContextBuildMixin:
             now=now,
         )
 
+    def _shared_groups_for_prompt(
+        self,
+        context: ConversationContext,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """取当前对话者与 Bot 的共处群，供系统提示词渲染一行背景。
+
+        只在非群聊会话取数：群聊里注入「她和对方同在某群」会把别的群的存在
+        当众说出来，与可见性规则同源——注入范围由场合决定。群成员关系覆盖的
+        群 stream 都是 Bot 自己在场的会话，对方的成员列表因此就是共处群集合；
+        群名为空（协议端没拉到）时退回群号。
+
+        :param context: 当前会话上下文。
+        :return: ``(对方显示名, 群标签元组)``；群聊会话或无共处群时为 ``None``。
+        :raises sqlite3.Error: 读取群成员关系或身份失败。
+        副作用：只读注册表。
+        """
+        if context.stream.kind == 'group':
+            return None
+        memberships = self._registry.group_memberships(context.person.id)
+        if not memberships:
+            return None
+        labels = tuple(
+            membership.group_display_name or membership.group_external_id
+            for membership in memberships
+        )
+        identities = self._registry.list_identities(context.person.id)
+        partner = self._profile_display_name(
+            context.person, identities, context.stream.platform,
+        )
+        return (partner, labels)
+
     def _prepare_turn_context(
         self,
         context: ConversationContext,
@@ -425,6 +456,7 @@ class ContextBuildMixin:
             raw_history=raw_history,
             agent_history=agent_history,
             jargon=jargon,
+            shared_groups=self._shared_groups_for_prompt(context),
         )
 
     def _render_prepared_context(
@@ -510,6 +542,9 @@ class ContextBuildMixin:
                     and feedback_cfg.profile_force_refresh_on_read
                 ),
             ),
+            # 共处群只在非群聊会话组装（取数在 _shared_groups_for_prompt），
+            # 群聊里这份输入恒为 None，渲染层整块省略。
+            'shared_groups': prepared.shared_groups,
             'render_params': render_params,
             'decision_only': decision_only,
             **prompt_kwargs,

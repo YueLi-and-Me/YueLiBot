@@ -151,7 +151,7 @@ def _chat_replay_event() -> dict[str, Any]:
                 'name': '测试角色', 'identity': '测试身份', 'relationship': '',
                 'time_context': '测试时间', 'birthday_note': '', 'resumption': '',
                 'persona': '', 'activity': '', 'scene': '',
-                'jargon': '', 'impressions': '',
+                'jargon': '', 'impressions': '', 'shared_groups': '',
                 'facts': '', 'episodes': '',
                 'reply_style': '自然回复', 'tone': '', 'expression_habits': '',
                 'length': '',

@@ -47,6 +47,8 @@ class GroupMembershipRef:
     group_external_id: str
     group_card: str
     updated_at: int
+    # 群名来自 streams.display_name；协议端没拉到群名时为空串，渲染侧退回群号。
+    group_display_name: str = ''
 
 
 @dataclass(frozen=True)

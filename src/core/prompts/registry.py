@@ -124,6 +124,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'scene',
         'jargon',
         'impressions',
+        'shared_groups',
         'facts',
         'episodes',
         'reply_style',

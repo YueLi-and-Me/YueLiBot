@@ -135,14 +135,16 @@ class StreamRegistry:
 
         :param person_id: 目标人物 ID。
 
-        :return: 按 stream ID 排序的 ``GroupMembershipRef`` 列表；空群名片表示当前未设置。
+        :return: 按 stream ID 排序的 ``GroupMembershipRef`` 列表；空群名片表示当前未设置，
+            群名为空表示协议端没拉到（渲染侧应退回群号）。
 
         :raises ValueError: 人物不存在。
         :raises sqlite3.Error: 查询群成员关系失败。
         """
         person = self.person(person_id)
         rows = self._db.execute(
-            '''SELECT gm.stream_id, s.external_id, gm.group_card, gm.updated_at
+            '''SELECT gm.stream_id, s.external_id, gm.group_card, gm.updated_at,
+                      s.display_name
                FROM group_memberships AS gm
                JOIN streams AS s ON s.id = gm.stream_id
                WHERE gm.person_id = ?
@@ -155,6 +157,7 @@ class StreamRegistry:
                 group_external_id=row[1],
                 group_card=row[2],
                 updated_at=row[3],
+                group_display_name=row[4] if row[4] is not None else '',
             )
             for row in rows
         ]

@@ -208,6 +208,9 @@ class _PreparedTurnContext:
     # 两类副作用，而组装好的上下文会被决策与回复两次渲染共用——查表放在
     # 组装期执行一次，结果作为不可变字段带下去，渲染期只读。
     jargon: tuple[tuple[str, str], ...]
+    # 当前对话者与 Bot 的共处群（对方显示名, 群标签元组）；仅非群聊会话组装，
+    # 无共处群时为 None。与 jargon 同一纪律：组装期取数一次，两次渲染只读。
+    shared_groups: tuple[str, tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True)

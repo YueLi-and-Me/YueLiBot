@@ -279,6 +279,26 @@ def _impressions_block(impressions: Optional[Sequence['InjectionProfile']]) -> s
     ]))
 
 
+def _shared_groups_block(shared_groups: Optional[Tuple[str, Sequence[str]]]) -> str:
+    """把「你和当前对话者共处哪些群」渲染成一行背景。
+
+    与 ``_impressions_block`` 同一纪律：只注入当前对话者的共处群（取数在
+    ``services/chat/context_build.py``，仅非群聊会话——它描述的是在场者，
+    群聊里注入等于当众复述「她在别的群」），此处为纯渲染器。无共处群时整块
+    省略，不输出只有标题的空块；群名为空是正常情况，取数时已退回群号。
+
+    :param shared_groups: ``(对方显示名, 群标签序列)``；``None`` 或标签为空时整块省略。
+    :return: 带段落前缀的一行块；无共处群时返回空字符串。
+    副作用：不修改传入序列。
+    """
+    if not shared_groups:
+        return ''
+    partner, labels = shared_groups
+    if not labels:
+        return ''
+    return _prefixed_block(f'你和{partner}同在这些群：{"、".join(labels)}')
+
+
 @dataclass(frozen=True)
 class MemoryFactItem:
     """注入主对话提示词的一条长期事实。
@@ -399,6 +419,7 @@ def build_system_prompt(
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
     impressions: Optional[Sequence[InjectionProfile]] = None,
+    shared_groups: Optional[Tuple[str, Sequence[str]]] = None,
     decision_only: bool = False,
 ) -> str:
     """组装主对话系统提示词，并将各类上下文注入对应的固定区块。
@@ -429,6 +450,8 @@ def build_system_prompt(
     :param emoji_enabled: 本轮是否允许发表情包。
     :param jargon: 本轮消息命中的黑话 ``(词, 含义)`` 列表，由 ``agent/jargon.py``
         查表截断后传入；为空时整块省略。
+    :param shared_groups: 当前对话者与 Bot 的共处群 ``(对方显示名, 群标签序列)``；
+        仅非群聊会话注入，``None`` 或标签为空时整块省略。
     :param decision_only: 只产出动作决策、不写正文时置真。此时省略回复风格、
         临时语调与表达样本三块：它们只影响表达方式，对决策无用，保留会占用
         上下文并诱导模型直接产出台词。身份、人格、关系与记忆照常注入：
@@ -489,6 +512,7 @@ def build_system_prompt(
         'scene': _scene_block(scene),
         'jargon': _jargon_block(jargon),
         'impressions': _impressions_block(impressions),
+        'shared_groups': _shared_groups_block(shared_groups),
         'facts': _facts_block(
             '你早就知道的事',
             facts,
@@ -543,6 +567,7 @@ def build_itemized_system_prompt(
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
     impressions: Optional[Sequence[InjectionProfile]] = None,
+    shared_groups: Optional[Tuple[str, Sequence[str]]] = None,
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     decision_only: bool = False,
 ) -> Tuple[str, List[str]]:
@@ -574,6 +599,8 @@ def build_itemized_system_prompt(
     :param platform_name: 平台侧 Bot 显示名。
     :param scene: 可选群聊场景画像。
     :param jargon: 本轮消息命中的黑话 ``(词, 含义)`` 列表；为空时不生成该上下文项。
+    :param shared_groups: 当前对话者与 Bot 的共处群 ``(对方显示名, 群标签序列)``；
+        仅非群聊会话注入，``None`` 或标签为空时不生成该上下文项。
     :param render_params: 可选的提示词渲染参数收集字典。
     :param decision_only: 是否只做动作决策；为真时省略表达层内容。
 
@@ -652,6 +679,7 @@ def build_itemized_system_prompt(
         ('会话场景', _scene_block(scene).strip()),
         ('群里的说法', _jargon_block(jargon).strip()),
         ('你对他们的印象', _impressions_block(impressions).strip()),
+        ('共处群聊', _shared_groups_block(shared_groups).strip()),
         ('长期记忆', _facts_block(
             '你早就知道的事',
             facts,

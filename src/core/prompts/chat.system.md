@@ -4,7 +4,7 @@
 {{identity}}{{relationship}}
 
 # 此刻
-{{time_context}}{{birthday_note}}{{resumption}}{{persona}}{{activity}}{{scene}}{{jargon}}{{impressions}}{{facts}}{{episodes}}
+{{time_context}}{{birthday_note}}{{resumption}}{{persona}}{{activity}}{{scene}}{{jargon}}{{impressions}}{{shared_groups}}{{facts}}{{episodes}}
 
 # 说话风格
 {{reply_style}}{{tone}}{{expression_habits}}{{length}}
