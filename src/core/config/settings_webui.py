@@ -264,7 +264,9 @@ def snapshot(directory: Path) -> Dict[str, Any]:
     """读取全部配置文件并组装 schema + values 的 WebUI 快照。
 
     :param directory: 主体配置目录，同时含当前适配器的声明文件。
-    :return: ``schema`` 为字段映射，``values`` 按文件标识保存业务字段。
+    :return: ``schema`` 为字段映射，``values`` 按文件标识保存业务字段；
+        含点号的嵌套段同时以完整段键（``typing.nudge``）补一份平铺别名，
+        与前端按段键平铺索引的约定对齐。
     :raises OSError/ValueError/ValidationError: 任一文件缺失、版本不符或字段非法。
     副作用：只读配置，密钥以空字符串返回。
     """
@@ -296,6 +298,17 @@ def snapshot(directory: Path) -> Dict[str, Any]:
             'models': models['models'],
         },
     }
+    # 点号嵌套段在模型导出里是嵌套结构，前端却按段键平铺索引；为每个含点号的
+    # schema 段补一份以段键为名的平铺别名。按 schema 遍历而不写死段名，将来
+    # 新增嵌套段时不会漏。嵌套那份保留：按嵌套路径读的现有代码不受影响。
+    for item in load_schema()['files']:
+        file_values = values.get(item.get('file', ''))
+        if not isinstance(file_values, dict):
+            continue
+        for section in item.get('sections', []):
+            key = section.get('key', '')
+            if '.' in key:
+                file_values[key] = copy.deepcopy(_section_values(file_values, key))
     return {'schema': _schema_with_adapter_path(adapter_path), 'values': values}
 
 def _toml_inline(value: Any) -> str:
@@ -362,18 +375,55 @@ def _section_header(key: str, label: str, description: str) -> List[str]:
 
 
 def _section_values(document: Dict[str, Any], key: str) -> Dict[str, Any]:
-    """按点分路径取出一个配置段的值，支持 ``[a.b]`` 形式的子表。
+    """取出一个配置段的值：先按完整段键直查，查不到再按点号拆嵌套路径。
 
-    :param document: 已 ``model_dump`` 的配置文档。
+    段键是前后端之间的唯一标识，前端按它平铺索引与回传（``typing.nudge`` 就是
+    一个键，不是两层路径）；模型导出却是嵌套结构。写盘文档里两种形态可能并存
+    （见 :func:`_overlay_dotted_sections`），平铺那份才是用户编辑后的值，必须
+    优先；只有嵌套形态时（如未叠加的模型导出）走点号拆路径。
+
+    :param document: 已 ``model_dump`` 或按段键平铺的配置文档。
     :param key: schema 中声明的段键，可含点号表示嵌套。
     :return: 该段的字段映射；路径不存在或不是映射时返回空字典。
     """
+    if key in document:
+        value = document[key]
+        return value if isinstance(value, dict) else {}
     current: Any = document
     for part in key.split('.'):
         if not isinstance(current, dict):
             return {}
         current = current.get(part, {})
     return current if isinstance(current, dict) else {}
+
+
+def _overlay_dotted_sections(
+    document: Dict[str, Any],
+    raw: Dict[str, Any],
+    schema: Dict[str, Any],
+) -> Dict[str, Any]:
+    """把载荷里按段键平铺提交的点号嵌套段叠加到写盘文档上。
+
+    前端对 ``typing.nudge`` 这类段的编辑只落在平铺键上，而模型校验按嵌套路径
+    读取、默认忽略不识别的平铺键；不叠加的话写盘永远拿到嵌套旧值，用户的修改
+    被静默丢弃。叠加按字段合并而不是整段替换：以嵌套校验值为底、平铺值覆盖，
+    只提交了部分字段的载荷不会把没提交的字段写丢。
+
+    :param document: 校验后的 ``model_dump`` 结果，只含嵌套结构。
+    :param raw: 该文件在提交载荷里的原始值，可能含平铺段键。
+    :param schema: 该文件的 schema 节点，点号段以它的声明为准，不写死段名。
+    :return: 叠加后的新字典；没有点号段或载荷没提交时原样返回内容的浅拷贝。
+    """
+    overlaid = dict(document)
+    for section in schema.get('sections', []):
+        key = section.get('key', '')
+        if '.' not in key or key not in raw:
+            continue
+        flat = raw[key]
+        if not isinstance(flat, dict):
+            continue
+        overlaid[key] = {**_section_values(document, key), **flat}
+    return overlaid
 
 
 def _write_documented_toml(
@@ -445,7 +495,9 @@ def save(directory: Path, values: Dict[str, Any]) -> Dict[str, Any]:
     """校验 WebUI 提交的全部配置并原子写回磁盘。
 
     :param directory: 主体配置目录，同时含当前适配器的声明文件。
-    :param values: 按文件标识组织的业务字段字典，结构与 ``snapshot`` 的 values 一致。
+    :param values: 按文件标识组织的业务字段字典，结构与 ``snapshot`` 的 values
+        一致；点号嵌套段的编辑以平铺段键为准——模型校验按嵌套路径读、平铺键
+        会被忽略，写盘前由 :func:`_overlay_dotted_sections` 合并回写盘文档。
     :return: 成功返回 ``{'ok': True, 'detail': ...}``；失败返回错误说明。
     副作用：校验通过后原子替换主体四个 TOML 与当前适配器的连接配置。
     """
@@ -506,15 +558,25 @@ def save(directory: Path, values: Dict[str, Any]) -> Dict[str, Any]:
             adapter_tmp = Path(adapter_tmp_name) / adapter_path.name
             _write_documented_toml(
                 tmp / 'bot.toml', file_schema('bot.toml'),
-                bot.model_dump(), CONFIG_VERSION,
+                _overlay_dotted_sections(
+                    bot.model_dump(), values.get('bot.toml', {}), file_schema('bot.toml'),
+                ),
+                CONFIG_VERSION,
             )
             _write_documented_toml(
                 tmp / 'features.toml', file_schema('features.toml'),
-                features.model_dump(), CONFIG_VERSION,
+                _overlay_dotted_sections(
+                    features.model_dump(), values.get('features.toml', {}),
+                    file_schema('features.toml'),
+                ),
+                CONFIG_VERSION,
             )
             _write_documented_toml(
                 adapter_tmp, _adapter_write_schema(adapter_section),
-                _adapter_document_with_section(adapter.model_dump(), adapter_section),
+                _overlay_dotted_sections(
+                    _adapter_document_with_section(adapter.model_dump(), adapter_section),
+                    values.get(_ADAPTER_FILE, {}), _adapter_write_schema(adapter_section),
+                ),
                 NAPCAT_CONFIG_VERSION,
             )
             _write_documented_toml(

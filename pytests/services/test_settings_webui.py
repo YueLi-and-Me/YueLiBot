@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import tomllib
 
 import pytest
 
@@ -170,3 +171,59 @@ def test_schema_entries_must_match_config_model() -> None:
 
     with pytest.raises(ValueError, match='与配置模型不一致'):
         _require_task_entries_match_config(broken)
+
+
+def test_snapshot_values_cover_every_schema_section_key(config_copy: Path) -> None:
+    """快照必须按 schema 段键供数，含 ``typing.nudge`` 这类点号嵌套段。
+
+    前端按段键平铺索引 ``values[file][key]``；点号段若只存在于模型导出的嵌套
+    路径里，面板取不到值，布尔开关恒渲染为关、数字框恒渲染为空。
+    """
+    snap = settings_webui.snapshot(config_copy)
+    missing = [
+        f"{item['file']} [{section['key']}]"
+        for item in settings_webui.load_schema()['files']
+        for section in item.get('sections', [])
+        if section.get('key', '') not in snap['values'].get(item['file'], {})
+    ]
+    assert not missing, '快照缺少这些段键：' + ', '.join(missing)
+
+
+def _flip_nudge_enabled(values: dict, enabled: bool) -> None:
+    """模拟前端的平铺编辑：按段键整段改写 ``values['bot.toml']['typing.nudge']``。"""
+    bot_values = values['bot.toml']
+    section = dict(bot_values.get('typing.nudge') or {})
+    section['enabled'] = enabled
+    bot_values['typing.nudge'] = section
+
+
+def _disk_bot_document(config_dir: Path) -> dict:
+    """从磁盘原样读回 bot.toml，绕过快照，直接核对写盘结果。"""
+    return tomllib.loads((config_dir / 'bot.toml').read_text(encoding='utf-8'))
+
+
+def test_nested_section_switch_round_trips_through_save(config_copy: Path) -> None:
+    """点号嵌套段的开关经设置页保存后必须落到磁盘，且能改回来。
+
+    前端按段键平铺读写，开关翻转提交的是平铺的 ``typing.nudge`` 段值；写侧
+    若只认模型导出的嵌套旧值，这次编辑会被静默丢弃——文件里仍是保存前的值。
+    """
+    before = settings_webui.snapshot(config_copy)
+    follow_up_before = before['values']['bot.toml']['typing']['follow_up']['enabled']
+    cleanup_before = before['values']['bot.toml']['emoji']['cleanup']['enabled']
+
+    _flip_nudge_enabled(before['values'], False)
+    assert settings_webui.save(config_copy, before['values'])['ok'] is True
+    document = _disk_bot_document(config_copy)
+    assert document['typing']['nudge']['enabled'] is False
+    # 不相干的另两个点号段不能被这次保存顺手改掉。
+    assert document['typing']['follow_up']['enabled'] is follow_up_before
+    assert document['emoji']['cleanup']['enabled'] is cleanup_before
+
+    after = settings_webui.snapshot(config_copy)
+    _flip_nudge_enabled(after['values'], True)
+    assert settings_webui.save(config_copy, after['values'])['ok'] is True
+    document = _disk_bot_document(config_copy)
+    assert document['typing']['nudge']['enabled'] is True
+    assert document['typing']['follow_up']['enabled'] is follow_up_before
+    assert document['emoji']['cleanup']['enabled'] is cleanup_before
