@@ -242,6 +242,8 @@ FIELD_LABELS: Dict[str, str] = {
     "blockedSource": "被拦来源",
     "blocked": "被挡数量",
     "blockedEpisodes": "被挡情节数",
+    "blockedRebuild": "被挡待重建情节数",
+    "blockedSuperseded": "被挡过时事实数",
     "botName": "机器人",
     "botNames": "机器人名称",
     "bodyChars": "正文字数",

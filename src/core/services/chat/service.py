@@ -460,6 +460,12 @@ class ChatService(
                         # 否则桌面端问到只有 QQ 身份的人会让整次检索抛错。
                         self.memory, self._registry.stream_display_name_or_any, db,
                         private_in_group=self._private_facts_in_group,
+                        # 与 context_build 的情节召回同一个开关表达式：纠错屏蔽
+                        # 只堵住直接召回而放过联想扩散，等于没堵。
+                        exclude_pending_rebuild=(
+                            cfg.memory_feedback.enabled
+                            and cfg.memory_feedback.episode_query_block_enabled
+                        ),
                     )
                 ),
             )
