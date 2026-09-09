@@ -17,10 +17,10 @@ verify_integrity 重算全部文件哈希，任何缺失、越界或内容不一
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, List, Protocol, Sequence, Tuple
 from urllib.parse import unquote
 
 from PIL import Image, UnidentifiedImageError
@@ -166,10 +166,12 @@ class EmojiImportSummary:
 
 @dataclass(frozen=True)
 class EmojiSelection:
-    """一张已命中的表情包发送引用及其 OneBot 子类型。"""
+    """命中引用、OneBot 子类型及本次抽样快照；使用计数仍由成功发送后更新。"""
 
     send_ref: str
     sub_type: int
+    use_count: int = 0
+    candidate_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -302,7 +304,7 @@ class EmojiLibrary:
         directory: Path,
         embed_client: EmojiEmbeddingClient | None = None,
         *,
-        choice: Callable[[Sequence[EmojiSelection]], EmojiSelection] = random.choice,
+        choice: Callable[[Sequence[EmojiSelection]], EmojiSelection] | None = None,
         config: EmojiConfig | None = None,
         content_filter: EmojiContentFilter | None = None,
     ) -> None:
@@ -311,7 +313,7 @@ class EmojiLibrary:
         :param db: 已完成迁移的 SQLite 连接。
         :param directory: 表情包文件专用目录；不得与其他运行文件共用。
         :param embed_client: 文本嵌入客户端；缺失时使用标签包含匹配。
-        :param choice: top-K 候选随机选择函数，测试可注入确定性实现。
+        :param choice: 测试可注入确定性选择函数；缺省按使用次数的倒数加权抽样。
         :param config: 表情包库管理配置；缺省时使用全默认值（0 上限不淘汰、
             5 MB 单文件上限、不过滤、自动收集）。
         :param content_filter: 内容审查实现；只在配置开启过滤时被调用。
@@ -358,33 +360,6 @@ class EmojiLibrary:
             return None
         tags = str(row[0]).strip()
         return tags or None
-
-    def frequent_tags(self, limit: int = 12) -> tuple[str, ...]:
-        """统计覆盖表情最多的情绪标签，供提示词锚定 emotion 词表。
-
-        模型自拟的情绪词与视觉标注的标签词表天然存在偏差，把库内高频标签
-        回填进提示词可以显著提高检索命中率；词表保持小规模，避免挤占
-        协议文本的注意力。
-
-        :param limit: 返回的最大标签数，必须大于零。
-        :return: 按覆盖表情数降序、同数按字典序排列的前若干标签；库为空时
-            返回空元组。
-        :raises ValueError: limit 非正数。
-        副作用：只读 emoji 表，不修改任何记录。
-        """
-
-        if limit < 1:
-            raise ValueError('表情包高频标签 limit 必须大于零')
-        counts: dict[str, int] = {}
-        for (tags,) in self._db.execute(
-            f'SELECT emotion_tags FROM emoji WHERE {_banned_predicate(banned_only=False)}'
-        ):
-            for tag in str(tags).split(','):
-                tag = tag.strip()
-                if tag:
-                    counts[tag] = counts.get(tag, 0) + 1
-        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-        return tuple(tag for tag, _count in ranked[:limit])
 
     async def auto_register_directory(
         self,
@@ -1054,7 +1029,7 @@ class EmojiLibrary:
         return evicted
 
     async def select(self, emotion: str, top_k: int = 10) -> EmojiSelection | None:
-        """按目标情绪取语义最相近的 top-K 并随机返回一张。
+        """按目标情绪取语义最相近的 top-K，再按使用次数加权抽样。
 
         嵌入客户端不可用或查询失败时，按逗号分隔标签执行双向包含匹配；仍无
         候选时返回 None，不强行返回无关表情包。
@@ -1073,7 +1048,7 @@ class EmojiLibrary:
         # 嵌入期间管理端仍可封禁；候选查询放在最后一个 await 之后。
         query_vec = await self._embed_tags(query)
         rows = self._db.execute(
-            'SELECT send_ref, emotion_tags, emotion_vec, sub_type '
+            'SELECT send_ref, emotion_tags, emotion_vec, sub_type, use_count '
             f'FROM emoji WHERE {_banned_predicate(banned_only=False)} '
             'ORDER BY first_seen_at, hash'
         ).fetchall()
@@ -1091,8 +1066,8 @@ class EmojiLibrary:
             # 2. 库内残留其它维度的历史向量时，按查询长度逐条过滤只会跳过不匹配
             #    的记录，不影响其余候选。
             dim = len(query_vec) // 4
-            ranked: list[tuple[float, EmojiSelection]] = []
-            for send_ref, _tags, vector, sub_type in rows:
+            ranked: List[Tuple[float, EmojiSelection]] = []
+            for send_ref, _tags, vector, sub_type, use_count in rows:
                 if not isinstance(vector, bytes) or len(vector) != len(query_vec):
                     continue
                 ranked.append((
@@ -1100,23 +1075,41 @@ class EmojiLibrary:
                     EmojiSelection(
                         send_ref=str(send_ref),
                         sub_type=_validate_emoji_sub_type(sub_type),
+                        use_count=int(use_count),
                     ),
                 ))
             if ranked:
                 ranked.sort(key=lambda item: item[0], reverse=True)
-                return self._choice([selection for _score, selection in ranked[:top_k]])
+                return self._select_weighted([selection for _score, selection in ranked[:top_k]])
 
         matched = [
             EmojiSelection(
                 send_ref=str(send_ref),
                 sub_type=_validate_emoji_sub_type(sub_type),
+                use_count=int(use_count),
             )
-            for send_ref, tags, _vector, sub_type in rows
+            for send_ref, tags, _vector, sub_type, use_count in rows
             if _tags_overlap(query, str(tags))
         ]
         if not matched:
             return None
-        return self._choice(matched[:top_k])
+        return self._select_weighted(matched[:top_k])
+
+    def _select_weighted(self, candidates: Sequence[EmojiSelection]) -> EmojiSelection:
+        """从已截断的非空候选池抽样，并随结果携带该次查询的观测快照。"""
+        # 真机统计有 83% 的库从未被选中；在相似度 top-K 内用 1/(use_count+1)
+        # 提高低使用条目的机会。未使用条目的权重是使用 16 次条目的 17 倍，
+        # 不靠扩大候选池牺牲相关性；选择本身不记账，成功发送后才增加 use_count。
+        if self._choice is None:
+            selected = random.choices(
+                candidates,
+                weights=[1 / (item.use_count + 1) for item in candidates],
+                k=1,
+            )[0]
+        else:
+            selected = self._choice(candidates)
+        # 元数据随返回值传递，避免并发会话覆盖共享的“最近一次候选数”。
+        return replace(selected, candidate_count=len(candidates))
 
     def verify_integrity(self) -> int:
         """在启动阶段逐项重算已登记表情包的 SHA-256，并巡检孤儿文件。

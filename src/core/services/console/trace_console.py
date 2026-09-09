@@ -175,6 +175,7 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
             lines.append(
                 f"表情包：{effect.get('hash', '')} · 目标情绪 {effect.get('emotion', '')}"
                 f" · 标签 {effect.get('tags', '')}"
+                f" · 候选 {effect.get('candidateCount', '未知')} 张"
             )
         elif effect.get('kind') == 'emoji_selection_missed':
             lines.append(

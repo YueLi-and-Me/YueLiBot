@@ -2459,7 +2459,6 @@ class ChatService(
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
-                emoji_tags=self._emoji_prompt_tags(frame.capabilities.emoji),
             )
             replyer_context = self._render_prepared_context(
                 prepared,
@@ -2705,7 +2704,6 @@ class ChatService(
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
-                emoji_tags=self._emoji_prompt_tags(frame.capabilities.emoji),
             )
             replyer_context = await self._enrich_prepared_context(
                 prepared,
@@ -3277,18 +3275,25 @@ class ChatService(
                     ))
                     content_hash = _send_ref_content_hash(selection.send_ref)
                     # 面板行要能指认「选中了哪张」：哈希前 8 位定位记录，
-                    # 目标情绪与库内标签并排，检索是否贴题一眼可判。
+                    # 请求词与库内标签并排，检索是否贴题一眼可判；候选数来自本次抽样。
+                    tags = self._emoji_library.emotion_tags_for_hash(content_hash) or ''
                     sink.side_effects.append({
                         'kind': 'emoji_selected',
                         'hash': content_hash[:8],
                         'emotion': event.emotion,
-                        'tags': self._emoji_library.emotion_tags_for_hash(content_hash) or '',
+                        'tags': tags,
+                        'candidateCount': selection.candidate_count,
+                        'useCountBefore': selection.use_count,
                     })
                     trace.emit(
                         'emoji_selected',
                         turnId=sink.turn,
                         streamId=context.stream.id,
                         emotion=event.emotion,
+                        hash=content_hash,
+                        tags=tags,
+                        candidateCount=selection.candidate_count,
+                        useCountBefore=selection.use_count,
                     )
                 else:
                     # 落空此前完全静默：模型写了 <emoji> 但检索没有可用候选时，

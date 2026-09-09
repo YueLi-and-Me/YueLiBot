@@ -102,7 +102,6 @@ class AgentProtocolMixin:
             self._selectable_message_previews(batch),
             quote_supported=frame.capabilities.quote,
             emoji_enabled=frame.capabilities.emoji,
-            emoji_tags=self._emoji_prompt_tags(frame.capabilities.emoji),
             target_person=target_person,
             cognitive_rounds=self._cognitive_rounds,
             available_reactions=frame.capabilities.available_reactions,

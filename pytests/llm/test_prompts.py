@@ -10,7 +10,13 @@ import random
 from src.core.agent.character import pick_tone
 from src.core.agent.expression import ExpressionSample, render_expression_habits
 from src.core.agent.fact_extract import Participant
-from src.core.agent.prompt import build_proactive_prompt, build_system_prompt
+from src.core.agent.prompt import (
+    _emoji_protocol_rule,
+    build_proactive_prompt,
+    build_system_prompt,
+    render_action_protocol,
+    render_replyer_protocol,
+)
 from src.core.agent.summarize import summarize
 from src.core.config.schema import Config
 from src.core.persona.state import PersonaState, describe_persona
@@ -37,6 +43,23 @@ def _build_prompt(**kwargs: Any) -> str:
     }
     values.update(kwargs)
     return build_system_prompt(**values)
+
+
+def test_emoji_protocol_uses_specific_free_text_in_all_prompt_paths() -> None:
+    """主对话、动作协议与回复生成共用自由措辞规则，不再注入库内高频词。"""
+    rule = _emoji_protocol_rule(True)
+    assert '具体情绪或语气' in rule
+    assert '不从固定词表中挑选' in rule
+    assert '与 <say> 的立绘表情标识不同' in rule
+    assert '库里常备' not in rule
+    assert '库中没有贴切的词时再自行措辞' not in rule
+    for prompt in (
+        _build_prompt(emoji_enabled=True),
+        render_action_protocol(['reply'], [(1, '消息')], False, emoji_enabled=True),
+        render_replyer_protocol('继续当前话题', 'brief', emoji_enabled=True),
+    ):
+        assert rule in prompt
+    assert _emoji_protocol_rule(False) == '本轮不支持发送表情包，不要写 <emoji> 标签。'
 
 
 class _SummaryProvider:

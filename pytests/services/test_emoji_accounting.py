@@ -8,18 +8,19 @@ use_count 是一个没有明细的聚合数：record_use 未命中时此前完�
 
 from __future__ import annotations
 
-import asyncio
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import asyncio
 import hashlib
 import re
 import sqlite3
 
-import pytest
 from PIL import Image
 from structlog.testing import capture_logs
+
+import pytest
 
 import src.core.observe.events as events_module
 import src.core.services.console.trace_console as console
@@ -172,12 +173,13 @@ def test_selected_emoji_renders_in_turn_panel(rendering, capsys: pytest.CaptureF
             'hash': '723b3877',
             'emotion': '开心',
             'tags': '开心,可爱',
+            'candidateCount': 1,
         }],
         bot_name='月璃', source_label='群聊·629201002',
     )
 
     out = _ANSI.sub('', capsys.readouterr().out)
-    assert '表情包：723b3877 · 目标情绪 开心 · 标签 开心,可爱' in out
+    assert '表情包：723b3877 · 目标情绪 开心 · 标签 开心,可爱 · 候选 1 张' in out
 
 
 def test_missed_emoji_renders_in_turn_panel(rendering, capsys: pytest.CaptureFixture) -> None:
@@ -194,7 +196,7 @@ def test_missed_emoji_renders_in_turn_panel(rendering, capsys: pytest.CaptureFix
 
 
 async def test_consume_events_stores_selected_side_effect(
-    db: sqlite3.Connection, tmp_path: Path,
+    db: sqlite3.Connection, tmp_path: Path, spy_trace: list[dict],
 ) -> None:
     """命中时 sink 同步拿到出站引用与面板副作用，字段足以指认选中了哪张。"""
     library = EmojiLibrary(db, tmp_path / 'emojis')
@@ -211,7 +213,16 @@ async def test_consume_events_stores_selected_side_effect(
         'hash': _send_ref_content_hash(send_ref)[:8],
         'emotion': '开心',
         'tags': '开心,可爱',
+        'candidateCount': 1,
+        'useCountBefore': 0,
     }]
+    selected_events = [item for item in spy_trace if item['kind'] == 'emoji_selected']
+    assert len(selected_events) == 1
+    assert selected_events[0]['emotion'] == '开心'
+    assert selected_events[0]['hash'] == _send_ref_content_hash(send_ref)
+    assert selected_events[0]['tags'] == '开心,可爱'
+    assert selected_events[0]['candidateCount'] == 1
+    assert selected_events[0]['useCountBefore'] == 0
 
 
 async def test_consume_events_stores_missed_side_effect(

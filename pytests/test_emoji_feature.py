@@ -1,3 +1,4 @@
+from collections import Counter
 from io import BytesIO
 from pathlib import Path
 from typing import List, Tuple
@@ -8,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import pytest
+import random
 import sqlite3
 import struct
 
@@ -382,18 +384,76 @@ async def test_text_fallback_does_not_send_unrelated_emoji(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_frequent_tags_orders_by_coverage(tmp_path: Path) -> None:
-    """高频标签按覆盖表情数降序，同数按字典序；limit 与非法入参各自生效。"""
+@pytest.mark.parametrize('embedding', [None, _EmbeddingClient()])
+async def test_select_weighted_distribution_prefers_unused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, embedding,
+) -> None:
+    """固定随机种子验证整批分布，覆盖向量与标签两条检索路径。"""
     db = _database()
-    library = EmojiLibrary(db, tmp_path / 'emojis', _EmbeddingClient())
-    await library.register(_png_bytes('red'), '开心,可爱', 'image/png')
-    await library.register(_png_bytes('blue'), '开心,无语', 'image/png')
-    await library.register(_png_bytes('white'), '无语', 'image/png')
+    library = EmojiLibrary(db, tmp_path / 'emojis', embedding)
+    unused = await library.register(_png_bytes('red'), '开心', 'image/png')
+    used = await library.register(_png_bytes('blue'), '开心', 'image/png')
+    db.execute('UPDATE emoji SET use_count = 16 WHERE send_ref = ?', (used,))
+    rng = random.Random(20260909)
+    monkeypatch.setattr('src.core.services.media.emoji.random.choices', rng.choices)
 
-    assert library.frequent_tags() == ('开心', '无语', '可爱')
-    assert library.frequent_tags(2) == ('开心', '无语')
-    with pytest.raises(ValueError):
-        library.frequent_tags(0)
+    counts = Counter()
+    for _ in range(5000):
+        selected = await library.select('开心')
+        assert selected is not None
+        assert selected.candidate_count == 2
+        assert selected.use_count == (0 if selected.send_ref == unused else 16)
+        counts[selected.send_ref] += 1
+
+    # 理论概率为 17/18；等概率或反向权重都不应落入此区间。
+    assert abs(counts[unused] / 5000 - 17 / 18) < 0.02
+    assert counts[used] > 0
+    assert db.execute('SELECT SUM(use_count) FROM emoji').fetchone() == (16,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('embedding', [None, _EmbeddingClient()])
+async def test_select_keeps_top_ten_before_weighting(tmp_path: Path, embedding) -> None:
+    """零使用次数不能把第 11 名挤进池；观测数是实际截断后的候选数。"""
+    db = _database()
+    candidates = []
+    library = EmojiLibrary(
+        db, tmp_path / 'emojis', embedding,
+        choice=lambda items: candidates.extend(items) or items[0],
+    )
+    for index in range(12):
+        db.execute(
+            'INSERT INTO emoji (hash, send_ref, emotion_tags, emotion_vec, first_seen_at, '
+            'use_count) VALUES (?, ?, ?, ?, ?, ?)',
+            (f'{index:064x}', f'file:///test/{index}.png', '开心',
+             struct.pack('2f', 1.0, index / 12), index, 16 if index < 10 else 0),
+        )
+    selected = await library.select('开心')
+    assert selected is not None
+    assert selected.candidate_count == 10
+    assert [item.send_ref for item in candidates] == [f'file:///test/{i}.png' for i in range(10)]
+    candidates.clear()
+    smaller = await library.select('开心', top_k=3)
+    assert smaller is not None
+    assert smaller.candidate_count == len(candidates) == 3
+    # 每次结果保存自己的候选数，下一次查询不会改写前一次快照。
+    assert selected.candidate_count == 10
+
+
+@pytest.mark.asyncio
+async def test_embedding_failure_preserves_tag_match_and_miss(tmp_path: Path) -> None:
+    """查询向量失败仍按既有标签包含规则检索，标签不命中时返回空。"""
+    class FailedEmbedding:
+        async def embed_one(self, text: str) -> bytes:
+            raise RuntimeError('测试嵌入失败')
+
+    library = EmojiLibrary(_database(), tmp_path / 'emojis', FailedEmbedding())
+    expected = await library.register(_png_bytes(), '开心,高兴', 'image/png')
+    selected = await library.select('很开心')
+    assert selected is not None
+    assert selected.send_ref == expected
+    assert selected.candidate_count == 1
+    assert await library.select('生气') is None
 
 
 def test_napcat_keeps_normal_and_emoji_sources_separate() -> None:
@@ -670,7 +730,7 @@ def _jpeg_variants() -> Tuple[bytes, bytes]:
 @pytest.mark.asyncio
 @pytest.mark.parametrize('embedding', [None, _EmbeddingClient()])
 async def test_sendable_pool_excludes_banned_emojis(tmp_path: Path, embedding) -> None:
-    """向量检索、标签检索、能力位与高频词表共同排除封禁身份。"""
+    """向量检索、标签检索与能力位共同排除封禁身份。"""
     db = _database()
     library = EmojiLibrary(db, tmp_path / 'emojis', embedding)
     blocked = await library.register(_png_bytes('red'), '高兴,愉快', 'image/png')
@@ -681,10 +741,8 @@ async def test_sendable_pool_excludes_banned_emojis(tmp_path: Path, embedding) -
     await library.select('开心', top_k=100)
     assert all(item.send_ref != blocked for item in candidates)
     assert library.has_sendable()
-    assert library.frequent_tags() == ('无语',)
     assert library.remove(hashlib.sha256(_png_bytes('blue')).hexdigest())
     assert not library.has_sendable()
-    assert library.frequent_tags() == ()
     assert await library.select('高兴') is None
     assert blocked != allowed
 

@@ -396,7 +396,6 @@ def build_system_prompt(
     render_params: Optional[Dict[str, Dict[str, str]]] = None,
     protocol_text: Optional[str] = None,
     emoji_enabled: bool = False,
-    emoji_tags: Sequence[str] = (),
     scene: Optional[Tuple[str, str]] = None,
     jargon: Optional[Sequence[Tuple[str, str]]] = None,
     impressions: Optional[Sequence[InjectionProfile]] = None,
@@ -428,7 +427,6 @@ def build_system_prompt(
         在「输出格式」块中的位置，用于 Agent 模式把「先 <decision> 再 <say>」
         变成唯一主指令，而不是追加成与既有直接发言指令竞争的第二套规则。
     :param emoji_enabled: 本轮是否允许发表情包。
-    :param emoji_tags: 表情包库内高频情绪标签，用于锚定 ``<emoji>`` 的 emotion 用词。
     :param jargon: 本轮消息命中的黑话 ``(词, 含义)`` 列表，由 ``agent/jargon.py``
         查表截断后传入；为空时整块省略。
     :param decision_only: 只产出动作决策、不写正文时置真。此时省略回复风格、
@@ -471,7 +469,7 @@ def build_system_prompt(
     component_values[CHAT_PROTOCOL_TEMPLATE_ID] = {
         'emotions': ' / '.join(EXPRESSION_IDS),
         'gestures': ' / '.join(GESTURE_IDS),
-        'emoji_rule': _emoji_protocol_rule(emoji_enabled, emoji_tags),
+        'emoji_rule': _emoji_protocol_rule(emoji_enabled),
     }
     if reply_length is not None:
         try:
@@ -761,7 +759,6 @@ def render_action_protocol(
     selectable_messages: Iterable[Tuple[int, str]],
     quote_supported: bool,
     emoji_enabled: bool = False,
-    emoji_tags: Sequence[str] = (),
     target_person: str = '',
     cognitive_rounds: int = 0,
     available_reactions: Sequence[str] = (),
@@ -779,7 +776,6 @@ def render_action_protocol(
     :param quote_supported: 平台是否支持模型在决策里显式指定引用目标；不支持时
         提示词明确禁止 quote。平台投递层的自动引用不受该开关控制。
     :param emoji_enabled: 本轮是否允许发表情包。
-    :param emoji_tags: 表情包库内高频情绪标签，锚定 ``<emoji>`` 的 emotion 用词。
     :param target_person: 本回合批次发送者的显示名，用于说明这一轮在回应谁的消息；
         私聊传空字符串。
     :param cognitive_rounds: 本回合的认知轮次预算；写进提示词使模型预先知道
@@ -828,7 +824,7 @@ def render_action_protocol(
         gestures=' / '.join(GESTURE_IDS),
         reply_example=reply_example,
         silent_example=silent_example,
-        emoji_rule=_emoji_protocol_rule(emoji_enabled, emoji_tags),
+        emoji_rule=_emoji_protocol_rule(emoji_enabled),
         cognition_rule=_cognition_protocol_rule(actions, ids, cognitive_rounds),
         react_rule=_react_protocol_rule(actions, ids, available_reactions),
         poke_rule=_poke_protocol_rule(actions, ids),
@@ -880,7 +876,6 @@ def render_replyer_protocol(
     reference: str,
     length: str | None,
     emoji_enabled: bool = False,
-    emoji_tags: Sequence[str] = (),
 ) -> str:
     """渲染回复生成那一次调用的协议文本。
 
@@ -893,7 +888,6 @@ def render_replyer_protocol(
     :param length: 决策层选定的篇幅；``None`` 时按 brief 处理，与单次调用路径
         ``to_decision`` 的默认口径一致。
     :param emoji_enabled: 本回合是否允许发表情包。
-    :param emoji_tags: 表情包库内高频情绪标签，锚定 ``<emoji>`` 的 emotion 用词。
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
     """
@@ -902,7 +896,7 @@ def render_replyer_protocol(
         length_rule=_replyer_length_rule(length),
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
-        emoji_rule=_emoji_protocol_rule(emoji_enabled, emoji_tags),
+        emoji_rule=_emoji_protocol_rule(emoji_enabled),
     )
 
 
@@ -1148,25 +1142,20 @@ def _cognition_protocol_rule(
     return '\n'.join(lines) + '\n'
 
 
-def _emoji_protocol_rule(enabled: bool, tags: Sequence[str] = ()) -> str:
+def _emoji_protocol_rule(enabled: bool) -> str:
     """渲染当前平台和频率窗口对应的表情包可见产物规则。
 
     :param enabled: 本轮是否允许发表情包。
-    :param tags: 库内高频情绪标签，锚定 emotion 的用词，降低检索落空率；
-        为空时退回自由措辞口径。
     :return: 供协议模板 ``{{emoji_rule}}`` 占位符使用的规则文本。
     """
 
     if not enabled:
         return '本轮不支持发送表情包，不要写 <emoji> 标签。'
-    vocabulary = (
-        f'emotion 优先从这些库里常备的词里挑最贴的：{"、".join(tags)}。'
-        if tags
-        else 'emotion 写简短的情绪词。'
-    )
     return (
         '当情绪需要表情包辅助表达、或需要回应对方发送的表情包时，在 <say> 之后追加'
         '最多一个 <emoji emotion="目标情绪"/>；也允许只发送一个 <emoji> 而不写 '
-        f'<say>，但两者不能都没有。{vocabulary}'
-        '库中没有贴切的词时再自行措辞；不要连续多轮发送表情包。'
+        '<say>，但两者不能都没有。emotion 用简短中文写出当下想表达的具体情绪或语气，'
+        '结合当前语境自行措辞，不从固定词表中挑选。'
+        '<emoji> 的 emotion 用于检索表情包，与 <say> 的立绘表情标识不同，'
+        '不要照搬立绘标识。不要连续多轮发送表情包。'
     )

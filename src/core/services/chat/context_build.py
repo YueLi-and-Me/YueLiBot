@@ -537,7 +537,6 @@ class ContextBuildMixin:
         system = build_system_prompt(
             protocol_text=protocol_text,
             emoji_enabled=emoji_enabled,
-            emoji_tags=self._emoji_prompt_tags(emoji_enabled),
             **shared_context,
         )
         # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
