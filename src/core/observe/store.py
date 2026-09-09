@@ -349,6 +349,19 @@ class EventStore:
             ).fetchone()
         return self._row_to_event(row) if row is not None else None
 
+    def assistant_message_turn_id(self, stream_id: int, message_id: int) -> int | None:
+        """由明确的消息关联事件查回合号；旧历史或已清理账本返回未知，不猜时间戳。"""
+        with self._lock:
+            connection = self._require_connection()
+            row = connection.execute(
+                """SELECT turn_id FROM pipeline_events
+                   WHERE stream_id = ? AND kind = 'assistant_reply_recorded'
+                     AND json_extract(payload, '$.messageId') = ?
+                   ORDER BY seq DESC LIMIT 1""",
+                (stream_id, message_id),
+            ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
+
     def max_turn_id(self) -> int:
         """返回账本中已出现过的最大回合 ID。
 

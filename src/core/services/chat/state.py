@@ -12,11 +12,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import asyncio
 
 from src.core.agent.conversation_gate import GateResult
+from src.core.agent.parser import ParseEvent
 from src.core.memory.store import RecalledFact
 from src.core.observe import events as trace
 from src.core.platform_io.types import ConversationContext
@@ -140,6 +141,10 @@ class _TurnSink:
     # 非桌面平台的出站正文。
     segments: list[str] = field(default_factory=list)
     segment: list[str] | None = None
+    # 完整 say 通过护栏后才进入桌面、语音及气泡切分；历史保留原始台词边界。
+    pending_say: List[ParseEvent] = field(default_factory=list)
+    say_markup: List[str] = field(default_factory=list)
+    say_texts: List[str] = field(default_factory=list)
     interrupted: bool = False
     # 已按模型目标情绪选中的可发送引用；只有真实命中才进入出站和历史。
     emoji_items: list[tuple[str, str, int]] = field(default_factory=list)

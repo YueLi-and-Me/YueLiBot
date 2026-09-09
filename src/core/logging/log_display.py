@@ -11,6 +11,8 @@ from typing import Any, Dict, FrozenSet
 
 
 EVENT_LABELS: Dict[str, str] = {
+    "assistant_reply_recorded": "助手回复已关联消息",
+    "reply_say_blocked": "重复台词已拦截",
     "trace": "运行追踪",
     "action_decision": "行动决策",
     "awareness_started": "感知服务已启动",
@@ -260,6 +262,12 @@ FIELD_LABELS: Dict[str, str] = {
     "contextMeaning": "语境含义",
     "count": "数量",
     "crossPerson": "跨人物检索",
+    "blockedText": "被拦台词",
+    "matchedText": "命中历史台词",
+    "matchedMessageId": "命中历史消息编号",
+    "matchedTurnId": "命中历史回合编号",
+    "matchedTurnStatus": "历史回合关联状态",
+    "similarity": "相似度",
     "currentText": "当前文本检索词",
     "currentTextChars": "当前文本字数",
     "cues": "线索数",
@@ -635,7 +643,7 @@ def display_value(value: Any, field: str | None = None) -> str:
     """
     verbatim = field in VERBATIM_VALUE_FIELDS
     if value is None:
-        return "—"
+        return "未知" if field == "matchedTurnId" else "—"
     if isinstance(value, bool):
         return "是" if value else "否"
     if isinstance(value, str):
