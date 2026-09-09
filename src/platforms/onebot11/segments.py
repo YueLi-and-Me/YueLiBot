@@ -1,8 +1,13 @@
-"""在 OneBot v11 数组消息段与主体可理解的文本之间执行纯转换。
+"""转换 OneBot v11 消息段，并在出站组装时读取本地图片字节。
 
 本模块识别文本、提及、引用、图片和其他非文本消息段，生成模型可读的占位描述，
-同时为 QQ 出站文本、图片和引用构造带明确来源协议前缀的消息段；函数不执行文件
-读取或网络 I/O。
+同时为 QQ 出站文本、图片和引用构造消息段。入站转换与底层段工具不执行 I/O；
+出站构造器读取本地图片并编码为 ``base64://``，不执行网络 I/O。
+
+曾有群聊表情与私聊图表发送返回 ``retcode=100 ENOENT stat``，文字却已发送：
+主体侧完整性校验只能证明主体可读，容器内协议端无法读取主体的绝对路径。
+因此出站不再依赖主体与协议端共享文件系统；全部图片读完才返回批次，任一图片
+不可读或超限就整条报错，避免只发出文字而把图片失败隐藏起来。
 
 提及显示名与引用原文都不在消息段里，需由 `runner` 先向协议端解析后作为映射传入
 （``mention_names`` / ``quote_previews``）；``mentioned_user_ids`` 和
@@ -11,18 +16,30 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Mapping, Sequence
+from base64 import b64encode
+from pathlib import Path
+from stat import S_ISREG
+from typing import TYPE_CHECKING, Any, Dict, Literal, Mapping, Sequence
+from urllib.request import url2pathname
+import os
 
 from .cards import render_card_placeholder
 from .qq_faces import face_id_by_name, face_name
 
 from src.core.agent.action_protocol import REACTION_IDS
 
+if TYPE_CHECKING:
+    from .transport import ActionError
 
 Segment = Mapping[str, Any]
 ImageSourceKind = Literal['base64', 'file']
 
 _IMAGE_SUBTYPES_THAT_ARE_NOT_EMOJI = frozenset({0, 4, 9})
+
+# 单张源文件上限为 5 MiB：现场 458 张表情最大约 4825 KB、图表最大 18 KB，
+# 可覆盖当前素材；编码后约 6.7 MiB。只限制源字节，不再另设编码后阈值或配置项。
+MAX_OUTBOUND_IMAGE_BYTES = 5 * 1024 * 1024
+
 
 # 合并转发的正文占位形态。消息段渲染阶段一律用前者；运行器解析转发后按
 # 位置替换——成功的根换成含内容预览的 [转发消息：…] 形态，失败的根换成
@@ -364,12 +381,16 @@ def outbound_message_segments(
     - 后果：合并成一个参数后，漏填 ``sub_type`` 的表情会变成普通图片，多填的
       图片会变成表情，而两种错都只能从聊天窗口的呈现上看出来。
 
+    两类图片均在此读取并编码；库内 ``file://`` 引用仍用于定位与去重，只有
+    发给协议端的 ``data.file`` 改为字节，协议端不需要挂载素材目录。
+
     :param text_segments: 已按打字习惯切分的气泡文本，顺序即发送顺序。
     :param emoji_refs: 已通过启动哈希校验的本地 ``file://`` 表情包引用。
     :param emoji_sub_types: 与表情包引用逐项对齐的 OneBot 表情包子类型。
     :param image_refs: 普通图片的本地路径，不带 ``sub_type``。
     :return: 与输入顺序一致的消息段序列，文字、表情包、图片依次排列。
     :raises ValueError: 三者同时为空、表情包引用与子类型数量不一致，或字段不合法。
+    :raises ActionError: 图片缺失、无权限、不是常规文件或源字节超限。
     """
 
     texts = [segment for segment in text_segments if segment]
@@ -381,15 +402,66 @@ def outbound_message_segments(
     return [
         *[{'type': 'text', 'data': {'text': text}} for text in texts],
         *[
-            file_image_segment(reference, sub_type)
+            _outbound_image_segment(reference, sub_type)
             for reference, sub_type in zip(
                 emoji_refs,
                 normalized_sub_types,
                 strict=True,
             )
         ],
-        *[file_image_segment(reference) for reference in image_refs],
+        *[_outbound_image_segment(reference) for reference in image_refs],
     ]
+
+
+def _outbound_image_segment(reference: str, sub_type: int | None = None) -> Dict[str, Any]:
+    """读取一张本地图片，失败时保留原因并交由运行器记录发送失败。
+
+    URI 先解码，裸路径保持原样，避免把文件名中的百分号当作转义。
+    读取前检查常规文件和大小；有界读取防止检查后文件增长造成无限制分配。
+    """
+    value = _required_value(reference, '图片来源不能为空')
+    path = Path(url2pathname(value[7:]) if value.startswith('file://') else value)
+    try:
+        metadata = path.stat()
+        if not S_ISREG(metadata.st_mode):
+            raise _outbound_image_error(path, '不是常规文件')
+        if metadata.st_size > MAX_OUTBOUND_IMAGE_BYTES:
+            raise _outbound_image_error(
+                path,
+                f'实际字节数={metadata.st_size}；上限={MAX_OUTBOUND_IMAGE_BYTES}',
+                metadata.st_size,
+            )
+        with path.open('rb') as source:
+            if not S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise _outbound_image_error(path, '不是常规文件')
+            content = source.read(MAX_OUTBOUND_IMAGE_BYTES + 1)
+            actual_bytes = max(len(content), os.fstat(source.fileno()).st_size)
+        if actual_bytes > MAX_OUTBOUND_IMAGE_BYTES:
+            raise _outbound_image_error(
+                path, f'实际字节数={actual_bytes}；上限={MAX_OUTBOUND_IMAGE_BYTES}',
+                actual_bytes,
+            )
+    except OSError as exc:
+        raise _outbound_image_error(path, f'{type(exc).__name__}：{exc}') from exc
+    if not content:
+        raise _outbound_image_error(path, '文件内容为空；实际字节数=0', 0)
+    return _image_segment(b64encode(content).decode('ascii'), 'base64', sub_type=sub_type)
+
+
+def _outbound_image_error(path: Path, reason: str, actual_bytes: int | None = None) -> ActionError:
+    """把本地准备错误交给既有发送失败日志和回报，不伪造协议端返回码。
+
+    transport 经 events 依赖本模块，延迟导入避免循环。使用 prepare_image 与
+    local_error 明确区分本地错误和协议端拒绝；运行器捕获后不发送本条任何批次。
+    """
+    from .transport import ActionError
+
+    return ActionError('prepare_image', {
+        'status': 'local_error',
+        'message': f'出站图片准备失败：路径={path}；{reason}',
+        'path': str(path),
+        'actual_bytes': actual_bytes,
+    })
 
 
 def reply_segment(message_id: str) -> Dict[str, Any]:
@@ -411,8 +483,9 @@ def outbound_message_batches(
 ) -> list[list[Dict[str, Any]]]:
     """把每条文字、每张表情包和每张图片拆成独立的 OneBot 消息段数组。
 
-    先完整校验全部字段，再返回“每条文字各一条、每张表情包各一条、每张图片各一条”
-    的发送批次，避免文字已经发出后才发现表情包元数据不一致。独立 action 会让 QQ 为
+    先完整校验全部字段并读取、编码全部图片，再返回“每条文字各一条、每张表情包
+    各一条、每张图片各一条”的发送批次，避免文字已经发出后才发现图片不可读、
+    超限或表情包元数据不一致。独立 action 会让 QQ 为
     每条文字和图片分别创建消息气泡，这正是 Bot 的分句在聊天窗口里表现为多条消息的原因。
 
     引用只加在第一个批次上：整轮回复在 QQ 里是连续的多条气泡，逐条都挂引用会
@@ -425,6 +498,7 @@ def outbound_message_batches(
     :param image_refs: 普通图片的本地路径，不带 ``sub_type``。
     :return: 按文字、表情包、图片原始顺序排列的非空消息段数组。
     :raises ValueError: 消息为空、字段数量不一致或图片字段不合法。
+    :raises ActionError: 任一图片准备失败，此时不返回任何发送批次。
     """
 
     segments = outbound_message_segments(

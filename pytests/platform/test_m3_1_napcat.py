@@ -300,9 +300,18 @@ def test_parse_inbound_event_collects_ordinary_image_sources() -> None:
 
 
 def test_outgoing_images_have_protocol_prefixes() -> None:
-    assert base64_image_segment('AAA')['data']['file'] == 'base64://AAA'
+    # 底层工具只组装来源，不读取文件；出站字节策略由更上层的构造器负责。
+    assert base64_image_segment('AAA') == {'type': 'image', 'data': {'file': 'base64://AAA'}}
     assert base64_image_segment('base64://BBB')['data']['file'] == 'base64://BBB'
-    assert file_image_segment('C:/a.png')['data']['file'] == 'file://C:/a.png'
+    assert file_image_segment('C:/a.png') == {'type': 'image', 'data': {'file': 'file://C:/a.png'}}
     assert file_image_segment('file://D:/b.png')['data']['file'] == 'file://D:/b.png'
+    assert file_image_segment('C:/a.png', sub_type=7)['data'] == {
+        'file': 'file://C:/a.png', 'sub_type': 7,
+    }
     with pytest.raises(ValueError, match='不能使用 file://'):
         base64_image_segment('file://a.png')
+    with pytest.raises(ValueError, match='不能使用 base64://'):
+        file_image_segment('base64://AAA')
+    for constructor in (base64_image_segment, file_image_segment):
+        with pytest.raises(ValueError, match='不能为空'):
+            constructor(' ')

@@ -458,17 +458,21 @@ async def test_emoji_sub_type_round_trips_through_library_and_outbound(
     selected = await library.select('开心')
 
     assert selected is not None
+    assert selected.send_ref.startswith('file://')
     assert outbound_message_segments(
         [],
         (selected.send_ref,),
         (selected.sub_type,),
     ) == [{
         'type': 'image',
-        'data': {'file': selected.send_ref, 'sub_type': 7},
+        'data': {'file': 'base64://' + base64.b64encode(_png_bytes()).decode('ascii'), 'sub_type': 7},
     }]
 
 
-def test_backend_outbound_allows_emoji_only_message() -> None:
+def test_backend_outbound_allows_emoji_only_message(tmp_path: Path) -> None:
+    image_path = tmp_path / '表情.png'
+    image_path.write_bytes(_png_bytes())
+    send_ref = image_path.as_uri()
     outbound = _parse_outbound({
         'stream_id': 7,
         'channel': 'qq.send',
@@ -476,13 +480,13 @@ def test_backend_outbound_allows_emoji_only_message() -> None:
             'streamKind': 'group',
             'streamExternalId': '123',
             'segments': [],
-            'emojiRefs': ['file:///D:/data/emojis/a.png'],
+            'emojiRefs': [send_ref],
             'emojiSubTypes': [1],
         },
     })
 
     assert outbound.segments == []
-    assert outbound.emoji_refs == ('file:///D:/data/emojis/a.png',)
+    assert outbound.emoji_refs == (send_ref,)
     assert outbound.emoji_sub_types == (1,)
     assert outbound_message_segments(
         outbound.segments,
@@ -490,7 +494,7 @@ def test_backend_outbound_allows_emoji_only_message() -> None:
         outbound.emoji_sub_types,
     ) == [{
         'type': 'image',
-        'data': {'file': 'file:///D:/data/emojis/a.png', 'sub_type': 1},
+        'data': {'file': 'base64://' + base64.b64encode(_png_bytes()).decode('ascii'), 'sub_type': 1},
     }]
 
 

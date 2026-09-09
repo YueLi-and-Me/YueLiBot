@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+from base64 import b64encode
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncIterator, List
 
 import sqlite3
@@ -570,15 +572,18 @@ async def test_bubbles_wait_for_typing_time_between_sends(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_text_and_emoji_are_sent_as_separate_qq_messages() -> None:
+async def test_text_and_emoji_are_sent_as_separate_qq_messages(tmp_path: Path) -> None:
     """文字与表情包分别调用一次 action，QQ 不再渲染为混合消息气泡。"""
 
+    image_path = tmp_path / '表情.gif'
+    content = b'GIF89a'
+    image_path.write_bytes(content)
     backend = _RecordingBackend(outbound=[BackendOutbound(
         stream_id=2,
         stream_kind='group',
         stream_external_id='86420',
         segments=['先看这张'],
-        emoji_refs=('file:///D:/data/emojis/a.png',),
+        emoji_refs=(image_path.as_uri(),),
         emoji_sub_types=(1,),
     )])
     transport = _RecordingActionTransport()
@@ -602,7 +607,7 @@ async def test_text_and_emoji_are_sent_as_separate_qq_messages() -> None:
             'message': [{
                 'type': 'image',
                 'data': {
-                    'file': 'file:///D:/data/emojis/a.png',
+                    'file': 'base64://' + b64encode(content).decode('ascii'),
                     'sub_type': 1,
                 },
             }],
