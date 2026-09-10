@@ -9,6 +9,10 @@
 由 ``ChatService`` 继承，依赖它的 ``_broker`` / ``_memory`` / ``_persona`` 等属性。
 """
 
+from difflib import SequenceMatcher
+from html import escape
+from typing import List, Tuple
+
 import asyncio
 import inspect
 
@@ -23,11 +27,20 @@ from src.core.agent.parser import (
 from src.core.agent.segmentation import typing_delay_seconds
 from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
-from src.core.observe.stages import DISPATCHING
+from src.core.observe.stages import DISPATCHING, GATED
+from src.core.observe.store import event_store
 from src.core.persona.state import EventDelta
 from src.core.platform_io.types import ConversationContext, OutboundMessage
 
+from .helpers import _extract_lines
+from .state import _TurnSink
+
 logger = get_logger(__name__)
+
+# 最近 6 条完整台词覆盖通常每轮 1～3 条 say 的相邻几轮，不受用户刷屏影响。
+REPLY_REPEAT_RECENT_SAYS = 6
+# 真机两例均为 1.0；比统计口径 0.8 更严，取 0.9 给正常换说法留空间。
+REPLY_REPEAT_SIMILARITY = 0.9
 
 
 def _send_ref_content_hash(send_ref: str) -> str:
@@ -45,6 +58,80 @@ def _send_ref_content_hash(send_ref: str) -> str:
 
 
 class OutboundDispatchMixin:
+
+    def _recent_assistant_says(self, stream_id: int) -> List[Tuple[int, str]]:
+        """从现有消息逐条提取最近 N 条完整台词，返回真实消息编号与正文。"""
+        recent: List[Tuple[int, str]] = []
+        for message in self.memory.iter_assistant_messages(stream_id):
+            for line in reversed(_extract_lines(message.content) or []):
+                # 动作记录、纯表情消息不是 say，不能因解析器的纯文本模式进入窗口。
+                if '<say' not in message.content:
+                    continue
+                recent.append((message.message_id, line['text']))
+                if len(recent) == REPLY_REPEAT_RECENT_SAYS:
+                    return recent
+        return recent
+
+    def _is_repeated_say(self, context: ConversationContext, turn: int, text: str) -> bool:
+        """命中即记录一条拦截事件；比较原文仅去两端空白，不扩展同义或标点规则。"""
+        body = text.strip()
+        for message_id, previous in self._recent_assistant_says(context.stream.id):
+            similarity = SequenceMatcher(None, previous, body).ratio()
+            if similarity >= REPLY_REPEAT_SIMILARITY:
+                matched_turn = event_store.assistant_message_turn_id(context.stream.id, message_id)
+                trace.emit(
+                    'reply_say_blocked', streamId=context.stream.id, turnId=turn,
+                    blockedText=body[:200], matchedText=previous[:200],
+                    matchedMessageId=message_id, matchedTurnId=matched_turn,
+                    matchedTurnStatus='未知' if matched_turn is None else '已关联',
+                    similarity=similarity,
+                )
+                return True
+        return False
+
+    def _guard_say_event(self, event: ParseEvent, sink: _TurnSink) -> List[ParseEvent]:
+        """缓存至 say 闭合再放行，保证重复正文不会先出现在桌面或进入 TTS。"""
+        if sink.cancel_event.is_set():
+            sink.interrupted = True
+            return []
+        if isinstance(event, SayEvent):
+            sink.pending_say = [event]
+            return []
+        if isinstance(event, TextEvent):
+            sink.pending_say.append(event)
+            return []
+        if not isinstance(event, SayEndEvent):
+            return [event]
+        pending = sink.pending_say
+        sink.pending_say = []
+        text = ''.join(item.value for item in pending if isinstance(item, TextEvent)).strip()
+        if not text or self._is_repeated_say(sink.context, sink.turn, text):
+            return []
+        head = next(item for item in pending if isinstance(item, SayEvent))
+        attrs = ''.join(
+            f' {name}="{escape(value, quote=True)}"'
+            for name, value in (('emotion', head.emotion), ('gesture', head.gesture))
+            if value is not None
+        )
+        sink.say_markup.append(f'<say{attrs}>{text}</say>')
+        sink.say_texts.append(text)
+        return [*pending, event]
+
+    def _record_assistant_reply(self, context: ConversationContext, turn: int, markup: str) -> None:
+        """保存通过护栏的正文，并在现有账本建立消息与回合的明确关联。"""
+        if not markup:
+            return
+        message_id = self.memory.append_message(context.stream.id, None, 'assistant', markup)
+        trace.emit(
+            'assistant_reply_recorded', streamId=context.stream.id,
+            turnId=turn, messageId=message_id,
+        )
+
+    async def _finish_empty_reply(self, context: ConversationContext, turn: int) -> None:
+        """没有可投递正文或表情时正常收束，不补台词，也不打开已回复的追问窗口。"""
+        self._mark_stage(context, GATED, '本轮无可投递正文或表情', turn_id=turn)
+        if context.stream.platform == 'desktop':
+            await self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'})
 
     def _handle_side_effects(
         self, context: ConversationContext, event: ParseEvent, now: int, turn: int,

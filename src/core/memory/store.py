@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Iterator, Optional, Sequence
 
 import json
 import sqlite3
@@ -368,6 +368,26 @@ class MemoryStore:
         """
         self._db.execute('DELETE FROM messages WHERE id = ? AND stream_id = ?', (id, stream_id))
         self._db.commit()
+
+    def iter_assistant_messages(self, stream_id: int) -> Iterator[StoredMessage]:
+        """按消息编号倒序读取本会话的 Bot 历史，调用方取够台词后即可停止。
+
+        用户消息、动作记录和无正文消息不能挤占台词窗口；包含已归档历史，
+        避免摘要后刚说过的话突然脱离护栏。游标逐行读取，不加载整段会话。
+        """
+        cursor = self._db.execute(
+            '''SELECT id, role, content, created_at, sender_person_id FROM messages
+               WHERE stream_id = ? AND role = 'assistant' ORDER BY id DESC''',
+            (stream_id,),
+        )
+        try:
+            for row in cursor:
+                yield StoredMessage(
+                    role=row[1], content=row[2], created_at=row[3],
+                    sender_person_id=row[4], message_id=row[0],
+                )
+        finally:
+            cursor.close()
 
     def working_memory(
         self,

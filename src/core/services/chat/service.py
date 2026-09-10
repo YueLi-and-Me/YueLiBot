@@ -1280,12 +1280,15 @@ class ChatService(
                     await self._consume_events(parser.flush(), sink)
 
                 # 先保存已产生的助手正文，再判断是否中断，确保历史与已经展示的内容一致。
-                self._persist_reply(context, assistant_raw, sink.emoji_items)
+                self._persist_reply(context, ''.join(sink.say_markup), sink.emoji_items, turn=turn)
                 reply_persisted = True
                 if sink.interrupted:
                     return
 
                 trace.emit('llm_final', turnId=turn, text=assistant_raw)
+                if not sink.segments and not sink.emoji_items:
+                    await self._finish_empty_reply(context, turn)
+                    return
                 render_turn(
                     turn,
                     sender['senderLabel'],
@@ -1333,11 +1336,14 @@ class ChatService(
                 if exc.kind == 'aborted':
                     # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
                     if not reply_persisted:
-                        self._persist_reply(context, assistant_raw, sink.emoji_items)
+                        self._persist_reply(context, ''.join(sink.say_markup), sink.emoji_items, turn=turn)
                     return
                 if not reply_persisted:
                     # 已确认接收的用户消息属于历史；失败时只保存已经产生的助手正文。
-                    self._persist_reply(context, assistant_raw, sink.emoji_items)
+                    # 桌面沿用异常时保留半句的行为，但先经解析器收尾并通过护栏。
+                    if context.stream.platform == 'desktop' and sink.pending_say:
+                        await self._consume_events(parser.flush(), sink)
+                    self._persist_reply(context, ''.join(sink.say_markup), sink.emoji_items, turn=turn)
                 hint = _HINTS.get(exc.kind, '')
                 snapshot = dump_llm_request('chat', exc.kind, str(exc), {
                     'turnId': turn,
@@ -1362,7 +1368,9 @@ class ChatService(
             except Exception as exc:
                 if not reply_persisted:
                     # 准备或投递失败不能删除已确认接收的用户消息。
-                    self._persist_reply(context, assistant_raw, sink.emoji_items)
+                    if context.stream.platform == 'desktop' and sink.pending_say:
+                        await self._consume_events(parser.flush(), sink)
+                    self._persist_reply(context, ''.join(sink.say_markup), sink.emoji_items, turn=turn)
                 snapshot = dump_llm_request('chat', type(exc).__name__, str(exc), {
                     'turnId': turn,
                     'stage': trace.current_stage_id(),
@@ -1576,11 +1584,14 @@ class ChatService(
         context: ConversationContext,
         assistant_raw: str,
         emoji_items: list[tuple[str, str, int]] | None = None,
+        *,
+        turn: int,
     ) -> None:
-        """将已生成的助手正文写入历史，并补齐流式中断留下的未闭合 ``<say>``。
+        """将通过护栏的完整台词写入历史，并保留其标签与表情信息。
 
         :param context: 当前会话上下文。
-        :param assistant_raw: 模型已产生的原始助手文本。
+        :param assistant_raw: 已闭合且通过护栏的台词标签；中断时未放行的片段不入库。
+        :param turn: 当前回合编号，用于关联历史消息。
 
         :raises sqlite3.Error: 助手消息写入失败。
 
@@ -1592,13 +1603,7 @@ class ChatService(
         text = re.sub(r'</?emoji\b[^>]*>', '', text, flags=re.IGNORECASE).strip()
         text += _emoji_history_markup(emoji_items or [])
         if text:
-            self.memory.append_message(
-                context.stream.id,
-                None,
-                'assistant',
-                text,
-                current_time(),
-            )
+            self._record_assistant_reply(context, turn, text)
 
     def interrupt(self, stream_id: int) -> None:
         """仅取消指定 stream 的活动对话、语音任务和未完成语音缓冲。
@@ -2096,6 +2101,8 @@ class ChatService(
             'kind': 'start',
         }))
         for line in lines:
+            if self._is_repeated_say(context, turn, line['text']):
+                continue
             # 先发解析事件再写入记忆，使桌面端和外部平台共享同一回合轨迹。
             asyncio.create_task(
                 self._emit_parse_event(context, turn, SayEvent(emotion=line.get('emotion')))
@@ -2106,12 +2113,7 @@ class ChatService(
             texts.append(f'<say>{line["text"]}</say>')
         asyncio.create_task(self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'}))
         # 记忆保存带有 <say> 边界，后续摘要和回放可以区分主动分句而不依赖前端事件。
-        self.memory.append_message(
-            stream_id,
-            None,
-            'assistant',
-            ''.join(texts),
-        )
+        self._record_assistant_reply(context, turn, ''.join(texts))
         return turn
 
     async def _speak_claimed_external(
@@ -2124,6 +2126,10 @@ class ChatService(
         """等待非桌面平台真实投递成功后，再记录这条主动消息。"""
         if context.stream.platform == 'desktop':
             raise ValueError('桌面主动消息不应走外部平台投递')
+        lines = [line for line in lines if not self._is_repeated_say(context, turn, line['text'])]
+        if not lines:
+            await self._finish_empty_reply(context, turn)
+            return turn
         await self._dispatch_outbound(
             context,
             turn,
@@ -2893,18 +2899,16 @@ class ChatService(
         # 目标消息，因此共用下面这条持久化与投递路径；_quote_target 对空目标返回
         # None，speak 自然不会挂引用。
         assert outcome.decision.reply is not None
+        if not sink.segments and not sink.emoji_items:
+            await self._finish_empty_reply(context, turn)
+            return _RoundResult('declined')
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
         visible_markup = (
-            ''.join(f'<say>{segment}</say>' for segment in sink.segments)
+            ''.join(f'<say>{text}</say>' for text in sink.say_texts)
             + _emoji_history_markup(sink.emoji_items)
         )
         if visible_markup:
-            self.memory.append_message(
-                context.stream.id,
-                None,
-                'assistant',
-                visible_markup,
-            )
+            self._record_assistant_reply(context, turn, visible_markup)
         render_turn(
             turn,
             sender['senderLabel'],
@@ -3286,7 +3290,9 @@ class ChatService(
             表情包命中与落空同样进 sink.side_effects，由轮末面板呈现那一行。
         """
         context = sink.context
-        for event in events:
+        for event in (
+            accepted for item in events for accepted in self._guard_say_event(item, sink)
+        ):
             if sink.cancel_event.is_set():
                 sink.interrupted = True
                 return
