@@ -316,7 +316,12 @@ class Persona:
         return int(row[0])
 
     def snapshot_daily(self, person_id: int, now: int | None = None) -> None:
-        """保存 owner 当日首次状态快照。
+        """保存 owner 当日的状态快照，语义为「当天最新的已结算状态」。
+
+        同一天内结算游标每向前推进，快照就跟着刷新；游标没有越过已记录的
+        ``captured_at`` 时不覆盖。早上第一次交互时结算游标还停在昨夜活动的
+        边界、夜间恢复尚未入账，若把那一刻钉死成当天值（旧 ``INSERT OR IGNORE``
+        的行为），全天读到的都是未结算的旧状态。
 
         :param person_id: 必须为 owner 的 ``persons.id``。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
@@ -325,19 +330,26 @@ class Persona:
         :raises RuntimeError: owner 状态缺失时抛出。
 
         副作用：
-            通过 ``INSERT OR IGNORE`` 写入当天快照并提交事务；重复调用不会覆盖
-            当天已经捕获的值。
+            当天无记录时写入；已有记录且本次结算游标更晚时覆盖。``captured_at``
+            记录结算游标时刻（``persona_self.updated_at``）而非写入时刻。
         """
 
         self._require_owner(person_id)
         now = now if now is not None else current_time()
         state = self.get(person_id)
         date = snapshot_date(now)
+        captured_at = self.settled_at()
         self._db.execute(
-            '''INSERT OR IGNORE INTO persona_snapshots
+            '''INSERT INTO persona_snapshots
                (date, intimacy, energy, mood, captured_at)
-               VALUES (?, ?, ?, ?, ?)''',
-            (date, state.intimacy, state.energy, state.mood, now),
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                   intimacy = excluded.intimacy,
+                   energy = excluded.energy,
+                   mood = excluded.mood,
+                   captured_at = excluded.captured_at
+               WHERE excluded.captured_at > persona_snapshots.captured_at''',
+            (date, state.intimacy, state.energy, state.mood, captured_at),
         )
         self._db.commit()
 

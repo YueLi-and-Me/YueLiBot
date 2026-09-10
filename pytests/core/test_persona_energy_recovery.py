@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from datetime import datetime
 from math import exp
 
 import pytest
@@ -278,3 +279,39 @@ def test_energy_regresses_toward_baseline_when_idle(db: sqlite3.Connection) -> N
     assert high == pytest.approx(
         95.0 + (ENERGY_BASELINE - 95.0) * (1.0 - exp(-48.0 / ENERGY_TAU))
     )
+
+
+# --------------------------------------------------------- 快照跟随结算游标
+
+def test_snapshot_follows_settle_cursor(db: sqlite3.Connection) -> None:
+    """快照语义是「当天最新的已结算状态」：游标推进才刷新，不推进不覆盖。
+
+    早上第一次交互时结算游标还停在昨夜、夜间恢复尚未入账，若把那一刻钉死成
+    当天值（旧 INSERT OR IGNORE 的行为），全天读到的都是未结算的旧状态。
+    """
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    morning = int(datetime(2051, 7, 15, 8, 0).timestamp() * 1000)
+    # 游标停在昨夜：第一次快照记下的是尚未结算的低位状态。
+    _reset(db, person_id, 30.0, morning - 10 * HOUR_MS)
+    persona.snapshot_daily(person_id, morning)
+    first = persona.snapshots(person_id)[0]
+    assert first.energy == pytest.approx(30.0)
+    assert first.captured_at == morning - 10 * HOUR_MS
+
+    # 结算推进四小时（补写后的夜间恢复入账），游标越过已记录值 → 覆盖。
+    persona.apply_elapsed(person_id, morning - 6 * HOUR_MS, _rest_effect(4.0))
+    persona.snapshot_daily(person_id, morning + 5 * 60_000)
+    second = persona.snapshots(person_id)[0]
+    settled = _regress(30.0 + REST_ENERGY_PER_HOUR * 4, 4.0)
+    assert second.energy == pytest.approx(settled)
+    assert second.captured_at == morning - 6 * HOUR_MS
+    assert len(persona.snapshots(person_id)) == 1
+
+    # 游标未推进时（回合只扣精力、不动游标）不覆盖已记录的快照。
+    persona.apply_turn(person_id, morning + 10 * 60_000, weight=1.0)
+    persona.snapshot_daily(person_id, morning + 15 * 60_000)
+    third = persona.snapshots(person_id)[0]
+    assert third.energy == pytest.approx(settled)
+    assert third.captured_at == morning - 6 * HOUR_MS
+    assert len(persona.snapshots(person_id)) == 1
