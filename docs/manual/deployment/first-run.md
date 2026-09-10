@@ -1,68 +1,129 @@
-# 从零跑起来
+# 第一次启动与配置
 
-完成依赖安装和 API Key 配置后，验证基础对话功能。
+这一步把月璃真正跑起来：同意协议、生成配置、填一个 API Key、看到管理面板。
+全部做完大约五分钟，中途需要你准备一个模型厂商的 API Key。
 
-**环境与凭据**：Python 3.11+、uv、百炼 API Key；更换厂商见[安装与配置](install.md)。本机构建面板需 Node.js，桌宠另需 Windows 10/11；服务器可部署已构建的面板。
+## 会发生什么
 
-## 安装依赖
+第一次启动**不会直接跑起来**，而是分两趟：
 
-```bash
-uv sync                    # 后端本体
-npm ci                    # 安装前端依赖；只用命令行或 QQ 可跳过
-npm run build             # 构建管理面板与桌宠
-```
+1. 第一趟：打印用户协议，你输入「同意」，它生成一份带完整中文注释的配置，然后**主动退出**
+2. 你打开配置文件，填上唯一的必填项——API Key
+3. 第二趟：正常启动，终端打印「WebUI 已就绪」，管理面板可以打开了
 
-## 首次启动并生成配置
+第一趟退出时进程退出码是 1，**这是正常的**，不是出错。
+
+## 第一趟：同意协议并生成配置
+
+在项目根目录执行：
 
 ```bash
 uv run bot.py
 ```
 
-**第一次会先要求你同意用户协议**：控制台打印协议要点与正文位置，逐字输入「同意」
-才继续。协议讲的是接入 QQ 的账号风险、程序会替你存群成员的哪些信息、以及对话内容
-会发给谁——正文在仓库根目录的 [`AGREEMENT.md`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)。
-同意一次即可，记录写在数据目录的 `consent.json`。
+终端会打印用户协议的要点与正文位置，要求你**逐字输入「同意」**两个字。
+协议讲的是三件事：接入 QQ 的账号风险、程序会替你保存群成员的哪些信息、
+对话内容会发送给谁。正文在仓库根目录的
+[AGREEMENT.md](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)，
+建议先读完再输入。接受一次即可，记录写在 `data/consent.json`。
 
-同意之后会生成 `config/` 并退出，属于正常初始化流程。控制台列出待填写的配置项；
-出现该提示表示配置文件已生成。
+输入「同意」之后，程序在 `config/` 下生成五份带中文注释的 TOML，然后退出。
+终端会列出还缺哪些必填项——通常只缺一个 API Key。
 
-## 配置 API Key
+## 填 API Key
 
-打开 `config/providers.toml`，填写唯一必需的凭据字段：
+打开 `config/providers.toml`，只改一行：
 
 ```toml
-api_key = ""    # 填写实际密钥
+api_key = "sk-这里换成你自己的 Key"
 ```
 
-厂商地址、六个模型条目和任务分档均已预填，六个模型共用百炼连接；默认名称为「月璃」。字段说明见 [`config.example/`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)。保存即完成。
+**其余字段不用动。** 厂商地址、六个模型条目和任务分档都已按阿里云百炼预填好，
+六个模型共用同一个连接配置，默认名称就是「月璃」。
 
-## 重新启动
+还没有 Key 的话，到[百炼控制台](<https://bailian.console.aliyun.com/>) 开通并创建，
+形如 `sk-xxxxxxxx`。想用别的厂商，见 [providers.toml](../configuration/providers.md)——
+换厂商要同时改模型 ID，不是只换一个地址。
+
+## 第二趟：正常启动
 
 ```bash
 uv run bot.py
 ```
 
-出现「WebUI 已就绪」信息框表示后端监听已建立。通过浏览器打开所示地址进入[管理面板](../webui/index.md)；本机访问自动登录，无需手动输入 token。
+这次终端会打印一段启动过程，最后出现一个信息框：
 
-## 发送首条消息
-
-管理面板提供观察与配置功能，不包含对话输入框。可通过以下三种方式发送消息：
-
-**命令行**：后端保持运行，另开 Bash 终端（Windows 可用 Git Bash），替换 token 后执行：
-
-```bash
-curl -X POST http://127.0.0.1:7999/chat/send \
-  -H "Authorization: Bearer <信息框里的 token>" \
-  -H "Content-Type: application/json" \
-  -d '{"text":"你好"}'
+```text
+WebUI 已就绪
 ```
 
-请求接收成功后返回 `{"accepted":true}`，HTTP 响应不包含回复正文。回复通过 WebSocket 推送，并显示在后端终端及管理面板的「会话观察」页；确认正文后即完成基础验证。
+同时打印出面板地址与一个登录 token。**看到这个信息框就说明后端起来了**，
+先不要关这个窗口——它是月璃本体，关掉她就下线了。
 
-**桌宠**：依赖就绪后，在 `config/bot.toml` 里设 `[desktop_pet] enabled = true` 并重启，详见 [Windows 上带桌宠](windows.md)。
+## 打开管理面板
 
-**QQ**：须独立安装协议端，具体要求见 [QQ 与群聊接入](../adapters/index.md)。
+浏览器打开终端里打印的地址，默认是：
 
-## 故障排查
+```text
+http://127.0.0.1:7999
+```
 
-按故障现象查阅[常见问题](../troubleshooting.md)。
+**本机访问自动登录**，不用手动输入 token。面板里可以看会话、改配置、管记忆，
+但它没有对话输入框——第一句话要用下面三种方式之一。
+
+## 说第一句话
+
+=== "命令行最快"
+
+    后端保持运行，另开一个终端（Windows 可以用 Git Bash），把 token 换成
+    信息框里那串，执行：
+
+    ```bash
+    curl -X POST http://127.0.0.1:7999/chat/send \\
+      -H "Authorization: Bearer <信息框里的 token>" \\
+      -H "Content-Type: application/json" \\
+      -d '{"text":"你好"}'
+    ```
+
+    返回 `{"accepted":true}` 表示消息已受理。**回复不在这个响应里**：
+    她会通过 WebSocket 推送回来，显示在终端和面板的「会话观察」页。
+
+=== "在 QQ 里说"
+
+    需要先装协议端并配置适配器，见 [QQ 接入总览](../adapters/index.md)。
+    配好之后，用你自己的 QQ 私聊机器人号即可。
+
+=== "在桌面上说"
+
+    打开桌宠，她出现在屏幕角落，设置里能开关与调整，见[桌面桌宠](windows.md)。
+
+## 验证与排错
+
+**跑通的标准**：终端打印出「WebUI 已就绪」，浏览器能打开面板，
+发出去的消息在面板「会话观察」页里出现了回复正文。
+
+**第一趟退出、终端停在「配置已生成」** —— 正常流程，去填 API Key 即可。
+
+**提示 `api_key` 为空或 401／403** —— Key 没填、填错，或该 Key 没有开通对应模型。
+确认 `providers.toml` 里的值与百炼控制台里的一致。
+
+**端口被占用（`address already in use`）** —— 7999 已被别的程序占用。
+换一个端口：`uv run bot.py --port 8100`，面板地址同步变成新端口。
+
+**面板打开是空白／提示尚未构建** —— 跳过了 `npm run build`。
+补跑一次，或按[无头部署](headless.md)从别的机器拷 `out/webui`。
+
+**想换配置文件位置** —— 加 `--config-path` 与 `--data-dir` 指向别的目录：
+
+```bash
+uv run bot.py --config-path /srv/yueli-config --data-dir /srv/yueli-data
+```
+
+注意 `--config-path` 接的是**目录**，不是某一份文件；适配器的连接配置仍留在
+项目目录下的插件目录里，不跟着迁移。
+
+**结束运行** —— 在终端按 `Ctrl+C`。它会先收尾子进程再关库，稍等几秒；
+重复按键不会打断收尾流程。
+
+**下一步** —— 想让她在 QQ 里说话，去[接入 QQ](../adapters/index.md)；
+想让她站在桌面上，去[桌面桌宠](windows.md)。

@@ -1,22 +1,56 @@
 # 月璃 · 文档
 
-分两套：
+<img class="yueli-hero" src="images/yueli.webp" alt="月璃" width="200">
 
-- **[用户手册](#用户手册)** —— 装、配、用。读者是使用者，不看代码。
-- **[开发手册](#开发手册)** —— 架构与模块。读者是要改代码的人。
+月璃是一台装在你自己机器上的程序：装好之后她跑在你本地，记忆存在你自己的硬盘里。
+这份文档分两套——**[用户手册](#用户手册)** 讲怎么装、怎么配、怎么用；
+**[开发手册](#开发手册)** 讲代码怎么组织、要改哪里。
+
+## 从这三处开始
+
+<div class="grid cards" markdown>
+
+-   :material-rocket-launch:{ .lg .middle } **第一次装**
+
+    ---
+
+    环境够不够、去哪儿下、装完怎么跑起来，一条直线走完。
+
+    [:octicons-arrow-right-24: 用户手册首页](manual/index.md)
+
+-   :material-robot-happy:{ .lg .middle } **让 AI 帮你装**
+
+    ---
+
+    不想敲命令，就把一段指令复制给你的 AI，它按步骤执行。
+
+    [:octicons-arrow-right-24: 安装指令](manual/ai-install.md)
+
+-   :material-connection:{ .lg .middle } **接到 QQ**
+
+    ---
+
+    协议端选 NapCat 还是 SnowLuma，白名单怎么配，为什么 @ 了不回。
+
+    [:octicons-arrow-right-24: 接入总览](manual/adapters/index.md)
+
+</div>
 
 ---
 
 ## 用户手册
 
-### 部署
+### 安装与部署
 
 | 文档 | 内容 |
 | :--- | :--- |
-| [从零跑起来](manual/deployment/first-run.md) | **新手从这里开始**：五步，每步写清该看到什么 |
-| [安装与配置](manual/deployment/install.md) | 环境要求、依赖安装、配置文件的生成与填写 |
-| [Windows 上带桌宠](manual/deployment/windows.md) | 前端依赖与构建、托盘与窗口行为、开机自启 |
-| [无头部署](manual/deployment/headless.md) | 服务器上只跑 QQ 与面板，含 systemd 单元 |
+| [手册首页](manual/index.md) | **新手从这里开始**：三条路线怎么选，各自要走哪几页 |
+| [让 AI 帮你装](manual/ai-install.md) | 复制一段指令给 AI，由它检查环境、装依赖、改配置 |
+| [环境要求](manual/deployment/requirements.md) | 系统、Python、Node、磁盘、内存、网络，以及要准备的两个账号 |
+| [下载与安装](manual/deployment/install.md) | 装 uv、拿代码、`uv sync`、可选的前端构建 |
+| [第一次启动与配置](manual/deployment/first-run.md) | 同意协议、生成配置、填 API Key、看到面板 |
+| [桌面桌宠](manual/deployment/windows.md) | 前端构建、托盘各项、拖动穿透、开机自启与退出边界 |
+| [无头部署](manual/deployment/headless.md) | 服务器上只跑 QQ 与面板，含 systemd 单元与 SSH 隧道 |
 | [升级与回退](manual/deployment/upgrade.md) | 配置版本升级、数据库迁移与备份、回退旧库 |
 
 ### 配置
@@ -48,9 +82,9 @@
 
 | 文档 | 内容 |
 | :--- | :--- |
-| [接入总览](manual/adapters/index.md) | 两个适配器怎么选、群聊白名单与回复触发 |
-| [NapCat](manual/adapters/napcat.md) | 装、建正向 WebSocket、必改项、连不上的常见原因 |
-| [SnowLuma](manual/adapters/snowluma.md) | 同上 |
+| [接入总览](manual/adapters/index.md) | 协议端怎么选、去哪儿下载、两个 QQ 号的分工、白名单与点名 |
+| [NapCat](manual/adapters/napcat.md) | 装协议端、建正向 WebSocket、必改项、连不上的常见原因 |
+| [SnowLuma](manual/adapters/snowluma.md) | 同上，另含地址与容器的填法 |
 
 ### 管理面板
 
@@ -124,3 +158,5 @@ uvx zensical@0.0.60 build --clean --strict   # CI 用的严格构建，断链与
 - 导航在 `zensical.toml` 的 `nav` 中显式声明。新增页面时，上面的目录与本页的登记要同步修改。
 - 指向 `docs/` 之外的文件（配置模板、脚本、协议正文）一律写 GitHub 绝对链接。
   `docs_dir` 之外的文件不会进入站点产物，仓库内相对路径在站上必然是死链，严格构建会拦下。
+- 样式与动画在 `docs/stylesheets/extra.css`，图标与立绘在 `docs/images/`。装饰性动效
+  一律包在 `prefers-reduced-motion` 里，改样式时不要破坏这条。

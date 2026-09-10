@@ -1,0 +1,141 @@
+/* 月璃文档站的自定义样式。
+ *
+ * 三条自我约束：
+ * 1. 动画只做一次进场，不挂滚动位置——长文阅读时反复触发的动效是干扰，不是美化；
+ * 2. 所有动效都关在 prefers-reduced-motion 的例外里，系统关了动画就完全不播；
+ * 3. 不重定义主题已有的布局类（.grid、.md-button 等主题自带），只增补配色与过渡，
+ *    这样主题升级时这份文件不会让版式塌掉。
+ */
+
+/* 配色向角色靠拢：主色偏蓝紫，强调色取发色里的淡紫；浅色与深色各一套。 */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #5661c4;
+  --md-accent-fg-color: #7c6cf0;
+  --yueli-soft: rgba(124, 108, 240, 0.08);
+  --yueli-border: rgba(15, 23, 42, 0.09);
+  --yueli-shadow: rgba(86, 97, 196, 0.22);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #8b93e8;
+  --md-accent-fg-color: #a99bff;
+  --yueli-soft: rgba(169, 155, 255, 0.10);
+  --yueli-border: rgba(255, 255, 255, 0.12);
+  --yueli-shadow: rgba(0, 0, 0, 0.45);
+}
+
+/* 正文整块淡入上浮。只包一层容器而不是逐个元素，避免长页面产生几十个动画。 */
+@keyframes yueli-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.md-content__inner {
+  animation: yueli-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 一级标题下加一条渐隐的强调线，页面有了起点感又不抢内容。 */
+.md-typeset h1 {
+  padding-bottom: 0.35rem;
+  background-image: linear-gradient(90deg, var(--md-accent-fg-color), transparent 72%);
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 2px;
+}
+
+/* 网格卡片：悬停抬起 + 顶部一层很淡的渐变。 */
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--yueli-border);
+  border-radius: 0.6rem;
+  background-image: linear-gradient(180deg, var(--yueli-soft), transparent 55%);
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  transform: translateY(-4px);
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 12px 28px -12px var(--yueli-shadow);
+}
+
+/* 卡片逐个错开一点点进场，只错开前六张，再多就反而拖沓。 */
+.md-typeset .grid.cards > ul > li {
+  animation: yueli-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.md-typeset .grid.cards > ul > li:nth-child(2) { animation-delay: 0.06s; }
+.md-typeset .grid.cards > ul > li:nth-child(3) { animation-delay: 0.12s; }
+.md-typeset .grid.cards > ul > li:nth-child(4) { animation-delay: 0.18s; }
+.md-typeset .grid.cards > ul > li:nth-child(5) { animation-delay: 0.24s; }
+.md-typeset .grid.cards > ul > li:nth-child(6) { animation-delay: 0.30s; }
+
+/* 表格：行悬停时高亮，长表格里眼睛不容易串行。 */
+.md-typeset table:not([class]) tbody tr {
+  transition: background-color 0.18s ease;
+}
+.md-typeset table:not([class]) tbody tr:hover {
+  background-color: var(--yueli-soft);
+}
+
+/* 按钮：悬停时轻轻抬起。 */
+.md-typeset .md-button {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+.md-typeset .md-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px -10px var(--yueli-shadow);
+}
+
+/* 侧边栏当前项左侧加一条短竖线，扫读时能立刻定位。 */
+.md-nav__item .md-nav__link--active::before {
+  content: "";
+  position: absolute;
+  left: -0.6rem;
+  top: 0.35rem;
+  bottom: 0.35rem;
+  width: 2px;
+  border-radius: 2px;
+  background-color: var(--md-accent-fg-color);
+}
+.md-nav__item .md-nav__link {
+  position: relative;
+}
+
+/* 首页与手册首页的立绘：轻微上下浮动，像在呼吸。 */
+.yueli-hero {
+  float: right;
+  width: clamp(150px, 26%, 240px);
+  margin: 0 0 1rem 1.4rem;
+  filter: drop-shadow(0 16px 30px -14px var(--yueli-shadow));
+  animation: yueli-float 7s ease-in-out infinite;
+}
+
+@keyframes yueli-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-9px); }
+}
+
+@media screen and (max-width: 44.98em) {
+  .yueli-hero {
+    float: none;
+    display: block;
+    width: 46%;
+    margin: 0 auto 1rem;
+  }
+}
+
+/* 系统开启「减少动态效果」时全部关掉：装饰性动效不该与无障碍设置对抗。 */
+@media (prefers-reduced-motion: reduce) {
+  .md-content__inner,
+  .md-typeset .grid.cards > ul > li,
+  .yueli-hero {
+    animation: none !important;
+  }
+  .md-typeset .grid.cards > ul > li:hover,
+  .md-typeset .md-button:hover {
+    transform: none;
+  }
+  .md-typeset table:not([class]) tbody tr,
+  .md-typeset .grid.cards > ul > li,
+  .md-typeset .md-button {
+    transition: none;
+  }
+}

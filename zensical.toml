@@ -19,6 +19,8 @@ repo_name = "YueLi-and-Me/YueLiBot"
 # 每页的「编辑此页」固定指向 main：站点由 main 构建，dev 分支上的草稿不应成为公开入口。
 edit_uri = "edit/main/docs/"
 copyright = "月璃 YueLiBot 贡献者 · AGPL-3.0"
+# 站点自定义样式：配色、卡片悬停与进场动画。路径相对 docs_dir。
+extra_css = ["stylesheets/extra.css"]
 
 # 导航显式声明，不走目录自动推断。
 #
@@ -28,10 +30,15 @@ copyright = "月璃 YueLiBot 贡献者 · AGPL-3.0"
 nav = [
   { "首页" = "README.md" },
   { "用户手册" = [
-    { "部署" = [
-      { "从零跑起来" = "manual/deployment/first-run.md" },
-      { "安装与配置" = "manual/deployment/install.md" },
-      { "Windows 上带桌宠" = "manual/deployment/windows.md" },
+    { "手册首页" = "manual/index.md" },
+    { "让 AI 帮你装" = "manual/ai-install.md" },
+    # 这一段是读者第一次上手的顺序：先看够不够、再装、再配置、最后选桌宠还是服务器。
+    # 顺序按读者心智排，不按文件名，改名或移动页面时这里要一起改。
+    { "安装与部署" = [
+      { "环境要求" = "manual/deployment/requirements.md" },
+      { "下载与安装" = "manual/deployment/install.md" },
+      { "第一次启动与配置" = "manual/deployment/first-run.md" },
+      { "桌面桌宠" = "manual/deployment/windows.md" },
       { "无头部署" = "manual/deployment/headless.md" },
       { "升级与回退" = "manual/deployment/upgrade.md" },
     ] },
@@ -137,10 +144,18 @@ features = [
   "toc.follow",
 ]
 
-[project.theme.icon]
-# 用内置图标而不是仓库里的立绘：docs_dir 之外的图片不会进入构建产物，
-# 而把二进制素材复制进 docs/ 会同时污染随代码分发的文档目录。
-logo = "lucide/moon-star"
+# 站点图标用角色头像：docs/images/ 下是从 assets/character 的立绘裁出来的小尺寸副本，
+# 原图在 docs_dir 之外不会进入构建产物，这三张副本合计不到 150 KB。
+logo = "images/logo.png"
+favicon = "images/favicon.png"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/YueLi-and-Me/YueLiBot"
+
+[[project.extra.social]]
+icon = "fontawesome/solid/comments"
+link = "https://github.com/YueLi-and-Me/YueLiBot/issues"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme)"
