@@ -117,6 +117,11 @@ ENERGY_RATES: dict[tuple[str, int], float] = {
 # 未装配日程服务时，全部经过时间按清醒 pace=-1 即 -6.0/h 消耗。该常量只在日程
 # 服务未装配时生效；装配后精力曲线由活动时间线按 ENERGY_RATES 积分决定。
 ENERGY_FALLBACK_RATE = -6.0
+# 精力若只是纯收支累加，长期必然贴到 0 或 100 中的一端；有了回归力，稳态由
+# 基线决定，速率表随之解耦。预期稳态约 73，日内振幅约 ±29：早上醒来 85 上下，
+# 晚上睡前 45 上下。连续熬夜仍然净亏（日 -58 对回归 +25），代价不会被抹平。
+ENERGY_BASELINE = 65.0   # 精力基线：无外力时收敛到的值，取值 0~100
+ENERGY_TAU = 48.0        # 精力回归时间常数，单位小时；一天回归约 39%
 # 单个对话回合的精力消耗，群聊再乘 group_chat.persona_weight。
 # 说话是要花精力的——这条不取消；但 0.4 会让一晚五十个回合吃掉一整夜睡眠的六成，
 # 对一个以聊天为本职的角色过重，收到 0.3。
@@ -479,10 +484,13 @@ class Persona:
     ) -> PersonaState:
         """按经过的时间衰减关系，并应用 owner 在此期间的精力、心情变化。
 
+        精力与心情在事件积分之后都向各自基线回归（见 ``ENERGY_BASELINE`` 与
+        ``MOOD_TAU``），避免纯收支累加把长期状态钉在 0 或 100 的极端。
+
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
         :param effect: 调用方按日程积分得到的精力与心情事件变化；未提供时将全部
-            经过时间按清醒 pace=-1（-6.0/h）消耗处理，心情只向基线回归。
+            经过时间按清醒 pace=-1（-6.0/h）消耗处理。
 
         :return: 调整后的状态；非 owner 或经过时间不足一小时则返回原状态。
 
@@ -515,10 +523,13 @@ class Persona:
         mood_delta = effect.mood_delta if effect is not None else 0.0
         mood = state.mood + mood_delta
         mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
+        # 与心情同序：先加活动积分，再向基线回归。
+        energy = state.energy + energy_delta
+        energy += (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
         days = hours / 24
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy - days * 0.6),
-            energy=_clamp('energy', state.energy + energy_delta),
+            energy=_clamp('energy', energy),
             mood=_clamp('mood', mood),
             updated_at=now,
         )

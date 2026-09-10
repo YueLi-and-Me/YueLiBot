@@ -16,8 +16,14 @@ from __future__ import annotations
 
 import sqlite3
 
+from math import exp
+
+import pytest
+
 from src.core.persona.state import (
+    ENERGY_BASELINE,
     ENERGY_RATES,
+    ENERGY_TAU,
     TURN_ENERGY_COST,
     ElapsedEffect,
     Persona,
@@ -53,6 +59,11 @@ def _rest_effect(hours: float) -> ElapsedEffect:
     return ElapsedEffect(energy_delta=REST_ENERGY_PER_HOUR * hours, mood_delta=0.0)
 
 
+def _regress(energy: float, hours: float) -> float:
+    """与 apply_elapsed 同口径的基线回归：活动积分之后向 ENERGY_BASELINE 收敛。"""
+    return energy + (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
+
+
 def _simulate(
     persona: Persona,
     person_id: int,
@@ -79,7 +90,7 @@ def _simulate(
 
 
 def test_rest_accumulates_without_conversation(db: sqlite3.Connection) -> None:
-    """无对话时休息照常入账：两小时 +4 点。"""
+    """无对话时休息照常入账：两小时各积一份 pace=2，每小时结算同时向基线回归。"""
     person_id = _owner_id(db)
     persona = Persona(db)
     start = 10 * HOUR_MS
@@ -87,13 +98,17 @@ def test_rest_accumulates_without_conversation(db: sqlite3.Connection) -> None:
 
     energy = _simulate(persona, person_id, start, 12, with_turns=False)
 
-    assert energy == 20.0 + REST_ENERGY_PER_HOUR * 2
+    # 每积满一小时结算一次：先加休息积分，再向基线回归。
+    expected = _regress(
+        _regress(20.0 + REST_ENERGY_PER_HOUR, 1.0) + REST_ENERGY_PER_HOUR, 1.0
+    )
+    assert energy == pytest.approx(expected)
 
 
 def test_conversation_does_not_swallow_rest(db: sqlite3.Connection) -> None:
     """有对话时休息同样入账，回合只扣自己那一份。
 
-    改动前这里是 15.2——两小时休息的 +4 点被十二个回合逐次重置游标全部丢掉，
+    改动前这里是 15.2——两小时休息的入账被十二个回合逐次重置游标全部丢掉，
     只剩下回合自身的消耗。
     """
     person_id = _owner_id(db)
@@ -103,8 +118,11 @@ def test_conversation_does_not_swallow_rest(db: sqlite3.Connection) -> None:
 
     energy = _simulate(persona, person_id, start, 12, with_turns=True)
 
-    expected = 20.0 + REST_ENERGY_PER_HOUR * 2 - TURN_ENERGY_COST * 12
-    assert abs(energy - expected) < 1e-6
+    # 第一小时结算前已有 5 个回合各扣一份，第二小时结算前又多 6 个；
+    # 回合不推进游标，只扣自己那一份。
+    first = _regress(20.0 - TURN_ENERGY_COST * 5 + REST_ENERGY_PER_HOUR, 1.0)
+    second = _regress(first - TURN_ENERGY_COST * 6 + REST_ENERGY_PER_HOUR, 1.0)
+    assert energy == pytest.approx(second - TURN_ENERGY_COST)
 
 
 def test_turn_does_not_advance_settle_cursor(db: sqlite3.Connection) -> None:
@@ -136,7 +154,9 @@ def test_settle_cursor_advances_only_when_applied(db: sqlite3.Connection) -> Non
     full_hour = start + HOUR_MS
     persona.apply_elapsed(person_id, full_hour, _rest_effect(1.0))
     assert persona.settled_at() == full_hour
-    assert persona.get(person_id).energy == 50.0 + REST_ENERGY_PER_HOUR
+    assert persona.get(person_id).energy == pytest.approx(
+        _regress(50.0 + REST_ENERGY_PER_HOUR, 1.0)
+    )
 
 
 # --------------------------------------------------------- 离线空缺的结算边界
@@ -207,8 +227,9 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
     persona.apply_elapsed(
         person_id, frontier, timeline.integrate_between(persona.settled_at(), frontier)
     )
-    # 那一小时清醒 pace=0，按速率表扣一份（-3.0/h）。
-    assert persona.get(person_id).energy == 10.0 + ENERGY_RATES[('awake', 0)]
+    # 那一小时清醒 pace=0，按速率表扣 3 点，结算同时向基线回归。
+    before_sleep = _regress(10.0 + ENERGY_RATES[('awake', 0)], 1.0)
+    assert persona.get(person_id).energy == pytest.approx(before_sleep)
     assert persona.settled_at() == frontier
 
     # 后台补写落地：空缺被填成整夜睡眠。
@@ -223,7 +244,37 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
     persona.apply_elapsed(
         person_id, back, timeline.integrate_between(persona.settled_at(), back)
     )
-    assert persona.get(person_id).energy == (
-        10.0 + ENERGY_RATES[('awake', 0)] + ENERGY_RATES[('sleep', 3)] * 9
+    assert persona.get(person_id).energy == pytest.approx(
+        _regress(before_sleep + ENERGY_RATES[('sleep', 3)] * 9, 9.0)
     )
     assert persona.settled_at() == back
+
+
+# --------------------------------------------------------- 基线回归
+
+def test_energy_regresses_toward_baseline_when_idle(db: sqlite3.Connection) -> None:
+    """无活动的长时间流逝中，精力向基线收敛：低位上行、高位回落，都不越过基线。
+
+    精力若只是纯收支累加，长期必然贴到 0 或 100 的一端；回归项让无外力时的
+    稳态由 ENERGY_BASELINE 决定。48 小时恰好一个时间常数，应走完缺口的大头。
+    """
+    person_id = _owner_id(db)
+    persona = Persona(db)
+    start = 10 * HOUR_MS
+    idle = ElapsedEffect(energy_delta=0.0, mood_delta=0.0)
+
+    _reset(db, person_id, 10.0, start)
+    persona.apply_elapsed(person_id, start + 48 * HOUR_MS, idle)
+    low = persona.get(person_id).energy
+    assert 10.0 < low < ENERGY_BASELINE
+    assert low == pytest.approx(
+        10.0 + (ENERGY_BASELINE - 10.0) * (1.0 - exp(-48.0 / ENERGY_TAU))
+    )
+
+    _reset(db, person_id, 95.0, start)
+    persona.apply_elapsed(person_id, start + 48 * HOUR_MS, idle)
+    high = persona.get(person_id).energy
+    assert ENERGY_BASELINE < high < 95.0
+    assert high == pytest.approx(
+        95.0 + (ENERGY_BASELINE - 95.0) * (1.0 - exp(-48.0 / ENERGY_TAU))
+    )
