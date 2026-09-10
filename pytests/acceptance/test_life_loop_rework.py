@@ -283,12 +283,16 @@ def test_activity_integration_is_deterministic_and_balanced() -> None:
         awake = timeline.integrate_between(start, sleep_at)
         asleep = timeline.integrate_between(sleep_at, end)
 
-        # 绝对值按速率表推导而不是写死数字：速率是可调的产品参数，
-        # 而「醒 16 小时 pace=0 与睡 8 小时 pace=3 相互抵消」是尺度无关的不变量
-        # （现行表下为 16h×(-3.0/h) 与 8h×(+6.0/h)），后者才是这条用例真正要锁的东西。
+        # 绝对值按速率表推导而不是写死数字：速率是可调的产品参数。
+        # 这条用例锁的是区间可加性——整段积分等于两段之和，与速率取值无关。
+        # 曾经锁的是「醒 16 小时与睡 8 小时恰好抵消」，那是速率表的一次标定巧合
+        # 而非不变量：睡眠速率按真机数据上调到 +6.5/h 之后两者不再相等（-48 对
+        # +52），继续断言抵消只会逼着后来者为了让用例变绿而回调产品参数。
         assert awake.energy_delta == pytest.approx(16 * ENERGY_RATES[('awake', 0)])
         assert asleep.energy_delta == pytest.approx(8 * ENERGY_RATES[('sleep', 3)])
-        assert whole.energy_delta == pytest.approx(0.0)
+        assert whole.energy_delta == pytest.approx(
+            awake.energy_delta + asleep.energy_delta
+        )
         assert whole.mood_delta == pytest.approx(awake.mood_delta + asleep.mood_delta)
     finally:
         db.close()
