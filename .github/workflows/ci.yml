@@ -24,15 +24,17 @@ jobs:
     name: pytest
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      # setup-uv 从 v8.0.0 起移除了浮动大版本标签（v8/v9/v10 都不存在），必须写完整
+      # 版本号；仓库原先写的 @v5 是被冻结的旧标签，挂在 Node 20 上永远不再更新。
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: '3.13'
           enable-cache: true
       # 部分用例会 shell out 调 electron/main/config.ts（配置写入器往返）与装配桌宠外壳，
       # 两者都需要 node_modules。不装的话它们在全新签出上必然 ERROR，而本机因为
       # node_modules 一直在，绿灯是假的。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -46,8 +48,8 @@ jobs:
     name: vitest + tsc
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           # 开发机跑 Node 24，CI 钉 LTS：sharp 与 uiohook-napi 这类原生模块的
           # 预编译产物对 LTS 覆盖最全，非 LTS 上会退回本地编译，慢且易碎。
@@ -64,12 +66,12 @@ jobs:
     name: 配置写入器与 schema 对齐
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: '3.13'
           enable-cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm

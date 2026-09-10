@@ -31,10 +31,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      # 版本与 ci.yml 保持一致（checkout@v4 / setup-uv@v5），避免同一个仓库里
-      # 两个工作流各用一套 major，将来升级时漏掉一个。
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      # 版本与 ci.yml 保持一致，避免同一个仓库里两个工作流各用一套 major，
+      # 将来升级时漏掉一个。
+      # setup-uv 从 v8.0.0 起移除了浮动大版本标签（v8/v9/v10 都不存在），必须写完整版本号。
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: '3.13'
           enable-cache: true
@@ -49,8 +50,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: '3.13'
           enable-cache: true
