@@ -2,7 +2,7 @@
 
 真实文件是 `config/models.toml`。先在[厂商配置](providers.md)建立连接，再添加模型。
 面板「模型与厂商」维护目录，「功能分配」给任务选择候选。
-逐字段说明见[模型模板](../../../config.example/models.toml)。
+逐字段说明见[模型模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/models.toml)。
 
 ## 模型名、真实 ID 与连接
 

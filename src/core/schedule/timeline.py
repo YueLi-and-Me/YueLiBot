@@ -16,7 +16,7 @@ import sqlite3
 
 from src.core.logging.logger import get_logger
 from src.core.llm_models.snapshot import bind_render_params
-from src.core.persona.state import ENERGY_RATE, MOOD_RATE, ElapsedEffect
+from src.core.persona.state import ENERGY_RATES, MOOD_RATE, ElapsedEffect
 from src.core.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
@@ -30,6 +30,28 @@ _ENERGY_PACE_RANGES: dict[str, tuple[int, int]] = {
     'awake': (-3, 1),
     'rest': (1, 2),
     'sleep': (2, 3),
+}
+
+# 一次决策允许给出的单段时长上限（分钟），按 kind 区分；下限沿用 10 分钟不变。
+#
+# 现象：模型偶发给出远超人类尺度的单段时长。2026-09-10 的 id=344 一次决策 360 分钟，
+#   内容是「被消息叫醒，拿着手机窝在床上迷迷糊糊刷刷b站或抖音缓一缓」，按 awake
+#   pace=-1 的 -6.0/h 折算，这一个决策就扣掉 36 点精力，当天精力因此归零；id=341
+#   同样 pace=-1、决策 321 分钟，一段扣 33.6 点。两段合计 -70，而全局活动日均净
+#   收益只有 +15.0。
+# 原因：写入层原先只校验 10 <= minutes <= 600，600 分钟对 sleep 合理、对 awake 过宽，
+#   拦不住这类尾部离群值。
+# 后果：长段是罕见离群值而非常态——近 14 天 106 次 awake 决策里 88% 不超过 60 分钟，
+#   p90 为 1.62h≈97 分，超过 240 分钟的只有 2 段。因此上限按 p90 留出余量：awake
+#   120 分钟只截断 106 段中的 3 段（2.8%）；rest 同期 75 次决策、p90 为 1.65h≈99 分，
+#   180 分钟只截断 1 段；sleep 维持 600 分钟不变。上限只给尾部兜底，不用来改变
+#   正常决策形态。
+#
+# 键集合必须与 _ENERGY_PACE_RANGES 完全一致：两者由同一次 kind 校验共同消费。
+_DECISION_MINUTE_LIMITS: dict[str, int] = {
+    'awake': 120,
+    'rest': 180,
+    'sleep': 600,
 }
 
 
@@ -135,13 +157,50 @@ def _integer(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _clamp_decision_minutes(kind: str, minutes: int) -> int:
+    """把一次决策给出的单段时长限幅到该 kind 的上限。
+
+    :param kind: 活动类型，必须存在于 ``_DECISION_MINUTE_LIMITS``。
+    :param minutes: 模型给出的单段时长，单位分钟；下限由调用方校验，此处只看上限。
+    :return: 不超过该 kind 上限的时长；未越界时原样返回。
+
+    副作用：
+        越界时记录一条 warning，同时带上模型给出的原始值与限幅后的值。
+    """
+
+    limit = _DECISION_MINUTE_LIMITS[kind]
+    if minutes <= limit:
+        return minutes
+    logger.warning(
+        '活动 minutes 越界，已按 kind 限幅',
+        kind=kind,
+        raw=minutes,
+        clamped=limit,
+    )
+    return limit
+
+
 def _parse_draft(
     value: Any,
     *,
     intention_count: int,
     sleep_enabled: bool,
+    minutes_is_duration: bool,
 ) -> ActivityDraft | None:
-    """严格解析单段活动；能量值域由写入层负责限幅并记录告警。"""
+    """严格解析单段活动；能量值域与单段时长由写入层限幅并记录告警。
+
+    :param value: 模型给出的单个活动对象；任一字段缺失或类型不符即整体判非法。
+    :param intention_count: 当轮意向条数，``advances`` 必须落在这一范围内。
+    :param sleep_enabled: 配置是否允许选择 sleep。
+    :param minutes_is_duration: ``minutes`` 是否就是这一段的真实时长。长缺口补叙的
+        ``minutes`` 只表示各段之间的相对占比（真实时长由铺满缺口决定），此时不按
+        kind 的上限限幅，否则一整夜的缺口会被判成非法输出。
+    :return: 通过结构校验的活动草案；不合法时返回 ``None``。
+
+    一次决策的时长越界只限幅、不判非法：模型给出 360 分钟的清醒段是常见偏差而非
+    数据损坏，判非法会让整条决策作废（``_advance`` 转入 10 分钟重试），模型给出的原始值
+    也一并丢失；限幅保留原始值供告警定位。
+    """
 
     if not isinstance(value, dict):
         return None
@@ -169,6 +228,8 @@ def _parse_draft(
         )
     ):
         return None
+    if minutes_is_duration:
+        minutes = _clamp_decision_minutes(kind, minutes)
     return ActivityDraft(
         kind=kind,
         doing=doing,
@@ -210,6 +271,7 @@ def parse_activity_decision(
                 item,
                 intention_count=intention_count,
                 sleep_enabled=sleep_enabled,
+                minutes_is_duration=False,
             )
             if draft is None:
                 return None
@@ -231,6 +293,7 @@ def parse_activity_decision(
         next_value,
         intention_count=intention_count,
         sleep_enabled=sleep_enabled,
+        minutes_is_duration=True,
     )
     if next_activity is None:
         return None
@@ -497,7 +560,7 @@ class ActivityTimeline:
             if segment_end <= segment_start:
                 continue
             hours = (segment_end - segment_start) / HOUR_MS
-            energy_delta += ENERGY_RATE * (activity.energy_pace - 1) * hours
+            energy_delta += ENERGY_RATES[(activity.kind, activity.energy_pace)] * hours
             mood_delta += MOOD_RATE * activity.mood_pace * hours
         return ElapsedEffect(energy_delta=energy_delta, mood_delta=mood_delta)
 
@@ -684,17 +747,20 @@ class ActivityTimeline:
             if transition.continuation_minutes is not None:
                 if gap_ms > SHORT_GAP_MS:
                     raise ValueError('长缺口不能延续上一段活动')
+                # 延续同样是「一次决策的时长」：不封顶时它能把清醒段一路延到数小时，
+                # 与切换出一条长段是同一个故障（见 _DECISION_MINUTE_LIMITS）。
+                minutes = _clamp_decision_minutes(
+                    previous.kind,
+                    transition.continuation_minutes,
+                )
                 self._db.execute(
                     'UPDATE activities SET expected_until = ? WHERE id = ?',
-                    (
-                        now + transition.continuation_minutes * MINUTE_MS,
-                        previous.id,
-                    ),
+                    (now + minutes * MINUTE_MS, previous.id),
                 )
                 logger.debug(
                     '延续当前活动，不新增时间线段',
                     activity_id=previous.id,
-                    minutes=transition.continuation_minutes,
+                    minutes=minutes,
                 )
             else:
                 if gap_ms <= SHORT_GAP_MS:
@@ -762,7 +828,11 @@ class ActivityTimeline:
         source: str,
         expected_until: int | None = None,
     ) -> int:
-        """校验、限幅并写入一段活动，返回新记录主键。"""
+        """校验、限幅并写入一段活动，返回新记录主键。
+
+        ``energy_pace`` 与 ``mood_pace`` 按值域限幅，``minutes`` 在它决定段长时按
+        ``_DECISION_MINUTE_LIMITS`` 限幅；三处越界都只记录 warning，不阻断写入。
+        """
 
         if draft.kind not in _ENERGY_PACE_RANGES:
             raise ValueError(f'未知活动 kind：{draft.kind}')
@@ -773,6 +843,13 @@ class ActivityTimeline:
         pace_min, pace_max = _ENERGY_PACE_RANGES[draft.kind]
         energy_pace = min(pace_max, max(pace_min, draft.energy_pace))
         mood_pace = min(3, max(-3, draft.mood_pace))
+        # 只有 minutes 真正决定段长时才限幅：补叙会传入 expected_until，那里的
+        # minutes 只是铺满缺口的相对占比，本身就可能超出单段上限。
+        minutes = (
+            _clamp_decision_minutes(draft.kind, draft.minutes)
+            if expected_until is None
+            else draft.minutes
+        )
         if energy_pace != draft.energy_pace:
             logger.warning(
                 '活动 energyPace 越界，已按 kind 限幅',
@@ -786,7 +863,7 @@ class ActivityTimeline:
                 raw=draft.mood_pace,
                 clamped=mood_pace,
             )
-        until = expected_until or started_at + draft.minutes * MINUTE_MS
+        until = expected_until or started_at + minutes * MINUTE_MS
         cursor = self._db.execute(
             """INSERT INTO activities
                  (kind, doing, mood, energy_pace, mood_pace, advances,

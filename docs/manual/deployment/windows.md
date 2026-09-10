@@ -19,7 +19,7 @@ npm run build
 例如使用 22.12.0 或更新的 22 系列版本，可满足这两个构建工具的约束。
 `npm ci` 按锁文件安装，失败时先处理终端给出的版本、下载或原生依赖错误。
 构建成功后应有 `out/main/index.js`、`out/renderer/` 和 `out/webui/index.html`。
-脚本与依赖见 [package.json](../../../package.json)、[package-lock.json](../../../package-lock.json)。
+脚本与依赖见 [package.json](https://github.com/YueLi-and-Me/YueLiBot/blob/main/package.json)、[package-lock.json](https://github.com/YueLi-and-Me/YueLiBot/blob/main/package-lock.json)。
 面板与外壳产物各有用途，复制面板目录不会同时安装桌宠。
 
 ## 开启与启动

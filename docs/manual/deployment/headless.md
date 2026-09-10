@@ -20,7 +20,7 @@ uv run bot.py
 uv run bot.py --accept-agreement
 ```
 
-协议正文在仓库根目录的 [`AGREEMENT.md`](../../../AGREEMENT.md)，接受前请先读。
+协议正文在仓库根目录的 [`AGREEMENT.md`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)，接受前请先读。
 记录写在数据目录的 `consent.json`，之后照常 `uv run bot.py` 启动。
 交给 systemd 之前必须先完成这一步，否则服务会在启动时退出。
 
@@ -52,7 +52,7 @@ scp -r out/webui yueli@server:/opt/yueli/out/
 
 `server` 替换成服务器主机名；目标目录须归运行用户可读。
 面板静态资源可跨平台复制，Python 环境和桌宠依赖不在复制范围内。
-构建脚本见 [package.json](../../../package.json)，输出位置见[面板构建配置](../../../webui/vite.config.ts)。
+构建脚本见 [package.json](https://github.com/YueLi-and-Me/YueLiBot/blob/main/package.json)，输出位置见[面板构建配置](https://github.com/YueLi-and-Me/YueLiBot/blob/main/webui/vite.config.ts)。
 访问页面并切换一个页面，确认脚本和样式都加载成功。
 未放入产物时页面会提示「尚未构建」，API 与 QQ 仍能运行。
 

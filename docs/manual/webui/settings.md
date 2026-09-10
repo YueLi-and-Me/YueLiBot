@@ -2,7 +2,7 @@
 
 直接在面板里编辑五份配置文件：读出当前值、改字段、存回文件。五份 TOML 的分工与
 交叉校验见[配置体系](../../dev/architecture/configuration.md)；逐字段的含义与
-默认值对照 [`config.example/`](../../../config.example/README.md)。
+默认值对照 [`config.example/`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)。
 
 ## 页面结构
 
@@ -61,4 +61,4 @@
 
 加载期校验会指名道姓报出问题字段，面板保存前的校验已经挡掉大多数。文件被改到
 面板打不开时，直接编辑 `config/` 下对应 TOML，或对照
-[`config.example/`](../../../config.example/README.md)恢复该字段的默认写法。
+[`config.example/`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)恢复该字段的默认写法。

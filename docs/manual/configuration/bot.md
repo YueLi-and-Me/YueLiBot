@@ -1,7 +1,7 @@
 # bot.toml：身份、关系与会话策略
 
 真实文件是 `config/bot.toml`，也可在「月璃设置」选择它编辑。
-逐字段范围见[完整模板](../../../config.example/bot.toml)。
+逐字段范围见[完整模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/bot.toml)。
 本篇按配置段说明组合关系；修改后保存并重启后端。
 
 ## 名称、别名与用户关系

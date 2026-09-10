@@ -1,0 +1,66 @@
+# 文档站：把 docs/ 构建成静态站，发布到 Cloudflare Workers 静态资源。
+#
+# 为什么独立成一个工作流而不并进 ci.yml：文档站与四条门没有共享状态。用 paths 过滤后
+# 改代码不会触发文档重建，改文档也不会占用 Windows runner 的时间。
+#
+# 为什么跑在 ubuntu 而不是 windows：ci.yml 选 Windows 是因为桌宠与协议端只在 Windows 上
+# 暴露差异，文档站是纯文本构建，与平台无关，Linux runner 更便宜也更快。
+name: Docs
+
+on:
+  push:
+    # dev 也触发：文档改动都发生在 dev 上，只在 main 上跑等于把关口放在合并之后。
+    # 发布仍然只发生在 main，由下方 deploy 任务的 if 条件挡住。
+    branches: [main, dev]
+    paths: ['docs/**', 'zensical.toml', 'wrangler.toml', '.github/workflows/docs.yml']
+  pull_request:
+    paths: ['docs/**', 'zensical.toml', 'wrangler.toml', '.github/workflows/docs.yml']
+  # 手动触发：换域名、改 wrangler 配置或 Secrets 之后，需要一条不依赖推送的验证路径。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 先过严格构建门再发布。严格模式下断链与失效锚点会直接让构建失败，
+  # 这是唯一能挡住「文档改了但链接忘了改」的关口。
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # 版本与 ci.yml 保持一致（checkout@v4 / setup-uv@v5），避免同一个仓库里
+      # 两个工作流各用一套 major，将来升级时漏掉一个。
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      # zensical 尚在 1.0 之前（当前 0.0.60），配置键与产物布局都可能变，
+      # 因此锁死版本而不是跟随最新；升级时同步改本行与 docs/README.md 的说明。
+      - run: uvx zensical@0.0.60 build --clean --strict
+
+  # 只有 main 上的提交才发布。dev 分支上的文档改动只过构建门，不进公开站点；
+  # workflow_dispatch 在 dev 上手动触发同样落在这一条之外。
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+          enable-cache: true
+      - run: uvx zensical@0.0.60 build --clean --strict
+      # wrangler 直接跑在 CI 里而不是用 wrangler-action：上传目录与 Worker 名都写在
+      # wrangler.toml 中，多一层 action 只会多一个版本变量。
+      - name: 发布到 Cloudflare
+        run: npx --yes wrangler@4 deploy
+        env:
+          # 这两个值由仓库 Secrets 提供，缺任意一个 wrangler 都会以鉴权失败退出，
+          # 不会退化成「悄悄发布到别的账号」。
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

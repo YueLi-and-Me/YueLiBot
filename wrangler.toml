@@ -1,0 +1,37 @@
+# 文档站的 Cloudflare Workers 配置：把 zensical 的构建产物 site/ 作为静态资源上传。
+#
+# 为什么是 Workers 静态资源而不是 Pages：Cloudflare 官方文档自 2026-08 起写明
+# 「新项目请用 Workers」，静态资源请求同样免费且不限量，边缘节点与 Pages 相同；
+# 且 wrangler deploy 会连带创建 Worker，不需要先去控制台建项目。
+#
+# 与仓库其余部分的关系：只在发布文档站时读取，不影响 pytest / vitest / tsc，
+# 也不参与桌宠与管理面板的构建。
+
+name = "yuelibot-docs"
+# 兼容性日期取首次配置文档站的日期，可决定 Workers 运行时默认行为；升级需另行评估。
+compatibility_date = "2026-09-10"
+
+# 正式入口。custom_domain = true 让 wrangler deploy 在 yuelibot.org 这个 zone 里
+# 自动建好 DNS 记录与边缘证书，不必先去控制台点一遍。
+#
+# zone 必须与 Worker 在同一账号下，否则部署会直接报错，而不是退化成只发 workers.dev。
+# 两个名字分工：docs 子域给文档站，apex 留给项目官网或跳转 GitHub 仓库。
+routes = [
+  { pattern = "docs.yuelibot.org", custom_domain = true },
+]
+
+# 显式保留 workers.dev 地址作为备用入口。
+#
+# 默认行为是「一旦配了 routes 就关掉 workers.dev」，实测会让站点在域名委派尚未生效、
+# 边缘证书尚未签发的这段窗口里彻底不可访问；两个入口同时可用更稳妥。
+# 重复内容由 zensical 生成的 canonical（指向 docs.yuelibot.org）兜住。
+workers_dev = true
+
+[assets]
+directory = "./site"
+# zensical 每页产出一个 <页名>/index.html，URL 是目录形式。
+# 保持默认的 auto-trailing-slash，/manual/.../ 与 /manual/... 才会命中同一份文件。
+html_handling = "auto-trailing-slash"
+# zensical 会在产物根目录生成 404.html，交给 Workers 就近返回，
+# 避免访问不存在的地址时落到 workers.dev 的默认提示页。
+not_found_handling = "404-page"

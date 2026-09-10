@@ -37,7 +37,7 @@ Python 启动会检查已有配置段：新增字段补入当前默认值，退�
 
 自动对账不会向模型、厂商列表添加首装条目，也不会补充整段缺失的可选功能配置。
 因此，升级会保留已有模型目录，不会将其替换为当前首装预设。
-需要新功能时，对照[配置模板说明](../../../config.example/README.md)自行补齐。
+需要新功能时，对照[配置模板说明](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)自行补齐。
 
 配置版本号和字段对账是两回事。
 Python 要求主体四份文件的 `[inner].version` 与当前模板一致，对账不会改版本号。
@@ -79,7 +79,7 @@ Python 因版本不匹配退出时，不会自动启动外壳执行配置升级�
 自动快照本身已带版本元信息，不需要再执行 `PRAGMA user_version = 5`。
 
 恢复后先确认启动读取的是预期目录，再检查历史会话、人物与素材是否对应。
-自检命令见 [scripts/check/self_check.py](../../../scripts/check/self_check.py)：
+自检命令见 [scripts/check/self_check.py](https://github.com/YueLi-and-Me/YueLiBot/blob/main/scripts/check/self_check.py)：
 
 ```bash
 uv run python scripts/check/self_check.py

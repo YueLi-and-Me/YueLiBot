@@ -178,13 +178,38 @@ def _bind_backend_socket(port: int) -> socket.socket:
 
     :return: 已绑定到 ``127.0.0.1`` 的 TCP socket；调用方负责在服务器接管后管理其生命周期。
 
-    :raises OSError: 端口被占用时抛出带排查提示的异常，其他绑定失败传播原始异常。
+    :raises OSError: 端口绑不上时抛出带排查提示的异常，提示同时覆盖「被占用」与
+        「还停在 TIME_WAIT」两种情况；其他绑定失败传播原始异常。
 
     副作用：
         成功时占用本地端口；绑定失败时关闭临时 socket。
     """
     # 该 socket 需持续持有：探测后立即释放会被其他进程抢占。
     sock = socket.socket()
+    if sys.platform != 'win32':
+        # Linux/macOS 上必须开地址复用，否则重启会撞上端口残留。
+        #
+        # 现象：`systemctl restart yueli.service` 之后进程反复以
+        #   `OSError: [Errno 98] Address already in use` 退出，systemd 落进
+        #   auto-restart 循环（MainPID=0、SubState=auto-restart），真机 NRestarts
+        #   累计到 11；而同一时刻 `ss -lptn "sport = :7999"` 输出为空，没有任何
+        #   进程处于 LISTEN，照报错提示去查只会更困惑。
+        # 原因：WebUI 与适配器同后端建过 TCP 连接，主进程退出后这些连接进入
+        #   TIME_WAIT，内核在这个窗口内继续保留该本地地址。TIME_WAIT 不是 LISTEN
+        #   状态，`ss -lptn` 看不到它；但没有 SO_REUSEADDR 时 `bind()` 仍会因此
+        #   返回 EADDRINUSE（等待若干秒再启动即可成功）。
+        # 后果：任何一次重启都可能把线上打进崩溃循环。这里只让 `bind()` 绕过
+        #   TIME_WAIT，不放宽地址的抢占语义，因此也不能改用 SO_REUSEPORT——那会让
+        #   多个进程同时监听同一端口，「同时跑起两个后端」从报错变成静默共存。
+        #
+        # 只在非 win32 平台设置：Windows 上 SO_REUSEADDR 的语义是允许另一个进程
+        # 真正抢占已绑定的地址，会直接违背上面「该 socket 需持续持有」的意图。
+        #
+        # 还有一条实测记录：Windows 上一旦开启地址复用，端口被真实占用时的失败码
+        # 会从 10048 变成 10013（WSAEACCES），而下面的排查提示只识别 {98, 10048}，
+        # 届时提示一并失效、退回难以定位的原始异常。若将来有人要在 Windows 上开启
+        # 地址复用，这两处必须一起改。
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", port))
     except OSError as exc:
@@ -192,15 +217,21 @@ def _bind_backend_socket(port: int) -> socket.socket:
         if exc.errno in {98, 10048}:
             # 排查命令按平台给：无头部署跑在 Linux 上，给一条 PowerShell 命令
             # 等于没给。
-            inspect = (
-                f'Get-NetTCPConnection -LocalPort {port}' if sys.platform == 'win32'
-                else f'ss -lptn "sport = :{port}"'
-            )
+            if sys.platform == 'win32':
+                inspect = f'Get-NetTCPConnection -LocalPort {port}'
+                inspect_all = f'netstat -ano | findstr ":{port}"'
+            else:
+                inspect = f'ss -lptn "sport = :{port}"'
+                inspect_all = f'ss -ant "sport = :{port}"'
             raise OSError(
                 f'后端端口 {port} 已被占用，Bot 无法启动。'
                 f'请运行 {inspect} '
                 f'查看占用进程，结束冲突进程后重试；'
                 f'如需临时改用其他端口，可传入 --port <端口>。'
+                f'若这条命令查不到 LISTEN 记录，端口可能不是被占用，而是还停在 '
+                f'TIME_WAIT：TIME_WAIT 不进入 LISTEN 状态，上面那条只列监听端的写法'
+                f'看不到，改用 {inspect_all} 这类列出全部连接状态的写法才看得到，'
+                f'此时稍等几秒重试即可。'
             ) from exc
         raise
     return sock

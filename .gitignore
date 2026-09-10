@@ -17,6 +17,10 @@ assets/character/fixture/
 # Electron 构建产物
 out/
 
+# 文档站构建产物（由 zensical build 生成，内容与 docs/ 一一对应，可重新生成）。
+# wrangler.toml 指向 site/，误入库会让发布上传上一次的陈旧页面。
+/site/
+
 # Live2D 预处理产物（可由 scripts/prepare-model.ts 重新生成）
 assets/model/
 

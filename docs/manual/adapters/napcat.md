@@ -48,7 +48,7 @@ WebSocket 客户端或仅启用 HTTP 服务端均不满足本接入方式的要�
 plugin = "yueli-napcat-adapter"
 ```
 
-使用[连接模板](../../../config.example/adapters/yueli-napcat-adapter.toml)，
+使用[连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-napcat-adapter.toml)，
 真实文件放在 `adapters/yueli-napcat-adapter/config.toml`。
 修改其中已有段；以下号码仅示范两个不同身份：
 

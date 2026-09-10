@@ -20,7 +20,7 @@ uv run bot.py
 
 **第一次会先要求你同意用户协议**：控制台打印协议要点与正文位置，逐字输入「同意」
 才继续。协议讲的是接入 QQ 的账号风险、程序会替你存群成员的哪些信息、以及对话内容
-会发给谁——正文在仓库根目录的 [`AGREEMENT.md`](../../../AGREEMENT.md)。
+会发给谁——正文在仓库根目录的 [`AGREEMENT.md`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)。
 同意一次即可，记录写在数据目录的 `consent.json`。
 
 同意之后会生成 `config/` 并退出，属于正常初始化流程。控制台列出待填写的配置项；
@@ -34,7 +34,7 @@ uv run bot.py
 api_key = ""    # 填写实际密钥
 ```
 
-厂商地址、六个模型条目和任务分档均已预填，六个模型共用百炼连接；默认名称为「月璃」。字段说明见 [`config.example/`](../../../config.example/README.md)。保存即完成。
+厂商地址、六个模型条目和任务分档均已预填，六个模型共用百炼连接；默认名称为「月璃」。字段说明见 [`config.example/`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)。保存即完成。
 
 ## 重新启动
 

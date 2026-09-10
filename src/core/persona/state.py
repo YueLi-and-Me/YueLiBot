@@ -92,12 +92,38 @@ _RANGE: dict[str, tuple[float, float]] = {
 
 MOOD_RATE = 2.0
 MOOD_TAU = 6.0
-# 活动对精力的速率基准：时间线按 ENERGY_RATE * (energy_pace - 1) 每小时积分，
-# pace 1 为不增不减的中性点。取 2.5 而不是更高，是为了让一夜八小时睡眠（pace 3）
-# 给出 +40——足以兜住一个聊得多的白天（六十个私聊回合 -18 加上清醒活动的消耗），
-# 而不至于让她整天贴在上限。数值与 TURN_ENERGY_COST 是一个比例的两端，改一个就要
-# 重算另一个，别单独调。
-ENERGY_RATE = 2.5
+# 精力速率表（精力点/小时）：睡眠、休息、清醒是三种不同的过程，按 (kind, pace)
+# 分档而不共用一个线性系数——共用一个系数时改一端就要重算另一端，正是旧
+# ENERGY_RATE 难调的根源。pace 取值范围由时间线的 _ENERGY_PACE_RANGES 限定。
+# 标定依据（时长构成取自真机连续 7 天的实际活动，不是估算）：
+# - 睡 8 小时 pace=3 给 +52，睡 6 小时给 +39；睡不够仍然补不满，跨日累积的代价
+#   刻意保留。
+# - 真机构成为睡眠 8.4h/天、休息 6.0h/天、清醒 9.6h/天，按本表核算活动日均
+#   +15.0，扣掉对话的 -11.7 后日均净 +3.3，稳态落在 73 上下。
+# - 清醒是最大的消耗项（日均 -50.8，占全部消耗七成以上，其中 pace=-1 一档就占
+#   6.0h/天），因此睡眠速率必须明显高于清醒速率的绝对值。旧 ENERGY_RATE=2.5
+#   在同一份真机数据上日均净 -4.3，精力反复归零；睡眠速率若只提到 +6.0/h 仍是
+#   日均净 -0.9，活动积分整体为负、全靠 ENERGY_BASELINE 的回归项兜底，主次颠倒。
+# 查表缺键直接抛 KeyError，不给默认值兜底；pace 越界由时间线入口限幅拦截。
+ENERGY_RATES: dict[tuple[str, int], float] = {
+    ('sleep', 2): 4.0,
+    ('sleep', 3): 6.5,
+    ('rest', 1): 1.0,
+    ('rest', 2): 3.0,
+    ('awake', 1): 0.0,
+    ('awake', 0): -3.0,
+    ('awake', -1): -6.0,
+    ('awake', -2): -9.0,
+    ('awake', -3): -12.0,
+}
+# 未装配日程服务时，全部经过时间按清醒 pace=-1 即 -6.0/h 消耗。该常量只在日程
+# 服务未装配时生效；装配后精力曲线由活动时间线按 ENERGY_RATES 积分决定。
+ENERGY_FALLBACK_RATE = -6.0
+# 精力若只是纯收支累加，长期必然贴到 0 或 100 中的一端；有了回归力，稳态由
+# 基线决定，速率表随之解耦。真机构成下预期稳态约 73，日内振幅约 ±25：早上醒来
+# 95 上下，晚上睡前 50 上下。连续熬夜仍然净亏，代价不会被抹平。
+ENERGY_BASELINE = 65.0   # 精力基线：无外力时收敛到的值，取值 0~100
+ENERGY_TAU = 48.0        # 精力回归时间常数，单位小时；一天回归约 39%
 # 单个对话回合的精力消耗，群聊再乘 group_chat.persona_weight。
 # 说话是要花精力的——这条不取消；但 0.4 会让一晚五十个回合吃掉一整夜睡眠的六成，
 # 对一个以聊天为本职的角色过重，收到 0.3。
@@ -292,7 +318,12 @@ class Persona:
         return int(row[0])
 
     def snapshot_daily(self, person_id: int, now: int | None = None) -> None:
-        """保存 owner 当日首次状态快照。
+        """保存 owner 当日的状态快照，语义为「当天最新的已结算状态」。
+
+        同一天内结算游标每向前推进，快照就跟着刷新；游标没有越过已记录的
+        ``captured_at`` 时不覆盖。早上第一次交互时结算游标还停在昨夜活动的
+        边界、夜间恢复尚未入账，若把那一刻钉死成当天值（旧 ``INSERT OR IGNORE``
+        的行为），全天读到的都是未结算的旧状态。
 
         :param person_id: 必须为 owner 的 ``persons.id``。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
@@ -301,19 +332,26 @@ class Persona:
         :raises RuntimeError: owner 状态缺失时抛出。
 
         副作用：
-            通过 ``INSERT OR IGNORE`` 写入当天快照并提交事务；重复调用不会覆盖
-            当天已经捕获的值。
+            当天无记录时写入；已有记录且本次结算游标更晚时覆盖。``captured_at``
+            记录结算游标时刻（``persona_self.updated_at``）而非写入时刻。
         """
 
         self._require_owner(person_id)
         now = now if now is not None else current_time()
         state = self.get(person_id)
         date = snapshot_date(now)
+        captured_at = self.settled_at()
         self._db.execute(
-            '''INSERT OR IGNORE INTO persona_snapshots
+            '''INSERT INTO persona_snapshots
                (date, intimacy, energy, mood, captured_at)
-               VALUES (?, ?, ?, ?, ?)''',
-            (date, state.intimacy, state.energy, state.mood, now),
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(date) DO UPDATE SET
+                   intimacy = excluded.intimacy,
+                   energy = excluded.energy,
+                   mood = excluded.mood,
+                   captured_at = excluded.captured_at
+               WHERE excluded.captured_at > persona_snapshots.captured_at''',
+            (date, state.intimacy, state.energy, state.mood, captured_at),
         )
         self._db.commit()
 
@@ -460,10 +498,13 @@ class Persona:
     ) -> PersonaState:
         """按经过的时间衰减关系，并应用 owner 在此期间的精力、心情变化。
 
+        精力与心情在事件积分之后都向各自基线回归（见 ``ENERGY_BASELINE`` 与
+        ``MOOD_TAU``），避免纯收支累加把长期状态钉在 0 或 100 的极端。
+
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
         :param effect: 调用方按日程积分得到的精力与心情事件变化；未提供时将全部
-            经过时间按清醒状态每小时消耗两点精力处理，心情只向基线回归。
+            经过时间按清醒 pace=-1（-6.0/h）消耗处理。
 
         :return: 调整后的状态；非 owner 或经过时间不足一小时则返回原状态。
 
@@ -488,18 +529,21 @@ class Persona:
         # 游标一旦被别处重置，累积窗口就永远到不了一小时。
         if hours < 1:
             return state
-        # 日程层决定精力曲线的形状；未装配日程时才退回原有的全清醒线性消耗。
+        # 日程层决定精力曲线的形状；未装配日程时才退回按清醒 pace=-1 的线性消耗。
         energy_delta = (
             effect.energy_delta if effect is not None
-            else -hours * ENERGY_RATE
+            else hours * ENERGY_FALLBACK_RATE
         )
         mood_delta = effect.mood_delta if effect is not None else 0.0
         mood = state.mood + mood_delta
         mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
+        # 与心情同序：先加活动积分，再向基线回归。
+        energy = state.energy + energy_delta
+        energy += (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
         days = hours / 24
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy - days * 0.6),
-            energy=_clamp('energy', state.energy + energy_delta),
+            energy=_clamp('energy', energy),
             mood=_clamp('mood', mood),
             updated_at=now,
         )

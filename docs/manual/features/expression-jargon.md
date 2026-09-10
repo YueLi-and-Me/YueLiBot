@@ -66,7 +66,7 @@
 - 每轮推断前：存量词条中与名字冲突的，降级为待定并永久锁定。
 - 注入侧：由 Bot 的名字、别名与对用户的称呼组成保护名单，任何状态下均不注入。
 
-另有一次性清洗脚本 [`scripts/maintain/jargon_guard_names.py`](../../../scripts/maintain/jargon_guard_names.py)：
+另有一次性清洗脚本 [`scripts/maintain/jargon_guard_names.py`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/scripts/maintain/jargon_guard_names.py)：
 将存量撞名词条批量降级，`--dry-run` 仅输出清单不修改数据；释义中含人名的词条只列入清单，交人工判断。
 
 ## 调整方式与停用影响

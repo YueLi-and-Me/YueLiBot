@@ -15,7 +15,7 @@ plugin = "yueli-napcat-adapter"
 选择 SnowLuma 时改为 `yueli-snowluma-adapter`。
 这里填目录名，不是显示名、文件路径、QQ 号或连接地址。
 两个插件互斥，不能用列表一次启用两个。
-模板见 [adapter.toml](../../../config.example/adapter.toml)。
+模板见 [adapter.toml](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapter.toml)。
 
 读取时不会因拼错名字而自动尝试另一个插件。
 缺选择文件、插件目录、清单或连接配置时，查看后端启动诊断；
@@ -40,8 +40,8 @@ plugin = "yueli-napcat-adapter"
 两个 QQ 号都填了占位数字，启用前必须改成实际的不同账号。
 需要手动创建时，复制对应模板到上表中的真实落点：
 
-- [NapCat 连接模板](../../../config.example/adapters/yueli-napcat-adapter.toml)。
-- [SnowLuma 连接模板](../../../config.example/adapters/yueli-snowluma-adapter.toml)。
+- [NapCat 连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-napcat-adapter.toml)。
+- [SnowLuma 连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-snowluma-adapter.toml)。
 
 应保留适配器模板的 `[inner]` 版本，不应改为主体配置版本。
 把 `host`、`port`、`token` 对齐协议端的正向 WebSocket 服务端。
@@ -71,7 +71,7 @@ plugin = "yueli-napcat-adapter"
 uv run python scripts/check/self_check.py
 ```
 
-命令见 [scripts/check/self_check.py](../../../scripts/check/self_check.py)。
+命令见 [scripts/check/self_check.py](https://github.com/YueLi-and-Me/YueLiBot/blob/main/scripts/check/self_check.py)。
 它检查选择、目录、清单、段名和版本；配置可以在后端运行时只读检查。
 若使用自定义位置，可用 `--config-dir`、`--adapters-dir` 指定对应目录。
 自检还会检查两个随附插件，不只检查当前选中的一个。

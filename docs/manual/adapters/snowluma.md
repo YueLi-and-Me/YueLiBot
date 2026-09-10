@@ -45,7 +45,7 @@ QQ 版本不匹配或注入未完成时，先解决协议端自身状态，再�
 plugin = "yueli-snowluma-adapter"
 ```
 
-从[连接模板](../../../config.example/adapters/yueli-snowluma-adapter.toml)准备真实配置，
+从[连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-snowluma-adapter.toml)准备真实配置，
 落点是 `adapters/yueli-snowluma-adapter/config.toml`。
 连接段名须与当前插件一致，不得沿用其他插件的段名。
 以下片段修改已有段，QQ 号需换成实际账号：

@@ -1,7 +1,7 @@
 # 配置总览
 
 主体配置由五份 TOML 文件组成，修改时应按功能归属定位文件及其关联配置。
-默认真实配置位于项目根的 `config/`；模板在[配置示例目录](../../../config.example/README.md)。
+默认真实配置位于项目根的 `config/`；模板在[配置示例目录](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)。
 模板仅用于参考，修改模板不会改变实际运行配置。
 
 ## 五份文件的分工
@@ -77,7 +77,7 @@ QQ 还有插件目录下的一份 `config.toml`，保存地址、QQ 身份和访
 
 ## 模板和备份
 
-完整注释见[模板说明](../../../config.example/README.md)，实例配置应在真实配置文件中修改。
+完整注释见[模板说明](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)，实例配置应在真实配置文件中修改。
 首次运行只补缺失文件，不会覆盖已有密钥或自动替换现有模型目录。
 新增字段的自动对账、版本不匹配与备份位置见[升级与回退](../deployment/upgrade.md)。
 真实配置和备份都可能含密钥，不进入版本控制。

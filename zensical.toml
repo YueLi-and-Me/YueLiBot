@@ -1,0 +1,197 @@
+# 月璃文档站配置：把仓库里的 docs/ 渲染成静态站，由 GitHub Actions 构建后
+# 发布到 Cloudflare Workers 静态资源（Worker 名与路由见仓库根的 wrangler.toml）。
+#
+# 上游选型说明：Material for MkDocs 已于 2025-11-06 进入最终维护期（2026-11-05 停止支持），
+# 官方指定的继任者是同一团队开发的 Zensical，配置模型沿用 MkDocs 的约定。
+# 本文件只被 docs 构建读取，不参与 pytest / vitest / tsc 三条门，也不影响运行时代码。
+
+[project]
+site_name = "月璃 · 文档"
+site_description = "月璃 YueLiBot 的用户手册与开发手册"
+# site_url 决定 sitemap.xml、canonical 链接与 navigation.instant 的预取目标。
+# 正式入口是 wrangler.toml 里绑定的 Custom Domain；换域名时两处必须同步，
+# 否则 sitemap、canonical 与站内预取都会指向旧地址。
+site_url = "https://docs.yuelibot.org/"
+docs_dir = "docs"
+site_dir = "site"
+repo_url = "https://github.com/YueLi-and-Me/YueLiBot"
+repo_name = "YueLi-and-Me/YueLiBot"
+# 每页的「编辑此页」固定指向 main：站点由 main 构建，dev 分支上的草稿不应成为公开入口。
+edit_uri = "edit/main/docs/"
+copyright = "月璃 YueLiBot 贡献者 · AGPL-3.0"
+
+# 导航显式声明，不走目录自动推断。
+#
+# 原因：docs/ 下的文件名是英文，自动推断按文件名排序会把 install.md 排在 first-run.md
+# 之前，而用户手册的阅读顺序恰恰相反（先跑起来，再谈安装细节）。显式导航的代价是
+# 与 docs/README.md 存在重复，新增页面时两处都要改。
+nav = [
+  { "首页" = "README.md" },
+  { "用户手册" = [
+    { "部署" = [
+      { "从零跑起来" = "manual/deployment/first-run.md" },
+      { "安装与配置" = "manual/deployment/install.md" },
+      { "Windows 上带桌宠" = "manual/deployment/windows.md" },
+      { "无头部署" = "manual/deployment/headless.md" },
+      { "升级与回退" = "manual/deployment/upgrade.md" },
+    ] },
+    { "配置" = [
+      { "配置总览" = "manual/configuration/index.md" },
+      { "bot.toml" = "manual/configuration/bot.md" },
+      { "models.toml" = "manual/configuration/models.md" },
+      { "providers.toml" = "manual/configuration/providers.md" },
+      { "features.toml" = "manual/configuration/features.md" },
+      { "适配器配置" = "manual/configuration/adapter.md" },
+    ] },
+    { "功能" = [
+      { "功能总览" = "manual/features/index.md" },
+      { "记忆" = "manual/features/memory.md" },
+      { "表达方式与黑话" = "manual/features/expression-jargon.md" },
+      { "表情包" = "manual/features/emoji.md" },
+      { "主动搭话" = "manual/features/proactive.md" },
+      { "人格与状态" = "manual/features/persona.md" },
+      { "日程与睡眠" = "manual/features/schedule.md" },
+      { "屏幕感知" = "manual/features/perception.md" },
+      { "生图管线" = "manual/features/sprite.md" },
+    ] },
+    { "接入 QQ" = [
+      { "接入总览" = "manual/adapters/index.md" },
+      { "NapCat" = "manual/adapters/napcat.md" },
+      { "SnowLuma" = "manual/adapters/snowluma.md" },
+    ] },
+    { "管理面板" = [
+      { "面板总览" = "manual/webui/index.md" },
+      { "会话观察" = "manual/webui/observe.md" },
+      { "模型与厂商" = "manual/webui/models.md" },
+      { "人物与关系" = "manual/webui/persons.md" },
+      { "黑话词表" = "manual/webui/jargon.md" },
+      { "表达方式" = "manual/webui/expressions.md" },
+      { "记忆联想网络" = "manual/webui/memory-graph.md" },
+      { "检索调优" = "manual/webui/retrieval-tuning.md" },
+      { "导入中心" = "manual/webui/import-center.md" },
+      { "记忆管理" = "manual/webui/memory-manage.md" },
+      { "表情包库" = "manual/webui/emojis.md" },
+      { "月璃设置" = "manual/webui/settings.md" },
+      { "开发者命令" = "manual/webui/developer.md" },
+    ] },
+    { "出问题了" = [
+      { "常见问题" = "manual/troubleshooting.md" },
+    ] },
+  ] },
+  { "开发手册" = [
+    { "架构" = [
+      { "架构总览" = "dev/architecture/overview.md" },
+      { "一次回合的完整链路" = "dev/architecture/conversation-turn.md" },
+      { "记忆系统" = "dev/architecture/memory.md" },
+      { "平台抽象与适配器" = "dev/architecture/platform-io.md" },
+      { "可观测性" = "dev/architecture/observability.md" },
+      { "配置体系" = "dev/architecture/configuration.md" },
+    ] },
+    { "模块" = [
+      { "core/agent" = "dev/modules/core-agent.md" },
+      { "core/memory" = "dev/modules/core-memory.md" },
+      { "core/services" = "dev/modules/core-services.md" },
+      { "core/db" = "dev/modules/core-db.md" },
+      { "core/config" = "dev/modules/core-config.md" },
+      { "core/platform_io" = "dev/modules/core-platform-io.md" },
+      { "core/logging 与 observe" = "dev/modules/core-observability.md" },
+      { "electron" = "dev/modules/electron.md" },
+      { "webui" = "dev/modules/webui.md" },
+      { "adapters" = "dev/modules/adapters.md" },
+      { "scripts" = "dev/modules/scripts.md" },
+    ] },
+    { "开发流程" = [
+      { "开发与验证" = "dev/guide/testing.md" },
+      { "写一个工具插件" = "dev/guide/plugins.md" },
+      { "Electron 侧的三个坑" = "dev/guide/electron-pitfalls.md" },
+    ] },
+    { "出站图片验收" = "dev/outbound-image-acceptance.md" },
+  ] },
+]
+
+[project.theme]
+language = "zh"
+
+# 下列特性取自 Zensical 模板的推荐集，逐项取舍见各自注释。
+# navigation.instant 依赖 site_url 生成的 sitemap.xml，site_url 未设置时会静默失效。
+features = [
+  # 代码块内的注释角标、复制与整块选中，站点大量使用命令行示例，缺了就只剩裸 pre。
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  # 标签页共享选中状态，同一页上并列的多份配置片段切换时不会各自复位。
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  # 面包屑：两套手册层级较深，没有它时只能靠浏览器后退。
+  "navigation.path",
+  "navigation.sections",
+  # 顶层三项（首页 / 用户手册 / 开发手册）做成横向标签，读者一眼分得清两套文档。
+  "navigation.tabs",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[project.theme.icon]
+# 用内置图标而不是仓库里的立绘：docs_dir 之外的图片不会进入构建产物，
+# 而把二进制素材复制进 docs/ 会同时污染随代码分发的文档目录。
+logo = "lucide/moon-star"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "切换主题"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "切换到浅色模式"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "切换到深色模式"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+# 正文里存在中文标题的交叉引用（如 docs/README.md 的「#用户手册」）。
+#
+# 默认的 python-markdown slugify 会丢弃非 ASCII 字符，中文标题只能退化成 _1、_2
+# 这类位置相关的编号，锚点既不可读也会随标题增删而失效；改用 pymdownx 的
+# uslugify 后锚点保留中文原文。kwds 的 case 必须为小写，否则同一标题的大小写
+# 变体会落到两个不同锚点上。
+toc.permalink = true
+toc.slugify.kwds.case = "lower"
+pymdownx.arithmatex.generic = true
+pymdownx.betterem = {}
+pymdownx.caret = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+# 架构文档里的 ASCII 流程图都写在围栏代码块内，超级围栏据此渲染 mermaid 块。
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}
