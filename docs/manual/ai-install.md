@@ -1,64 +1,70 @@
-# 让 AI 帮你装
+# 把安装交给 AI
 
-不想一条条敲命令的话，把下面这段复制给任意能执行命令的 AI（Claude、ChatGPT
-的桌面端、Cursor、终端里的 AI agent 都行），它会照着这份文档检查环境、装依赖、改配置。
+命令不想自己敲，可以把这一摊交给 AI 执行：它查环境、装依赖、改配置，你只负责
+回答问题、点确认。这一页既是交给它执行的规格，也是你最后验收时的对照表。
 
-## 第一步：复制这段给它
+## 怎么用
+
+把这一页的链接发给你正在用的 AI（Claude、ChatGPT、Cursor，或终端里的 agent），
+再附一句话：
 
 ```text
-帮我在本机装好 YueLiBot（月璃），全程你来执行，我在旁边确认。
-
-安装手册：https://docs.yuelibot.org/manual/ai-install/
-请按那份页面里的「AI 执行手册」逐条执行。
-
-要求：
-1. 动手前先问清楚我的系统、要不要桌宠、要不要接 QQ，不要自己假设
-2. 用户协议必须由我本人阅读并确认，你不要代我同意
-3. 每一步做完告诉我结果，缺什么、要我做什么，说清楚
-4. 报错了先按手册里的排查项定位，不要盲目重试或改用别的办法绕过
+按 https://docs.yuelibot.org/manual/ai-install/ 把我这台机器上的月璃装好。
+那页写了硬约束和完成判据，照它做。
+需要我本人操作或确认的地方停下来告诉我，别替我接受任何协议。
 ```
 
-装完之后如果还想接 QQ，把[接入总览](adapters/index.md)的链接也发给它。
+下面是规格正文。它按「先问什么、不许做什么、做到什么算完、按什么顺序、错了怎么判」
+组织，你读一遍也就知道自己会被问哪些问题。
 
 ---
 
-## AI 执行手册
+## 先问清楚，别猜
 
-以下内容写给 AI。人也可以读，写的都是它接下来会做的事。
+四件事必须从用户口中问到答案，猜错任何一件都会白装一遍：
 
-### 你是谁
+**系统与版本** —— Windows 还是 Linux，具体版本号。桌宠只在 Windows 10 / 11 上可用，
+选错平台等于选错整条路线。
 
-你是 YueLiBot（月璃）的安装助手。**用户只负责回答问题，所有操作由你执行。**
-你不是向导，是执行者；每一步做完要给用户一句明确的结果。
+**凭据** —— 模型厂商的 API Key（默认走阿里云百炼，形如 `sk-xxxxxxxx`），
+以及一个打算当机器人的 **QQ 小号**。**必须是小号**，不要用用户本人的主号。
 
-**红线：用户协议必须由用户本人确认。** 协议讲的是接入 QQ 的账号风险、
-程序会保存群成员的哪些信息、对话内容会发给谁。把
-[AGREEMENT.md](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)
-的链接交给用户，让他自己读完、自己在终端里输入「同意」。
-**不要用 `--accept-agreement` 替他跳过这一步**（那个参数只用于无头服务器等确实无法交互的场景，
-且必须由用户明确要求）。
+**装到哪个目录** —— 默认别放 C 盘，理由见下面的硬约束。
 
-### Step 0：先问清楚，不要假设
+协议端用 NapCat 还是 SnowLuma 不用问：**默认 NapCat**，它支持的平台最多，
+用户之后想换随时能改 `config/adapter.toml` 里的一行。
 
-- 操作系统是 Windows 还是 Linux？版本是多少？
-- 要不要桌宠（立绘站在桌面上）？要的话必须是 Windows 10/11。
-- 要不要接 QQ？要接的话用 NapCat 还是 SnowLuma？（不确定就推荐 NapCat）
-- 项目装在哪个盘？**要桌宠的话不能装 C 盘**（桌面外壳会拒绝把运行时文件写进系统盘）。
-- 有没有模型厂商的 API Key？默认用阿里云百炼，形如 `sk-xxxxxxxx`。
-- 有 QQ 小号吗？机器人号建议用小号，且必须与用户本人的号不同。
+## 三条硬约束
 
-### Step 1：检查系统要求
+**用户协议由用户本人读、本人输入，不许代劳。**
+首次启动时终端会打印协议要点与正文位置，要求逐字输入「同意」。
+把 [AGREEMENT.md](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)
+的链接交给用户，让他自己决定。**不要用 `--accept-agreement` 绕过这一步**——
+那个参数只服务于确实无法交互的无头服务器，且必须由用户本人提出。
 
-- 磁盘剩余 ≥ 3 GB（长期跑建议 10 GB 以上）
-- 内存 ≥ 4 GB
-- 能访问 PyPI、GitHub 与模型厂商 API
-- 要构建面板或桌宠则需要 Node.js 22+；纯后端部署可跳过
+**机器人号用小号，且与用户本人的号不同。**
+接入 QQ 可能导致账号被风控或限制。两个号填成同一个会被配置校验直接拒绝。
 
-不满足就明确告诉用户哪里不够、怎么补，不要硬装。
+**要桌宠，项目根就不能落在 C 盘。**
+桌面外壳启动时会拒绝把运行时文件写进系统盘，报错原文是
+「拒绝把 YueLiBot 运行时文件写入 C 盘」。装到 `D:` 之类的位置，或用
+`YUELI_PROJECT_ROOT` 显式指定一个非 C 盘目录。
 
-### Step 2：安装 uv
+## 做到什么算装完
 
-先执行 `uv --version` 看是否已装。没有的话：
+别看「命令有没有报错」，看下面这几条是否真的成立：
+
+1. 后端终端出现「WebUI 已就绪」的信息框
+2. 浏览器能打开 `http://127.0.0.1:7999`，看得见面板
+3. 发一条消息后，面板的「会话观察」页里出现回复正文
+4. **接了 QQ 的话**：用用户本人的 QQ 私聊机器人号，QQ 里真的收到回复
+
+第 4 条单独列出来，是因为它和前三条不是一回事：面板上显示回复只证明模型出了结果，
+QQ 里收到气泡才证明出站动作被协议端接受。只做到第 3 条就宣布完成是错的。
+
+## 按这个顺序做
+
+**安装 uv** —— 先 `uv --version` 看有没有。没有就按系统装：
 
 ```powershell
 # Windows PowerShell
@@ -70,112 +76,45 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-装完**必须重开终端**让 PATH 生效，否则后面所有命令都会找不到 uv。
-uv 会自己下载合适的 Python（3.11+），**不要额外装 Python**。
+装完必须重开终端让 PATH 生效。**不要另外装 Python**：uv 会按 `pyproject.toml`
+的声明自己准备 3.11 以上版本。
 
-### Step 3：拿到代码
+**克隆仓库** —— `git clone https://github.com/YueLi-and-Me/YueLiBot.git`。
+机器上没有 Git，就从
+[Releases](https://github.com/YueLi-and-Me/YueLiBot/releases) 下源码包解压。
+解压后目录里要能直接看到 `pyproject.toml`，多套一层会导致后面所有命令找不到项目。
 
-```bash
-git clone https://github.com/YueLi-and-Me/YueLiBot.git
-cd YueLiBot
-```
+**安装依赖** —— 在项目根依次执行 `uv sync`、`npm ci`、`npm run build`。
+前一条装后端，后两条装前端并构建管理面板与桌宠（产物在 `out/`）。
+Node.js 要 22 以上；**管理面板离不了构建产物**，所以这两条不是可选项。
 
-没有 Git 就引导用户到
-[Releases](https://github.com/YueLi-and-Me/YueLiBot/releases) 下载源码包解压。
-解压后确认目录里直接能看到 `pyproject.toml`，**不要多套一层目录**。
+**第一次启动** —— `uv run bot.py`。同意协议后它会生成五份带注释的 TOML
+**并主动退出，退出码是 1**。这是设计如此，不要当成报错去修，也不要去改退出码出处。
 
-### Step 4：安装依赖
+**填 Key** —— 配置在项目目录下的 `config/`，改 `providers.toml` 里的 `api_key` 一行。
+厂商地址与六个模型条目已按百炼预填，**除非用户明确要换厂商，否则不要动模型 ID**。
 
-在项目根目录（能看到 `pyproject.toml` 的那一层）执行：
+**再启动** —— 再跑一次 `uv run bot.py`，直到出现「WebUI 已就绪」。
+端口 7999 被占用时用 `--port` 换一个。
 
-```bash
-uv sync
-```
+**接 QQ** —— 见 [NapCat 接入](adapters/napcat.md) 与 [SnowLuma 接入](adapters/snowluma.md)。
+协议端是独立程序，不要装进月璃的目录；月璃侧要改 `config/adapter.toml` 的 `plugin`
+与插件目录下的 `config.toml` 两处。
 
-需要桌宠或要在本机构建面板时，再执行：
+## 出错时怎么判
 
-```bash
-npm ci
-npm run build
-```
+| 现象 | 多半是 | 怎么办 |
+| :--- | :--- | :--- |
+| 找不到 `uv` 命令 | 装完没重开终端 | 关掉窗口重新打开 |
+| `uv sync` 长时间不动 | 访问 PyPI 或 GitHub 不畅 | 换网络环境重跑，已下载的部分会保留 |
+| 第一次启动就退出 | 正常流程 | 去填 `api_key` 再启动，不要改代码 |
+| 启动报 `api_key` 为空，或调用返回 401 / 403 | Key 没填、填错，或没开通对应模型 | 回百炼控制台核对；**不要靠换模型 ID「试试看」** |
+| 外壳报「拒绝把运行时文件写入 C 盘」 | 项目在 C 盘 | 挪到其它盘，或设 `YUELI_PROJECT_ROOT` |
+| 面板空白、提示尚未构建 | 跳过了 `npm run build` | 补跑一次，或从别的机器拷 `out/webui` |
+| 面板正常但 QQ 没反应 | 协议端未连上、白名单没写、或消息格式不是数组 | 按[接入总览](adapters/index.md#验收顺序)的三层逐项确认 |
 
-缺少 Node.js 时，Windows 可用 `winget install OpenJS.NodeJS.LTS`，
-其他系统用各自的包管理器，或引导用户从 nodejs.org 下载。
+**不要用「加大超时」「加重连间隔」去治连不上的问题。** 端口、令牌、账号错了，
+等多久都连不上；那两个参数只影响网络抖动时的表现。
 
-### Step 5：第一次启动与配置
-
-```bash
-uv run bot.py
-```
-
-1. 终端打印用户协议并要求输入「同意」——**停下来，把协议链接交给用户，让他自己读、自己输入**。
-2. 同意后程序在 `config/` 生成五份带中文注释的 TOML，**然后主动退出，退出码是 1**。
-   这是正常流程，不要当成报错去修。
-3. 打开 `config/providers.toml`，把 `api_key` 改成用户提供的 Key。
-   其余字段已按百炼预填，**不要改模型 ID 和厂商地址**，除非用户明确要换厂商。
-4. 再次执行 `uv run bot.py`，直到终端打印「WebUI 已就绪」。
-
-WebUI 默认在 `http://127.0.0.1:7999`，本机访问自动登录，不需要手动填 token。
-端口被占用时用 `uv run bot.py --port 8100` 换一个。
-
-### Step 6：接入 QQ（可跳过）
-
-先让用户确认用的是哪个协议端，再按对应篇章操作：
-
-- NapCat：<https://docs.yuelibot.org/manual/adapters/napcat/>
-  协议端仓库 <https://github.com/NapNeko/NapCatQQ>，
-  Windows 推荐用桌面控制台 <https://github.com/NapNeko/NapCatQQ-Desktop/releases>
-- SnowLuma：<https://docs.yuelibot.org/manual/adapters/snowluma/>
-  协议端仓库 <https://github.com/SnowLuma/SnowLuma>
-
-要点（细节以上面两篇为准）：
-
-1. 协议端是**独立程序**，不要把它装进月璃的目录里。
-2. 协议端里建的是 **WebSocket 服务端**（月璃主动去连），不是客户端、也不是 HTTP 服务。
-3. **消息上报格式必须是 `array`**，填成字符串会导致「连上了但没有正常内容」。
-4. 月璃侧要改两处：`config/adapter.toml` 里的 `plugin`，
-   以及插件目录下的 `config.toml`（`self_qq`、`host`、`port`、`token`、`owner.qq`）。
-5. 三个「令牌」别填混：协议端 WS 访问令牌、协议端管理面板密码、月璃面板 token 是三回事。
-6. `self_qq`（机器人号）与 `owner.qq`（用户本人）必须是**两个不同的号**。
-7. 群聊是**白名单**：用户想用的群号必须显式写进 `[group].list`，空列表等于不接任何群。
-
-### Step 7：验证
-
-逐项确认，不要跳步：
-
-1. 后端终端出现「WebUI 已就绪」
-2. 浏览器能打开 `http://127.0.0.1:7999`
-3. 发一条测试消息，在面板「会话观察」页里能看到回复正文：
-
-   ```bash
-   curl -X POST http://127.0.0.1:7999/chat/send \\
-     -H "Authorization: Bearer <终端打印的 token>" \\
-     -H "Content-Type: application/json" \\
-     -d '{"text":"你好"}'
-   ```
-
-4. 接 QQ 的话：用用户本人的 QQ 私聊机器人号，**在 QQ 里真的收到回复**；
-   再把测试群加进白名单、用 @ 提及机器人，确认群里有回复
-
-### 常见问题
-
-**`uv: command not found`** —— 装完 uv 没重开终端。关掉重新打开。
-
-**`uv sync` 卡住** —— 网络访问 PyPI/GitHub 不畅。换网络环境后重跑，已下载的部分会保留。
-
-**第一次启动就退出、退出码 1** —— 正常。配置已生成，去填 `api_key` 再启动。
-
-**启动后报 `api_key` 为空 / 调用返回 401、403** —— Key 没填、填错，或该 Key 没开通对应模型。
-不要靠改模型 ID 或厂商地址来「试试看」。
-
-**桌面外壳报「拒绝把运行时文件写入 C 盘」** —— 项目在 C 盘。挪到其它盘，
-或用 `YUELI_PROJECT_ROOT` 指定一个非 C 盘目录。
-
-**面板空白、提示尚未构建** —— 跳过了 `npm run build`。
-
-**QQ 连不上** —— 按[接入总览](adapters/index.md#验证与排错)的三层分别确认：
-配置能读通、连接能建立、QQ 真收到回复。**不要靠加大超时或重连间隔来「解决」**，
-端口、令牌、账号错了，等多久都连不上。
-
-**用户想把机器人接到大号上** —— 提醒风险：接入 QQ 可能导致账号被风控或限制，
-协议正文见 [AGREEMENT.md](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)。
+**不要把 `api_key`、协议端访问令牌或面板 token 写进任何会提交的文件**，
+也不要贴进聊天窗口——那是能直接用的凭据。

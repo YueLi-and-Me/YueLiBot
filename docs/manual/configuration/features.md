@@ -94,6 +94,23 @@ surfaces = ["desktop"]
 容量淘汰和孤儿清理分别控制；保留磁盘现场时，应分别核对两项设置。
 自动收录异常时，应在管理面板「表情包库」检查条目与标签，并区分收录配置与连接故障。
 
+## 匿名统计
+
+`[telemetry] enabled` 默认开启，用于统计有多少个安装、分别是什么版本。
+上报内容固定三项：应用版本、系统类型、Python 版本。
+**不含聊天内容、不含任何身份信息，也不采集 IP。**
+
+不想要就关掉它：
+
+```toml
+[telemetry]
+enabled = false    # 关掉后不再有任何上报
+```
+
+首次启动时控制台也会把这几句话念一遍。完整说明见
+[用户协议](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)第四节；
+上报服务的实现见 [telemetry-server](https://github.com/YueLi-and-Me/YueLiBot/tree/main/telemetry-server)。
+
 ## 日志、调试与代理
 
 `[log]` 默认 INFO，终端和文件等级可分别覆盖。
