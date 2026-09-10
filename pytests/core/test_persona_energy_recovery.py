@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 
 from src.core.persona.state import (
-    ENERGY_RATE,
+    ENERGY_RATES,
     TURN_ENERGY_COST,
     ElapsedEffect,
     Persona,
@@ -25,9 +25,9 @@ from src.core.persona.state import (
 
 HOUR_MS = 3_600_000
 TEN_MINUTES_MS = 10 * 60_000
-# 休息类活动（pace=2）的每小时精力：时间线按 ENERGY_RATE * (pace - 1) 积分。
+# 休息类活动（pace=2）的每小时精力：时间线按 (kind, pace) 查 ENERGY_RATES 积分。
 # 引用常量而不是抄数字——调速率时用例应当跟着走，而不是变成第二份判据。
-REST_ENERGY_PER_HOUR = ENERGY_RATE
+REST_ENERGY_PER_HOUR = ENERGY_RATES[('rest', 2)]
 
 
 def _owner_id(db: sqlite3.Connection) -> int:
@@ -207,8 +207,8 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
     persona.apply_elapsed(
         person_id, frontier, timeline.integrate_between(persona.settled_at(), frontier)
     )
-    # 那一小时清醒 pace=0，按 ENERGY_RATE 扣一份。
-    assert persona.get(person_id).energy == 10.0 - ENERGY_RATE
+    # 那一小时清醒 pace=0，按速率表扣一份（-3.0/h）。
+    assert persona.get(person_id).energy == 10.0 + ENERGY_RATES[('awake', 0)]
     assert persona.settled_at() == frontier
 
     # 后台补写落地：空缺被填成整夜睡眠。
@@ -219,11 +219,11 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
         expected_until=back, ended_at=back, source='backfilled',
     )
 
-    # 下一次结算读到补写结果，九小时睡眠按 +4/小时入账。
+    # 下一次结算读到补写结果，九小时睡眠 pace=3 按 +6/小时入账。
     persona.apply_elapsed(
         person_id, back, timeline.integrate_between(persona.settled_at(), back)
     )
     assert persona.get(person_id).energy == (
-        10.0 - ENERGY_RATE + ENERGY_RATE * 2 * 9
+        10.0 + ENERGY_RATES[('awake', 0)] + ENERGY_RATES[('sleep', 3)] * 9
     )
     assert persona.settled_at() == back

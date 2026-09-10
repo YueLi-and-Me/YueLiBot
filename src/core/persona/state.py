@@ -92,12 +92,31 @@ _RANGE: dict[str, tuple[float, float]] = {
 
 MOOD_RATE = 2.0
 MOOD_TAU = 6.0
-# 活动对精力的速率基准：时间线按 ENERGY_RATE * (energy_pace - 1) 每小时积分，
-# pace 1 为不增不减的中性点。取 2.5 而不是更高，是为了让一夜八小时睡眠（pace 3）
-# 给出 +40——足以兜住一个聊得多的白天（六十个私聊回合 -18 加上清醒活动的消耗），
-# 而不至于让她整天贴在上限。数值与 TURN_ENERGY_COST 是一个比例的两端，改一个就要
-# 重算另一个，别单独调。
-ENERGY_RATE = 2.5
+# 精力速率表（精力点/小时）：睡眠、休息、清醒是三种不同的过程，按 (kind, pace)
+# 分档而不共用一个线性系数——共用一个系数时改一端就要重算另一端，正是旧
+# ENERGY_RATE 难调的根源。pace 取值范围由时间线的 _ENERGY_PACE_RANGES 限定。
+# 标定依据：
+# - 睡 8 小时 pace=3 给 +48，从 25 能回到 73；睡 6 小时给 +36，明显好转但补不满
+#   ——睡不够会跨日累积，这是刻意保留的手感。
+# - 「醒 16 小时 pace=0（-48）与睡 8 小时 pace=3（+48）恰好抵消」在新表下依然
+#   成立，是刻意维持的不变量，后续调数值要保住它。
+# - 按实测时长构成核算日均：睡眠 8.5h×5.625=+47.8，休息 5.7h×2.40=+13.7，
+#   清醒 8.3h×(-5.38)=-44.6，对话 -13.8，日均净 +3.1，由精力回归力收敛。
+# 查表缺键直接抛 KeyError，不给默认值兜底；pace 越界由时间线入口限幅拦截。
+ENERGY_RATES: dict[tuple[str, int], float] = {
+    ('sleep', 2): 3.5,
+    ('sleep', 3): 6.0,
+    ('rest', 1): 1.0,
+    ('rest', 2): 3.0,
+    ('awake', 1): 0.0,
+    ('awake', 0): -3.0,
+    ('awake', -1): -6.0,
+    ('awake', -2): -9.0,
+    ('awake', -3): -12.0,
+}
+# 未装配日程服务时，全部经过时间按清醒 pace=-1 即 -6.0/h 消耗。该常量只在日程
+# 服务未装配时生效；装配后精力曲线由活动时间线按 ENERGY_RATES 积分决定。
+ENERGY_FALLBACK_RATE = -6.0
 # 单个对话回合的精力消耗，群聊再乘 group_chat.persona_weight。
 # 说话是要花精力的——这条不取消；但 0.4 会让一晚五十个回合吃掉一整夜睡眠的六成，
 # 对一个以聊天为本职的角色过重，收到 0.3。
@@ -463,7 +482,7 @@ class Persona:
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
         :param effect: 调用方按日程积分得到的精力与心情事件变化；未提供时将全部
-            经过时间按清醒状态每小时消耗两点精力处理，心情只向基线回归。
+            经过时间按清醒 pace=-1（-6.0/h）消耗处理，心情只向基线回归。
 
         :return: 调整后的状态；非 owner 或经过时间不足一小时则返回原状态。
 
@@ -488,10 +507,10 @@ class Persona:
         # 游标一旦被别处重置，累积窗口就永远到不了一小时。
         if hours < 1:
             return state
-        # 日程层决定精力曲线的形状；未装配日程时才退回原有的全清醒线性消耗。
+        # 日程层决定精力曲线的形状；未装配日程时才退回按清醒 pace=-1 的线性消耗。
         energy_delta = (
             effect.energy_delta if effect is not None
-            else -hours * ENERGY_RATE
+            else hours * ENERGY_FALLBACK_RATE
         )
         mood_delta = effect.mood_delta if effect is not None else 0.0
         mood = state.mood + mood_delta

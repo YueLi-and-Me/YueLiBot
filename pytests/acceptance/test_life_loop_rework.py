@@ -24,7 +24,7 @@ from src.core.db import schema as db_schema
 from src.core.db.migrations import manager as migration_manager
 from src.core.db.migrations.manager import run_migrations
 from src.core.config.schema import ScheduleConfig
-from src.core.persona.state import ENERGY_RATE, PersonaState, status_label
+from src.core.persona.state import ENERGY_RATES, PersonaState, status_label
 from src.core.schedule import plan as schedule_plan
 
 
@@ -283,11 +283,11 @@ def test_activity_integration_is_deterministic_and_balanced() -> None:
         awake = timeline.integrate_between(start, sleep_at)
         asleep = timeline.integrate_between(sleep_at, end)
 
-        # 绝对值按 ENERGY_RATE 推导而不是写死数字：速率是可调的产品参数，
-        # 而「醒 16 小时 pace=0 与睡 8 小时 pace=3 相互抵消」是尺度无关的不变量，
-        # 后者才是这条用例真正要锁的东西。
-        assert awake.energy_delta == pytest.approx(-16 * ENERGY_RATE)
-        assert asleep.energy_delta == pytest.approx(16 * ENERGY_RATE)
+        # 绝对值按速率表推导而不是写死数字：速率是可调的产品参数，
+        # 而「醒 16 小时 pace=0 与睡 8 小时 pace=3 相互抵消」是尺度无关的不变量
+        # （现行表下为 16h×(-3.0/h) 与 8h×(+6.0/h)），后者才是这条用例真正要锁的东西。
+        assert awake.energy_delta == pytest.approx(16 * ENERGY_RATES[('awake', 0)])
+        assert asleep.energy_delta == pytest.approx(8 * ENERGY_RATES[('sleep', 3)])
         assert whole.energy_delta == pytest.approx(0.0)
         assert whole.mood_delta == pytest.approx(awake.mood_delta + asleep.mood_delta)
     finally:

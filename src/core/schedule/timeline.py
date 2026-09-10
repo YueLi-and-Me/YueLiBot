@@ -16,7 +16,7 @@ import sqlite3
 
 from src.core.logging.logger import get_logger
 from src.core.llm_models.snapshot import bind_render_params
-from src.core.persona.state import ENERGY_RATE, MOOD_RATE, ElapsedEffect
+from src.core.persona.state import ENERGY_RATES, MOOD_RATE, ElapsedEffect
 from src.core.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
@@ -497,7 +497,7 @@ class ActivityTimeline:
             if segment_end <= segment_start:
                 continue
             hours = (segment_end - segment_start) / HOUR_MS
-            energy_delta += ENERGY_RATE * (activity.energy_pace - 1) * hours
+            energy_delta += ENERGY_RATES[(activity.kind, activity.energy_pace)] * hours
             mood_delta += MOOD_RATE * activity.mood_pace * hours
         return ElapsedEffect(energy_delta=energy_delta, mood_delta=mood_delta)
 
