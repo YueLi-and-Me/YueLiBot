@@ -18,13 +18,13 @@
 
     [:octicons-arrow-right-24: 用户手册首页](manual/index.md)
 
--   :material-robot-happy:{ .lg .middle } **让 AI 帮你装**
+-   :material-robot-happy:{ .lg .middle } **把安装交给 AI**
 
     ---
 
-    不想敲命令，就把一段指令复制给你的 AI，它按步骤执行。
+    不想敲命令，就把这一页发给你的 AI，由它查环境、装依赖、改配置。
 
-    [:octicons-arrow-right-24: 安装指令](manual/ai-install.md)
+    [安装规格](manual/ai-install.md)
 
 -   :material-connection:{ .lg .middle } **接到 QQ**
 
@@ -45,7 +45,7 @@
 | 文档 | 内容 |
 | :--- | :--- |
 | [手册首页](manual/index.md) | **新手从这里开始**：三条路线怎么选，各自要走哪几页 |
-| [让 AI 帮你装](manual/ai-install.md) | 复制一段指令给 AI，由它检查环境、装依赖、改配置 |
+| [把安装交给 AI](manual/ai-install.md) | 交给 AI 执行的安装规格：硬约束、完成判据、出错判定表 |
 | [环境要求](manual/deployment/requirements.md) | 系统、Python、Node、磁盘、内存、网络，以及要准备的两个账号 |
 | [下载与安装](manual/deployment/install.md) | 装 uv、拿代码、`uv sync`、可选的前端构建 |
 | [第一次启动与配置](manual/deployment/first-run.md) | 同意协议、生成配置、填 API Key、看到面板 |

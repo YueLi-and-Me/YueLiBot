@@ -6,6 +6,55 @@ SnowLuma 是面向 QQ 客户端的新一代互操作运行时，把 QQ 原生会
 **前置**：月璃后端已经能跑（[第一次启动与配置](../deployment/first-run.md)），
 准备好两个不同的 QQ 号——机器人号用**小号**。
 
+## 先看清这四件事
+
+接入时最容易卡住的就是这四个问题，动手前先花一分钟看完。
+
+### 一、要建的是「正向 WebSocket 服务端」
+
+这个服务由协议端开出来、等着月璃去连，所以叫**正向**。
+在 SnowLuma 的 OneBot 网络配置里对应的条目是 **`wsServers`**：
+
+- `wsServers`（服务端）—— 对的。SnowLuma 监听端口，月璃主动连上来。
+- `wsClients`（客户端）—— 方向反了，月璃不会去当服务端，连不上。
+- 只开 HTTP 服务端 —— 不满足，月璃走的是 WebSocket。
+
+这一条还要**同时提供事件与动作**：当前配置形态里 `role` 填 `Universal`，
+只接事件或只收 API 都会出现「收得到消息、发不出回复」。
+
+### 二、一共涉及四个端口，只有一个要填进月璃
+
+| 端口 | 谁在用它 | 要填进月璃吗 |
+| :--- | :--- | :--- |
+| 协议端**管理面板**端口（默认 5099） | 浏览器打开 SnowLuma 的 WebUI 改配置 | 不填 |
+| OneBot **HTTP 服务**端口 | HTTP 上报或 API 调用 | 本接入方式用不到 |
+| **正向 WebSocket 端口** | 月璃连过去收发消息 | **要填**，就是 `[snowluma].port`，示例用 8095 |
+| 月璃后端端口 **7999** | 浏览器打开月璃的管理面板 | 不填，和协议端没有关系 |
+
+四个端口互不通兑。**只有 WebSocket 那个**要出现在月璃的配置里，
+另外三个填进去都会连不上。
+
+### 三、一共三个 token，也只有一个要填进月璃
+
+| 名字 | 干什么用 | 填到哪 |
+| :--- | :--- | :--- |
+| 协议端 OneBot 访问令牌（`accessToken`） | 月璃连协议端时握手用的凭据 | **月璃的 `[snowluma].token`**；协议端没设这项就留空 |
+| 协议端**管理面板初始密码** | 登录 SnowLuma 自己的 WebUI | 不填 |
+| 月璃**面板 token** | 登录月璃的管理面板 | 不填 |
+
+前两个都在协议端，但只有第一个是给月璃用的 —— 把管理面板密码填进 `token`
+是接入时最常犯的错，表现是握手返回 401 或 403。
+
+### 四、月璃这边要改两个文件
+
+两个文件**都在项目目录下**（项目装在 `D:\YueLiBot` 就是 `D:\YueLiBot\config\adapter.toml`
+与 `D:\YueLiBot\adapters\yueli-snowluma-adapter\config.toml`），用记事本打开即可。
+
+- `config/adapter.toml`：只改 `plugin` 一行
+- `adapters/yueli-snowluma-adapter/config.toml`：改 `[snowluma]` 与 `[owner]` 段里的几个值
+
+两个文件的分工，见[适配器配置](../configuration/adapter.md)。
+
 ## 第一步：装 SnowLuma
 
 === "Windows：桌面控制台或发行包"
@@ -55,15 +104,24 @@ http://localhost:5099
 
 ## 第三步：建一个正向 WebSocket 服务端
 
-在 SnowLuma 的面板里进入 OneBot 网络配置，配置一个 **`wsServers`** 条目：
+在 SnowLuma 的面板里进入 **OneBot 网络配置**，新建一个 **`wsServers`** 条目。
 
-- `wsClients` 是反向客户端，**不适用**于本接入方式
-- 服务端要**同时提供事件与动作**：当前配置形态里 `role` 填 `Universal`，
-  只接事件或只收 API 都不行
-- 根路径为 `/`
-- 记下访问令牌（`accessToken`），月璃那边要填同一个值
+不同版本的字段名略有出入，但只要看到下面这几项，就说明找对地方了：
 
-同机部署填 `127.0.0.1` 加一个端口（例如 `8095`），保存后确认**服务真的开始监听**。
+| 界面上的字段 | 填什么 | 月璃那边对应哪个值 |
+| :--- | :--- | :--- |
+| 启用 | **打开**（只保存不启用，端口不会真的监听） | 插件连接段的 `enabled = true` |
+| 主机 / 监听地址 | `127.0.0.1`（同机部署） | `host = "127.0.0.1"` |
+| 端口 | `8095`，或任意没被占用的端口 | `port`，**两边必须一模一样** |
+| 角色 / role | `Universal`（事件与动作都要） | 不用填 |
+| 路径 | `/`（月璃固定用根路径，不支持自定义路径） | 不用填 |
+| 访问令牌 / `accessToken` | 自定义；不想设就留空 | 有值就原样填进 `token`，留空则 `token = ""` |
+| 消息格式 | **`array`** | 适配器按消息段解析 |
+
+注意**端口那一行是唯一需要两边抄一致的数字**。上面的管理面板端口、
+下面的 HTTP 端口都不要填进月璃，见[上面第二节](#二一共涉及四个端口只有一个要填进月璃)。
+
+保存后确认**服务真的开始监听**——只保存草稿、没有启用，端口是不会开的。
 
 !!! danger "消息上报必须是数组格式"
 
@@ -75,14 +133,21 @@ http://localhost:5099
 
 ## 第四步：在月璃这边选插件、填连接
 
-编辑 `config/adapter.toml`：
+要改两个文件，**都在项目目录下**，用记事本打开就行（右键 → 打开方式 → 记事本）。
+
+先打开 `config/adapter.toml`。项目装在 `D:\YueLiBot` 的话，完整路径就是
+`D:\YueLiBot\config\adapter.toml`。把 `plugin` 改成：
 
 ```toml
 plugin = "yueli-snowluma-adapter"
 ```
 
-从[连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-snowluma-adapter.toml)
-复制一份到 `adapters/yueli-snowluma-adapter/config.toml`，改这几个值：
+再打开第二个文件：`adapters/yueli-snowluma-adapter/config.toml`，同样在项目目录下。
+**它可能还不存在** —— 那就从
+[连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-snowluma-adapter.toml)
+复制一份内容，存成这个路径。
+
+改下面这几个值，**其余字段保留模板里的原样**：
 
 ```toml
 [snowluma]
@@ -97,6 +162,8 @@ qq = "987654321"          # 你自己的 QQ 号，与上面必须是两个不同
 ```
 
 段名必须是 `[snowluma]`，不能沿用别家插件的段名。
+`token` 填的是协议端的 `accessToken`；三个 token 的区别见
+[上面第三节](#三一共三个-token也只有一个要填进月璃)。
 
 ## 地址怎么填才对
 
