@@ -8,7 +8,7 @@
   </p>
 
   <p>
-    官方群 <b>424949962</b> · 在线文档 <b><a href="https://docs.yuelibot.org/">docs.yuelibot.org</a></b>
+    官方群 <b>424949962</b> · 文档中心 <b><a href="https://docs.yuelibot.org/">docs.yuelibot.org</a></b>
   </p>
 
 </div>
@@ -55,7 +55,7 @@ uv run bot.py   # 启动
 
 ## 📚 文档
 
-用户手册与开发手册都在[在线文档](https://docs.yuelibot.org/)，完整索引见 [`docs/`](docs/README.md)。
+用户手册与开发手册都在[文档中心](https://docs.yuelibot.org/)，完整索引见 [`docs/`](docs/README.md)。
 
 | 我想…… | 看这篇 |
 | :--- | :--- |
