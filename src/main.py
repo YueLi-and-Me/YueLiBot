@@ -204,6 +204,11 @@ def _bind_backend_socket(port: int) -> socket.socket:
         #
         # 只在非 win32 平台设置：Windows 上 SO_REUSEADDR 的语义是允许另一个进程
         # 真正抢占已绑定的地址，会直接违背上面「该 socket 需持续持有」的意图。
+        #
+        # 还有一条实测记录：Windows 上一旦开启地址复用，端口被真实占用时的失败码
+        # 会从 10048 变成 10013（WSAEACCES），而下面的排查提示只识别 {98, 10048}，
+        # 届时提示一并失效、退回难以定位的原始异常。若将来有人要在 Windows 上开启
+        # 地址复用，这两处必须一起改。
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("127.0.0.1", port))
