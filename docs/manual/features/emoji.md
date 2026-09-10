@@ -68,7 +68,7 @@
 目录中存在文件而库中无对应记录的称为孤儿文件（例如手动投放后记录被删除）。`[emoji.cleanup]` 默认开启：
 每 6 小时检查一次，删除无记录且修改时间超过 `orphan_retention_days`（默认 30 天）的文件。
 关闭后孤儿文件仅被报告数量，不做删除。一次性手动清理可使用
-[`scripts/maintain/emoji_orphan_cleanup.py`](../../../scripts/maintain/emoji_orphan_cleanup.py)，先以 `--dry-run` 查看清单。
+[`scripts/maintain/emoji_orphan_cleanup.py`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/scripts/maintain/emoji_orphan_cleanup.py)，先以 `--dry-run` 查看清单。
 
 ## 停用方式与影响
 

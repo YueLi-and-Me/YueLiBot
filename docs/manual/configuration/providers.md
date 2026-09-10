@@ -2,7 +2,7 @@
 
 真实文件是 `config/providers.toml`，每个 `[[api_providers]]` 是一条可复用连接。
 同一连接可以供多个模型使用，换密钥不必逐个编辑模型。
-逐字段说明见[厂商模板](../../../config.example/providers.toml)。
+逐字段说明见[厂商模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/providers.toml)。
 
 ## 连接名、预设与实际地址
 

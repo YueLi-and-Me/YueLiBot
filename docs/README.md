@@ -103,3 +103,24 @@
 开发流程：[开发与验证](dev/guide/testing.md) ·
 [写一个工具插件](dev/guide/plugins.md) ·
 [Electron 侧的三个坑](dev/guide/electron-pitfalls.md)
+
+---
+
+## 在线站点与本地预览
+
+这套文档发布在 <https://docs.yuelibot.org/>，
+由 `.github/workflows/docs.yml` 在 main 分支上构建后推送到 Cloudflare Workers 静态资源。
+站点配置在仓库根的 `zensical.toml`，域名与路由在 `wrangler.toml`，产物目录 `site/` 不入库。
+
+本地预览与校验不需要安装全局依赖：
+
+```bash
+uvx zensical@0.0.60 serve                    # 起本地服务，改 Markdown 即时刷新
+uvx zensical@0.0.60 build --clean --strict   # CI 用的严格构建，断链与失效锚点会直接失败
+```
+
+注意事项：
+
+- 导航在 `zensical.toml` 的 `nav` 中显式声明。新增页面时，上面的目录与本页的登记要同步修改。
+- 指向 `docs/` 之外的文件（配置模板、脚本、协议正文）一律写 GitHub 绝对链接。
+  `docs_dir` 之外的文件不会进入站点产物，仓库内相对路径在站上必然是死链，严格构建会拦下。

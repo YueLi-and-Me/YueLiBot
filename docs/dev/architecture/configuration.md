@@ -10,7 +10,7 @@ src/core/config/schema.py 一份 Pydantic schema 上——类型、范围、字�
 以及为什么需要一条专门的校验门把两个运行时的写入器钉在一起。
 
 用户向的字段说明不在本文范围内，见[安装与配置](../../manual/deployment/install.md)与
-[config.example/README.md](../../../config.example/README.md)。
+[config.example/README.md](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/README.md)。
 
 ## 1. 五份 TOML 的职责划分
 

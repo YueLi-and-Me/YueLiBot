@@ -1,7 +1,7 @@
 # features.toml：能力、感知出口与调试
 
 真实文件是 `config/features.toml`，可在「月璃设置」编辑。
-完整字段范围见[功能模板](../../../config.example/features.toml)。
+完整字段范围见[功能模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/features.toml)。
 功能开关与模型候选分别配置；启用前应满足相关依赖，保存后重启生效。
 
 ## 语音合成
@@ -78,7 +78,7 @@ surfaces = ["desktop"]
 ## 表情库管理在 bot.toml
 
 表情包相关配置归 `bot.toml` 的 `[emoji]` 与 `[emoji.cleanup]`，
-不在 features 文件里新增同名段。模板见 [bot.toml](../../../config.example/bot.toml)。
+不在 features 文件里新增同名段。模板见 [bot.toml](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/bot.toml)。
 `collect_enabled` 管从聊天自动收录，关闭后不会因此禁止已有表情发送。
 `max_file_size_mb` 限制收录文件大小，0 表示不按大小限制。
 

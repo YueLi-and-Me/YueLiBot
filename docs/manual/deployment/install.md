@@ -17,7 +17,7 @@ uv sync
 这会安装后端依赖。QQ 适配器复用后端解释器，不必单独建环境。
 `--extra dev` 是开发验证所需，`--extra chart` 只有开发者命令 `/inst` 画图用得上，
 日常使用两者都不必安装。
-依赖声明见 [pyproject.toml](../../../pyproject.toml)。
+依赖声明见 [pyproject.toml](https://github.com/YueLi-and-Me/YueLiBot/blob/main/pyproject.toml)。
 
 需要桌宠或在本机构建管理面板时，再执行：
 

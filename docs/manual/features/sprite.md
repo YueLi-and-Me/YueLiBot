@@ -76,4 +76,4 @@ npm run sprite:process                                     # 抠图 + 对齐 + �
 - `base --pick`、`preview`、`process` 均为纯本地操作，可随意重跑；
   `base` 的生成本身按次计费，执行前确认参数。
 
-更多参数与实现细节见 [`scripts/sprite/README.md`](../../../scripts/sprite/README.md) 与[开发手册·scripts](../../dev/modules/scripts.md)。
+更多参数与实现细节见 [`scripts/sprite/README.md`](https://github.com/YueLi-and-Me/YueLiBot/blob/main/scripts/sprite/README.md) 与[开发手册·scripts](../../dev/modules/scripts.md)。
