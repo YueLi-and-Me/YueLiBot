@@ -1,8 +1,11 @@
-# Windows 上带桌宠
+# 桌面桌宠
 
-后端为应用启动入口，桌宠为可选外壳。模型密钥配置见[安装与配置](install.md)。
-本文适用于 Windows 10/11；把项目放在 C 盘以外，外壳会检查运行时根目录。
-桌宠默认关闭，开启前先准备前端依赖。
+桌宠是可选外壳：立绘站在桌面角落，托盘常驻，能显隐、能说话。本篇把它打开，
+并说清托盘各项、拖动与穿透、开机自启和退出时的边界。
+
+**前置**：后端已经跑通（[第一次启动与配置](first-run.md)），
+且项目**不在 C 盘**——外壳会拒绝把运行时文件写进系统盘。
+桌宠默认关闭，开启前先准备前端依赖。本篇适用于 Windows 10 / 11。
 
 ## 安装 Node 依赖并构建
 
@@ -15,8 +18,8 @@ npm ci
 npm run build
 ```
 
-锁文件中的 Vite 与 electron-vite 要求 Node `^20.19.0 || >=22.12.0`。
-例如使用 22.12.0 或更新的 22 系列版本，可满足这两个构建工具的约束。
+锁文件中的 Vite 与 electron-vite 要求 Node `^20.19.0 || >=22.12.0`；
+用 22.12.0 或更新的 22 系列最省事（Node 没装的话见[下载与安装](install.md)）。
 `npm ci` 按锁文件安装，失败时先处理终端给出的版本、下载或原生依赖错误。
 构建成功后应有 `out/main/index.js`、`out/renderer/` 和 `out/webui/index.html`。
 脚本与依赖见 [package.json](https://github.com/YueLi-and-Me/YueLiBot/blob/main/package.json)、[package-lock.json](https://github.com/YueLi-and-Me/YueLiBot/blob/main/package-lock.json)。

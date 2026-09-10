@@ -1,103 +1,144 @@
 # SnowLuma 接入
 
-本篇把 SnowLuma 的 OneBot 正向 WebSocket 接到月璃。
-先完成[后端安装](../deployment/install.md)，准备两个不同 QQ 账号。
-群聊白名单和参与规则见[接入总览](index.md)。
+SnowLuma 是面向 QQ 客户端的新一代互操作运行时，把 QQ 原生会话转成 OneBot 接口。
+它在 Windows 上体验最完整；Linux 也能跑，但 QQ 扫码登录需要一块能看见的远程桌面。
 
-## 安装并登录协议端
+**前置**：月璃后端已经能跑（[第一次启动与配置](../deployment/first-run.md)），
+准备好两个不同的 QQ 号——机器人号用**小号**。
 
-Windows 原生部署先安装与 SnowLuma 发行版兼容的桌面 QQ。
-从 SnowLuma 发布页面选择 `win-x64` 包，解压到独立目录。
-完整版内置 Node，精简版需要自行安装 Node 22 或更新版本。
-运行包内 `launcher.bat`，同时打开 QQ，用机器人账号扫码登录。
-QQ 与 SnowLuma 应使用同一 Windows 用户和相同权限等级运行。
+## 第一步：装 SnowLuma
 
-检查 SnowLuma 的 QQ 连接或注入状态，再用启动输出提供的地址进入 WebUI。
-首次全新数据目录的管理密码由启动输出提供；它不是 OneBot 访问令牌。
-QQ 版本不匹配或注入未完成时，先解决协议端自身状态，再连接月璃。
-无头 Linux 的 QQ 登录需要可见的远程桌面扫码；月璃本身没有代登录入口。
-协议端独立运行，其发行包应解压到月璃插件目录以外的位置。
+=== "Windows：桌面控制台或发行包"
 
-## 建立正向 WebSocket 服务端
+    两条都可以：
 
-进入 SnowLuma 的 OneBot 网络配置，使用 `wsServers` 服务端条目。
-`wsClients` 为反向客户端，不适用于本接入方式。
-配置一个同时支持事件与动作的服务端，根路径为 `/`。
-当前配置形态中的 `role` 使用 `Universal`，避免仅接事件或仅收 API。
+    **走桌面控制台**——到
+    [NapCatQQ Desktop 的 Releases](https://github.com/NapNeko/NapCatQQ-Desktop/releases)
+    下载 `NapCatQQ-Desktop-<版本>-x64.msi` 安装。这个控制台同时管 NapCat 和
+    SnowLuma，能一键装组件、起停、看日志。
 
-同机示例可设主机为 `127.0.0.1`、端口为 `8095`，启用该服务。
-8095 为示例端口；保留协议端原有端口时，须同步修改月璃插件配置。
-访问令牌使用该 OneBot 服务的 `accessToken`。
-保存后确认服务实际开始监听。
+    **走官方发行包**——到
+    [SnowLuma 的 Releases](https://github.com/SnowLuma/SnowLuma/releases)
+    下载 Windows 完整发行包，解压到**独立目录**，运行 `launcher.bat`。
 
-消息上报必须为数组。
-**如果所用界面提供 `messagePostFormat`，必须改为 `array`。**
-当前 SnowLuma 配置文档使用的是 `messageFormat`，该字段也应设为 `array`。
-仅识别新字段的版本中，添加旧字段不会改变上报格式，应使用该版本支持的配置键。
-最终判据是事件中的 `message` 为数组，而不是字符串。
-月璃不读取协议端这份 JSON，只会校验它实际收到的消息段。
+    > Lite 版不带运行时，需要自己装 Node.js 22.13 以上（23 系要 23.4 以上）。
+    > 不确定就下完整版。
 
-## 选择插件与填写两个 QQ 号
+=== "Linux"
 
-编辑月璃的 `config/adapter.toml`：
+    下载对应平台的完整发行包解压，然后：
+
+    ```bash
+    chmod +x launcher.sh
+    ./launcher.sh
+    ```
+
+    QQ 的扫码登录需要图形界面；无头服务器要先准备可见的远程桌面。
+    **月璃不提供代登录入口**，这一步必须由你在协议端完成。
+
+## 第二步：登录机器人 QQ
+
+打开桌面 QQ 并用机器人小号登录，然后启动 SnowLuma。
+两者应当用**同一个 Windows 用户、相同的权限等级**运行，否则注入会失败。
+
+启动日志里会打印 WebUI 地址，默认是：
+
+```text
+http://localhost:5099
+```
+
+用日志里给的**初始密码**登录（全新数据目录时由启动日志提供）。
+这个密码是 SnowLuma 自己的管理面板密码，**不是 OneBot 访问令牌**。
+
+进面板先看 QQ 的连接／注入状态：状态不对时先解决协议端自己的问题，
+这时候去连月璃只会白费功夫。
+
+## 第三步：建一个正向 WebSocket 服务端
+
+在 SnowLuma 的面板里进入 OneBot 网络配置，配置一个 **`wsServers`** 条目：
+
+- `wsClients` 是反向客户端，**不适用**于本接入方式
+- 服务端要**同时提供事件与动作**：当前配置形态里 `role` 填 `Universal`，
+  只接事件或只收 API 都不行
+- 根路径为 `/`
+- 记下访问令牌（`accessToken`），月璃那边要填同一个值
+
+同机部署填 `127.0.0.1` 加一个端口（例如 `8095`），保存后确认**服务真的开始监听**。
+
+!!! danger "消息上报必须是数组格式"
+
+    SnowLuma 不同版本的配置键名不一样：有的界面叫 `messagePostFormat`，
+    当前的配置文档用的是 `messageFormat`。**哪个存在就改哪个，都设成 `array`。**
+
+    只识别新键名的版本里，写旧键名不会报错但也不生效——
+    最终判据是**事件里的 `message` 是数组而不是字符串**。
+
+## 第四步：在月璃这边选插件、填连接
+
+编辑 `config/adapter.toml`：
 
 ```toml
 plugin = "yueli-snowluma-adapter"
 ```
 
-从[连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-snowluma-adapter.toml)准备真实配置，
-落点是 `adapters/yueli-snowluma-adapter/config.toml`。
-连接段名须与当前插件一致，不得沿用其他插件的段名。
-以下片段修改已有段，QQ 号需换成实际账号：
+从[连接模板](https://github.com/YueLi-and-Me/YueLiBot/blob/main/config.example/adapters/yueli-snowluma-adapter.toml)
+复制一份到 `adapters/yueli-snowluma-adapter/config.toml`，改这几个值：
 
 ```toml
 [snowluma]
-enabled = true
-self_qq = "123456789"
-host = "127.0.0.1"
-port = 8095
-token = ""
+enabled = true            # 启用前先在协议端建好 wsServers 条目
+self_qq = "123456789"     # 机器人小号，与协议端登录的号一致
+host = "127.0.0.1"        # 只填地址，不带 ws://、端口和路径
+port = 8095               # 与协议端实际监听端口一致
+token = ""                # 填成协议端的 accessToken；没有就留空
 
 [owner]
-qq = "987654321"
+qq = "987654321"          # 你自己的 QQ 号，与上面必须是两个不同的号
 ```
 
-把 `token` 填为协议端 OneBot 服务的访问令牌。
-`self_qq` 对应协议端登录的机器人号，`owner.qq` 是用户本人。
-两者相同会被拒绝，实际登录号与配置不同也会在连接后报错。
-保留模板的版本、重连设置、私聊与群聊名单。
+段名必须是 `[snowluma]`，不能沿用别家插件的段名。
 
-## 网络位置要对齐
+## 地址怎么填才对
 
-`host` 仅填主机或 IP，不带协议、端口和路径。
-当前月璃连接固定使用普通 `ws://主机:端口`，不提供自定义路径设置。
-协议端须通过根路径 `/` 提供服务；仅支持自定义路径的服务端不满足连接条件。
-服务器填 `0.0.0.0` 表示监听范围，月璃连接时要填可到达的实际地址。
+**`host` 只填主机名或 IP。** 月璃当前固定使用普通 `ws://主机:端口` 连接，
+**不支持自定义路径**——协议端必须在根路径 `/` 上提供服务。
 
-容器内的 `127.0.0.1` 指容器自身，不是宿主机。
-月璃在宿主机时，要连已经映射到宿主机的 WS 端口；
-月璃位于其他容器时，应使用容器网络可达的地址。
-SnowLuma 管理面板端口、OneBot HTTP 端口与 WS 端口用途不同，不可互换。
+**服务器上写 `0.0.0.0` 是监听范围，不是连接地址。** 月璃这边要填**能连到的实际地址**。
 
-## 启动与验收
+**容器里的 `127.0.0.1` 指容器自己。** 月璃跑在宿主机就填映射到宿主机的端口；
+月璃也在容器里，就填容器网络里能到达的地址。
 
-保持 QQ 和 SnowLuma 在线，在月璃根目录运行 `uv run bot.py`。
-检查适配器连接状态及实际登录号，并使用本人 QQ 发送私聊短消息。
-确认 QQ 收到实际回复后，添加测试群白名单并用真实 @ 验证群聊。
-收到入站事件只证明上报方向；仍需确认出站动作成功。
+**别把端口搞混**：管理面板端口、OneBot HTTP 端口和 WebSocket 端口是三回事，
+只有 WS 端口能填进 `port`。
+
+## 第五步：启动并确认
+
+保持 QQ 与 SnowLuma 在线，在月璃项目根目录运行：
+
+```bash
+uv run bot.py
+```
+
+看后端终端里的适配器连接状态与识别到的登录号，然后：
+
+1. 用**你自己的 QQ** 私聊机器人号，确认 QQ 里收到回复
+2. 把测试群写进 `[group]` 名单，重启月璃
+3. 在群里用 **@** 提及机器人，确认群里有回复
 
 ## 连不上的常见原因
 
-| 现象 | 核对项 |
+| 现象 | 先查这里 |
 | :--- | :--- |
-| WebUI 能开但没有 QQ 消息 | QQ 是否登录、注入是否成功、版本是否匹配 |
-| WS 连接失败 | 服务端条目是否启用，端口和容器映射是否一致 |
-| 401／403 | 是否填了 OneBot 访问令牌，而不是管理员密码 |
-| 能收到事件但发不出去 | 服务端角色是否同时提供事件与动作，检查动作错误 |
-| array 格式校验失败 | 实际使用的消息格式字段是否设成数组 |
-| 插件配置校验失败 | 检查 `[snowluma]` 段、版本和两个不同的 QQ 号 |
-| 私聊成功、群聊无回复 | 检查群号白名单，再检查点名与睡眠状态 |
+| 面板能打开，但 QQ 里没反应 | QQ 登录了吗、注入成功了吗、版本对得上吗 |
+| WS 连接失败 | `wsServers` 条目启用了吗、端口与容器映射一致吗 |
+| 401 / 403 | 填的是 `accessToken` 吗，是不是把管理员密码填了进去 |
+| 收得到事件、发不出消息 | 服务端的 `role` 是不是 `Universal`，看动作报错 |
+| 消息格式校验失败 | 实际生效的那个格式键（`messageFormat` 或 `messagePostFormat`）设成 `array` 了吗 |
+| 插件配置校验失败 | 段名是不是 `[snowluma]`，两个 QQ 号是不是填成了同一个 |
+| 私聊正常、群里不回 | 群号进白名单了吗、@ 到了吗、她是不是在睡眠 |
 
-`reconnect_interval_sec` 管断线重连，`action_timeout_sec` 管动作响应等待。
-端口、鉴权或账号错误不能靠加长等待解决。
-自检与文件关系见[适配器配置](../configuration/adapter.md)。
+**`reconnect_interval_sec` 管断线重连，`action_timeout_sec` 管动作等待。**
+端口、鉴权或账号错了，把等待时间调长解决不了问题。
+
+配置能读通、连接能建立、QQ 真收到回复——这三件事要分别确认。
+只读自检见[适配器配置](../configuration/adapter.md)。

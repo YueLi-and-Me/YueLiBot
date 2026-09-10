@@ -49,18 +49,24 @@ uv run bot.py   # 一条命令起全套
 模型厂商与默认值都已预填好。填好后再次启动即可。接入 QQ 需另外配置协议端（NapCat 或 SnowLuma），
 见[接入总览](docs/manual/adapters/index.md)。
 
-- 首次安装：[从零跑起来](docs/manual/deployment/first-run.md)，五个环节，每步都写明了该看到什么、没看到先查哪里。
+- 第一次装：[用户手册](docs/manual/index.md)，三条路线怎么选、每步该看到什么，写清了。
+- 不想敲命令：[让 AI 帮你装](docs/manual/ai-install.md)，复制一段指令给你的 AI，它按步骤执行。
 - 服务器部署：[无头部署](docs/manual/deployment/headless.md)，只跑 QQ 和面板。
 - 配置预览：[`config.example/`](config.example/README.md) 就是首次运行会生成的那份配置，每个字段都有中文说明，可以先看看再决定。
+
+在线文档：<https://docs.yuelibot.org/>
 
 ## 📚 文档
 
 | | |
 | :--- | :--- |
-| [从零跑起来](docs/manual/deployment/first-run.md) | 新手入口：五个环节，每步写清预期现象 |
-| [安装与配置](docs/manual/deployment/install.md) | 依赖、配置文件的生成与填写、启动方式 |
+| [用户手册](docs/manual/index.md) | 新手入口：三条路线怎么选，各自要走哪几页 |
+| [让 AI 帮你装](docs/manual/ai-install.md) | 复制一段指令给 AI，由它检查环境、装依赖、改配置 |
+| [环境要求](docs/manual/deployment/requirements.md) | 系统、Python、Node、磁盘、内存、网络与要准备的账号 |
+| [下载与安装](docs/manual/deployment/install.md) | 装 uv、拿代码、装依赖、可选的前端构建 |
+| [第一次启动与配置](docs/manual/deployment/first-run.md) | 同意协议、生成配置、填 API Key、看到面板 |
 | [功能总览](docs/manual/features/index.md) | 各项功能的默认开关、前提与依赖 |
-| [QQ 与群聊接入](docs/manual/adapters/index.md) | 协议端选择、必改项、群聊白名单与回复触发 |
+| [QQ 与群聊接入](docs/manual/adapters/index.md) | 协议端选择与仓库、两个 QQ 号的分工、白名单与回复触发 |
 | [管理面板](docs/manual/webui/index.md) | 浏览器内的观察与配置入口 |
 | [无头部署](docs/manual/deployment/headless.md) | 服务器上仅运行 QQ 与面板 |
 | [升级与回退](docs/manual/deployment/upgrade.md) | 配置升级、数据库迁移与备份回退 |
