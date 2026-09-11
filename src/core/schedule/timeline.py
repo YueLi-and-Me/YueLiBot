@@ -32,7 +32,8 @@ _ENERGY_PACE_RANGES: dict[str, tuple[int, int]] = {
     'sleep': (2, 3),
 }
 
-# 一次决策允许给出的单段时长上限（分钟），按 kind 区分；下限沿用 10 分钟不变。
+# 单段活动的时长上限（分钟），按 kind 区分：既封一次决策给出的时长，也封一段活动
+# 自 started_at 起的累计时长；下限沿用 10 分钟不变。
 #
 # 现象：模型偶发给出远超人类尺度的单段时长。2026-09-10 的 id=344 一次决策 360 分钟，
 #   内容是「被消息叫醒，拿着手机窝在床上迷迷糊糊刷刷b站或抖音缓一缓」，按 awake
@@ -46,6 +47,17 @@ _ENERGY_PACE_RANGES: dict[str, tuple[int, int]] = {
 #   120 分钟只截断 106 段中的 3 段（2.8%）；rest 同期 75 次决策、p90 为 1.65h≈99 分，
 #   180 分钟只截断 1 段；sleep 维持 600 分钟不变。上限只给尾部兜底，不用来改变
 #   正常决策形态。
+#
+# 上限约束的是「一段活动的累计时长」，不只是「一次决策的时长」。
+#
+# 现象：2026-09-11 的 id=366 是 awake、pace=-1，12:07 起把 expected_until 一路推到
+#   20:46，单段实际持续 8.64 小时，按 -6.0/h 折算一段扣掉约 52 点精力。单次决策上限
+#   是 120 分钟，所以这一段至少被 continue 了 4 次，每一次单独看都合规。
+# 原因：上限最初只判一次决策给出的 minutes，不判这一段自 started_at 以来的累计时长；
+#   continue 只是 UPDATE 同一行的 expected_until，可以一次接一次地叠。
+# 后果：只封单次决策等于没有上界，单段代价可以超过全天活动的净收益。因此提示词与
+#   写入层都改判累计时长（_elapsed_minutes），并有意不设自动复制新段的兜底路径：
+#   内容与 pace 不变的新段扣分与延续完全相同，只是把一段拆成两段。
 #
 # 键集合必须与 _ENERGY_PACE_RANGES 完全一致：两者由同一次 kind 校验共同消费。
 _DECISION_MINUTE_LIMITS: dict[str, int] = {
@@ -155,6 +167,20 @@ def _integer(value: Any) -> int | None:
     """只接收真正的 JSON 整数，排除 ``bool`` 与字符串隐式转换。"""
 
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _elapsed_minutes(activity: Activity, now: int) -> int:
+    """返回一段活动自 ``started_at`` 起已经持续了多久。
+
+    :param activity: 待测量的一段活动；只用它的 ``started_at``。
+    :param now: 当前毫秒时间戳。
+    :return: 向下取整的持续分钟数；``now`` 早于 ``started_at`` 时返回 0。
+
+    这是**累计**时长，不是本次决策给出的时长：它把此前每一次 continue 叠加进来的
+    时间一起算上，因此是判断「这一段还能不能继续延」的唯一正确依据。
+    """
+
+    return max(0, (now - activity.started_at) // MINUTE_MS)
 
 
 def _clamp_decision_minutes(kind: str, minutes: int) -> int:
@@ -315,6 +341,35 @@ def _duration_text(duration_ms: int) -> str:
     return f'{minutes} 分钟'
 
 
+def _short_gap_rule(current: Activity, now: int) -> str:
+    """给出短缺口这一轮允许的输出形态，累计达上限时不再提供延续选项。
+
+    :param current: 当前进行中的活动；它的 ``kind`` 决定取哪一条上限。
+    :param now: 当前毫秒时间戳。
+    :return: 注入 ``backfill_rule`` 占位符的规则正文。
+
+    判据是 ``now - current.started_at``，即这一段的累计时长。提示词里本来就写着
+    「已经持续 X」，模型知情却仍选 continue，所以这里改的是**可选项本身**：一旦累计
+    达到该 kind 的单段上限，continue 不再是一个合法输出，模型只能切换核心对象。
+    """
+
+    limit = _DECISION_MINUTE_LIMITS[current.kind]
+    if _elapsed_minutes(current, now) < limit:
+        return (
+            '没有长缺口。先判断是继续当前活动，还是切换核心对象。只允许输出以下一种：\n'
+            '{"decision":"continue","minutes":45}\n'
+            '{"decision":"switch","activity":活动对象}\n'
+            '不要输出 backfill，也不要直接输出裸活动对象。'
+        )
+    return (
+        f'没有长缺口。当前这段已经达到单段时长上限（{limit} 分钟），必须切换核心对象：'
+        '这一轮不允许延续当前活动，{"decision":"continue",...} 不是合法输出。'
+        '只允许输出：\n'
+        '{"decision":"switch","activity":活动对象}\n'
+        '不要输出 backfill，也不要直接输出裸活动对象。'
+    )
+
+
 def build_activity_prompt(
     current: Activity,
     now: int,
@@ -337,12 +392,7 @@ def build_activity_prompt(
             '时长只表示各段相对占比，系统会把它们连续铺满。'
         )
     else:
-        backfill_rule = (
-            '没有长缺口。先判断是继续当前活动，还是切换核心对象。只允许输出以下一种：\n'
-            '{"decision":"continue","minutes":45}\n'
-            '{"decision":"switch","activity":活动对象}\n'
-            '不要输出 backfill，也不要直接输出裸活动对象。'
-        )
+        backfill_rule = _short_gap_rule(current, now)
     sleep_rule = (
         '允许选择 sleep；真的睡着时才用 sleep，闭目养神但仍会回应要用 rest。'
         if context.energy_enabled
@@ -735,7 +785,21 @@ class ActivityTimeline:
         now: int,
         gap_ms: int,
     ) -> None:
-        """延续当前活动，或根据缺口长度补满缺口并写入下一段。"""
+        """延续当前活动，或根据缺口长度补满缺口并写入下一段。
+
+        :param previous: 触发这次决策的进行中活动；它的 ``started_at`` 与 ``kind``
+            共同决定延续是否还在单段累计上限之内。
+        :param transition: 决策器给出的转换；延续与切换互斥，由
+            :class:`ActivityTransition` 保证。
+        :param now: 当前毫秒时间戳；延续的 ``expected_until`` 与新段的 ``started_at``
+            都以它为基准。
+        :param gap_ms: ``now`` 超出上一条 ``expected_until`` 的毫秒数。
+        :raises ValueError: 长缺口被要求延续、延续累计已达该 kind 的单段上限、
+            切换缺少下一段活动，或补叙无法形成连续正时长时抛出。异常不在此处兜底：
+            调用方 ``_advance`` 会记 `活动决策失败` 并续期重试。
+        :return: 无返回值。
+        副作用：写入 activities 表的 UPDATE 或 INSERT，并在返回前断言时间线不变量。
+        """
 
         with self._db:
             still_open = self._db.execute(
@@ -747,12 +811,40 @@ class ActivityTimeline:
             if transition.continuation_minutes is not None:
                 if gap_ms > SHORT_GAP_MS:
                     raise ValueError('长缺口不能延续上一段活动')
+                limit = _DECISION_MINUTE_LIMITS[previous.kind]
+                elapsed_minutes = _elapsed_minutes(previous, now)
+                # 累计上限是硬判据，不只写在提示词里：模型可以无视提示词继续回
+                # continue，而每一次单独的 continue 都不超单次上限。抛出后由
+                # `_advance` 记 `活动决策失败` 并把 expected_until 续期
+                # DECISION_RETRY_MS；续期生效期间 `current()` 不会再创建后台任务，
+                # 所以周期性轮询不会把重试间隔压缩到每分钟一次。
+                if elapsed_minutes >= limit:
+                    raise ValueError(
+                        f'累计超限：{previous.kind} 活动已持续 {elapsed_minutes} 分钟，'
+                        f'达到单段时长上限 {limit} 分钟，不能再延续'
+                    )
                 # 延续同样是「一次决策的时长」：不封顶时它能把清醒段一路延到数小时，
                 # 与切换出一条长段是同一个故障（见 _DECISION_MINUTE_LIMITS）。
                 minutes = _clamp_decision_minutes(
                     previous.kind,
                     transition.continuation_minutes,
                 )
+                # 单次决策上限仍不足以定住实际段长：在一段已经持续 30 分钟的 awake 上
+                # 再延续 120 分钟，实际段长是 150 分钟，照样越过累计上限。因此还要按
+                # 这一段剩余的可用时长再截断一次。剩余不足 10 分钟时截断结果会小于
+                # 模型输出的下限，这是有意的：这一段就停在累计上限上，下一次边界必然
+                # 进入必须切换的分支。
+                remaining_minutes = limit - elapsed_minutes
+                if minutes > remaining_minutes:
+                    logger.warning(
+                        '延续时长超过这一段剩余的可用时长，已截断到累计上限',
+                        activity_id=previous.id,
+                        kind=previous.kind,
+                        raw=transition.continuation_minutes,
+                        clamped=remaining_minutes,
+                        elapsed_minutes=elapsed_minutes,
+                    )
+                    minutes = remaining_minutes
                 self._db.execute(
                     'UPDATE activities SET expected_until = ? WHERE id = ?',
                     (now + minutes * MINUTE_MS, previous.id),
