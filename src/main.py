@@ -656,6 +656,10 @@ def main() -> None:
     logger.info('startup_begin', bot=cfg.bot.name, dataDir=str(data_dir))
     _announce_official_group()
     _announce_model_routing(cfg)
+    # 上次启动运行的版本，必须在 announce_update 之前取：后者会把同一个字段改写成
+    # 当前版本，取晚了就只剩「没有升级」这一种结论，发布公告会被永久吞掉。
+    # 两个功能共用一份状态文件、语义不同，读取顺序就是它们之间唯一的契约。
+    previous_version = read_last_version(data_dir)
     # 本机版本号高于上次运行时才报告，内容取自仓库根的 CHANGELOG.md。
     # 放在这里而不是启动末段：到那时版本更新会被服务清单、自检结果、连接坐标
     # 挤到屏幕外，而它是本次启动里唯一「用户需要读完」的信息。
@@ -1138,7 +1142,7 @@ def main() -> None:
         register_stream=_register_platform_stream,
         endpoint=TELEMETRY_ENDPOINT,
         interval_s=UPDATE_CHECK_INTERVAL_S,
-        previous_version=read_last_version(data_dir),
+        previous_version=previous_version,
     )
     lifecycle.register('update_announce', update_announce.startup, update_announce.shutdown)
     if update_announce.active:
