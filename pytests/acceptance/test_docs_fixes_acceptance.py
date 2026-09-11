@@ -45,6 +45,10 @@ class _Chat:
     def current_sleep(self):
         return type('Sleep', (), {'asleep': False})()
 
+    async def summarize_deep_sleep(self, sleep):
+        """无头桩不实现汇总；真实 ChatService 由独立用例覆盖。"""
+        return None
+
     def set_activity_provider(self, provider):
         self.activity_provider = provider
 

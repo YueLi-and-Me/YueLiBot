@@ -142,7 +142,7 @@ EVENT_LABELS: Dict[str, str] = {
     "persona_apply_turn_failed": "临时语调应用失败",
     "proactive_decision": "主动发言决策",
     "proactive_intent": "主动意图评估",
-    "proactive_service_disabled": "主动感知服务未启用",
+    "proactive_speech_disabled": "主动桌面发言未启用",
     "proactive_speak_failed": "主动发言失败",
     "promise_handler_missing": "约定处理器缺失",
     "promise_rejected_for_person": "约定人物归属不匹配",

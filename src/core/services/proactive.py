@@ -105,8 +105,10 @@ class AwarenessService:
         self._cfg = cfg
         self._push_event = push_event
         self._sensor = sensor
-        # 主动搭话的唯一出口是桌面 stream：桌宠关闭时没有窗口接收这些消息，
-        # 运行兴趣累积与生成只会浪费模型调用，因此两个开关取与。
+        # 这里只决定「是否生成并投递桌面主动发言」：主动搭话的唯一出口是桌面
+        # stream，桌宠关闭时没有窗口接收消息，运行兴趣累积与模型生成只会浪费调用。
+        # 活动时间线推进与睡眠状态机不归这个开关管——它们是无头 QQ 部署也需要
+        # 按周期运行的生活事实，轮询循环始终启动，见 startup 与 _tick。
         self._enabled = cfg.generation.proactive.enabled and cfg.desktop_pet.enabled
 
         # 启动前恢复 promise，保证服务重建不会丢失尚未到期的主动意图。
@@ -380,11 +382,15 @@ class AwarenessService:
     async def startup(self) -> None:
         """绑定聊天回调并启动主动感知后台轮询。
 
+        轮询循环无条件创建：桌宠关闭时它仍要按周期推进活动时间线与睡眠状态机，
+        否则无头 QQ 部署在没有对话时完全没有东西推动生活时间线。是否生成桌面
+        主动发言由 :meth:`_tick` 内的 ``_enabled`` 判断，与轮询生命周期解耦。
+
         :return: ``None``。
 
         副作用：
-            注入活动、睡眠和 promise 回调，按配置初始化视觉服务，并在主动感知
-            开启时创建轮询 task。
+            注入活动、睡眠和 promise 回调，按配置初始化视觉服务，创建名为
+            ``awareness-poll`` 的后台 task 后立即返回；不会在 startup 内等待循环。
         """
 
         self.chat.set_activity_provider(self._activity_text)
@@ -394,8 +400,9 @@ class AwarenessService:
         if self._sensor:
             self._sensor.startup()
         if not self._enabled:
-            logger.info('proactive_service_disabled')
-            return
+            # 只停主动发言，不停活动/睡眠生命周期；事件名保留 speech 限定语，
+            # 避免排查时把「桌宠关闭」误读成整个感知服务没有运行。
+            logger.info('proactive_speech_disabled')
         self._stop.clear()
         self._poll_task = asyncio.create_task(self._poll_loop(), name='awareness-poll')
 
@@ -426,16 +433,17 @@ class AwarenessService:
                 ``input`` 可提供 keys、clicks、mouseDistance、idleSeconds、spanMs。
 
         副作用：
-            更新前台分类和活动起始时间，写入不含窗口标题的观察事件；主动感知启用
-            时创建前台处理和睡眠刷新后台任务。该同步入口不等待任何异步操作。
+            更新前台分类和活动起始时间，写入不含窗口标题的观察事件；始终创建睡眠
+            状态刷新任务，主动发言开启时额外创建前台处理任务。该同步入口不等待
+            任何异步操作。
         """
         if self._sensor is None:
             return
         now = current_time()
         classified, window_changed = self._sensor.ingest(body)
-        if not self._enabled:
-            return
-        asyncio.create_task(self._handle_foreground(classified, now, window_changed))
+        if self._enabled:
+            asyncio.create_task(self._handle_foreground(classified, now, window_changed))
+        # 睡眠/活动刷新与桌宠开关无关：即使只有托盘或纯后端，时间线边界也要推进。
         asyncio.create_task(self._refresh_activity_state(now))
 
     # ------------------------------------------------------------ 主动搭话决策
@@ -703,13 +711,14 @@ class AwarenessService:
     # ------------------------------------------------------------ 睡眠状态推送
 
     async def _refresh_activity_state(self, now: int) -> None:
-        """刷新活动派生的睡眠状态并在变化时推送客户端事件。
+        """刷新活动派生的睡眠状态、推送变化并触发起床汇总。
 
         :param now: 当前毫秒时间戳。
 
         副作用：
-            可能写入睡眠转换观察事件并推送 ``sleep.state``；读取异常只记录警告，
-            不中断前台事件处理。
+            可能写入睡眠转换观察事件并推送 ``sleep.state``；刚醒时可能调用起床
+            汇总，汇总内部会尝试投递一条 owner 私聊消息。睡眠读取异常只记录警告，
+            不中断前台事件处理；汇总异常同样只记录警告，避免后台任务静默死亡。
         """
         try:
             state = self._sleep.current(now)
@@ -732,6 +741,14 @@ class AwarenessService:
                 'justWoke': state.just_woke,
                 'resting': state.resting,
             })
+        try:
+            # 每次刷新都调用：刚醒窗口内若上一次因 stream 忙没有取得占用权，
+            # 下一个 tick 会拿着同一批活动 ID 再试；幂等由 chat 侧活动 ID 集合保证。
+            await self.chat.summarize_deep_sleep(state)
+        except Exception as exc:
+            # 这是后台轮询/前台任务的统一异常边界：汇总失败只记警告，不能让它
+            # 终止时间线推进或变成 asyncio 的未观测异常。
+            logger.warning('wake_summary_failed', error=str(exc))
 
     # ------------------------------------------------------------ 后台轮询
 
@@ -754,27 +771,35 @@ class AwarenessService:
     async def _tick(self) -> None:
         """执行一次无前台事件时也必须运行的状态推进。
 
-        该流程刷新待投放队列、按日程时段变化登记 plan 意图、更新睡眠状态，并
-        在兴趣达到阈值时尝试生成 idle 意图。
+        生命周期部分无条件运行：日程生成与 :meth:`_refresh_activity_state`（内部
+        通过 ``timeline.current`` 触发边界决策并触发起床汇总）。主动发言部分只在
+        ``_enabled`` 为真时运行：待投放队列、活动切换的 plan 意图、兴趣累积与
+        idle 生成。这样桌宠关闭的无头 QQ 部署在没有任何对话时也能自己推进到
+        下一段活动，同时不会产生任何桌面主动消息。
 
         副作用：
-            可能创建日程生成 task、更新兴趣与待投放队列并发送主动消息。
+            可能创建日程生成 task、推进活动时间线、触发深睡汇总；只有主动发言
+            开启时才更新兴趣、待投放队列并发送桌面消息。
         """
         now = current_time()
-        await self._flush_pending(now)
+        if self._enabled:
+            await self._flush_pending(now)
         if self._schedule:
             asyncio.create_task(self._schedule.ensure(now))
-        activity = self._timeline.current(now)
-        if self._last_activity_id is not None and activity.id != self._last_activity_id:
-            self._stash(PendingIntent(
-                intent_type=IntentType.Plan,
-                earliest_at=now,
-                expires_at=now + IntentType.Plan.ttl_ms,
-                activity=self._sensor.signal.activity if self._sensor and self._sensor.signal else 'idle',
-                wants_vision=False,
-            ), now)
-        self._last_activity_id = activity.id
+        if self._enabled:
+            activity = self._timeline.current(now)
+            if self._last_activity_id is not None and activity.id != self._last_activity_id:
+                self._stash(PendingIntent(
+                    intent_type=IntentType.Plan,
+                    earliest_at=now,
+                    expires_at=now + IntentType.Plan.ttl_ms,
+                    activity=self._sensor.signal.activity if self._sensor and self._sensor.signal else 'idle',
+                    wants_vision=False,
+                ), now)
+            self._last_activity_id = activity.id
         await self._refresh_activity_state(now)
+        if not self._enabled:
+            return
         classified = self._sensor.signal if self._sensor else None
         if classified is not None:
             self._grow_interest(now)
