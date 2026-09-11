@@ -10,7 +10,7 @@ pyproject.toml 与 package.json 的 ``version`` 字段都必须与本模块的
 
 from __future__ import annotations
 
-APP_VERSION = '0.1.2'
+APP_VERSION = '0.1.3'
 
 # 官方交流群的 QQ 群号。启动开场白与 README 都引用它，改群号只改这一处代码；
 # README 里的那份是面向读者的纯文本，无法从这里取值，两处要一起改。
