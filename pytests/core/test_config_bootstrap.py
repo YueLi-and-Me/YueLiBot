@@ -179,8 +179,9 @@ def test_每个必填字段都有初值(model: type) -> None:
 
     expected = set(model.model_fields)
     if model is FeatureDocument:
-        # 开发者命令段故意不进入首次安装种子；schema 默认值仍保证缺段可加载。
+        # 开发者命令段与发布公告段故意不进入首次安装种子；schema 默认值仍保证缺段可加载。
         expected.remove('developer')
+        expected.remove('update_announce')
     assert set(document) == expected
 
 

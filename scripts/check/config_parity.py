@@ -49,7 +49,11 @@ from src.core.config.schema import (
 )
 
 # 版本标记不是设置项，与 upgrade.py 的 _SKIP_SECTIONS 同口径。
-SKIP_TOP_SECTIONS = frozenset({'inner'})
+#
+# update_announce 是维护者那份分发专用的段：发布出去的配置模板里根本不存在它，
+# 因此不可能与模板对齐。它只在本机手写 features.toml 时生效，schema 默认值保证
+# 缺段可加载——这与「新增字段忘了进模板」是两回事，不豁免只会让这条检查永远红。
+SKIP_TOP_SECTIONS = frozenset({'inner', 'update_announce'})
 
 # 默认 None 的可写字段：TOML 没有 null，模板只在有值时写键，允许缺席。
 NULLABLE_TABLE_FIELDS: dict[str, frozenset[str]] = {

@@ -1012,6 +1012,41 @@ class BotDocument(BaseModel):
         return value
 
 
+class UpdateAnnounceConfig(BaseModel):
+    """发布后向指定群公告新版本。
+
+    默认关闭且群号默认为空：这一段是维护者自己那份分发专用的，别人的 bot 不改
+    配置就永远不会往任何群发东西。
+
+    ``group`` 要填数字 QQ 群号。该群还必须同时在 QQ 适配器的 ``[group] list`` 白名单里：
+    出站投递走适配器订阅的 WebSocket 通道，白名单外的群没有订阅者，消息发不出去。
+
+    与 ``[developer]`` 段同一处理：bootstrap 生成用户配置时整段剔除，用户文件里
+    不会出现它，因此不需要 bump 配置版本号。
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    # 是否启用发布公告。默认关闭，开启是显式动作。
+    enabled: StrictBool = False
+    # 公告目标群号；留空表示不发任何群。
+    group: str = ''
+
+    @field_validator('group')
+    @classmethod
+    def _validate_group(cls, value: str) -> str:
+        """群号留空或为数字串，挡掉把非数字内容当群号填进去。
+
+        :param value: 原始配置值。
+        :return: 去除首尾空白后的群号。
+        :raises ValueError: 群号非空且含非数字字符。
+        """
+        group = value.strip()
+        if group and not group.isdigit():
+            raise ValueError('update_announce.group 必须是数字 QQ 群号，或留空')
+        return group
+
+
 class TelemetryConfig(BaseModel):
     """匿名安装量统计的开关。
 
@@ -1041,6 +1076,7 @@ class FeatureDocument(BaseModel):
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig
     developer: DeveloperConfig = Field(default_factory=DeveloperConfig)
+    update_announce: UpdateAnnounceConfig = Field(default_factory=UpdateAnnounceConfig)
 
 
 class Config(BaseModel):
@@ -1086,3 +1122,4 @@ class Config(BaseModel):
     log: LogConfig = Field(default_factory=LogConfig)
     advanced: AdvancedConfig = Field(default_factory=AdvancedConfig)
     developer: DeveloperConfig = Field(default_factory=DeveloperConfig)
+    update_announce: UpdateAnnounceConfig = Field(default_factory=UpdateAnnounceConfig)

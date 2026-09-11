@@ -27,3 +27,13 @@ CREATE TABLE IF NOT EXISTS daily_stats (
   online   INTEGER NOT NULL,
   versions TEXT    NOT NULL       -- JSON：{"0.1.0": 812, ...}
 );
+
+-- 已发布的最新版本号，供 bot 的发布公告读取。
+--
+-- 只有一行，主键恒为 1：广播端点的语义是「现在最新是哪个版本」，保留历史版本
+-- 只会让读取方多一次「哪一行才算数」的判断，而历史本来就在 git tag 里。
+CREATE TABLE IF NOT EXISTS release_state (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  version      TEXT    NOT NULL,
+  published_at INTEGER NOT NULL   -- 毫秒时间戳，写入时刻
+);

@@ -61,16 +61,20 @@ npx wrangler d1 create yueli-installs
 npx wrangler d1 execute yueli-installs --remote --file=./schema.sql
 ```
 
-### 4. 设置 `/stats` 的访问令牌
+### 4. 设置访问令牌
 
 ```bash
 npx wrangler secret put STATS_TOKEN
+npx wrangler secret put UPDATE_TOKEN
 ```
 
-按提示粘贴一串足够长的随机字符串。这是 `/inst` 命令读取聚合数据的凭据，
-不要写进 `wrangler.toml`——那个文件会进版本控制。
+按提示粘贴两串足够长的随机字符串。`STATS_TOKEN` 是 `/inst` 命令读取聚合数据的凭据，
+`UPDATE_TOKEN` 是发布流程写版本号的凭据；两者分开是为了不把读权限与写权限绑在同一个
+秘密上。都不要写进 `wrangler.toml`——那个文件会进版本控制。
 
-未设置该 secret 时 `/stats` 一律返回 401，不会裸奔。
+未设置对应 secret 时 `/stats` 与 `/update/publish` 一律返回 401，不会裸奔。
+`UPDATE_TOKEN` 还要填进 GitHub 仓库的 Actions secret `UPDATE_RELAY_TOKEN`，
+端点地址填进 `UPDATE_RELAY_URL`（形如 `https://telemetry.yuelibot.org`）。
 
 ### 5. 部署
 
@@ -102,6 +106,8 @@ npx wrangler deploy
 | POST | `/register` | 无 | 下发 UUID。不读请求体。同一机房每小时 10 次，超出返回 429 |
 | POST | `/heartbeat` | `Client-UUID` 头 | 刷新 `last_seen` 与三个字段。成功 204，未知 UUID 403 |
 | GET | `/stats?days=30` | `Authorization: Bearer <STATS_TOKEN>` | 聚合读取，失败一律 401 |
+| GET | `/update/latest` | 无 | 已发布的最新版本号，公开信息（tag 本就挂在公开仓库上） |
+| POST | `/update/publish` | `Authorization: Bearer <UPDATE_TOKEN>` | 记录最新版本号，由发布流程调用 |
 
 两个入口（自定义域与 workers.dev）指向同一个 Worker、同一份 D1，客户端打哪个
 都算同一次上报：身份是服务端下发的 UUID，按 UUID 更新 `last_seen`，不会重复计数。
@@ -132,8 +138,30 @@ npx wrangler deploy
 
 `days` 缺省 30，取值夹在 1 到 365 之间。
 
-## 日快照
+## 版本广播与发布公告
 
+`GET /update/latest` 与 `POST /update/publish` 只做一件事：把「现在最新是哪个版本」
+存进 `release_state` 表的一行。发布流程在 Release 建成后写入，bot 侧读取它来决定
+要不要往群里公告新版本（实现见 `src/core/services/update_announce.py`）。
+
+为什么绕这一圈而不是让发布流程直接通知 bot：
+
+- 现象：本机后端 HTTP 与协议端都只监听回环地址，公网无处可推。
+- 原因：要让云上的发布流程"推送"进来，必须把其中一个开到公网。
+- 后果：于是改成"发布流程写、本机读"。多等几分钟换掉一个对公网开放的可控接口，
+  这个交换是有意的——不要为了省那几分钟把端口开出去。
+
+整段功能默认关闭且群号默认为空，并且**不进入配置模板**（见
+`bootstrap._feature_document`）：别人的 bot 不改配置就没有群号，也就没有任何东西能被
+触发。开启方式是在自己那份 `config/features.toml` 里手写：
+
+```toml
+[update_announce]
+enabled = true
+group = "你的群号"
+```
+
+## 日快照
 `installs` 表只有「此刻」，画不出趋势。Cron 每日 UTC 00:05 跑一次，把当天的
 三项聚合写成 `daily_stats` 的一行，折线图的历史维度全靠它。按 `day` 主键
 覆盖，重复触发或手动补跑都不会产生重复行。

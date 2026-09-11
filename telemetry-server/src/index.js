@@ -1,11 +1,13 @@
 /**
  * 月璃匿名安装统计的服务端，运行在 Cloudflare Workers 上，数据落在 D1。
  *
- * 对外只有三个路由与一个定时任务：
- *  - POST /register   下发 UUID 并落库，客户端首次启动时调用一次
- *  - POST /heartbeat  更新 last_seen 与三个上报字段
- *  - GET  /stats      特权读取聚合数据，供开发者的 /inst 命令绘图
- *  - Cron             每日写一行快照，折线图的历史维度全靠它
+ * 对外只有五个路由与一个定时任务：
+ *  - POST /register        下发 UUID 并落库，客户端首次启动时调用一次
+ *  - POST /heartbeat       更新 last_seen 与三个上报字段
+ *  - GET  /stats           特权读取聚合数据，供开发者的 /inst 命令绘图
+ *  - GET  /update/latest   读取已发布的最新版本号，供 bot 的发布公告
+ *  - POST /update/publish  记录最新版本号，由发布流程在 Release 建成后调用
+ *  - Cron                  每日写一行快照，折线图的历史维度全靠它
  *
  * 依赖关系：客户端在 src/core/runtime/telemetry.py，表结构在同目录
  * schema.sql，绑定与定时配置在 wrangler.toml。
@@ -158,6 +160,62 @@ async function handleHeartbeat(request, env) {
 }
 
 /**
+ * 读取已发布的最新版本号。
+ *
+ * 不鉴权：这是公开信息（tag 本身就挂在公开仓库上），而读它的 bot 分布在各地，
+ * 给读侧加令牌只会多一个需要轮换的秘密，换不来任何保护。
+ *
+ * @param {{DB: D1Database}} env Worker 绑定。
+ * @returns {Promise<Response>} 200 携带 version 与 publishedAt；尚未发布过时 version 为空串。
+ */
+async function handleLatestVersion(env) {
+  const row = await env.DB.prepare(
+    'SELECT version, published_at FROM release_state WHERE id = 1',
+  ).first()
+  return json({
+    version: row?.version ?? '',
+    publishedAt: row?.published_at ?? 0,
+  })
+}
+
+/**
+ * 记录最新版本号，由发布流程在 Release 建成后调用。
+ *
+ * 只有一行，用 upsert 覆盖：这条端点的语义是「现在最新是哪个版本」，不是流水账。
+ *
+ * @param {Request} request 入站请求，正文为 ``{"version": "0.1.3"}``。
+ * @param {{DB: D1Database, UPDATE_TOKEN?: string}} env Worker 绑定。
+ * @returns {Promise<Response>} 204 无内容；鉴权失败 401；版本号不合法 400。
+ */
+async function handlePublishVersion(request, env) {
+  const expected = env.UPDATE_TOKEN
+  const provided = request.headers.get('Authorization')
+  // 与 /stats 同一取向：令牌未配置时也一律拒绝，空令牌放行等于把写入口裸露在公网。
+  if (!expected || provided !== 'Bearer ' + expected) {
+    return json({ error: 'unauthorized' }, 401)
+  }
+
+  let body = {}
+  try {
+    body = await request.json()
+  } catch {
+    return json({ error: 'invalid_json' }, 400)
+  }
+  const version = sanitize(body?.version)
+  // 版本号要能参与比较，所以不接受任意字符串：公告端按数字段逐位比较，
+  // 存进一个畸形版本只会让所有 bot 静默地判断成「不是更新」。
+  if (!/^\d+(\.\d+)*$/.test(version)) {
+    return json({ error: 'invalid_version' }, 400)
+  }
+
+  await env.DB.prepare(
+    'INSERT INTO release_state (id, version, published_at) VALUES (1, ?, ?) '
+    + 'ON CONFLICT(id) DO UPDATE SET version = excluded.version, published_at = excluded.published_at',
+  ).bind(version, Date.now()).run()
+  return new Response(null, { status: 204 })
+}
+
+/**
  * 聚合读取，供开发者的 /inst 命令绘图。
  *
  * 鉴权失败一律返回同一个 401，不区分「服务端未配置令牌」与「令牌不匹配」，
@@ -289,6 +347,12 @@ export default {
     }
     if (request.method === 'GET' && pathname === '/stats') {
       return handleStats(request, env)
+    }
+    if (request.method === 'GET' && pathname === '/update/latest') {
+      return handleLatestVersion(env)
+    }
+    if (request.method === 'POST' && pathname === '/update/publish') {
+      return handlePublishVersion(request, env)
     }
     return new Response('Not Found', { status: 404 })
   },

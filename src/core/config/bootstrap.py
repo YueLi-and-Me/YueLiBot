@@ -263,10 +263,13 @@ def _bot_document() -> Dict[str, Any]:
 
 
 def _feature_document() -> Dict[str, Any]:
-    """组装 features.toml 初始文档，但故意不向全新安装暴露开发者命令段。
+    """组装 features.toml 初始文档，但故意不向全新安装暴露两个维护者专用段。
 
-    `developer` 在 schema 中有关闭态默认值，因此旧配置与首次安装都能正常加载；
-    只有开发者手写该段并显式开启后，用户机器上才可能命中聊天内命令。
+    `developer`（开发者命令通道）与 `update_announce`（发布公告）在 schema 中都有关闭态
+    默认值，因此旧配置与首次安装都能正常加载；两者只对明确手写该段的部署生效。
+    `update_announce` 尤其不能进模板：它的作用是往群里推消息，模板一旦带上它，
+    每个新安装都会多出一个「往某个群发东西」的钩子，而那个群号本该只存在于维护者
+    自己那份配置里。
 
     识图、记忆反馈与向量召回默认开启：模板的模型表已经预填了 vision 与
     embedding 两条路由，配置校验能过，装完就能用。三者都会产生额外的模型调用，
@@ -283,6 +286,7 @@ def _feature_document() -> Dict[str, Any]:
         'vision': {'chat_image_enabled': True},
     })
     document.pop('developer')
+    document.pop('update_announce')
     return document
 
 

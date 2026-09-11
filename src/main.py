@@ -25,13 +25,14 @@ import time
 import uvicorn
 
 from src.core.agent.action import PresenceActionPolicy, TurnPlanner
-from src.core.app_meta import OFFICIAL_GROUP
+from src.core.app_meta import APP_VERSION, OFFICIAL_GROUP
 from src.core.api.auth import token_manager
 from src.core.api.state import app_state
 from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
 from src.core.runtime.child_process import ChildProcess
 from src.core.runtime.consent import require_consent
-from src.core.runtime.telemetry import TelemetryService, describe_for_console
+from src.core.runtime.telemetry import TelemetryService, describe_for_console, TELEMETRY_ENDPOINT
+from src.core.runtime.update_notes import announce_update
 from src.core.runtime.clock import now as current_time
 from src.core.logging.console_layout import print_box, print_line
 from src.core.logging.logger_colors import HIGHLIGHT_COLOR, is_color_enabled
@@ -70,6 +71,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # 停止单个子进程的等待秒数，超时后强制终止。适配器与外壳都没有需要落盘的状态，
 # 这里只需覆盖「进程收到终止信号到真正消失」的时间。
 CHILD_STOP_GRACE_SECONDS = 5.0
+
+# 发布公告读取广播端点的间隔，单位秒。十分钟一次，与匿名统计心跳同一量级：
+# 广播端点每发一版才变一次，查得再勤也不会更早知道，而公告迟到十分钟没有代价。
+UPDATE_CHECK_INTERVAL_S = 600.0
 
 logger = get_logger('main')
 
@@ -651,6 +656,13 @@ def main() -> None:
     logger.info('startup_begin', bot=cfg.bot.name, dataDir=str(data_dir))
     _announce_official_group()
     _announce_model_routing(cfg)
+    # 本机版本号高于上次运行时才报告，内容取自仓库根的 CHANGELOG.md。
+    # 放在这里而不是启动末段：到那时版本更新会被服务清单、自检结果、连接坐标
+    # 挤到屏幕外，而它是本次启动里唯一「用户需要读完」的信息。
+    # 自检不写运行时状态：它不是一次真正的运行，让它落盘会让随后的正式启动
+    # 以为本版本已经报告过。
+    if not args.selftest:
+        announce_update(data_dir, PROJECT_ROOT, APP_VERSION)
 
     from src.core.prompts.registry import configure_prompts
     configure_prompts(data_dir)
@@ -1109,6 +1121,28 @@ def main() -> None:
     telemetry = TelemetryService(data_dir, enabled=cfg.telemetry.enabled)
     print_box('匿名统计', describe_for_console(cfg.telemetry.enabled), publish=False)
     lifecycle.register('telemetry', telemetry.startup, telemetry.shutdown)
+
+    # 发布公告：默认关闭且群号默认为空，只在明确填了 [update_announce] 的那份配置里
+    # 生效。它读的广播端点由发布流程写入，所以公告时机由发版决定，本机只负责发现与投递。
+    from src.core.services.update_announce import UpdateAnnounceService
+    update_announce = UpdateAnnounceService(
+        data_dir,
+        cfg.update_announce,
+        project_root=PROJECT_ROOT,
+        registry=app_state.registry,
+        broker=broker,
+        register_stream=_register_platform_stream,
+        endpoint=TELEMETRY_ENDPOINT,
+        interval_s=UPDATE_CHECK_INTERVAL_S,
+    )
+    lifecycle.register('update_announce', update_announce.startup, update_announce.shutdown)
+    if update_announce.active:
+        print_box(
+            '发布公告',
+            [f'目标群：{cfg.update_announce.group}', f'检查间隔：{UPDATE_CHECK_INTERVAL_S / 60:.0f} 分钟'],
+            source=__name__,
+        )
+
     lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。

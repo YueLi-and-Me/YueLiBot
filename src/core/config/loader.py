@@ -333,6 +333,7 @@ def _load_split_config(directory: Path) -> Config:
         log=features_document.log,
         advanced=features_document.advanced,
         developer=features_document.developer,
+        update_announce=features_document.update_announce,
     )
 
 

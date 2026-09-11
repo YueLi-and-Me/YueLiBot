@@ -39,9 +39,65 @@ jobs:
         shell: bash
         run: 7z a "yueli-${GITHUB_REF_NAME}-build.zip" out/
 
+      # Release 正文取自 CHANGELOG.md 里该版本的小节，与控制台启动公告同一份文本。
+      #
+      # 不用 generate_release_notes：提交列表的读者是维护者，装的人要看的是行为变化。
+      # 两者粒度不同，正文只留前者。
+      #
+      # 版本号从 tag 名里去掉前缀 v 得到。小节定位用固定字面量而不是正则区间：
+      # 后者要处理 awk 的转义，而小节标题格式是由测试钉住的固定形式。
+      - name: 取该版本的更新日志
+        shell: bash
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v start="## [${version}]" '
+            index($0, start) == 1 { inside = 1; next }
+            inside && index($0, "## [") == 1 { exit }
+            inside { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ -s release-notes.md ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat release-notes.md
+
+      # 更新日志缺这个版本时不让发布失败：产物已经打好，正文退化成自动生成的
+      # 提交列表也比把整次发布卡住好。缺失由上面那步的输出与这里的分支共同暴露。
       - uses: softprops/action-gh-release@v3
         with:
           files: |
             yueli-*-source.zip
             yueli-*-build.zip
-          generate_release_notes: true
+          body_path: release-notes.md
+          generate_release_notes: ${{ steps.notes.outputs.found != 'true' }}
+
+      # 把版本号写进广播端点，本机那份 bot 会读取它并在群里公告这一版。
+      #
+      # 顺序放在 Release 建成之后：公告的语义是「已经发布」，而不是「正在发布」。
+      # 缺少任一 secret 时只告警不失败——发布本身已经完成，公告是附加动作。
+      #
+      # 注意这是"发布流程写、bot 读"而不是推送：本机后端与协议端都只监听回环地址，
+      # 公网无处可推（见 docs/manual/troubleshooting.md 关于不要暴露面板的说明）。
+      - name: 广播新版本号
+        shell: bash
+        env:
+          RELAY_URL: ${{ secrets.UPDATE_RELAY_URL }}
+          RELAY_TOKEN: ${{ secrets.UPDATE_RELAY_TOKEN }}
+        run: |
+          if [ -z "$RELAY_URL" ] || [ -z "$RELAY_TOKEN" ]; then
+            echo "::warning::未配置 UPDATE_RELAY_URL / UPDATE_RELAY_TOKEN，跳过版本广播"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            "${RELAY_URL%/}/update/publish" \
+            -H "Authorization: Bearer ${RELAY_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data "{\"version\":\"${version}\"}")
+          echo "广播 ${version} 返回 HTTP ${status}"
+          if [ "$status" != "204" ]; then
+            echo "::error::版本广播失败，HTTP ${status}"
+            exit 1
+          fi
