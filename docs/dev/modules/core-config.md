@@ -30,10 +30,12 @@
   `read_versioned_toml`：读取主体与适配器共用的版本化 TOML，版本不匹配时在
   解析业务字段之前直接失败，并给出面向用户的修复提示。
 - `src/core/config/upgrade.py`
-  `upgrade_config_directory`，由 `loader.load_config` 在解析之前调用。解决版本
-  升级的两个沉默问题：新增字段用户不可见、废弃字段留在文件里看似生效。
-  口径是新增字段只追加不改写（已有行、注释、顺序不动），废弃字段只报告不
-  删除；写任何字节之前先整目录备份到 `data/backups/config/<时间戳>/`。
+  `upgrade_config_directory`，由 `src.main` 在解析之前调用。解决版本升级的两个
+  沉默问题：新增字段用户不可见、废弃字段留在文件里看似生效。口径是新增字段只
+  追加不改写（已有行、注释、顺序不动），废弃字段就地删除并展示实际删除的路径；
+  字段对账成功后再把 `[inner].version` 改写成当前 `CONFIG_VERSION`（版本号最后
+  写，避免留下版本已新、字段还旧的配置）；写任何字节之前先整目录备份到
+  `data/backups/config/<时间戳>/`。
 - `src/core/config/bootstrap.py`
   首装生成。`bootstrap_config_directory` 在配置目录缺失时按 schema 默认值生成
   整份可编辑配置——`config/` 不入版本库，无头形态下没有它根本起不来。默认值

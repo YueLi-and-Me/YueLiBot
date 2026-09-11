@@ -45,10 +45,12 @@ class InnerConfig(BaseModel):
     # 有意不自动补（见 upgrade._diff_section 的注释），于是「只新增一个段」的版本跳升
     # 拿不到任何升级路径，存量配置会在 read_versioned_toml 处直接失败、Bot 起不来。
     #
-    # 旧配置由 Electron 侧在读取时整份重写升级，Python 只解析当前版本——
-    # 所以删除或重命名配置字段时必须同步修改这里与 electron/main/config.ts，
-    # 不 bump 就不会触发重写，废弃字段会一直留在用户文件里，后端每次启动都要
-    # 为它们报一次「配置字段变更」。
+    # 旧配置有两条升级路径：无头启动由 upgrade_config_directory 就地对账字段，
+    # 并在成功后把 [inner].version 补到当前值；Electron 侧仍在读取目录时按当前
+    # 模板整份重写。两者以 CONFIG_VERSION 为共同契约，所以删除或重命名配置字段
+    # 时必须同步修改这里与 electron/main/config.ts 并 bump 版本：Python 对账虽然
+    # 能按当前模型删掉不认识的字段，版本号才是 Electron 重写路径与「这份文件已
+    # 按新结构解释过」的共同判据，不 bump 会让整份重写路径不触发。
     version: Literal['1.6.0'] = CONFIG_VERSION
 
 

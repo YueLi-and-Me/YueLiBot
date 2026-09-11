@@ -10,7 +10,9 @@
 处置口径：
 
 - 新增字段补进文件并写默认值，只追加不改写：已有的行、注释、顺序一律不动。
-- 废弃字段只报告不删除：删除不可逆，由人决定是否处理。
+- 废弃字段就地删除并展示实际删除的路径：留在文件里的字段看似生效，实际没有代码读取。
+- 字段对账成功后再把 ``[inner].version`` 改写为当前配置版本；版本号最后写，
+  避免中途失败留下「版本已新、字段还旧」的配置。
 - 写入任何字节之前先整目录备份到 ``data/backups/config/<时间戳>/``。``config/``
   含明文密钥且没有版本控制。
 
@@ -168,16 +170,32 @@ class FileDiff:
     :ivar added: 需要补进文件的新增字段。
     :ivar removed: 文件里有但 schema 已不认识的字段路径；升级时就地删除，
         这里保留的是实际删除的路径，用于展示。
+    :ivar version_from: 升级前 ``[inner].version``；文件缺少版本段时为 ``None``。
+    :ivar version_to: 实际写入的当前配置版本；本次没有改写版本号时为 ``None``。
+    :ivar failure: 本次升级未完成时的中文原因；成功或无需升级时为 ``None``。
     """
 
     name: str
     added: List[AddedField] = field(default_factory=list)
     removed: List[str] = field(default_factory=list)
+    version_from: str | None = None
+    version_to: str | None = None
+    failure: str | None = None
+
+    def version_upgraded(self) -> bool:
+        """判断本次升级是否真的改写了该文件的配置版本号。"""
+
+        return self.version_to is not None and self.version_to != self.version_from
 
     def is_empty(self) -> bool:
-        """判断该文件是否既无新增也无废弃字段。"""
+        """判断该文件是否既无字段差异、也没有本次完成的版本号升级或失败。"""
 
-        return not self.added and not self.removed
+        return (
+            not self.added
+            and not self.removed
+            and not self.version_upgraded()
+            and self.failure is None
+        )
 
 
 def _encode(value: Any) -> str:
@@ -426,9 +444,9 @@ def apply_removed_fields(path: Path, removed: List[str]) -> List[str]:
     section = ''
     dropping_section = False
     for line in lines:
-        stripped = line.strip()
-        if stripped.startswith('[') and stripped.endswith(']'):
-            section = stripped[1:-1].strip().strip('"\'')
+        name = _section_name(line)
+        if name is not None:
+            section = name
             dropping_section = section in wanted
             if dropping_section:
                 dropped.append(section)
@@ -457,6 +475,63 @@ def apply_removed_fields(path: Path, removed: List[str]) -> List[str]:
     return dropped
 
 
+def _rewrite_version(path: Path, version: str) -> bool:
+    """把 ``[inner].version`` 就地改写为当前配置版本，保留其余字节。
+
+    只在字段增删全部成功之后调用，理由见 :func:`upgrade_config_directory`：若先改
+    版本号再写字段，中途失败会得到「版本已新、字段还旧」的配置，比旧版本更难恢复。
+    版本号是字符串字面量，此处仍按行扫描而不是整份重写，避免丢掉用户注释与排版；
+    改写后先回读解析，失败则不落盘并返回 ``False``。
+
+    跨版本说明：本项目的字段对账是「文件现有字段与当前模型求差」，不按来源版本
+    逐级迁移。因此 1.4.0 直接改写成 1.6.0 与经过中间版本是同一结果——差集会把
+    中间版本新增字段补齐、废弃字段删掉。这里不存在「1.4 到 1.5 的迁移路径」这种
+    概念，后来者不要按逐级迁移链去设计或寻找它。
+
+    :param path: 目标 TOML 文件。
+    :param version: 要写入的配置版本号，例如 ``CONFIG_VERSION``。
+    :return: 确实改写了版本号并回读通过返回 ``True``；没有找到版本字段、版本已是
+        目标值或回读失败返回 ``False``。
+    :raises OSError: 读写文件失败。
+    副作用：可能改写目标文件；调用前必须已经完成 :func:`backup_config_directory`。
+    """
+
+    original = path.read_text(encoding='utf-8')
+    lines = original.splitlines()
+    section = ''
+    changed = False
+    for index, line in enumerate(lines):
+        name = _section_name(line)
+        if name is not None:
+            section = name
+            continue
+        if section != 'inner':
+            continue
+        cut = _comment_start(line)
+        content = line[:cut]
+        match = re.match(r'^(\s*version\s*=\s*)(.*?)(\s*)$', content)
+        if match is None:
+            continue
+        raw_value = match.group(2).strip()
+        quote = raw_value[0] if raw_value[:1] in ('"', "'") and raw_value.endswith(raw_value[:1]) else ''
+        literal = f'{quote}{version}{quote}' if quote else f'"{version}"'
+        if raw_value == literal:
+            return False
+        lines[index] = f'{match.group(1)}{literal}{match.group(3)}{line[cut:]}'
+        changed = True
+        break
+    if not changed:
+        return False
+    text = '\n'.join(lines) + '\n'
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        logger.warning('config_version_rewrite_reverted', file=path.name, version=version)
+        return False
+    path.write_text(text, encoding='utf-8')
+    return True
+
+
 def report_config_changes(diffs: List[FileDiff]) -> None:
     """把配置差异逐条打印成控制台信息框。
 
@@ -472,16 +547,82 @@ def report_config_changes(diffs: List[FileDiff]) -> None:
         return
     rows: List[str] = []
     for diff in interesting:
+        if diff.failure is not None:
+            rows.append(f'{diff.name} 升级未完成（{diff.failure}），文件保持原样，详见上方警告')
+            continue
+        if diff.version_upgraded():
+            rows.append(
+                f'{diff.name} 配置版本 {diff.version_from} -> {diff.version_to}（已写入文件）'
+            )
         for item in diff.added:
             rows.append(f'{diff.name} 新增 {item.path} = {item.value}（默认值，已写入文件）')
         for path in diff.removed:
             rows.append(f'{diff.name} 删除 {path}（代码已不再读取，旧值见本次配置备份）')
-    print_box('配置字段变更', rows, width=104, source=__name__)
+    print_box('配置变更', rows, width=104, source=__name__)
     logger.info(
         'config_fields_changed',
         added=[f'{d.name}:{i.path}' for d in interesting for i in d.added],
         removed=[f'{d.name}:{p}' for d in interesting for p in d.removed],
+        versions=[
+            f'{d.name}:{d.version_from}->{d.version_to}'
+            for d in interesting if d.version_upgraded()
+        ],
+        failures=[f'{d.name}:{d.failure}' for d in interesting if d.failure is not None],
     )
+
+
+def _upgrade_document(path: Path, diff: FileDiff, target_version: str) -> bool:
+    """对一份 TOML 完成字段增删与版本号改写，任何一步失败都整份还原。
+
+    顺序固定为「补新增字段 -> 删废弃字段 -> 整体回读 -> 改写版本号 -> 再回读」。
+    版本号必须最后写：如果先写成新版本再写字段，中途失败会留下「版本已新、字段
+    还旧」的配置，加载器会按新结构解释旧字段，比停在旧版本更难恢复。
+
+    :param path: 目标 TOML 文件。
+    :param diff: 该文件与当前模型的差异；成功时会被补充实际删除字段与版本号。
+    :param target_version: 要写入的配置版本，通常是当前 ``CONFIG_VERSION``。
+    :return: 全部步骤成功返回 ``True``；某一步回读失败、已整份还原时返回 ``False``。
+    :raises OSError: 读写文件失败；调用方已完成整目录备份，异常必须向上暴露。
+    副作用：可能改写目标文件；失败时把文件恢复到进入本函数时的原文。
+    """
+
+    original = path.read_text(encoding='utf-8')
+    try:
+        if diff.added and not apply_added_fields(path, diff.added):
+            path.write_text(original, encoding='utf-8')
+            diff.failure = '新增字段未通过回读校验'
+            return False
+        if diff.removed:
+            dropped = apply_removed_fields(path, diff.removed)
+            if set(dropped) != set(diff.removed):
+                path.write_text(original, encoding='utf-8')
+                diff.failure = '废弃字段未全部删除'
+                return False
+            diff.removed = dropped
+        # 增删叠加后的第一次整体回读；通过才允许动版本号。
+        tomllib.loads(path.read_text(encoding='utf-8'))
+        if diff.version_from != target_version:
+            if not _rewrite_version(path, target_version):
+                path.write_text(original, encoding='utf-8')
+                diff.failure = f'配置版本未从 {diff.version_from!r} 改写为 {target_version}'
+                return False
+            diff.version_to = target_version
+        # 第二次回读是 report_config_changes 宣称「已写入文件」的依据。
+        tomllib.loads(path.read_text(encoding='utf-8'))
+        return True
+    except tomllib.TOMLDecodeError as exc:
+        path.write_text(original, encoding='utf-8')
+        diff.failure = f'升级结果回读解析失败：{exc}'
+        logger.warning(
+            'config_upgrade_reverted',
+            file=path.name,
+            reason=str(exc),
+        )
+        return False
+    except Exception:
+        # 非语法类异常已经无法安全继续；先恢复原文，再把异常交给调用方。
+        path.write_text(original, encoding='utf-8')
+        raise
 
 
 def upgrade_config_directory(
@@ -489,31 +630,44 @@ def upgrade_config_directory(
     documents: Dict[str, Type[BaseModel]],
     data_dir: Path,
 ) -> List[FileDiff]:
-    """对账整个配置目录，补齐新增字段并展示差异。
+    """对账整个配置目录，补齐新增字段、删除废弃字段并把版本号升到当前值。
+
+    本次升级与来源版本无关：字段差异是「文件现有字段与当前模型求差」，所以 1.4.0
+    可以直接升到 1.6.0，不存在逐级迁移链；版本号只是在字段对账成功之后统一改写，
+    不需要知道文件原来属于哪个中间版本。这个前提必须保持：一旦改为逐级迁移，
+    这里就需要来源版本分派，不能只改 ``version`` 字段。
+
+    只有确实需要写入（有字段差异，或 ``[inner].version`` 不是当前值）时才做整目录
+    备份；备份是任何字节写入的前置条件，与数据库迁移同一条纪律。单个文件升级失败
+    时保留原文并继续处理其余文件，失败原因写进返回的 :class:`FileDiff` 并由
+    :func:`report_config_changes` 打到控制台。
 
     :param directory: 配置目录。
     :param documents: 文件名到文档模型类的映射。
     :param data_dir: 运行时数据目录，用于放备份。
     :return: 各文件的差异列表，供调用方按需再加工。
-    :raises OSError: 备份或写入失败——不吞异常，配置写坏比启动失败严重得多。
-    副作用：可能备份配置目录并向文件追加字段，并向控制台打印差异。
+    :raises OSError: 备份、读取或写入失败——不吞异常，配置写坏比启动失败严重得多。
+    副作用：可能备份配置目录、改写文件并向控制台打印差异。
     """
 
     diffs: List[FileDiff] = []
+    targets: List[FileDiff] = []
     for name, model in documents.items():
         path = directory / name
         if not path.is_file():
             continue
         raw = tomllib.loads(path.read_text(encoding='utf-8'))
-        diffs.append(diff_document(raw, model, name))
+        diff = diff_document(raw, model, name)
+        inner = raw.get('inner')
+        version = inner.get('version') if isinstance(inner, dict) else None
+        diff.version_from = version if isinstance(version, str) else None
+        diffs.append(diff)
+        if diff.added or diff.removed or diff.version_from != CONFIG_VERSION:
+            targets.append(diff)
 
-    # 删除与补齐都要先备份：config/ 含明文密钥又不在版本控制里，改坏没有第二份。
-    if any(diff.added or diff.removed for diff in diffs):
+    if targets:
         backup_config_directory(directory, data_dir)
-        for diff in diffs:
-            apply_added_fields(directory / diff.name, diff.added)
-            # 废弃字段就地删除，而不是留在文件里等人手删。留着的代价是这个信息框
-            # 每次启动都重报同一份清单，「本次启动改了什么」的意义随之失效。
-            diff.removed = apply_removed_fields(directory / diff.name, diff.removed)
+        for diff in targets:
+            _upgrade_document(directory / diff.name, diff, CONFIG_VERSION)
     report_config_changes(diffs)
     return diffs
