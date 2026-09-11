@@ -35,6 +35,7 @@ import type {
  * 重写即补齐两段及默认值。
  * 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊；
  * 旧文件按 1.3.0 解析后重写即补齐该字段及默认值。
+ * 1.6.0 将睡眠许可改为精力系统开关，旧值随配置重写迁移；
  * 1.5.0 新增 [memory_feedback] 段：反馈纠错链路，15 项默认全关；
  * 旧文件按 1.4.0 解析后重写即补齐该段及默认值。
  *
@@ -42,9 +43,9 @@ import type {
  * 且初始配置生成时会显式剔除它，用户文件里永远不出现，没有内容需要迁移。
  * 详细理由见 src/core/config/schema.py 的 InnerConfig 注释。
  */
-export const CONFIG_VERSION = '1.5.0'
+export const CONFIG_VERSION = '1.6.0'
 const SUPPORTED_VERSIONS = [
-  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0',
+  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0',
 ] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
@@ -152,7 +153,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     scene_refresh_messages: 15,
   },
   schedule: {
-    sleep_enabled: true,
+    energy_enabled: true,
     fallback_theme: '按自己的节奏度过今天。',
     generation_retry_interval_minutes: 10,
   },
@@ -1082,9 +1083,9 @@ function parseSchedule(
   const value = recordAt(document, 'schedule', path)
   const defaults = DEFAULT_CONFIG.schedule
   const schedule: YueliConfig['schedule'] = {
-    sleep_enabled: value.sleep_enabled === undefined
-      ? defaults.sleep_enabled
-      : booleanAt(value, 'sleep_enabled', path),
+    energy_enabled: value.energy_enabled === undefined
+      ? defaults.energy_enabled
+      : booleanAt(value, 'energy_enabled', path),
     fallback_theme: stringAtOr(value, 'fallback_theme', defaults.fallback_theme, path),
     generation_retry_interval_minutes: numberAtOr(
       value,
@@ -1322,6 +1323,12 @@ function readSplitConfig(directory: string): YueliConfig {
   const conversation = parseConversation(botDocument, botPath)
   const conversationAgent = parseConversationAgent(botDocument, botPath)
   const typing = parseTyping(botDocument, botPath)
+  // 只在旧版本迁移旧值，重写器会剪掉退休字段；已有新字段时以新值为准。
+  const oldSchedule = botDocument.schedule
+  if (botVersion !== CONFIG_VERSION && isRecord(oldSchedule)
+      && oldSchedule.energy_enabled === undefined && oldSchedule.sleep_enabled !== undefined) {
+    oldSchedule.energy_enabled = booleanAt(oldSchedule, 'sleep_enabled', botPath)
+  }
   const schedule = parseSchedule(botDocument, botPath)
   const emoji = parseEmoji(botDocument, botPath)
   const desktopPet = parseDesktopPet(botDocument, botPath)
@@ -2247,8 +2254,8 @@ self_started_topics = ${cfg.group_chat.self_started_topics}
 scene_refresh_messages = ${cfg.group_chat.scene_refresh_messages}
 
 [schedule]
-# 是否允许活动决策选择 sleep；关闭后仍可选择会回应的 rest
-sleep_enabled = ${cfg.schedule.sleep_enabled}
+# 启用精力系统；关闭后不睡眠且精力静止，重新开启时按关闭时长向基线收敛
+energy_enabled = ${cfg.schedule.energy_enabled}
 # 每日方向模型不可用或输出不合法时使用的主题
 fallback_theme = ${tomlString(cfg.schedule.fallback_theme)}
 # 生成失败后再次尝试前等待的分钟数

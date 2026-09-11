@@ -483,6 +483,7 @@ class ChatService(
             )
         self._desktop_context = self._registry.desktop_context()
         self.persona = Persona(db)
+        self.persona.set_energy_enabled(cfg.schedule.energy_enabled)
         self.persona.snapshot_daily(self._desktop_context.person.id)
         # 从账本里已出现过的最大回合 ID 接着发号，而不是每次启动从 0 重来。
         # - 现象：turn_id 与上次运行的回合撞号，WebUI 按 turnId 聚合时把不同启动的

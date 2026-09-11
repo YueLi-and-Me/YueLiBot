@@ -123,13 +123,13 @@
           "kind": "object",
           "key": "schedule",
           "label": "每日方向与活动",
-          "description": "控制活动能否进入睡眠、方向生成失败时的备用主题与重试节奏。",
+          "description": "控制精力系统的开关、方向生成失败时的备用主题与重试节奏。",
           "fields": [
             {
-              "key": "sleep_enabled",
+              "key": "energy_enabled",
               "type": "boolean",
-              "label": "允许睡眠活动",
-              "help": "开启后活动模型可以选择 sleep；关闭后仍可选择会正常回应的 rest。"
+              "label": "启用精力系统",
+              "help": "开启后她会有精力起伏，累了会困、会睡觉，应答节奏随精力变化；关闭后不睡眠，行为不受精力影响。关闭期间精力静止，重新开启时按关闭时长向基线收敛。"
             },
             {
               "key": "fallback_theme",

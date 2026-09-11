@@ -169,6 +169,34 @@ class Persona:
 
         self._db = db
         self._registry = StreamRegistry(db)
+        self._energy_enabled = True
+
+    def set_energy_enabled(self, enabled: bool, now: int | None = None) -> None:
+        """切换精力结算；关闭时长单独保存，恢复时只做基线回归。
+
+        由服务在读取运行配置后调用。关闭期间的活动积分不会补算；普通时间结算仍按
+        原游标驱动心情与亲密度。重新开启是唯一额外推进游标的配置转换边界。
+        """
+        now = now if now is not None else current_time()
+        with self._db:
+            if not enabled:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO meta (key, value) VALUES ('energy_disabled_at', ?)",
+                    (str(now),),
+                )
+            else:
+                row = self._db.execute(
+                    "SELECT value FROM meta WHERE key = 'energy_disabled_at'"
+                ).fetchone()
+                if row is not None:
+                    hours = max(0.0, (now - int(row[0])) / 3_600_000)
+                    self._db.execute(
+                        'UPDATE persona_self SET energy = ? + (energy - ?) * ?, '
+                        'updated_at = ? WHERE id = 1',
+                        (ENERGY_BASELINE, ENERGY_BASELINE, exp(-hours / ENERGY_TAU), now),
+                    )
+                    self._db.execute("DELETE FROM meta WHERE key = 'energy_disabled_at'")
+        self._energy_enabled = enabled
 
     def get(self, person_id: int) -> PersonaState:
         """读取人物亲密度并合并主体当前精力。
@@ -449,7 +477,10 @@ class Persona:
         energy = _clamp_delta(delta.energy)
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + favor * 1.2 * weight),
-            energy=_clamp('energy', state.energy + energy * 3 * weight),
+            energy=(
+                _clamp('energy', state.energy + energy * 3 * weight)
+                if self._energy_enabled else state.energy
+            ),
             mood=state.mood,
             updated_at=now,
         )
@@ -483,7 +514,10 @@ class Persona:
         state = self.get(person_id)
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + 0.35 * weight),
-            energy=_clamp('energy', state.energy - TURN_ENERGY_COST * weight),
+            energy=(
+                _clamp('energy', state.energy - TURN_ENERGY_COST * weight)
+                if self._energy_enabled else state.energy
+            ),
             mood=state.mood,
             updated_at=now,
         )
@@ -530,16 +564,15 @@ class Persona:
         if hours < 1:
             return state
         # 日程层决定精力曲线的形状；未装配日程时才退回按清醒 pace=-1 的线性消耗。
-        energy_delta = (
-            effect.energy_delta if effect is not None
-            else hours * ENERGY_FALLBACK_RATE
-        )
         mood_delta = effect.mood_delta if effect is not None else 0.0
         mood = state.mood + mood_delta
         mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
         # 与心情同序：先加活动积分，再向基线回归。
-        energy = state.energy + energy_delta
-        energy += (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
+        energy = state.energy
+        if self._energy_enabled:
+            energy += (effect.energy_delta if effect is not None
+                       else hours * ENERGY_FALLBACK_RATE)
+            energy += (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
         days = hours / 24
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy - days * 0.6),
@@ -637,7 +670,7 @@ def describe_persona(s: PersonaState) -> str:
     return f'你和对方的关系深度：{relationship_tier(s.intimacy)}。'
 
 
-def describe_persona_for_planning(s: PersonaState) -> str:
+def describe_persona_for_planning(s: PersonaState, *, energy_enabled: bool = True) -> str:
     """把当前精力与心情改写成供日程模型使用的安排口径。
 
     :param s: 昨日结束时的人物状态。
@@ -645,7 +678,9 @@ def describe_persona_for_planning(s: PersonaState) -> str:
     """
 
     tier = energy_tier(s)
-    if tier is EnergyTier.SPENT:
+    if not energy_enabled:
+        energy_guidance = ''
+    elif tier is EnergyTier.SPENT:
         energy_guidance = (
             '昨天结束时精力已经见底。今天的安排要明显轻一些，并且必须至少有两段是明确能回精力的'
             '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'

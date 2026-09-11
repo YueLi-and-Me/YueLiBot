@@ -137,7 +137,7 @@ class ActivityDecisionContext:
     rough_rhythm: str
     recent_activities: str
     interaction: str
-    sleep_enabled: bool = True
+    energy_enabled: bool = True
 
 
 def _required_text(value: Any, *, maximum: int) -> str | None:
@@ -184,14 +184,14 @@ def _parse_draft(
     value: Any,
     *,
     intention_count: int,
-    sleep_enabled: bool,
+    energy_enabled: bool,
     minutes_is_duration: bool,
 ) -> ActivityDraft | None:
     """严格解析单段活动；能量值域与单段时长由写入层限幅并记录告警。
 
     :param value: 模型给出的单个活动对象；任一字段缺失或类型不符即整体判非法。
     :param intention_count: 当轮意向条数，``advances`` 必须落在这一范围内。
-    :param sleep_enabled: 配置是否允许选择 sleep。
+    :param energy_enabled: 精力系统是否开启；关闭时拒绝 sleep。
     :param minutes_is_duration: ``minutes`` 是否就是这一段的真实时长。长缺口补叙的
         ``minutes`` 只表示各段之间的相对占比（真实时长由铺满缺口决定），此时不按
         kind 的上限限幅，否则一整夜的缺口会被判成非法输出。
@@ -205,7 +205,7 @@ def _parse_draft(
     if not isinstance(value, dict):
         return None
     kind = value.get('kind')
-    if kind not in _ENERGY_PACE_RANGES or (kind == 'sleep' and not sleep_enabled):
+    if kind not in _ENERGY_PACE_RANGES or (kind == 'sleep' and not energy_enabled):
         return None
     doing = _required_text(value.get('doing'), maximum=80)
     mood = _required_text(value.get('mood'), maximum=80)
@@ -246,7 +246,7 @@ def parse_activity_decision(
     *,
     intention_count: int,
     require_backfill: bool,
-    sleep_enabled: bool = True,
+    energy_enabled: bool = True,
 ) -> ActivityTransition | None:
     """解析一次下一步活动决策，长缺口必须同时提供补叙。
 
@@ -270,7 +270,7 @@ def parse_activity_decision(
             draft = _parse_draft(
                 item,
                 intention_count=intention_count,
-                sleep_enabled=sleep_enabled,
+                energy_enabled=energy_enabled,
                 minutes_is_duration=False,
             )
             if draft is None:
@@ -292,7 +292,7 @@ def parse_activity_decision(
     next_activity = _parse_draft(
         next_value,
         intention_count=intention_count,
-        sleep_enabled=sleep_enabled,
+        energy_enabled=energy_enabled,
         minutes_is_duration=True,
     )
     if next_activity is None:
@@ -345,8 +345,8 @@ def build_activity_prompt(
         )
     sleep_rule = (
         '允许选择 sleep；真的睡着时才用 sleep，闭目养神但仍会回应要用 rest。'
-        if context.sleep_enabled
-        else '当前配置不允许选择 sleep；需要恢复时只能选择 rest，并保持可回应。'
+        if context.energy_enabled
+        else '当前精力系统已关闭，不允许选择 sleep；活动照常进行，不根据精力安排活动。'
     )
     values = {
         'character_name': context.character_name,
@@ -404,7 +404,7 @@ class ActivityDecisionService:
             raw,
             intention_count=context.intention_count,
             require_backfill=gap_ms > SHORT_GAP_MS,
-            sleep_enabled=context.sleep_enabled,
+            energy_enabled=context.energy_enabled,
         )
         if parsed is None:
             raise ValueError('下一步活动模型输出未通过结构校验')

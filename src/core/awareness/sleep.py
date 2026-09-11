@@ -27,10 +27,13 @@ class SleepStateController:
         self,
         timeline: ActivityTimeline,
         wake_grace_ms: int = WAKE_GRACE_MS,
+        *,
+        energy_enabled: bool = True,
     ) -> None:
         """绑定唯一活动时间线；构造阶段不读库、不创建后台任务。"""
 
         self._timeline = timeline
+        self._energy_enabled = energy_enabled
         self._wake_grace_ms = wake_grace_ms
         self._woken_until = 0
         self._woke_at: int | None = None
@@ -42,7 +45,8 @@ class SleepStateController:
         now = now if now is not None else current_time()
         activity = self._timeline.current(now)
         asleep = activity.kind == 'sleep'
-        if asleep and now < self._woken_until:
+        if asleep and (not self._energy_enabled or now < self._woken_until):
+            # 关闭精力时也要结束已存在的睡眠段，避免旧状态继续限制回复。
             # 外部唤醒与恰好完成的后台决策可能交错；宽限期内再次把新 sleep 段打断，
             # 确保刚回复用户后不会立即回到睡着状态。
             self._timeline.note_woken(now)

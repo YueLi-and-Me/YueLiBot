@@ -76,7 +76,7 @@ def _plan_dict(
     date: str,
     slots: Sequence[Tuple[str, int, int]],
     *,
-    sleep_enabled: bool,
+    energy_enabled: bool,
     bedtime: str,
     wake: str,
     include_paces: bool = True,
@@ -101,7 +101,7 @@ def _plan_dict(
         'wakeHint': wake,
         'theme': '按自己的节奏安排一天',
         'carryOver': '无',
-        'sleepEnabled': sleep_enabled,
+        'sleepEnabled': energy_enabled,
         'bedtimeDayBoundary': '02:00',
     }
 
@@ -109,7 +109,7 @@ def _plan_dict(
 def _make_schedule(
     store: _Store,
     *,
-    sleep_enabled: bool,
+    energy_enabled: bool,
     state_provider: Callable[[], Any] | None = None,
 ) -> Any:
     """按当前构造签名装配日程服务，避免改动前在收集阶段统一报错。"""
@@ -118,7 +118,7 @@ def _make_schedule(
     config = ScheduleConfig(
         min_slots=1,
         max_slots=24,
-        sleep_enabled=sleep_enabled,
+        energy_enabled=energy_enabled,
         fallback_bedtime='20:00',
         fallback_wake='08:00',
     )
@@ -166,12 +166,12 @@ def test_disabled_sleep_still_recovers_energy_across_rest_window() -> None:
         _plan_dict(
             '2032-07-15',
             [('08:00', 0, 0)],
-            sleep_enabled=False,
+            energy_enabled=False,
             bedtime='20:00',
             wake='08:00',
         ),
     )
-    service = _make_schedule(store, sleep_enabled=False)
+    service = _make_schedule(store, energy_enabled=False)
 
     delta = _energy_delta(
         service,
@@ -193,7 +193,7 @@ def test_disabled_sleep_never_enters_sleep_state() -> None:
             wake_hint='08:00',
             energy=0.0,
             last_interaction_at=None,
-            sleep_enabled=False,
+            energy_enabled=False,
             bedtime_day_boundary='02:00',
         ),
         _timestamp('2032-07-15', 23),
@@ -215,7 +215,7 @@ def test_rest_window_can_reach_second_day_after_plan_date() -> None:
         _plan_dict(
             '2032-07-15',
             [('00:00', 0, 0)],
-            sleep_enabled=False,
+            energy_enabled=False,
             bedtime='02:00',
             wake='01:00',
         ),
@@ -227,12 +227,12 @@ def test_rest_window_can_reach_second_day_after_plan_date() -> None:
             _plan_dict(
                 date,
                 [('00:00', 0, 0)],
-                sleep_enabled=False,
+                energy_enabled=False,
                 bedtime='10:00',
                 wake='11:00',
             ),
         )
-    service = _make_schedule(store, sleep_enabled=False)
+    service = _make_schedule(store, energy_enabled=False)
 
     effect = service.integrate_between(
         _timestamp('2032-07-17', 0),
@@ -252,13 +252,13 @@ def test_legacy_plan_without_paces_keeps_hourly_energy_curve() -> None:
         _plan_dict(
             '2032-07-15',
             [('08:00', 0, 0)],
-            sleep_enabled=True,
+            energy_enabled=True,
             bedtime='20:00',
             wake='08:00',
             include_paces=False,
         ),
     )
-    service = _make_schedule(store, sleep_enabled=True)
+    service = _make_schedule(store, energy_enabled=True)
     integrate = getattr(service, 'integrate_between', None)
     assert integrate is not None, 'DayPlanService 尚未提供 integrate_between'
     start = _timestamp('2032-07-15', 8)
@@ -280,7 +280,7 @@ def test_day_plan_pace_parsing_and_round_trip_contract() -> None:
     missing = _plan_dict(
         '2032-07-15',
         [('08:00', 0, 0)],
-        sleep_enabled=True,
+        energy_enabled=True,
         bedtime='20:00',
         wake='08:00',
         include_paces=False,
@@ -297,7 +297,7 @@ def test_day_plan_pace_parsing_and_round_trip_contract() -> None:
     invalid_types = _plan_dict(
         '2032-07-15',
         [('08:00', 0, 0)],
-        sleep_enabled=True,
+        energy_enabled=True,
         bedtime='20:00',
         wake='08:00',
     )
@@ -316,7 +316,7 @@ def test_day_plan_pace_parsing_and_round_trip_contract() -> None:
         out_of_range = _plan_dict(
             '2032-07-15',
             [('08:00', 0, 0)],
-            sleep_enabled=True,
+            energy_enabled=True,
             bedtime='20:00',
             wake='08:00',
         )
@@ -330,7 +330,7 @@ def test_day_plan_pace_parsing_and_round_trip_contract() -> None:
     valid = _plan_dict(
         '2032-07-15',
         [('08:00', -3, 2)],
-        sleep_enabled=True,
+        energy_enabled=True,
         bedtime='20:00',
         wake='08:00',
     )
@@ -359,12 +359,12 @@ def test_energy_pace_normalization_preserves_fourteen_hour_total() -> None:
             _plan_dict(
                 '2032-07-15',
                 [(time, pace, 0) for time, pace in zip(slot_times, paces)],
-                sleep_enabled=False,
+                energy_enabled=False,
                 bedtime='22:00',
                 wake='08:00',
             ),
         )
-        service = _make_schedule(store, sleep_enabled=False)
+        service = _make_schedule(store, energy_enabled=False)
         integrate = getattr(service, 'integrate_between', None)
         assert integrate is not None, 'DayPlanService 尚未提供 integrate_between'
 
@@ -391,12 +391,12 @@ def test_opposite_energy_and_mood_paces_move_axes_in_opposite_directions() -> No
                 ('14:00', 1, 2),
                 ('17:00', 3, -1),
             ],
-            sleep_enabled=False,
+            energy_enabled=False,
             bedtime='20:00',
             wake='08:00',
         ),
     )
-    service = _make_schedule(store, sleep_enabled=False)
+    service = _make_schedule(store, energy_enabled=False)
     integrate = getattr(service, 'integrate_between', None)
     assert integrate is not None, 'DayPlanService 尚未提供 integrate_between'
 
@@ -451,9 +451,9 @@ def test_positive_mood_schedule_converges_below_one_hundred(
     )
 
 
-@pytest.mark.parametrize('sleep_enabled', [False, True])
+@pytest.mark.parametrize('energy_enabled', [False, True])
 def test_spent_energy_status_is_backend_derived(
-    sleep_enabled: bool,
+    energy_enabled: bool,
 ) -> None:
     """精力见底且醒着时统一标签必须是“精疲力尽”，与睡眠开关无关。"""
 

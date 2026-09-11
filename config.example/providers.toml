@@ -1,7 +1,7 @@
 # 模型厂商：API 厂商与连接策略；文件由 WebUI 保存时整体重写。密钥只保存到本机，WebUI 读取时不会回传明文。
 
 [inner]
-version = "1.5.0"
+version = "1.6.0"
 
 [[api_providers]] # 一个「API 厂商」条目
 name = "dashscope" # 模型配置引用的唯一名称；不能与其他厂商重复。

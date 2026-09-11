@@ -388,7 +388,7 @@ export interface YueliConfig {
     scene_refresh_messages: number
   }
   schedule: {
-    sleep_enabled: boolean
+    energy_enabled: boolean
     fallback_theme: string
     generation_retry_interval_minutes: number
   }

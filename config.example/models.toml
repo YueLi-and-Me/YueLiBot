@@ -1,7 +1,7 @@
 # 模型与任务：模型定义、各任务候选与按任务拆分的生成参数；文件由 WebUI 保存时整体重写。
 
 [inner]
-version = "1.5.0"
+version = "1.6.0"
 
 [model_tasks.chat] # 日常对话：回复用户普通消息的对话模型；至少要有一个。
 model_list = ["deepseek-pro"] # 每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。

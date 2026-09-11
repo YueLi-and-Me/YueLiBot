@@ -71,7 +71,7 @@ def _prompt(config: ScheduleConfig) -> str:
 def test_parser_accepts_configured_nonhuman_rhythm() -> None:
     raw = json.dumps(_nonhuman_plan('2032-07-15'), ensure_ascii=False)
 
-    plan = parse_day_plan(raw, '2032-07-15', ScheduleConfig(sleep_enabled=False))
+    plan = parse_day_plan(raw, '2032-07-15', ScheduleConfig(energy_enabled=False))
 
     assert plan is not None
     assert plan.intentions[0].what == '穿过星门去拜访机械城'
@@ -80,7 +80,7 @@ def test_parser_accepts_configured_nonhuman_rhythm() -> None:
 
 
 def test_schedule_prompt_uses_configured_character() -> None:
-    prompt = _prompt(ScheduleConfig(sleep_enabled=False))
+    prompt = _prompt(ScheduleConfig(energy_enabled=False))
 
     assert '「巡星」' in prompt
     assert '沿星图迁徙的数据生命' in prompt
@@ -107,7 +107,7 @@ async def test_service_passes_configured_character_to_generator(
         generator=generator,
         character_name='巡星',
         character_personality='你是沿星图迁徙的数据生命。',
-        schedule_config=ScheduleConfig(sleep_enabled=False),
+        schedule_config=ScheduleConfig(energy_enabled=False),
     )
 
     plan = await service.ensure(
@@ -120,7 +120,7 @@ async def test_service_passes_configured_character_to_generator(
 
 
 def test_disabled_sleep_never_enters_sleep_state() -> None:
-    prompt = _prompt(ScheduleConfig(sleep_enabled=False))
+    prompt = _prompt(ScheduleConfig(energy_enabled=False))
 
     assert '当前不允许实际活动进入睡眠' in prompt
     assert '不要承诺睡觉时刻' in prompt

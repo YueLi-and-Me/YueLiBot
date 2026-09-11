@@ -1,7 +1,7 @@
 # 功能开关：语音合成、屏幕视觉、感知出口、向量召回、日志与代理等运行参数；文件由 WebUI 保存时整体重写。
 
 [inner]
-version = "1.5.0"
+version = "1.6.0"
 
 [tts] # 语音合成：TTS 功能开关与音色；服务地址和密钥在 providers.toml 中维护。
 enabled = false # 关闭时保持纯文字回复。

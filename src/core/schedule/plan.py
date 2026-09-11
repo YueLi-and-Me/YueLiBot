@@ -266,7 +266,7 @@ def build_plan_prompt(
     settings = schedule_config or ScheduleConfig()
     sleep_rule = (
         '实际活动允许自然选择睡觉；roughRhythm 只写作息感觉，不能写钟点。'
-        if settings.sleep_enabled
+        if settings.energy_enabled
         else '当前不允许实际活动进入睡眠；roughRhythm 只写节奏感觉，不要承诺睡觉时刻。'
     )
     values = {
@@ -430,7 +430,7 @@ class DayPlanService:
 
         activity = self._timeline.current(now)
         state = self._persona_state()
-        if sleep.just_woke:
+        if self._config.energy_enabled and sleep.just_woke:
             lines = [
                 '你刚醒没多久，还在慢慢把意识拢回来；别装得已经精神十足，'
                 '语气应有一点迷糊和迟缓。'
@@ -438,7 +438,8 @@ class DayPlanService:
         else:
             current_behavior = describe_mood_behavior(activity.mood).rstrip('。')
             energy_behavior = (
-                '' if sleep.asleep or sleep.resting else _energy_behavior(state)
+                '' if not self._config.energy_enabled or sleep.asleep or sleep.resting
+                else _energy_behavior(state)
             )
             mood_behavior = '' if sleep.asleep else _mood_behavior(state)
             if energy_behavior:
@@ -456,9 +457,9 @@ class DayPlanService:
                     f'如果他是在问你在干什么：此刻你在{doing}。照实答一句就够，'
                     '不用展开讲，也不要顺势宣告接下来要做什么。'
                 )
-        if sleep.asleep:
+        if self._config.energy_enabled and sleep.asleep:
             lines.append('你已经睡着了；现在有人找你时，是外部消息把你叫醒。')
-        elif sleep.resting:
+        elif self._config.energy_enabled and sleep.resting:
             lines.append('你正在休息，精力不会继续下降，但仍然清醒并会正常回应。')
         return '\n'.join(lines)
 
@@ -566,8 +567,11 @@ class DayPlanService:
             character_name=self._character_name,
             character_personality=self._character_personality,
             persona=(
-                f'精力 {state.energy:.0f}，心情 {state.mood:.0f}。'
-                f'{describe_persona_for_planning(state)}'
+                (f'精力 {state.energy:.0f}，' if self._config.energy_enabled else '')
+                + f'心情 {state.mood:.0f}。'
+                + describe_persona_for_planning(
+                    state, energy_enabled=self._config.energy_enabled,
+                )
             ),
             sleep_history=self._timeline.last_sleep_summary(now),
             intentions='\n'.join(intention_lines),
@@ -575,7 +579,7 @@ class DayPlanService:
             rough_rhythm=plan.rough_rhythm,
             recent_activities=self._timeline.recent_summary(now),
             interaction=interaction,
-            sleep_enabled=self._config.sleep_enabled,
+            energy_enabled=self._config.energy_enabled,
         )
 
     def _unfinished_intentions(
@@ -691,7 +695,9 @@ class DayPlanService:
             date=date,
             weekday=_weekday_cn(now),
             occasion=_day_occasion(now, self._anniversary_at()),
-            persona=describe_persona_for_planning(self._persona_state()),
+            persona=describe_persona_for_planning(
+                self._persona_state(), energy_enabled=self._config.energy_enabled,
+            ),
             yesterday_theme=(
                 yesterday.theme
                 if yesterday is not None

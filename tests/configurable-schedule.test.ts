@@ -1,16 +1,17 @@
 /**
  * 可配置日程与分任务生成参数测试。
  *
- * 本模块属于 Electron 主进程配置层的 Vitest 测试，验证日程边界、睡眠开关、
+ * 本模块属于 Electron 主进程配置层的 Vitest 测试，验证日程边界、精力开关、
  * 任务级 token/temperature 参数以及配置文件的无损读写。测试通过临时目录隔离持久化副作用，
  * 依赖 electron/main/config.ts 的默认配置、一致性校验和目录读写函数。
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  CONFIG_VERSION,
   DEFAULT_CONFIG,
   assertConfigConsistent,
   readConfigDirectory,
@@ -55,11 +56,26 @@ afterEach(() => {
 })
 
 describe('可配置日程与生成预算', () => {
+  it.each([false, true])('旧睡眠开关 %s 自动迁移并从文件中剪除', (enabled) => {
+    const directory = temporaryConfigDirectory()
+    writeConfigDirectory(directory, writableConfig())
+    const path = join(directory, 'bot.toml')
+    writeFileSync(path, readFileSync(path, 'utf-8')
+      .replace(`version = "${CONFIG_VERSION}"`, 'version = "1.5.0"')
+      .replace('energy_enabled = true', `sleep_enabled = ${enabled}`))
+    const config = readConfigDirectory(directory)
+    expect(config.schedule.energy_enabled).toBe(enabled)
+    const upgraded = readFileSync(path, 'utf-8')
+    expect(upgraded).toContain(`version = "${CONFIG_VERSION}"`)
+    expect(upgraded).toContain(`energy_enabled = ${enabled}`)
+    expect(upgraded).not.toContain('sleep_enabled')
+  })
+
   it('日程行为和每类模型参数可从配置写入并无损读回', () => {
     const directory = temporaryConfigDirectory()
     const config = writableConfig()
     config.schedule = {
-      sleep_enabled: false,
+      energy_enabled: false,
       fallback_theme: '穿过机械城',
       generation_retry_interval_minutes: 37,
     }
@@ -72,7 +88,7 @@ describe('可配置日程与生成预算', () => {
     const botToml = readFileSync(join(directory, 'bot.toml'), 'utf-8')
     const modelsToml = readFileSync(join(directory, 'models.toml'), 'utf-8')
     expect(botToml).toContain('[schedule]')
-    expect(botToml).toContain('sleep_enabled = false')
+    expect(botToml).toContain('energy_enabled = false')
     expect(botToml).toContain('generation_retry_interval_minutes = 37')
     expect(modelsToml).toContain('max_tokens = 12288')
   })
@@ -89,7 +105,7 @@ describe('可配置日程与生成预算', () => {
 
   it('设置页提供全部日程和六类生成参数入口', () => {
     const html = readFileSync(join(process.cwd(), 'electron/renderer/settings.html'), 'utf-8')
-    expect(html).toContain('name="schedule.sleep_enabled"')
+    expect(html).toContain('name="schedule.energy_enabled"')
     expect(html).toContain('name="schedule.generation_retry_interval_minutes"')
     for (const task of ['chat', 'proactive', 'summary', 'schedule', 'expression', 'vision']) {
       expect(html).toContain(`name="generation.${task}.temperature"`)

@@ -110,7 +110,7 @@ class InterestFactors:
 
 
 def factors_for(activity: Activity, intensity: InputIntensity, favor: float, energy: float,
-                ignored: int, absence_hours: float) -> InterestFactors:
+                ignored: int, absence_hours: float, *, energy_enabled: bool = True) -> InterestFactors:
     """把当前情境和人物状态折算成五个兴趣乘数。
 
     favor / energy 是 persona 的 0~100 轴，除以 100 后参与计算；两者设置下限，
@@ -120,6 +120,7 @@ def factors_for(activity: Activity, intensity: InputIntensity, favor: float, ene
     :param intensity: 当前键鼠输入强度。
     :param favor: 人物好感度，通常范围为 ``0`` 到 ``100``。
     :param energy: Bot 精力值，通常范围为 ``0`` 到 ``100``。
+    :param energy_enabled: 关闭时精力乘数固定为 1.0。
     :param ignored: 连续被忽略的主动意图次数，负值按 ``0`` 处理。
     :param absence_hours: 用户离开时长，单位为小时，负值按 ``0`` 处理。
 
@@ -131,7 +132,7 @@ def factors_for(activity: Activity, intensity: InputIntensity, favor: float, ene
     return InterestFactors(
         activity=_ACTIVITY_WEIGHT.get(activity, 1.0) * _INTENSITY_WEIGHT.get(intensity, 1.0),
         favor=max(0.25, favor / 100.0),
-        energy=max(0.2, energy / 100.0),
+        energy=max(0.2, energy / 100.0) if energy_enabled else 1.0,
         ignored=IGNORED_DECAY ** max(0, ignored),
         absence=1.0 + min(1.5, max(0.0, absence_hours) / ABSENCE_SCALE_HOURS),
     )

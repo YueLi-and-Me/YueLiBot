@@ -110,7 +110,7 @@ class AwarenessService:
         self._enabled = cfg.generation.proactive.enabled and cfg.desktop_pet.enabled
 
         # 启动前恢复 promise，保证服务重建不会丢失尚未到期的主动意图。
-        self._sleep = SleepStateController(timeline=timeline)
+        self._sleep = SleepStateController(timeline=timeline, energy_enabled=cfg.schedule.energy_enabled)
         self._budget: ProactiveState = initial_state(started_at)
         self._interest: InterestState = initial_interest_state(started_at)
         self._pending: list[PendingIntent] = self._restore_promises()
@@ -186,6 +186,7 @@ class AwarenessService:
             persona.energy,
             self._budget.ignored,
             absence_hours,
+            energy_enabled=self._cfg.schedule.energy_enabled,
         )
 
     def _grow_interest(self, now: int) -> None:

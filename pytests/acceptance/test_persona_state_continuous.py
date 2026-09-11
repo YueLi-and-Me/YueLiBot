@@ -85,7 +85,7 @@ def _make_schedule(store: _Store, provider: Callable[[], Any]) -> Any:
     config = ScheduleConfig(
         min_slots=1,
         max_slots=24,
-        sleep_enabled=True,
+        energy_enabled=True,
         fallback_bedtime='23:00',
         fallback_wake='07:00',
     )
