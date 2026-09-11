@@ -2436,6 +2436,7 @@ enabled = ${tomlValue(cfg.developer.enabled)}
 [telemetry]
 # 默认开启；关闭后不注册、不心跳，本机统计不受影响
 enabled = ${tomlValue(cfg.telemetry.enabled)}
+# 上报发往自建统计服务，失败时改用历史地址兜底；网络不通只让当次上报作废，不重试到阻塞、不影响任何功能。
 
 # 反馈纠错：事实进过提示词后被用户纠正时，按事实账本取代机制改库。
 # 整条链路默认关闭，开启是显式动作。

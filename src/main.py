@@ -1104,7 +1104,8 @@ def main() -> None:
     lifecycle.register('edge_decay', edge_decay.startup, edge_decay.shutdown)
 
     # 匿名统计默认开启，因此必须在控制台当面讲清楚传什么、怎么关——
-    # 默认开启的功能埋在文档里不算说过。服务端未立起时它自己保持惰性。
+    # 默认开启的功能埋在文档里不算说过。端点候选由 telemetry 模块自己解析：
+    # 惰性链路（候选为空）与告知文案必须看同一份列表，否则会一边发请求一边说没启用。
     telemetry = TelemetryService(data_dir, enabled=cfg.telemetry.enabled)
     print_box('匿名统计', describe_for_console(cfg.telemetry.enabled), publish=False)
     lifecycle.register('telemetry', telemetry.startup, telemetry.shutdown)

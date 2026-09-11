@@ -9,11 +9,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import asyncio
 import json
 
 import pytest
 
 from src.core.app_meta import APP_VERSION
+from src.core.config.schema import LogConfig
+from src.core.logging.logger import initialize_logging
 from src.core.runtime import telemetry
 
 
@@ -86,6 +89,95 @@ def test_身份读写往返(tmp_path: Path) -> None:
     telemetry.write_identity(tmp_path, 'abc-123')
 
     assert telemetry.read_identity(tmp_path) == 'abc-123'
+
+
+def test_端点候选展开与惰性() -> None:
+    """显式空地址必须解析为空候选：否则「服务端尚未立起」会被默认地址悄悄推翻。"""
+    assert telemetry.resolve_endpoints('') == ()
+    assert telemetry.resolve_endpoints('   ') == ()
+    assert telemetry.resolve_endpoints('https://例子/') == ('https://例子',)
+    assert telemetry.resolve_endpoints(None) == telemetry.TELEMETRY_ENDPOINTS
+    # 首选是自建域名，被 DNS 污染的历史地址排在它后面兜底。
+    assert telemetry.TELEMETRY_ENDPOINTS[0] == telemetry.TELEMETRY_ENDPOINT
+    assert telemetry.TELEMETRY_ENDPOINT_LEGACY in telemetry.TELEMETRY_ENDPOINTS
+
+
+def test_失败后重试间隔先压缩再放大() -> None:
+    """600 秒的常规节拍照搬到首轮失败上，会让只开机几分钟的安装整段不上报。"""
+    assert (
+        telemetry.next_retry_interval(telemetry.HEARTBEAT_INTERVAL_S)
+        == telemetry.RETRY_INTERVAL_S
+    )
+    assert telemetry.next_retry_interval(telemetry.RETRY_INTERVAL_S) == 2 * telemetry.RETRY_INTERVAL_S
+    assert telemetry.next_retry_interval(telemetry.MAX_RETRY_INTERVAL_S) == telemetry.MAX_RETRY_INTERVAL_S
+    assert telemetry.next_retry_interval(60.0) <= telemetry.MAX_RETRY_INTERVAL_S
+
+
+@pytest.mark.asyncio
+async def test_首选端点失败时改用兜底端点(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """主备两个地址是这条链路在国内可用的前提，顺序与短路行为都要钉住。"""
+    service = telemetry.TelemetryService(tmp_path, enabled=True, endpoint=('https://首选', 'https://兜底'))
+    called: list[str] = []
+
+    async def _fake_attempt(self: Any, endpoint: str) -> tuple[bool, bool]:
+        called.append(endpoint)
+        if endpoint == 'https://首选':
+            raise OSError('首选连不上')
+        telemetry.write_identity(tmp_path, '兜底给的')
+        return True, False
+
+    monkeypatch.setattr(telemetry.TelemetryService, '_attempt', _fake_attempt)
+
+    assert await service._beat_once() is True
+    assert called == ['https://首选', 'https://兜底']
+    assert telemetry.read_identity(tmp_path) == '兜底给的'
+
+
+@pytest.mark.asyncio
+async def test_全部端点拒绝身份后才丢本地身份(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """403 只在两个端点都不认这个 UUID 时才算身份失效。
+
+    单端点被拒就删文件，会把「两套库各存一半」这种部署差异变成反复重注册，
+    统计出来的装机量会凭空膨胀。
+    """
+    telemetry.write_identity(tmp_path, '旧身份')
+    service = telemetry.TelemetryService(tmp_path, enabled=True, endpoint=('https://甲', 'https://乙'))
+
+    async def _fake_attempt(self: Any, endpoint: str) -> tuple[bool, bool]:
+        return False, True
+
+    monkeypatch.setattr(telemetry.TelemetryService, '_attempt', _fake_attempt)
+
+    assert await service._beat_once() is False
+    assert telemetry.identity_path(tmp_path).exists() is False
+
+
+@pytest.mark.asyncio
+async def test_失败日志带异常类型与端点(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """连接类失败的 str(exc) 常常是空串，日志必须自带异常类型。
+
+    这条断言盯着的是排障能力本身：远程用户报「统计不到」时，服务端那条路径上
+    什么都不会留下，唯一的线索就是本机这行日志。
+    """
+    log_dir = tmp_path / 'logs'
+    initialize_logging(LogConfig(to_file=True), log_dir)
+    service = telemetry.TelemetryService(tmp_path, enabled=True, endpoint='https://连不上')
+
+    async def _boom(self: Any, endpoint: str) -> tuple[bool, bool]:
+        raise ConnectionError('')
+
+    monkeypatch.setattr(telemetry.TelemetryService, '_attempt', _boom)
+
+    assert await service._beat_once() is False
+    written = [
+        json.loads(line)
+        for path in log_dir.glob('app_*.log.jsonl')
+        for line in path.read_text(encoding='utf-8').splitlines()
+    ]
+    events = [entry for entry in written if entry['event'] == 'telemetry_failed']
+    assert len(events) == 1
+    assert events[0]['fields']['kind'] == 'ConnectionError'
+    assert events[0]['fields']['endpoint'] == 'https://连不上'
 
 
 def test_损坏的身份按未注册处理(tmp_path: Path) -> None:

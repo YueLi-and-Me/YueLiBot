@@ -53,6 +53,10 @@
 
 安装标识由服务端下发，存放于数据目录的 `telemetry.json`，与您的身份无关。
 
+上报发往本项目自建的统计服务（`telemetry.yuelibot.org`，并保留历史地址
+`yueli-telemetry.yuelibot.workers.dev` 作为备用）。网络不通时不会重试到影响使用，
+只在本机日志记一条警告。
+
 **关闭方式**：将 `config/features.toml` 中 `[telemetry] enabled` 改为 `false`，
 重启后生效。关闭后不再注册、不再发送心跳。程序内的本机统计功能（高频词、记忆召回
 效果、管理面板各类计数）不受影响——这些数据本就只存储在您自己的数据库中，不出网。

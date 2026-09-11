@@ -107,6 +107,10 @@ surfaces = ["desktop"]
 enabled = false    # 关掉后不再有任何上报
 ```
 
+上报发往自建统计服务 `telemetry.yuelibot.org`，失败时改用历史地址
+`yueli-telemetry.yuelibot.workers.dev` 兜底。网络不通只是让这一次上报作废，
+最多在本机日志留一条带异常类型的警告，不影响任何功能，也不会阻塞启动。
+
 首次启动时控制台也会把这几句话念一遍。完整说明见
 [用户协议](https://github.com/YueLi-and-Me/YueLiBot/blob/main/AGREEMENT.md)第四节；
 上报服务的实现见 [telemetry-server](https://github.com/YueLi-and-Me/YueLiBot/tree/main/telemetry-server)。
