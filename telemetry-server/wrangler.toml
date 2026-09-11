@@ -2,7 +2,24 @@ name = "yueli-telemetry"
 main = "src/index.js"
 compatibility_date = "2026-09-05"
 
-# workers.dev 是这个服务唯一的对外入口，客户端常量指的就是它，必须开着。
+# 对外入口有两个，缺一不可。
+#
+# 自定义域是首选入口，新装机打的是它：
+# - 现象：workers.dev 域名在中国大陆被 DNS 污染，解析直接失败，注册请求根本到不了
+#   边缘节点，服务端连一条访问记录都不会留下，装机量因此静默偏低。
+# - 原因：workers.dev 是 Cloudflare 共享的公共后缀，被污染的是域名本身而非某个 IP，
+#   换解析地址、加 hosts 都无效。
+# - 后果：新增入口是为了让国内无代理的装机也能上报；自定义域走 zone 自己的权威
+#   DNS，不受该污染影响。删掉它等于把统计口径打回「只有挂代理的用户算数」。
+#
+# workers.dev 保留是因为 0.1.0–0.1.2 的存量装机只认这个地址：
+# - 现象：关掉它之后，已发布的客户端心跳全部落空，历史装机量不再更新。
+# - 原因：端点常量在已发布的代码里，改地址只能靠用户升级。
+# - 后果：两个入口并存，客户端按主备顺序尝试（见 src/core/runtime/telemetry.py）。
+#
+routes = [
+  { pattern = "telemetry.yuelibot.org", custom_domain = true },
+]
 workers_dev = true
 
 # 预览地址逐版本再开一组公网 URL（形如 <版本前缀>-yueli-telemetry.<子域>.workers.dev）。

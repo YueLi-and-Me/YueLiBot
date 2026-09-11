@@ -6,6 +6,16 @@
 这一套是可选的。仓库里 `TELEMETRY_ENDPOINT` 为空，整条链路惰性，不部署也
 不影响任何功能——部署只在你想统计自己那份分发的装机情况时才需要。
 
+## 为什么要自建域名
+
+`*.workers.dev` 在中国大陆被 DNS 污染：解析直接失败，请求到不了边缘节点，而
+服务端侧连一条访问记录都不会留下。结果是装机量只统计到挂了代理的用户，且完全
+静默——这正是「有新装机但统计不动」的成因。
+
+因此正式入口是 zone 自己的域名（`wrangler.toml` 里的 `routes`），
+`workers_dev` 保留只为兼容 0.1.0–0.1.2 的存量装机：那些版本把 workers.dev 地址
+写死在代码里。两者指向同一个 Worker、同一份 D1。
+
 ## 数据边界
 
 `installs` 表里没有 IP 列，也没有任何可回溯到人的列。这不是承诺而是结构
@@ -64,16 +74,26 @@ npx wrangler secret put STATS_TOKEN
 
 ### 5. 部署
 
+部署前先把 `wrangler.toml` 的 `routes` 改成你自己的域名。`custom_domain = true`
+会让 wrangler 自动建 DNS 记录与边缘证书，前提是 zone 在同一账号下；不用这个
+字段的话，每次部署都只得到 workers.dev 地址，国内用户依旧统计不到。
+
 ```bash
 npx wrangler deploy
 ```
 
-输出里会给出 `https://yueli-telemetry.<你的子域>.workers.dev`。
+输出里会列出两个入口：`https://yueli-telemetry.<你的子域>.workers.dev` 与
+`telemetry.<你的域名> (custom domain)`。免费额度就够，但自定义域走的是境外
+节点，绕开的是 DNS 污染，不保证国内直连一定稳定。
 
 ### 6. 回填端点
 
-把上一步的地址填进 `src/core/runtime/telemetry.py` 的 `TELEMETRY_ENDPOINT`
-常量。填之前它是空串，客户端不发任何请求。
+把自定义域地址填进 `src/core/runtime/telemetry.py` 的 `TELEMETRY_ENDPOINT`
+常量，workers.dev 地址留给 `TELEMETRY_ENDPOINT_LEGACY`，两者都在
+`TELEMETRY_ENDPOINTS` 候选里按顺序尝试。填之前候选为空串时客户端不发任何请求。
+
+不要删掉 `TELEMETRY_ENDPOINT_LEGACY`：已发布版本的端点常量写死在代码里，删掉
+等于那些装机的心跳全部落空。
 
 ## 端点
 
@@ -83,10 +103,14 @@ npx wrangler deploy
 | POST | `/heartbeat` | `Client-UUID` 头 | 刷新 `last_seen` 与三个字段。成功 204，未知 UUID 403 |
 | GET | `/stats?days=30` | `Authorization: Bearer <STATS_TOKEN>` | 聚合读取，失败一律 401 |
 
+两个入口（自定义域与 workers.dev）指向同一个 Worker、同一份 D1，客户端打哪个
+都算同一次上报：身份是服务端下发的 UUID，按 UUID 更新 `last_seen`，不会重复计数。
+
 心跳是单向上报：响应体不回写任何指令或配置，服务端没有控制客户端的通道。
 
 `/heartbeat` 收到 403 时客户端会删除本地身份文件并在下一轮重新注册，因此
-清库或重建数据库不会把老客户端永久踢出统计。
+清库或重建数据库不会把老客户端永久踢出统计。这一删除动作只在**所有**端点都
+认不出该 UUID 之后才执行，避免两个入口指向不同库时反复重注册、把装机量刷高。
 
 ### `GET /stats` 的返回
 
@@ -141,3 +165,26 @@ npx wrangler d1 execute yueli-installs --remote --command "SELECT * FROM daily_s
 ```bash
 npx wrangler tail
 ```
+
+## 排查「新装机没进统计」
+
+按下面的顺序看，每一步都能把问题范围砍掉一半：
+
+1. 查 `installs` 最新注册时刻：
+
+   ```bash
+   npx wrangler d1 execute yueli-installs --remote --command \
+     "SELECT COUNT(*), datetime(MAX(first_seen)/1000,'unixepoch') FROM installs"
+   ```
+
+2. 时刻对不上那台机器的安装时间，说明请求没到服务端。服务端不留痕是**预期
+   行为**：DNS 解析失败根本产生不了访问日志，所以「这里什么都没有」不等于
+   「服务端拒绝了」。
+
+3. 去那台机器的数据目录看两点：有没有 `telemetry.json`（有则身份已下发），
+   `logs/app_*.jsonl` 里有没有 `telemetry_failed`。带 `kind` 字段的那条日志
+   就是结论——`ConnectError` 是网络到不了，`HTTPStatusError` 才是服务端回的错。
+
+4. 排除客户端后，回到域名：`telemetry.<你的域名>` 与 workers.dev 各解析一次，
+   前者必须解析到 zone 的真实 IP。若对方网络连自定义域也不通，那就不是配置
+   问题，得换国内可达的中转。
