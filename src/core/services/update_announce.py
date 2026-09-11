@@ -41,9 +41,6 @@ logger = get_logger(__name__)
 LATEST_VERSION_PATH = '/update/latest'
 # 状态文件里记录「已公告到哪个版本」的字段名。与更新内容报告共用同一份文件。
 ANNOUNCED_FIELD = 'announced_version'
-# 状态文件里「上次启动时运行的版本」字段名，由 update_notes 写入。用它判断本机
-# 是否刚刚升级过，见 UpdateAnnounceService.check_once。
-_LAST_RUN_FIELD = 'version'
 # 出站投递使用的平台标识。公告只走 QQ。
 ANNOUNCE_PLATFORM = 'qq'
 # 公告正文的首行。
@@ -79,6 +76,16 @@ def is_newer(candidate: str, current: str) -> bool:
     return left > right
 
 
+def _higher(left: str, right: str) -> str:
+    """返回两个版本号里较高的那个。
+
+    :param left: 第一个版本号。
+    :param right: 第二个版本号。
+    :return: 较高的版本号；任一畸形（无法比较）时返回 ``right``。
+    """
+    return left if is_newer(left, right) else right
+
+
 def announcement_text(version: str, lines: List[str]) -> str:
     """拼出群公告正文。
 
@@ -105,6 +112,7 @@ class UpdateAnnounceService:
         register_stream: Callable[[StreamRef], None],
         endpoint: str,
         interval_s: float,
+        previous_version: str | None = None,
     ) -> None:
         """保存运行参数，不做任何网络动作。
 
@@ -117,6 +125,10 @@ class UpdateAnnounceService:
             注册表里只有 stream 而没有驱动，缺这一步投递会直接失败。
         :param endpoint: 广播端点根地址，不带尾斜杠。
         :param interval_s: 两次检查之间的间隔，单位秒，必须为正。
+        :param previous_version: **启动那一刻**从状态文件读到的上次运行版本。必须由启动
+            流程注入，不能在本服务里现读：启动期的 ``update_notes`` 会把同一个字段改写
+            成当前版本，本服务再读就只剩「没有升级」这一种结论，升级带来的公告会被永久
+            吞掉——部署紧接发版时必然如此，那不是偶发竞态而是固定顺序。
         :raises ValueError: ``interval_s`` 不为正。
         副作用：只保存引用，不建立连接也不读文件。
         """
@@ -130,6 +142,7 @@ class UpdateAnnounceService:
         self._register_stream = register_stream
         self._endpoint = endpoint.strip().rstrip('/')
         self._interval_s = interval_s
+        self._previous_version = previous_version
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
 
@@ -199,26 +212,25 @@ class UpdateAnnounceService:
         if not self.active:
             return False
         version = await self.fetch_latest()
-        # 本机是否刚刚升级过：状态文件里的 LAST_RUN_FIELD 是上次启动时记下的版本，
-        # 与当前 APP_VERSION 不等就说明这一版是升上来的。
+        # 门槛一律取「启动那一刻的上次运行版本」，由启动流程注入本对象。
         #
-        # 这个信号必须读状态文件，不能直接用 APP_VERSION 与远端比：发版后先把服务器
-        # 升上去再看公告时，远端与本机已经同为新版，拿本机版本当门槛就再也不算更新，
-        # 公告被永久吞掉——而升级与公告本来就常在同一分钟里先后发生。
-        state = read_state(self._data_dir)
-        recorded = state.get(_LAST_RUN_FIELD)
-        upgraded = bool(recorded) and recorded != APP_VERSION
-        # 门槛取「升级前的那个版本」：比它新说明差异来自这次升级，该公告；不比它新
-        # 说明要么已公告过、要么本机装着比远端更新的版本，都不该发。
-        # 刚升级时用上次运行的版本而不是本机版本——本机已经等于远端，拿它当门槛
-        # 会把这次升级带来的公告判成「不是更新」，正是上面那个窗口。
-        floor = recorded if upgraded else APP_VERSION
+        # 不在这里现读状态文件：同一个字段会被启动期的 update_notes 改写成当前版本，
+        # 而本服务的循环是服务启动之后才跑的，现读只会得到「没有升级」这一种结论。
+        # 部署紧接发版时必然如此，所以这不是偶发竞态，是固定顺序。
+        previous = self._previous_version
+        # 门槛就是「这次启动之前的那个版本」，一个字都不改：
+        # - 远端比它新 → 差异来自这次发版，该公告（本机是否已经升上去都不影响）；
+        # - 远端不比它新 → 要么已公告过、要么远端广播落后于本机，都不该发。
+        #
+        # 不要在这里按「本机是否升过头」再抬门槛：本机版本高于过去版本正是升级本身，
+        # 抬上去就把这一版的公告判成「不是更新」而吞掉；而远端真落后时上面第二条
+        # 已经拦住了，不需要额外判断。
+        floor = previous if previous is not None else APP_VERSION
         if not is_newer(version, floor):
             return False
-        # 这条不能省：升级后的状态文件里 version 会一直停在旧值（那是「上次启动」的
-        # 语义，由 update_notes 在下次启动时才覆盖），所以门槛会一直是旧版本。少了
-        # 它，同一次升级会在每次检查里重复公告，直到下一次重启为止。
-        if state.get(ANNOUNCED_FIELD) == version:
+        # 这条不能省：门槛固定在启动时的旧版本上，少了它，同一次升级会在每轮检查里
+        # 重复公告，直到下一次重启把门槛抬上去为止。
+        if read_state(self._data_dir).get(ANNOUNCED_FIELD) == version:
             return False
         notes = read_release_notes(self._project_root, version)
         if notes is None:

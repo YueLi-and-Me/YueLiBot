@@ -82,8 +82,13 @@ def _service(
     broker: _FakeBroker | None = None,
     registry: _FakeRegistry | None = None,
     notes_text: str = CHANGELOG,
+    previous_version: str | None = None,
 ) -> UpdateAnnounceService:
-    """构造一个只连本地假件的公告服务。"""
+    """构造一个只连本地假件的公告服务。
+
+    ``previous_version`` 由启动流程注入，测试直接给定，不去碰状态文件——真实启动里
+    那个字段会在公告循环跑起来之前就被改写成当前版本。
+    """
     project = tmp_path / 'repo'
     project.mkdir(exist_ok=True)
     (project / update_notes.CHANGELOG_FILENAME).write_text(notes_text, encoding='utf-8')
@@ -97,6 +102,7 @@ def _service(
         register_stream=registered.append,
         endpoint='https://例子',
         interval_s=600.0,
+        previous_version=previous_version,
     )
     # 把假件挂成实例属性，测试里直接读，不必再各自构造一遍。
     service.registered = registered  # type: ignore[attr-defined]
@@ -201,16 +207,42 @@ async def test_远端版本不比本机新时不公告(tmp_path: Path, monkeypat
 async def test_升级先于公告时仍然公告(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """本机已经升到远端说的那一版，也不能把公告吞掉。
 
-    - 现象：发版后先把服务器升上去、再看公告，结果什么都没有。
-    - 原因：门槛原先固定取「本机正在跑的版本」，远端升到同一版本后就不再算更新。
-    - 后果：升级与公告常在同一分钟里先后发生，这个窗口一旦错开，公告永久丢失。
+    - 现象：发版后立刻 pull + 重启，公告永远不出现。
+    - 原因：门槛原先现读状态文件的「上次运行版本」，而启动期的 update_notes 已经把它
+      改写成当前版本，于是远端与本机同版、判定为「不是更新」。
+    - 后果：部署紧接发版时必然命中（固定顺序，不是偶发竞态），公告整批丢失；因此门槛
+      必须由启动流程在改写之前读出并注入本对象。
     """
+    broker = _FakeBroker()
+    # 启动流程在改写状态文件之前读出的是旧版本，而本机已经跑在新版本上。
+    service = _service(
+        tmp_path, _enabled(), broker=broker,
+        notes_text=_changelog_for('0.1.3'), previous_version='0.1.2',
+    )
+    monkeypatch.setattr(update_announce, 'APP_VERSION', '0.1.3')
+
+    async def _latest() -> str:
+        return '0.1.3'
+
+    monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
+
+    assert await service.check_once() is True
+    assert len(broker.sent) == 1
+    assert broker.sent[0].startswith('月璃更新到 0.1.3')
+    assert read_state(tmp_path)[ANNOUNCED_FIELD] == '0.1.3'
+
+
+@pytest.mark.asyncio
+async def test_未升级时远端新版本照样公告(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本机还停在旧版、远端已经发新版：最常见的公告场景。"""
     newer = _one_minor_above(APP_VERSION)
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(newer))
-    # 状态文件说上次跑的是旧版，而本机已经是新版：这就是「刚刚升上来」。
-    update_notes.write_state(tmp_path, {'version': APP_VERSION})
-    monkeypatch.setattr(update_announce, 'APP_VERSION', newer)
+    service = _service(
+        tmp_path, _enabled(), broker=broker,
+        notes_text=_changelog_for(newer), previous_version=APP_VERSION,
+    )
 
     async def _latest() -> str:
         return newer
@@ -218,16 +250,38 @@ async def test_升级先于公告时仍然公告(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
 
     assert await service.check_once() is True
-    assert len(broker.sent) == 1
-    assert broker.sent[0].startswith(f'月璃更新到 {newer}')
-    assert read_state(tmp_path)[ANNOUNCED_FIELD] == newer
+    assert broker.sent and broker.sent[0].startswith(f'月璃更新到 {newer}')
+
+
+@pytest.mark.asyncio
+async def test_远端广播落后时不公告旧版本(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """远端广播的是一个比过去版本还旧的版本（广播写漏、回滚）时不该往群里发。
+
+    场景是「本机没升级过、过去版本就是本机版本」：门槛落在本机版本上，旧版自然被拦。
+    """
+    older = '0.1.0'
+    broker = _FakeBroker()
+    service = _service(
+        tmp_path, _enabled(), broker=broker,
+        notes_text=_changelog_for(older), previous_version=APP_VERSION,
+    )
+
+    async def _latest() -> str:
+        return older
+
+    monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
+
+    assert await service.check_once() is False
+    assert broker.sent == []
 
 
 @pytest.mark.asyncio
 async def test_全新安装不会把历史版本刷进群(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """刚装好、状态文件里什么都没有时，不能把远端那个更旧的版本当更新发出来。"""
+    """刚装好、没有过去版本时，不能把远端那个更旧的版本当更新发出来。"""
     older = '0.0.1'
     broker = _FakeBroker()
     service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(older))

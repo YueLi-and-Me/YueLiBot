@@ -32,7 +32,7 @@ from src.core.runtime.backend_runtime import create_backend_runtime, runtime_fil
 from src.core.runtime.child_process import ChildProcess
 from src.core.runtime.consent import require_consent
 from src.core.runtime.telemetry import TelemetryService, describe_for_console, TELEMETRY_ENDPOINT
-from src.core.runtime.update_notes import announce_update
+from src.core.runtime.update_notes import announce_update, read_last_version
 from src.core.runtime.clock import now as current_time
 from src.core.logging.console_layout import print_box, print_line
 from src.core.logging.logger_colors import HIGHLIGHT_COLOR, is_color_enabled
@@ -1124,6 +1124,10 @@ def main() -> None:
 
     # 发布公告：默认关闭且群号默认为空，只在明确填了 [update_announce] 的那份配置里
     # 生效。它读的广播端点由发布流程写入，所以公告时机由发版决定，本机只负责发现与投递。
+    #
+    # 上次运行的版本在启动早期就取出并注入：announce_update 会把同一个字段改写成当前
+    # 版本，等公告服务的循环跑起来再读，就只剩「没有升级」这一种结论，紧接发版的部署
+    # 会把公告永久吞掉。
     from src.core.services.update_announce import UpdateAnnounceService
     update_announce = UpdateAnnounceService(
         data_dir,
@@ -1134,6 +1138,7 @@ def main() -> None:
         register_stream=_register_platform_stream,
         endpoint=TELEMETRY_ENDPOINT,
         interval_s=UPDATE_CHECK_INTERVAL_S,
+        previous_version=read_last_version(data_dir),
     )
     lifecycle.register('update_announce', update_announce.startup, update_announce.shutdown)
     if update_announce.active:
