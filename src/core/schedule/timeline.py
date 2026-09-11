@@ -849,10 +849,15 @@ class ActivityTimeline:
                     'UPDATE activities SET expected_until = ? WHERE id = ?',
                     (now + minutes * MINUTE_MS, previous.id),
                 )
-                logger.debug(
+                # 提到 info 是排查需要：延续不新增时间线段，这条日志是「continue 真的
+                # 发生过」的唯一证据。debug 级既不进 stdout（systemd 部署下 stdout 即
+                # journal）、也不进文件日志，默认配置下等于不存在——上一轮排查正是
+                # 因为 grep 不到它，把「continue 叠加」误判成「单次封顶失效」。
+                logger.info(
                     '延续当前活动，不新增时间线段',
                     activity_id=previous.id,
                     minutes=minutes,
+                    elapsed_minutes=elapsed_minutes,
                 )
             else:
                 if gap_ms <= SHORT_GAP_MS:

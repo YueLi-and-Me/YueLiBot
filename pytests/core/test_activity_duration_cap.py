@@ -41,6 +41,8 @@ STARTED_AT = 1_700_000_000_000
 CLAMP_EVENT = '活动 minutes 越界，已按 kind 限幅'
 # 续期截断告警的事件名，与单次决策越界分开，便于定位是哪条判据生效。
 TRUNCATE_EVENT = '延续时长超过这一段剩余的可用时长，已截断到累计上限'
+# 延续成功的记录：唯一能证明 continue 真的发生过的日志。
+CONTINUE_EVENT = '延续当前活动，不新增时间线段'
 # 短缺口分支给出的两个选项原文；累计达上限后继续选项必须整条消失。
 CONTINUE_OPTION = '{"decision":"continue","minutes":45}'
 SWITCH_OPTION = '{"decision":"switch","activity":'
@@ -343,6 +345,46 @@ def test_continuation_decision_is_clamped_to_the_kind_limit() -> None:
         assert len(truncated) == 1
         assert truncated[0]['elapsed_minutes'] == elapsed_before
         assert truncated[0]['clamped'] == remaining
+        timeline.assert_invariants()
+    finally:
+        db.close()
+
+
+def test_continuation_is_logged_at_info_with_the_cumulative_elapsed() -> None:
+    """延续成功的记录必须是 info 级并带上累计时长，否则真机上无从复核。"""
+
+    limit = timeline_module._DECISION_MINUTE_LIMITS['awake']
+    elapsed = 30
+    continue_minutes = 45
+    assert elapsed + continue_minutes < limit, '这条用例的前提是这次延续不触发任何封顶'
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        timeline._insert_draft(
+            _draft('awake', elapsed),
+            started_at=STARTED_AT,
+            ended_at=None,
+            source='decided',
+        )
+        now = STARTED_AT + elapsed * MINUTE_MS
+
+        with capture_logs() as logs:
+            timeline._apply_transition(
+                _open_activity(db),
+                ActivityTransition(continuation_minutes=continue_minutes),
+                now,
+                0,
+            )
+
+        continued = [
+            entry for entry in logs if entry.get('event') == CONTINUE_EVENT
+        ]
+        assert len(continued) == 1
+        # 直接断言事件自身的级别：`capture_logs` 不按级别过滤，debug 也会被捕获，
+        # 所以只有比对 log_level 才能锁住「这条记录在真机上会落 journal」。
+        assert continued[0]['log_level'] == 'info'
+        assert continued[0]['minutes'] == continue_minutes
+        assert continued[0]['elapsed_minutes'] == elapsed
         timeline.assert_invariants()
     finally:
         db.close()
