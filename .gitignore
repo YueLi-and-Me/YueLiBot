@@ -83,6 +83,11 @@ __pycache__/
 /scripts/fetch_docs.py
 /scripts/fetch_reference_docs.mjs
 
+# 只在本机跑的一次性量化读侧对照脚本：结论未采纳进项目，且它依赖的重放池与
+# 生产候选池失配严重（逐位对账通过率不足百分之一），入库会把不可迁移的读数
+# 当成历史基线；同规范约定守卫，防的是一次 `git add .` 把它带进版本库。
+/scripts/eval/sq8_ab.py
+
 # IDE
 .idea/
 .vscode/
