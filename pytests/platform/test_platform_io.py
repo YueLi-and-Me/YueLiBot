@@ -87,7 +87,7 @@ class _Chat:
         at_mention_must_reply: bool = True,
     ) -> None:
         self.memory = _Memory(reply_count)
-        self._sleep = SimpleNamespace(asleep=asleep)
+        self._sleep = SimpleNamespace(asleep=asleep, level='light' if asleep else 'awake')
         self.at_mention_must_reply = at_mention_must_reply
         self.name_mention_probability = 1.0
         self.inbound: List[Any] = []
@@ -247,7 +247,7 @@ def test_gate_decision_carries_every_input_it_judged_on() -> None:
         stream_kind='group',
         mentioned_me=False,
         name_mentioned=True,
-        asleep=False,
+        sleep_level='awake',
         at_mention_must_reply=True,
         replies_in_window=1,
         max_replies_in_window=3,
@@ -270,12 +270,12 @@ def test_gate_records_sleep_even_when_name_was_called() -> None:
         stream_kind='group',
         mentioned_me=False,
         name_mentioned=True,
-        asleep=True,
+        sleep_level='light',
         at_mention_must_reply=True,
         replies_in_window=0,
         max_replies_in_window=3,
     ))
 
-    assert result.reason_codes == ('asleep',)
+    assert result.reason_codes == ('light_sleep',)
     # 称呼命中与睡眠状态是独立条件，入口处仍会把称呼命中写入 reply_gate 事件。
     assert result.disposition == 'drop'

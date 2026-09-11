@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from src.core.runtime.clock import now as current_time
 from src.core.schedule.timeline import ActivityTimeline
+
+SleepLevel = Literal['awake', 'drowsy', 'light', 'deep']
 
 WAKE_GRACE_MS = 10 * 60_000
 WAKE_TRANSITION_MS = 40 * 60_000
@@ -18,6 +21,8 @@ class SleepState:
     asleep: bool
     just_woke: bool
     resting: bool
+    level: SleepLevel = 'awake'
+    activity_id: int | None = None
 
 
 class SleepStateController:
@@ -66,10 +71,17 @@ class SleepStateController:
             and self._woke_at is not None
             and 0 <= now - self._woke_at < WAKE_TRANSITION_MS
         )
+        level: SleepLevel = 'awake'
+        if asleep:
+            level = 'deep' if activity.energy_pace == 3 else 'light'
+        elif activity.kind == 'rest':
+            level = 'drowsy'
         return SleepState(
             asleep=asleep,
             just_woke=just_woke,
             resting=activity.kind == 'rest',
+            level=level,
+            activity_id=activity.id,
         )
 
     def wake(self, now: int | None = None) -> SleepState:

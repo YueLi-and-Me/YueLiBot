@@ -77,7 +77,7 @@ def _gate_request(stream_kind: str, **overrides: Any) -> GateRequest:
         'stream_kind': stream_kind,
         'mentioned_me': False,
         'name_mentioned': False,
-        'asleep': False,
+        'sleep_level': 'awake',
         'at_mention_must_reply': False,
         'replies_in_window': 0,
         'max_replies_in_window': 10,
@@ -586,7 +586,7 @@ def test_all_asleep_consumers_share_sleep_kind_and_rest_is_awake() -> None:
         gate = decide_disposition(_gate_request(
             'group',
             name_mentioned=True,
-            asleep=sleep.asleep,
+            sleep_level=sleep.level,
         ))
         assert gate.disposition != 'drop' or gate.reason_codes != ('asleep',)
 
@@ -620,9 +620,9 @@ def test_all_asleep_consumers_share_sleep_kind_and_rest_is_awake() -> None:
         ).to_dict()['asleep'] is False
 
         consumers = {
-            'src/core/agent/conversation_gate.py': 'request.asleep',
+            'src/core/agent/conversation_gate.py': 'request.sleep_level',
             'src/core/awareness/budget.py': 'ctx.asleep',
-            'src/core/api/http.py': 'current_sleep().asleep',
+            'src/core/api/http.py': 'sleep = app_state.chat.current_sleep()',
             'src/core/services/chat/service.py': 'current_sleep().asleep',
             'src/core/agent/action_protocol.py': "'asleep': self.asleep",
         }
@@ -637,15 +637,15 @@ def test_all_asleep_consumers_share_sleep_kind_and_rest_is_awake() -> None:
 @pytest.mark.parametrize(
     ('gate_request', 'expected'),
     (
-        (_gate_request('direct', asleep=True), 'force'),
+        (_gate_request('direct', sleep_level='light'), 'force'),
         (_gate_request(
             'group',
             mentioned_me=True,
-            asleep=True,
+            sleep_level='light',
             at_mention_must_reply=True,
         ), 'force'),
-        (_gate_request('group', name_mentioned=True, asleep=True), 'drop'),
-        (_gate_request('group', poked_me=True, asleep=True), 'drop'),
+        (_gate_request('group', name_mentioned=True, sleep_level='light'), 'drop'),
+        (_gate_request('group', poked_me=True, sleep_level='light'), 'drop'),
     ),
 )
 def test_sleeping_gate_priority_is_unchanged(gate_request: GateRequest, expected: str) -> None:
@@ -660,11 +660,11 @@ def test_sleeping_gate_priority_is_unchanged(gate_request: GateRequest, expected
 @pytest.mark.parametrize(
     'gate_request',
     (
-        _gate_request('direct', asleep=True),
+        _gate_request('direct', sleep_level='light'),
         _gate_request(
             'group',
             mentioned_me=True,
-            asleep=True,
+            sleep_level='light',
             at_mention_must_reply=True,
         ),
     ),

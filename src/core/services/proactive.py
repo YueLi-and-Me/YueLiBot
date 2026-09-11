@@ -114,7 +114,7 @@ class AwarenessService:
         self._budget: ProactiveState = initial_state(started_at)
         self._interest: InterestState = initial_interest_state(started_at)
         self._pending: list[PendingIntent] = self._restore_promises()
-        self._last_pushed_sleep: tuple[bool, bool, bool] | None = None
+        self._last_pushed_sleep: tuple[bool, bool, bool, str] | None = None
         self._last_activity_id: int | None = None
 
         self._poll_task: asyncio.Task | None = None
@@ -716,15 +716,18 @@ class AwarenessService:
         except Exception as exc:
             logger.warning('activity_sleep_read_failed', error=str(exc))
             return
-        snapshot = (state.asleep, state.just_woke, state.resting)
+        snapshot = (state.asleep, state.just_woke, state.resting, state.level)
         if snapshot != self._last_pushed_sleep:
             self._last_pushed_sleep = snapshot
             trace.emit(
                 'sleep_transition',
+                sleepLevel=state.level,
+                activityId=state.activity_id,
                 asleep=state.asleep,
                 resting=state.resting,
             )
             await self._push_event('sleep.state', {
+                'level': state.level,
                 'asleep': state.asleep,
                 'justWoke': state.just_woke,
                 'resting': state.resting,

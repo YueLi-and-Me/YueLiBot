@@ -628,7 +628,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             )
     # 文本称呼只读取 bot.toml；协议登录昵称仅用于上下文展示，不能旁路配置触发回合。
     bot_names = app_state.chat.bot_names()
-    asleep = app_state.chat.current_sleep().asleep
+    sleep = app_state.chat.current_sleep()
+    asleep = sleep.asleep
     # poke 正文由适配器合成，里面的 Bot 名字不是用户说出的点名信号，不能参与匹配。
     # 名称匹配也只在群聊门控中有意义；直接对话不读取名称，避免空名称配置报错。
     name_mentioned = (
@@ -645,7 +646,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         stream_kind=context.stream.kind,
         mentioned_me=body.mentioned_me,
         name_mentioned=name_mentioned,
-        asleep=asleep,
+        sleep_level=sleep.level,
         at_mention_must_reply=app_state.chat.at_mention_must_reply,
         replies_in_window=reply_count,
         max_replies_in_window=group_chat.max_replies_in_window,
@@ -678,6 +679,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             else gate_result.reason_codes[0]
         ),
         asleep=asleep,
+        sleepLevel=sleep.level,
         mentionedMe=body.mentioned_me,
         nameMentioned=name_mentioned,
         pokedMe=body.poked_me,
@@ -731,15 +733,17 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
             event_status='gate_dropped',
         )
         trace.emit('action_decision', **gate_event.to_dict())
+        if reason == 'deep_sleep':
+            await app_state.chat.send_deep_sleep_notice(context)
         return JSONResponse({
             'streamId': context.stream.id,
             'accepted': False,
             'reason': reason,
         })
 
-    # 只有私聊与协议 @ 会在睡着时得到 force；先保留门控时的 asleep 审计事实，
-    # 再打断时间线里的 sleep 段，避免名字命中或戳一戳旁路既有丢弃优先级。
-    if asleep and gate_result.disposition == 'force':
+    # 浅睡只被直接冲着她来的交互唤醒，真实 @ 不受 @必回开关影响。
+    # 深睡已在上游 DROP，名字命中或戳一戳不能旁路该边界。
+    if sleep.level == 'light' and gate_result.disposition != 'drop':
         app_state.chat.wake_from_inbound(now)
 
     image_sources = tuple(body.image_sources)

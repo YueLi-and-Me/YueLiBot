@@ -68,7 +68,7 @@ def _gate(
         stream_kind=stream_kind,  # type: ignore[arg-type]
         mentioned_me=mentioned_me,
         name_mentioned=mentions_bot_name(text, _bot_names(document)),
-        asleep=asleep,
+        sleep_level='light' if asleep else 'awake',
         at_mention_must_reply=document.group_chat.at_mention_must_reply,
         replies_in_window=reply_count,
         max_replies_in_window=3,
@@ -80,7 +80,7 @@ def _gate(
     [
         ('desktop', True, False, 'plain', 99, ('force', ('direct_conversation',))),
         ('direct', True, False, 'plain', 99, ('force', ('direct_conversation',))),
-        ('group', True, False, 'name', 0, ('drop', ('asleep',))),
+        ('group', True, False, 'name', 0, ('drop', ('light_sleep',))),
         # 频率硬上限只压「没人点名的自发参与」：撞上限时点名仍然放行进 DELIBERATE，
         # 没有任何称呼的普通消息才 DROP。
         ('group', False, False, 'name', 3, ('deliberate', ('name_mention',))),

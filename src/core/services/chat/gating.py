@@ -52,7 +52,8 @@ class BatchGateMixin:
             相同。批次含戳一戳时由调用方剔除合成正文后传入。
         :return: 门控结果与全部判定输入事实。
         """
-        asleep = self.current_sleep().asleep
+        sleep = self.current_sleep()
+        asleep = sleep.asleep
         reply_count = 0
         last_bot_reply_elapsed_ms: int | None = None
         current_topic_available = False
@@ -80,7 +81,7 @@ class BatchGateMixin:
             stream_kind=context.stream.kind,
             mentioned_me=mentioned_me,
             name_mentioned=name_mentioned,
-            asleep=asleep,
+            sleep_level=sleep.level,
             at_mention_must_reply=self._at_mention_must_reply,
             replies_in_window=reply_count,
             max_replies_in_window=self._cfg.group_chat.max_replies_in_window,
@@ -106,7 +107,7 @@ class BatchGateMixin:
             context.stream.kind == 'group'
             and result.disposition in ('deliberate', 'force')
         ):
-            # 只有真正获得候选机会的批次才清零扩展累计；asleep、rate_limited
+            # 只有真正获得候选机会的批次才清零扩展累计；deep_sleep、light_sleep、rate_limited
             # 等硬边界 DROP 不消费候选机会，保留之前的累计。
             self._extended_pending.pop(context.stream.id, None)
         return _BatchGate(

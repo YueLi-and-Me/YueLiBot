@@ -512,6 +512,8 @@ class ChatService(
         self._activity: Callable[[], str] | None = None
         self._sleep_state: Callable[[], SleepState] | None = None
         self._wake_sleep: Callable[[int], SleepState] | None = None
+        self._deep_sleep_notice_activity_id: int | None = None
+        self._deep_sleep_notice_lock = asyncio.Lock()
         self._promise_handler: Callable[[int, str], None] | None = None
         self._schedule: DayPlanService | None = None
 
@@ -622,7 +624,7 @@ class ChatService(
         """
         return self._group_persona_weight if context.stream.kind == 'group' else 1.0
 
-    def current_sleep(self) -> ScheduleSleepState:
+    def current_sleep(self) -> SleepState:
         """读取当前睡眠状态并转换为调度服务使用的类型。
 
         :return: 当前 ``asleep``、``resting`` 和 ``just_woke`` 标志；未绑定状态回调时
@@ -631,12 +633,8 @@ class ChatService(
 
         s = self._sleep_state() if self._sleep_state else None
         if s is None:
-            return ScheduleSleepState(asleep=False)
-        return ScheduleSleepState(
-            asleep=s.asleep,
-            just_woke=s.just_woke,
-            resting=s.resting,
-        )
+            return SleepState(asleep=False, just_woke=False, resting=False)
+        return s
 
     async def ensure_schedule(self, now: int | None = None) -> None:
         """确保指定时间对应的日程已经可用。
@@ -1057,6 +1055,21 @@ class ChatService(
                 'turnId': turn,
                 'kind': 'start',
             })
+        # 桌面直接入缓冲，且平台放行后也可能跨过睡眠边界；先查硬门控，不能依赖
+        # Agent 是否启用，更不能等上下文准备或模型初始化之后才挡深睡。
+        if self.current_sleep().asleep:
+            sleep_gate = self._batch_gate(
+                context, trimmed, inbound.mentioned_me,
+                poked_me=inbound.poked_me, pokes_in_window=inbound.pokes_in_window,
+                name_match_text=name_match_text,
+            )
+            if sleep_gate.result.disposition == 'drop':
+                try:
+                    await self._handle_live_drop(context, batch, turn, sleep_gate)
+                finally:
+                    self.release_stream(stream_id, 'reply')
+                return turn
+            self.wake_from_inbound(current_time())
         if not self._chat_provider:
             await self._emit(stream_id, 'chat.error', {
                 'turnId': turn,
@@ -1142,6 +1155,8 @@ class ChatService(
                     name_match_text=name_match_text,
                 )
                 if batch_gate.result.reason_codes[0] in (
+                    'deep_sleep',
+                    'light_sleep',
                     'frequency_wait',
                     'low_necessity',
                 ):
@@ -3222,6 +3237,10 @@ class ChatService(
             event_status='gate_dropped',
         )
         trace.emit('action_decision', **gate_event.to_dict())
+        if reason == 'deep_sleep':
+            await self.send_deep_sleep_notice(context)
+        if context.stream.platform == 'desktop':
+            await self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'})
 
     def bot_names(self) -> tuple[str, ...]:
 

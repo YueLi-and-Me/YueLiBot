@@ -526,14 +526,14 @@ def test_asleep_drop_preserves_extended_pending(db) -> None:
     assert chat._extended_pending[context.stream.id] == 1
 
     chat.set_sleep_state_provider(
-        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False)
+        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False, level='light')
     )
     asleep_drop = chat._batch_gate(context, "第二条普通消息", False, candidate_count=1)
-    assert asleep_drop.result.reason_codes == ('asleep',)
+    assert asleep_drop.result.reason_codes == ('light_sleep',)
     assert chat._extended_pending[context.stream.id] == 1
 
     chat.set_sleep_state_provider(
-        lambda: SimpleNamespace(asleep=False, just_woke=False, resting=False)
+        lambda: SimpleNamespace(asleep=False, just_woke=False, resting=False, level='awake')
     )
     third = chat._batch_gate(context, "第三条普通消息", False, candidate_count=1)
     assert third.result.reason_codes == ('frequency_budget',)
@@ -677,16 +677,16 @@ async def test_enabled_batch_drop_skips_agent_and_records_reason(db) -> None:
     await chat.send(InboundMessage(text="月璃你好", context=context))
     # 入缓冲后、批次处理前进入休眠：批次级门控必须拦截。
     chat.set_sleep_state_provider(
-        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False)
+        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False, level='light')
     )
     await chat._tick()
     turn = chat._active_turns[context.stream.id]
-    await chat._inflight[context.stream.id].task
+    assert context.stream.id not in chat._inflight
 
     assert provider.calls == 0
     events = _action_events()
     assert events[-1]["eventStatus"] == "gate_dropped"
-    assert events[-1]["gate"]["reasonCodes"] == ["asleep"]
+    assert events[-1]["gate"]["reasonCodes"] == ["light_sleep"]
     assert events[-1]["inputs"]["asleep"] is True
     assert [
         entry for entry in event_store.search(turn_id=turn, kinds=["observation"]).events

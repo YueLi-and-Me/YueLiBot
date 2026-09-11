@@ -41,7 +41,7 @@ class _ChatSpy:
         return ('月璃',)
 
     def current_sleep(self) -> SimpleNamespace:
-        return SimpleNamespace(asleep=False)
+        return SimpleNamespace(asleep=False, level='awake')
 
     def follow_up_declined(self, stream_id: int) -> bool:
         del stream_id
@@ -392,7 +392,7 @@ async def test_V6_追问生成期间收到命令阻止追问投递(
     chat.memory.append_message(context.stream.id, None, 'assistant', '好呀', now=200)
     state = _DirectFollowUpState(context, 200, target_id, 200)
     chat._direct_follow_ups[context.stream.id] = state
-    monkeypatch.setattr(chat, 'current_sleep', lambda: SimpleNamespace(asleep=False))
+    monkeypatch.setattr(chat, 'current_sleep', lambda: SimpleNamespace(asleep=False, level='awake'))
     async def deciding(*_args: Any) -> Tuple[int, List[str]]:
         await platform_inbound(_body())
         return 42, ['忙完了吗？']

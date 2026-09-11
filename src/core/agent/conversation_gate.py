@@ -2,7 +2,7 @@
 
 确定门控只负责硬边界与注意力过滤，不判断回复意愿。DROP
 只处理确定、无语义争议的过滤（Bot 自己的消息、休眠、频率硬上限、无任何
-注意力信号的群聊噪声）；FORCE 保证用户发起的私聊、桌面交互与 @必回必须
+注意力信号的群聊噪声）；深睡之外，FORCE 保证用户发起的私聊、桌面交互与 @必回必须
 回应且不允许 silent；DELIBERATE 把普通群候选交给 Conversation Agent 自主选择。
 
 轻量注意力信号只决定「是否进入意识」，不决定「是否回复」：名字/别名、回复
@@ -23,13 +23,15 @@ from typing import Any, Sequence
 
 from .action_protocol import GateDisposition
 
+from src.core.awareness.sleep import SleepLevel
 from src.core.platform_io.types import StreamKind
 
 # DROP 原因：全部是确定、无语义争议的硬过滤，不承载回复意愿判断。
 DROP_GATE_CODES: frozenset[str] = frozenset({
     'self_message',             # Bot 自己发的消息
     'poke_repeat',              # 同一 stream 的戳一戳在信号窗口内超出上限
-    'asleep',                   # 休眠
+    'deep_sleep',               # 深睡屏蔽全部交互
+    'light_sleep',              # 浅睡只放行私聊、桌面与真实 @
     'rate_limited',             # 频率窗口硬上限
     'attention_filtered',       # 无任何注意力信号，不值得进入意识
     'frequency_wait',           # 频率预算尚未攒够候选消息
@@ -108,7 +110,7 @@ class GateRequest:
     stream_kind: StreamKind
     mentioned_me: bool
     name_mentioned: bool
-    asleep: bool
+    sleep_level: SleepLevel
     at_mention_must_reply: bool
     replies_in_window: int
     max_replies_in_window: int
@@ -141,6 +143,8 @@ class GateRequest:
 
     def __post_init__(self) -> None:
         """拒绝负计数、零窗口上限与负回复间隔，防止频率比较被错误输入翻转。"""
+        if self.sleep_level not in ('awake', 'drowsy', 'light', 'deep'):
+            raise ValueError(f'未知睡眠档位：{self.sleep_level}')
         if self.replies_in_window < 0:
             raise ValueError('窗口内回复数不能为负')
         if self.pokes_in_window < 0:
@@ -208,12 +212,13 @@ def decide_disposition(request: GateRequest) -> GateResult:
     优先级从高到低：
     1. Bot 自己的消息直接 DROP，永不回环；
     2. 同一 stream 的戳一戳在信号窗口内超出上限时直接 DROP；
-    3. 用户发起的 QQ 私聊与桌面交互是明确问答契约，FORCE 且不允许 silent；
-    4. 群聊真实 @ 且 @必回开启时 FORCE（先于休眠与频率硬限）；
-    5. 休眠 DROP；
-    6. 频率窗口硬上限 DROP，但只在没有任何直接点名信号时生效：@、名字/别名、
+    3. 深睡 DROP，优先于私聊与真实 @；
+    4. 用户发起的 QQ 私聊与桌面交互是明确问答契约，FORCE 且不允许 silent；
+    5. 群聊真实 @ 且 @必回开启时 FORCE（先于浅睡与频率硬限）；
+    6. 浅睡时普通群消息 DROP，只有真实 @ 可以继续；困意不增加限制；
+    7. 频率窗口硬上限 DROP，但只在没有任何直接点名信号时生效：@、名字/别名、
        被戳、回复 Bot 的消息都不受该上限约束；
-    7. 任一便宜注意力信号命中则 DELIBERATE，全部未命中则按注意力过滤 DROP。
+    8. 任一便宜注意力信号命中则 DELIBERATE，全部未命中则按注意力过滤 DROP。
 
     :param request: 已按事实填充的门控输入。
     :return: 携带门控态与原因码的 GateResult。
@@ -223,12 +228,14 @@ def decide_disposition(request: GateRequest) -> GateResult:
         return GateResult('drop', ('self_message',))
     if request.poked_me and request.pokes_in_window > POKE_SIGNAL_LIMIT:
         return GateResult('drop', ('poke_repeat',))
+    if request.sleep_level == 'deep':
+        return GateResult('drop', ('deep_sleep',))
     if request.stream_kind in ('desktop', 'direct'):
         return GateResult('force', ('direct_conversation',))
     if request.mentioned_me and request.at_mention_must_reply:
         return GateResult('force', ('at_mention_must_reply',))
-    if request.asleep:
-        return GateResult('drop', ('asleep',))
+    if request.sleep_level == 'light' and not request.mentioned_me:
+        return GateResult('drop', ('light_sleep',))
     # 直接冲着 Bot 来的信号先收齐：@、名字/别名、被戳、回复 Bot 的消息。
     codes: list[str] = []
     if request.mentioned_me:

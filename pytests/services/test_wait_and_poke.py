@@ -370,7 +370,7 @@ class Test私聊连戳不再打崩入站:
             stream_kind='direct',
             mentioned_me=False,
             name_mentioned=False,
-            asleep=False,
+            sleep_level='awake',
             at_mention_must_reply=True,
             replies_in_window=0,
             max_replies_in_window=3,

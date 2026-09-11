@@ -38,6 +38,8 @@ from .state import _TurnSink
 logger = get_logger(__name__)
 
 # 最近 6 条完整台词覆盖通常每轮 1～3 条 say 的相邻几轮，不受用户刷屏影响。
+DEEP_SLEEP_NOTICE = '（深度睡眠中zzz....有啥事等我醒了再说）'
+
 REPLY_REPEAT_RECENT_SAYS = 6
 # 真机两例均为 1.0；比统计口径 0.8 更严，取 0.9 给正常换说法留空间。
 REPLY_REPEAT_SIMILARITY = 0.9
@@ -58,6 +60,34 @@ def _send_ref_content_hash(send_ref: str) -> str:
 
 
 class OutboundDispatchMixin:
+
+    async def send_deep_sleep_notice(self, context: ConversationContext) -> None:
+        """同一深睡活动只投递一次固定提示；跨 stream 并发也共享这份状态。
+
+        固定文案直接交给既有桌面解析事件或平台出站管线，不经过模型与台词去重。
+        只有投递成功才记已发；失败保留原异常，让后续入站仍有发送机会。
+        """
+        async with self._deep_sleep_notice_lock:
+            sleep = self.current_sleep()
+            if sleep.level != 'deep':
+                return
+            if sleep.activity_id is None:
+                raise RuntimeError('深睡状态缺少活动段编号')
+            if self._deep_sleep_notice_activity_id == sleep.activity_id:
+                return
+            turn = self._next_turn()
+            if context.stream.platform == 'desktop':
+                await self._emit(context.stream.id, 'chat.start', {'turnId': turn, 'kind': 'start'})
+                await self._emit_parse_event(context, turn, SayEvent())
+                await self._emit_parse_event(context, turn, TextEvent(value=DEEP_SLEEP_NOTICE))
+                await self._emit_parse_event(context, turn, SayEndEvent())
+                await self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'})
+            else:
+                await self._dispatch_outbound(context, turn, [DEEP_SLEEP_NOTICE], [])
+            self._deep_sleep_notice_activity_id = sleep.activity_id
+            self._record_assistant_reply(context, turn, f'<say>{DEEP_SLEEP_NOTICE}</say>')
+            logger.info('深睡提示已投递', activityId=sleep.activity_id, streamId=context.stream.id, turnId=turn)
+
 
     def _recent_assistant_says(self, stream_id: int) -> List[Tuple[int, str]]:
         """从现有消息逐条提取最近 N 条完整台词，返回真实消息编号与正文。"""

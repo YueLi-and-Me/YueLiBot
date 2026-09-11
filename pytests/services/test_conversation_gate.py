@@ -25,7 +25,7 @@ def _request(**overrides: Any) -> GateRequest:
         stream_kind='group',
         mentioned_me=False,
         name_mentioned=False,
-        asleep=False,
+        sleep_level='awake',
         at_mention_must_reply=True,
         replies_in_window=0,
         max_replies_in_window=3,
@@ -54,11 +54,11 @@ def test_desktop_and_user_started_direct_are_forced() -> None:
 
 
 def test_at_mention_must_reply_is_force() -> None:
-    """真实 @ 且 @必回开启时 FORCE，先于休眠与频率硬限。"""
+    """真实 @ 且 @必回开启时 FORCE，先于浅睡与频率硬限。"""
     result = decide_disposition(_request(
         mentioned_me=True,
         at_mention_must_reply=True,
-        asleep=True,
+        sleep_level='light',
         replies_in_window=5,
         max_replies_in_window=3,
     ))
@@ -88,10 +88,10 @@ def test_name_mention_enters_deliberate_without_forced_reply() -> None:
 
 def test_asleep_group_is_dropped() -> None:
     """群聊休眠时 DROP，不调用模型。"""
-    result = decide_disposition(_request(asleep=True))
+    result = decide_disposition(_request(sleep_level='light'))
 
     assert result.disposition == 'drop'
-    assert result.reason_codes == ('asleep',)
+    assert result.reason_codes == ('light_sleep',)
 
 
 def test_rate_limited_group_is_dropped() -> None:
@@ -174,9 +174,9 @@ def test_poke_enters_deliberate_but_never_forces() -> None:
 
 def test_poke_still_yields_to_sleep() -> None:
     """休眠先于被戳生效：睡着了就是睡着了，戳也不醒。"""
-    result = decide_disposition(_request(poked_me=True, asleep=True))
+    result = decide_disposition(_request(poked_me=True, sleep_level='light'))
 
-    assert result.reason_codes == ('asleep',)
+    assert result.reason_codes == ('light_sleep',)
 
 
 def test_poke_over_window_limit_is_dropped() -> None:
@@ -316,7 +316,7 @@ def test_gate_result_rejects_foreign_code() -> None:
 def test_gate_result_rejects_unknown_disposition() -> None:
     """门控态只有三态，未知态直接拒绝。"""
     with pytest.raises(ValueError):
-        GateResult('skip', ('asleep',))  # type: ignore[arg-type]
+        GateResult('skip', ('light_sleep',))  # type: ignore[arg-type]
 
 
 def test_gate_code_sets_are_disjoint() -> None:

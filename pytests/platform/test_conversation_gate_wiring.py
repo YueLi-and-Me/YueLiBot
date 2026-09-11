@@ -218,7 +218,7 @@ async def test_asleep_group_message_drops_with_asleep_fact(db: sqlite3.Connectio
     config.bot.name = '月璃'
     chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(db, config)
     chat.set_sleep_state_provider(
-        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False)
+        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False, level='light')
     )
     try:
         response = await platform_inbound(_body("月璃，在吗"))
@@ -230,7 +230,7 @@ async def test_asleep_group_message_drops_with_asleep_fact(db: sqlite3.Connectio
 
     payload = response.body.decode("utf-8")
     assert '"accepted":false' in payload
-    assert '"reason":"asleep"' in payload
+    assert '"reason":"light_sleep"' in payload
     gate_events = [
         entry for entry in event_store.search(kinds=["action_decision"]).events
         if entry['eventStatus'] == 'gate_dropped'
