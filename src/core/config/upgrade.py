@@ -33,13 +33,111 @@ import typing
 
 from pydantic import BaseModel
 
+from src.core.config.schema import CONFIG_VERSION
 from src.core.logging.console_layout import print_box
 from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 版本段由 read_versioned_toml 单独校验，不参与字段对账。
+# 版本段不参与字段增删：它的值由 read_versioned_toml 单独校验，升级器在字段对账
+# 全部写成功之后才通过 _rewrite_version 改写，避免出现「版本已新、字段还旧」。
 _SKIP_SECTIONS = frozenset({'inner'})
+
+
+def _comment_start(line: str) -> int:
+    """返回一行 TOML 中行内注释的起始下标，找不到时返回行长度。
+
+    不能用 ``str.split('#', 1)``：TOML 的引号字符串里 ``#`` 是正文而不是注释。
+    例如 ``fallback_theme = "按自己的节奏 # 度过今天"`` 的前一个 ``#`` 不能被当成
+    注释起点，否则升级回写时会把用户配置值截断。本函数逐字符扫描，只在单行
+    基本字符串（双引号，支持反斜杠转义）或字面量字符串（单引号，无转义）之外
+    才把 ``#`` 判为注释起点。
+
+    :param line: 一行 TOML 原文（可包含行尾换行符，但不要求）。
+    :return: ``#`` 在行内的下标；该行没有行内注释时返回 ``len(line)``。
+    副作用：无。
+    """
+
+    quote = ''
+    escaped = False
+    for index, char in enumerate(line):
+        if quote:
+            if quote == '"' and char == '\\' and not escaped:
+                escaped = True
+                continue
+            if char == quote and not escaped:
+                quote = ''
+            escaped = False
+            continue
+        if char in ('"', "'"):
+            quote = char
+        elif char == '#':
+            return index
+    return len(line)
+
+
+def _normalize_section_name(raw: str) -> str:
+    """把方括号内的 TOML 表名规范化为点分路径。
+
+    表名允许写成 ``[ typing . follow_up ]`` 或 ``["a.b"]`` 这类形态；字段对账生成
+    的路径永远是 ``typing.follow_up`` 这种紧凑点分形式，因此这里去掉各段两端的
+    空白和引号后再拼回点分路径，保证两条路径能对上同一张表。
+
+    :param raw: 已去掉首尾方括号的原始表名文本。
+    :return: 规范化后的点分表名。
+    副作用：无。
+    """
+
+    parts: list[str] = []
+    current: list[str] = []
+    quote = ''
+    escaped = False
+    for char in raw:
+        if quote:
+            current.append(char)
+            if quote == '"' and char == '\\' and not escaped:
+                escaped = True
+                continue
+            if char == quote and not escaped:
+                quote = ''
+            escaped = False
+            continue
+        if char in ('"', "'"):
+            quote = char
+            current.append(char)
+        elif char == '.':
+            parts.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    parts.append(''.join(current).strip())
+    return '.'.join(
+        part[1:-1] if len(part) >= 2 and part[0] == part[-1] and part[0] in ('"', "'") else part
+        for part in parts
+    )
+
+
+def _section_name(line: str) -> str | None:
+    """识别一行是否是 TOML 表标题，并返回规范化后的表名。
+
+    本项目所有表标题都带行内注释（例如 ``[schedule] # 每日方向与活动：...``）。
+    旧实现按「整行以 ``]`` 结尾」判断，带注释时永远匹配不到目标表，增量路径会
+    在文件末尾新建一个同名表、把配置写成非法 TOML；删除路径则把段名读成空串，
+    废弃字段永远删不掉。这里先剥离行内注释再判断，两条路径共用同一实现。
+
+    :param line: 一行 TOML 原文。
+    :return: 规范化的表名；该行不是表标题时返回 ``None``。
+    副作用：无。
+    """
+
+    content = line[: _comment_start(line)].strip()
+    if not content.startswith('['):
+        return None
+    # 只接受「单个闭合方括号后没有非注释正文」的行，防止把数组值行误判成表标题。
+    if not content.endswith(']'):
+        return None
+    inner = content[1:-1].strip()
+    return _normalize_section_name(inner) if inner else None
 
 
 @dataclass
@@ -224,22 +322,32 @@ def backup_config_directory(directory: Path, data_dir: Path) -> Path:
     return dest
 
 
-def apply_added_fields(path: Path, added: List[AddedField]) -> None:
+def apply_added_fields(path: Path, added: List[AddedField]) -> bool:
     """把新增字段追加进对应的 TOML 表，不触碰任何已有行。
 
     实现刻意用行扫描而不是「解析后整份重写」：后者会丢掉用户写的注释与排版，而这份
     文件是人要读的。追加位置取该表的最后一个非空行之后，段不存在时在文件末尾新建。
 
+    段标题统一由 :func:`_section_name` 解析：本项目所有表标题都带行内注释，旧实现
+    用「整行等于 ``[段名]``」判等，在带注释的段里补字段时找不到目标段，就会在文件
+    末尾新建同名表。实测后果是用户配置被写成非法 TOML，下次启动直接
+    ``TOMLDecodeError``。这是既有缺陷，与本次新增的 ``energy_enabled`` 无关：任何
+    一次在带注释段里新增字段都会踩，之前没暴露只是因为没有无头升级路径走到这里。
+
+    写盘之前会先回读校验；与 :func:`apply_removed_fields` 同一纪律，解析不过就整份
+    保留原样，宁可少补一个字段也不把配置写成起不来的样子。
+
     :param path: 目标 TOML 文件。
     :param added: 待追加的字段。
-    :return: 无返回值。
+    :return: 确实写入且回读解析通过返回 ``True``；没有待补字段或回读失败返回 ``False``。
     :raises OSError: 读写文件失败。
-    副作用：改写目标文件；调用前必须已经完成 :func:`backup_config_directory`。
+    副作用：可能改写目标文件；调用前必须已经完成 :func:`backup_config_directory`。
     """
 
     if not added:
-        return
-    lines = path.read_text(encoding='utf-8').splitlines()
+        return False
+    original = path.read_text(encoding='utf-8')
+    lines = original.splitlines()
     by_section: Dict[str, List[AddedField]] = {}
     for item in added:
         by_section.setdefault(item.section, []).append(item)
@@ -249,15 +357,15 @@ def apply_added_fields(path: Path, added: List[AddedField]) -> None:
         insert_at = -1
         if section:
             for index, line in enumerate(lines):
-                if line.strip() == header:
+                if _section_name(line) == section:
                     insert_at = index + 1
-                    while insert_at < len(lines) and not lines[insert_at].lstrip().startswith('['):
+                    while insert_at < len(lines) and _section_name(lines[insert_at]) is None:
                         insert_at += 1
                     break
         else:
             # 顶层字段必须排在第一个表头之前，否则会被归进那个表。
             insert_at = next(
-                (i for i, line in enumerate(lines) if line.lstrip().startswith('[')),
+                (i for i, line in enumerate(lines) if _section_name(line) is not None),
                 len(lines),
             )
         block = ['# 本项由版本升级自动补齐，值为默认值', *[f'{i.key} = {i.value}' for i in items]]
@@ -269,7 +377,18 @@ def apply_added_fields(path: Path, added: List[AddedField]) -> None:
             insert_at -= 1
         tail = [''] if insert_at < len(lines) else []
         lines[insert_at:insert_at] = ['', *block, *tail]
-    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    text = '\n'.join(lines) + '\n'
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        logger.warning(
+            'config_add_reverted',
+            file=path.name,
+            fields=[item.path for item in added],
+        )
+        return False
+    path.write_text(text, encoding='utf-8')
+    return True
 
 
 def apply_removed_fields(path: Path, removed: List[str]) -> List[str]:
@@ -282,6 +401,10 @@ def apply_removed_fields(path: Path, removed: List[str]) -> List[str]:
     注释与排版），删完重新解析一遍；解析不过就整份还原，当作未删。有这道
     回读校验兜底，删除逻辑本身不必处理跨行数组、引号内的方括号等边角情况：
     真遇到即还原，不会把配置改到无法启动。
+
+    段标题与增量路径共用 :func:`_section_name`。旧实现要求标题行以 ``]`` 结尾，
+    带行内注释的标题会被读成空表名，于是 ``段.字段`` 永远对不上，废弃字段删不掉；
+    这是同一个既有缺陷的另一半，与本次业务字段无关。
 
     注释一律不动：孤立的注释无害，误删用户自己写的说明无法挽回。
 
