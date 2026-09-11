@@ -107,6 +107,18 @@ def _enabled() -> UpdateAnnounceConfig:
     return UpdateAnnounceConfig(enabled=True, group=ANNOUNCE_GROUP)
 
 
+def _one_minor_above(version: str) -> str:
+    """给出比 ``version`` 高一个次版本号的版本号，用于构造「本机还在旧版上」的场景。"""
+    parts = [int(part) for part in version.split('.')]
+    parts[1] += 1
+    return '.'.join(str(part) for part in parts[:2] + [0] * (len(parts) - 2))
+
+
+def _changelog_for(version: str) -> str:
+    """造一份含指定版本小节的更新日志。"""
+    return f'# 更新日志\n\n## [{version}] - 2026-12-31\n\n- {version} 的条目\n'
+
+
 def test_版本号数字比较而不是字典序() -> None:
     """`0.10.0` 在字典序里小于 `0.9.0`，按字符串比会让新版本永远公告不出去。"""
     assert parse_version('0.1.3') == (0, 1, 3)
@@ -178,6 +190,67 @@ async def test_远端版本不比本机新时不公告(tmp_path: Path, monkeypat
 
     async def _latest() -> str:
         return '0.0.1'
+
+    monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
+
+    assert await service.check_once() is False
+    assert broker.sent == []
+
+
+@pytest.mark.asyncio
+async def test_升级先于公告时仍然公告(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """本机已经升到远端说的那一版，也不能把公告吞掉。
+
+    - 现象：发版后先把服务器升上去、再看公告，结果什么都没有。
+    - 原因：门槛原先固定取「本机正在跑的版本」，远端升到同一版本后就不再算更新。
+    - 后果：升级与公告常在同一分钟里先后发生，这个窗口一旦错开，公告永久丢失。
+    """
+    newer = _one_minor_above(APP_VERSION)
+    broker = _FakeBroker()
+    service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(newer))
+    # 状态文件说上次跑的是旧版，而本机已经是新版：这就是「刚刚升上来」。
+    update_notes.write_state(tmp_path, {'version': APP_VERSION})
+    monkeypatch.setattr(update_announce, 'APP_VERSION', newer)
+
+    async def _latest() -> str:
+        return newer
+
+    monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
+
+    assert await service.check_once() is True
+    assert len(broker.sent) == 1
+    assert broker.sent[0].startswith(f'月璃更新到 {newer}')
+    assert read_state(tmp_path)[ANNOUNCED_FIELD] == newer
+
+
+@pytest.mark.asyncio
+async def test_全新安装不会把历史版本刷进群(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """刚装好、状态文件里什么都没有时，不能把远端那个更旧的版本当更新发出来。"""
+    older = '0.0.1'
+    broker = _FakeBroker()
+    service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(older))
+
+    async def _latest() -> str:
+        return older
+
+    monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
+
+    assert await service.check_once() is False
+    assert broker.sent == []
+
+
+@pytest.mark.asyncio
+async def test_已公告的同版本不再重复(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """重复公告由状态文件兜住，与门槛无关。"""
+    version = _one_minor_above(APP_VERSION)
+    broker = _FakeBroker()
+    service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(version))
+    update_notes.write_state(tmp_path, {ANNOUNCED_FIELD: version})
+
+    async def _latest() -> str:
+        return version
 
     monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
 

@@ -39,8 +39,11 @@ logger = get_logger(__name__)
 
 # 广播端点的路径，与 telemetry-server 的路由一致。
 LATEST_VERSION_PATH = '/update/latest'
-# 状态文件里记录已公告版本号的字段名。与更新内容报告共用同一份文件，见 update_notes。
+# 状态文件里记录「已公告到哪个版本」的字段名。与更新内容报告共用同一份文件。
 ANNOUNCED_FIELD = 'announced_version'
+# 状态文件里「上次启动时运行的版本」字段名，由 update_notes 写入。用它判断本机
+# 是否刚刚升级过，见 UpdateAnnounceService.check_once。
+_LAST_RUN_FIELD = 'version'
 # 出站投递使用的平台标识。公告只走 QQ。
 ANNOUNCE_PLATFORM = 'qq'
 # 公告正文的首行。
@@ -196,11 +199,26 @@ class UpdateAnnounceService:
         if not self.active:
             return False
         version = await self.fetch_latest()
-        # 只公告比自己新的版本：远端落后或相同时什么都不做，否则每次发版都会在群里
-        # 收到一条"未来版本"的公告。
-        if not is_newer(version, APP_VERSION):
+        # 本机是否刚刚升级过：状态文件里的 LAST_RUN_FIELD 是上次启动时记下的版本，
+        # 与当前 APP_VERSION 不等就说明这一版是升上来的。
+        #
+        # 这个信号必须读状态文件，不能直接用 APP_VERSION 与远端比：发版后先把服务器
+        # 升上去再看公告时，远端与本机已经同为新版，拿本机版本当门槛就再也不算更新，
+        # 公告被永久吞掉——而升级与公告本来就常在同一分钟里先后发生。
+        state = read_state(self._data_dir)
+        recorded = state.get(_LAST_RUN_FIELD)
+        upgraded = bool(recorded) and recorded != APP_VERSION
+        # 门槛取「升级前的那个版本」：比它新说明差异来自这次升级，该公告；不比它新
+        # 说明要么已公告过、要么本机装着比远端更新的版本，都不该发。
+        # 刚升级时用上次运行的版本而不是本机版本——本机已经等于远端，拿它当门槛
+        # 会把这次升级带来的公告判成「不是更新」，正是上面那个窗口。
+        floor = recorded if upgraded else APP_VERSION
+        if not is_newer(version, floor):
             return False
-        if read_state(self._data_dir).get(ANNOUNCED_FIELD) == version:
+        # 这条不能省：升级后的状态文件里 version 会一直停在旧值（那是「上次启动」的
+        # 语义，由 update_notes 在下次启动时才覆盖），所以门槛会一直是旧版本。少了
+        # 它，同一次升级会在每次检查里重复公告，直到下一次重启为止。
+        if state.get(ANNOUNCED_FIELD) == version:
             return False
         notes = read_release_notes(self._project_root, version)
         if notes is None:
