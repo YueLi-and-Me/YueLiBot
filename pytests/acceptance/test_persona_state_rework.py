@@ -490,6 +490,30 @@ def test_persona_and_planning_descriptions_never_expose_numbers() -> None:
     assert '不要把一整天都写成没劲' in low_guidance
 
 
+def test_activity_persona_describes_present_moment_without_planning_wording() -> None:
+    """逐段决策口径只说当下档位与取舍含义，不搬日方向措辞、不列举具体活动。"""
+
+    activity = getattr(persona_state, 'describe_persona_for_activity', None)
+    assert activity is not None, 'persona.state 尚未提供 describe_persona_for_activity'
+    segments = {
+        activity(_state(energy=energy, mood=50.0))
+        for energy in (10.0, 30.0, 60.0, 90.0)
+    }
+    assert len(segments) == 4
+    assert all(segments)
+    for segment in segments:
+        assert '今天的安排' not in segment
+        assert '必须至少有两段' not in segment
+        assert '吃饭' not in segment
+        assert '午睡' not in segment
+        assert '洗澡' not in segment
+        assert '发呆' not in segment
+
+    assert '精力' not in activity(
+        _state(energy=10.0, mood=50.0), energy_enabled=False,
+    )
+
+
 def test_v12_to_v13_preserves_rows_and_backfills_neutral_mood(
     tmp_path: Path,
 ) -> None:

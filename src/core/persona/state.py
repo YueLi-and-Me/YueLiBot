@@ -726,6 +726,38 @@ def describe_persona_for_planning(s: PersonaState, *, energy_enabled: bool = Tru
     return '\n'.join(part for part in (energy_guidance, mood_guidance) if part)
 
 
+def describe_persona_for_activity(s: PersonaState, *, energy_enabled: bool = True) -> str:
+    """把当前精力与心情改写成供逐段活动决策使用的当下口径。
+
+    与日方向口径不同，这里只说此刻处在哪一档、对当下取舍意味着什么，
+    不安排今天、也不列举具体活动。
+
+    :param s: 此刻的人物状态。
+    :return: 不含原始数值的中文当下状态描述。
+    """
+
+    tier = energy_tier(s)
+    if not energy_enabled:
+        energy_guidance = ''
+    elif tier is EnergyTier.SPENT:
+        energy_guidance = '此刻精力已经见底，继续消耗的任何选择都很勉强，该停下往回收了。'
+    elif tier is EnergyTier.TIRED:
+        energy_guidance = '此刻精力偏低，适合省力气的做法，别再往上加消耗。'
+    elif tier is EnergyTier.HIGH:
+        energy_guidance = '此刻精力很好，可以放心挑费精力的事做。'
+    else:
+        energy_guidance = '此刻精力平稳，按自己的节奏消耗与恢复即可。'
+
+    mood = mood_tier(s)
+    if mood is MoodTier.GOOD:
+        mood_guidance = '此刻心情不错。'
+    elif mood is MoodTier.LOW:
+        mood_guidance = '此刻心情偏低，做事容易提不起劲。'
+    else:
+        mood_guidance = ''
+    return '\n'.join(part for part in (energy_guidance, mood_guidance) if part)
+
+
 def describe_acquaintance(first_seen_at: int, now: int | None = None) -> str:
     """根据首次出现时间生成相识时长提示。
 

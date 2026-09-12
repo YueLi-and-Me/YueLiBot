@@ -106,6 +106,18 @@ class TestMemoryStore:
         assert [message.content for message in store.working_memory(DESKTOP_STREAM_ID)] == ['桌面消息']
         assert [message.content for message in store.working_memory(group_stream.id)] == ['群聊消息']
 
+    def test_last_owner_message_at_reads_owner_across_streams(self, store):
+        registry = StreamRegistry(store._db)
+        group_stream = registry.get_or_create_stream('qq', 'group', '20002')
+        contact = registry.create_person('contact', 1_700_000_000_000)
+        store.append_message(group_stream.id, contact.id, 'user', '群友发言', 5000)
+        assert store.last_owner_message_at() is None
+
+        store.append_message(DESKTOP_STREAM_ID, OWNER_PERSON_ID, 'user', '桌面旧消息', 1000)
+        store.append_message(group_stream.id, OWNER_PERSON_ID, 'user', '群里冒泡', 3000)
+        store.append_message(group_stream.id, contact.id, 'user', '群友新发言', 9000)
+        assert store.last_owner_message_at() == 3000
+
     def test_l3_same_fact_is_independent_between_people(self, store):
         registry = StreamRegistry(store._db)
         contact = registry.create_person('contact', 1_700_000_000_000)

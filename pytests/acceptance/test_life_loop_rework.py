@@ -518,6 +518,58 @@ def test_activity_prompt_uses_human_scale_episodes_and_continuation() -> None:
     assert '写代码、调试和测试仍是一次“写脚本”' in prompt
 
 
+def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> None:
+    """★ 最近互动读全局 owner 发言；提示词把当前时刻与上次睡眠变成取舍依据。"""
+
+    module = _timeline_module()
+    db = _database()
+    now = _timestamp('2032-07-15', 3, 24)
+    try:
+        service = schedule_plan.DayPlanService(
+            db=db,
+            store=_PlanStore(),
+            persona_state=lambda: PersonaState(60, 10, 50, now),
+            interaction_density=lambda _now: '最近偶尔说话',
+            anniversary_at=lambda: 0,
+            last_interaction_at=lambda: now - 30 * MINUTE_MS,
+            character_name='测试角色',
+            character_personality='按自己的节奏生活',
+            generator=None,
+            activity_generator=None,
+            schedule_config=ScheduleConfig(),
+        )
+        context = service.activity_decision_context(now)
+        assert context.interaction == '他 30 分钟前还在跟你说话'
+        prompt = module.build_activity_prompt(
+            module.ActivityTimeline(db).current(now), now, 0, context,
+        )
+        assert '最近互动：他 30 分钟前还在跟你说话' in prompt
+        assert '自身状态：精力 10，心情 50。此刻精力已经见底' in prompt
+        assert '打算真的睡着用 sleep，只是闭眼缓一缓用 rest' in prompt
+        assert '每条消息仍会把你叫来回应' in prompt
+        assert '累了就去休息，困了就去睡' in prompt
+        assert '把当前时刻和上次睡眠当作睡与不睡的取舍依据' in prompt
+        assert '今天的安排' not in prompt
+        assert '必须至少有两段' not in prompt
+
+        silent = schedule_plan.DayPlanService(
+            db=db,
+            store=_PlanStore(),
+            persona_state=lambda: PersonaState(60, 10, 50, now),
+            interaction_density=lambda _now: '最近偶尔说话',
+            anniversary_at=lambda: 0,
+            last_interaction_at=lambda: None,
+            character_name='测试角色',
+            character_personality='按自己的节奏生活',
+            generator=None,
+            activity_generator=None,
+            schedule_config=ScheduleConfig(),
+        )
+        assert silent.activity_decision_context(now).interaction == '还没有互动记录'
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_current_returns_synchronously_when_decision_fails() -> None:
     """★ 决策失败不阻塞、不抛给调用方，并延长当前活动。"""

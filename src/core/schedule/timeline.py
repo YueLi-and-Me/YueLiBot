@@ -394,7 +394,8 @@ def build_activity_prompt(
     else:
         backfill_rule = _short_gap_rule(current, now)
     sleep_rule = (
-        '允许选择 sleep；真的睡着时才用 sleep，闭目养神但仍会回应要用 rest。'
+        '允许选择 sleep。按这一段的打算选：打算真的睡着用 sleep，只是闭眼缓一缓用 rest。'
+        'rest 期间每条消息仍会把你叫来回应，精力恢复也只有 sleep 的一半上下。'
         if context.energy_enabled
         else '当前精力系统已关闭，不允许选择 sleep；活动照常进行，不根据精力安排活动。'
     )
