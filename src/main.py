@@ -948,7 +948,7 @@ def main() -> None:
                 n,
             ),
             anniversary_at=lambda: chat_svc.memory.first_seen_at(desktop_context.person.id),
-            last_interaction_at=lambda: chat_svc.memory.last_message_at(desktop_context.stream.id),
+            last_interaction_at=lambda: chat_svc.memory.last_owner_message_at(),
             generator=schedule_generator,
             activity_generator=activity_generator,
             character_name=cfg.bot.name,

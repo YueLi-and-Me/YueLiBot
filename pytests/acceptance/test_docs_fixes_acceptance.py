@@ -45,6 +45,9 @@ class _Chat:
     def current_sleep(self):
         return type('Sleep', (), {'asleep': False})()
 
+    def settle_time(self, now: int) -> None:
+        """该用例只验证无头感知输出，时间结算由真实服务回归覆盖。"""
+
     async def summarize_deep_sleep(self, sleep):
         """无头桩不实现汇总；真实 ChatService 由独立用例覆盖。"""
         return None
