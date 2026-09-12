@@ -771,7 +771,7 @@ class AwarenessService:
     async def _tick(self) -> None:
         """执行一次无前台事件时也必须运行的状态推进。
 
-        生命周期部分无条件运行：日程生成与 :meth:`_refresh_activity_state`（内部
+        生命周期部分无条件运行：日程生成、全局时间结算与 :meth:`_refresh_activity_state`（内部
         通过 ``timeline.current`` 触发边界决策并触发起床汇总）。主动发言部分只在
         ``_enabled`` 为真时运行：待投放队列、活动切换的 plan 意图、兴趣累积与
         idle 生成。这样桌宠关闭的无头 QQ 部署在没有任何对话时也能自己推进到
@@ -786,6 +786,8 @@ class AwarenessService:
             await self._flush_pending(now)
         if self._schedule:
             asyncio.create_task(self._schedule.ensure(now))
+        # 无头部署同样结算；首次读取当前活动前入账，让边界决策读到最新精力。
+        self.chat.settle_time(now)
         if self._enabled:
             activity = self._timeline.current(now)
             if self._last_activity_id is not None and activity.id != self._last_activity_id:

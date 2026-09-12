@@ -655,21 +655,24 @@ class ChatService(
         self,
         context: ConversationContext,
         now: int | None = None,
-        earlier_resting: bool = False,
     ) -> None:
-        """结算指定人物自上次状态更新时间以来的作息影响。
+        """在任意人物的回合开始时同步结算全局时间。
 
         :param context: 已完成会话和人物归属解析的上下文。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
-        :param earlier_resting: 区间起点之前已休息时是否计入被截断的休息时间。
 
         副作用：
-            owner 上会更新人格状态并保存每日快照；非 owner 只读取状态，不写入
-            关系信号。
+            与后台心跳共用结算游标；仅 owner 的亲密度参与时间衰减。
         """
+        self.settle_time(now)
 
-        now = now or current_time()
-        person_id = context.person.id
+    def settle_time(self, now: int | None = None) -> None:
+        """按已决策的活动区间结算主体状态，不依赖会话或关系信号开关。
+
+        :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+        副作用：累计满一小时后更新主体状态、owner 亲密度、游标与每日快照。
+        """
+        now = now if now is not None else current_time()
         # 结算区间的两端都不能想当然：
         # - 起点必须是全局结算游标，不能用 persona.get() 的 updated_at——后者取自
         #   persona_bond，每个对话回合都会把它推到当前时刻，两次对话之间的休息
@@ -683,13 +686,10 @@ class ChatService(
             effect = self._schedule.integrate_between(
                 self.persona.settled_at(),
                 settled,
-                earlier_resting,
             )
         else:
             effect = None
-        if context.relationship_signals_enabled:
-            self.persona.apply_elapsed(person_id, settled, effect)
-            self.persona.snapshot_daily(person_id, now)
+        self.persona.settle_elapsed_time(settled, effect)
 
     async def startup(self) -> None:
         """启动由入站消息唤醒、固定心跳兜底的聊天缓冲循环，并加载插件。
@@ -1103,8 +1103,7 @@ class ChatService(
             trimmed = '\n'.join(message.text for message in batch)
             try:
                 now = current_time()
-                earlier_resting = self.current_sleep().asleep
-                self.settle_elapsed(context, now, earlier_resting)
+                self.settle_elapsed(context, now)
                 self.memory.sweep(now)
 
                 # 图片描述在后台已尽力提前完成；这里等待结果后再做门控与上下文构建。

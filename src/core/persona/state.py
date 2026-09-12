@@ -309,7 +309,7 @@ class Persona:
             (state.intimacy, state.updated_at, person_id),
         )
         # 刻意不写 persona_self.updated_at：那一列是「全局精力与心情结算到哪一刻」的
-        # 游标，只有 apply_elapsed 推进（见 settled_at 的说明）。本方法被回合结算与
+        # 游标，由 settle_elapsed_time 推进（见 settled_at 的说明）。本方法被回合结算与
         # 事件结算共用，在这里顺手推进游标会把尚未结算的休息区间抹掉。
         self._db.execute(
             'UPDATE persona_self SET energy = ?, mood = ? WHERE id = 1',
@@ -320,7 +320,7 @@ class Persona:
     def settled_at(self) -> int:
         """返回全局精力与心情已经结算到的毫秒时刻。
 
-        :return: ``persona_self.updated_at``，即上一次 :meth:`apply_elapsed` 真正
+        :return: ``persona_self.updated_at``，即上一次 :meth:`settle_elapsed_time` 真正
             应用变化的时刻；调用方据此计算下一段积分区间的起点。
 
         :raises RuntimeError: 主体状态记录缺失。
@@ -330,7 +330,7 @@ class Persona:
         - 现象：真机上精力跌到 0 之后再不回升，而只驱动时间、不产生对话的验收
           用例始终是对的。
         - 原因：``PersonaState.updated_at`` 取自 ``persona_bond``，而 ``apply_turn``
-          与 ``apply_event`` 每次都把它推到当前时刻。:meth:`apply_elapsed` 在不足一
+          与 ``apply_event`` 每次都把它推到当前时刻。:meth:`settle_elapsed_time` 在不足一
           小时时直接返回、刻意不推进游标，靠的就是「没有别人动它」——一旦对话把它
           重置，累积窗口永远到不了一小时，那一段休息就被整段丢弃。
         - 后果：只要对话间隔短于一小时，精力就是单向递减，休息与睡眠一点都不生效。
@@ -530,31 +530,40 @@ class Persona:
         now: int | None = None,
         effect: ElapsedEffect | None = None,
     ) -> PersonaState:
-        """按经过的时间衰减关系，并应用 owner 在此期间的精力、心情变化。
+        """兼容按人物读取的调用方：先结算全局时间，再返回该人物的状态。
+
+        人物必须存在；contact 的亲密度不衰减，共享精力和心情仍参与时间结算。
+        """
+        self._registry.person(person_id)
+        self.settle_elapsed_time(now, effect)
+        return self.get(person_id)
+
+    def settle_elapsed_time(
+        self,
+        now: int | None = None,
+        effect: ElapsedEffect | None = None,
+    ) -> PersonaState:
+        """结算主体全局精力、心情与 owner 亲密度，不依赖任何对话人物。
 
         精力与心情在事件积分之后都向各自基线回归（见 ``ENERGY_BASELINE`` 与
         ``MOOD_TAU``），避免纯收支累加把长期状态钉在 0 或 100 的极端。
 
-        :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
         :param effect: 调用方按日程积分得到的精力与心情事件变化；未提供时将全部
             经过时间按清醒 pace=-1（-6.0/h）消耗处理。
 
-        :return: 调整后的状态；非 owner 或经过时间不足一小时则返回原状态。
+        :return: owner 的调整后状态；经过时间不足一小时则返回原状态。
 
         :raises ValueError: 人物不存在时由注册表抛出。
         :raises RuntimeError: 状态记录缺失或数据库写入失败。
 
         副作用：
-            owner 经过至少一小时后更新两张状态表并提交事务。
+            经过至少一小时后原子更新两张状态表和全局游标，再保存每日快照。
         """
 
         now = now if now is not None else current_time()
-        person = self._registry.person(person_id)
+        person = self._registry.owner_person()
         state = self.get(person.id)
-        # 只有 owner 的共享精力和心情参与时间结算，contact 的状态只随交互事件变化。
-        if person.kind != 'owner':
-            return state
         # 区间起点取全局结算游标而不是 state.updated_at：后者会被对话回合重置，
         # 理由与后果见 settled_at 的说明。
         settled_at = self.settled_at()
@@ -580,13 +589,22 @@ class Persona:
             mood=_clamp('mood', mood),
             updated_at=now,
         )
-        self._write(person.id, next_state)
-        # 游标只在真正应用了变化之后推进，与上面的早退是一对：早退不推进，
-        # 区间才能累积到下一次。
-        self._db.execute(
-            'UPDATE persona_self SET updated_at = ? WHERE id = 1', (now,)
-        )
-        self._db.commit()
+        # 状态和游标在同一事务落地，防止只写了状态、未推进游标而重复积分。
+        with self._db:
+            self._db.execute(
+                'UPDATE persona_self SET energy = ?, mood = ? WHERE id = 1',
+                (next_state.energy, next_state.mood),
+            )
+            self._db.execute(
+                'UPDATE persona_bond SET intimacy = ?, updated_at = ? WHERE person_id = ?',
+                (next_state.intimacy, now, person.id),
+            )
+            # 游标只在真正应用了变化之后推进，与上面的早退是一对：早退不推进，
+            # 区间才能累积到下一次。
+            self._db.execute(
+                'UPDATE persona_self SET updated_at = ? WHERE id = 1', (now,)
+            )
+        self.snapshot_daily(person.id, now)
         return next_state
 
     def _require_owner(self, person_id: int) -> PersonRef:
