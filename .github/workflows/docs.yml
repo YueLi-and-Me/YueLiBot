@@ -12,9 +12,11 @@ on:
     # dev 也触发：文档改动都发生在 dev 上，只在 main 上跑等于把关口放在合并之后。
     # 发布仍然只发生在 main，由下方 deploy 任务的 if 条件挡住。
     branches: [main, dev]
-    paths: ['docs/**', 'zensical.toml', 'wrangler.toml', '.github/workflows/docs.yml']
+    # 发布链路的所有输入都要在这里列全：漏掉 docs-worker 会让改跳转逻辑的提交只过 CI
+    # 而不重新发布，线上仍是旧的 Worker。
+    paths: ['docs/**', 'docs-worker/**', 'zensical.toml', 'wrangler.toml', '.github/workflows/docs.yml']
   pull_request:
-    paths: ['docs/**', 'zensical.toml', 'wrangler.toml', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'docs-worker/**', 'zensical.toml', 'wrangler.toml', '.github/workflows/docs.yml']
   # 手动触发：换域名、改 wrangler 配置或 Secrets 之后，需要一条不依赖推送的验证路径。
   workflow_dispatch:
 

@@ -1,0 +1,20 @@
+# 月璃文档站的爬虫指令。
+#
+# 为什么必须有这个文件：站点的 sitemap.xml 由 zensical 在构建时生成，但搜索引擎
+# 不会主动去猜它的位置。Google 在缺少声明时会退回探测 /sitemap.xml，百度不会，
+# 百度只认 robots.txt 里的 Sitemap 行或站长平台的手工提交。
+#
+# 为什么只写这两行：站点全部内容都是公开的用户手册与开发手册，没有需要排除的
+# 路径，因此不设任何 Disallow。全站放行能让爬虫把抓取预算花在正文上。
+#
+# 与 Cloudflare 的关系：线上 /robots.txt 会额外返回一段 Cloudflare 注入的
+# content signals 注释块（search=yes、ai-train=no）。那段注释不影响本文件的
+# 指令生效，两段内容会同时返回给爬虫。
+#
+# 注意：该文件位于 docs_dir 内，属于 zensical 的静态资源，会原样复制进 site/，
+# 因此改域名时要与 zensical.toml 的 site_url 同步修改。
+
+User-agent: *
+Allow: /
+
+Sitemap: https://docs.yuelibot.org/sitemap.xml

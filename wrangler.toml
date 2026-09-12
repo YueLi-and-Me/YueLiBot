@@ -11,13 +11,28 @@ name = "yuelibot-docs"
 # 兼容性日期取首次配置文档站的日期，可决定 Workers 运行时默认行为；升级需另行评估。
 compatibility_date = "2026-09-10"
 
+# Worker 入口，负责把 apex 的请求 301 收归到 docs 子域，其余请求原样交回静态资源。
+#
+# 这是顶层键而不是 [assets] 的子键：wrangler 会以「Unexpected fields found in assets field」
+# 报错拒绝启动。未声明 main 时本站是 assets-only Worker，不能使用资源绑定，
+# 也就拿不到 env.ASSETS，apex 跳转无从实现。
+main = "./docs-worker/src/index.js"
+
 # 正式入口。custom_domain = true 让 wrangler deploy 在 yuelibot.org 这个 zone 里
 # 自动建好 DNS 记录与边缘证书，不必先去控制台点一遍。
 #
 # zone 必须与 Worker 在同一账号下，否则部署会直接报错，而不是退化成只发 workers.dev。
-# 两个名字分工：docs 子域给文档站，apex 留给项目官网或跳转 GitHub 仓库。
+#
+# 为什么 apex 也放进 routes：custom domain 只为写明的那个主机名签发边缘证书，
+# 只配 docs 子域时 yuelibot.org 既没有证书也没有落地页，访问根域会在 TLS 握手阶段
+# 直接失败，搜索引擎抓到根域的证书错误属于负面信号。
+#
+# 两个名字的分工：docs 子域承载文档站，是规范地址；apex 只做入口，靠 Worker 301 收归到子域。
+# 若将来要做独立官网，官网需要接管 apex，届时这里、顶层 main 与 Worker 内的跳转要一起调整，
+# 见 docs-worker/src/index.js 的定态说明。
 routes = [
   { pattern = "docs.yuelibot.org", custom_domain = true },
+  { pattern = "yuelibot.org", custom_domain = true },
 ]
 
 # 显式保留 workers.dev 地址作为备用入口。
@@ -29,6 +44,12 @@ workers_dev = true
 
 [assets]
 directory = "./site"
+# ASSETS 暴露给上面声明的 Worker 入口，用 env.ASSETS.fetch(request) 取静态文件。
+# 该调用走服务绑定、不经网络，因此不会自递归（fetch(request.url) 会）。
+binding = "ASSETS"
+# 每个请求先进 Worker 再做资源匹配，否则匹配到文件时 Worker 根本不执行，apex 跳转不会生效。
+# 写 ["/*"] 而不是 true：数组形式是官方给选择性路由准备的写法，语义与 true 等效但更明确。
+run_worker_first = ["/*"]
 # zensical 每页产出一个 <页名>/index.html，URL 是目录形式。
 # 保持默认的 auto-trailing-slash，/manual/.../ 与 /manual/... 才会命中同一份文件。
 html_handling = "auto-trailing-slash"
