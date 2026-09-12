@@ -65,7 +65,10 @@ def test_non_owner_elapsed_and_snapshots_do_not_change_relation(db: sqlite3.Conn
     before = persona.get(contact.id)
     after = persona.apply_elapsed(contact.id, before.updated_at + 7 * DAY)
 
-    assert after == before
+    assert after.intimacy == before.intimacy
+    assert after.updated_at == before.updated_at
+    assert after.energy != before.energy
+    assert persona.settled_at() == before.updated_at + 7 * DAY
     with pytest.raises(ValueError, match='owner'):
         persona.snapshot_daily(contact.id, before.updated_at)
 
