@@ -20,6 +20,7 @@ from src.core.persona.state import (
     EnergyTier,
     MoodTier,
     PersonaState,
+    describe_persona_for_activity,
     describe_persona_for_planning,
     energy_tier,
     mood_tier,
@@ -569,7 +570,7 @@ class DayPlanService:
             persona=(
                 (f'精力 {state.energy:.0f}，' if self._config.energy_enabled else '')
                 + f'心情 {state.mood:.0f}。'
-                + describe_persona_for_planning(
+                + describe_persona_for_activity(
                     state, energy_enabled=self._config.energy_enabled,
                 )
             ),

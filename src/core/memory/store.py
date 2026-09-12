@@ -495,6 +495,23 @@ class MemoryStore:
         ).fetchone()
         return row[0] if row and row[0] is not None else None
 
+    def last_owner_message_at(self) -> int | None:
+        """返回全局最近一条 owner 发言的落库时间，不限 stream。
+
+        owner 在私聊和群里都以同一 person 身份发言；「最近互动」关心的是他本人
+        多久没说话，绑在单一 stream 上会在该流沉寂后读到陈旧值。
+
+        :return: 最近 owner 消息的最大 ``created_at``；没有 owner 发言时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 与 persons 表。
+        """
+        row = self._db.execute(
+            '''SELECT MAX(messages.created_at) FROM messages
+               JOIN persons ON messages.sender_person_id = persons.id
+               WHERE persons.kind = 'owner' ''',
+        ).fetchone()
+        return row[0] if row and row[0] is not None else None
+
     def interaction_density(self, stream_id: int, now: int | None = None) -> str:
         """根据最近三天消息数量生成自然语言互动密度描述。
 
