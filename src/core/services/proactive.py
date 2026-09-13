@@ -39,9 +39,19 @@ from src.core.schedule.timeline import ActivityTimeline
 logger = get_logger(__name__)
 
 POLL_INTERVAL_S = 60.0
-# 收束后台生成任务的诊断阈值，单位秒。它不是取消的截止时间：收束会一直等到任务真正
-# 结束，超过这个时长只额外打一条告警，说明生成链路对取消的响应比预期慢。
+# 收束后台生成任务的告警阈值与硬上限，单位秒。
+#
+# 上限的依据来自部署侧：systemd 的 TimeoutStopSec=60 是整个进程的关闭预算，由
+# lifecycle 逆序串行关闭的全部服务共享，而 awareness 注册在最后、逆序时第一个停。
+# 在这里无截止等待不是「更安全」——LifecycleManager.stop_all 串行 await 每个服务，
+# 且它的 try/except 只拦异常、拦不住挂起，因此一次不响应取消的生成就会让 chat、
+# storage 等其余服务一个都轮不到 shutdown，最终整进程被 SIGKILL。相比之下，
+# 放任一次越界写入只是一条可解释的错误日志，代价低得多。
 DRAIN_WARN_AFTER_S = 5.0
+DRAIN_DEADLINE_S = 15.0
+# 轮询循环的自行退出宽限，单位秒。停止事件置位后循环会在下一个 await 点自己返回，
+# 这段宽限让正在执行的 tick 把活动状态刷新的多步写库做完，避免从中间被取消。
+POLL_STOP_GRACE_S = 2.0
 
 
 class ProactiveSensor(Protocol):
@@ -432,15 +442,21 @@ class AwarenessService:
         :return: ``None``。
 
         副作用：
-            置停止事件；取消轮询 task 并等待它真正结束；取消并等待全部在飞的生成
-            任务结束。
+            置停止事件；给轮询 task 一段自行退出的宽限，用尽才取消，并等待它真正
+            结束；随后收束全部在飞的生成任务。
         """
 
         self._stop.set()
         task = self._poll_task
         self._poll_task = None
         if task:
-            task.cancel()
+            # 停止事件已置位，轮询循环会在下一个 await 点自行返回。先给一段宽限让
+            # 正在执行的 tick 跑完——直接取消会把 _refresh_activity_state 的多步
+            # 写库从中间掐断。宽限用尽才取消，且取消后必须 await 到真正结束：只
+            # cancel 不 await 会留下一个 pending 的轮询 task。
+            _, unfinished = await asyncio.wait([task], timeout=POLL_STOP_GRACE_S)
+            if unfinished:
+                task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
@@ -496,19 +512,30 @@ class AwarenessService:
           事件循环才真正生效，shutdown 返回时任务仍会在关闭后的资源上继续跑。
         - 后果：取消并 await 到任务真正结束，关闭边界之后不再有任何本服务派发的写入。
 
-        **为什么取消之后不设等待上限。**
+        **为什么等待必须有上限。**
 
-        取消是请求而不是强杀：生成链路若在某个不可中断的等待里，取消可能迟迟不生效。
-        若给收束加一个「最多等 N 秒」的上限，超时后就必须把还在飞的任务留给后面的
-        ``storage`` 关闭，正是本方法要消除的越界写入。因此这里不设截止时间，一直等到
-        任务结束；耗时超过 ``DRAIN_WARN_AFTER_S`` 只补一条告警，用于暴露「取消响应慢」
-        这一类问题，而不会让任务越过资源关闭。
+        取消是请求而不是强杀：生成链路若停在某个不响应取消的等待里，取消可能迟迟
+        不生效。此时无截止等待并不能阻止越界写入，只是把问题换了个形态——awareness
+        在逆序关闭中排第一，``stop_all`` 串行 await，挂在这里等同于其余服务全部不再
+        关闭，最后由 systemd 在 ``TimeoutStopSec`` 上 SIGKILL 整个进程。因此这里按
+        ``DRAIN_DEADLINE_S`` 停手，把关闭权交回给 lifecycle。
+
+        **为什么告警必须在等待期间发出。**
+
+        把耗时统计写在 ``gather`` 之后，只能覆盖「慢但最终结束」的情况；真出现任务
+        不响应取消时那行代码永远不会执行，而这恰恰是唯一需要它的场景。所以先等一个
+        告警窗口、立刻把仍在飞的任务名打出来，再等到硬上限。
+
+        到达上限仍未结束的任务记为 ``awareness_schedule_drain_abandoned``。这里不
+        捕获也不吞掉任何异常：放弃是显式记录的一条 error，随后若出现「事件账本尚未
+        配置」一类的越界写入，这条日志就是它的前因，两条连起来是完整的因果链。
 
         :return: ``None``。
 
         副作用：
-            取消仍在飞的任务并等待它们结束；超过诊断阈值时记录一条告警。任务自身的
-            异常已由 :meth:`_finish_ensure_task` 取回并记录，这里不重复记录。
+            取消仍在飞的任务；超过告警阈值时记录一条告警，到达硬上限仍未结束时记录
+            一条错误并返回。任务自身的异常已由 :meth:`_finish_ensure_task` 取回并
+            记录，这里不重复记录。
         """
 
         pending = [task for task in self._ensure_tasks if not task.done()]
@@ -516,14 +543,22 @@ class AwarenessService:
             return
         for task in pending:
             task.cancel()
-        started_at = asyncio.get_running_loop().time()
-        await asyncio.gather(*pending, return_exceptions=True)
-        elapsed = asyncio.get_running_loop().time() - started_at
-        if elapsed > DRAIN_WARN_AFTER_S:
+        _, still_running = await asyncio.wait(pending, timeout=DRAIN_WARN_AFTER_S)
+        if still_running:
             logger.warning(
                 'awareness_schedule_drain_slow',
-                tasks=len(pending),
-                elapsedSeconds=round(elapsed, 3),
+                tasks=len(still_running),
+                names=sorted(task.get_name() for task in still_running),
+                waitedSeconds=DRAIN_WARN_AFTER_S,
+            )
+            _, still_running = await asyncio.wait(
+                still_running, timeout=DRAIN_DEADLINE_S - DRAIN_WARN_AFTER_S)
+        if still_running:
+            logger.error(
+                'awareness_schedule_drain_abandoned',
+                tasks=len(still_running),
+                names=sorted(task.get_name() for task in still_running),
+                deadlineSeconds=DRAIN_DEADLINE_S,
             )
 
     # ------------------------------------------------------------ 前台事件摄入

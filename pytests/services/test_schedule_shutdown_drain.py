@@ -251,6 +251,31 @@ class _ImmediateFailureSchedule:
         raise RuntimeError(self.MESSAGE)
 
 
+class _UncancellableSchedule:
+    """``ensure()`` 吞掉一次取消请求的最小日程桩件。
+
+    真实形态是生成停在某个不响应取消的等待里（例如底层客户端未把取消透传下去）。
+    这里用显式吞掉一次 ``CancelledError`` 等价复现，好让用例不依赖具体阻塞实现。
+    """
+
+    def __init__(self) -> None:
+        """初始化进入标记、释放开关与吞掉取消的计数。"""
+
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.swallowed_cancels = 0
+
+    async def ensure(self, _now: Any = None) -> None:
+        """进入后等待显式释放，中途吞掉一次取消继续等待。"""
+
+        self.entered.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.swallowed_cancels += 1
+            await self.release.wait()
+
+
 class _LoopExceptionSpy:
     """替换事件循环的异常处理器，记录未取回异常。
 
@@ -293,9 +318,6 @@ def _capture_loop_exception_count(records: List[Tuple[str, BaseException]]) -> i
     """把捕获记录折算成未取回异常数。"""
 
     return len(records)
-
-
-# ---------------------------------------------------------------- 红测：未取回异常
 
 
 # ---------------------------------------------------------------- 红测：未取回异常
@@ -733,3 +755,65 @@ async def test_tick_does_not_block_on_generation(
     generator.release.set()
     await _drain_inflight(schedule)
     assert generator.finished == 1
+
+
+# ---------------------------------------------------------------- 收束的硬上限
+
+
+async def test_shutdown_abandons_uncancellable_task_within_deadline(
+    db: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """生成任务不响应取消时，shutdown 仍须在硬上限内返回并显式记录放弃。
+
+    缺陷与后果：收束若不设上限，一次不响应取消的生成就会让 shutdown 永不返回。
+    awareness 注册在最后，``LifecycleManager.stop_all`` 逆序串行 await 且它的
+    try/except 只拦异常、拦不住挂起，因此挂在这里等同于 chat、storage 等其余服务
+    全部得不到 shutdown，最终整进程被 systemd 在 ``TimeoutStopSec`` 上 SIGKILL，
+    代价高于放任一次越界写入。
+
+    同时验证告警发生在等待期间：告警若写在等待结束之后，在本场景下永远不会执行，
+    而这正是唯一需要它的场景。
+    """
+
+    monkeypatch.setattr(proactive_module, 'DRAIN_WARN_AFTER_S', 0.05)
+    monkeypatch.setattr(proactive_module, 'DRAIN_DEADLINE_S', 0.15)
+    monkeypatch.setattr(proactive_module, 'current_time', lambda: 1_789_000_000_000)
+    schedule = _UncancellableSchedule()
+    service = _make_service(db, schedule)
+
+    await service._tick()
+    await asyncio.wait_for(schedule.entered.wait(), timeout=1.0)
+    capsys.readouterr()
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    # 外层超时远大于硬上限：它只负责在缺陷复现时让用例失败而不是挂死整轮测试。
+    await asyncio.wait_for(service.shutdown(), timeout=5.0)
+    elapsed = loop.time() - started_at
+    output = capsys.readouterr().out
+    slow = output.count('awareness_schedule_drain_slow')
+    abandoned = output.count('awareness_schedule_drain_abandoned')
+
+    with capsys.disabled():
+        print(
+            '[shutdown-drain] 收束耗时={elapsed:.3f}s 上限=0.150s 吞掉的取消={swallowed} '
+            '变慢告警={slow} 放弃记录={abandoned}'.format(
+                elapsed=elapsed,
+                swallowed=schedule.swallowed_cancels,
+                slow=slow,
+                abandoned=abandoned,
+            ),
+        )
+
+    assert schedule.swallowed_cancels == 1, '收束没有向在飞任务发出取消'
+    assert elapsed < 1.0, f'shutdown 超过硬上限仍未返回，实际 {elapsed:.3f}s'
+    assert slow == 1, '等待期间没有发出变慢告警'
+    assert abandoned == 1, '放弃在飞任务时没有记录 error'
+
+    # 释放并回收任务，避免把未完成的 task 泄漏给后续用例。
+    schedule.release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not service._ensure_tasks, '任务结束后仍留在持有集合里'
