@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol, Set
 
 import asyncio
 
@@ -39,6 +39,9 @@ from src.core.schedule.timeline import ActivityTimeline
 logger = get_logger(__name__)
 
 POLL_INTERVAL_S = 60.0
+# 收束后台生成任务的诊断阈值，单位秒。它不是取消的截止时间：收束会一直等到任务真正
+# 结束，超过这个时长只额外打一条告警，说明生成链路对取消的响应比预期慢。
+DRAIN_WARN_AFTER_S = 5.0
 
 
 class ProactiveSensor(Protocol):
@@ -120,6 +123,19 @@ class AwarenessService:
         self._last_activity_id: int | None = None
 
         self._poll_task: asyncio.Task | None = None
+        # 日方向生成是后台任务，由本服务派发就必须由本服务持有生命周期。
+        #
+        # - 现象：真实隔离基线上观测到，生成任务越过 awareness 停止点继续跑，在 storage
+        #   关闭事件账本之后仍尝试写账本，日志出现「方向生成失败：事件账本尚未配置」。
+        # - 原因：此前用裸 create_task 派发 schedule.ensure(now)，返回的 task 无人持有；
+        #   shutdown 只收束 _poll_task，而 lifecycle 按注册逆序关闭，awareness 先于
+        #   storage 停止。
+        # - 后果：任务异常完成时无人取回结果，事件循环会在任务回收时报
+        #   Task exception was never retrieved。用集合而非单个槽位：跨日边界时上一天的
+        #   生成可能仍在飞，只记最后一个会漏掉先派发的那条。
+        # 说明：以上的进程侧症状是实测到的；Task was destroyed but it is pending 只在
+        # 单测里以「shutdown 返回后任务仍 pending」的形式复现，真实进程日志未观测到它。
+        self._ensure_tasks: Set[asyncio.Task[Any]] = set()
         self._stop = asyncio.Event()
 
     def _restore_promises(self) -> list[PendingIntent]:
@@ -407,22 +423,108 @@ class AwarenessService:
         self._poll_task = asyncio.create_task(self._poll_loop(), name='awareness-poll')
 
     async def shutdown(self) -> None:
-        """请求停止主动感知轮询并等待其退出。
+        """请求停止主动感知轮询，并在返回前收束它派发的日方向生成任务。
+
+        收束顺序不可颠倒：先置停止事件，``_tick`` 才不会再派发新的生成任务；
+        再停轮询循环，确保最后一次 tick 已经结束；最后收束生成任务。生成任务
+        不归轮询循环管，提前退出循环不会连带取消它，因此必须单独收束。
 
         :return: ``None``。
 
         副作用：
-            设置停止事件并最多等待 5 秒；超时或取消时取消轮询 task。
+            置停止事件；取消轮询 task 并等待它真正结束；取消并等待全部在飞的生成
+            任务结束。
         """
 
         self._stop.set()
         task = self._poll_task
         self._poll_task = None
         if task:
+            task.cancel()
             try:
-                await asyncio.wait_for(task, timeout=5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                task.cancel()
+                await task
+            except asyncio.CancelledError:
+                pass
+        await self._drain_ensure_tasks()
+
+    def _finish_ensure_task(self, task: asyncio.Task[Any]) -> None:
+        """消费生成任务的结束状态，把它移出持有集合。
+
+        **为什么不能直接用 ``set.discard`` 当完成回调。**
+
+        - 现象：「任务在 shutdown 之前自行异常完成」时，事件循环在任务被回收时报
+          ``Task exception was never retrieved``，异常本身没有任何一方取回。
+        - 原因：``add_done_callback(集合.discard)`` 只把 task 移出集合，没有任何代码
+          读取它的结果；asyncio 只在 result 被取回时才认为异常已被观测。
+        - 后果：异常静默丢失，且 ``_drain_ensure_tasks`` 只处理仍在飞的任务，任务一旦
+          在 shutdown 前结束就再也没人管它。因此这里按结束状态分三路处理。
+
+        已取回的异常不会再被 :meth:`_drain_ensure_tasks` 记录一次：drain 只遍历未完成
+        的任务，本回调已经把任务移出集合。
+
+        :param task: 刚结束的生成任务。
+
+        :return: ``None``。
+
+        副作用：
+            取回任务结果或异常，并把任务移出 ``_ensure_tasks``；异常路径额外记录一条
+            错误日志。
+        """
+
+        # 取回结果与移出集合必须成对完成：只移出集合会让异常失去最后一处观测点，
+        # 只取回不移出会让集合随运行时长无界增长。
+        try:
+            if not task.cancelled():
+                task.result()
+        except Exception as exc:
+            logger.error(
+                'awareness_schedule_task_failed',
+                error=str(exc),
+                errorType=type(exc).__name__,
+            )
+        finally:
+            self._ensure_tasks.discard(task)
+
+    async def _drain_ensure_tasks(self) -> None:
+        """取消并等待本服务派发的全部日方向生成任务结束。
+
+        **为什么必须先取消再等待，而不是只置停止事件。**
+
+        - 现象：真实隔离基线上，生成任务在飞时关闭，进程退出阶段报「方向生成失败：
+          事件账本尚未配置」——它在 storage 关闭账本之后仍尝试写入。
+        - 原因：只置停止事件不会打断已经在跑的生成；而只取消不 await，取消要到下一轮
+          事件循环才真正生效，shutdown 返回时任务仍会在关闭后的资源上继续跑。
+        - 后果：取消并 await 到任务真正结束，关闭边界之后不再有任何本服务派发的写入。
+
+        **为什么取消之后不设等待上限。**
+
+        取消是请求而不是强杀：生成链路若在某个不可中断的等待里，取消可能迟迟不生效。
+        若给收束加一个「最多等 N 秒」的上限，超时后就必须把还在飞的任务留给后面的
+        ``storage`` 关闭，正是本方法要消除的越界写入。因此这里不设截止时间，一直等到
+        任务结束；耗时超过 ``DRAIN_WARN_AFTER_S`` 只补一条告警，用于暴露「取消响应慢」
+        这一类问题，而不会让任务越过资源关闭。
+
+        :return: ``None``。
+
+        副作用：
+            取消仍在飞的任务并等待它们结束；超过诊断阈值时记录一条告警。任务自身的
+            异常已由 :meth:`_finish_ensure_task` 取回并记录，这里不重复记录。
+        """
+
+        pending = [task for task in self._ensure_tasks if not task.done()]
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        started_at = asyncio.get_running_loop().time()
+        await asyncio.gather(*pending, return_exceptions=True)
+        elapsed = asyncio.get_running_loop().time() - started_at
+        if elapsed > DRAIN_WARN_AFTER_S:
+            logger.warning(
+                'awareness_schedule_drain_slow',
+                tasks=len(pending),
+                elapsedSeconds=round(elapsed, 3),
+            )
 
     # ------------------------------------------------------------ 前台事件摄入
 
@@ -784,8 +886,14 @@ class AwarenessService:
         now = current_time()
         if self._enabled:
             await self._flush_pending(now)
-        if self._schedule:
-            asyncio.create_task(self._schedule.ensure(now))
+        # stop 已设置时不得再派生生成任务：shutdown 的收束（_drain_ensure_tasks）在
+        # 轮询循环停止之后执行，此时新派发的任务要等下一次收束才有机会被取消，而
+        # shutdown 早已返回、storage 已经关闭，它只会写到已关闭的事件账本与数据库。
+        if self._schedule and not self._stop.is_set():
+            task = asyncio.create_task(
+                self._schedule.ensure(now), name='awareness-schedule-ensure')
+            self._ensure_tasks.add(task)
+            task.add_done_callback(self._finish_ensure_task)
         # 无头部署同样结算；首次读取当前活动前入账，让边界决策读到最新精力。
         self.chat.settle_time(now)
         if self._enabled:
