@@ -14,6 +14,7 @@ import pytest
 from src.core.awareness.sleep import SleepStateController
 from src.core.config.schema import Config
 from src.core.persona.state import (
+    MOOD_ENERGY_SCALE,
     TURN_ENERGY_COST,
     EventDelta,
     Persona,
@@ -168,7 +169,7 @@ def test_weight_one_matches_documented_deltas(db: sqlite3.Connection) -> None:
         weight=1.0,
     )
     assert mood.intimacy - before.intimacy == pytest.approx(3.0 * 1.2)
-    assert mood.energy - before.energy == pytest.approx(-3.0 * 3.0)
+    assert mood.energy - before.energy == pytest.approx(-3.0 * MOOD_ENERGY_SCALE)
 
 
 @pytest.mark.parametrize(
@@ -191,7 +192,7 @@ def test_weight_one_matches_documented_deltas(db: sqlite3.Connection) -> None:
                 weight=GROUP_WEIGHT,
             ),
             3.0 * 1.2 * GROUP_WEIGHT,
-            -3.0 * 3.0 * GROUP_WEIGHT,
+            -3.0 * MOOD_ENERGY_SCALE * GROUP_WEIGHT,
         ),
     ],
 )

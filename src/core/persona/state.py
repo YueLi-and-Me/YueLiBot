@@ -124,6 +124,14 @@ ENERGY_FALLBACK_RATE = -6.0
 # 95 上下，晚上睡前 50 上下。连续熬夜仍然净亏，代价不会被抹平。
 ENERGY_BASELINE = 65.0   # 精力基线：无外力时收敛到的值，取值 0~100
 ENERGY_TAU = 48.0        # 精力回归时间常数，单位小时；一天回归约 39%
+# mood 标签自报精力的放大系数。原值为 3：一次 energy=-1 在群聊里等于 -2.4，相当于
+# 十个对话回合，而模型给出的 -3 会一次扣掉近 1.2 小时清醒活动的量。
+# 标定依据（真机实证，不是估算）：2026-09-11 00:49 连续两次触发 energy=-1，当时
+# 活动时间线上是 awake pace=-1（doing 写的就是「盯着消息慢慢打字回过去」），系统
+# 已按 -6.0/h 在扣；两个标签又额外扣掉 -4.8，等于同一件事被记了两遍，而且在精力
+# 曲线上留下活动完全解释不了的陡坎。收到 1 之后一次典型触发约等于三四个回合，
+# 与「这一轮比平常累一些」的语义相称，也不再压过活动积分。
+MOOD_ENERGY_SCALE = 1.0
 # 单个对话回合的精力消耗，群聊再乘 group_chat.persona_weight。
 # 说话是要花精力的——这条不取消；但 0.4 会让一晚五十个回合吃掉一整夜睡眠的六成，
 # 对一个以聊天为本职的角色过重，收到 0.3。
@@ -461,6 +469,9 @@ class Persona:
         :param weight: 事件权重，仅限关键字且必填；同时作用于亲密度和精力两个维度。
             不设默认值：漏传会让群聊按全速消耗全局精力且测试无感，故要求调用点显式打折。
 
+        精力轴按 ``MOOD_ENERGY_SCALE`` 缩放后入账，量级刻意压在几个对话回合上：
+        精力主要由活动速率表逐小时积分决定，模型自报的阶跃只作微调，不能盖过它。
+
         :return: 应用增量并限制到 [0, 100] 后的新状态。
 
         :raises ValueError: 人物不存在时由注册表抛出。
@@ -478,7 +489,7 @@ class Persona:
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + favor * 1.2 * weight),
             energy=(
-                _clamp('energy', state.energy + energy * 3 * weight)
+                _clamp('energy', state.energy + energy * MOOD_ENERGY_SCALE * weight)
                 if self._energy_enabled else state.energy
             ),
             mood=state.mood,
