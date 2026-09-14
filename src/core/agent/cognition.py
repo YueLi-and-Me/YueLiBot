@@ -399,9 +399,12 @@ class RecallAction:
         # 只有真正进了这段观察文本的才加强边——被检索到不等于被用到，
         # 这个区分是边质量的全部来源。
         link_together(self._db, adopted, now)
-        self._activation.touch(
-            [node_id(self._db, kind, ref) for kind, ref in adopted], now,
-        )
+        # node_id 会按需补建 memory_nodes 行，事务必须在这里收掉：adopted 少于两条时
+        # link_together 直接返回，既不建节点也不提交，这批行没有别的收尾点。留着不提交
+        # 会让写事务一直挂在本线程的连接上，同一进程里别的线程再写就要等到 busy_timeout。
+        with self._db:
+            adopted_ids = [node_id(self._db, kind, ref) for kind, ref in adopted]
+        self._activation.touch(adopted_ids, now)
         trace.emit(
             'memory_spread',
             query=request.query,

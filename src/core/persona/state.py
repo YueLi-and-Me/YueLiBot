@@ -307,23 +307,26 @@ class Persona:
         :param state: 已完成范围限制、准备持久化的新状态。
 
         副作用：
-            更新 ``persona_bond`` 与 ``persona_self``，随后提交 SQLite 事务。
-            数据库约束或连接错误会直接向调用方传播。
+            在同一个事务里更新 ``persona_bond`` 与 ``persona_self``。
+            数据库约束或连接错误会直接向调用方传播，且两张表都不会留下改动。
         """
 
-        self._db.execute(
-            '''UPDATE persona_bond SET intimacy = ?, updated_at = ?
-               WHERE person_id = ?''',
-            (state.intimacy, state.updated_at, person_id),
-        )
-        # 刻意不写 persona_self.updated_at：那一列是「全局精力与心情结算到哪一刻」的
-        # 游标，由 settle_elapsed_time 推进（见 settled_at 的说明）。本方法被回合结算与
-        # 事件结算共用，在这里顺手推进游标会把尚未结算的休息区间抹掉。
-        self._db.execute(
-            'UPDATE persona_self SET energy = ?, mood = ? WHERE id = 1',
-            (state.energy, state.mood),
-        )
-        self._db.commit()
+        # 两条 UPDATE 必须同事务：第二条失败时第一条若留在库里，亲密度与精力就分属
+        # 两代状态，而这种半截写入没有任何日志痕迹。事务边界只在本线程的连接上生效，
+        # 前提是句柄按线程分连接，见 db.connection.Database。
+        with self._db:
+            self._db.execute(
+                '''UPDATE persona_bond SET intimacy = ?, updated_at = ?
+                   WHERE person_id = ?''',
+                (state.intimacy, state.updated_at, person_id),
+            )
+            # 刻意不写 persona_self.updated_at：那一列是「全局精力与心情结算到哪一刻」的
+            # 游标，由 settle_elapsed_time 推进（见 settled_at 的说明）。本方法被回合结算与
+            # 事件结算共用，在这里顺手推进游标会把尚未结算的休息区间抹掉。
+            self._db.execute(
+                'UPDATE persona_self SET energy = ?, mood = ? WHERE id = 1',
+                (state.energy, state.mood),
+            )
 
     def settled_at(self) -> int:
         """返回全局精力与心情已经结算到的毫秒时刻。

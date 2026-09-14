@@ -74,6 +74,17 @@ class SleepStateController:
         # 最近一次真实醒转时收集到的深睡区间，随 just_woke 状态只暴露一轮。
         self._wake_periods: tuple[DeepSleepPeriod, ...] = ()
 
+    def set_energy_enabled(self, enabled: bool) -> None:
+        """切换精力系统开关，供配置热重载调用。
+
+        :param enabled: 精力系统是否开启。关闭时任何 ``sleep`` 段都会在下一次
+            :meth:`current` 被 ``note_woken`` 结束；开启后不再干预睡眠段。
+        :return: ``None``。
+        副作用：只改进程内状态，不读库、不写库；已被打断的睡眠段不会因此恢复。
+        """
+
+        self._energy_enabled = enabled
+
     def current(self, now: int | None = None) -> SleepState:
         """读取当前活动并派生 asleep、resting 与刚醒过渡状态。
 
