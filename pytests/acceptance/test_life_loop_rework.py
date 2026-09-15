@@ -547,8 +547,15 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
         assert '自身状态：精力 10，心情 50。此刻精力已经见底' in prompt
         assert '打算真的睡着用 sleep，只是闭眼缓一缓用 rest' in prompt
         assert '每条消息仍会把你叫来回应' in prompt
-        assert '累了就去休息，困了就去睡' in prompt
+        # 规则 5 用旧句、规则 6 只留后半句，双向钉住。2026-09-12 曾把「困了就去睡」与
+        # 钟点劝睡半句一起加进去，依据的诊断是「她不选 sleep」；该诊断随后被数据否掉
+        # （规则 6 部署之前的 09-13 07:09 同样在睡眠边界续睡）。这里同时断言旧句在、
+        # 新句不在，避免再按同一诊断把它们加回来。
+        assert '累了就去休息，不必先把手上的事做完' in prompt
+        assert '困了就去睡' not in prompt
         assert '把当前时刻和上次睡眠当作睡与不睡的取舍依据' in prompt
+        assert '时间已到深夜或凌晨' not in prompt
+        assert '不要为了睡觉而睡觉' in prompt
         assert '今天的安排' not in prompt
         assert '必须至少有两段' not in prompt
 
