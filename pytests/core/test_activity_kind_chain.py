@@ -129,7 +129,7 @@ def test_single_segment_chain_equals_its_own_elapsed() -> None:
         now = T0 + 300 * MINUTE_MS
 
         current = _open_activity(db)
-        assert timeline.continuous_kind_chain_minutes(current, now) == 300
+        assert timeline.continuous_kind_chain_minutes(current, now).minutes == 300
         assert timeline_module._elapsed_minutes(current, now) == 300
         timeline.assert_invariants()
     finally:
@@ -153,7 +153,7 @@ def test_chain_accumulates_contiguous_same_kind_segments(kind: str) -> None:
 
         current = _open_activity(db)
         assert timeline_module._elapsed_minutes(current, now) == 120
-        assert timeline.continuous_kind_chain_minutes(current, now) == 480
+        assert timeline.continuous_kind_chain_minutes(current, now).minutes == 480
         timeline.assert_invariants()
     finally:
         db.close()
@@ -173,7 +173,7 @@ def test_chain_stops_at_different_kind() -> None:
         _insert_segment(timeline, 'sleep', T0 + 400 * MINUTE_MS, None, T0 + 700 * MINUTE_MS)
         now = T0 + 460 * MINUTE_MS
 
-        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now) == 260
+        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now).minutes == 260
         timeline.assert_invariants()
     finally:
         db.close()
@@ -194,7 +194,7 @@ def test_chain_stops_at_gap() -> None:
         _insert_segment(timeline, 'sleep', T0 + 300 * MINUTE_MS, None, T0 + 600 * MINUTE_MS)
         now = T0 + 330 * MINUTE_MS
 
-        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now) == 170
+        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now).minutes == 170
     finally:
         db.close()
 
@@ -289,7 +289,7 @@ def test_zero_length_same_kind_segment_extends_chain_without_minutes() -> None:
 
         current = _open_activity(db)
         assert timeline_module._elapsed_minutes(current, now) == 60
-        assert timeline.continuous_kind_chain_minutes(current, now) == 180
+        assert timeline.continuous_kind_chain_minutes(current, now).minutes == 180
         timeline.assert_invariants()
     finally:
         db.close()
@@ -309,7 +309,7 @@ def test_zero_length_different_kind_segment_breaks_chain() -> None:
         _insert_segment(timeline, 'sleep', T0 + 120 * MINUTE_MS, None, T0 + 300 * MINUTE_MS)
         now = T0 + 180 * MINUTE_MS
 
-        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now) == 60
+        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now).minutes == 60
         timeline.assert_invariants()
     finally:
         db.close()
@@ -334,7 +334,7 @@ async def test_cold_start_then_repeated_decisions_keep_moving() -> None:
         async def decider(_activity: Activity, at: int, _gap_ms: int) -> ActivityTransition:
             current = timeline.current(at)
             calls.append(at)
-            chains.append(timeline.continuous_kind_chain_minutes(current, at))
+            chains.append(timeline.continuous_kind_chain_minutes(current, at).minutes)
             if len(calls) == 1:
                 # 第一次决策：从冷启动的中性段切换成一件真事，把前者结束成零时长段。
                 return ActivityTransition(
@@ -408,8 +408,8 @@ def test_long_chain_covers_more_than_the_recent_summary_limit() -> None:
         assert len(summary.split(' → ')) == 6, '前提是摘要条数上限仍在 6，截断生效'
         recent_six = sum(segment_minutes[-6:])
         chain = timeline.continuous_kind_chain_minutes(_open_activity(db), now)
-        assert chain == 1076
-        assert chain > recent_six, '链长必须超过摘要里最近 6 段的合计，否则等同按摘要截断'
+        assert chain.minutes == 1076
+        assert chain.minutes > recent_six, '链长必须超过摘要里最近 6 段的合计，否则等同按摘要截断'
         timeline.assert_invariants()
     finally:
         db.close()
@@ -436,7 +436,7 @@ def test_chain_right_edge_is_now_not_the_settlement_horizon() -> None:
         assert timeline.decided_until(now) == T0 + 150 * MINUTE_MS, (
             '前提是结算右缘确实被裁到 expected_until，否则这条用例没有验到分叉'
         )
-        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now) == 180
+        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now).minutes == 180
         timeline.assert_invariants()
     finally:
         db.close()
@@ -513,3 +513,86 @@ def test_current_activity_appends_chain_only_when_longer_than_segment() -> None:
 
     absent = timeline_module.build_activity_prompt(current, now, 0, _context(None))
     assert CHAIN_CLAUSE not in absent, '调用方没有提供链长时不得凭空追加'
+
+
+def test_open_segment_future_expected_until_does_not_extend_chain() -> None:
+    """进行中段只计到 now：expected_until 的未来部分不进链长。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        _insert_segment(timeline, 'sleep', T0, T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS)
+        # 进行中这段的预期结束在两小时之后：链长只能量到 now，不能量到预期终点。
+        _insert_segment(
+            timeline, 'sleep', T0 + 120 * MINUTE_MS, None, T0 + 300 * MINUTE_MS,
+        )
+        db.commit()
+        now = T0 + 180 * MINUTE_MS
+
+        current = _open_activity(db)
+        assert timeline_module._elapsed_minutes(current, now) == 60
+        assert timeline.continuous_kind_chain_minutes(current, now).minutes == 180
+        timeline.assert_invariants()
+    finally:
+        db.close()
+
+
+def test_chain_reports_whether_it_reached_the_first_row() -> None:
+    """链起点是表中第一行时标记 reached_record_start；被异 kind 挡住时不标。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        # 表中第一行就是 sleep 链起点：回溯抵达记录起点，更早的历史不可知。
+        _insert_segment(timeline, 'sleep', T0, T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS)
+        _insert_segment(timeline, 'sleep', T0 + 120 * MINUTE_MS, None, T0 + 300 * MINUTE_MS)
+        now = T0 + 180 * MINUTE_MS
+
+        chain = timeline.continuous_kind_chain_minutes(_open_activity(db), now)
+        assert chain.minutes == 180
+        assert chain.start_ms == T0
+        assert chain.reached_record_start is True
+
+        # 链前再补一段异 kind：第一行不再是链的一部分，回溯被它挡住。
+        db.execute(
+            """INSERT INTO activities
+                 (kind, doing, mood, energy_pace, mood_pace, advances,
+                  started_at, expected_until, ended_at, source)
+               VALUES ('awake', '更早的清醒段', '安静', 0, 0, NULL, ?, ?, ?, 'decided')""",
+            (T0 - 60 * MINUTE_MS, T0, T0),
+        )
+        db.commit()
+        chain = timeline.continuous_kind_chain_minutes(_open_activity(db), now)
+        assert chain.minutes == 180
+        assert chain.reached_record_start is False
+        timeline.assert_invariants()
+    finally:
+        db.close()
+
+
+def test_chain_raises_when_current_is_not_in_table() -> None:
+    """链尾不在活动时间线中也是损坏：抛 RuntimeError，不算出任何链长。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        _insert_segment(timeline, 'awake', T0, None, T0 + 60 * MINUTE_MS)
+        db.commit()
+        ghost = Activity(
+            id=0,
+            kind='awake',
+            doing='刚停下来，还没决定接下来做什么',
+            mood='状态平稳，仍会正常回应',
+            energy_pace=0,
+            mood_pace=0,
+            advances=None,
+            started_at=T0,
+            expected_until=T0 + 10 * MINUTE_MS,
+            ended_at=None,
+            source='decided',
+        )
+
+        with pytest.raises(RuntimeError, match='不在活动时间线中'):
+            timeline.continuous_kind_chain_minutes(ghost, T0 + 30 * MINUTE_MS)
+    finally:
+        db.close()

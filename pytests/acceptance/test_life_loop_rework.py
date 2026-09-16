@@ -538,11 +538,10 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
             activity_generator=None,
             schedule_config=ScheduleConfig(),
         )
-        context = service.activity_decision_context(now)
+        current = module.ActivityTimeline(db).current(now)
+        context = service.activity_decision_context(current, now)
         assert context.interaction == '他 30 分钟前还在跟你说话'
-        prompt = module.build_activity_prompt(
-            module.ActivityTimeline(db).current(now), now, 0, context,
-        )
+        prompt = module.build_activity_prompt(current, now, 0, context)
         assert '最近互动：他 30 分钟前还在跟你说话' in prompt
         assert '自身状态：精力 10，心情 50。此刻精力已经见底' in prompt
         assert '打算真的睡着用 sleep，只是闭眼缓一缓用 rest' in prompt
@@ -572,7 +571,7 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
             activity_generator=None,
             schedule_config=ScheduleConfig(),
         )
-        assert silent.activity_decision_context(now).interaction == '还没有互动记录'
+        assert silent.activity_decision_context(current, now).interaction == '还没有互动记录'
     finally:
         db.close()
 
@@ -625,17 +624,16 @@ def test_activity_prompt_shows_kind_chain_and_unfinished_sleep_marker() -> None:
             schedule_config=ScheduleConfig(),
         )
 
-        context = service.activity_decision_context(now)
+        current = module.ActivityTimeline(db).current(now)
+        context = service.activity_decision_context(current, now)
         assert context.current_kind_chain_minutes == 480
         assert context.sleep_history == '这一觉已经睡了 2 小时（还没醒）'
-        prompt = module.build_activity_prompt(
-            module.ActivityTimeline(db).current(now), now, 0, context,
-        )
+        prompt = module.build_activity_prompt(current, now, 0, context)
         assert (
             '刚才：迷迷糊糊翻了个身继续睡，已经持续 2 小时；'
-            '算上首尾相接的之前几段，这种 sleep 状态已经连续 8 小时；'
-            '原本打算持续到'
-        ) in prompt
+            '算上首尾相接的之前几段，这种 sleep 状态已经连续 8 小时'
+            '（更早没有记录，实际可能更长）；原本打算持续到'
+        ) in prompt, '这条 sleep 链抵达表中第一行，必须带历史不可知声明'
         assert '已经持续 2 小时；原本打算持续到' not in prompt
         assert '上次睡眠：这一觉已经睡了 2 小时（还没醒）' in prompt
     finally:

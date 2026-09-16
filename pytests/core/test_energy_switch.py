@@ -74,7 +74,8 @@ def test_disabled_energy_is_absent_from_behavior_and_planning(db: sqlite3.Connec
         schedule_config=ScheduleConfig(energy_enabled=False),
     )
     prompt = service.describe(1_800_000_000_000, ScheduleSleepState(asleep=False))
-    context = service.activity_decision_context(1_800_000_000_000)
+    current = service.timeline.current(1_800_000_000_000)
+    context = service.activity_decision_context(current, 1_800_000_000_000)
     assert '精疲力尽' not in prompt
     assert '精力' not in context.persona
     assert not context.energy_enabled
