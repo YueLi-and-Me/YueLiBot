@@ -1,28 +1,36 @@
 """连续同 kind 链长派生与两处时间输入措辞的守护用例。
 
-对应精力系统重设计阶段 1（时间输入诚实化）。此前两处文案都没有用例守护：
-``last_sleep_summary`` 的「正在睡」分支与已结束分支文本上不可区分，``刚才`` 行
-只给单段时长。真机上两者同时在场时（09-14 05:04 的记录），模型看到的是
-「这一觉已经睡了 8 小时」与「刚才：……已经持续 8 小时」并排，读起来像同一件事
-说了两遍，其中一句其实还没结束。
+此前两处决策输入文案都没有用例守护：``last_sleep_summary`` 的「正在睡」分支与
+已结束分支在文本上不可区分，``刚才`` 行只给单段时长。真机上两者同时在场时
+（09-14 05:04 的记录），模型看到的是「这一觉已经睡了 8 小时」与
+「刚才：……已经持续 8 小时」并排，读起来像同一件事说了两遍，其中一句其实还没结束。
 
-本文件锁四件事：
+本文件锁五件事：
 
-- ``continuous_kind_chain_minutes`` 逐段回溯 activities 全表：单段、多段同 kind、
-  异 kind 打断、段间缺口、长链（超过 ``recent_summary`` 条数上限）各自正确；
-  回溯到「前段起点不早于后段」时抛 ``RuntimeError`` 暴露时间线损坏。
+- ``continuous_kind_chain_minutes`` 在 ``(started_at, id)`` 一次有序查询的有限
+  结果集上逐段回溯 activities 全表：单段、多段同 kind、异 kind 打断、段间缺口、
+  长链（超过 ``recent_summary`` 条数上限）各自正确。零时长段是合法段：同 kind
+  计入（贡献 0 分钟、链继续），异 kind 照常断链。只有真正的损坏才抛
+  ``RuntimeError``：负时长、重叠、进行中的段后面还有段。
+- 冷启动回归：空库走真实 ``_insert_cold_start`` 与 ``_advance``，连续多次决策
+  不得再出现「活动决策失败」，时间线正常前进。冷启动第一段是零时长段——
+  ``_insert_cold_start`` 写 ``expected_until=now``，同一毫秒的第一次决策把它
+  结束成 [t, t]，时间线必须能带着它继续走。
 - 链长右端只用 ``now``：``decided_until`` 裁的是积分右缘，共用同一右缘会把进行
   中那段裁掉，链长在每个边界上都偏短——而边界恰恰是唯一用到它的时刻。
 - ``last_sleep_summary`` 的「正在睡」分支带「（还没醒）」，与已结束分支不再可混。
 - ``刚才`` 行只在链长严格大于当前段时长时追加链长，单段不追加（追加只是噪声）。
 
-链长在本阶段只是注入决策输入的信息，不是任何门控判据；awake 链长同样只派生、
+链长只作为决策输入的信息注入，不携带任何门控判据；awake 链长同样只派生、
 不封顶。依赖 ``src.core.schedule.timeline`` 与 ``src.core.db.schema``。
 """
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+
+from structlog.testing import capture_logs
 
 import pytest
 
@@ -33,6 +41,7 @@ from src.core.schedule.timeline import (
     ActivityDecisionContext,
     ActivityDraft,
     ActivityTimeline,
+    ActivityTransition,
 )
 
 MINUTE_MS = 60_000
@@ -40,6 +49,8 @@ MINUTE_MS = 60_000
 T0 = 1_800_000_000_000
 # 渲染用例里「刚才」行追加的链长分句；旧版渲染没有这一分句。
 CHAIN_CLAUSE = '算上首尾相接的之前几段'
+# 决策失败重试的日志事件名；用例断言事件名与字段，不比对整句排版。
+DECISION_FAILURE_EVENT = '活动决策失败，沿用当前活动并延后重试'
 
 _KIND_PACE = {'awake': 0, 'rest': 1, 'sleep': 2}
 
@@ -188,34 +199,184 @@ def test_chain_stops_at_gap() -> None:
         db.close()
 
 
-def test_chain_raises_when_predecessor_does_not_start_earlier() -> None:
-    """回溯找到的相邻前段起点不早于后段起点时抛 RuntimeError，不静默跳出。
+def test_chain_raises_on_negative_duration_segment() -> None:
+    """负时长段（``ended_at < started_at``）是时间线损坏，抛 RuntimeError 暴露。
 
-    合法时间线里每段都是正时长，``前段.started_at < 前段.ended_at == 后段.started_at``
-    必然成立；违反它即时间线损坏（例如出现起点不早于终点的段），必须暴露而不是
-    让链长停在一个看似合理实则错误的值上。
+    不留洞与不重叠都拦不住它：起点不早于终点的段仍可能与前后邻居首尾相接。
+    损坏行与当前链之间隔着缺口、回溯根本踩不到它，校验也必须把它认出来——
+    链长是在一条被断言完好的时间线上计算的，而不是「能用就行」。
     """
 
     db = _database()
     try:
         timeline = ActivityTimeline(db)
-        _insert_segment(timeline, 'sleep', T0 + 300 * MINUTE_MS, None, T0 + 600 * MINUTE_MS)
-        # 损坏行：起点（T0+320）不早于它自己的终点（T0+300），而终点又恰好接上
-        # 进行中那段的起点，回溯一定会踩到它。用裸 SQL 写入，因为这条行本来就不
-        # 该能通过正常写入路径产生。
+        _insert_segment(timeline, 'sleep', T0, T0 + 100 * MINUTE_MS, T0 + 100 * MINUTE_MS)
+        # 损坏行：起点 T0+200 晚于自己的终点 T0+100，前后都留缺口，唯一的异常
+        # 就是负时长本身。用裸 SQL 写入，因为正常写入路径不产生这种行。
         db.execute(
             """INSERT INTO activities
                  (kind, doing, mood, energy_pace, mood_pace, advances,
                   started_at, expected_until, ended_at, source)
                VALUES ('sleep', '损坏段', '损坏段', 2, 0, NULL, ?, ?, ?, 'decided')""",
-            (T0 + 320 * MINUTE_MS, T0 + 300 * MINUTE_MS, T0 + 300 * MINUTE_MS),
+            (T0 + 200 * MINUTE_MS, T0 + 100 * MINUTE_MS, T0 + 100 * MINUTE_MS),
         )
+        _insert_segment(timeline, 'sleep', T0 + 300 * MINUTE_MS, None, T0 + 600 * MINUTE_MS)
         db.commit()
 
-        with pytest.raises(RuntimeError, match='前段起点不早于后段起点'):
+        with pytest.raises(RuntimeError, match='负时长'):
             timeline.continuous_kind_chain_minutes(
                 _open_activity(db), T0 + 400 * MINUTE_MS,
             )
+    finally:
+        db.close()
+
+
+def test_chain_raises_on_overlapping_segments() -> None:
+    """前段终点晚于后段起点（重叠）是时间线损坏，抛 RuntimeError 暴露。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        _insert_segment(timeline, 'sleep', T0, T0 + 200 * MINUTE_MS, T0 + 200 * MINUTE_MS)
+        # 进行中这段的起点 T0+100 落在上一段内部：两段重叠 100 分钟。
+        _insert_segment(timeline, 'sleep', T0 + 100 * MINUTE_MS, None, T0 + 400 * MINUTE_MS)
+        db.commit()
+
+        with pytest.raises(RuntimeError, match='重叠'):
+            timeline.continuous_kind_chain_minutes(
+                _open_activity(db), T0 + 300 * MINUTE_MS,
+            )
+    finally:
+        db.close()
+
+
+def test_chain_raises_when_open_segment_is_not_last() -> None:
+    """进行中的段后面还有段是时间线损坏，抛 RuntimeError 暴露。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        # 先写进行中段，再补一条起点更晚的已结束段：开放行不再是最后一行。
+        _insert_segment(timeline, 'sleep', T0, None, T0 + 60 * MINUTE_MS)
+        _insert_segment(
+            timeline, 'sleep',
+            T0 + 100 * MINUTE_MS, T0 + 200 * MINUTE_MS, T0 + 200 * MINUTE_MS,
+        )
+        db.commit()
+
+        with pytest.raises(RuntimeError, match='后面仍有活动'):
+            timeline.continuous_kind_chain_minutes(
+                _open_activity(db), T0 + 300 * MINUTE_MS,
+            )
+    finally:
+        db.close()
+
+
+def test_zero_length_same_kind_segment_extends_chain_without_minutes() -> None:
+    """零时长段合法：同 kind 时计入——贡献 0 分钟、链继续向前延伸，不抛错。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        _insert_segment(timeline, 'sleep', T0, T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS)
+        # 零时长段 [T0+120, T0+120]：首尾与前后两段都相接，自身不占时长。
+        _insert_segment(
+            timeline, 'sleep',
+            T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS,
+        )
+        _insert_segment(timeline, 'sleep', T0 + 120 * MINUTE_MS, None, T0 + 300 * MINUTE_MS)
+        now = T0 + 180 * MINUTE_MS
+
+        current = _open_activity(db)
+        assert timeline_module._elapsed_minutes(current, now) == 60
+        assert timeline.continuous_kind_chain_minutes(current, now) == 180
+        timeline.assert_invariants()
+    finally:
+        db.close()
+
+
+def test_zero_length_different_kind_segment_breaks_chain() -> None:
+    """零时长段合法：异 kind 时照常断链，不抛错。"""
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        _insert_segment(timeline, 'sleep', T0, T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS)
+        _insert_segment(
+            timeline, 'rest',
+            T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS, T0 + 120 * MINUTE_MS,
+        )
+        _insert_segment(timeline, 'sleep', T0 + 120 * MINUTE_MS, None, T0 + 300 * MINUTE_MS)
+        now = T0 + 180 * MINUTE_MS
+
+        assert timeline.continuous_kind_chain_minutes(_open_activity(db), now) == 60
+        timeline.assert_invariants()
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_cold_start_then_repeated_decisions_keep_moving() -> None:
+    """冷启动回归：零时长冷启动段在场时，第二次起的每次决策都正常推进。
+
+    空时间线由 ``_insert_cold_start`` 写入 ``expected_until=now`` 的中性清醒段；
+    同一毫秒的第一次决策（switch）把它结束成零时长段 [t, t]——生产库 id=1 即此
+    形态。决策器内按 ``plan.py`` 同形重新读当前段并计算链长；此后每次决策都不得
+    抛错续期，日志不得出现「活动决策失败」。
+    """
+
+    db = _database()
+    try:
+        timeline = ActivityTimeline(db)
+        calls: list[int] = []
+        chains: list[int] = []
+
+        async def decider(_activity: Activity, at: int, _gap_ms: int) -> ActivityTransition:
+            current = timeline.current(at)
+            calls.append(at)
+            chains.append(timeline.continuous_kind_chain_minutes(current, at))
+            if len(calls) == 1:
+                # 第一次决策：从冷启动的中性段切换成一件真事，把前者结束成零时长段。
+                return ActivityTransition(
+                    next_activity=ActivityDraft(
+                        kind='awake',
+                        doing='窝在书桌前刷视频',
+                        mood='放松，被问到仍会回应',
+                        energy_pace=0,
+                        mood_pace=0,
+                        minutes=30,
+                    ),
+                )
+            return ActivityTransition(continuation_minutes=30)
+
+        timeline.set_decider(decider)
+        with capture_logs() as logs:
+            timeline.current(T0)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            timeline.current(T0 + 30 * MINUTE_MS)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            timeline.current(T0 + 60 * MINUTE_MS)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        failures = [
+            entry for entry in logs if entry.get('event') == DECISION_FAILURE_EVENT
+        ]
+        assert failures == [], f'第二次决策起不得再失败续期：{failures}'
+        assert len(calls) == 3, '三次边界都应真的发起决策'
+        assert chains == [0, 30, 60], '链长把零时长冷启动段计入（0 分钟、链继续）'
+        rows = db.execute(
+            'SELECT started_at, expected_until, ended_at FROM activities ORDER BY id'
+        ).fetchall()
+        assert len(rows) == 2, '延续只延长进行中段，不新增时间线段'
+        assert rows[0]['started_at'] == rows[0]['ended_at'] == T0, (
+            '第一段是被第一次决策结束的零时长冷启动段'
+        )
+        assert rows[1]['ended_at'] is None
+        assert rows[1]['expected_until'] == T0 + 90 * MINUTE_MS, '时间线必须正常前进'
+        timeline.assert_invariants()
     finally:
         db.close()
 

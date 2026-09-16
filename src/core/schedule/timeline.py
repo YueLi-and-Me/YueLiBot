@@ -711,16 +711,19 @@ class ActivityTimeline:
     def continuous_kind_chain_minutes(self, current: Activity, now: int) -> int:
         """返回当前活动所属「连续同 kind 段」自最早一段起算的累计分钟数。
 
-        :param current: 链尾的活动段，通常是进行中那一段；从它的 ``started_at``
-            开始逐段回溯。
+        :param current: 链尾的活动段，通常是进行中那一段；从它开始向前回溯。
         :param now: 当前毫秒时间戳；进行中那一段的右端就取它，不做任何裁剪。
         :return: 累计分钟数，向下取整；单段时等于这一段自 ``started_at`` 起的时长。
-        :raises RuntimeError: 回溯找到的相邻前段起点不早于后段起点时抛出，暴露
-            时间线损坏；不静默跳出，也不设循环次数上限当兜底。
+        :raises RuntimeError: 时间线损坏时抛出——负时长（``ended_at < started_at``）、
+            重叠（``前一段.ended_at > 本段.started_at``）、进行中的段后面还有段。
+            损坏必须暴露，不静默跳出，也不设循环次数上限当兜底。
 
-        链的命中条件是段与段首尾相接且 kind 相同（``前一段.ended_at ==
-        本段.started_at``，相接由 ``assert_invariants`` 保证）；缺口、异 kind
-        或没有更早的段都让链自然终止。逐段直接回溯 activities 表，不设条数上限，
+        回溯次序与 ``assert_invariants`` 相同（``started_at, id``），在一次有序查询
+        的有限结果集上迭代，终止性由结果集有限保证。链的命中条件是段与段首尾相接
+        且 kind 相同（``前一段.ended_at == 本段.started_at``）；缺口让链自然终止。
+        零时长段是合法段——``_insert_cold_start`` 写 ``expected_until=now``，同一
+        毫秒的第一次决策就会把冷启动段结束成 [t, t]：同 kind 时计入（贡献 0 分钟、
+        链继续），异 kind 时照常断链。逐段直接读 activities 表，不设条数上限，
         也不从 ``recent_summary`` 这类带条数上限的摘要派生——照摘要数会在真机上
         把长链算短。
 
@@ -729,30 +732,52 @@ class ActivityTimeline:
         恰恰是唯一用到它的时刻。
 
         上限约束的对象是一次连续的同类活动（这条链），不是一条 activities 行：
-        switch 新建行只是把一条链拆成两行，不改变链的累计时长。阶段 3 的 B0 闸门
-        复用本函数当判据；本阶段它只注入信息，不做任何门控。
+        switch 新建行只是把一条链拆成两行，不改变链的累计时长。睡眠链上限复用
+        本函数当判据；本函数自身只读不写，不携带任何门控。
         """
 
-        chain_start = current.started_at
-        cursor_start = current.started_at
-        while True:
-            row = self._db.execute(
-                """SELECT started_at, kind FROM activities
-                   WHERE ended_at = ? ORDER BY id DESC LIMIT 1""",
-                (cursor_start,),
-            ).fetchone()
-            if row is None:
-                break
-            previous_start = int(row['started_at'])
-            if previous_start >= cursor_start:
+        rows = self._db.execute(
+            'SELECT id, kind, started_at, ended_at FROM activities ORDER BY started_at, id'
+        ).fetchall()
+        segments = [
+            (
+                int(row['id']),
+                str(row['kind']),
+                int(row['started_at']),
+                int(row['ended_at']) if row['ended_at'] is not None else None,
+            )
+            for row in rows
+        ]
+        cursor = next(
+            (index for index, segment in enumerate(segments) if segment[0] == current.id),
+            None,
+        )
+        if cursor is None:
+            raise RuntimeError(
+                f'活动时间线损坏：当前段（id={current.id}）不在活动时间线中'
+            )
+        for index, (segment_id, _, started_at, ended_at) in enumerate(segments):
+            if ended_at is None:
+                if index != len(segments) - 1:
+                    raise RuntimeError('活动时间线损坏：进行中的段后面仍有活动')
+                continue
+            if ended_at < started_at:
                 raise RuntimeError(
-                    '活动时间线损坏：同 kind 链回溯时前段起点不早于后段起点'
-                    f'（前段 started_at={previous_start}，后段 started_at={cursor_start}）'
+                    f'活动时间线损坏：段 {segment_id} 为负时长'
+                    f'（started_at={started_at} 晚于 ended_at={ended_at}）'
                 )
-            if str(row['kind']) != current.kind:
+            if index + 1 < len(segments) and ended_at > segments[index + 1][2]:
+                raise RuntimeError(
+                    f'活动时间线损坏：段 {segment_id} 与后段重叠'
+                    f'（ended_at={ended_at} 晚于后段 started_at={segments[index + 1][2]}）'
+                )
+        chain_start = current.started_at
+        while cursor > 0:
+            _, kind, started_at, ended_at = segments[cursor - 1]
+            if ended_at != segments[cursor][2] or kind != current.kind:
                 break
-            chain_start = previous_start
-            cursor_start = previous_start
+            chain_start = started_at
+            cursor -= 1
         return max(0, (now - chain_start) // MINUTE_MS)
 
     def _open_activity(self) -> Activity | None:
