@@ -577,6 +577,71 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
         db.close()
 
 
+def test_activity_prompt_shows_kind_chain_and_unfinished_sleep_marker() -> None:
+    """★ 决策输入同时给出连续同 kind 链长与「还没醒」标记，两个数分别命名。
+
+    真机 09-14 05:04 的记录里「上次睡眠：这一觉已经睡了 8 小时」与
+    「刚才：……已经持续 8 小时」同时在场，前者其实还没结束。这里用三段首尾相接的
+    sleep 链锁住新形态：「刚才」行追加的链长（8 小时）大于当前段时长（2 小时），
+    「上次睡眠」行带「（还没醒）」。
+    """
+
+    module = _timeline_module()
+    db = _database()
+    now = _timestamp('2032-07-15', 5, 0)
+    try:
+        _insert_activity(
+            db,
+            kind='sleep', doing='抱着被子熟睡', mood='睡得安稳',
+            energy_pace=2, mood_pace=0,
+            started_at=now - 8 * HOUR_MS, expected_until=now - 5 * HOUR_MS,
+            ended_at=now - 5 * HOUR_MS,
+        )
+        _insert_activity(
+            db,
+            kind='sleep', doing='裹紧被子继续睡', mood='睡得安稳',
+            energy_pace=2, mood_pace=0,
+            started_at=now - 5 * HOUR_MS, expected_until=now - 2 * HOUR_MS,
+            ended_at=now - 2 * HOUR_MS,
+        )
+        _insert_activity(
+            db,
+            kind='sleep', doing='迷迷糊糊翻了个身继续睡', mood='半梦半醒',
+            energy_pace=2, mood_pace=0,
+            started_at=now - 2 * HOUR_MS, expected_until=now + 4 * HOUR_MS,
+            ended_at=None,
+        )
+        service = schedule_plan.DayPlanService(
+            db=db,
+            store=_PlanStore(),
+            persona_state=lambda: PersonaState(60, 40, 55, now),
+            interaction_density=lambda _now: '最近偶尔说话',
+            anniversary_at=lambda: 0,
+            last_interaction_at=lambda: None,
+            character_name='测试角色',
+            character_personality='按自己的节奏生活',
+            generator=None,
+            activity_generator=None,
+            schedule_config=ScheduleConfig(),
+        )
+
+        context = service.activity_decision_context(now)
+        assert context.current_kind_chain_minutes == 480
+        assert context.sleep_history == '这一觉已经睡了 2 小时（还没醒）'
+        prompt = module.build_activity_prompt(
+            module.ActivityTimeline(db).current(now), now, 0, context,
+        )
+        assert (
+            '刚才：迷迷糊糊翻了个身继续睡，已经持续 2 小时；'
+            '算上首尾相接的之前几段，这种 sleep 状态已经连续 8 小时；'
+            '原本打算持续到'
+        ) in prompt
+        assert '已经持续 2 小时；原本打算持续到' not in prompt
+        assert '上次睡眠：这一觉已经睡了 2 小时（还没醒）' in prompt
+    finally:
+        db.close()
+
+
 @pytest.mark.asyncio
 async def test_current_returns_synchronously_when_decision_fails() -> None:
     """★ 决策失败不阻塞、不抛给调用方，并延长当前活动。"""

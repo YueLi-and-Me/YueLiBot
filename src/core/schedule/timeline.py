@@ -150,6 +150,9 @@ class ActivityDecisionContext:
     recent_activities: str
     interaction: str
     energy_enabled: bool = True
+    # 当前活动所属「连续同 kind 段」自最早一段起算的累计分钟数；None 表示调用方
+    # 没有提供，渲染时不追加。单段时它与当前段时长相等，追加只是噪声，也不追加。
+    current_kind_chain_minutes: int | None = None
 
 
 def _required_text(value: Any, *, maximum: int) -> str | None:
@@ -399,14 +402,26 @@ def build_activity_prompt(
         if context.energy_enabled
         else '当前精力系统已关闭，不允许选择 sleep；活动照常进行，不根据精力安排活动。'
     )
+    # 链长只在比当前段时长更长时追加：单段时两数相等，追加了也只是噪声。链长与
+    # 「已经持续 X」分别命名——前者是连续同 kind 段的累计，后者只是当前这一段。
+    chain_minutes = context.current_kind_chain_minutes
+    current_activity = (
+        f'{current.doing}，已经持续 {_duration_text(now - current.started_at)}'
+    )
+    if chain_minutes is not None and chain_minutes > _elapsed_minutes(current, now):
+        current_activity += (
+            f'；算上首尾相接的之前几段，这种 {current.kind} 状态已经连续 '
+            f'{_duration_text(chain_minutes * MINUTE_MS)}'
+        )
+    current_activity += (
+        f'；原本打算持续到 '
+        f'{datetime.fromtimestamp(current.expected_until / 1000):%H:%M}'
+    )
     values = {
         'character_name': context.character_name,
         'character_personality': context.character_personality,
         'time_context': f'{current_dt:%Y-%m-%d %H:%M}，{weekday}',
-        'current_activity': (
-            f'{current.doing}，已经持续 {_duration_text(now - current.started_at)}；'
-            f'原本打算持续到 {datetime.fromtimestamp(current.expected_until / 1000):%H:%M}'
-        ),
+        'current_activity': current_activity,
         'persona': context.persona,
         'sleep_history': context.sleep_history,
         'intentions': context.intentions,
@@ -687,9 +702,58 @@ class ActivityTimeline:
         activity = _activity_from_row(row)
         sleep_end = min(now, activity.ended_at or now)
         duration = _duration_text(sleep_end - activity.started_at)
+        # 正在睡的分支必须带「（还没醒）」：不加时它与已结束分支在文本上不可区分，
+        # 「这一觉已经睡了 8 小时」读起来像一件已完成的事。
         if activity.ended_at is None:
-            return f'这一觉已经睡了 {duration}'
+            return f'这一觉已经睡了 {duration}（还没醒）'
         return f'{_duration_text(now - activity.ended_at)}前结束，睡了 {duration}'
+
+    def continuous_kind_chain_minutes(self, current: Activity, now: int) -> int:
+        """返回当前活动所属「连续同 kind 段」自最早一段起算的累计分钟数。
+
+        :param current: 链尾的活动段，通常是进行中那一段；从它的 ``started_at``
+            开始逐段回溯。
+        :param now: 当前毫秒时间戳；进行中那一段的右端就取它，不做任何裁剪。
+        :return: 累计分钟数，向下取整；单段时等于这一段自 ``started_at`` 起的时长。
+        :raises RuntimeError: 回溯找到的相邻前段起点不早于后段起点时抛出，暴露
+            时间线损坏；不静默跳出，也不设循环次数上限当兜底。
+
+        链的命中条件是段与段首尾相接且 kind 相同（``前一段.ended_at ==
+        本段.started_at``，相接由 ``assert_invariants`` 保证）；缺口、异 kind
+        或没有更早的段都让链自然终止。逐段直接回溯 activities 表，不设条数上限，
+        也不从 ``recent_summary`` 这类带条数上限的摘要派生——照摘要数会在真机上
+        把长链算短。
+
+        右端只用 ``now``：``decided_until`` 与结算视界裁的是积分右缘，与链长是
+        两件事；共用同一右缘会把进行中那段裁掉，链长在每个边界上都偏短——而边界
+        恰恰是唯一用到它的时刻。
+
+        上限约束的对象是一次连续的同类活动（这条链），不是一条 activities 行：
+        switch 新建行只是把一条链拆成两行，不改变链的累计时长。阶段 3 的 B0 闸门
+        复用本函数当判据；本阶段它只注入信息，不做任何门控。
+        """
+
+        chain_start = current.started_at
+        cursor_start = current.started_at
+        while True:
+            row = self._db.execute(
+                """SELECT started_at, kind FROM activities
+                   WHERE ended_at = ? ORDER BY id DESC LIMIT 1""",
+                (cursor_start,),
+            ).fetchone()
+            if row is None:
+                break
+            previous_start = int(row['started_at'])
+            if previous_start >= cursor_start:
+                raise RuntimeError(
+                    '活动时间线损坏：同 kind 链回溯时前段起点不早于后段起点'
+                    f'（前段 started_at={previous_start}，后段 started_at={cursor_start}）'
+                )
+            if str(row['kind']) != current.kind:
+                break
+            chain_start = previous_start
+            cursor_start = previous_start
+        return max(0, (now - chain_start) // MINUTE_MS)
 
     def _open_activity(self) -> Activity | None:
         """读取唯一进行中的活动。"""

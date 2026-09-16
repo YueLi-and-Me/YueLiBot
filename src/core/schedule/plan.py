@@ -581,6 +581,9 @@ class DayPlanService:
             recent_activities=self._timeline.recent_summary(now),
             interaction=interaction,
             energy_enabled=self._config.energy_enabled,
+            current_kind_chain_minutes=self._timeline.continuous_kind_chain_minutes(
+                current_activity, now,
+            ),
         )
 
     def _unfinished_intentions(
