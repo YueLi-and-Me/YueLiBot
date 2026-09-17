@@ -16,7 +16,7 @@ import sqlite3
 
 from src.core.logging.logger import get_logger
 from src.core.llm_models.snapshot import bind_render_params
-from src.core.persona.state import ENERGY_RATES, MOOD_RATE, ElapsedEffect
+from src.core.persona.state import ENERGY_RATES, MOOD_RATE, SettlementPiece
 from src.core.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
@@ -722,7 +722,7 @@ class ActivityTimeline:
         - 现象：离线一整夜再上线，精力不但没有因为睡眠回升，反而更低。
         - 原因：越过 ``expected_until`` 的那段时间还没有被决策。``current()`` 只在
           后台任务里调模型补写它（``_advance`` → ``_apply_transition``），而状态结算
-          是同步跑在回合开头的。结算先发生时，``integrate_between`` 会把整段空缺按
+          是同步跑在回合开头的。结算先发生时，时间线积分会把整段空缺按
           离线前那条活动的 pace 算掉（``COALESCE(ended_at, to_ms)`` 让未结束的活动
           一直延伸到区间末端），随后游标推过这一段。
         - 后果：后台补写进来的真实活动——整夜睡眠是其中最大的一笔——再也不会被任何
@@ -744,29 +744,40 @@ class ActivityTimeline:
             return now
         return min(now, int(row[0]))
 
-    def integrate_between(self, from_ms: int, to_ms: int) -> ElapsedEffect:
-        """按活动与目标区间的真实交集积分精力和心情变化。"""
+    def iter_pieces(self, from_ms: int, to_ms: int) -> tuple[SettlementPiece, ...]:
+        """按活动与目标区间的真实交集产出恒速率结算片段。
+
+        行序、求交方式、零长度交集跳过与进行中段右端取 ``to_ms`` 都与它取代的
+        整窗求和实现逐字相同；``to_ms <= from_ms`` 返回空元组。
+        """
 
         if to_ms <= from_ms:
-            return ElapsedEffect(energy_delta=0.0, mood_delta=0.0)
+            return ()
         rows = self._db.execute(
             """SELECT * FROM activities
                WHERE started_at < ? AND COALESCE(ended_at, ?) > ?
                ORDER BY started_at, id""",
             (to_ms, to_ms, from_ms),
         ).fetchall()
-        energy_delta = 0.0
-        mood_delta = 0.0
+        pieces: list[SettlementPiece] = []
         for row in rows:
             activity = _activity_from_row(row)
             segment_start = max(from_ms, activity.started_at)
             segment_end = min(to_ms, activity.ended_at or to_ms)
             if segment_end <= segment_start:
                 continue
-            hours = (segment_end - segment_start) / HOUR_MS
-            energy_delta += ENERGY_RATES[(activity.kind, activity.energy_pace)] * hours
-            mood_delta += MOOD_RATE * activity.mood_pace * hours
-        return ElapsedEffect(energy_delta=energy_delta, mood_delta=mood_delta)
+            pieces.append(
+                SettlementPiece(
+                    activity_id=activity.id,
+                    kind=activity.kind,
+                    source=activity.source,
+                    started_at=segment_start,
+                    ended_at=segment_end,
+                    energy_rate=ENERGY_RATES[(activity.kind, activity.energy_pace)],
+                    mood_rate=MOOD_RATE * activity.mood_pace,
+                )
+            )
+        return tuple(pieces)
 
     def assert_invariants(self) -> None:
         """断言整条活动时间线连续，且只有最后一段可以保持进行中。"""

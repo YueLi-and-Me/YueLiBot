@@ -9,7 +9,7 @@ from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any, Callable, Tuple
 
 import asyncio
 import json
@@ -279,21 +279,27 @@ def test_activity_integration_is_deterministic_and_balanced() -> None:
         )
         timeline = module.ActivityTimeline(db)
 
-        whole = timeline.integrate_between(start, end)
-        awake = timeline.integrate_between(start, sleep_at)
-        asleep = timeline.integrate_between(sleep_at, end)
+        def _sums(pieces: Any) -> Tuple[float, float]:
+            """对结算片段按精力、心情分别求和。"""
+
+            return (
+                sum(piece.energy_rate * piece.hours for piece in pieces),
+                sum(piece.mood_rate * piece.hours for piece in pieces),
+            )
+
+        whole_energy, whole_mood = _sums(timeline.iter_pieces(start, end))
+        awake_energy, awake_mood = _sums(timeline.iter_pieces(start, sleep_at))
+        asleep_energy, asleep_mood = _sums(timeline.iter_pieces(sleep_at, end))
 
         # 绝对值按速率表推导而不是写死数字：速率是可调的产品参数。
         # 这条用例锁的是区间可加性——整段积分等于两段之和，与速率取值无关。
         # 曾经锁的是「醒 16 小时与睡 8 小时恰好抵消」，那是速率表的一次标定巧合
         # 而非不变量：睡眠速率按真机数据上调到 +6.5/h 之后两者不再相等（-48 对
         # +52），继续断言抵消只会逼着后来者为了让用例变绿而回调产品参数。
-        assert awake.energy_delta == pytest.approx(16 * ENERGY_RATES[('awake', 0)])
-        assert asleep.energy_delta == pytest.approx(8 * ENERGY_RATES[('sleep', 3)])
-        assert whole.energy_delta == pytest.approx(
-            awake.energy_delta + asleep.energy_delta
-        )
-        assert whole.mood_delta == pytest.approx(awake.mood_delta + asleep.mood_delta)
+        assert awake_energy == pytest.approx(16 * ENERGY_RATES[('awake', 0)])
+        assert asleep_energy == pytest.approx(8 * ENERGY_RATES[('sleep', 3)])
+        assert whole_energy == pytest.approx(awake_energy + asleep_energy)
+        assert whole_mood == pytest.approx(awake_mood + asleep_mood)
     finally:
         db.close()
 

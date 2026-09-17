@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from math import exp
+from typing import Sequence
 
 import sqlite3
 
@@ -35,16 +36,51 @@ class PersonaState:
     updated_at: int
 
 
-@dataclass
-class ElapsedEffect:
-    """日程服务预先积分得到的精力与心情变化。
+@dataclass(frozen=True)
+class SettlementPiece:
+    """时间结算的一段恒速率片段：活动行与结算窗口求交后的切片。
 
-    两个增量均为目标时间区间内的事件合计值；人格服务只负责应用增量并执行心情
-    回归，不反向读取日程或睡眠配置。
+    :ivar activity_id: 片段来源的活动行主键。
+    :ivar kind: 活动类型（awake／rest／sleep）。
+    :ivar source: 活动行的来源标记。
+    :ivar started_at: 片段起点毫秒时间戳（与窗口求交后）。
+    :ivar ended_at: 片段终点毫秒时间戳（与窗口求交后）。
+    :ivar energy_rate: 精力速率（每小时），取自 ``ENERGY_RATES[(kind, energy_pace)]``。
+    :ivar mood_rate: 心情速率（每小时），即 ``MOOD_RATE × mood_pace``。
     """
 
-    energy_delta: float
-    mood_delta: float
+    activity_id: int
+    kind: str
+    source: str
+    started_at: int
+    ended_at: int
+    energy_rate: float
+    mood_rate: float
+
+    @property
+    def hours(self) -> float:
+        """片段时长（小时），与窗口交集毫秒数除以一小时毫秒数。"""
+
+        return (self.ended_at - self.started_at) / 3_600_000
+
+
+def _accumulate_energy_piecewise(
+    energy: float,
+    pieces: Sequence[SettlementPiece],
+) -> float:
+    """按片段顺序逐片累加精力增量，每片结束即截断到 [0, 100]。
+
+    :param energy: 窗口起点的精力初值。
+    :param pieces: 与结算窗口求交后的恒速率片段，按 ``(started_at, id)`` 序。
+    :return: 逐片累加截断后的精力值；不回归、不写库。
+
+    越界溢出在片末当场烧掉，不会带进下一片——它与「整窗求和后才截断」的差异
+    只出现在片末触界的窗口，方向由净截断量符号决定。
+    """
+
+    for piece in pieces:
+        energy = _clamp('energy', energy + piece.energy_rate * piece.hours)
+    return energy
 
 
 @dataclass
@@ -542,20 +578,20 @@ class Persona:
         self,
         person_id: int,
         now: int | None = None,
-        effect: ElapsedEffect | None = None,
+        pieces: Sequence[SettlementPiece] | None = None,
     ) -> PersonaState:
         """兼容按人物读取的调用方：先结算全局时间，再返回该人物的状态。
 
         人物必须存在；contact 的亲密度不衰减，共享精力和心情仍参与时间结算。
         """
         self._registry.person(person_id)
-        self.settle_elapsed_time(now, effect)
+        self.settle_elapsed_time(now, pieces)
         return self.get(person_id)
 
     def settle_elapsed_time(
         self,
         now: int | None = None,
-        effect: ElapsedEffect | None = None,
+        pieces: Sequence[SettlementPiece] | None = None,
     ) -> PersonaState:
         """结算主体全局精力、心情与 owner 亲密度，不依赖任何对话人物。
 
@@ -563,8 +599,9 @@ class Persona:
         ``MOOD_TAU``），避免纯收支累加把长期状态钉在 0 或 100 的极端。
 
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
-        :param effect: 调用方按日程积分得到的精力与心情事件变化；未提供时将全部
-            经过时间按清醒 pace=-1（-6.0/h）消耗处理。
+        :param pieces: 与结算窗口求交后的恒速率片段序列；``None`` 表示未装配日程
+            服务，全部经过时间按清醒 pace=-1（-6.0/h）消耗处理；空序列表示装配了
+            日程但窗口内没有活动覆盖，增量为 0——两者不是一回事。
 
         :return: owner 的调整后状态；经过时间不足一小时则返回原状态。
 
@@ -587,14 +624,21 @@ class Persona:
         if hours < 1:
             return state
         # 日程层决定精力曲线的形状；未装配日程时才退回按清醒 pace=-1 的线性消耗。
-        mood_delta = effect.mood_delta if effect is not None else 0.0
+        # mood 的求和顺序与乘法结合方式与逐行查询的历史算法逐项相同，结果逐位相等。
+        mood_delta = 0.0
+        if pieces is not None:
+            for piece in pieces:
+                mood_delta += piece.mood_rate * piece.hours
         mood = state.mood + mood_delta
         mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
-        # 与心情同序：先加活动积分，再向基线回归。
+        # 与心情同序：先加活动积分，再向基线回归。精力的活动积分逐片累加、每片
+        # 结束即截断——越界溢出当场烧掉，不再被带进回归。
         energy = state.energy
         if self._energy_enabled:
-            energy += (effect.energy_delta if effect is not None
-                       else hours * ENERGY_FALLBACK_RATE)
+            if pieces is None:
+                energy += hours * ENERGY_FALLBACK_RATE
+            else:
+                energy = _accumulate_energy_piecewise(energy, pieces)
             energy += (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
         days = hours / 24
         next_state = PersonaState(

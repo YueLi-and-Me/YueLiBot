@@ -11,7 +11,7 @@ from src.core.awareness.interest import factors_for
 from src.core.awareness.sleep import SleepStateController
 from src.core.config.schema import Config, ScheduleConfig
 from src.core.config.settings_webui import load_schema
-from src.core.persona.state import ENERGY_BASELINE, ENERGY_TAU, ElapsedEffect, EventDelta, Persona, PersonaState
+from src.core.persona.state import ENERGY_BASELINE, ENERGY_TAU, EventDelta, Persona, PersonaState, SettlementPiece
 from src.core.runtime.clock import now as current_time
 from src.core.schedule.plan import DayPlanService, ScheduleSleepState
 from src.core.schedule.timeline import ActivityTimeline, parse_activity_decision
@@ -31,7 +31,17 @@ def test_disabled_energy_freezes_turn_event_and_elapsed(db: sqlite3.Connection) 
     persona.set_energy_enabled(False, start)
     persona.apply_turn(person_id, start + 1, weight=1.0)
     persona.apply_event(person_id, EventDelta(favor=1, energy=-3), start + 2, weight=1.0)
-    result = persona.apply_elapsed(person_id, start + HOUR_MS, ElapsedEffect(100, 10))
+    result = persona.apply_elapsed(person_id, start + HOUR_MS, (
+        SettlementPiece(
+            activity_id=0,
+            kind='rest',
+            source='decided',
+            started_at=start,
+            ended_at=start + HOUR_MS,
+            energy_rate=100.0,
+            mood_rate=10.0,
+        ),
+    ))
     assert result.energy == 20
     assert result.mood > 20
     assert result.intimacy > initial.intimacy

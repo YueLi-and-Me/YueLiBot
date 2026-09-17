@@ -145,15 +145,20 @@ def _save_plan(store: _Store, plan: Dict[str, Any]) -> None:
     store.values[f"day_plan:{plan['date']}"] = plan
 
 
-def _energy_delta(service: Any, from_ms: int, to_ms: int) -> float:
-    """读取当前实现的时间积分，旧实现用于给解耦断言提供真实数值红灯。"""
+def _piece_sums(service: Any, from_ms: int, to_ms: int) -> Tuple[float, float]:
+    """读取当前实现的时间积分：对结算片段按精力、心情分别求和。"""
 
-    integrate = getattr(service, 'integrate_between', None)
-    if integrate is not None:
-        return float(integrate(from_ms, to_ms).energy_delta)
-    rest_hours = service.rest_hours_between(from_ms, to_ms)
-    hours = (to_ms - from_ms) / HOUR_MS
-    return rest_hours * 4.0 - (hours - rest_hours) * 2.0
+    pieces = service.iter_pieces(from_ms, to_ms)
+    return (
+        sum(piece.energy_rate * piece.hours for piece in pieces),
+        sum(piece.mood_rate * piece.hours for piece in pieces),
+    )
+
+
+def _energy_delta(service: Any, from_ms: int, to_ms: int) -> float:
+    """读取当前实现的精力时间积分，旧实现用于给解耦断言提供真实数值红灯。"""
+
+    return _piece_sums(service, from_ms, to_ms)[0]
 
 
 @LEGACY_SCHEDULE
@@ -234,12 +239,13 @@ def test_rest_window_can_reach_second_day_after_plan_date() -> None:
         )
     service = _make_schedule(store, energy_enabled=False)
 
-    effect = service.integrate_between(
+    delta = _energy_delta(
+        service,
         _timestamp('2032-07-17', 0),
         _timestamp('2032-07-17', 1),
     )
 
-    assert effect.energy_delta == pytest.approx(4.0)
+    assert delta == pytest.approx(4.0)
 
 
 @LEGACY_SCHEDULE
@@ -259,17 +265,15 @@ def test_legacy_plan_without_paces_keeps_hourly_energy_curve() -> None:
         ),
     )
     service = _make_schedule(store, energy_enabled=True)
-    integrate = getattr(service, 'integrate_between', None)
-    assert integrate is not None, 'DayPlanService 尚未提供 integrate_between'
     start = _timestamp('2032-07-15', 8)
 
     for elapsed_hours in range(1, 25):
-        effect = integrate(start, start + elapsed_hours * HOUR_MS)
+        energy_delta, mood_delta = _piece_sums(service, start, start + elapsed_hours * HOUR_MS)
         awake_hours = min(float(elapsed_hours), 12.0)
         rest_hours = max(0.0, float(elapsed_hours) - 12.0)
         expected = -2.0 * awake_hours + 4.0 * rest_hours
-        assert effect.energy_delta == pytest.approx(expected, abs=1e-9)
-        assert effect.mood_delta == pytest.approx(0.0, abs=1e-9)
+        assert energy_delta == pytest.approx(expected, abs=1e-9)
+        assert mood_delta == pytest.approx(0.0, abs=1e-9)
 
 
 @LEGACY_SCHEDULE
@@ -365,15 +369,14 @@ def test_energy_pace_normalization_preserves_fourteen_hour_total() -> None:
             ),
         )
         service = _make_schedule(store, energy_enabled=False)
-        integrate = getattr(service, 'integrate_between', None)
-        assert integrate is not None, 'DayPlanService 尚未提供 integrate_between'
 
-        effect = integrate(
+        delta = _energy_delta(
+            service,
             _timestamp('2032-07-15', 8),
             _timestamp('2032-07-15', 22),
         )
 
-        assert effect.energy_delta == pytest.approx(-28.0, abs=1e-8), sample
+        assert delta == pytest.approx(-28.0, abs=1e-8), sample
 
 
 @LEGACY_SCHEDULE
@@ -397,22 +400,21 @@ def test_opposite_energy_and_mood_paces_move_axes_in_opposite_directions() -> No
         ),
     )
     service = _make_schedule(store, energy_enabled=False)
-    integrate = getattr(service, 'integrate_between', None)
-    assert integrate is not None, 'DayPlanService 尚未提供 integrate_between'
-
-    draining_but_happy = integrate(
+    draining_energy, draining_mood = _piece_sums(
+        service,
         _timestamp('2032-07-15', 8),
         _timestamp('2032-07-15', 11),
     )
-    restoring_but_low = integrate(
+    restoring_energy, restoring_mood = _piece_sums(
+        service,
         _timestamp('2032-07-15', 17),
         _timestamp('2032-07-15', 20),
     )
 
-    assert draining_but_happy.energy_delta < 0.0
-    assert draining_but_happy.mood_delta > 0.0
-    assert restoring_but_low.energy_delta > 0.0
-    assert restoring_but_low.mood_delta < 0.0
+    assert draining_energy < 0.0
+    assert draining_mood > 0.0
+    assert restoring_energy > 0.0
+    assert restoring_mood < 0.0
 
 
 def test_positive_mood_schedule_converges_below_one_hundred(
@@ -420,8 +422,7 @@ def test_positive_mood_schedule_converges_below_one_hundred(
 ) -> None:
     """持续正向心情输入在回归项作用下收敛，不会卡到上边界。"""
 
-    effect_type = getattr(persona_state, 'ElapsedEffect', None)
-    assert effect_type is not None, 'persona.state 尚未提供 ElapsedEffect'
+    piece_type = persona_state.SettlementPiece
     persona = persona_state.Persona(db)
     start = _timestamp('2032-07-15', 8)
     db.execute(
@@ -439,7 +440,17 @@ def test_positive_mood_schedule_converges_below_one_hundred(
         current = persona.apply_elapsed(
             1,
             start + hour_index * HOUR_MS,
-            effect_type(energy_delta=0.0, mood_delta=6.0),
+            (
+                piece_type(
+                    activity_id=0,
+                    kind='rest',
+                    source='decided',
+                    started_at=start + (hour_index - 1) * HOUR_MS,
+                    ended_at=start + hour_index * HOUR_MS,
+                    energy_rate=0.0,
+                    mood_rate=6.0,
+                ),
+            ),
         )
         if hour_index % 24 == 0:
             daily_moods.append(current.mood)

@@ -693,13 +693,13 @@ class ChatService(
         settled = now
         if self._schedule:
             settled = min(now, self._schedule.decided_until(now))
-            effect = self._schedule.integrate_between(
+            pieces = self._schedule.iter_pieces(
                 self.persona.settled_at(),
                 settled,
             )
         else:
-            effect = None
-        self.persona.settle_elapsed_time(settled, effect)
+            pieces = None
+        self.persona.settle_elapsed_time(settled, pieces)
 
     async def startup(self) -> None:
         """启动由入站消息唤醒、固定心跳兜底的聊天缓冲循环，并加载插件。

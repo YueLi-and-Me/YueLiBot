@@ -26,8 +26,8 @@ from src.core.persona.state import (
     ENERGY_RATES,
     ENERGY_TAU,
     TURN_ENERGY_COST,
-    ElapsedEffect,
     Persona,
+    SettlementPiece,
 )
 
 HOUR_MS = 3_600_000
@@ -55,9 +55,20 @@ def _reset(db: sqlite3.Connection, person_id: int, energy: float, at: int) -> No
     db.commit()
 
 
-def _rest_effect(hours: float) -> ElapsedEffect:
-    """构造一段纯休息的积分结果，替代日程时间线。"""
-    return ElapsedEffect(energy_delta=REST_ENERGY_PER_HOUR * hours, mood_delta=0.0)
+def _rest_pieces(start: int, hours: float) -> tuple[SettlementPiece, ...]:
+    """构造一段覆盖窗口 [start, start+hours] 的纯休息片段，替代总增量写法。"""
+
+    return (
+        SettlementPiece(
+            activity_id=0,
+            kind='rest',
+            source='decided',
+            started_at=start,
+            ended_at=start + int(hours * HOUR_MS),
+            energy_rate=REST_ENERGY_PER_HOUR,
+            mood_rate=0.0,
+        ),
+    )
 
 
 def _regress(energy: float, hours: float) -> float:
@@ -84,7 +95,7 @@ def _simulate(
     for _ in range(steps):
         now += TEN_MINUTES_MS
         hours = (now - persona.settled_at()) / HOUR_MS
-        persona.apply_elapsed(person_id, now, _rest_effect(hours))
+        persona.apply_elapsed(person_id, now, _rest_pieces(persona.settled_at(), hours))
         if with_turns:
             persona.apply_turn(person_id, now, weight=1.0)
     return persona.get(person_id).energy
@@ -148,12 +159,12 @@ def test_settle_cursor_advances_only_when_applied(db: sqlite3.Connection) -> Non
     _reset(db, person_id, 50.0, start)
 
     half_hour = start + HOUR_MS // 2
-    persona.apply_elapsed(person_id, half_hour, _rest_effect(0.5))
+    persona.apply_elapsed(person_id, half_hour, _rest_pieces(start, 0.5))
     assert persona.settled_at() == start, '不足一小时不应推进游标'
     assert persona.get(person_id).energy == 50.0
 
     full_hour = start + HOUR_MS
-    persona.apply_elapsed(person_id, full_hour, _rest_effect(1.0))
+    persona.apply_elapsed(person_id, full_hour, _rest_pieces(start, 1.0))
     assert persona.settled_at() == full_hour
     assert persona.get(person_id).energy == pytest.approx(
         _regress(50.0 + REST_ENERGY_PER_HOUR, 1.0)
@@ -226,7 +237,7 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
     frontier = timeline.decided_until(back)
     assert frontier == start + HOUR_MS
     persona.apply_elapsed(
-        person_id, frontier, timeline.integrate_between(persona.settled_at(), frontier)
+        person_id, frontier, timeline.iter_pieces(persona.settled_at(), frontier)
     )
     # 那一小时清醒 pace=0，按速率表扣 3 点，结算同时向基线回归。
     before_sleep = _regress(10.0 + ENERGY_RATES[('awake', 0)], 1.0)
@@ -243,7 +254,7 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
 
     # 下一次结算读到补写结果，九小时睡眠 pace=3 按 +6/小时入账。
     persona.apply_elapsed(
-        person_id, back, timeline.integrate_between(persona.settled_at(), back)
+        person_id, back, timeline.iter_pieces(persona.settled_at(), back)
     )
     assert persona.get(person_id).energy == pytest.approx(
         _regress(before_sleep + ENERGY_RATES[('sleep', 3)] * 9, 9.0)
@@ -262,7 +273,7 @@ def test_energy_regresses_toward_baseline_when_idle(db: sqlite3.Connection) -> N
     person_id = _owner_id(db)
     persona = Persona(db)
     start = 10 * HOUR_MS
-    idle = ElapsedEffect(energy_delta=0.0, mood_delta=0.0)
+    idle: tuple[SettlementPiece, ...] = ()
 
     _reset(db, person_id, 10.0, start)
     persona.apply_elapsed(person_id, start + 48 * HOUR_MS, idle)
@@ -300,7 +311,7 @@ def test_snapshot_follows_settle_cursor(db: sqlite3.Connection) -> None:
     assert first.captured_at == morning - 10 * HOUR_MS
 
     # 结算推进四小时（补写后的夜间恢复入账），游标越过已记录值 → 覆盖。
-    persona.apply_elapsed(person_id, morning - 6 * HOUR_MS, _rest_effect(4.0))
+    persona.apply_elapsed(person_id, morning - 6 * HOUR_MS, _rest_pieces(morning - 10 * HOUR_MS, 4.0))
     persona.snapshot_daily(person_id, morning + 5 * 60_000)
     second = persona.snapshots(person_id)[0]
     settled = _regress(30.0 + REST_ENERGY_PER_HOUR * 4, 4.0)

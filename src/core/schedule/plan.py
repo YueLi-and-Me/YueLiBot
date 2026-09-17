@@ -16,10 +16,10 @@ from src.core.logging.logger import get_logger
 from src.core.config.schema import ScheduleConfig
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.persona.state import (
-    ElapsedEffect,
     EnergyTier,
     MoodTier,
     PersonaState,
+    SettlementPiece,
     describe_persona_for_activity,
     describe_persona_for_planning,
     energy_tier,
@@ -472,15 +472,15 @@ class DayPlanService:
 
         return self._timeline.decided_until(now)
 
-    def integrate_between(
+    def iter_pieces(
         self,
         from_ms: int,
         to_ms: int,
         *_unused: Any,
-    ) -> ElapsedEffect:
-        """把人格结算直接委托给真实活动时间线。"""
+    ) -> tuple[SettlementPiece, ...]:
+        """把人格结算的片段请求直接委托给真实活动时间线。"""
 
-        return self._timeline.integrate_between(from_ms, to_ms)
+        return self._timeline.iter_pieces(from_ms, to_ms)
 
     def activities_between(self, from_dt: datetime, to_dt: datetime) -> List[str]:
         """从真实活动日志回忆指定区间，而不是反查当时计划。"""
