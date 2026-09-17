@@ -11,10 +11,13 @@ log_display.py；JSONL 文件继续保留英文机器标识。
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, MutableMapping, TYPE_CHECKING
+from typing import Any, Dict, List, MutableMapping, Tuple, TYPE_CHECKING
 
 import logging
+import sys
+import threading
 
 import structlog
 
@@ -221,13 +224,32 @@ class FileLogHandler:
         :return: 原始 `event_dict`。
         副作用：事件等级达到阈值时向 sink 写入一行。
         """
-        if _LEVELS.get(str(event_dict.get('level', 'info')).upper(), logging.INFO) >= self._level:
-            self._sink.write(render_json_line(event_dict))
+        if (
+            not _file_output_disabled
+            and _LEVELS.get(
+                str(event_dict.get('level', 'info')).upper(),
+                logging.INFO,
+            ) >= self._level
+        ):
+            # 规范化在 OSError 边界之外：字段转换失败是编程错误，必须继续外抛。
+            payload = render_json_line(event_dict)
+            _write_file_payload(self._sink, payload)
         return event_dict
 
 
 _webui_log_handler = WebUiLogHandler()
 _file_sink: JsonlFileSink | None = None
+_console_failure_renderer: Any = structlog.processors.JSONRenderer()
+
+# 两个目的地的熔断状态属于进程生命周期，不随 initialize_logging 重置。
+#
+# 现象：stdout 或 JSONL 写入抛 OSError 时，异常会越过日志调用点回到业务路径。
+# 原因：原先的 print 与 JsonlFileSink.write 都不在输出目的地专属的捕获边界内。
+# 后果：事务内日志会回滚业务写入，失败日志又会阻断续期，轮询因此反复触发模型决策。
+_console_output_disabled = False
+_file_output_disabled = False
+_console_output_lock = threading.Lock()
+_file_output_lock = threading.Lock()
 
 
 def current_log_file() -> Path | None:
@@ -284,6 +306,125 @@ _trace_console_silent_kinds = frozenset({'llm_chunk', 'foreground'})
 # 追踪出口在色表与别名表里的身份。借用 observe.events 那一条登记，追踪行于是和
 # 该模块的普通日志同色同名，读者不必分辨「这行是日志还是追踪」——它们本就是一回事。
 _TRACE_LOGGER_NAME = 'observe.events'
+
+_CONSOLE_FAILURE_EVENT = '控制台日志输出失败，已停用控制台输出'
+_FILE_FAILURE_EVENT = '文件日志写入失败，已停用文件日志'
+
+
+def _output_failure_event(
+    event: str,
+    error: OSError,
+    **fields: Any,
+) -> Dict[str, Any]:
+    """构造绕过 structlog 处理器链的输出支路失败事件。"""
+
+    return {
+        'timestamp': datetime.now().strftime(_trace_date_format),
+        'level': 'error',
+        'logger': __name__,
+        'event': event,
+        'errno': error.errno,
+        'error': str(error),
+        **fields,
+    }
+
+
+def _publish_failure_to_webui(event_dict: MutableMapping[str, Any]) -> None:
+    """直接渲染并发布失败记录，不重入 structlog 处理器链。"""
+
+    line = _webui_log_handler._renderer(None, 'error', event_dict.copy())
+    webui_logs.publish(line)
+
+
+def _render_failure_for_console(event_dict: MutableMapping[str, Any]) -> str:
+    """按当前控制台格式渲染文件支路失败记录。"""
+
+    return _console_failure_renderer(None, 'error', event_dict.copy())
+
+
+def _record_file_failure(error: OSError, path: Path | None) -> None:
+    """把文件支路首次失败直接写向仍可用的控制台与 WebUI。"""
+
+    event_dict = _output_failure_event(
+        _FILE_FAILURE_EVENT,
+        error,
+        path=str(path) if path is not None else '',
+    )
+    _write_console_line(_render_failure_for_console(event_dict))
+    _publish_failure_to_webui(event_dict)
+
+
+def _write_file_payload(sink: JsonlFileSink, payload: Dict[str, Any]) -> None:
+    """向 JSONL sink 写一条记录，只隔离写目的地抛出的 OSError。"""
+
+    global _file_output_disabled
+
+    failure: Tuple[OSError, Path | None] | None = None
+    with _file_output_lock:
+        if _file_output_disabled:
+            return
+        try:
+            sink.write(payload)
+        except OSError as error:
+            _file_output_disabled = True
+            failure = (error, sink.current_path())
+    if failure is not None:
+        _record_file_failure(*failure)
+
+
+def _record_console_failure(error: OSError) -> None:
+    """把控制台支路首次失败直接写向仍可用的文件与 WebUI。"""
+
+    event_dict = _output_failure_event(
+        _CONSOLE_FAILURE_EVENT,
+        error,
+        stream='stdout',
+    )
+    sink = _file_sink
+    if sink is not None and not _file_output_disabled:
+        # 失败记录的字段均由本模块构造；仍沿用统一 JSONL 结构，不经过 structlog。
+        _write_file_payload(sink, render_json_line(event_dict))
+    _publish_failure_to_webui(event_dict)
+
+
+def _write_console_line(line: str) -> None:
+    """逐行写调用时刻的 stdout，并在首次 OSError 后永久停用控制台支路。"""
+
+    global _console_output_disabled
+
+    failure: OSError | None = None
+    with _console_output_lock:
+        if _console_output_disabled:
+            return
+        try:
+            print(line, file=sys.stdout, flush=True)
+        except OSError as error:
+            _console_output_disabled = True
+            failure = error
+    if failure is not None:
+        _record_console_failure(failure)
+
+
+class _ProtectedConsoleLogger:
+    """structlog 的最终输出 logger，把 stdout 的 OSError 隔离在日志层。"""
+
+    __slots__ = ()
+
+    def msg(self, message: str) -> None:
+        """把已经渲染的单行日志写入受保护的控制台入口。"""
+
+        _write_console_line(message)
+
+    log = debug = info = warn = warning = msg
+    fatal = failure = err = error = critical = exception = msg
+
+
+class _ProtectedConsoleLoggerFactory:
+    """为 structlog 创建不提前绑定 stdout 的项目内 logger。"""
+
+    def __call__(self, *_args: Any) -> _ProtectedConsoleLogger:
+        return _ProtectedConsoleLogger()
+
 
 # 来源元数据在同一轮的每条事件里都会重复出现；完整来源仍写入事件账本，控制台只
 # 在需要时把发送者放进面板标题。这样日志不会被账号、群名片和昵称字段横向撑开。
@@ -521,7 +662,6 @@ def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
         and entry.get('kind') != 'memory_fact_scope_blocked'
     ):
         return
-    from datetime import datetime
     timestamp = datetime.fromtimestamp((entry.get('at') or 0) / 1000).strftime(_trace_date_format)
     fields: Dict[str, Any] = {
         key: value for key, value in entry.items()
@@ -554,7 +694,7 @@ def emit_console_trace(entry: MutableMapping[str, Any]) -> None:
             width=_TRACE_PANEL_WIDTH,
             tint=module_color(_TRACE_LOGGER_NAME) if is_color_enabled() else '',
         )
-    print(line)
+    _write_console_line(line)
     webui_logs.publish(line)
 
 
@@ -646,6 +786,7 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
         修改 structlog 全局处理器和第三方库 logger 配置，可能创建文件日志 sink；
         重复调用会替换当前文件 sink。
     """
+    global _console_failure_renderer
     global _file_sink
     global _trace_date_format
 
@@ -668,7 +809,7 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
 
     shared_processors: List[Any] = [
         structlog.contextvars.merge_contextvars,
-        # 不使用 add_logger_name：PrintLoggerFactory 生成的 logger 没有 name 属性。
+        # 不使用 add_logger_name：项目内控制台 logger 没有 name 属性。
         # 模块名由 get_logger() 显式绑定，避免处理器依赖具体 logger factory。
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt=config.date_format, utc=False),
@@ -689,6 +830,7 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
     else:
         shared_processors.append(structlog.processors.dict_tracebacks)
         renderer = structlog.processors.JSONRenderer()
+    _console_failure_renderer = renderer
 
     # 落盘要在渲染成字符串之前挂上，拿到的才是结构化字典
     _file_sink = None
@@ -715,7 +857,7 @@ def initialize_logging(config: LogConfig | None = None, log_dir: Path | None = N
             min(level, console_level, file_level)
         ),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=_ProtectedConsoleLoggerFactory(),
         cache_logger_on_first_use=False,
     )
     _apply_library_levels(config, level)
