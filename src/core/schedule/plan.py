@@ -16,10 +16,10 @@ from src.core.logging.logger import get_logger
 from src.core.config.schema import ScheduleConfig
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.persona.state import (
-    ElapsedEffect,
     EnergyTier,
     MoodTier,
     PersonaState,
+    SettlementPiece,
     describe_persona_for_activity,
     describe_persona_for_planning,
     energy_tier,
@@ -27,6 +27,7 @@ from src.core.persona.state import (
 )
 from src.core.prompts.registry import get_prompt
 from src.core.schedule.timeline import (
+    Activity,
     ActivityDecisionContext,
     ActivityDecisionService,
     ActivityGenerator,
@@ -361,6 +362,7 @@ class DayPlanService:
         self._generator = generator
         self._config = schedule_config or ScheduleConfig()
         self._timeline = timeline
+        self._timeline.set_energy_enabled(self._config.energy_enabled)
         self._inflight: Dict[str, asyncio.Task[DayPlan]] = {}
         self._generation_issues: Dict[str, DayPlanGenerationIssue] = {}
         if activity_generator is not None:
@@ -382,6 +384,7 @@ class DayPlanService:
         """
 
         self._config = config
+        self._timeline.set_energy_enabled(config.energy_enabled)
 
     @property
     def timeline(self) -> ActivityTimeline:
@@ -461,7 +464,7 @@ class DayPlanService:
         if self._config.energy_enabled and sleep.asleep:
             lines.append('你已经睡着了；现在有人找你时，是外部消息把你叫醒。')
         elif self._config.energy_enabled and sleep.resting:
-            lines.append('你正在休息，精力不会继续下降，但仍然清醒并会正常回应。')
+            lines.append('你正在休息，精力比平常清醒掉得慢，但仍然清醒并会正常回应。')
         return '\n'.join(lines)
 
     def decided_until(self, now: int) -> int:
@@ -469,15 +472,15 @@ class DayPlanService:
 
         return self._timeline.decided_until(now)
 
-    def integrate_between(
+    def iter_pieces(
         self,
         from_ms: int,
         to_ms: int,
         *_unused: Any,
-    ) -> ElapsedEffect:
-        """把人格结算直接委托给真实活动时间线。"""
+    ) -> tuple[SettlementPiece, ...]:
+        """把人格结算的片段请求直接委托给真实活动时间线。"""
 
-        return self._timeline.integrate_between(from_ms, to_ms)
+        return self._timeline.iter_pieces(from_ms, to_ms)
 
     def activities_between(self, from_dt: datetime, to_dt: datetime) -> List[str]:
         """从真实活动日志回忆指定区间，而不是反查当时计划。"""
@@ -535,12 +538,21 @@ class DayPlanService:
             '这只是你自己察觉到了偏离，不代表必须立刻改回计划'
         )
 
-    def activity_decision_context(self, now: int) -> ActivityDecisionContext:
-        """组合下一步活动真正需要的连续状态与当日方向。"""
+    def activity_decision_context(
+        self,
+        current_activity: Activity,
+        now: int,
+    ) -> ActivityDecisionContext:
+        """组合下一步活动真正需要的连续状态与当日方向。
+
+        当前段由调用方（``ActivityDecisionService.decide``）传入，不再自行重读：
+        瞬时读库失败时 ``current()`` 会返回 id=0 的中性段，把它当当前段既会让
+        链长函数误报时间线损坏，也会让决策上下文与写入层看到两条不同的段。
+        """
 
         plan = self.get(now)
         advanced = self._timeline.advanced_intention_indexes(plan.date)
-        current_activity = self._timeline.current(now)
+        chain = self._timeline.continuous_kind_chain_minutes(current_activity, now)
         intention_lines: List[str] = []
         for index, intention in enumerate(plan.intentions, start=1):
             if current_activity.advances == index:
@@ -581,6 +593,9 @@ class DayPlanService:
             recent_activities=self._timeline.recent_summary(now),
             interaction=interaction,
             energy_enabled=self._config.energy_enabled,
+            current_kind_chain_minutes=chain.minutes,
+            current_kind_chain_reached_start=chain.reached_record_start,
+            last_ended_sleep_end=self._timeline.last_ended_sleep_end(),
         )
 
     def _unfinished_intentions(

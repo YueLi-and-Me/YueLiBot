@@ -14,10 +14,10 @@ import pytest
 
 from src.core.memory.store import MemoryStore, FactInput
 from src.core.persona.state import (
-    ElapsedEffect,
     EventDelta,
     Persona,
     PersonaState,
+    SettlementPiece,
     describe_persona,
 )
 from src.core.schedule.plan import (
@@ -28,6 +28,26 @@ from src.core.schedule.plan import (
 HOUR = 3_600_000
 DAY = 24 * HOUR
 OWNER_PERSON_ID = 1
+
+
+def _delta_pieces(
+    hours: float,
+    energy_delta: float,
+    mood_delta: float = 0.0,
+) -> tuple[SettlementPiece, ...]:
+    """把「窗口内总增量 D」表达成一片覆盖整窗、速率 D / hours 的片段。"""
+
+    return (
+        SettlementPiece(
+            activity_id=0,
+            kind='rest',
+            source='decided',
+            started_at=0,
+            ended_at=int(hours * HOUR),
+            energy_rate=energy_delta / hours,
+            mood_rate=mood_delta / hours,
+        ),
+    )
 
 
 @pytest.fixture
@@ -59,7 +79,7 @@ class TestPersona:
         after = persona.apply_elapsed(
             OWNER_PERSON_ID,
             before.updated_at + 7 * DAY,
-            ElapsedEffect(energy_delta=0.0, mood_delta=0.0),
+            _delta_pieces(7 * 24.0, 0.0),
         )
         assert before.intimacy - 7 < after.intimacy < before.intimacy
 
@@ -76,7 +96,7 @@ class TestPersona:
         after = persona.apply_elapsed(
             OWNER_PERSON_ID,
             before.updated_at + 6 * HOUR,
-            ElapsedEffect(energy_delta=-12.0, mood_delta=0.0),
+            _delta_pieces(6.0, -12.0),
         )
         assert after.energy < before.energy
 
@@ -85,7 +105,7 @@ class TestPersona:
         after = persona.apply_elapsed(
             OWNER_PERSON_ID,
             before.updated_at + 13 * HOUR,
-            ElapsedEffect(energy_delta=28.0, mood_delta=0.0),
+            _delta_pieces(13.0, 28.0),
         )
         assert after.energy > before.energy
 

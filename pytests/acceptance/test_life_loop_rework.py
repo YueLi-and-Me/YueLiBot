@@ -9,7 +9,7 @@ from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable
+from typing import Any, Callable, Tuple
 
 import asyncio
 import json
@@ -279,21 +279,27 @@ def test_activity_integration_is_deterministic_and_balanced() -> None:
         )
         timeline = module.ActivityTimeline(db)
 
-        whole = timeline.integrate_between(start, end)
-        awake = timeline.integrate_between(start, sleep_at)
-        asleep = timeline.integrate_between(sleep_at, end)
+        def _sums(pieces: Any) -> Tuple[float, float]:
+            """对结算片段按精力、心情分别求和。"""
+
+            return (
+                sum(piece.energy_rate * piece.hours for piece in pieces),
+                sum(piece.mood_rate * piece.hours for piece in pieces),
+            )
+
+        whole_energy, whole_mood = _sums(timeline.iter_pieces(start, end))
+        awake_energy, awake_mood = _sums(timeline.iter_pieces(start, sleep_at))
+        asleep_energy, asleep_mood = _sums(timeline.iter_pieces(sleep_at, end))
 
         # 绝对值按速率表推导而不是写死数字：速率是可调的产品参数。
         # 这条用例锁的是区间可加性——整段积分等于两段之和，与速率取值无关。
         # 曾经锁的是「醒 16 小时与睡 8 小时恰好抵消」，那是速率表的一次标定巧合
         # 而非不变量：睡眠速率按真机数据上调到 +6.5/h 之后两者不再相等（-48 对
         # +52），继续断言抵消只会逼着后来者为了让用例变绿而回调产品参数。
-        assert awake.energy_delta == pytest.approx(16 * ENERGY_RATES[('awake', 0)])
-        assert asleep.energy_delta == pytest.approx(8 * ENERGY_RATES[('sleep', 3)])
-        assert whole.energy_delta == pytest.approx(
-            awake.energy_delta + asleep.energy_delta
-        )
-        assert whole.mood_delta == pytest.approx(awake.mood_delta + asleep.mood_delta)
+        assert awake_energy == pytest.approx(16 * ENERGY_RATES[('awake', 0)])
+        assert asleep_energy == pytest.approx(8 * ENERGY_RATES[('sleep', 3)])
+        assert whole_energy == pytest.approx(awake_energy + asleep_energy)
+        assert whole_mood == pytest.approx(awake_mood + asleep_mood)
     finally:
         db.close()
 
@@ -538,17 +544,23 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
             activity_generator=None,
             schedule_config=ScheduleConfig(),
         )
-        context = service.activity_decision_context(now)
+        current = module.ActivityTimeline(db).current(now)
+        context = service.activity_decision_context(current, now)
         assert context.interaction == '他 30 分钟前还在跟你说话'
-        prompt = module.build_activity_prompt(
-            module.ActivityTimeline(db).current(now), now, 0, context,
-        )
+        prompt = module.build_activity_prompt(current, now, 0, context)
         assert '最近互动：他 30 分钟前还在跟你说话' in prompt
         assert '自身状态：精力 10，心情 50。此刻精力已经见底' in prompt
         assert '打算真的睡着用 sleep，只是闭眼缓一缓用 rest' in prompt
         assert '每条消息仍会把你叫来回应' in prompt
-        assert '累了就去休息，困了就去睡' in prompt
+        # 规则 5 用旧句、规则 6 只留后半句，双向钉住。2026-09-12 曾把「困了就去睡」与
+        # 钟点劝睡半句一起加进去，依据的诊断是「她不选 sleep」；该诊断随后被数据否掉
+        # （规则 6 部署之前的 09-13 07:09 同样在睡眠边界续睡）。这里同时断言旧句在、
+        # 新句不在，避免再按同一诊断把它们加回来。
+        assert '累了就去休息，不必先把手上的事做完' in prompt
+        assert '困了就去睡' not in prompt
         assert '把当前时刻和上次睡眠当作睡与不睡的取舍依据' in prompt
+        assert '时间已到深夜或凌晨' not in prompt
+        assert '不要为了睡觉而睡觉' in prompt
         assert '今天的安排' not in prompt
         assert '必须至少有两段' not in prompt
 
@@ -565,7 +577,71 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
             activity_generator=None,
             schedule_config=ScheduleConfig(),
         )
-        assert silent.activity_decision_context(now).interaction == '还没有互动记录'
+        assert silent.activity_decision_context(current, now).interaction == '还没有互动记录'
+    finally:
+        db.close()
+
+
+def test_activity_prompt_shows_kind_chain_and_unfinished_sleep_marker() -> None:
+    """★ 决策输入同时给出连续同 kind 链长与「还没醒」标记，两个数分别命名。
+
+    真机 09-14 05:04 的记录里「上次睡眠：这一觉已经睡了 8 小时」与
+    「刚才：……已经持续 8 小时」同时在场，前者其实还没结束。这里用三段首尾相接的
+    sleep 链锁住新形态：「刚才」行追加的链长（8 小时）大于当前段时长（2 小时），
+    「上次睡眠」行带「（还没醒）」。
+    """
+
+    module = _timeline_module()
+    db = _database()
+    now = _timestamp('2032-07-15', 5, 0)
+    try:
+        _insert_activity(
+            db,
+            kind='sleep', doing='抱着被子熟睡', mood='睡得安稳',
+            energy_pace=2, mood_pace=0,
+            started_at=now - 8 * HOUR_MS, expected_until=now - 5 * HOUR_MS,
+            ended_at=now - 5 * HOUR_MS,
+        )
+        _insert_activity(
+            db,
+            kind='sleep', doing='裹紧被子继续睡', mood='睡得安稳',
+            energy_pace=2, mood_pace=0,
+            started_at=now - 5 * HOUR_MS, expected_until=now - 2 * HOUR_MS,
+            ended_at=now - 2 * HOUR_MS,
+        )
+        _insert_activity(
+            db,
+            kind='sleep', doing='迷迷糊糊翻了个身继续睡', mood='半梦半醒',
+            energy_pace=2, mood_pace=0,
+            started_at=now - 2 * HOUR_MS, expected_until=now + 4 * HOUR_MS,
+            ended_at=None,
+        )
+        service = schedule_plan.DayPlanService(
+            db=db,
+            store=_PlanStore(),
+            persona_state=lambda: PersonaState(60, 40, 55, now),
+            interaction_density=lambda _now: '最近偶尔说话',
+            anniversary_at=lambda: 0,
+            last_interaction_at=lambda: None,
+            character_name='测试角色',
+            character_personality='按自己的节奏生活',
+            generator=None,
+            activity_generator=None,
+            schedule_config=ScheduleConfig(),
+        )
+
+        current = module.ActivityTimeline(db).current(now)
+        context = service.activity_decision_context(current, now)
+        assert context.current_kind_chain_minutes == 480
+        assert context.sleep_history == '这一觉已经睡了 2 小时（还没醒）'
+        prompt = module.build_activity_prompt(current, now, 0, context)
+        assert (
+            '刚才：迷迷糊糊翻了个身继续睡，已经持续 2 小时；'
+            '算上首尾相接的之前几段，这种 sleep 状态已经连续 8 小时'
+            '（更早没有记录，实际可能更长）；原本打算持续到'
+        ) in prompt, '这条 sleep 链抵达表中第一行，必须带历史不可知声明'
+        assert '已经持续 2 小时；原本打算持续到' not in prompt
+        assert '上次睡眠：这一觉已经睡了 2 小时（还没醒）' in prompt
     finally:
         db.close()
 

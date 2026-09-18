@@ -292,13 +292,20 @@ class AwarenessService:
 
         注意 ``_enabled`` 是装配期一次性算出的开关组合，本方法有意不重算：
         主动搭话的开关变更需要重建服务，热重载只保证读配置字段的地方拿到新值。
+        ``schedule.energy_enabled`` 的处置与它相反，见下方注释。
 
         :param cfg: 重载后的运行时配置。
         :return: ``None``。
-        副作用：重绑配置引用；不重算启用开关、不重建传感器。
+        副作用：重绑配置引用并同步睡眠控制器的精力开关；不重算主动搭话启用开关、
+            不重建传感器。
         """
 
         self._cfg = cfg
+        # 睡眠控制器把精力开关拷在自己身上，换配置引用够不着它。它不是「下次读到新值
+        # 就行」的展示字段，而是一个持续生效的状态机输入：关闭态的控制器会对任何 sleep
+        # 段调用 note_woken，配置从关闭改成开启而不重启进程时，每一段睡眠都会在创建当
+        # 轮被改写成 interrupted，且 activities.source 的创建来源就此被覆盖掉。
+        self._sleep.set_energy_enabled(cfg.schedule.energy_enabled)
 
     def current_sleep(self, now: int | None = None) -> SleepState:
         """读取由活动时间线派生的当前睡眠状态。

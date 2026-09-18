@@ -132,8 +132,8 @@ def test_three_day_curve_has_true_intraday_waves_and_never_stalls_at_zero(
 ) -> None:
     """固定三天一次跑完：每天有升有降且极差足够，精力不在零点卡住。"""
 
-    integrate_name = getattr(schedule_plan.DayPlanService, 'integrate_between', None)
-    assert integrate_name is not None, 'DayPlanService 尚未提供 integrate_between'
+    iter_pieces = schedule_plan.DayPlanService.iter_pieces
+    assert iter_pieces is not None, 'DayPlanService 尚未提供 iter_pieces'
     assert 'mood' in persona_state.PersonaState.__dataclass_fields__
 
     persona = persona_state.Persona(db)
@@ -172,8 +172,8 @@ def test_three_day_curve_has_true_intraday_waves_and_never_stalls_at_zero(
     for step in range(1, 3 * 24 * 6):
         now = start + step * TEN_MINUTES_MS
         before = persona.get(1)
-        effect = service.integrate_between(before.updated_at, now)
-        after = persona.apply_elapsed(1, now, effect)
+        pieces = service.iter_pieces(before.updated_at, now)
+        after = persona.apply_elapsed(1, now, pieces)
         now_dt = datetime.fromtimestamp(now / 1000)
         sleep = evaluate_sleep(
             SleepInputs(**service.sleep_inputs(now)),

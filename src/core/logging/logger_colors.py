@@ -110,6 +110,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "services.dev.install_stats": ("#afffaf", True),
     "agent.expression_learn": ("#ffaf87", False),
     "agent.impression": ("#d7af87", False),
+    "persona.state": ("#d7afff", False),
     # 运行画像
     # 进程监护：入口拉起的 QQ 适配器与桌面外壳
     "runtime.child_process": ("#87d7d7", True),
@@ -200,6 +201,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "services.dev.install_stats": "安装统计",
     "agent.expression_learn": "表达学习",
     "agent.impression": "会话印象",
+    "persona.state": "主体状态",
     "runtime.child_process": "子进程",
     "services.host.adapter_host": "适配器进程",
     "services.host.desktop_shell": "桌面外壳",

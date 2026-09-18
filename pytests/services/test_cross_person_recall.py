@@ -108,6 +108,35 @@ async def test_recall_action_cross_person_hits_absent_person(db: sqlite3.Connect
     assert person_id != 1
 
 
+async def test_recall_action_leaves_no_open_write_transaction(db: sqlite3.Connection) -> None:
+    """采用的节点只有一条时，认知检索返回后不得在连接上留下未提交的写事务。
+
+    - 现象：``link_together`` 在 refs 少于两条时直接返回，既不建节点也不提交；随后
+      ``node_id`` 为同一批 refs 补建的 ``memory_nodes`` 行没有任何人收尾。
+    - 原因：这两步分属两个函数，提交责任只写在 ``node_id`` 的 docstring 里
+      （「由调用方统一提交」），而调用方没有提交。
+    - 后果：共用一条连接的年代这行会被进程里下一次提交顺手落盘；按线程分连接之后，
+      它让写事务一直挂在本线程上，同一进程里别的线程再写就要等到 busy_timeout。
+    """
+
+    chat = _make_chat(db)
+    _absent_qq_person(chat)
+    action = RecallAction(chat.memory, chat._registry.stream_display_name_or_any, db)
+
+    result = await action.execute(CognitiveRequest(
+        action='recall',
+        query='原神',
+        stream_id=1,
+        stream_kind='direct',
+        person_ids=(1,),
+        message_watermark=0,
+        cross_person=True,
+    ))
+
+    assert result.hit_count > 0, '用例前提失效：没有任何节点被采用就验不到这条不变量'
+    assert not db.in_transaction
+
+
 async def test_recall_action_default_scope_misses_absent_person(db: sqlite3.Connection) -> None:
     """★K2-1 对照：同一构造不开跨人物时命中数为 0。"""
 

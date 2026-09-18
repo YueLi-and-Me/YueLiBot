@@ -26,8 +26,8 @@ from src.core.persona.state import (
     ENERGY_RATES,
     ENERGY_TAU,
     TURN_ENERGY_COST,
-    ElapsedEffect,
     Persona,
+    SettlementPiece,
 )
 
 HOUR_MS = 3_600_000
@@ -55,9 +55,22 @@ def _reset(db: sqlite3.Connection, person_id: int, energy: float, at: int) -> No
     db.commit()
 
 
-def _rest_effect(hours: float) -> ElapsedEffect:
-    """构造一段纯休息的积分结果，替代日程时间线。"""
-    return ElapsedEffect(energy_delta=REST_ENERGY_PER_HOUR * hours, mood_delta=0.0)
+def _rest_pieces(
+    start: int, hours: float, *, pace: int = 2
+) -> tuple[SettlementPiece, ...]:
+    """构造一段覆盖窗口 [start, start+hours] 的纯休息片段，替代总增量写法。"""
+
+    return (
+        SettlementPiece(
+            activity_id=0,
+            kind='rest',
+            source='decided',
+            started_at=start,
+            ended_at=start + int(hours * HOUR_MS),
+            energy_rate=ENERGY_RATES[('rest', pace)],
+            mood_rate=0.0,
+        ),
+    )
 
 
 def _regress(energy: float, hours: float) -> float:
@@ -72,10 +85,12 @@ def _simulate(
     steps: int,
     *,
     with_turns: bool,
+    rest_pace: int = 2,
 ) -> float:
     """按十分钟一步推进，返回结束时的精力。
 
     :param with_turns: 每一步是否附带一次回合结算，用于区分两个场景。
+    :param rest_pace: 休息片段的 pace 档，用于对比两档的消耗差异。
 
     积分区间的起点取 ``settled_at()``，与聊天服务的 ``settle_elapsed`` 同口径——
     用 ``persona.get().updated_at`` 会把本文件要锁的那个缺陷一起复制进用例。
@@ -84,33 +99,49 @@ def _simulate(
     for _ in range(steps):
         now += TEN_MINUTES_MS
         hours = (now - persona.settled_at()) / HOUR_MS
-        persona.apply_elapsed(person_id, now, _rest_effect(hours))
+        persona.apply_elapsed(
+            person_id, now, _rest_pieces(persona.settled_at(), hours, pace=rest_pace)
+        )
         if with_turns:
             persona.apply_turn(person_id, now, weight=1.0)
     return persona.get(person_id).energy
 
 
-def test_rest_accumulates_without_conversation(db: sqlite3.Connection) -> None:
-    """无对话时休息照常入账：两小时各积一份 pace=2，每小时结算同时向基线回归。"""
+def test_rest_drains_slowly_without_conversation(db: sqlite3.Connection) -> None:
+    """无对话时休息照常入账：两小时各积一份——rest 是负的一份，只让精力掉得慢。
+
+    起点取 80（高于基线），避免低位时回归拉力盖过休息档本身的负速率：
+    rest 不再回精力，两小时净下降；pace=2 比 pace=1 掉得少。
+    """
     person_id = _owner_id(db)
     persona = Persona(db)
     start = 10 * HOUR_MS
-    _reset(db, person_id, 20.0, start)
+    _reset(db, person_id, 80.0, start)
 
-    energy = _simulate(persona, person_id, start, 12, with_turns=False)
+    pace2 = _simulate(persona, person_id, start, 12, with_turns=False)
 
     # 每积满一小时结算一次：先加休息积分，再向基线回归。
     expected = _regress(
-        _regress(20.0 + REST_ENERGY_PER_HOUR, 1.0) + REST_ENERGY_PER_HOUR, 1.0
+        _regress(80.0 + REST_ENERGY_PER_HOUR, 1.0) + REST_ENERGY_PER_HOUR, 1.0
     )
-    assert energy == pytest.approx(expected)
+    assert pace2 == pytest.approx(expected)
+    assert pace2 < 80.0, 'rest 不回精力，只会慢慢往下掉'
+
+    _reset(db, person_id, 80.0, start)
+    pace1 = _simulate(persona, person_id, start, 12, with_turns=False, rest_pace=1)
+
+    expected1 = _regress(
+        _regress(80.0 + ENERGY_RATES[('rest', 1)], 1.0) + ENERGY_RATES[('rest', 1)], 1.0
+    )
+    assert pace1 == pytest.approx(expected1)
+    assert pace1 < pace2, 'rest pace=2 必须比 pace=1 掉得少'
 
 
 def test_conversation_does_not_swallow_rest(db: sqlite3.Connection) -> None:
     """有对话时休息同样入账，回合只扣自己那一份。
 
-    改动前这里是 15.2——两小时休息的入账被十二个回合逐次重置游标全部丢掉，
-    只剩下回合自身的消耗。
+    改动前两小时休息的入账被十二个回合逐次重置游标全部丢掉，只剩下回合自身的
+    消耗。rest 如今是负入账，「不被对话吞掉」的判据不变。
     """
     person_id = _owner_id(db)
     persona = Persona(db)
@@ -148,12 +179,12 @@ def test_settle_cursor_advances_only_when_applied(db: sqlite3.Connection) -> Non
     _reset(db, person_id, 50.0, start)
 
     half_hour = start + HOUR_MS // 2
-    persona.apply_elapsed(person_id, half_hour, _rest_effect(0.5))
+    persona.apply_elapsed(person_id, half_hour, _rest_pieces(start, 0.5))
     assert persona.settled_at() == start, '不足一小时不应推进游标'
     assert persona.get(person_id).energy == 50.0
 
     full_hour = start + HOUR_MS
-    persona.apply_elapsed(person_id, full_hour, _rest_effect(1.0))
+    persona.apply_elapsed(person_id, full_hour, _rest_pieces(start, 1.0))
     assert persona.settled_at() == full_hour
     assert persona.get(person_id).energy == pytest.approx(
         _regress(50.0 + REST_ENERGY_PER_HOUR, 1.0)
@@ -226,9 +257,9 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
     frontier = timeline.decided_until(back)
     assert frontier == start + HOUR_MS
     persona.apply_elapsed(
-        person_id, frontier, timeline.integrate_between(persona.settled_at(), frontier)
+        person_id, frontier, timeline.iter_pieces(persona.settled_at(), frontier)
     )
-    # 那一小时清醒 pace=0，按速率表扣 3 点，结算同时向基线回归。
+    # 那一小时清醒 pace=0，按速率表扣 1.5 点，结算同时向基线回归。
     before_sleep = _regress(10.0 + ENERGY_RATES[('awake', 0)], 1.0)
     assert persona.get(person_id).energy == pytest.approx(before_sleep)
     assert persona.settled_at() == frontier
@@ -241,9 +272,9 @@ def test_offline_sleep_is_credited_after_backfill(db: sqlite3.Connection) -> Non
         expected_until=back, ended_at=back, source='backfilled',
     )
 
-    # 下一次结算读到补写结果，九小时睡眠 pace=3 按 +6/小时入账。
+    # 下一次结算读到补写结果，九小时睡眠 pace=3 按 +6.5/小时入账。
     persona.apply_elapsed(
-        person_id, back, timeline.integrate_between(persona.settled_at(), back)
+        person_id, back, timeline.iter_pieces(persona.settled_at(), back)
     )
     assert persona.get(person_id).energy == pytest.approx(
         _regress(before_sleep + ENERGY_RATES[('sleep', 3)] * 9, 9.0)
@@ -262,7 +293,7 @@ def test_energy_regresses_toward_baseline_when_idle(db: sqlite3.Connection) -> N
     person_id = _owner_id(db)
     persona = Persona(db)
     start = 10 * HOUR_MS
-    idle = ElapsedEffect(energy_delta=0.0, mood_delta=0.0)
+    idle: tuple[SettlementPiece, ...] = ()
 
     _reset(db, person_id, 10.0, start)
     persona.apply_elapsed(person_id, start + 48 * HOUR_MS, idle)
@@ -286,7 +317,7 @@ def test_energy_regresses_toward_baseline_when_idle(db: sqlite3.Connection) -> N
 def test_snapshot_follows_settle_cursor(db: sqlite3.Connection) -> None:
     """快照语义是「当天最新的已结算状态」：游标推进才刷新，不推进不覆盖。
 
-    早上第一次交互时结算游标还停在昨夜、夜间恢复尚未入账，若把那一刻钉死成
+    早上第一次交互时结算游标还停在昨夜、夜间结算尚未入账，若把那一刻钉死成
     当天值（旧 INSERT OR IGNORE 的行为），全天读到的都是未结算的旧状态。
     """
     person_id = _owner_id(db)
@@ -299,8 +330,8 @@ def test_snapshot_follows_settle_cursor(db: sqlite3.Connection) -> None:
     assert first.energy == pytest.approx(30.0)
     assert first.captured_at == morning - 10 * HOUR_MS
 
-    # 结算推进四小时（补写后的夜间恢复入账），游标越过已记录值 → 覆盖。
-    persona.apply_elapsed(person_id, morning - 6 * HOUR_MS, _rest_effect(4.0))
+    # 结算推进四小时（补写后的夜间休息入账），游标越过已记录值 → 覆盖。
+    persona.apply_elapsed(person_id, morning - 6 * HOUR_MS, _rest_pieces(morning - 10 * HOUR_MS, 4.0))
     persona.snapshot_daily(person_id, morning + 5 * 60_000)
     second = persona.snapshots(person_id)[0]
     settled = _regress(30.0 + REST_ENERGY_PER_HOUR * 4, 4.0)

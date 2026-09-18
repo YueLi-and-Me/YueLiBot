@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Protocol, Sequence
 
@@ -16,7 +16,7 @@ import sqlite3
 
 from src.core.logging.logger import get_logger
 from src.core.llm_models.snapshot import bind_render_params
-from src.core.persona.state import ENERGY_RATES, MOOD_RATE, ElapsedEffect
+from src.core.persona.state import ENERGY_RATES, MOOD_RATE, SettlementPiece
 from src.core.prompts.registry import get_prompt
 
 logger = get_logger(__name__)
@@ -59,11 +59,23 @@ _ENERGY_PACE_RANGES: dict[str, tuple[int, int]] = {
 #   写入层都改判累计时长（_elapsed_minutes），并有意不设自动复制新段的兜底路径：
 #   内容与 pace 不变的新段扣分与延续完全相同，只是把一段拆成两段。
 #
+# 连续睡眠上限（分钟）：一条首尾相接的 sleep 链自最早一段起算的累计上限。续睡
+# （continue 与 switch→sleep 两条路径）申请越过它时截到「上限 − 链长」；链已达
+# 上限仍要求续睡时第一次拒判即由系统结束这条链。它同时是 sleep 单段上限的唯一
+# 来源：上限约束的对象是一次连续的同类活动，不再只是单条 activities 行。
+_CONTINUOUS_SLEEP_LIMIT_MINUTES = 540
+
+# 入眠过近阈值（分钟）：距上一条已结束 sleep 链末端不足这么久时，不允许新起
+# sleep 链。「上一条已结束 sleep 链末端」＝持久化时间线里 kind='sleep' 且已结束
+# 的段中最大的 ended_at；没有任何 sleep 段时不判。只读持久化时间线，不读进程内
+# 状态。
+_SLEEP_REENTRY_MIN_MINUTES = 60
+
 # 键集合必须与 _ENERGY_PACE_RANGES 完全一致：两者由同一次 kind 校验共同消费。
 _DECISION_MINUTE_LIMITS: dict[str, int] = {
     'awake': 120,
     'rest': 180,
-    'sleep': 600,
+    'sleep': _CONTINUOUS_SLEEP_LIMIT_MINUTES,
 }
 
 
@@ -137,6 +149,21 @@ class ActivityGenerator(Protocol):
 
 
 @dataclass(frozen=True)
+class KindChain:
+    """连续同 kind 链的读侧结果。
+
+    :ivar minutes: 自最早一段起算的累计分钟数，向下取整。
+    :ivar start_ms: 链起点的毫秒时间戳（最早一段的 ``started_at``）。
+    :ivar reached_record_start: 回溯是否抵达了表中第一行；为 True 时更早的历史
+        不可知，链长只是已知部分的下界。
+    """
+
+    minutes: int
+    start_ms: int
+    reached_record_start: bool
+
+
+@dataclass(frozen=True)
 class ActivityDecisionContext:
     """运行时已经知道、可供下一步活动判断的全部上下文。"""
 
@@ -150,6 +177,14 @@ class ActivityDecisionContext:
     recent_activities: str
     interaction: str
     energy_enabled: bool = True
+    # 当前活动所属「连续同 kind 段」自最早一段起算的累计分钟数；None 表示调用方
+    # 没有提供，渲染时不追加。单段时它与当前段时长相等，追加只是噪声，也不追加。
+    current_kind_chain_minutes: int | None = None
+    # 链回溯是否抵达了表中第一行；只在当前段为 sleep 时用来追加「更早没有记录」
+    # 的声明，awake 链的首行是冷启动真实起点，不加。
+    current_kind_chain_reached_start: bool = False
+    # 上一条已结束 sleep 链末端的毫秒时间戳；没有任何已结束 sleep 段时为 None。
+    last_ended_sleep_end: int | None = None
 
 
 def _required_text(value: Any, *, maximum: int) -> str | None:
@@ -341,18 +376,40 @@ def _duration_text(duration_ms: int) -> str:
     return f'{minutes} 分钟'
 
 
-def _short_gap_rule(current: Activity, now: int) -> str:
+def _short_gap_rule(
+    current: Activity,
+    now: int,
+    chain_minutes: int | None = None,
+) -> str:
     """给出短缺口这一轮允许的输出形态，累计达上限时不再提供延续选项。
 
     :param current: 当前进行中的活动；它的 ``kind`` 决定取哪一条上限。
     :param now: 当前毫秒时间戳。
+    :param chain_minutes: 当前活动所属连续同 kind 链的累计分钟数；只在 sleep 链
+        达到连续睡眠上限时换成链上限变体，``None`` 或其余 kind 仍按单段判定。
     :return: 注入 ``backfill_rule`` 占位符的规则正文。
 
     判据是 ``now - current.started_at``，即这一段的累计时长。提示词里本来就写着
     「已经持续 X」，模型知情却仍选 continue，所以这里改的是**可选项本身**：一旦累计
     达到该 kind 的单段上限，continue 不再是一个合法输出，模型只能切换核心对象。
+    sleep 的单段上限与连续睡眠上限是同一个常量，所以 sleep 的变体直接由链长判定。
     """
 
+    if (
+        current.kind == 'sleep'
+        and chain_minutes is not None
+        and chain_minutes >= _CONTINUOUS_SLEEP_LIMIT_MINUTES
+    ):
+        return (
+            f'没有长缺口。这次睡眠已经连续 {_duration_text(chain_minutes * MINUTE_MS)}，'
+            '达到连续睡眠上限'
+            f'（{_duration_text(_CONTINUOUS_SLEEP_LIMIT_MINUTES * MINUTE_MS)}），'
+            '必须切换核心对象：'
+            '这一轮不允许延续当前活动，{"decision":"continue",...} 不是合法输出。'
+            '只允许输出：\n'
+            '{"decision":"switch","activity":活动对象}\n'
+            '不要输出 backfill，也不要直接输出裸活动对象。'
+        )
     limit = _DECISION_MINUTE_LIMITS[current.kind]
     if _elapsed_minutes(current, now) < limit:
         return (
@@ -392,21 +449,63 @@ def build_activity_prompt(
             '时长只表示各段相对占比，系统会把它们连续铺满。'
         )
     else:
-        backfill_rule = _short_gap_rule(current, now)
-    sleep_rule = (
-        '允许选择 sleep。按这一段的打算选：打算真的睡着用 sleep，只是闭眼缓一缓用 rest。'
-        'rest 期间每条消息仍会把你叫来回应，精力恢复也只有 sleep 的一半上下。'
-        if context.energy_enabled
-        else '当前精力系统已关闭，不允许选择 sleep；活动照常进行，不根据精力安排活动。'
+        backfill_rule = _short_gap_rule(
+            current,
+            now,
+            context.current_kind_chain_minutes if context.energy_enabled else None,
+        )
+    chain_minutes = context.current_kind_chain_minutes
+    if not context.energy_enabled:
+        sleep_rule = '当前精力系统已关闭，不允许选择 sleep；活动照常进行，不根据精力安排活动。'
+    elif (
+        current.kind == 'sleep'
+        and chain_minutes is not None
+        and chain_minutes >= _CONTINUOUS_SLEEP_LIMIT_MINUTES
+    ):
+        sleep_rule = (
+            f'这次睡眠已经连续 {_duration_text(chain_minutes * MINUTE_MS)}，'
+            '达到连续睡眠上限'
+            f'（{_duration_text(_CONTINUOUS_SLEEP_LIMIT_MINUTES * MINUTE_MS)}），'
+            '这一轮不允许选择 sleep。'
+        )
+    elif (
+        current.kind != 'sleep'
+        and context.last_ended_sleep_end is not None
+        and now - context.last_ended_sleep_end < _SLEEP_REENTRY_MIN_MINUTES * MINUTE_MS
+    ):
+        sleep_rule = (
+            f'上次睡醒到现在只有 {_duration_text(now - context.last_ended_sleep_end)}，'
+            f'不到 {_duration_text(_SLEEP_REENTRY_MIN_MINUTES * MINUTE_MS)}，'
+            '这一轮不允许选择 sleep。'
+        )
+    else:
+        sleep_rule = (
+            '允许选择 sleep。按这一段的打算选：打算真的睡着用 sleep，只是闭眼缓一缓用 rest。'
+            'rest 期间每条消息仍会把你叫来回应，也不回精力。'
+        )
+    # 链长只在比当前段时长更长时追加：单段时两数相等，追加了也只是噪声。链长与
+    # 「已经持续 X」分别命名——前者是连续同 kind 段的累计，后者只是当前这一段。
+    current_activity = (
+        f'{current.doing}，已经持续 {_duration_text(now - current.started_at)}'
+    )
+    if chain_minutes is not None and chain_minutes > _elapsed_minutes(current, now):
+        current_activity += (
+            f'；算上首尾相接的之前几段，这种 {current.kind} 状态已经连续 '
+            f'{_duration_text(chain_minutes * MINUTE_MS)}'
+        )
+    if current.kind == 'sleep' and context.current_kind_chain_reached_start:
+        # sleep 链抵达记录起点时更早的历史不可知，链长只是已知部分的下界；awake
+        # 链不加：冷启动首行必然是 awake，它是真实起点而不是缺失的历史。
+        current_activity += '（更早没有记录，实际可能更长）'
+    current_activity += (
+        f'；原本打算持续到 '
+        f'{datetime.fromtimestamp(current.expected_until / 1000):%H:%M}'
     )
     values = {
         'character_name': context.character_name,
         'character_personality': context.character_personality,
         'time_context': f'{current_dt:%Y-%m-%d %H:%M}，{weekday}',
-        'current_activity': (
-            f'{current.doing}，已经持续 {_duration_text(now - current.started_at)}；'
-            f'原本打算持续到 {datetime.fromtimestamp(current.expected_until / 1000):%H:%M}'
-        ),
+        'current_activity': current_activity,
         'persona': context.persona,
         'sleep_history': context.sleep_history,
         'intentions': context.intentions,
@@ -427,7 +526,7 @@ class ActivityDecisionService:
     def __init__(
         self,
         generator: ActivityGenerator,
-        context: Callable[[int], ActivityDecisionContext],
+        context: Callable[[Activity, int], ActivityDecisionContext],
     ) -> None:
         self._generator = generator
         self._context = context
@@ -440,7 +539,7 @@ class ActivityDecisionService:
     ) -> ActivityTransition:
         """生成并严格解析一次活动转换；非法结果直接暴露给时间线续期。"""
 
-        context = self._context(now)
+        context = self._context(current, now)
         render_params: dict[str, dict[str, str]] = {}
         prompt = build_activity_prompt(
             current,
@@ -480,22 +579,66 @@ def _activity_from_row(row: sqlite3.Row) -> Activity:
     )
 
 
-def _neutral_activity(now: int) -> Activity:
-    """数据库不可读时也能同步返回的中性清醒状态。"""
+def _neutral_awake_draft() -> ActivityDraft:
+    """中性清醒段的唯一定义：冷启动与收场占位段都从这里写入。"""
 
-    return Activity(
-        id=0,
+    return ActivityDraft(
         kind='awake',
         doing='刚停下来，还没决定接下来做什么',
         mood='状态平稳，仍会正常回应',
         energy_pace=0,
         mood_pace=0,
+        minutes=10,
+    )
+
+
+def _neutral_activity(now: int) -> Activity:
+    """数据库不可读时也能同步返回的中性清醒状态。"""
+
+    draft = _neutral_awake_draft()
+    return Activity(
+        id=0,
+        kind=draft.kind,
+        doing=draft.doing,
+        mood=draft.mood,
+        energy_pace=draft.energy_pace,
+        mood_pace=draft.mood_pace,
         advances=None,
         started_at=now,
         expected_until=now + DECISION_RETRY_MS,
         ended_at=None,
         source='decided',
     )
+
+
+def _backfill_layout(
+    drafts: Sequence[ActivityDraft],
+    start: int,
+    end: int,
+) -> list[tuple[ActivityDraft, int, int]]:
+    """把长缺口按各补叙段的相对时长铺满，返回每段的绝对起止（不写库）。
+
+    判定与写入共用同一处布局计算：长缺口时「候选时间线」必须包含本次拟写的
+    补叙，布局若在两处各算一遍，判定看到的时间线就可能与真正写入的不一致。
+    """
+
+    if not drafts:
+        raise ValueError('长缺口决策必须给出至少一段 backfill')
+    total_minutes = sum(max(1, draft.minutes) for draft in drafts)
+    layout: list[tuple[ActivityDraft, int, int]] = []
+    cursor = start
+    duration = end - start
+    for index, draft in enumerate(drafts):
+        segment_end = end if index == len(drafts) - 1 else (
+            cursor + duration * max(1, draft.minutes) // total_minutes
+        )
+        if segment_end <= cursor:
+            raise ValueError('backfill 段过多，无法形成正时长的连续活动')
+        layout.append((draft, cursor, segment_end))
+        duration -= segment_end - cursor
+        total_minutes -= max(1, draft.minutes)
+        cursor = segment_end
+    return layout
 
 
 class ActivityTimeline:
@@ -509,11 +652,21 @@ class ActivityTimeline:
         self._db = db
         self._decider = decider
         self._inflight: asyncio.Task[None] | None = None
+        self._energy_enabled = True
 
     def set_decider(self, decider: ActivityDecider) -> None:
         """在组合根完成上下文服务装配后绑定唯一活动决策器。"""
 
         self._decider = decider
+
+    def set_energy_enabled(self, enabled: bool) -> None:
+        """切换精力开关：睡眠闸门只在精力系统开启时生效，关闭时写入路径照旧。
+
+        该开关由装配方在启动与配置热重载时同步（与睡眠控制器、Persona 同一传播
+        形态）；精力关闭时 sleep 本就不可选，闸门无需介入。
+        """
+
+        self._energy_enabled = enabled
 
     def current(self, now: int) -> Activity:
         """同步返回当前活动；边界决策只在后台进行，异常不会进入调用链。"""
@@ -569,7 +722,7 @@ class ActivityTimeline:
         - 现象：离线一整夜再上线，精力不但没有因为睡眠回升，反而更低。
         - 原因：越过 ``expected_until`` 的那段时间还没有被决策。``current()`` 只在
           后台任务里调模型补写它（``_advance`` → ``_apply_transition``），而状态结算
-          是同步跑在回合开头的。结算先发生时，``integrate_between`` 会把整段空缺按
+          是同步跑在回合开头的。结算先发生时，时间线积分会把整段空缺按
           离线前那条活动的 pace 算掉（``COALESCE(ended_at, to_ms)`` 让未结束的活动
           一直延伸到区间末端），随后游标推过这一段。
         - 后果：后台补写进来的真实活动——整夜睡眠是其中最大的一笔——再也不会被任何
@@ -591,29 +744,40 @@ class ActivityTimeline:
             return now
         return min(now, int(row[0]))
 
-    def integrate_between(self, from_ms: int, to_ms: int) -> ElapsedEffect:
-        """按活动与目标区间的真实交集积分精力和心情变化。"""
+    def iter_pieces(self, from_ms: int, to_ms: int) -> tuple[SettlementPiece, ...]:
+        """按活动与目标区间的真实交集产出恒速率结算片段。
+
+        行序、求交方式、零长度交集跳过与进行中段右端取 ``to_ms`` 都与它取代的
+        整窗求和实现逐字相同；``to_ms <= from_ms`` 返回空元组。
+        """
 
         if to_ms <= from_ms:
-            return ElapsedEffect(energy_delta=0.0, mood_delta=0.0)
+            return ()
         rows = self._db.execute(
             """SELECT * FROM activities
                WHERE started_at < ? AND COALESCE(ended_at, ?) > ?
                ORDER BY started_at, id""",
             (to_ms, to_ms, from_ms),
         ).fetchall()
-        energy_delta = 0.0
-        mood_delta = 0.0
+        pieces: list[SettlementPiece] = []
         for row in rows:
             activity = _activity_from_row(row)
             segment_start = max(from_ms, activity.started_at)
             segment_end = min(to_ms, activity.ended_at or to_ms)
             if segment_end <= segment_start:
                 continue
-            hours = (segment_end - segment_start) / HOUR_MS
-            energy_delta += ENERGY_RATES[(activity.kind, activity.energy_pace)] * hours
-            mood_delta += MOOD_RATE * activity.mood_pace * hours
-        return ElapsedEffect(energy_delta=energy_delta, mood_delta=mood_delta)
+            pieces.append(
+                SettlementPiece(
+                    activity_id=activity.id,
+                    kind=activity.kind,
+                    source=activity.source,
+                    started_at=segment_start,
+                    ended_at=segment_end,
+                    energy_rate=ENERGY_RATES[(activity.kind, activity.energy_pace)],
+                    mood_rate=MOOD_RATE * activity.mood_pace,
+                )
+            )
+        return tuple(pieces)
 
     def assert_invariants(self) -> None:
         """断言整条活动时间线连续，且只有最后一段可以保持进行中。"""
@@ -628,6 +792,9 @@ class ActivityTimeline:
         ]
         if len(open_indexes) > 1 or (open_indexes and open_indexes[0] != len(activities) - 1):
             raise RuntimeError('活动时间线至多一条进行中记录，且必须是最后一条')
+        for activity in activities:
+            if activity.ended_at is not None and activity.ended_at < activity.started_at:
+                raise RuntimeError('活动时间线不允许负时长段')
         for previous, following in zip(activities, activities[1:]):
             if previous.ended_at is None:
                 raise RuntimeError('活动时间线的进行中记录后面仍有活动')
@@ -687,9 +854,102 @@ class ActivityTimeline:
         activity = _activity_from_row(row)
         sleep_end = min(now, activity.ended_at or now)
         duration = _duration_text(sleep_end - activity.started_at)
+        # 正在睡的分支必须带「（还没醒）」：不加时它与已结束分支在文本上不可区分，
+        # 「这一觉已经睡了 8 小时」读起来像一件已完成的事。
         if activity.ended_at is None:
-            return f'这一觉已经睡了 {duration}'
+            return f'这一觉已经睡了 {duration}（还没醒）'
         return f'{_duration_text(now - activity.ended_at)}前结束，睡了 {duration}'
+
+    def last_ended_sleep_end(self) -> int | None:
+        """上一条已结束 sleep 链末端：已结束 sleep 段中最大的 ``ended_at``。
+
+        :return: 毫秒时间戳；没有任何已结束 sleep 段时返回 ``None``（此时不判
+            入眠过近）。只读持久化时间线，不读任何进程内状态。
+        """
+
+        row = self._db.execute(
+            "SELECT MAX(ended_at) FROM activities"
+            " WHERE kind = 'sleep' AND ended_at IS NOT NULL"
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else None
+
+    def continuous_kind_chain_minutes(self, current: Activity, now: int) -> KindChain:
+        """返回当前活动所属「连续同 kind 段」的读侧结果。
+
+        :param current: 链尾的活动段，通常是进行中那一段；从它开始向前回溯。
+        :param now: 当前毫秒时间戳；进行中那一段的右端就取它，不做任何裁剪。
+        :return: :class:`KindChain`——累计分钟数、链起点，以及回溯是否抵达了表中
+            第一行（抵达时更早的历史不可知，链长只是已知部分的下界）。单段时分钟数
+            等于这一段自 ``started_at`` 起的时长。
+        :raises RuntimeError: 时间线损坏时抛出——负时长（``ended_at < started_at``）、
+            重叠（``前一段.ended_at > 本段.started_at``）、进行中的段后面还有段。
+            损坏必须暴露，不静默跳出，也不设循环次数上限当兜底。
+
+        回溯次序与 ``assert_invariants`` 相同（``started_at, id``），在一次有序查询
+        的有限结果集上迭代，终止性由结果集有限保证。链的命中条件是段与段首尾相接
+        且 kind 相同（``前一段.ended_at == 本段.started_at``）；缺口让链自然终止。
+        零时长段是合法段——``_insert_cold_start`` 写 ``expected_until=now``，同一
+        毫秒的第一次决策就会把冷启动段结束成 [t, t]：同 kind 时计入（贡献 0 分钟、
+        链继续），异 kind 时照常断链。逐段直接读 activities 表，不设条数上限，
+        也不从 ``recent_summary`` 这类带条数上限的摘要派生——照摘要数会在真机上
+        把长链算短。
+
+        右端只用 ``now``：``decided_until`` 与结算视界裁的是积分右缘，与链长是
+        两件事；共用同一右缘会把进行中那段裁掉，链长在每个边界上都偏短——而边界
+        恰恰是唯一用到它的时刻。
+
+        上限约束的对象是一次连续的同类活动（这条链），不是一条 activities 行：
+        switch 新建行只是把一条链拆成两行，不改变链的累计时长。睡眠链上限复用
+        本函数当判据；本函数自身只读不写，不携带任何门控。
+        """
+
+        rows = self._db.execute(
+            'SELECT id, kind, started_at, ended_at FROM activities ORDER BY started_at, id'
+        ).fetchall()
+        segments = [
+            (
+                int(row['id']),
+                str(row['kind']),
+                int(row['started_at']),
+                int(row['ended_at']) if row['ended_at'] is not None else None,
+            )
+            for row in rows
+        ]
+        cursor = next(
+            (index for index, segment in enumerate(segments) if segment[0] == current.id),
+            None,
+        )
+        if cursor is None:
+            raise RuntimeError(
+                f'活动时间线损坏：当前段（id={current.id}）不在活动时间线中'
+            )
+        for index, (segment_id, _, started_at, ended_at) in enumerate(segments):
+            if ended_at is None:
+                if index != len(segments) - 1:
+                    raise RuntimeError('活动时间线损坏：进行中的段后面仍有活动')
+                continue
+            if ended_at < started_at:
+                raise RuntimeError(
+                    f'活动时间线损坏：段 {segment_id} 为负时长'
+                    f'（started_at={started_at} 晚于 ended_at={ended_at}）'
+                )
+            if index + 1 < len(segments) and ended_at > segments[index + 1][2]:
+                raise RuntimeError(
+                    f'活动时间线损坏：段 {segment_id} 与后段重叠'
+                    f'（ended_at={ended_at} 晚于后段 started_at={segments[index + 1][2]}）'
+                )
+        chain_start = current.started_at
+        while cursor > 0:
+            _, kind, started_at, ended_at = segments[cursor - 1]
+            if ended_at != segments[cursor][2] or kind != current.kind:
+                break
+            chain_start = started_at
+            cursor -= 1
+        return KindChain(
+            minutes=max(0, (now - chain_start) // MINUTE_MS),
+            start_ms=chain_start,
+            reached_record_start=cursor == 0,
+        )
 
     def _open_activity(self) -> Activity | None:
         """读取唯一进行中的活动。"""
@@ -702,17 +962,9 @@ class ActivityTimeline:
     def _insert_cold_start(self, now: int) -> Activity:
         """空时间线从中性清醒段开始，不伪造启动前发生过的事。"""
 
-        draft = ActivityDraft(
-            kind='awake',
-            doing='刚停下来，还没决定接下来做什么',
-            mood='状态平稳，仍会正常回应',
-            energy_pace=0,
-            mood_pace=0,
-            minutes=10,
-        )
         with self._db:
             activity_id = self._insert_draft(
-                draft,
+                _neutral_awake_draft(),
                 started_at=now,
                 ended_at=None,
                 source='decided',
@@ -725,6 +977,24 @@ class ActivityTimeline:
         if row is None:
             raise RuntimeError('冷启动活动写入后无法读回')
         return _activity_from_row(row)
+
+    def _insert_placeholder(self, now: int) -> int:
+        """在调用方的事务里写一条零时长中性清醒占位段，返回新记录主键。
+
+        占位段与冷启动段共用同一处定义（``_neutral_awake_draft``），起点与预期
+        结束都是 ``now``：写入即到期，紧接着的决策以同一个 ``now`` 发生。本方法
+        没有自己的 ``with self._db:``——它必须跑在调用方的事务里，这里的失败会让
+        同事务的其他写入一并回滚；也**不能**改去调用 ``_insert_cold_start``（它
+        自带事务，会在内层退出时提前提交外层写入）。
+        """
+
+        return self._insert_draft(
+            _neutral_awake_draft(),
+            started_at=now,
+            ended_at=None,
+            source='decided',
+            expected_until=now,
+        )
 
     def _ensure_background(self, activity: Activity, now: int) -> None:
         """在运行中的事件循环里创建唯一的边界决策任务。"""
@@ -759,9 +1029,10 @@ class ActivityTimeline:
         if self._decider is None:
             return
         gap_ms = max(0, now - activity.expected_until)
+        placeholder: Activity | None = None
         try:
             transition = await self._decider(activity, now, gap_ms)
-            self._apply_transition(activity, transition, now, gap_ms)
+            placeholder = self._apply_transition(activity, transition, now, gap_ms)
         except Exception as exc:
             logger.exception(
                 '活动决策失败，沿用当前活动并延后重试',
@@ -778,6 +1049,33 @@ class ActivityTimeline:
                     )
             except Exception:
                 logger.exception('活动决策失败后的续期也写入失败', activity_id=activity.id)
+        if placeholder is None:
+            return
+        # 收场写下的零时长占位段「写入即到期」：同一个后台任务里立即以同一个 now
+        # 对它再做一次决策，与冷启动同形。这一次决策不递归——失败就走现有续期；
+        # 它若仍要 sleep，会在写入层被过近规则拒判（上一条 sleep 链末端正是 now）。
+        try:
+            followup = await self._decider(placeholder, now, 0)
+            self._apply_transition(placeholder, followup, now, 0)
+        except Exception as exc:
+            logger.exception(
+                '活动决策失败，沿用当前活动并延后重试',
+                activity_id=placeholder.id,
+                error=str(exc),
+            )
+            try:
+                with self._db:
+                    self._db.execute(
+                        """UPDATE activities
+                           SET expected_until = ?
+                           WHERE id = ? AND ended_at IS NULL""",
+                        (now + DECISION_RETRY_MS, placeholder.id),
+                    )
+            except Exception:
+                logger.exception(
+                    '活动决策失败后的续期也写入失败',
+                    activity_id=placeholder.id,
+                )
 
     def _apply_transition(
         self,
@@ -785,7 +1083,7 @@ class ActivityTimeline:
         transition: ActivityTransition,
         now: int,
         gap_ms: int,
-    ) -> None:
+    ) -> Activity | None:
         """延续当前活动，或根据缺口长度补满缺口并写入下一段。
 
         :param previous: 触发这次决策的进行中活动；它的 ``started_at`` 与 ``kind``
@@ -795,97 +1093,343 @@ class ActivityTimeline:
         :param now: 当前毫秒时间戳；延续的 ``expected_until`` 与新段的 ``started_at``
             都以它为基准。
         :param gap_ms: ``now`` 超出上一条 ``expected_until`` 的毫秒数。
+        :return: 收场占位段（拒判续睡或入睡时写入的零时长中性清醒段）；正常写入
+            时返回 ``None``。
         :raises ValueError: 长缺口被要求延续、延续累计已达该 kind 的单段上限、
-            切换缺少下一段活动，或补叙无法形成连续正时长时抛出。异常不在此处兜底：
-            调用方 ``_advance`` 会记 `活动决策失败` 并续期重试。
-        :return: 无返回值。
+            切换缺少下一段活动、短缺口过近入睡，或补叙无法形成连续正时长时抛出。
+            异常不在此处兜底：调用方 ``_advance`` 会记 `活动决策失败` 并续期重试。
         副作用：写入 activities 表的 UPDATE 或 INSERT，并在返回前断言时间线不变量。
+
+        睡眠闸门只在精力系统开启时生效，判定全部在写入任何行之前完成，长缺口时
+        按含本次拟写补叙的候选时间线判定：
+
+        - 续睡（continue，或 switch→sleep 且与 sleep 链相接）：链未达上限而请求
+          越界时截到「上限 − 链长」；链已达上限时第一次拒判即收场——同一事务、
+          同一 now 内结束 sleep 段并写零时长中性清醒占位段。
+        - 新起 sleep 链（相接的前一段不是 sleep）：距上一条已结束 sleep 链末端
+          不足阈值时拒判——短缺口抛 ``ValueError``、不写任何行、走既有续期；
+          长缺口保留补叙、末尾写占位段、不抛。
+        - 补叙段本身不判、不缩短、不改填；它写入后按统一规则进入后续链长。
         """
 
+        placeholder_id: int | None = None
         with self._db:
             still_open = self._db.execute(
                 'SELECT 1 FROM activities WHERE id = ? AND ended_at IS NULL',
                 (previous.id,),
             ).fetchone()
             if still_open is None:
-                return
+                return None
             if transition.continuation_minutes is not None:
                 if gap_ms > SHORT_GAP_MS:
                     raise ValueError('长缺口不能延续上一段活动')
-                limit = _DECISION_MINUTE_LIMITS[previous.kind]
-                elapsed_minutes = _elapsed_minutes(previous, now)
-                # 累计上限是硬判据，不只写在提示词里：模型可以无视提示词继续回
-                # continue，而每一次单独的 continue 都不超单次上限。抛出后由
-                # `_advance` 记 `活动决策失败` 并把 expected_until 续期
-                # DECISION_RETRY_MS；续期生效期间 `current()` 不会再创建后台任务，
-                # 所以周期性轮询不会把重试间隔压缩到每分钟一次。
-                if elapsed_minutes >= limit:
-                    raise ValueError(
-                        f'累计超限：{previous.kind} 活动已持续 {elapsed_minutes} 分钟，'
-                        f'达到单段时长上限 {limit} 分钟，不能再延续'
+                minutes = transition.continuation_minutes
+                if self._energy_enabled and previous.kind == 'sleep':
+                    chain = self.continuous_kind_chain_minutes(previous, now)
+                    if chain.minutes >= _CONTINUOUS_SLEEP_LIMIT_MINUTES:
+                        logger.warning(
+                            '连续睡眠已达上限，拒判续睡并结束该链',
+                            chain_start=chain.start_ms,
+                            chain_minutes=chain.minutes,
+                            limit=_CONTINUOUS_SLEEP_LIMIT_MINUTES,
+                            decision='continue',
+                            kind='sleep',
+                            raw=minutes,
+                        )
+                        self._db.execute(
+                            'UPDATE activities SET ended_at = ? WHERE id = ?',
+                            (now, previous.id),
+                        )
+                        placeholder_id = self._insert_placeholder(now)
+                    else:
+                        remaining = _CONTINUOUS_SLEEP_LIMIT_MINUTES - chain.minutes
+                        if minutes > remaining:
+                            logger.warning(
+                                '续睡时长按连续睡眠上限截断',
+                                chain_start=chain.start_ms,
+                                chain_minutes=chain.minutes,
+                                limit=_CONTINUOUS_SLEEP_LIMIT_MINUTES,
+                                decision='continue',
+                                kind='sleep',
+                                raw=minutes,
+                                clamped=remaining,
+                            )
+                            minutes = remaining
+                if placeholder_id is None:
+                    limit = _DECISION_MINUTE_LIMITS[previous.kind]
+                    elapsed_minutes = _elapsed_minutes(previous, now)
+                    # 累计上限是硬判据，不只写在提示词里：模型可以无视提示词继续回
+                    # continue，而每一次单独的 continue 都不超单次上限。抛出后由
+                    # `_advance` 记 `活动决策失败` 并把 expected_until 续期
+                    # DECISION_RETRY_MS；续期生效期间 `current()` 不会再创建后台任务，
+                    # 所以周期性轮询不会把重试间隔压缩到每分钟一次。
+                    if elapsed_minutes >= limit:
+                        raise ValueError(
+                            f'累计超限：{previous.kind} 活动已持续 {elapsed_minutes} 分钟，'
+                            f'达到单段时长上限 {limit} 分钟，不能再延续'
+                        )
+                    # 延续同样是「一次决策的时长」：不封顶时它能把清醒段一路延到数小时，
+                    # 与切换出一条长段是同一个故障（见 _DECISION_MINUTE_LIMITS）。
+                    minutes = _clamp_decision_minutes(previous.kind, minutes)
+                    # 单次决策上限仍不足以定住实际段长：在一段已经持续 30 分钟的 awake 上
+                    # 再延续 120 分钟，实际段长是 150 分钟，照样越过累计上限。因此还要按
+                    # 这一段剩余的可用时长再截断一次。剩余不足 10 分钟时截断结果会小于
+                    # 模型输出的下限，这是有意的：这一段就停在累计上限上，下一次边界必然
+                    # 进入必须切换的分支。
+                    remaining_minutes = limit - elapsed_minutes
+                    if minutes > remaining_minutes:
+                        logger.warning(
+                            '延续时长超过这一段剩余的可用时长，已截断到累计上限',
+                            activity_id=previous.id,
+                            kind=previous.kind,
+                            raw=transition.continuation_minutes,
+                            clamped=remaining_minutes,
+                            elapsed_minutes=elapsed_minutes,
+                        )
+                        minutes = remaining_minutes
+                    self._db.execute(
+                        'UPDATE activities SET expected_until = ? WHERE id = ?',
+                        (now + minutes * MINUTE_MS, previous.id),
                     )
-                # 延续同样是「一次决策的时长」：不封顶时它能把清醒段一路延到数小时，
-                # 与切换出一条长段是同一个故障（见 _DECISION_MINUTE_LIMITS）。
-                minutes = _clamp_decision_minutes(
-                    previous.kind,
-                    transition.continuation_minutes,
-                )
-                # 单次决策上限仍不足以定住实际段长：在一段已经持续 30 分钟的 awake 上
-                # 再延续 120 分钟，实际段长是 150 分钟，照样越过累计上限。因此还要按
-                # 这一段剩余的可用时长再截断一次。剩余不足 10 分钟时截断结果会小于
-                # 模型输出的下限，这是有意的：这一段就停在累计上限上，下一次边界必然
-                # 进入必须切换的分支。
-                remaining_minutes = limit - elapsed_minutes
-                if minutes > remaining_minutes:
-                    logger.warning(
-                        '延续时长超过这一段剩余的可用时长，已截断到累计上限',
+                    # 提到 info 是排查需要：延续不新增时间线段，这条日志是「continue 真的
+                    # 发生过」的唯一证据。debug 级既不进 stdout（systemd 部署下 stdout 即
+                    # journal）、也不进文件日志，默认配置下等于不存在——上一轮排查正是
+                    # 因为 grep 不到它，把「continue 叠加」误判成「单次封顶失效」。
+                    logger.info(
+                        '延续当前活动，不新增时间线段',
                         activity_id=previous.id,
-                        kind=previous.kind,
-                        raw=transition.continuation_minutes,
-                        clamped=remaining_minutes,
+                        minutes=minutes,
                         elapsed_minutes=elapsed_minutes,
                     )
-                    minutes = remaining_minutes
-                self._db.execute(
-                    'UPDATE activities SET expected_until = ? WHERE id = ?',
-                    (now + minutes * MINUTE_MS, previous.id),
-                )
-                # 提到 info 是排查需要：延续不新增时间线段，这条日志是「continue 真的
-                # 发生过」的唯一证据。debug 级既不进 stdout（systemd 部署下 stdout 即
-                # journal）、也不进文件日志，默认配置下等于不存在——上一轮排查正是
-                # 因为 grep 不到它，把「continue 叠加」误判成「单次封顶失效」。
-                logger.info(
-                    '延续当前活动，不新增时间线段',
-                    activity_id=previous.id,
-                    minutes=minutes,
-                    elapsed_minutes=elapsed_minutes,
-                )
             else:
+                next_activity = transition.next_activity
+                if next_activity is None:
+                    raise ValueError('活动切换缺少下一段活动')
                 if gap_ms <= SHORT_GAP_MS:
-                    self._db.execute(
-                        'UPDATE activities SET ended_at = ? WHERE id = ?',
-                        (now, previous.id),
-                    )
+                    if self._energy_enabled and next_activity.kind == 'sleep':
+                        if previous.kind == 'sleep':
+                            chain = self.continuous_kind_chain_minutes(previous, now)
+                            if chain.minutes >= _CONTINUOUS_SLEEP_LIMIT_MINUTES:
+                                logger.warning(
+                                    '连续睡眠已达上限，拒判续睡并结束该链',
+                                    chain_start=chain.start_ms,
+                                    chain_minutes=chain.minutes,
+                                    limit=_CONTINUOUS_SLEEP_LIMIT_MINUTES,
+                                    decision='switch',
+                                    kind='sleep',
+                                    raw=next_activity.minutes,
+                                )
+                                self._db.execute(
+                                    'UPDATE activities SET ended_at = ? WHERE id = ?',
+                                    (now, previous.id),
+                                )
+                                placeholder_id = self._insert_placeholder(now)
+                            else:
+                                remaining = (
+                                    _CONTINUOUS_SLEEP_LIMIT_MINUTES - chain.minutes
+                                )
+                                if next_activity.minutes > remaining:
+                                    logger.warning(
+                                        '续睡时长按连续睡眠上限截断',
+                                        chain_start=chain.start_ms,
+                                        chain_minutes=chain.minutes,
+                                        limit=_CONTINUOUS_SLEEP_LIMIT_MINUTES,
+                                        decision='switch',
+                                        kind='sleep',
+                                        raw=next_activity.minutes,
+                                        clamped=remaining,
+                                    )
+                                    next_activity = replace(
+                                        next_activity,
+                                        minutes=remaining,
+                                    )
+                        else:
+                            self._reject_reentry_short_gap(
+                                now,
+                                self.last_ended_sleep_end(),
+                                raw=next_activity.minutes,
+                            )
+                    if placeholder_id is None:
+                        self._db.execute(
+                            'UPDATE activities SET ended_at = ? WHERE id = ?',
+                            (now, previous.id),
+                        )
+                        self._insert_draft(
+                            next_activity,
+                            started_at=now,
+                            ended_at=None,
+                            source='decided',
+                        )
                 else:
-                    self._db.execute(
-                        'UPDATE activities SET ended_at = ? WHERE id = ?',
-                        (previous.expected_until, previous.id),
-                    )
-                    self._insert_backfill(
+                    layout = _backfill_layout(
                         transition.backfilled,
                         previous.expected_until,
                         now,
                     )
-                next_activity = transition.next_activity
-                if next_activity is None:
-                    raise ValueError('活动切换缺少下一段活动')
-                self._insert_draft(
-                    next_activity,
-                    started_at=now,
-                    ended_at=None,
-                    source='decided',
-                )
+                    if self._energy_enabled and next_activity.kind == 'sleep':
+                        trailing_sleep_ms = 0
+                        for draft, segment_start, segment_end in reversed(layout):
+                            if draft.kind != 'sleep':
+                                break
+                            trailing_sleep_ms += segment_end - segment_start
+                        if trailing_sleep_ms > 0:
+                            chain_ms = trailing_sleep_ms
+                            if (
+                                all(draft.kind == 'sleep' for draft, _, _ in layout)
+                                and previous.kind == 'sleep'
+                            ):
+                                chain_ms += (
+                                    self.continuous_kind_chain_minutes(
+                                        previous,
+                                        previous.expected_until,
+                                    ).minutes
+                                    * MINUTE_MS
+                                )
+                            chain_minutes = chain_ms // MINUTE_MS
+                            if chain_minutes >= _CONTINUOUS_SLEEP_LIMIT_MINUTES:
+                                logger.warning(
+                                    '连续睡眠已达上限，拒判续睡并结束该链',
+                                    chain_start=now - chain_ms,
+                                    chain_minutes=chain_minutes,
+                                    limit=_CONTINUOUS_SLEEP_LIMIT_MINUTES,
+                                    decision='switch',
+                                    kind='sleep',
+                                    raw=next_activity.minutes,
+                                )
+                                placeholder_id = self._finish_long_gap_with_placeholder(
+                                    previous,
+                                    layout,
+                                    now,
+                                )
+                            else:
+                                remaining = (
+                                    _CONTINUOUS_SLEEP_LIMIT_MINUTES - chain_minutes
+                                )
+                                if next_activity.minutes > remaining:
+                                    logger.warning(
+                                        '续睡时长按连续睡眠上限截断',
+                                        chain_start=now - chain_ms,
+                                        chain_minutes=chain_minutes,
+                                        limit=_CONTINUOUS_SLEEP_LIMIT_MINUTES,
+                                        decision='switch',
+                                        kind='sleep',
+                                        raw=next_activity.minutes,
+                                        clamped=remaining,
+                                    )
+                                    next_activity = replace(
+                                        next_activity,
+                                        minutes=remaining,
+                                    )
+                        else:
+                            last_sleep_end = self.last_ended_sleep_end()
+                            for draft, segment_start, segment_end in layout:
+                                if draft.kind == 'sleep':
+                                    last_sleep_end = (
+                                        segment_end
+                                        if last_sleep_end is None
+                                        else max(last_sleep_end, segment_end)
+                                    )
+                            if self._reentry_too_soon(now, last_sleep_end):
+                                self._log_reentry_rejection(
+                                    now,
+                                    last_sleep_end,
+                                    raw=next_activity.minutes,
+                                )
+                                placeholder_id = self._finish_long_gap_with_placeholder(
+                                    previous,
+                                    layout,
+                                    now,
+                                )
+                    if placeholder_id is None:
+                        self._db.execute(
+                            'UPDATE activities SET ended_at = ? WHERE id = ?',
+                            (previous.expected_until, previous.id),
+                        )
+                        for draft, started_at, segment_end in layout:
+                            self._insert_draft(
+                                draft,
+                                started_at=started_at,
+                                ended_at=segment_end,
+                                source='backfilled',
+                                expected_until=segment_end,
+                            )
+                        self._insert_draft(
+                            next_activity,
+                            started_at=now,
+                            ended_at=None,
+                            source='decided',
+                        )
         self.assert_invariants()
+        if placeholder_id is None:
+            return None
+        row = self._db.execute(
+            'SELECT * FROM activities WHERE id = ?',
+            (placeholder_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError('收场占位段写入后无法读回')
+        return _activity_from_row(row)
+
+    def _reentry_too_soon(self, now: int, last_sleep_end: int | None) -> bool:
+        """距上一条已结束 sleep 链末端不足阈值时判过近；没有任何 sleep 段不判。"""
+
+        return (
+            last_sleep_end is not None
+            and now - last_sleep_end < _SLEEP_REENTRY_MIN_MINUTES * MINUTE_MS
+        )
+
+    def _log_reentry_rejection(self, now: int, last_sleep_end: int, raw: int) -> None:
+        """过近拒判的事实告警：上一条链末端、间隔、阈值与原始请求。"""
+
+        logger.warning(
+            '距上次睡醒不足阈值，拒判入睡',
+            last_sleep_end=last_sleep_end,
+            interval_minutes=(now - last_sleep_end) // MINUTE_MS,
+            threshold=_SLEEP_REENTRY_MIN_MINUTES,
+            decision='switch',
+            kind='sleep',
+            raw=raw,
+        )
+
+    def _reject_reentry_short_gap(self, now: int, last_sleep_end: int | None, raw: int) -> None:
+        """短缺口过近拒判：告警后抛 ValueError，不写任何行，走既有续期。"""
+
+        if not self._reentry_too_soon(now, last_sleep_end):
+            return
+        assert last_sleep_end is not None
+        self._log_reentry_rejection(now, last_sleep_end, raw)
+        interval = (now - last_sleep_end) // MINUTE_MS
+        raise ValueError(
+            f'距上次睡醒只有 {interval} 分钟，不足 {_SLEEP_REENTRY_MIN_MINUTES} 分钟阈值，'
+            '不允许入睡'
+            f'（上一条 sleep 链末端 {last_sleep_end}，间隔 {interval} 分钟，'
+            f'阈值 {_SLEEP_REENTRY_MIN_MINUTES} 分钟，请求 switch→sleep {raw} 分钟）'
+        )
+
+    def _finish_long_gap_with_placeholder(
+        self,
+        previous: Activity,
+        layout: list[tuple[ActivityDraft, int, int]],
+        now: int,
+    ) -> int:
+        """长缺口拒判的收尾：结束当前段、照写补叙、末尾写零时长占位段。
+
+        补叙本身不判、不缩短、不改填、不回滚；被拒的 sleep 下一段不写入。
+        """
+
+        self._db.execute(
+            'UPDATE activities SET ended_at = ? WHERE id = ?',
+            (previous.expected_until, previous.id),
+        )
+        for draft, started_at, segment_end in layout:
+            self._insert_draft(
+                draft,
+                started_at=started_at,
+                ended_at=segment_end,
+                source='backfilled',
+                expected_until=segment_end,
+            )
+        return self._insert_placeholder(now)
 
     def _insert_backfill(
         self,
@@ -895,27 +1439,14 @@ class ActivityTimeline:
     ) -> None:
         """按模型给出的相对时长把长缺口完整且连续地铺满。"""
 
-        if not drafts:
-            raise ValueError('长缺口决策必须给出至少一段 backfill')
-        total_minutes = sum(max(1, draft.minutes) for draft in drafts)
-        cursor = start
-        duration = end - start
-        for index, draft in enumerate(drafts):
-            segment_end = end if index == len(drafts) - 1 else (
-                cursor + duration * max(1, draft.minutes) // total_minutes
-            )
-            if segment_end <= cursor:
-                raise ValueError('backfill 段过多，无法形成正时长的连续活动')
+        for draft, started_at, segment_end in _backfill_layout(drafts, start, end):
             self._insert_draft(
                 draft,
-                started_at=cursor,
+                started_at=started_at,
                 ended_at=segment_end,
                 source='backfilled',
                 expected_until=segment_end,
             )
-            duration -= segment_end - cursor
-            total_minutes -= max(1, draft.minutes)
-            cursor = segment_end
 
     def _insert_draft(
         self,

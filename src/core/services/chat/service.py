@@ -527,14 +527,24 @@ class ChatService(
         下次读到的就是新值。图片描述器由本服务持有，这里一并换掉，
         调用方不必知道它的存在。
 
+        ``schedule.energy_enabled`` 是这条规则的例外，见下方注释。
+
         :param cfg: 重载后的运行时配置。
         :return: ``None``。
-        副作用：重绑自身与图片描述器的配置引用；不重建任何对象。
+        副作用：重绑自身与图片描述器的配置引用；不重建任何对象。精力开关发生变化时
+            会写 ``meta.energy_disabled_at`` 或按关闭时长更新 ``persona_self``；本方法
+            由配置重载在工作线程里同步调用，因此该写入不在事件循环线程上。
         """
 
         self._cfg = cfg
         if self._image_describer is not None:
             self._image_describer.apply_config(cfg)
+        # 精力开关不是「下次读到新值」就够的字段：它门控的是带副作用的状态转换——
+        # 关闭时记下关闭起点，重新开启时按关闭时长补算基线回归。Persona 在装配期把这
+        # 个布尔值拷进了自己身上，换配置引用够不着它，只有 set_energy_enabled 能把转换
+        # 补上。该调用幂等（关闭起点 INSERT OR IGNORE，开启时无起点则空操作），每次
+        # 重载都调不会重复计账。
+        self.persona.set_energy_enabled(cfg.schedule.energy_enabled)
 
     @property
     def ready(self) -> bool:
@@ -683,13 +693,13 @@ class ChatService(
         settled = now
         if self._schedule:
             settled = min(now, self._schedule.decided_until(now))
-            effect = self._schedule.integrate_between(
+            pieces = self._schedule.iter_pieces(
                 self.persona.settled_at(),
                 settled,
             )
         else:
-            effect = None
-        self.persona.settle_elapsed_time(settled, effect)
+            pieces = None
+        self.persona.settle_elapsed_time(settled, pieces)
 
     async def startup(self) -> None:
         """启动由入站消息唤醒、固定心跳兜底的聊天缓冲循环，并加载插件。
