@@ -11,7 +11,7 @@ pace=-1 档，不再单独写死。每次结算在状态事务提交之后写一
 - 经真实 ``ChatService.settle_time`` 入口的 rest／awake 结算，期望按新表速率
   字面量手算（逐片累加不触界，再向基线回归）；
 - 未装配日程的回退路径按清醒 pace=-1 档（-3.5/h）消耗；
-- 三处提示词文案的双向断言（新原文在、旧原文不在）；
+- 四处提示词文案的双向断言（新原文在、旧原文不在），含休息中的对话行为提示；
 - 结算日志的条数与字段口径，以及早退、回退、精力关闭三种边界。
 
 依赖 ``src.core.persona.state``、``src.core.schedule.timeline``、
@@ -40,7 +40,7 @@ from src.core.persona.state import (
     describe_persona_for_planning,
 )
 from src.core.schedule import timeline as timeline_module
-from src.core.schedule.plan import DayPlanService
+from src.core.schedule.plan import DayPlanService, ScheduleSleepState
 from src.core.schedule.timeline import (
     Activity,
     ActivityDecisionContext,
@@ -289,6 +289,22 @@ def test_planning_guidance_drops_recovery_wording() -> None:
         '不要把一整天都写成没劲。'
     )
     assert '明确能回精力' not in spent and '明确能回精力' not in tired
+
+
+def test_resting_behavior_hint_says_energy_drains_slower(db: sqlite3.Connection) -> None:
+    """对话行为提示：休息中不再说精力不会下降，改为比平常清醒掉得慢。"""
+
+    chat = _services(db)
+    schedule = DayPlanService(
+        chat.memory, lambda: chat.persona.get(chat.desktop_context.person.id),
+        lambda _now: '', lambda: 0, lambda: None, '测试角色', '安静',
+        timeline=ActivityTimeline(db),
+    )
+
+    prompt = schedule.describe(T0, ScheduleSleepState(asleep=False, resting=True))
+
+    assert '你正在休息，精力比平常清醒掉得慢，但仍然清醒并会正常回应。' in prompt
+    assert '精力不会继续下降' not in prompt, '旧文案必须退场'
 
 
 # ---------------------------------------------------------------- 结算日志

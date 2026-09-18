@@ -464,7 +464,7 @@ class DayPlanService:
         if self._config.energy_enabled and sleep.asleep:
             lines.append('你已经睡着了；现在有人找你时，是外部消息把你叫醒。')
         elif self._config.energy_enabled and sleep.resting:
-            lines.append('你正在休息，精力不会继续下降，但仍然清醒并会正常回应。')
+            lines.append('你正在休息，精力比平常清醒掉得慢，但仍然清醒并会正常回应。')
         return '\n'.join(lines)
 
     def decided_until(self, now: int) -> int:
