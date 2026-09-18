@@ -11,6 +11,7 @@
 
 - 新增字段补进文件并写默认值，只追加不改写：已有的行、注释、顺序一律不动。
 - 废弃字段就地删除并展示实际删除的路径：留在文件里的字段看似生效，实际没有代码读取。
+- 改名字段沿用旧键的值而不写默认值，旧键按废弃字段删除；只对旧版本文件生效。
 - 字段对账成功后再把 ``[inner].version`` 改写为当前配置版本；版本号最后写，
   避免中途失败留下「版本已新、字段还旧」的配置。
 - 写入任何字节之前先整目录备份到 ``data/backups/config/<时间戳>/``。``config/``
@@ -44,6 +45,12 @@ logger = get_logger(__name__)
 # 版本段不参与字段增删：它的值由 read_versioned_toml 单独校验，升级器在字段对账
 # 全部写成功之后才通过 _rewrite_version 改写，避免出现「版本已新、字段还旧」。
 _SKIP_SECTIONS = frozenset({'inner'})
+
+# 改名字段，按文件列出「新路径 -> 旧路径」。旧版本文件只有旧键时，新键沿用旧值；
+# 口径与 electron/main/config.ts 读取 bot.toml 时的旧键迁移一致。
+_RENAMED_FIELDS: Dict[str, Dict[str, str]] = {
+    'bot.toml': {'schedule.energy_enabled': 'schedule.sleep_enabled'},
+}
 
 
 def _comment_start(line: str) -> int:
@@ -148,12 +155,15 @@ class AddedField:
 
     :ivar section: 所属 TOML 表名；顶层字段为空字符串。
     :ivar key: 字段名。
-    :ivar value: 已编码为 TOML 字面量的默认值。
+    :ivar value: 已编码为 TOML 字面量的取值；通常是默认值，改名字段是旧键的值。
+    :ivar renamed_from: 改名字段的旧路径，例如 ``schedule.sleep_enabled``；
+        取值来自默认值时为 ``None``。
     """
 
     section: str
     key: str
     value: str
+    renamed_from: str | None = None
 
     @property
     def path(self) -> str:
@@ -320,6 +330,33 @@ def diff_document(raw: Dict[str, Any], model: Type[BaseModel], name: str) -> Fil
     return FileDiff(name=name, added=added, removed=removed)
 
 
+def _carry_renamed_values(raw: Dict[str, Any], diff: FileDiff) -> None:
+    """让改名字段沿用文件里旧键的值，而不是写入默认值。
+
+    旧键不在当前模型里，仍按废弃字段删除；新键已存在时不在 ``diff.added`` 中，
+    旧值不参与。补新键与删旧键在同一次文档升级里完成，失败时随整份还原。
+
+    :param raw: 该文件解析出的原始字典。
+    :param diff: 该文件的差异。
+    :raises TypeError: 旧值无法编码为 TOML 字面量。
+    副作用：原地改写 ``diff.added`` 中命中条目的 ``value`` 与 ``renamed_from``。
+    """
+
+    renames = _RENAMED_FIELDS.get(diff.name, {})
+    for item in diff.added:
+        old_path = renames.get(item.path)
+        if old_path is None:
+            continue
+        value: Any = raw
+        for part in old_path.split('.'):
+            value = value.get(part) if isinstance(value, dict) else None
+        # TOML 没有空值，取到 None 即文件里没有旧键。
+        if value is None:
+            continue
+        item.value = _encode(value)
+        item.renamed_from = old_path
+
+
 def backup_config_directory(directory: Path, data_dir: Path) -> Path:
     """在改写任何配置文件之前，整目录快照一份。
 
@@ -386,7 +423,15 @@ def apply_added_fields(path: Path, added: List[AddedField]) -> bool:
                 (i for i, line in enumerate(lines) if _section_name(line) is not None),
                 len(lines),
             )
-        block = ['# 本项由版本升级自动补齐，值为默认值', *[f'{i.key} = {i.value}' for i in items]]
+        block: List[str] = []
+        defaults = [i for i in items if i.renamed_from is None]
+        if defaults:
+            block.append('# 本项由版本升级自动补齐，值为默认值')
+            block.extend(f'{i.key} = {i.value}' for i in defaults)
+        for item in items:
+            if item.renamed_from is not None:
+                block.append(f'# 本项由版本升级从 {item.renamed_from} 改名而来，沿用旧值')
+                block.append(f'{item.key} = {item.value}')
         if insert_at < 0:
             lines.extend(['', header, *block])
             continue
@@ -554,10 +599,16 @@ def report_config_changes(diffs: List[FileDiff]) -> None:
             rows.append(
                 f'{diff.name} 配置版本 {diff.version_from} -> {diff.version_to}（已写入文件）'
             )
+        renamed = {item.renamed_from: item.path for item in diff.added if item.renamed_from}
         for item in diff.added:
-            rows.append(f'{diff.name} 新增 {item.path} = {item.value}（默认值，已写入文件）')
+            origin = f'沿用 {item.renamed_from} 的旧值' if item.renamed_from else '默认值'
+            rows.append(f'{diff.name} 新增 {item.path} = {item.value}（{origin}，已写入文件）')
         for path in diff.removed:
-            rows.append(f'{diff.name} 删除 {path}（代码已不再读取，旧值见本次配置备份）')
+            note = (
+                f'已改名为 {renamed[path]}' if path in renamed
+                else '代码已不再读取，旧值见本次配置备份'
+            )
+            rows.append(f'{diff.name} 删除 {path}（{note}）')
     print_box('配置变更', rows, width=104, source=__name__)
     logger.info(
         'config_fields_changed',
@@ -661,6 +712,9 @@ def upgrade_config_directory(
         inner = raw.get('inner')
         version = inner.get('version') if isinstance(inner, dict) else None
         diff.version_from = version if isinstance(version, str) else None
+        # 只迁移旧版本文件：已声明当前版本的文件按新结构解释过，残留的旧键只删除。
+        if diff.version_from != CONFIG_VERSION:
+            _carry_renamed_values(raw, diff)
         diffs.append(diff)
         if diff.added or diff.removed or diff.version_from != CONFIG_VERSION:
             targets.append(diff)
