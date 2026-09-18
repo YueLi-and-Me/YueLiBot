@@ -17,9 +17,12 @@ from typing import Sequence
 import sqlite3
 
 from src.core.agent.relationship import relationship_tier
+from src.core.logging.logger import get_logger
 from src.core.runtime.clock import now as current_time, snapshot_date
 from src.core.platform_io.registry import StreamRegistry
 from src.core.platform_io.types import PersonRef
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -67,20 +70,24 @@ class SettlementPiece:
 def _accumulate_energy_piecewise(
     energy: float,
     pieces: Sequence[SettlementPiece],
-) -> float:
+) -> tuple[float, float]:
     """按片段顺序逐片累加精力增量，每片结束即截断到 [0, 100]。
 
     :param energy: 窗口起点的精力初值。
     :param pieces: 与结算窗口求交后的恒速率片段，按 ``(started_at, id)`` 序。
-    :return: 逐片累加截断后的精力值；不回归、不写库。
+    :return: ``(逐片累加截断后的精力, 净截断量)``——净截断量在同一次遍历里算出，
+        上界烧掉记正、下界抬升记负；不回归、不写库。
 
     越界溢出在片末当场烧掉，不会带进下一片——它与「整窗求和后才截断」的差异
     只出现在片末触界的窗口，方向由净截断量符号决定。
     """
 
+    clip = 0.0
     for piece in pieces:
-        energy = _clamp('energy', energy + piece.energy_rate * piece.hours)
-    return energy
+        raw = energy + piece.energy_rate * piece.hours
+        energy = _clamp('energy', raw)
+        clip += raw - energy
+    return energy, clip
 
 
 @dataclass
@@ -130,34 +137,32 @@ MOOD_RATE = 2.0
 MOOD_TAU = 6.0
 # 精力速率表（精力点/小时）：睡眠、休息、清醒是三种不同的过程，按 (kind, pace)
 # 分档而不共用一个线性系数——共用一个系数时改一端就要重算另一端，正是旧
-# ENERGY_RATE 难调的根源。pace 取值范围由时间线的 _ENERGY_PACE_RANGES 限定。
-# 标定依据（时长构成取自真机连续 7 天的实际活动，不是估算）：
-# - 睡 8 小时 pace=3 给 +52，睡 6 小时给 +39；睡不够仍然补不满，跨日累积的代价
-#   刻意保留。
-# - 真机构成为睡眠 8.4h/天、休息 6.0h/天、清醒 9.6h/天，按本表核算活动日均
-#   +15.0，扣掉对话的 -11.7 后日均净 +3.3，稳态落在 73 上下。
-# - 清醒是最大的消耗项（日均 -50.8，占全部消耗七成以上，其中 pace=-1 一档就占
-#   6.0h/天），因此睡眠速率必须明显高于清醒速率的绝对值。旧 ENERGY_RATE=2.5
-#   在同一份真机数据上日均净 -4.3，精力反复归零；睡眠速率若只提到 +6.0/h 仍是
-#   日均净 -0.9，活动积分整体为负、全靠 ENERGY_BASELINE 的回归项兜底，主次颠倒。
+# ENERGY_RATE 难调的根源。同一 kind 内档位数字越大，对精力越好；只有 sleep 回
+# 精力，rest 只是比平常清醒掉得慢。pace 取值范围由时间线的 _ENERGY_PACE_RANGES
+# 限定。
+# 标定依据：活动构成取 2026-09-13 19:29 至 09-17 15:17 的生产实测。该构成下
+# 收支净零所需睡眠约 7.94 小时/天，计入回合消耗后的稳态精力约 48；两个数字
+# 都带「精力回归仍在」的前提，是该构成下的对照值而不是上线目标。
 # 查表缺键直接抛 KeyError，不给默认值兜底；pace 越界由时间线入口限幅拦截。
 ENERGY_RATES: dict[tuple[str, int], float] = {
     ('sleep', 2): 4.0,
     ('sleep', 3): 6.5,
-    ('rest', 1): 1.0,
-    ('rest', 2): 3.0,
+    ('rest', 1): -1.5,
+    ('rest', 2): -0.75,
     ('awake', 1): 0.0,
-    ('awake', 0): -3.0,
-    ('awake', -1): -6.0,
-    ('awake', -2): -9.0,
-    ('awake', -3): -12.0,
+    ('awake', 0): -1.5,
+    ('awake', -1): -3.5,
+    ('awake', -2): -5.5,
+    ('awake', -3): -7.5,
 }
-# 未装配日程服务时，全部经过时间按清醒 pace=-1 即 -6.0/h 消耗。该常量只在日程
-# 服务未装配时生效；装配后精力曲线由活动时间线按 ENERGY_RATES 积分决定。
-ENERGY_FALLBACK_RATE = -6.0
+# 未装配日程服务时，全部经过时间按清醒 pace=-1 档消耗。直接引用速率表而不是
+# 写死数值：它的定义本来就是「按清醒 pace=-1 消耗」，单一来源保证速率表再改时
+# 两者不分叉。该常量只在日程服务未装配时生效；装配后精力曲线由活动时间线按
+# ENERGY_RATES 积分决定。
+ENERGY_FALLBACK_RATE = ENERGY_RATES[('awake', -1)]
 # 精力若只是纯收支累加，长期必然贴到 0 或 100 中的一端；有了回归力，稳态由
-# 基线决定，速率表随之解耦。真机构成下预期稳态约 73，日内振幅约 ±25：早上醒来
-# 95 上下，晚上睡前 50 上下。连续熬夜仍然净亏，代价不会被抹平。
+# 基线决定，速率表随之解耦。实测构成下计入回合消耗的稳态精力约 48（标定依据
+# 见 ENERGY_RATES 上方注释）。连续熬夜仍然净亏，代价不会被抹平。
 ENERGY_BASELINE = 65.0   # 精力基线：无外力时收敛到的值，取值 0~100
 ENERGY_TAU = 48.0        # 精力回归时间常数，单位小时；一天回归约 39%
 # mood 标签自报精力的放大系数。原值为 3：一次 energy=-1 在群聊里等于 -2.4，相当于
@@ -600,8 +605,8 @@ class Persona:
 
         :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
         :param pieces: 与结算窗口求交后的恒速率片段序列；``None`` 表示未装配日程
-            服务，全部经过时间按清醒 pace=-1（-6.0/h）消耗处理；空序列表示装配了
-            日程但窗口内没有活动覆盖，增量为 0——两者不是一回事。
+            服务，全部经过时间按清醒 pace=-1 档（``ENERGY_FALLBACK_RATE``）消耗处理；
+            空序列表示装配了日程但窗口内没有活动覆盖，增量为 0——两者不是一回事。
 
         :return: owner 的调整后状态；经过时间不足一小时则返回原状态。
 
@@ -609,7 +614,8 @@ class Persona:
         :raises RuntimeError: 状态记录缺失或数据库写入失败。
 
         副作用：
-            经过至少一小时后原子更新两张状态表和全局游标，再保存每日快照。
+            经过至少一小时后原子更新两张状态表和全局游标，再保存每日快照；
+            事务提交之后写一条「精力结算完成」日志，不足一小时的早退不写。
         """
 
         now = now if now is not None else current_time()
@@ -632,13 +638,17 @@ class Persona:
         mood = state.mood + mood_delta
         mood += (50.0 - mood) * (1.0 - exp(-hours / MOOD_TAU))
         # 与心情同序：先加活动积分，再向基线回归。精力的活动积分逐片累加、每片
-        # 结束即截断——越界溢出当场烧掉，不再被带进回归。
+        # 结束即截断——越界溢出当场烧掉，不再被带进回归。逐片截断后的精力与净截断
+        # 量只在走了逐片路径时才有值，回退路径与精力关闭时保持 None。
         energy = state.energy
+        piecewise_energy: float | None = None
+        energy_clip: float | None = None
         if self._energy_enabled:
             if pieces is None:
                 energy += hours * ENERGY_FALLBACK_RATE
             else:
-                energy = _accumulate_energy_piecewise(energy, pieces)
+                piecewise_energy, energy_clip = _accumulate_energy_piecewise(energy, pieces)
+                energy = piecewise_energy
             energy += (ENERGY_BASELINE - energy) * (1.0 - exp(-hours / ENERGY_TAU))
         days = hours / 24
         next_state = PersonaState(
@@ -663,6 +673,22 @@ class Persona:
                 'UPDATE persona_self SET updated_at = ? WHERE id = 1', (now,)
             )
         self.snapshot_daily(person.id, now)
+        # 日志只在状态事务提交、快照落地之后写：早退（不足一小时）在上方直接返回，
+        # 不会走到这里。
+        logger.info(
+            '精力结算完成',
+            window_started_at=settled_at,
+            window_ended_at=now,
+            hours=hours,
+            energy_enabled=self._energy_enabled,
+            fallback=pieces is None,
+            energy_before=state.energy,
+            energy_piecewise=piecewise_energy,
+            energy_after=next_state.energy,
+            c_clip=energy_clip,
+            mood_before=state.mood,
+            mood_after=next_state.mood,
+        )
         return next_state
 
     def _require_owner(self, person_id: int) -> PersonRef:
@@ -758,13 +784,15 @@ def describe_persona_for_planning(s: PersonaState, *, energy_enabled: bool = Tru
         energy_guidance = ''
     elif tier is EnergyTier.SPENT:
         energy_guidance = (
-            '昨天结束时精力已经见底。今天的安排要明显轻一些，并且必须至少有两段是明确能回精力的'
-            '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'
+            '昨天结束时精力已经见底。今天的安排要明显轻一些，'
+            '多排不费劲的事（吃饭、洗澡、发呆这类），需要的话留出午睡，'
+            '不要把一整天都写成没劲。'
         )
     elif tier is EnergyTier.TIRED:
         energy_guidance = (
-            '昨天结束时精力偏低。今天的安排要轻一些，并且必须至少有两段是明确能回精力的'
-            '（吃饭、午睡、洗澡、发呆这类），不要把一整天都写成没劲。'
+            '昨天结束时精力偏低。今天的安排要轻一些，'
+            '多排不费劲的事（吃饭、洗澡、发呆这类），需要的话留出午睡，'
+            '不要把一整天都写成没劲。'
         )
     elif tier is EnergyTier.HIGH:
         energy_guidance = (

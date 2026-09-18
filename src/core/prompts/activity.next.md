@@ -15,8 +15,8 @@
 
 # 决策规则
 1. kind 只能是 awake / rest / sleep。
-   awake 的 energyPace 只能是 -3 到 1；rest 只能是 1 或 2；sleep 只能是 2 或 3。
-   清醒时最好的状态是不掉精力，真正回精力只能靠 rest 或 sleep。
+   awake 的 energyPace 只能是 -3 到 1；rest 只能是 1 或 2（1 是边歇边做点事，2 是真正放松下来）；sleep 只能是 2 或 3。
+   energyPace 越大对精力越好。清醒时最好的状态是不掉精力；rest 不回精力，只是比平常清醒掉得慢；真正回精力只能靠 sleep。
 2. {{sleep_rule}}
 3. energyPace 表示精力变化，moodPace 表示心情变化，moodPace 只能是 -3 到 3 的整数。
    两根轴各自判断，不要机械地总写成同号。

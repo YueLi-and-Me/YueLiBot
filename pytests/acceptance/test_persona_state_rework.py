@@ -497,7 +497,9 @@ def test_persona_and_planning_descriptions_never_expose_numbers() -> None:
             assert '心情' not in relationship
 
     low_guidance = planning(_state(energy=0.0, mood=10.0))
-    assert '至少有两段' in low_guidance
+    assert '多排不费劲的事' in low_guidance
+    assert '需要的话留出午睡' in low_guidance
+    assert '必须至少有两段' not in low_guidance
     assert '不要把一整天都写成没劲' in low_guidance
 
 

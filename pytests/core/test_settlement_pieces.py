@@ -31,6 +31,7 @@ from src.core.config.schema import Config
 from src.core.persona import state as state_module
 from src.core.persona.state import (
     ENERGY_BASELINE,
+    ENERGY_FALLBACK_RATE,
     ENERGY_RATES,
     ENERGY_TAU,
     MOOD_RATE,
@@ -140,7 +141,7 @@ def _old_algorithm(energy: float, deltas: Sequence[float], hours: float) -> floa
 def _new_algorithm(energy: float, pieces: Sequence[Any], hours: float) -> float:
     """现行入口内部同序：逐片累加并截断 → 整窗回归 → 末尾截断。"""
 
-    walked = state_module._accumulate_energy_piecewise(energy, pieces)
+    walked, _clip = state_module._accumulate_energy_piecewise(energy, pieces)
     walked = walked + (ENERGY_BASELINE - walked) * (1.0 - exp(-hours / ENERGY_TAU))
     return min(100.0, max(0.0, walked))
 
@@ -202,7 +203,11 @@ def test_settle_raises_lower_overflow_at_piece_end() -> None:
 
 
 def test_settle_burns_mid_window_overflow_even_when_net_lands_in_range() -> None:
-    """中途越界后落回界内：E=80 先 rest pace=2 共 10 小时、后 awake pace=-1 共 10 小时。"""
+    """中途越界后落回界内：E=80 先 sleep pace=3 共 8 小时、后 awake pace=-1 共 12 小时。
+
+    sleep 片末 80+52=132 截到 100，烧掉的 32 不进回归；awake 再扣 42 落回 58，
+    整窗净增 −22 本不触界。新结果 60.3853；旧算法把 132 带进回归，得 81.4810。
+    """
 
     db = sqlite3.connect(':memory:')
     db.row_factory = sqlite3.Row
@@ -214,20 +219,20 @@ def test_settle_burns_mid_window_overflow_even_when_net_lands_in_range() -> None
         chat = _services(db)
         _reset_persona(db, 80.0, T0)
         _insert_activity(
-            db, kind='rest', energy_pace=2,
-            started_at=T0, expected_until=T0 + 10 * HOUR_MS, ended_at=T0 + 10 * HOUR_MS,
+            db, kind='sleep', energy_pace=3,
+            started_at=T0, expected_until=T0 + 8 * HOUR_MS, ended_at=T0 + 8 * HOUR_MS,
         )
         _insert_activity(
             db, kind='awake', energy_pace=-1,
-            started_at=T0 + 10 * HOUR_MS, expected_until=T0 + 20 * HOUR_MS,
+            started_at=T0 + 8 * HOUR_MS, expected_until=T0 + 20 * HOUR_MS,
             ended_at=T0 + 20 * HOUR_MS,
         )
 
         chat.settle_time(T0 + 20 * HOUR_MS)
 
         energy = chat.persona.get(1).energy
-        assert energy == pytest.approx(48.5190, abs=1e-4)
-        assert abs(energy - 55.1114) > 0.1, '新旧结果必须可区分：旧算法把越界带进回归'
+        assert energy == pytest.approx(60.3853, abs=1e-4)
+        assert abs(energy - 81.4810) > 0.1, '新旧结果必须可区分：旧算法把越界带进回归'
     finally:
         db.close()
 
@@ -491,14 +496,14 @@ def test_unassembled_schedule_uses_the_legacy_fallback_unchanged(db: sqlite3.Con
 
     chat.settle_time(T0 + 3 * HOUR_MS)
 
-    expected = 60.0 + 3.0 * -6.0
+    expected = 60.0 + 3.0 * ENERGY_FALLBACK_RATE
     expected = expected + (ENERGY_BASELINE - expected) * (1.0 - exp(-3.0 / ENERGY_TAU))
     assert chat.persona.get(1).energy == pytest.approx(min(100.0, max(0.0, expected)))
     assert chat.persona.settled_at() == T0 + 3 * HOUR_MS
 
 
 def test_assembled_but_empty_window_is_not_the_fallback(db: sqlite3.Connection) -> None:
-    """装配日程但窗口内没有活动覆盖：增量为 0，与回退公式的 −6/h 不是一回事。"""
+    """装配日程但窗口内没有活动覆盖：增量为 0，与回退路径按清醒 pace=-1 档消耗不是一回事。"""
 
     chat = _services(db)
     _reset_persona(db, 60.0, T0)
