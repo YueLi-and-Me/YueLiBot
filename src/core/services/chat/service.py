@@ -275,7 +275,7 @@ class ChatService(
         # 进程内状态，重启即丢：链接到那时多半也已过期。
         self._video_unwatched: dict[int, list[_UnwatchedVideo]] = {}
         # 本回合开始前必须等待的补看任务（按 stream）；物化批次时取走并清空。
-        self._video_catchup_tasks: dict[int, list[asyncio.Task[str | None]]] = {}
+        self._video_catchup_tasks: dict[int, list[asyncio.Task[str]]] = {}
         self._default_action_policy = action_policy or TurnPlanner(AlwaysReplyPolicy())
         self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
@@ -995,7 +995,9 @@ class ChatService(
         # 覆盖掉。以此刻库里正文为底合并，先完成的结果才不会被后到的覆盖。
         base = self.memory.message_content(stream_id, message_id)
         if base is None:
-            base = text
+            raise RuntimeError(
+                f'图片回写找不到消息行：stream={stream_id} message={message_id}'
+            )
         enriched = merge_image_descriptions(base, descriptions)
         enriched = merge_emoji_descriptions(enriched, emoji_descriptions)
         if enriched != base:
@@ -1008,7 +1010,7 @@ class ChatService(
         message_id: int,
         text: str,
         inbound: InboundMessage,
-    ) -> asyncio.Task[str | None] | None:
+    ) -> asyncio.Task[str] | None:
         """按范围与本条相关性决定消息里的视频看不看：要看就起任务，暂不看就登记。
 
         视频链接会过期且无法重取，决定必须在入库后立即做出；开关关闭或没有
@@ -1034,7 +1036,6 @@ class ChatService(
             task = asyncio.create_task(self._describe_video_message(
                 stream_id,
                 message_id,
-                text,
                 inbound.video_sources,
             ))
             self._track_background_task(task)
@@ -1081,7 +1082,6 @@ class ChatService(
             task = asyncio.create_task(self._describe_video_message(
                 stream_id,
                 entry.message_id,
-                None,
                 entry.sources,
             ))
             self._track_background_task(task)
@@ -1091,32 +1091,30 @@ class ChatService(
         self,
         stream_id: int,
         message_id: int,
-        fallback_text: str | None,
         sources: tuple[VideoSource, ...],
-    ) -> str | None:
+    ) -> str:
         """在后台理解视频来源，并把结果合并回写进已落库的正文。
 
         回写以库里当前正文为底，与图片描述同口径：同一条消息的图片、表情包与
         视频描述完成先后不定，先完成的结果不能被后到任务手里的旧正文覆盖。
+        消息落库后不会被删，读不到行属于记忆层异常，必须显式暴露而不是退回旧正文。
 
         :param stream_id: 消息所属 stream ID。
         :param message_id: 已落库消息主键。
-        :param fallback_text: 库里读不到行时使用的占位正文；补看任务传 ``None``。
         :param sources: 与正文 ``[视频]`` 占位符顺序一致的视频来源。
-        :return: 合并后的正文；完全失败时返回原占位正文，无正文可合并时返回 ``None``。
+        :return: 合并后的正文；理解全部失败时返回原占位正文。
+        :raises RuntimeError: 库里读不到该消息行。
         :raises sqlite3.Error: 描述成功后回写消息失败时抛出。
         副作用：有变化时用合并后的正文更新对应消息行；不触发回合。
         """
-        if self._video_describer is None or not sources:
-            return fallback_text
         outcomes = await self._video_describer.describe_sources(sources)
         # 与图片描述同一约束：读、合并、写回之间不能再有 await，否则后到任务
         # 会用更早读到的正文把先完成的结果覆盖掉。
         base = self.memory.message_content(stream_id, message_id)
         if base is None:
-            base = fallback_text or ''
-        if not base:
-            return None
+            raise RuntimeError(
+                f'视频回写找不到消息行：stream={stream_id} message={message_id}'
+            )
         enriched = merge_video_descriptions(base, outcomes)
         if enriched != base:
             self.memory.update_message_content(stream_id, message_id, enriched)
@@ -1155,8 +1153,8 @@ class ChatService(
         """取一条缓冲消息在媒体任务全部结束后的正文：以库里当前正文为准。
 
         同一条消息的图片与视频任务按「以库里正文为底」回写，后结束的那次写就是
-        最终正文，因此物化直接重读库行；库里没有行（测试替身）时退回任务结果，
-        最后退回占位正文。
+        最终正文，因此物化直接重读库行。消息落库后不会被删，读不到行属于记忆层
+        异常，必须显式暴露而不是退回任务结果或占位正文。
         """
         if (
             message.image_description_task is None
@@ -1164,17 +1162,12 @@ class ChatService(
         ):
             return message.text
         current = self.memory.message_content(message.context.stream.id, message.message_id)
-        if current is not None:
-            return current
-        for task in (message.video_description_task, message.image_description_task):
-            if task is None or not task.done() or task.cancelled():
-                continue
-            if task.exception() is not None:
-                continue
-            result = task.result()
-            if result:
-                return result
-        return message.text
+        if current is None:
+            raise RuntimeError(
+                '批次物化找不到消息行：'
+                f'stream={message.context.stream.id} message={message.message_id}'
+            )
+        return current
 
     async def _start_turn(
         self,

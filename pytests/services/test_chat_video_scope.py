@@ -355,3 +355,53 @@ async def test_emoji_registration_await_does_not_clobber_video_description(db) -
     final = chat.memory.message_content(stream_id, buffered.message_id)
     assert '[表情包：笑死]' in final
     assert '[视频：两个人在打射击游戏，配音在说别抓我]' in final
+
+
+@pytest.mark.asyncio
+async def test_missing_db_row_raises_instead_of_silent_fallback(db) -> None:
+    """库里没有该行时，物化批次与两个回写路径都抛出错误，而不是静默返回旧正文。
+
+    生产上消息落库后不会被删，读不到行只会来自被截断的记忆层或测试替身；
+    按错误完整暴露处理，不用回退掩盖。
+    """
+    import base64
+
+    class _ImmediateImageDescriber:
+        async def describe_sources(self, sources: tuple[str, ...]) -> list[Any]:
+            return ['一只猫'] * len(sources)
+
+        async def describe_emoji_sources(self, sources: tuple[str, ...]) -> list[Any]:
+            return [None] * len(sources)
+
+    chat = ChatService(
+        db, None, None, None, _noop, cfg=_config(),
+        image_describer=_ImmediateImageDescriber(),
+        video_describer=_FakeVideoDescriber(),
+    )
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(InboundMessage(
+        text='[图片][视频]',
+        context=context,
+        mentioned_me=True,
+        image_sources=('base64://' + base64.b64encode(b'img').decode('ascii'),),
+        video_sources=(VideoSource(url='https://multimedia.nt.qq.com.cn/download?rkey=x', file='a1b2.mp4'),),
+    ))
+    buffered = chat._buffers[stream_id][0]
+    await buffered.image_description_task
+    await buffered.video_description_task
+    chat.memory.delete_message(stream_id, buffered.message_id)
+
+    with pytest.raises(RuntimeError, match=str(buffered.message_id)):
+        await chat._describe_image_message(
+            stream_id, buffered.message_id, '占位[图片]',
+            ('base64://' + base64.b64encode(b'img').decode('ascii'),), (), (),
+        )
+    with pytest.raises(RuntimeError, match=str(buffered.message_id)):
+        await chat._describe_video_message(
+            stream_id, buffered.message_id,
+            (VideoSource(url='https://multimedia.nt.qq.com.cn/download?rkey=y', file='c3d4.mp4'),),
+        )
+    with pytest.raises(RuntimeError, match=str(buffered.message_id)):
+        await chat._materialize_batch_images(chat._buffers[stream_id])

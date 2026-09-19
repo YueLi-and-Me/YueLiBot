@@ -105,7 +105,7 @@ class _BufferedMessage:
     replied_to_me: bool = False
     name_mentioned: bool = False
     # 后台视频理解任务；结果为补齐描述后的完整正文，回合构建前与图片任务一起等待。
-    video_description_task: asyncio.Task[str | None] | None = None
+    video_description_task: asyncio.Task[str] | None = None
 
 
 @dataclass(frozen=True)
