@@ -28,6 +28,7 @@ from src.core.platform_io.forward import (
 )
 
 from .segments import segment_to_text
+from .xml_cards import is_chat_record_card_text
 
 
 logger = get_logger(__name__)
@@ -46,6 +47,10 @@ FORWARD_PREVIEW_MAX_CHARS = 120
 
 # 预览里嵌套转发的短标记：只提示存在，不展开，要看全的走读取工具。
 FORWARD_PREVIEW_NESTED_MARKER = '[嵌套转发]'
+
+# 预览里聊天记录卡片的短标记：完整渲染自带的说明语会吃掉大半预算，
+# 与嵌套转发同理只提示存在；完整格式只在读取工具里出现。
+FORWARD_PREVIEW_CHAT_RECORD_MARKER = '[聊天记录卡片]'
 
 
 class ForwardStructureError(ValueError):
@@ -99,11 +104,14 @@ def forward_tree_preview(tree: ForwardMessageTree) -> str:
 
 
 def _preview_node_text(node: ForwardNode) -> str:
-    """把节点内有序片段压成单行文本：文本压平换行，嵌套转发换短标记。"""
+    """把节点内有序片段压成单行文本：文本压平换行，聊天记录卡片与嵌套转发换短标记。"""
     chunks: List[str] = []
     for part in node.parts:
         if part.kind == 'text':
-            chunks.append(' '.join(part.text.split()))
+            if is_chat_record_card_text(part.text):
+                chunks.append(FORWARD_PREVIEW_CHAT_RECORD_MARKER)
+            else:
+                chunks.append(' '.join(part.text.split()))
         else:
             chunks.append(FORWARD_PREVIEW_NESTED_MARKER)
     return ''.join(chunks)

@@ -31,6 +31,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "platforms.onebot11.backend": ("#d787ff", True),
     "platforms.onebot11.cards": ("#ff87d7", False),
     "platforms.onebot11.forward": ("#ff87af", False),
+    "platforms.onebot11.xml_cards": ("#ff8787", False),
     "platforms.onebot11.runner": ("#ff5f87", True),
     "platforms.onebot11.transport": ("#afafff", True),
     # 插件契约
@@ -134,6 +135,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "platforms.onebot11.backend": "QQ主体",
     "platforms.onebot11.cards": "QQ卡片解析",
     "platforms.onebot11.forward": "QQ转发解析",
+    "platforms.onebot11.xml_cards": "XML 卡片",
     "platforms.onebot11.runner": "QQ运行器",
     "platforms.onebot11.transport": "QQ传输",
     "plugin_system.adapter": "插件契约",

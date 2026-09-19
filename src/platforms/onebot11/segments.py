@@ -28,6 +28,7 @@ import os
 
 from .cards import render_card_placeholder
 from .qq_faces import face_id_by_name, face_name
+from .xml_cards import render_xml_card
 
 from src.core.agent.action_protocol import REACTION_IDS
 from src.core.platform_io.types import VideoSource
@@ -164,6 +165,11 @@ def segment_to_text(
         # 结构不认识时扫描器自己退回原占位符，主链路不受影响。
         return render_card_placeholder(segment_type, data)
 
+    if segment_type == 'xml':
+        # 旧式聊天记录卡片读出自带的标题与预览行，其余 XML 形态由渲染器
+        # 退回原占位符；识别与安全边界都在渲染器内。
+        return render_xml_card(data)
+
     # 未知段类型也保留类型名称，便于模型知道消息存在而不臆造具体内容。
     placeholders = {
         'face': '[表情]',
@@ -172,7 +178,6 @@ def segment_to_text(
         'file': '[文件]',
         'location': '[位置]',
         'contact': '[联系人]',
-        'xml': '[XML 消息]',
         'forward': FORWARD_PLACEHOLDER,
     }
     return placeholders.get(segment_type, f'[非文本消息：{segment_type}]')
