@@ -524,6 +524,12 @@ class GenerationConfig(BaseModel):
     vision: GenerationTaskConfig = Field(
         default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=120)
     )
+    # 视频理解要的是如实转述而不是发挥，取与视觉描述同档的低温度；输出上限
+    # 交给厂商（0 表示请求里不带）：推理模型的 max_tokens 是否计入思考 token
+    # 未核，设值可能截断描述，长度由提示词约束。
+    video: GenerationTaskConfig = Field(
+        default_factory=lambda: GenerationTaskConfig(temperature=0.3, max_tokens=0)
+    )
     # 记忆抽取要的是稳定的结构化输出，温度取全局最低一档；上限给足是因为一批
     # 消息可能同时产出多条事实，截断会让 JSON 直接不可解析而整批丢弃。
     memory: GenerationTaskConfig = Field(
@@ -549,6 +555,9 @@ class VisionConfig(BaseModel):
 
     :ivar enabled: 是否允许桌面屏幕视觉调用。
     :ivar chat_image_enabled: 是否允许 QQ 聊天图片视觉描述。
+    :ivar chat_video_enabled: 是否允许 QQ 聊天视频全模态理解。
+    :ivar chat_video_scope: 看哪些视频（`related` 跟她有关的 / `all` 全都看）。
+    :ivar chat_video_max_seconds: 交给模型的视频时长上限（秒）。
     :ivar fullscreen_silent: 疑似全屏时是否静默，默认值为 `True`。
     :ivar capture_mode: 截取前台窗口或整个主屏，默认值为 `window`。
     """
@@ -558,6 +567,17 @@ class VisionConfig(BaseModel):
     enabled: bool = False
     # 聊天图片是否调用视觉模型描述；与桌面屏幕视觉独立开关。
     chat_image_enabled: bool = False
+    # QQ 私聊与群聊视频是否交给全模态模型理解（画面和声音）；关闭后视频只
+    # 显示为 [视频]，不影响聊天。需要在模型配置页把全模态模型分配给 video 任务。
+    chat_video_enabled: bool = False
+    # 看哪些视频：related 只看跟她有关的（私聊里的，以及群里 @ 她、叫她名字、
+    # 回复她的消息里的；有人这样喊她时，她上下文里还没看过的视频会一起补看）；
+    # all 则名单内的视频到了就看，费用随视频数量增长。
+    chat_video_scope: Literal['related', 'all'] = 'related'
+    # 最长看多久（秒，10–1200）：超过这个时长的视频不交给模型，她只知道有个
+    # 多长的视频没看。上限取 1200 是因为约 600 token/s 时 20 分钟约 72 万 token，
+    # 仍在全模态模型约 99 万上下文之内。
+    chat_video_max_seconds: int = Field(default=180, ge=10, le=1200)
     # 疑似全屏时保持静默，避免直播或录屏场景输出桌宠声音。
     fullscreen_silent: bool = True
     # 截图范围：window 仅捕获前台窗口（默认）；screen 捕获整个主屏，包含当时可见的
@@ -778,6 +798,9 @@ class ModelDefinitionConfig(BaseModel):
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     # WebUI 模型能力标记：视觉模型才应进入 vision / 图片描述任务
     visual: bool = False
+    # WebUI 模型能力标记：全模态（能同时看画面、听声音）才应进入 video 视频
+    # 理解任务；只能看图的视觉模型听不到视频里的人声和配乐。
+    omni: bool = False
     # 可选模型级温度与最大输出覆盖；留空时使用任务 generation 配置
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
@@ -863,6 +886,12 @@ class ModelTaskConfig(BaseModel):
     summary: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     schedule: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     vision: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    # 聊天视频理解：同时看画面、听声音的全模态模型，留空即不可用（不继承 chat——
+    # chat 是文本类模型，接不了视频块）。首字窗口默认 60 秒：两分钟量级的视频
+    # 首字要 20–30 秒，沿用其它任务的 30 秒会在正常视频上误切。
+    video: TaskRoutingConfig = Field(
+        default_factory=lambda: TaskRoutingConfig(first_token_timeout_ms=60_000)
+    )
     expression: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     # 决策与表达各自独立的槽。留空即继承 chat，因此拆分本身不要求先配模型；
     # 首字延迟主要由 planner 这一档决定，想压延迟就在这里单独指一个快模型。
@@ -908,6 +937,7 @@ class ModelCandidate(BaseModel):
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     visual: bool = False
+    omni: bool = False
     temperature: float | None = None
     max_tokens: int | None = None
     default_headers: Dict[str, Any] = Field(default_factory=dict)
@@ -959,6 +989,7 @@ class RoutingConfig(BaseModel):
     summary: TaskRouting = Field(default_factory=lambda: TaskRouting(task='summary'))
     schedule: TaskRouting = Field(default_factory=lambda: TaskRouting(task='schedule'))
     vision: TaskRouting = Field(default_factory=lambda: TaskRouting(task='vision'))
+    video: TaskRouting = Field(default_factory=lambda: TaskRouting(task='video'))
     expression: TaskRouting = Field(default_factory=lambda: TaskRouting(task='expression'))
     planner: TaskRouting = Field(default_factory=lambda: TaskRouting(task='planner'))
     replyer: TaskRouting = Field(default_factory=lambda: TaskRouting(task='replyer'))

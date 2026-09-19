@@ -837,6 +837,7 @@ class ModelRouters:
         self.summary = self._build('summary', routing.summary)
         self.schedule = self._build('schedule', routing.schedule)
         self.vision = self._build('vision', routing.vision)
+        self.video = self._build('video', routing.video)
         self.expression = self._build('expression', routing.expression)
         self.planner = self._build('planner', routing.planner)
         self.replyer = self._build('replyer', routing.replyer)
@@ -850,6 +851,7 @@ class ModelRouters:
             'summary': self.summary,
             'schedule': self.schedule,
             'vision': self.vision,
+            'video': self.video,
             'expression': self.expression,
             'planner': self.planner,
             'replyer': self.replyer,
@@ -890,7 +892,7 @@ class ModelRouters:
     def for_task(self, task: str) -> ModelRouter:
         """按封闭任务名取得对应模型路由。
 
-        :param task: chat、proactive、summary、schedule、vision、expression、tts
+        :param task: chat、proactive、summary、schedule、vision、video、expression、tts
                 或 embedding。
         :return: 对应的任务级模型路由。
         :raises ValueError: 任务名不在已声明的任务集合中。

@@ -628,8 +628,8 @@
         {
           "kind": "object",
           "key": "vision",
-          "label": "屏幕视觉",
-          "description": "屏幕截图与视觉模型的隐私控制。",
+          "label": "视觉与视频",
+          "description": "屏幕截图、聊天图片与视频理解的开关与隐私边界。",
           "fields": [
             {
               "key": "enabled",
@@ -642,6 +642,36 @@
               "type": "boolean",
               "label": "启用聊天图片描述",
               "help": "是否允许 QQ 聊天图片调用视觉模型描述；与桌面屏幕视觉独立开关。"
+            },
+            {
+              "key": "chat_video_enabled",
+              "type": "boolean",
+              "label": "QQ 视频理解",
+              "help": "用全模态模型理解私聊和群聊里的视频（画面和声音）。需要在模型配置页把全模态模型分配给「视频理解」任务。关闭后视频只显示为 [视频]，不影响聊天。"
+            },
+            {
+              "key": "chat_video_scope",
+              "type": "enum",
+              "label": "看哪些视频",
+              "options": [
+                {
+                  "value": "related",
+                  "label": "只看跟她有关的（related）"
+                },
+                {
+                  "value": "all",
+                  "label": "全都看（all）"
+                }
+              ],
+              "help": "只看跟她有关的＝私聊里的视频，以及群里 @ 她、叫她名字、回复她的消息里的视频；有人这样喊她时，她上下文里还没看过的视频会一起补看。全都看＝名单内的视频到了就看，费用随视频数量增长。"
+            },
+            {
+              "key": "chat_video_max_seconds",
+              "type": "integer",
+              "label": "最长看多久（秒）",
+              "min": 10,
+              "max": 1200,
+              "help": "超过这个时长的视频不交给模型，她只知道有个多长的视频没看。"
             },
             {
               "key": "fullscreen_silent",
@@ -1411,6 +1441,11 @@
               "description": "识别屏幕画面的多模态模型；留空不可用。"
             },
             {
+              "key": "video",
+              "label": "视频理解",
+              "description": "理解聊天里视频画面与声音的全模态模型；留空不可用。"
+            },
+            {
               "key": "expression",
               "label": "表达选择",
               "description": "为当前语境挑选表达习惯的模型；留空继承对话候选。"
@@ -1524,6 +1559,11 @@
               "key": "vision",
               "label": "视觉描述",
               "description": "屏幕画面描述的采样参数。"
+            },
+            {
+              "key": "video",
+              "label": "视频理解",
+              "description": "聊天视频画面与声音描述的采样参数。"
             }
           ],
           "fields": [
@@ -1611,6 +1651,12 @@
               "type": "boolean",
               "label": "视觉模型",
               "help": "标记该模型可用于 vision / 图片描述任务。"
+            },
+            {
+              "key": "omni",
+              "type": "boolean",
+              "label": "全模态",
+              "help": "用于处理包含音频的视频，使月璃能够理解消息中的视频内容。"
             },
             {
               "key": "temperature",

@@ -13,12 +13,16 @@
 
 `visual = true` 声明该模型可接收图片，是视觉候选的准入条件。
 不能通过给纯文本模型勾选视觉能力，让它获得真实图片理解能力。
+`omni = true` 声明该模型能同时理解画面和声音（全模态），是视频理解候选的准入条件；
+只能看图的视觉模型听不到视频里的人声和配乐。
+思考强度等厂商参数写在模型条目的 `extra_body`，写法以厂商文档为准
+（例如百炼全模态模型：`{"reasoning_effort": "medium"}`）。
 价格字段只是面板计费参考，不会改变接口计费或自动选出最便宜模型。
 `embedding_dim` 只用于嵌入模型，必须对应接口实际返回的维度。
 
-## 首装预填的六档
+## 首装预填的七档
 
-六个条目都引用 `dashscope` 这一条百炼连接。
+七个条目都引用 `dashscope` 这一条百炼连接。
 下表是随本版本代码分发的配置，不是远端实时模型清单。
 
 | 本地名称 | 真实模型 ID | 预填任务与分档意图 |
@@ -28,6 +32,7 @@
 | `qwen-flash` | `qwen3.8-flash` | expression，短文本表达选择 |
 | `qwen-max` | `qwen3.8-max` | memory、schedule，归属判断与结构化结果 |
 | `qwen-vision` | `qwen3.8-max-0902` | vision，声明图片输入能力 |
+| `qwen-omni` | `qwen3.8-omni-flash` | video，声明全模态（画面和声音） |
 | `qwen-embedding` | `qwen3.7-text-embedding` | embedding，声明 1024 维 |
 
 记忆抽取在后台执行，但错误事实会影响后续召回，模型选择仍需保证判断质量。
@@ -40,7 +45,7 @@
 `chat` 至少保留一个候选。
 planner、replyer、scene、proactive、summary、memory、schedule、expression 留空时，
 继承 chat 的候选和挑选策略；各自的首字超时与慢阈值仍按各自任务设置。
-vision、tts、embedding 不继承 chat；候选列表为空时，对应任务没有可用模型。
+vision、video、tts、embedding 不继承 chat；候选列表为空时，对应任务没有可用模型。
 
 因此「清空摘要候选」不等于关闭摘要，而是改用对话模型做摘要。
 要关某项能力，检查相应功能开关，而不是随意清空候选。

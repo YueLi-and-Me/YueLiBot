@@ -56,6 +56,7 @@ def _model_task_config(
         'summary': catalog.model_tasks.summary,
         'schedule': catalog.model_tasks.schedule,
         'vision': catalog.model_tasks.vision,
+        'video': catalog.model_tasks.video,
         'expression': catalog.model_tasks.expression,
         'planner': catalog.model_tasks.planner,
         'replyer': catalog.model_tasks.replyer,
@@ -184,6 +185,13 @@ def _build_routing(
                 f'model_tasks.vision 的候选 {model_name} 没有标记 visual = true，'
                 '不能用于屏幕视觉或聊天图片理解'
             )
+        # omni 同理：能看画面却听不到音轨的模型（如 qwen-max 类）放进 video 会把
+        # 视频里的人声和配乐静默丢掉，加载期直接拒绝。
+        if task == 'video' and not model.omni:
+            raise ValueError(
+                f'model_tasks.video 的候选 {model_name} 没有标记 omni = true，'
+                '不能用于聊天视频理解（需要同时看画面、听声音）'
+            )
         provider = _selected_provider(model, providers)
         # 豆包语音是私有协议，只能承载 tts。指到别的任务上只会在运行时抛出
         # 难以定位的错误，不如在加载阶段就说清楚。
@@ -214,6 +222,7 @@ def _build_routing(
             extra_body=model.extra_body,
             reasoning_parse_mode=model.reasoning_parse_mode,
             visual=model.visual,
+            omni=model.omni,
             temperature=model.temperature,
             max_tokens=model.max_tokens,
             default_headers=provider.default_headers,
@@ -276,6 +285,7 @@ def _load_split_config(directory: Path) -> Config:
         scene=_build_routing('scene', models_document, models, providers, chat_routing),
         memory=_build_routing('memory', models_document, models, providers, chat_routing),
         vision=_build_routing('vision', models_document, models, providers, None),
+        video=_build_routing('video', models_document, models, providers, None),
         tts=_build_routing('tts', models_document, models, providers, None),
         embedding=_build_routing('embedding', models_document, models, providers, None),
     )
@@ -287,6 +297,7 @@ def _load_split_config(directory: Path) -> Config:
     feature_routes = {
         'tts': routing.tts,
         'vision': routing.vision,
+        'video': routing.video,
         'embedding': routing.embedding,
     }
     # 已启用功能必须至少绑定一个候选模型；否则配置表面有效，但运行时无法执行该功能。
@@ -294,6 +305,7 @@ def _load_split_config(directory: Path) -> Config:
         (features_tts.enabled, 'tts'),
         (features_vision.enabled, 'vision'),
         (features_vision.chat_image_enabled, 'vision'),
+        (features_vision.chat_video_enabled, 'video'),
         (features_vector.enabled, 'embedding'),
     ):
         if enabled and not feature_routes[task].ready:

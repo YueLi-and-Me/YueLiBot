@@ -57,6 +57,12 @@ selection_strategy = "sequential" # sequential 永远优先第一条；random �
 first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
 slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
 
+[model_tasks.video] # 视频理解：理解聊天里视频画面与声音的全模态模型；留空不可用。
+model_list = ["qwen-omni"] # 每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 60000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
 [model_tasks.expression] # 表达选择：为当前语境挑选表达习惯的模型；留空继承对话候选。
 model_list = ["qwen-flash"] # 每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。
 selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
@@ -116,6 +122,10 @@ max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商
 temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
 max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
 
+[generation.video] # 视频理解：聊天视频画面与声音描述的采样参数。
+temperature = 0.3 # 采样温度；低温度更确定，高温度更有创造性。
+max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。
+
 [[models]] # 一个「模型目录」条目
 name = "deepseek-pro" # 任务候选引用的唯一名称；不能与其他模型重复。
 model_identifier = "deepseek-v4-pro-0813" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
@@ -123,6 +133,7 @@ api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名�
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
+omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
 price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 embedding_dim = 0 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。
@@ -133,6 +144,7 @@ api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名�
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
+omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
 price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 embedding_dim = 0 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。
@@ -143,6 +155,7 @@ api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名�
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
+omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
 price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 embedding_dim = 0 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。
@@ -153,6 +166,7 @@ api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名�
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
+omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
 price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 embedding_dim = 0 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。
@@ -163,6 +177,18 @@ api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名�
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = true # 标记该模型可用于 vision / 图片描述任务。
+omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
+price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
+price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
+embedding_dim = 0 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。
+[[models]] # 一个「模型目录」条目
+name = "qwen-omni" # 任务候选引用的唯一名称；不能与其他模型重复。
+model_identifier = "qwen3.8-omni-flash" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
+api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
+extra_body = { modalities = ["text"], reasoning_effort = "medium" } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
+visual = false # 标记该模型可用于 vision / 图片描述任务。
+omni = true # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
 price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 embedding_dim = 0 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。
@@ -173,6 +199,7 @@ api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名�
 extra_body = {} # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
+omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
 price_in = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 price_out = 0.0 # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。
 embedding_dim = 1024 # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。

@@ -51,7 +51,7 @@ function baseConfig(): typeof DEFAULT_CONFIG {
 /**
  * 清掉所有任务的候选模型。
  *
- * 默认配置预填了六个模型并把各任务分别指过去；夹具一旦整体替换 models，
+ * 默认配置预填了七个模型并把各任务分别指过去；夹具一旦整体替换 models，
  * 那些任务就仍指着已经不存在的名字，读回时被引用校验拦下。替换目录之前
  * 先清空，再按用例需要显式指定。
  */
@@ -59,6 +59,9 @@ function clearTaskCandidates(config: typeof DEFAULT_CONFIG): void {
   for (const task of Object.keys(config.model_tasks) as (keyof typeof config.model_tasks)[]) {
     config.model_tasks[task].model_list = []
   }
+  // 默认配置预填了视频理解并指向 video 候选；候选全空时开关也必须关掉，
+  // 否则「已启用功能必须绑定候选模型」的一致性校验会拦下整份配置。
+  config.vision.chat_video_enabled = false
 }
 
 afterEach(() => {
@@ -68,6 +71,20 @@ afterEach(() => {
 })
 
 describe('拆分配置', () => {
+  it('首装模板预填全模态视频理解', () => {
+    // 与 Python bootstrap 的种子一致：omni 模型、video 路由与视频理解开关。
+    expect(DEFAULT_CONFIG.vision.chat_video_enabled).toBe(true)
+    expect(DEFAULT_CONFIG.vision.chat_video_scope).toBe('related')
+    expect(DEFAULT_CONFIG.vision.chat_video_max_seconds).toBe(180)
+    expect(DEFAULT_CONFIG.model_tasks.video.model_list).toEqual(['qwen-omni'])
+    expect(DEFAULT_CONFIG.model_tasks.video.first_token_timeout_ms).toBe(60_000)
+    expect(DEFAULT_CONFIG.generation.video).toEqual({ temperature: 0.3, max_tokens: 0 })
+    const omni = DEFAULT_CONFIG.models.find((model) => model.name === 'qwen-omni')
+    expect(omni?.omni).toBe(true)
+    expect(omni?.model_identifier).toBe('qwen3.8-omni-flash')
+    expect(omni?.extra_body).toEqual({ modalities: ['text'], reasoning_effort: 'medium' })
+  })
+
   it('自动创建停用的 QQ 配置模板且不覆盖已有内容', () => {
     const root = makeTemporaryDirectory()
     // 连接配置与适配器插件同目录，不再落在主体的 config/ 下。
@@ -219,8 +236,8 @@ describe('API 轮询', () => {
     ]
     clearTaskCandidates(config)
     config.models = [
-      { name: '主力对话', model_identifier: 'deepseek-chat', api_provider: '主力', extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
-      { name: '备用对话', model_identifier: 'gpt-4o-mini', api_provider: '备用', extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
+      { name: '主力对话', model_identifier: 'deepseek-chat', api_provider: '主力', extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
+      { name: '备用对话', model_identifier: 'gpt-4o-mini', api_provider: '备用', extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
     ]
     config.model_tasks.chat = {
       ...config.model_tasks.chat,
@@ -293,7 +310,7 @@ describe('API 轮询', () => {
     config.models.push({
       name: '没人用的模型', model_identifier: 'x', api_provider: '不存在的厂商',
       extra_body: {}, reasoning_parse_mode: 'field', embedding_dim: 0,
-      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     })
     writeConfigDirectory(directory, config)
 
@@ -336,7 +353,7 @@ describe('API 轮询', () => {
     config.models.push({
       name: 'tts', model_identifier: '', api_provider: config.api_providers[0]!.name,
       extra_body: {}, reasoning_parse_mode: 'none', embedding_dim: 0,
-      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     })
     config.model_tasks.tts = {
       ...config.model_tasks.tts, model_list: ['tts'], selection_strategy: 'sequential',
@@ -537,7 +554,7 @@ describe('豆包语音 TTS', () => {
     config.models.push({
       name: 'tts', model_identifier: '', api_provider: '语音',
       extra_body: {}, reasoning_parse_mode: 'none', embedding_dim: 0,
-      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     })
     config.model_tasks.tts = {
       ...config.model_tasks.tts, model_list: ['tts'], selection_strategy: 'sequential',
