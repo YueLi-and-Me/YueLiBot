@@ -405,3 +405,26 @@ async def test_missing_db_row_raises_instead_of_silent_fallback(db) -> None:
         )
     with pytest.raises(RuntimeError, match=str(buffered.message_id)):
         await chat._materialize_batch_images(chat._buffers[stream_id])
+
+
+@pytest.mark.asyncio
+async def test_registration_prunes_entries_outside_window(db) -> None:
+    """登记新项时顺手剔除同一 stream 里已经出了工作记忆窗口的旧项（判据与补看相同）。"""
+    describer = _FakeVideoDescriber()
+    config = _config()
+    config.conversation.working_memory_messages = 2
+    chat = ChatService(db, None, None, None, _noop, cfg=config, video_describer=describer)
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(_video_message(context, external_message_id='v1'))
+    first_message_id = chat._buffers[stream_id][0].message_id
+    await chat.send(InboundMessage(text=' filler 一', context=context))
+    await chat.send(InboundMessage(text=' filler 二', context=context))
+    assert len(chat._video_unwatched[stream_id]) == 1
+
+    await chat.send(_video_message(context, external_message_id='v2'))
+
+    remaining = [entry.message_id for entry in chat._video_unwatched[stream_id]]
+    assert first_message_id not in remaining
+    assert len(remaining) == 1

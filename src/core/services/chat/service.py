@@ -1040,9 +1040,16 @@ class ChatService(
             ))
             self._track_background_task(task)
             return task
-        self._video_unwatched.setdefault(stream_id, []).append(
-            _UnwatchedVideo(message_id=message_id, sources=inbound.video_sources)
-        )
+        # 登记新项时顺手剔除已经出了工作记忆窗口的旧项（判据与补看相同）：
+        # 从来没人喊她的群里登记会一直累积，每次补看还要对每一项查一次库。
+        window = self._cfg.conversation.working_memory_messages
+        entries = [
+            entry
+            for entry in self._video_unwatched.get(stream_id, [])
+            if self.memory.message_count_after(stream_id, entry.message_id) < window
+        ]
+        entries.append(_UnwatchedVideo(message_id=message_id, sources=inbound.video_sources))
+        self._video_unwatched[stream_id] = entries
         logger.info(
             'chat_video_deferred',
             streamId=stream_id,
