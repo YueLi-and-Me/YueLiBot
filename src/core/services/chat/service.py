@@ -876,6 +876,8 @@ class ChatService(
             image_description_task=image_task,
             poked_me=inbound.poked_me,
             pokes_in_window=inbound.pokes_in_window,
+            replied_to_me=inbound.replied_to_me,
+            name_mentioned=inbound.name_mentioned,
         ))
         self._wake.set()
 
@@ -1033,6 +1035,9 @@ class ChatService(
             pokes_in_window=max(
                 (message.pokes_in_window for message in batch), default=0,
             ),
+            # 「回复了她」与名字命中都是逐条事实，批次里任一条为真即真。
+            replied_to_me=any(message.replied_to_me for message in batch),
+            name_mentioned=any(message.name_mentioned for message in batch),
         )
 
         turn = self._next_turn()
@@ -1075,6 +1080,7 @@ class ChatService(
                 context, trimmed, inbound.mentioned_me,
                 poked_me=inbound.poked_me, pokes_in_window=inbound.pokes_in_window,
                 name_match_text=name_match_text,
+                replied_to_me=inbound.replied_to_me,
             )
             if sleep_gate.result.disposition == 'drop':
                 try:
@@ -1165,6 +1171,7 @@ class ChatService(
                     poked_me=inbound.poked_me,
                     pokes_in_window=inbound.pokes_in_window,
                     name_match_text=name_match_text,
+                    replied_to_me=inbound.replied_to_me,
                 )
                 if batch_gate.result.reason_codes[0] in (
                     'deep_sleep',

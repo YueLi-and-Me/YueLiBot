@@ -343,3 +343,103 @@ async def test_quote_preview_neutralizes_forward_placeholder() -> None:
     text = backend.submitted[0].text
     assert text == '[回复 凌白：[合并转发]]这转的啥'
     assert FORWARD_PLACEHOLDER not in text
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_message_sets_replied_to_me() -> None:
+    """引用 Bot 自己发的消息时，入站事件带上 replied_to_me 事实。
+
+    引用摘要查询已经把被引用消息取回过一次，归属判定必须复用同一份结果，
+    同一条被引用消息只调用一次 get_msg。
+    """
+    payload = _group_payload([
+        {'type': 'reply', 'data': {'id': '4177'}},
+        {'type': 'text', 'data': {'text': '有一会儿了（）'}},
+    ])
+    transport = _RecordingTransport(
+        [payload],
+        {
+            'get_msg': {
+                'data': {
+                    'message_id': 4177,
+                    'sender': {'user_id': 13579, 'nickname': '这个昵称不该出现'},
+                    'message': [{'type': 'text', 'data': {'text': '他多久没冒泡了'}}],
+                },
+            },
+        },
+    )
+    backend = _CollectingBackend()
+    runner = OneBot11Runner(
+        _document(['86420']),
+        backend_port=1,
+        token='backend-secret',
+        transport=transport,
+        backend=backend,
+    )
+
+    await runner._consume_protocol_events('13579', '月璃')
+
+    assert len(backend.submitted) == 1
+    assert backend.submitted[0].replied_to_me is True
+    assert [action for action, _ in transport.actions].count('get_msg') == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_to_other_message_leaves_replied_to_me_false() -> None:
+    """引用别人发的消息时 replied_to_me 为假；归属判定同样不重复查询。"""
+    payload = _group_payload([
+        {'type': 'reply', 'data': {'id': '4173'}},
+        {'type': 'text', 'data': {'text': '？'}},
+    ])
+    transport = _RecordingTransport(
+        [payload],
+        {
+            'get_msg': {
+                'data': {
+                    'message_id': 4173,
+                    'sender': {'user_id': 900000001, 'nickname': '凌白'},
+                    'message': [{'type': 'text', 'data': {'text': '谁家好人没事打句号'}}],
+                },
+            },
+        },
+    )
+    backend = _CollectingBackend()
+    runner = OneBot11Runner(
+        _document(['86420']),
+        backend_port=1,
+        token='backend-secret',
+        transport=transport,
+        backend=backend,
+    )
+
+    await runner._consume_protocol_events('13579', '月璃')
+
+    assert len(backend.submitted) == 1
+    assert backend.submitted[0].replied_to_me is False
+    assert [action for action, _ in transport.actions].count('get_msg') == 1
+
+
+@pytest.mark.asyncio
+async def test_quote_query_failure_keeps_replied_to_me_false_and_submits() -> None:
+    """get_msg 查询失败按「不是回复 Bot」处理，消息照常入站。"""
+    payload = _group_payload([
+        {'type': 'reply', 'data': {'id': '4173'}},
+        {'type': 'text', 'data': {'text': '？'}},
+    ])
+    transport = _RecordingTransport(
+        [payload],
+        {'get_msg': RuntimeError('消息已撤回')},
+    )
+    backend = _CollectingBackend()
+    runner = OneBot11Runner(
+        _document(['86420']),
+        backend_port=1,
+        token='backend-secret',
+        transport=transport,
+        backend=backend,
+    )
+
+    await runner._consume_protocol_events('13579', '月璃')
+
+    assert len(backend.submitted) == 1
+    assert backend.submitted[0].replied_to_me is False

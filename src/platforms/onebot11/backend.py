@@ -205,6 +205,9 @@ class BackendClient:
             body['forwardMessages'] = [
                 forward_tree_to_payload(tree) for tree in event.forward_messages
             ]
+        # 与 forwardMessages 同口径：为假不发送，保持既有精确载荷用例不变。
+        if event.replied_to_me:
+            body['repliedToMe'] = True
         response = await client.post(
             '/platform/inbound',
             json=body,

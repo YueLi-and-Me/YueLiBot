@@ -463,22 +463,23 @@ class OneBot11Runner:
             return '', ''
         return _optional_text(data.get('nickname')), _optional_text(data.get('card'))
 
-    async def _reacted_message_is_mine(
+    async def _message_is_mine(
         self,
         message_id: str,
         self_id: str,
     ) -> bool:
-        """判断被贴表情回应的那条消息是不是 Bot 自己发的。
+        """判断一条消息是不是 Bot 自己发的，结果按消息 ID 缓存。
 
-        协议端为群里所有回应都推送 group_msg_emoji_like，通知里只有
-        目标消息 ID、没有发送者；不查询一次就会把群里所有人的回应都当成给 Bot 的。
-        查询结果按消息 ID 缓存：同一条消息经常连着多个回应，逐次查询会放大
-        串行入站循环的往返次数。
+        被贴表情回应与被引用的消息都只有 ID、没有发送者：协议端为群里所有回应都
+        推送 group_msg_emoji_like，不查询一次就会把群里所有人的回应都当成给 Bot 的；
+        「回复了她的消息」同理，引用段本身看不出被引用的是谁。查询结果按消息 ID
+        缓存：同一条消息经常连着多个回应、或被摘要与归属判定先后用到，逐次查询
+        会放大串行入站循环的往返次数。
 
-        :param message_id: 被回应消息的平台编号。
+        :param message_id: 目标消息的平台编号。
         :param self_id: 机器人登录 QQ 号。
         :return: 目标消息发送者是 Bot 时返回 True；查询失败一律按不是处理，
-            漏一条回应的代价低于把群里回应错记为给 Bot 的。
+            漏一条信号的代价低于把别人的消息错记为 Bot 的。
         副作用：调用一次 get_msg 并写入消息归属缓存。
         """
         cached = self._own_message_ids.get(message_id)
@@ -573,6 +574,11 @@ class OneBot11Runner:
                 _optional_text(sender.get('card'))
                 or _optional_text(sender.get('nickname'))
             )
+        # 引用还原已经把这条消息取回过一次，归属结论顺手写进同一缓存：
+        # 「回复了她的消息」判定直接读缓存，同一条被引用消息只调用一次 get_msg。
+        self._own_message_ids[quoted_id] = sender_id == self_id
+        while len(self._own_message_ids) > RESOLUTION_CACHE_LIMIT:
+            self._own_message_ids.pop(next(iter(self._own_message_ids)))
         if sender_id == self_id:
             sender_name = self_name
         if not sender_name:
@@ -600,6 +606,37 @@ class OneBot11Runner:
         while len(self._quote_previews) > RESOLUTION_CACHE_LIMIT:
             self._quote_previews.pop(next(iter(self._quote_previews)))
         return preview
+
+    async def _replied_message_is_mine(
+        self,
+        quoted_id: str,
+        self_id: str,
+    ) -> bool:
+        """判断本条消息引用的那条消息是不是 Bot 自己发的。
+
+        引用摘要查询会把被引用消息的归属结论写进同一缓存，这里先查缓存，
+        缺失时才走与 ``_message_is_mine`` 同一条 get_msg 查询路径，同一条被
+        引用消息只调用一次 get_msg。查询失败按「不是」处理，消息照常入站：
+        ``_message_is_mine`` 已覆盖协议端预期的失败，这里再兜住其余异常，
+        不让归属判定打断串行入站循环。
+
+        :param quoted_id: 被引用消息的平台编号。
+        :param self_id: 机器人登录 QQ 号。
+        :return: 被引用消息发送者是 Bot 时返回 True。
+        副作用：缓存缺失时调用一次 get_msg 并写入消息归属缓存。
+        """
+        cached = self._own_message_ids.get(quoted_id)
+        if cached is not None:
+            return cached
+        try:
+            return await self._message_is_mine(quoted_id, self_id)
+        except Exception as exc:
+            logger.warning(
+                'QQ 被引用消息归属查询失败，按非 Bot 消息处理',
+                messageId=quoted_id,
+                error=str(exc),
+            )
+            return False
 
     async def _resolve_inbound_image_sources(
         self,
@@ -967,7 +1004,7 @@ class OneBot11Runner:
                 like_group_id = _optional_text(payload.get('group_id'))
                 like_user_id = _optional_text(payload.get('user_id'))
                 target_message_id = _optional_text(payload.get('message_id'))
-                if not target_message_id or not await self._reacted_message_is_mine(
+                if not target_message_id or not await self._message_is_mine(
                     target_message_id, self_id,
                 ):
                     logger.debug(
@@ -1027,6 +1064,13 @@ class OneBot11Runner:
             # QQ 号和不含内容的引用占位符。两者都只在解析失败时退回原占位形态。
             raw_segments = payload.get('message')
             raw_segments = raw_segments if isinstance(raw_segments, list) else []
+            quote_previews = await self._resolve_quote_previews(raw_segments, self_id, self_name)
+            # 「回复了她的消息」与提及、引用摘要同一层计算：摘要还原已把被引用消息
+            # 的归属结论写进缓存，这里直接读缓存，不为归属判定多查一次 get_msg。
+            replied_to_me = False
+            quoted_ids = quoted_message_ids(raw_segments)
+            if quoted_ids:
+                replied_to_me = await self._replied_message_is_mine(quoted_ids[0], self_id)
             event = parse_inbound_event(
                 payload,
                 self_id,
@@ -1035,7 +1079,8 @@ class OneBot11Runner:
                 self._config.private,
                 self._config.group,
                 await self._resolve_mention_names(payload, raw_segments, self_id),
-                await self._resolve_quote_previews(raw_segments, self_id, self_name),
+                quote_previews,
+                replied_to_me=replied_to_me,
             )
             if event is None:
                 continue

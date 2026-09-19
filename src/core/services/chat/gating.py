@@ -35,12 +35,14 @@ class BatchGateMixin:
         poked_me: bool = False,
         pokes_in_window: int = 0,
         name_match_text: str | None = None,
+        replied_to_me: bool = False,
     ) -> _BatchGate:
         """按本批合并事实重算三态门控；只读取确定性输入，不调用模型。
 
         戳一戳的三项事实全部由入口门控算好后随消息传入，本方法不重算：窗口计数
         在入口按每次到达登记，重算等于重复记账；合成正文的名字匹配已在入口排除，
-        重算会使被排除的合成点名重新命中。
+        重算会使被排除的合成点名重新命中。「回复了她的消息」同口径：被引用消息
+        的发送者由适配器查询后随消息传入，批次合并取任一条为真。
 
         :param context: 本批消息的会话上下文。
         :param batch_text: 合并后的本批正文。
@@ -50,6 +52,7 @@ class BatchGateMixin:
         :param pokes_in_window: 本批戳一戳在入口信号窗口内的到达序号；无戳一戳时为 0。
         :param name_match_text: 参与名字匹配的正文；``None`` 表示与 ``batch_text``
             相同。批次含戳一戳时由调用方剔除合成正文后传入。
+        :param replied_to_me: 本批是否包含「回复了她的消息」。
         :return: 门控结果与全部判定输入事实。
         """
         sleep = self.current_sleep()
@@ -89,6 +92,7 @@ class BatchGateMixin:
             current_topic_available=current_topic_available,
             poked_me=poked_me,
             pokes_in_window=pokes_in_window,
+            reply_to_bot=replied_to_me,
             follow_up_declined=self.follow_up_declined(context.stream.id),
         ))
         plain_group_drop = (
@@ -117,6 +121,7 @@ class BatchGateMixin:
             reply_count=reply_count,
             mentioned_me=mentioned_me,
             last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
+            replied_to_me=replied_to_me,
         )
 
     def _extended_group_gate(

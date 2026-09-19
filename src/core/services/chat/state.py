@@ -101,6 +101,9 @@ class _BufferedMessage:
     # 也不拿适配器合成的正文做名字匹配。
     poked_me: bool = False
     pokes_in_window: int = 0
+    # 适配器判定的「回复了她的消息」与入口算好的名字命中，批次门控读同一份事实。
+    replied_to_me: bool = False
+    name_mentioned: bool = False
 
 
 @dataclass
@@ -228,6 +231,8 @@ class _BatchGate:
     reply_count: int
     mentioned_me: bool
     last_bot_reply_elapsed_ms: int | None = None
+    # 本批是否包含「回复了她的消息」；决策层审计与相关性判定读这份快照。
+    replied_to_me: bool = False
 
 
 @dataclass(frozen=True)

@@ -493,3 +493,76 @@ async def test_group_backfill_seeds_cursor_from_existing_messages(
     assert second.body.decode('utf-8') == '{"written":0}'
     stored = [message.content for message in chat.memory.working_memory(context.stream.id, 20)]
     assert stored == ['这条重启前已经落库', '停机期间的新消息']
+
+
+async def test_replied_to_bot_message_bypasses_reply_cap(db: sqlite3.Connection) -> None:
+    """只「回复了她」的群消息越过回复频率硬上限，抬入 DELIBERATE。
+
+    没有 @ 也没有叫名字：入口门控读取的唯一信号就是适配器提交的
+    repliedToMe 事实。上限只约束无人点名的自发参与，不约束点名交互。
+    """
+    config = Config()
+    config.bot.name = '月璃'
+    chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(db, config)
+    registry: StreamRegistry = app_state.registry
+    context = registry.resolve_inbound(
+        platform='qq',
+        stream_kind='group',
+        stream_external_id='86420',
+        sender_external_id='97531',
+        sender_nickname='账号昵称',
+        sender_group_card='小李',
+        first_seen_at=1_000_000,
+    )
+    for index in range(config.group_chat.max_replies_in_window):
+        chat.memory.append_message(
+            context.stream.id,
+            None,
+            'assistant',
+            f'回复{index}',
+            current_time() - index,
+        )
+    try:
+        response = await platform_inbound(_body("说得对", repliedToMe=True))
+    finally:
+        app_state.chat = prev_chat
+        app_state.registry = prev_registry
+        app_state.register_platform_stream = prev_register
+        app_state.group_chat_config = prev_group_chat
+
+    payload = response.body.decode("utf-8")
+    assert '"accepted":true' in payload
+    assert '"reason":"reply_to_bot"' in payload
+    gates = event_store.search(kinds=["reply_gate"]).events
+    assert gates[-1]['disposition'] == 'deliberate'
+    # 直接点名信号排在原因码首位；她刚回复过，自然窗口与话题延续也会一起命中。
+    assert gates[-1]['reasonCodes'][0] == 'reply_to_bot'
+    assert gates[-1]['replyToBot'] is True
+
+
+async def test_sleep_drop_audit_records_reply_to_bot_fact(
+    db: sqlite3.Connection,
+) -> None:
+    """DROP 路径的审计事件照实记录 replyToBot，即使它被睡眠硬边界压过。"""
+    config = Config()
+    config.bot.name = '月璃'
+    chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(db, config)
+    chat.set_sleep_state_provider(
+        lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False, level='light')
+    )
+    try:
+        response = await platform_inbound(_body("说得对", repliedToMe=True))
+    finally:
+        app_state.chat = prev_chat
+        app_state.registry = prev_registry
+        app_state.register_platform_stream = prev_register
+        app_state.group_chat_config = prev_group_chat
+
+    payload = response.body.decode("utf-8")
+    assert '"accepted":false' in payload
+    assert '"reason":"light_sleep"' in payload
+    gate_events = [
+        entry for entry in event_store.search(kinds=["action_decision"]).events
+        if entry['eventStatus'] == 'gate_dropped'
+    ]
+    assert gate_events[-1]['inputs']['replyToBot'] is True

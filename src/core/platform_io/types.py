@@ -98,6 +98,11 @@ class InboundMessage:
     # 入口登记一次，批次侧重算等于重复记账。
     poked_me: bool = False
     pokes_in_window: int = 0
+    # 本条是「有人回复了 Bot 自己发的消息」，由平台适配器查询被引用消息发送者后
+    # 给出。入口门控、批次门控与视频理解的相关性判定读同一份事实，不重算。
+    replied_to_me: bool = False
+    # 本条正文里出现了 Bot 的名字/别名，由入口按 bot.toml 的称呼配置算好后传入。
+    name_mentioned: bool = False
     # 已由平台适配器完整解析的合并转发根树；主体按内部消息 ID 放入有界会话缓存，
     # 模型只能通过只读工具逐层浏览，不把整棵树直接拼进聊天正文。
     forward_messages: Tuple[ForwardMessageTree, ...] = ()

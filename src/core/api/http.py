@@ -96,6 +96,10 @@ class PlatformInboundBody(BaseModel):
     # DELIBERATE，绝不 FORCE——群里贴表情非常频繁，每次都唤醒会造成大量
     # 无意义回合。
     emoji_liked_me: bool = Field(default=False, alias='emojiLikedMe')
+    # 本条是「有人回复了 Bot 自己发的消息」。被引用消息的发送者是不是 Bot
+    # 由适配器查询后给出；与 @、叫名字同口径，抬入 DELIBERATE 且不受回复
+    # 频率硬上限约束。
+    replied_to_me: bool = Field(default=False, alias='repliedToMe')
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
@@ -655,6 +659,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         poked_me=body.poked_me,
         pokes_in_window=pokes_in_window,
         emoji_liked_me=body.emoji_liked_me,
+        reply_to_bot=body.replied_to_me,
         # 入口与批次两个门控必须读同一份跟进事实，否则 reply_gate 审计事件报告的
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
         follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
@@ -684,6 +689,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         nameMentioned=name_mentioned,
         pokedMe=body.poked_me,
         pokesInWindow=pokes_in_window,
+        replyToBot=body.replied_to_me,
         repliesInWindow=reply_count,
         maxRepliesInWindow=group_chat.max_replies_in_window,
         naturalReplyElapsedMs=last_bot_reply_elapsed_ms,
@@ -707,6 +713,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 emoji_sources=tuple(body.emoji_sources),
                 emoji_sub_types=tuple(body.emoji_sub_types),
                 forward_messages=forward_messages,
+                replied_to_me=body.replied_to_me,
+                name_mentioned=name_mentioned,
             ),
             reason,
         )
@@ -725,6 +733,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 recent_bot_replies=reply_count,
                 candidate_message_ids=(message_id,),
                 selectable_message_ids=(),
+                reply_to_bot=body.replied_to_me,
             ),
             gate_disposition=gate_result.disposition,
             gate_reason_codes=gate_result.reason_codes,
@@ -771,6 +780,8 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         forward_messages=forward_messages,
         poked_me=body.poked_me,
         pokes_in_window=pokes_in_window,
+        replied_to_me=body.replied_to_me,
+        name_mentioned=name_mentioned,
     ))
     return JSONResponse({
         'streamId': context.stream.id,
