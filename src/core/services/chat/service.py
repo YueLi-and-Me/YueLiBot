@@ -274,8 +274,14 @@ class ChatService(
         # 按范围暂不看的视频登记（按 stream）；「跟她有关」的消息入缓冲时按窗口补看。
         # 进程内状态，重启即丢：链接到那时多半也已过期。
         self._video_unwatched: dict[int, list[_UnwatchedVideo]] = {}
-        # 本回合开始前必须等待的补看任务（按 stream）；物化批次时取走并清空。
-        self._video_catchup_tasks: dict[int, list[asyncio.Task[str]]] = {}
+        # 本回合开始前必须等待的补看任务（按 stream），元素为（视频消息主键, 任务）；
+        # 物化批次时取走并清空。记下主键是因为被补看的视频可能就在当前这一批里，
+        # 它在缓冲区里的正文仍是 [视频]，物化时要改从库里读。
+        self._video_catchup_tasks: dict[int, list[tuple[int, asyncio.Task[str]]]] = {}
+        # 每个人在每个 stream 里上一条消息是否「跟她有关」，键为（stream, 人物），
+        # 值为（消息主键, 是否有关）。用于「先 @ 她、再发视频」：视频那条本身不带 @，
+        # 若同一发送者的上一条喊过她，就算冲她发的。进程内状态，重启即丢。
+        self._last_inbound_concern: dict[tuple[int, int], tuple[int, bool]] = {}
         self._default_action_policy = action_policy or TurnPlanner(AlwaysReplyPolicy())
         self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
@@ -1014,25 +1020,39 @@ class ChatService(
         """按范围与本条相关性决定消息里的视频看不看：要看就起任务，暂不看就登记。
 
         视频链接会过期且无法重取，决定必须在入库后立即做出；开关关闭或没有
-        video 模型时什么都不做（不调用、不登记、不记日志）。
+        video 模型时不调用、不登记、不记日志。
+
+        带视频的消息本身不跟她有关时，再看同一发送者在本 stream 的上一条：那条
+        跟她有关、且仍在她工作记忆窗口内，就算这条视频是冲她发的。它覆盖「先 @ 她、
+        再发视频」且两条落在不同批的情形——@ 那一轮已经开始，视频落到下一批，
+        下一批里没人喊她。只认同一发送者的紧邻上一条：别人喊她之后的视频、或者
+        中间隔了一句别的话，都不算。被这样认定的视频也记为「有关」，同一人连发
+        几个视频时逐个接得上。
 
         :param stream_id: 消息所属 stream ID。
         :param message_id: 已落库消息主键。
         :param text: 含 ``[视频]`` 占位符的落库正文。
         :param inbound: 带来源与相关性事实的入站消息。
         :return: 后台理解任务；暂不看或完全不动用时返回 ``None``。
-        副作用：要看的起后台任务并登记未看的，登记写进程内列表。
+        副作用：每条入站都更新发送者的「上一条是否跟她有关」；要看的起后台任务，
+            暂不看的登记进进程内列表。
         """
-        if self._video_describer is None or not inbound.video_sources:
-            return None
-        if not self._cfg.vision.chat_video_enabled:
-            return None
-        if self._cfg.vision.chat_video_scope == 'all' or message_concerns_her(
+        person_key = (stream_id, inbound.context.person.id)
+        concerns_her = message_concerns_her(
             inbound.context.stream.kind,
             inbound.mentioned_me,
             inbound.name_mentioned,
             inbound.replied_to_me,
-        ):
+        )
+        if not concerns_her and inbound.video_sources:
+            concerns_her = self._follows_her_mention(stream_id, person_key)
+        # 不论有没有视频、开关开没开都要记：下一条视频要读的是这一条的结论。
+        self._last_inbound_concern[person_key] = (message_id, concerns_her)
+        if self._video_describer is None or not inbound.video_sources:
+            return None
+        if not self._cfg.vision.chat_video_enabled:
+            return None
+        if self._cfg.vision.chat_video_scope == 'all' or concerns_her:
             task = asyncio.create_task(self._describe_video_message(
                 stream_id,
                 message_id,
@@ -1057,6 +1077,25 @@ class ChatService(
             count=len(inbound.video_sources),
         )
         return None
+
+    def _follows_her_mention(self, stream_id: int, person_key: tuple[int, int]) -> bool:
+        """判断同一发送者在本 stream 的紧邻上一条是否跟她有关、且仍在窗口内。
+
+        窗口判据与补看相同：那一条之后的消息数小于 ``conversation.working_memory_messages``。
+
+        :param stream_id: 当前消息所属 stream ID。
+        :param person_key: （stream, 人物）键。
+        :return: 上一条跟她有关且仍在窗口内时返回 True；没有记录时返回 False。
+        副作用：只读记忆层。
+        """
+        previous = self._last_inbound_concern.get(person_key)
+        if previous is None:
+            return False
+        previous_message_id, previous_concerns_her = previous
+        if not previous_concerns_her:
+            return False
+        window = self._cfg.conversation.working_memory_messages
+        return self.memory.message_count_after(stream_id, previous_message_id) < window
 
     def _catch_up_unwatched_videos(self, stream_id: int) -> None:
         """把同一 stream 里还没看过、且仍在她工作记忆窗口内的视频一起补看。
@@ -1092,7 +1131,7 @@ class ChatService(
                 entry.sources,
             ))
             self._track_background_task(task)
-            self._video_catchup_tasks.setdefault(stream_id, []).append(task)
+            self._video_catchup_tasks.setdefault(stream_id, []).append((entry.message_id, task))
 
     async def _describe_video_message(
         self,
@@ -1136,10 +1175,17 @@ class ChatService(
         除本批消息自带的图片与视频任务外，「喊她时顺带补看」的视频任务也在同一处
         等待：补看的正文属于更早的消息行，回合上下文从库里读取，必须先落库。
 
+        本批里只要有一条跟她有关，这里再补看一次窗口内还没看的视频。入站时的补看
+        只回头看喊她那条之前的视频；「先 @ 她、再发视频」且两条落在同一批时，视频
+        那条到达时本身不带 @、只被登记为未看，要靠这一次补上。
+
+        被补看的视频消息若就在本批里，它在缓冲区里的正文仍是 ``[视频]``，
+        物化时改从库里读，否则这一轮交给模型的仍是占位。
+
         :param batch: 已入缓冲、可能携带后台描述任务的原始消息批次。
         :return: 每条 ``text`` 均为与库里当前正文一致的新批次；无媒体任务的消息原样保留。
         :raises Exception: 任一后台任务异常时重新抛出，由回合错误处理记录。
-        副作用：不回写数据库；数据库回写由各后台任务完成。
+        副作用：可能起补看任务（其回写由任务完成）；本方法自身不回写数据库。
         """
         pending = [
             task
@@ -1147,25 +1193,48 @@ class ChatService(
             for task in (message.image_description_task, message.video_description_task)
             if task is not None
         ]
+        caught_up_ids: set[int] = set()
         if batch:
-            pending.extend(self._video_catchup_tasks.pop(batch[-1].context.stream.id, []))
+            stream_id = batch[-1].context.stream.id
+            if any(
+                message_concerns_her(
+                    message.context.stream.kind,
+                    message.mentioned_me,
+                    message.name_mentioned,
+                    message.replied_to_me,
+                )
+                for message in batch
+            ):
+                self._catch_up_unwatched_videos(stream_id)
+            for message_id, task in self._video_catchup_tasks.pop(stream_id, []):
+                caught_up_ids.add(message_id)
+                pending.append(task)
         if pending:
             await asyncio.gather(*pending)
         return [
-            replace(message, text=self._materialized_text(message))
+            replace(
+                message,
+                text=self._materialized_text(message, message.message_id in caught_up_ids),
+            )
             for message in batch
         ]
 
-    def _materialized_text(self, message: _BufferedMessage) -> str:
+    def _materialized_text(self, message: _BufferedMessage, caught_up: bool) -> str:
         """取一条缓冲消息在媒体任务全部结束后的正文：以库里当前正文为准。
 
         同一条消息的图片与视频任务按「以库里正文为底」回写，后结束的那次写就是
         最终正文，因此物化直接重读库行。消息落库后不会被删，读不到行属于记忆层
         异常，必须显式暴露而不是退回任务结果或占位正文。
+
+        :param message: 缓冲消息。
+        :param caught_up: 这条消息的视频是否刚被补看（任务不挂在缓冲消息上）。
+        :return: 物化后的正文。
+        :raises RuntimeError: 需要读库时读不到该消息行。
         """
         if (
             message.image_description_task is None
             and message.video_description_task is None
+            and not caught_up
         ):
             return message.text
         current = self.memory.message_content(message.context.stream.id, message.message_id)

@@ -74,6 +74,19 @@ def _group_context(registry: StreamRegistry):
     )
 
 
+def _other_group_context(registry: StreamRegistry):
+    """同一个群里的另一位发送者。"""
+    return registry.resolve_inbound(
+        platform='qq',
+        stream_kind='group',
+        stream_external_id='86420',
+        sender_external_id='24680',
+        sender_nickname='另一个账号',
+        sender_group_card='小王',
+        first_seen_at=1_000_000,
+    )
+
+
 def _direct_context(registry: StreamRegistry):
     return registry.resolve_inbound(
         platform='qq',
@@ -428,3 +441,114 @@ async def test_registration_prunes_entries_outside_window(db) -> None:
     remaining = [entry.message_id for entry in chat._video_unwatched[stream_id]]
     assert first_message_id not in remaining
     assert len(remaining) == 1
+
+
+_DESCRIBED = '[视频：两个人在打射击游戏，配音在说别抓我]'
+
+
+@pytest.mark.asyncio
+async def test_caught_up_video_in_same_batch_reaches_turn_text(db) -> None:
+    """先发视频、后 @ 她且同批：补看后这一轮交给模型的正文就是描述，不再是 [视频]。"""
+    describer = _FakeVideoDescriber()
+    chat = ChatService(db, None, None, None, _noop, cfg=_config(), video_describer=describer)
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(_video_message(context, text='[视频]'))
+    await chat.send(InboundMessage(text='@月璃 你快看', context=context, mentioned_me=True))
+
+    materialized = await chat._materialize_batch_images(chat._buffers[stream_id])
+    assert materialized[0].text == _DESCRIBED
+    assert chat.memory.message_content(stream_id, materialized[0].message_id) == _DESCRIBED
+
+
+@pytest.mark.asyncio
+async def test_mention_before_video_in_same_batch_is_caught_up_at_turn_start(db) -> None:
+    """别人先 @ 她、另一个人随后发视频且同批：入站时只登记，回合开始前补看，这一轮就看得到。"""
+    describer = _FakeVideoDescriber()
+    chat = ChatService(db, None, None, None, _noop, cfg=_config(), video_describer=describer)
+    caller = _other_group_context(chat._registry)
+    sender = _group_context(chat._registry)
+    stream_id = sender.stream.id
+
+    await chat.send(InboundMessage(text='@月璃 看看这个视频', context=caller, mentioned_me=True))
+    await chat.send(_video_message(sender, text='[视频]'))
+    assert describer.calls == []
+    assert chat._buffers[stream_id][1].video_description_task is None
+
+    materialized = await chat._materialize_batch_images(chat._buffers[stream_id])
+    assert len(describer.calls) == 1
+    assert materialized[1].text == _DESCRIBED
+    assert stream_id not in chat._video_unwatched
+
+
+@pytest.mark.asyncio
+async def test_video_right_after_same_sender_mention_is_watched_in_next_batch(db) -> None:
+    """同一人先 @ 她、那一轮已开始，视频落到下一批：视频入站时就按「冲她发的」立即看。"""
+    describer = _FakeVideoDescriber()
+    chat = ChatService(db, None, None, None, _noop, cfg=_config(), video_describer=describer)
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(InboundMessage(text='@月璃 看看这个视频', context=context, mentioned_me=True))
+    chat._buffers.pop(stream_id)  # 那一轮已经开始，缓冲被取走
+    await chat.send(_video_message(context, text='[视频]'))
+
+    buffered = chat._buffers[stream_id][0]
+    assert buffered.video_description_task is not None
+    assert await buffered.video_description_task == _DESCRIBED
+    assert len(describer.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_consecutive_videos_after_one_mention_are_all_watched(db) -> None:
+    """同一人 @ 她之后连发两个视频：第二个紧跟的是第一个（已认定冲她发的），同样要看。"""
+    describer = _FakeVideoDescriber()
+    chat = ChatService(db, None, None, None, _noop, cfg=_config(), video_describer=describer)
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(InboundMessage(text='@月璃 看这两个', context=context, mentioned_me=True))
+    chat._buffers.pop(stream_id)
+    await chat.send(_video_message(context, text='[视频]', external_message_id='v1'))
+    await chat.send(_video_message(context, text='[视频]', external_message_id='v2'))
+
+    tasks = [message.video_description_task for message in chat._buffers[stream_id]]
+    assert all(task is not None for task in tasks)
+    await asyncio.gather(*tasks)
+    assert len(describer.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_video_from_another_sender_after_mention_stays_deferred(db) -> None:
+    """别人 @ 她那一轮已开始后，另一个人发的视频不算冲她发的，照常只登记。"""
+    describer = _FakeVideoDescriber()
+    chat = ChatService(db, None, None, None, _noop, cfg=_config(), video_describer=describer)
+    caller = _other_group_context(chat._registry)
+    sender = _group_context(chat._registry)
+    stream_id = sender.stream.id
+
+    await chat.send(InboundMessage(text='@月璃 在吗', context=caller, mentioned_me=True))
+    chat._buffers.pop(stream_id)
+    await chat.send(_video_message(sender, text='[视频]'))
+
+    assert chat._buffers[stream_id][0].video_description_task is None
+    assert describer.calls == []
+    assert len(chat._video_unwatched[stream_id]) == 1
+
+
+@pytest.mark.asyncio
+async def test_video_after_unrelated_message_from_same_sender_stays_deferred(db) -> None:
+    """同一人 @ 她之后先说了一句别的，再发视频：紧邻上一条不跟她有关，不算冲她发的。"""
+    describer = _FakeVideoDescriber()
+    chat = ChatService(db, None, None, None, _noop, cfg=_config(), video_describer=describer)
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(InboundMessage(text='@月璃 在吗', context=context, mentioned_me=True))
+    await chat.send(InboundMessage(text='算了没事', context=context))
+    chat._buffers.pop(stream_id)
+    await chat.send(_video_message(context, text='[视频]'))
+
+    assert chat._buffers[stream_id][0].video_description_task is None
+    assert describer.calls == []
