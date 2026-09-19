@@ -158,3 +158,23 @@ async def test_moov_without_mvhd_is_rejected() -> None:
 
     with pytest.raises(VideoDurationUnreadableError):
         await _duration_of(server)
+
+
+@pytest.mark.asyncio
+async def test_http_200_to_range_request_is_unreadable() -> None:
+    """服务器不理会 Range 时会返回 200 与整个文件：按读不出处理，且只发一个请求。
+
+    把 200 当成功等于每读一个盒子头就整段下载一次，违背「不下载整段」的决定。
+    """
+    full = _box(b'ftyp', b'isom' + bytes(4)) + _box(b'moov', _mvhd(1000, 8000))
+    requests: list[httpx.Request] = []
+
+    def whole(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=full)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(whole)) as http:
+        with pytest.raises(VideoDurationUnreadableError):
+            await read_mp4_duration_seconds('https://multimedia.nt.qq.com.cn/download?rkey=x', http)
+
+    assert len(requests) == 1

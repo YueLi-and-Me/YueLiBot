@@ -144,7 +144,11 @@ async def _range_get(
         # 只记异常类型名：异常文本可能带请求 URL，而链接带一次性签名，
         # 有效期内谁拿到都能下载，不能落进日志与追踪事件。
         raise VideoDurationUnreadableError(f'Range 请求失败：{type(exc).__name__}') from exc
-    if response.status_code not in (200, 206):
+    if response.status_code == 200:
+        # 服务器不理会 Range 时会返回 200 与整个文件：把 200 当成功等于每读一个
+        # 盒子头就整段下载一次，违背「不下载整段」的决定，按读不出处理。
+        raise VideoDurationUnreadableError('服务器不支持 Range（HTTP 200）')
+    if response.status_code != 206:
         raise VideoDurationUnreadableError(f'HTTP {response.status_code}')
     total: int | None = None
     content_range = response.headers.get('content-range', '')
