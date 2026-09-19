@@ -49,7 +49,7 @@ const SUPPORTED_VERSIONS = [
 ] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
-  'chat', 'proactive', 'summary', 'schedule', 'vision', 'expression',
+  'chat', 'proactive', 'summary', 'schedule', 'vision', 'video', 'expression',
   'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding',
 ] as const
 
@@ -106,7 +106,7 @@ function seedProvider(name: string, baseUrl: string): ApiProviderConfig {
   }
 }
 
-// 六个模型全部走这一条连接：DeepSeek 系列也由百炼托管，不需要单独开账号。
+// 七个模型全部走这一条连接：DeepSeek 系列也由百炼托管，不需要单独开账号。
 // 只留一条是刻意的——schema 对目录里每个厂商都要求非空 api_key，多预填一条
 // 就等于多逼用户开一个账号。
 const DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
@@ -132,7 +132,7 @@ function seedModel(
   return {
     name, model_identifier: identifier, api_provider: provider,
     extra_body: { ...NO_THINKING }, reasoning_parse_mode: 'field',
-    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     embedding_dim: 0,
     ...overrides,
   }
@@ -220,6 +220,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     schedule: { temperature: 0.95, max_tokens: 4096 },
     expression: { temperature: 0.1, max_tokens: 4096 },
     vision: { temperature: 0.3, max_tokens: 120 },
+    video: { temperature: 0.3, max_tokens: 0 },
     planner: { temperature: 0.85, max_tokens: 0 },
     replyer: { temperature: 0.85, max_tokens: 0 },
     scene: { temperature: 0.3, max_tokens: 0 },
@@ -232,6 +233,10 @@ export const DEFAULT_CONFIG: YueliConfig = {
     seedModel('qwen-flash', 'qwen3.8-flash', 'dashscope'),
     seedModel('qwen-max', 'qwen3.8-max', 'dashscope'),
     seedModel('qwen-vision', 'qwen3.8-max-0902', 'dashscope', { visual: true }),
+    // 聊天视频理解要同时看画面、听声音，只能预填全模态模型。思考强度等厂商参数
+    // 原样写进 extra_body：modalities 只要文本输出，reasoning_effort 取中档。
+    seedModel('qwen-omni', 'qwen3.8-omni-flash', 'dashscope',
+      { omni: true, extra_body: { modalities: ['text'], reasoning_effort: 'medium' } }),
     // 嵌入不带生成参数：extra_body 只用于对话类请求，嵌入端点不读它。
     seedModel('qwen-embedding', 'qwen3.7-text-embedding', 'dashscope',
       { extra_body: {}, embedding_dim: EMBEDDING_DIM }),
@@ -242,6 +247,8 @@ export const DEFAULT_CONFIG: YueliConfig = {
     summary: { model_list: ['deepseek-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     schedule: { model_list: ['qwen-max'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     vision: { model_list: ['qwen-vision'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    // 两分钟量级的视频首字要 20–30 秒，首字窗口预填 60 秒，沿用 30 秒会在正常视频上误切。
+    video: { model_list: ['qwen-omni'], selection_strategy: 'sequential', first_token_timeout_ms: 60_000, slow_threshold_ms: 8_000 },
     expression: { model_list: ['qwen-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     planner: { model_list: ['deepseek-flash'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     replyer: { model_list: ['deepseek-pro'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
@@ -254,7 +261,11 @@ export const DEFAULT_CONFIG: YueliConfig = {
     enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
   },
   vision: {
-    enabled: false, chat_image_enabled: false, fullscreen_silent: true, capture_mode: 'window',
+    enabled: false, chat_image_enabled: false,
+    // 缺键兜底与图片开关同口径取 false：这份默认值同时充当「缺这一项时的兜底」。
+    // 新装开启只由 Python bootstrap 的种子负责（vision.chat_video_enabled = true）。
+    chat_video_enabled: false, chat_video_scope: 'related', chat_video_max_seconds: 180,
+    fullscreen_silent: true, capture_mode: 'window',
   },
   perception: {
     surfaces: ['desktop'],
@@ -413,6 +424,41 @@ function captureModeAt(record: Record<string, unknown>, path: string): 'window' 
   if (value === undefined) return DEFAULT_CONFIG.vision.capture_mode
   if (value !== 'window' && value !== 'screen') {
     throw new Error(`${path} 的 capture_mode 只能是 "window" 或 "screen"`)
+  }
+  return value
+}
+
+/**
+ * 读取视频理解的观看范围，并在配置加载阶段校验取值。
+ *
+ * @param record 视觉配置记录。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns `related`（只看跟她有关的）或 `all`（全都看）；字段缺失时返回默认值。
+ * @throws Error 当字段取值不是 `related` 或 `all` 时抛出。
+ */
+function chatVideoScopeAt(record: Record<string, unknown>, path: string): 'related' | 'all' {
+  const value = record['chat_video_scope']
+  if (value === undefined) return DEFAULT_CONFIG.vision.chat_video_scope
+  if (value !== 'related' && value !== 'all') {
+    throw new Error(`${path} 的 chat_video_scope 只能是 "related" 或 "all"`)
+  }
+  return value
+}
+
+/**
+ * 读取交给模型的视频时长上限（秒），并在配置加载阶段校验范围。
+ *
+ * @param record 视觉配置记录。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 10–1200 的整数秒数；字段缺失时返回默认值 180。
+ * @throws Error 当字段不是整数或超出 10–1200 范围时抛出。
+ */
+function chatVideoMaxSecondsAt(record: Record<string, unknown>, path: string): number {
+  const value = numberAtOr(
+    record, 'chat_video_max_seconds', DEFAULT_CONFIG.vision.chat_video_max_seconds, path,
+  )
+  if (!Number.isInteger(value) || value < 10 || value > 1200) {
+    throw new Error(`${path} 的 chat_video_max_seconds 必须是 10 到 1200 之间的整数秒`)
   }
   return value
 }
@@ -578,7 +624,7 @@ function parseGeneration(document: Record<string, unknown>, path: string): Gener
   const generation = recordAt(document, 'generation', path)
   const result = structuredClone(DEFAULT_CONFIG.generation)
   for (const task of [
-    'chat', 'proactive', 'summary', 'schedule', 'expression', 'vision',
+    'chat', 'proactive', 'summary', 'schedule', 'expression', 'vision', 'video',
     'planner', 'replyer', 'scene', 'memory',
   ] as const) {
     if (generation[task] === undefined) continue
@@ -628,7 +674,7 @@ function parseTaskRouting(
   // 文件里没有这个任务段 = 该任务没有候选，不能借用新装种子的候选。
   //
   // 现象：老用户升级后起不来，报「model_tasks.proactive 引用了不存在的模型」。
-  // 原因：默认配置为新装预填了六个模型并把各任务指过去；那些名字只存在于全新
+  // 原因：默认配置为新装预填了七个模型并把各任务指过去；那些名字只存在于全新
   //   生成的目录里，老用户自己的 models.toml 没有它们。
   // 后果：把种子候选当缺省值填进去就是制造悬空引用，而引用校验会拒绝整份配置。
   if (value === undefined) return { ...structuredClone(defaults), model_list: [] }
@@ -725,6 +771,7 @@ function parseModels(
       extra_body: structuredClone(extraBody),
       reasoning_parse_mode: reasoningMode,
       visual: value.visual === undefined ? false : booleanAt(value, 'visual', itemPath),
+      omni: value.omni === undefined ? false : booleanAt(value, 'omni', itemPath),
       temperature: modelTemperature,
       max_tokens: modelMaxTokens,
       price_in: numberAtOr(value, 'price_in', 0, itemPath),
@@ -1405,6 +1452,11 @@ function readSplitConfig(directory: string): YueliConfig {
       chat_image_enabled: vision.chat_image_enabled === undefined
         ? DEFAULT_CONFIG.vision.chat_image_enabled
         : booleanAt(vision, 'chat_image_enabled', featuresPath),
+      chat_video_enabled: vision.chat_video_enabled === undefined
+        ? DEFAULT_CONFIG.vision.chat_video_enabled
+        : booleanAt(vision, 'chat_video_enabled', featuresPath),
+      chat_video_scope: chatVideoScopeAt(vision, featuresPath),
+      chat_video_max_seconds: chatVideoMaxSecondsAt(vision, featuresPath),
       fullscreen_silent: booleanAt(vision, 'fullscreen_silent', featuresPath),
       capture_mode: captureModeAt(vision, featuresPath),
     },
@@ -1781,7 +1833,7 @@ function readLegacyConfig(path: string): YueliConfig {
     api_provider: chat.providerName,
     extra_body: {},
     reasoning_parse_mode: 'field',
-    visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     embedding_dim: 0,
   })
   tasks.chat = { ...tasks.chat, model_list: ['chat'], selection_strategy: 'sequential' }
@@ -1795,7 +1847,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'vision', model_identifier: vision.model,
       api_provider: pushProvider(connection), extra_body: {},
       reasoning_parse_mode: 'field',
-      visual: true, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: true, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: 0,
     })
     tasks.vision = { ...tasks.vision, model_list: ['vision'], selection_strategy: 'sequential' }
@@ -1807,7 +1859,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
       api_provider: pushProvider(connection), extra_body: {},
       reasoning_parse_mode: 'none',
-      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: 0,
     })
     tasks.tts = { ...tasks.tts, model_list: ['tts'], selection_strategy: 'sequential' }
@@ -1823,7 +1875,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'embedding', model_identifier: vector.embedding_model,
       api_provider: pushProvider(connection), extra_body: {},
       reasoning_parse_mode: 'none',
-      visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
     tasks.embedding = {
@@ -2077,6 +2129,8 @@ extra_body = ${tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body
 reasoning_parse_mode = ${tomlString(model.reasoning_parse_mode)}
 # 视觉能力标记：只有 true 的模型才能进入 vision / 图片描述任务
 visual = ${model.visual}
+# 全模态能力标记：只有 true 的模型才能进入 video 视频理解任务（同时看画面、听声音）
+omni = ${model.omni}
 ${modelOverrides}
 # 计费参考价，单位元/百万 token；仅用于展示
 price_in = ${model.price_in}
@@ -2136,6 +2190,7 @@ const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
   summary: '长期记忆摘要；留空时继承用户聊天候选',
   schedule: '每日生活计划；留空时继承用户聊天候选',
   vision: '前台窗口图片理解；模型和接口都必须接受图片消息',
+  video: '聊天视频理解；模型必须开了「全模态」，能同时看画面、听声音',
   expression: '挑选表达方式；分类型小任务，留空时继承用户聊天候选',
   planner: '行动决策；留空时继承用户聊天候选。首字延迟主要由它决定',
   replyer: '回复生成；留空时继承用户聊天候选',
@@ -2180,6 +2235,7 @@ function serializeModels(cfg: YueliConfig): string {
     schedule: '每日生活计划的生成参数',
     expression: '挑选表达方式的生成参数',
     vision: '前台窗口视觉描述的生成参数',
+    video: '聊天视频理解的生成参数；长度交给厂商，由提示词约束',
     planner: '行动决策的生成参数；决策不产出正文，想让动作更稳可单独调低',
     replyer: '回复生成的生成参数；写她实际说出口的那句话',
     scene: '情景分析的生成参数；要稳定概括而不是发挥',
@@ -2410,6 +2466,14 @@ cluster = ${tomlValue(cfg.tts.cluster)}
 enabled = ${tomlValue(cfg.vision.enabled)}
 # 允许理解 QQ 聊天里收到的图片；候选模型必须标记 visual = true
 chat_image_enabled = ${tomlValue(cfg.vision.chat_image_enabled)}
+# 允许用全模态模型理解 QQ 私聊与群聊里的视频（画面和声音）；候选模型必须标记 omni = true
+chat_video_enabled = ${tomlValue(cfg.vision.chat_video_enabled)}
+# 看哪些视频："related" 只看跟她有关的（私聊里的，以及群里 @ 她、叫她名字、回复她的
+# 消息里的；有人这样喊她时，她上下文里还没看过的视频会一起补看）；
+# "all" 名单内的视频到了就看，费用随视频数量增长
+chat_video_scope = ${tomlValue(cfg.vision.chat_video_scope)}
+# 最长看多久（秒，10~1200）：超过这个时长的视频不交给模型，她只知道有个多长的视频没看
+chat_video_max_seconds = ${tomlValue(cfg.vision.chat_video_max_seconds)}
 # 检测到疑似全屏窗口时是否保持静默，避免直播或录屏意外播报
 fullscreen_silent = ${tomlValue(cfg.vision.fullscreen_silent)}
 # 截什么："window" 只截前台那一个窗口；"screen" 截整个主屏。
@@ -2680,6 +2744,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   for (const [enabled, task] of [
     [cfg.tts.enabled, 'tts'],
     [cfg.vision.enabled, 'vision'],
+    [cfg.vision.chat_video_enabled, 'video'],
     [cfg.vector.enabled, 'embedding'],
     [cfg.emoji.content_filtration, 'vision'],
   ] as const) {
@@ -2881,7 +2946,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         api_provider: DEFAULT_PROVIDER.name,
         extra_body: extraBody,
         reasoning_parse_mode: 'field',
-        visual: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+        visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
         embedding_dim: 0,
       }] : [],
       model_tasks: {

@@ -461,6 +461,7 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
     'prompt_record': ('task', 'path'),
     'llm_error': ('turnId', 'errorKind', 'message'),
     'image_description': ('result', 'hash', 'text', 'promptId', 'error'),
+    'video_description': ('result', 'file', 'durationSec', 'text', 'promptId', 'error'),
     'action_decision': (
         'turnId', 'eventStatus', 'detail', 'gate', 'decision', 'version',
         'snapshotId', 'messageWatermark',

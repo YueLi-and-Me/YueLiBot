@@ -340,6 +340,26 @@ class MemoryStore:
             return None
         return row['external_message_id']
 
+    def message_content(self, stream_id: int, id: int) -> str | None:
+        """只读地取回一条消息的当前正文，供媒体描述回写以库里正文为底。
+
+        同一条消息的图片、表情包与视频描述由不同后台任务补齐，完成先后不定；
+        回写必须以库里当前正文为底再合并，先完成的任务结果才不会被后到的覆盖。
+
+        :param stream_id: 消息所属 stream ID，防止跨 stream 读到同号消息。
+        :param id: 消息主键。
+        :return: 当前正文；消息不存在或不属于该 stream 时返回 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        副作用：不修改任何数据。
+        """
+        row = self._db.execute(
+            'SELECT content FROM messages WHERE id = ? AND stream_id = ?',
+            (id, stream_id)
+        ).fetchone()
+        if row is None:
+            return None
+        return row['content']
+
     def update_message_content(self, stream_id: int, id: int, content: str) -> int:
         """用后台补齐后的正文替换一条已落库消息的内容。
 

@@ -55,13 +55,13 @@ import {
 
 const TASK_NAMES = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'vision',
-  'expression', 'memory', 'tts', 'embedding',
+  'video', 'expression', 'memory', 'tts', 'embedding',
 ] as const
 // 生成参数（温度、token 上限）覆盖后端 GenerationConfig 里的每一档任务。
 // tts 与 embedding 不在其中：语音合成与向量化没有温度和输出上限可言。
 const GENERATION_TASKS = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'expression', 'vision',
-  'memory',
+  'video', 'memory',
 ] as const
 
 /** 任务字段的中文名称，仅用于功能分配页展示；TOML 配置键名保持英文不变。 */
@@ -74,6 +74,7 @@ const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
   summary: '对话摘要',
   schedule: '日程安排',
   vision: '屏幕视觉',
+  video: '视频理解',
   expression: '表达选择',
   memory: '记忆抽取',
   tts: '语音合成',
@@ -90,6 +91,7 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   summary: '把长对话压缩为角色记忆的摘要模型',
   schedule: '生成角色每日日程计划的模型',
   vision: '识别用户询问的屏幕画面的视觉模型',
+  video: '理解聊天里视频画面与声音的全模态模型',
   expression: '为当前语境挑选表达习惯的模型',
   memory: '回合结束后回看一段对话、判断有没有值得长期记住的事实。后台任务不在回复关键路径上，做结构化抽取而非发挥，配便宜快的模型即可；留空继承日常对话',
   tts: '把回复文本合成为语音的模型',
@@ -150,6 +152,10 @@ const TASK_ADVICE: Record<(typeof TASK_NAMES)[number], TaskAdvice> = {
   vision: {
     kind: 'required',
     note: '必须是能看图的多模态模型。它既要认屏幕截图，也要描述群里的图片和表情包，中文描述质量直接进她的上下文。',
+  },
+  video: {
+    kind: 'required',
+    note: '必须是开了「全模态」的模型：要同时看画面、听声音。只能看图的视觉模型听不到视频里的人声和配乐。视频按时长计费，看得越长越贵。',
   },
   expression: {
     kind: 'fast',
@@ -263,6 +269,7 @@ function emptyModel(): ModelConfig {
     extra_body: {},
     reasoning_parse_mode: 'field',
     visual: false,
+    omni: false,
     temperature: null,
     max_tokens: null,
     price_in: 0,
@@ -622,6 +629,19 @@ export function ModelConfigPage() {
               checked={draft.chat_image_enabled}
               onChange={(checked) => setDraft((current) => current ? { ...current, chat_image_enabled: checked } : current)}
               label={draft.chat_image_enabled ? '已开启' : '未开启'}
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+            <div className="min-w-0">
+              <strong className="text-sm">QQ 视频理解</strong>
+              <p className="mt-1 text-xs text-muted-foreground">
+                用全模态模型理解私聊和群聊里的视频（画面和声音）；需要全模态模型并分配给「视频理解」任务。关闭后视频只显示为 [视频]，不影响聊天。
+              </p>
+            </div>
+            <Toggle
+              checked={draft.chat_video_enabled}
+              onChange={(checked) => setDraft((current) => current ? { ...current, chat_video_enabled: checked } : current)}
+              label={draft.chat_video_enabled ? '已开启' : '未开启'}
             />
           </div>
         </CardBody>
@@ -1475,6 +1495,9 @@ function ModelDialog({
             <Field label="视觉能力" help="开启后，这个模型可以被分配给图片理解和屏幕视觉任务。">
               <Toggle checked={form.visual} onChange={(checked) => updateForm({ visual: checked })} label={form.visual ? '已开启视觉' : '未开启视觉'} />
             </Field>
+            <Field label="全模态" help="用于处理包含音频的视频，使月璃能够理解消息中的视频内容。">
+              <Toggle checked={form.omni} onChange={(checked) => updateForm({ omni: checked })} label={form.omni ? '已开启全模态' : '未开启全模态'} />
+            </Field>
             <Field label="思考模式" help="控制请求体中的 enable_thinking；未显式设置时沿用模型默认行为。">
               <Toggle
                 checked={thinkingEnabled}
@@ -1522,7 +1545,7 @@ function ModelDialog({
                   <Input type="number" min={0} value={form.embedding_dim} onChange={(event) => updateForm({ embedding_dim: Number(event.target.value) })} />
                 </Field>
               </div>
-              <Field label="extra_body（JSON）" className="mt-3" help="需要透传给厂商请求体的额外参数；JSON 对象格式。">
+              <Field label="extra_body（JSON）" className="mt-3" help="需要透传给厂商请求体的额外参数；JSON 对象格式。思考强度等厂商参数写在这里，写法以厂商文档为准（例如百炼全模态模型：{&quot;reasoning_effort&quot;: &quot;medium&quot;}）。">
                 <Textarea rows={3} value={JSON.stringify(form.extra_body)} onChange={(event) => {
                   try { updateForm({ extra_body: JSON.parse(event.target.value) }) } catch { /* 编辑中 */ }
                 }} />

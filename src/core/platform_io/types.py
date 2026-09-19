@@ -82,6 +82,18 @@ class ConversationContext:
 
 
 @dataclass(frozen=True)
+class VideoSource:
+    """一个视频段的下载来源；``url`` 或 ``file`` 缺失时留空串以对齐 [视频] 占位。
+
+    ``url`` 是 QQ 多媒体直链，会过期且无法重取；``file`` 形如 ``<内容 MD5>.mp4``，
+    不下载也能当进程内缓存键。适配器只交这两个事实，看不看、怎么看全由主体判断。
+    """
+
+    url: str = ''
+    file: str = ''
+
+
+@dataclass(frozen=True)
 class InboundMessage:
     """已完成会话与人物归属解析的入站消息。"""
 
@@ -93,11 +105,18 @@ class InboundMessage:
     image_sources: tuple[str, ...] = ()
     emoji_sources: tuple[str, ...] = ()
     emoji_sub_types: tuple[int, ...] = ()
+    # 视频段来源；顺序与 text 中的 [视频] 占位符一致，缺来源的项留空串。
+    video_sources: tuple[VideoSource, ...] = ()
     # 入口门控判定过的戳一戳事实，随消息传到批次门控。两层门控必须读同一份事实：
     # 戳一戳的正文由适配器合成，其中的 Bot 名字不得参与名字匹配，窗口计数也只在
     # 入口登记一次，批次侧重算等于重复记账。
     poked_me: bool = False
     pokes_in_window: int = 0
+    # 本条是「有人回复了 Bot 自己发的消息」，由平台适配器查询被引用消息发送者后
+    # 给出。入口门控、批次门控与视频理解的相关性判定读同一份事实，不重算。
+    replied_to_me: bool = False
+    # 本条正文里出现了 Bot 的名字/别名，由入口按 bot.toml 的称呼配置算好后传入。
+    name_mentioned: bool = False
     # 已由平台适配器完整解析的合并转发根树；主体按内部消息 ID 放入有界会话缓存，
     # 模型只能通过只读工具逐层浏览，不把整棵树直接拼进聊天正文。
     forward_messages: Tuple[ForwardMessageTree, ...] = ()

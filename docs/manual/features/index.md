@@ -36,15 +36,17 @@
 | 语音合成 | `features.toml` `[tts]` | tts 任务档与对应厂商；改动需重启 |
 | 屏幕视觉 | `features.toml` `vision.enabled` | vision 任务档与桌宠；改动需重启 |
 | QQ 聊天图片描述 | `features.toml` `vision.chat_image_enabled` | vision 任务档；与屏幕视觉相互独立 |
+| QQ 聊天视频理解 | `features.toml` `vision.chat_video_enabled` | video 任务档（全模态模型）；与屏幕视觉相互独立 |
 | 向量混合召回 | `features.toml` `vector.enabled` | embedding 任务档；初始配置即开启；改动需重启 |
 | 记忆反馈纠错 | `features.toml` `[memory_feedback]` | memory 任务档；初始配置即开启，关闭后整条链路零写入；改动需重启 |
 | 群聊戳一戳 | `bot.toml` `group_chat.pokes_enabled` | 无 |
 
 ## 模型任务档与功能的对应关系
 
-`models.toml` 将模型按用途划分为十二个任务槽：chat、planner、replyer、scene、proactive、summary、
-memory、schedule、vision、expression、tts、embedding。除 chat 外，任务槽留空即沿用 chat 的候选；
-vision 留空表示不可用，依赖它的功能（屏幕视觉、图片描述、表情包语义标签、表情包内容审查）随之停用。
+`models.toml` 将模型按用途划分为十三个任务槽：chat、planner、replyer、scene、proactive、summary、
+memory、schedule、vision、video、expression、tts、embedding。除 vision、video、tts、embedding 外，
+任务槽留空即沿用 chat 的候选；
+vision 与 video 留空表示不可用，依赖它们的功能（屏幕视觉、图片描述、视频理解、表情包语义标签、表情包内容审查）随之停用。
 
 - 对话回复：chat；行动决策与正文分离时另用 planner、replyer。
 - 长期记忆摘要：summary；事实抽取、表达学习、黑话推断、反馈纠错判定：memory。

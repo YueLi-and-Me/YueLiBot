@@ -50,7 +50,7 @@ from src.core.observe.source import source_label
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
 from src.core.platform_io.forward import forward_tree_from_payload
-from src.core.platform_io.types import InboundMessage, OutboundMessage
+from src.core.platform_io.types import InboundMessage, OutboundMessage, VideoSource
 from src.core.prompts.registry import (
     delete_prompt_override,
     list_prompts,
@@ -70,6 +70,24 @@ from src.core.services.console.trace_console import render_action_decision
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+class VideoSourceBody(BaseModel):
+    """一个视频段的下载来源；``url`` 或 ``file`` 缺失时留空串以对齐 [视频] 占位。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    url: str = ''
+    file: str = ''
+
+
+def _video_source_tuple(body: 'PlatformInboundBody') -> tuple[VideoSource, ...]:
+    """把入站报文里的视频来源规范成 ``VideoSource`` 序列，空项保留以对齐占位。"""
+
+    return tuple(
+        VideoSource(url=source.url.strip(), file=source.file.strip())
+        for source in body.video_sources
+    )
 
 
 class PlatformInboundBody(BaseModel):
@@ -96,9 +114,15 @@ class PlatformInboundBody(BaseModel):
     # DELIBERATE，绝不 FORCE——群里贴表情非常频繁，每次都唤醒会造成大量
     # 无意义回合。
     emoji_liked_me: bool = Field(default=False, alias='emojiLikedMe')
+    # 本条是「有人回复了 Bot 自己发的消息」。被引用消息的发送者是不是 Bot
+    # 由适配器查询后给出；与 @、叫名字同口径，抬入 DELIBERATE 且不受回复
+    # 频率硬上限约束。
+    replied_to_me: bool = Field(default=False, alias='repliedToMe')
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
+    # 视频段来源；元素为 {url, file}，顺序与正文 [视频] 占位符一致，空列表不发送。
+    video_sources: List['VideoSourceBody'] = Field(default_factory=list, alias='videoSources')
     forward_messages: List[Dict[str, Any]] = Field(
         default_factory=list,
         alias='forwardMessages',
@@ -655,6 +679,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         poked_me=body.poked_me,
         pokes_in_window=pokes_in_window,
         emoji_liked_me=body.emoji_liked_me,
+        reply_to_bot=body.replied_to_me,
         # 入口与批次两个门控必须读同一份跟进事实，否则 reply_gate 审计事件报告的
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
         follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
@@ -684,6 +709,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         nameMentioned=name_mentioned,
         pokedMe=body.poked_me,
         pokesInWindow=pokes_in_window,
+        replyToBot=body.replied_to_me,
         repliesInWindow=reply_count,
         maxRepliesInWindow=group_chat.max_replies_in_window,
         naturalReplyElapsedMs=last_bot_reply_elapsed_ms,
@@ -706,7 +732,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 image_sources=tuple(body.image_sources),
                 emoji_sources=tuple(body.emoji_sources),
                 emoji_sub_types=tuple(body.emoji_sub_types),
+                video_sources=_video_source_tuple(body),
                 forward_messages=forward_messages,
+                replied_to_me=body.replied_to_me,
+                name_mentioned=name_mentioned,
             ),
             reason,
         )
@@ -725,6 +754,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 recent_bot_replies=reply_count,
                 candidate_message_ids=(message_id,),
                 selectable_message_ids=(),
+                reply_to_bot=body.replied_to_me,
             ),
             gate_disposition=gate_result.disposition,
             gate_reason_codes=gate_result.reason_codes,
@@ -768,9 +798,12 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         image_sources=image_sources if not legacy_attachments else (),
         emoji_sources=emoji_sources,
         emoji_sub_types=emoji_sub_types,
+        video_sources=_video_source_tuple(body),
         forward_messages=forward_messages,
         poked_me=body.poked_me,
         pokes_in_window=pokes_in_window,
+        replied_to_me=body.replied_to_me,
+        name_mentioned=name_mentioned,
     ))
     return JSONResponse({
         'streamId': context.stream.id,

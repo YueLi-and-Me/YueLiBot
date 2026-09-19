@@ -346,6 +346,8 @@ export interface ModelDefinitionConfig {
   reasoning_parse_mode: ReasoningParseMode
   /** 视觉能力标记：只有 visual = true 的模型才能进入 vision / 图片描述任务 */
   visual: boolean
+  /** 全模态标记：只有 omni = true 的模型才能进入 video 视频理解任务（同时看画面、听声音） */
+  omni: boolean
   /** 可选模型级温度覆盖；留空（null）时使用任务 generation 配置 */
   temperature: number | null
   /** 可选模型级最大输出覆盖；留空（null）时使用任务 generation 配置 */
@@ -474,6 +476,7 @@ export interface YueliConfig {
     expression: { temperature: number; max_tokens: number }
     schedule: { temperature: number; max_tokens: number }
     vision: { temperature: number; max_tokens: number }
+    video: { temperature: number; max_tokens: number }
     planner: { temperature: number; max_tokens: number }
     replyer: { temperature: number; max_tokens: number }
     scene: { temperature: number; max_tokens: number }
@@ -490,6 +493,7 @@ export interface YueliConfig {
     summary: TaskRoutingConfig
     schedule: TaskRoutingConfig
     vision: TaskRoutingConfig
+    video: TaskRoutingConfig
     expression: TaskRoutingConfig
     planner: TaskRoutingConfig
     replyer: TaskRoutingConfig
@@ -508,6 +512,12 @@ export interface YueliConfig {
     enabled: boolean
     /** 允许理解 QQ 聊天里收到的图片 */
     chat_image_enabled: boolean
+    /** 允许用全模态模型理解 QQ 私聊与群聊里的视频（画面和声音） */
+    chat_video_enabled: boolean
+    /** 看哪些视频：related = 只看跟她有关的；all = 名单内的视频到了就看 */
+    chat_video_scope: 'related' | 'all'
+    /** 超过这个时长（秒）的视频不交给模型 */
+    chat_video_max_seconds: number
     fullscreen_silent: boolean
     /** window = 只截前台那一个窗口；screen = 截整个主屏（能看到桌面，但会连带截到别的窗口） */
     capture_mode: 'window' | 'screen'

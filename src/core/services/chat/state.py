@@ -20,7 +20,7 @@ from src.core.agent.conversation_gate import GateResult
 from src.core.agent.parser import ParseEvent
 from src.core.memory.store import RecalledFact
 from src.core.observe import events as trace
-from src.core.platform_io.types import ConversationContext
+from src.core.platform_io.types import ConversationContext, VideoSource
 
 
 class _BatchFailureTracker:
@@ -101,6 +101,22 @@ class _BufferedMessage:
     # 也不拿适配器合成的正文做名字匹配。
     poked_me: bool = False
     pokes_in_window: int = 0
+    # 适配器判定的「回复了她的消息」与入口算好的名字命中，批次门控读同一份事实。
+    replied_to_me: bool = False
+    name_mentioned: bool = False
+    # 后台视频理解任务；结果为补齐描述后的完整正文，回合构建前与图片任务一起等待。
+    video_description_task: asyncio.Task[str] | None = None
+
+
+@dataclass(frozen=True)
+class _UnwatchedVideo:
+    """一条登记为「按范围暂不看」的视频消息，等待她被人喊时顺带补看。
+
+    登记在进程内按 stream 保存，重启即丢：链接到那时多半也已过期。
+    """
+
+    message_id: int
+    sources: Tuple[VideoSource, ...]
 
 
 @dataclass
@@ -228,6 +244,8 @@ class _BatchGate:
     reply_count: int
     mentioned_me: bool
     last_bot_reply_elapsed_ms: int | None = None
+    # 本批是否包含「回复了她的消息」；决策层审计与相关性判定读这份快照。
+    replied_to_me: bool = False
 
 
 @dataclass(frozen=True)

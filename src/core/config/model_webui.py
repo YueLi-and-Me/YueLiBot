@@ -36,7 +36,7 @@ _PROVIDER_FIELDS = (
 )
 _MODEL_FIELDS = (
     'name', 'model_identifier', 'api_provider', 'extra_body',
-    'reasoning_parse_mode', 'visual', 'temperature', 'max_tokens',
+    'reasoning_parse_mode', 'visual', 'omni', 'temperature', 'max_tokens',
     'price_in', 'price_out', 'embedding_dim',
 )
 # 任务清单从配置模型派生，不在这里再抄一份。
@@ -111,6 +111,7 @@ def snapshot(directory: Path) -> Dict[str, Any]:
         'generation': generation_out,
         'vision_enabled': bool(vision.get('enabled', False)),
         'chat_image_enabled': bool(vision.get('chat_image_enabled', False)),
+        'chat_video_enabled': bool(vision.get('chat_video_enabled', False)),
     }
 
 
@@ -190,11 +191,14 @@ def save(directory: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     old_features = (directory / 'features.toml').read_bytes()
     vision_enabled = payload.get('vision_enabled')
     chat_image_enabled = payload.get('chat_image_enabled')
+    chat_video_enabled = payload.get('chat_video_enabled')
     try:
         if isinstance(vision_enabled, bool):
             _write_vision_bool(directory, 'enabled', vision_enabled)
         if isinstance(chat_image_enabled, bool):
             _write_vision_bool(directory, 'chat_image_enabled', chat_image_enabled)
+        if isinstance(chat_video_enabled, bool):
+            _write_vision_bool(directory, 'chat_video_enabled', chat_video_enabled)
     except Exception as exc:
         return {'ok': False, 'detail': f'视觉开关保存失败：{exc}'}
     providers_path = directory / 'providers.toml'
@@ -314,7 +318,7 @@ def _default_model() -> Dict[str, Any]:
     return {
         'name': '', 'model_identifier': '', 'api_provider': '',
         'extra_body': {}, 'reasoning_parse_mode': 'field', 'visual': False,
-        'temperature': None, 'max_tokens': None,
+        'omni': False, 'temperature': None, 'max_tokens': None,
         'price_in': 0.0, 'price_out': 0.0, 'embedding_dim': 0,
     }
 
@@ -412,6 +416,7 @@ def _dump_models(
             ' # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。'
         )
         lines.append(f'visual = {_toml_value(bool(model.get("visual", False)))} # 标记该模型可用于 vision / 图片描述任务。')
+        lines.append(f'omni = {_toml_value(bool(model.get("omni", False)))} # 标记该模型是全模态，可用于 video 视频理解任务（同时看画面、听声音）。')
         if model.get('temperature') is not None:
             lines.append(
                 f'temperature = {_toml_value(float(model["temperature"]))}'

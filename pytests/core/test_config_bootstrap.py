@@ -210,3 +210,36 @@ def test_种子展开覆盖嵌套子模型() -> None:
 
     assert isinstance(document['tts'], dict)
     assert 'enabled' in document['tts']
+
+
+def test_新装种子预填全模态视频理解(tmp_path: Path, adapters_root: Path) -> None:
+    """新装模板预填 omni 模型、video 路由与开关，与识图的种子做法一致。"""
+    config_dir = tmp_path / 'config'
+    bootstrap_config_directory(config_dir)
+
+    features = tomllib.loads((config_dir / 'features.toml').read_text(encoding='utf-8'))
+    assert features['vision']['chat_video_enabled'] is True
+    models = tomllib.loads((config_dir / 'models.toml').read_text(encoding='utf-8'))
+    assert models['model_tasks']['video']['model_list'] == ['qwen-omni']
+    assert models['model_tasks']['video']['first_token_timeout_ms'] == 60_000
+    assert models['generation']['video']['temperature'] == 0.3
+    assert models['generation']['video']['max_tokens'] == 0
+    entries = {entry['name']: entry for entry in models['models']}
+    omni = entries['qwen-omni']
+    assert omni['model_identifier'] == 'qwen3.8-omni-flash'
+    assert omni['omni'] is True
+    assert omni['extra_body'] == {'modalities': ['text'], 'reasoning_effort': 'medium'}
+
+
+def test_schema_默认视频理解关闭且首字窗口更长() -> None:
+    """schema 默认是「老配置缺键时的兜底」：视频理解关闭，video 首字窗口 60 秒。"""
+    from src.core.config.schema import GenerationConfig, ModelTaskConfig, VisionConfig
+
+    vision = VisionConfig()
+    assert vision.chat_video_enabled is False
+    assert vision.chat_video_scope == 'related'
+    assert vision.chat_video_max_seconds == 180
+    assert ModelTaskConfig().video.first_token_timeout_ms == 60_000
+    video_generation = GenerationConfig().video
+    assert video_generation.temperature == 0.3
+    assert video_generation.max_tokens == 0

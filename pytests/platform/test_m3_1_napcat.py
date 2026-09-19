@@ -22,7 +22,9 @@ from src.platforms.onebot11.segments import (
     image_source_urls,
     is_emoji_image,
     message_to_text,
+    video_sources,
 )
+from src.core.platform_io.types import VideoSource
 
 
 def _private(message: list[dict], **overrides: object) -> dict:
@@ -315,3 +317,42 @@ def test_outgoing_images_have_protocol_prefixes() -> None:
     for constructor in (base64_image_segment, file_image_segment):
         with pytest.raises(ValueError, match='不能为空'):
             constructor(' ')
+
+
+def test_video_sources_keep_placeholder_order_with_missing_fields_kept() -> None:
+    """视频来源按段顺序提取 (url, file)，缺来源的项留空以对齐 [视频] 占位。"""
+    segments = [
+        {'type': 'text', 'data': {'text': '看这个'}},
+        {'type': 'video', 'data': {'file': 'a1b2.mp4', 'url': 'https://v/a'}},
+        {'type': 'video', 'data': {'file': 'c3d4.mp4'}},
+        {'type': 'video', 'data': {'url': 'https://v/c'}},
+    ]
+
+    sources = video_sources(segments)
+
+    assert sources == (
+        VideoSource(url='https://v/a', file='a1b2.mp4'),
+        VideoSource(url='', file='c3d4.mp4'),
+        VideoSource(url='https://v/c', file=''),
+    )
+    text = message_to_text(segments)
+    assert text == '看这个[视频][视频][视频]'
+    assert text.count('[视频]') == len(sources)
+
+
+def test_parse_inbound_event_collects_video_sources() -> None:
+    """入站事件把视频来源与正文占位一起带上。"""
+    event = parse_inbound_event(
+        _group([
+            {'type': 'video', 'data': {'file': 'a1b2.mp4', 'url': 'https://v/a'}},
+        ]),
+        '13579',
+        '月璃',
+        '24680',
+        PrivateAccessConfig(),
+        GroupAccessConfig(list=['86420']),
+    )
+
+    assert event is not None
+    assert event.text == '[视频]'
+    assert event.video_sources == (VideoSource(url='https://v/a', file='a1b2.mp4'),)

@@ -36,6 +36,7 @@ export interface ModelConfig {
   extra_body: Record<string, unknown>
   reasoning_parse_mode: 'field' | 'tag' | 'none'
   visual: boolean
+  omni: boolean
   temperature: number | null
   max_tokens: number | null
   price_in: number
@@ -66,6 +67,7 @@ export interface ModelConfigSnapshot {
   generation: Record<string, GenerationConfig>
   vision_enabled: boolean
   chat_image_enabled: boolean
+  chat_video_enabled: boolean
 }
 
 /** 连通性探测结果。 */

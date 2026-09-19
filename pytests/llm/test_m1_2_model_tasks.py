@@ -282,7 +282,7 @@ def test_model_routers_inspect_returns_all_tasks() -> None:
 
     assert set(routers.inspect()) == {
         'chat', 'planner', 'replyer', 'scene', 'memory', 'proactive', 'summary', 'schedule',
-        'vision', 'expression', 'tts', 'embedding',
+        'vision', 'video', 'expression', 'tts', 'embedding',
     }
 
 

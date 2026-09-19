@@ -40,8 +40,10 @@ from .schema import (
     ApiProviderConfig,
     BotDocument,
     FeatureDocument,
+    GenerationConfig,
     ModelCatalog,
     ModelDefinitionConfig,
+    ModelTaskConfig,
     ProviderCatalog,
 )
 from .settings_webui import (
@@ -58,7 +60,7 @@ logger = get_logger(__name__)
 # 主体配置目录内的四个文件；创建了其中任何一个都意味着本次是首次安装。
 MAIN_CONFIG_FILES = ('bot.toml', 'features.toml', 'providers.toml', 'models.toml')
 
-# 新装预填的厂商连接。六个模型全部走这一条：DeepSeek 系列也由百炼托管，
+# 新装预填的厂商连接。七个模型全部走这一条：DeepSeek 系列也由百炼托管，
 # 不需要单独开一个 DeepSeek 账号。模型条目通过 api_provider 引用这个名字，
 # 改名字要顺着这条链一起改，否则加载期会因悬空引用直接报错退出。
 #
@@ -89,6 +91,13 @@ _SEED_MODELS: List[tuple[str, str, str, Dict[str, Any]]] = [
     ('qwen-flash', 'qwen3.8-flash', _DASHSCOPE_PROVIDER, {}),
     ('qwen-max', 'qwen3.8-max', _DASHSCOPE_PROVIDER, {}),
     ('qwen-vision', 'qwen3.8-max-0902', _DASHSCOPE_PROVIDER, {'visual': True}),
+    # 聊天视频理解要同时看画面、听声音，只能预填全模态模型。思考强度等厂商参数
+    # 原样写进 extra_body：modalities 只要文本输出（理解结果是一段描述），
+    # reasoning_effort 取中档——实测它不比更高档不准，却快得多。
+    ('qwen-omni', 'qwen3.8-omni-flash', _DASHSCOPE_PROVIDER, {
+        'omni': True,
+        'extra_body': {'modalities': ['text'], 'reasoning_effort': 'medium'},
+    }),
     ('qwen-embedding', 'qwen3.7-text-embedding', _DASHSCOPE_PROVIDER,
      {'embedding_dim': _EMBEDDING_DIM, 'extra_body': {}}),
 ]
@@ -99,7 +108,9 @@ _SEED_MODELS: List[tuple[str, str, str, Dict[str, Any]]] = [
 # - 决策、摘要、场景观察每回合都跑且不面向用户，走快档。
 # - 表达选择只做短文本判别，用最便宜的一档。
 # - 记忆与日程要长上下文和稳定的结构化输出。
-# - 视觉与嵌入各有专用模型，不与上面共用。
+# - 视觉与视频各有专用模型，不与上面共用：vision 只看图，video 必须画面和
+#   声音一起理解，指向预填的全模态条目。
+# - 嵌入专用模型，不与上面共用。
 # - tts 留空：它需要 volcengine 这类专门的语音厂商，预填一个 OpenAI 兼容的
 #   模型 ID 没有意义。任务候选为空时对应功能直接不启用。
 _SEED_TASKS: Dict[str, List[str]] = {
@@ -113,6 +124,7 @@ _SEED_TASKS: Dict[str, List[str]] = {
     'memory': ['qwen-max'],
     'schedule': ['qwen-max'],
     'vision': ['qwen-vision'],
+    'video': ['qwen-omni'],
     'embedding': ['qwen-embedding'],
 }
 
@@ -271,9 +283,9 @@ def _feature_document() -> Dict[str, Any]:
     每个新安装都会多出一个「往某个群发东西」的钩子，而那个群号本该只存在于维护者
     自己那份配置里。
 
-    识图、记忆反馈与向量召回默认开启：模板的模型表已经预填了 vision 与
-    embedding 两条路由，配置校验能过，装完就能用。三者都会产生额外的模型调用，
-    不想要的在 features.toml 里各改一行即可关掉。
+    识图、视频理解、记忆反馈与向量召回默认开启：模板的模型表已经预填了 vision、
+    video 与 embedding 三条路由，配置校验能过，装完就能用。它们都会产生额外的
+    模型调用，不想要的在 features.toml 里各改一行即可关掉。
 
     视觉的两项**不跟随实际配置**：`capture_mode` 保持 `window`、
     `fullscreen_silent` 保持 `true`。整屏截取会把当时可见的桌面、任务栏和其他
@@ -283,7 +295,7 @@ def _feature_document() -> Dict[str, Any]:
         'inner': {'version': CONFIG_VERSION},
         'memory_feedback': {'enabled': True},
         'vector': {'enabled': True},
-        'vision': {'chat_image_enabled': True},
+        'vision': {'chat_image_enabled': True, 'chat_video_enabled': True},
     })
     document.pop('developer')
     document.pop('update_announce')
@@ -310,6 +322,19 @@ def _model_document() -> Dict[str, Any]:
     })
     for task, model_list in _SEED_TASKS.items():
         document['model_tasks'][task]['model_list'] = list(model_list)
+    # 递归展开用的是子模型字段自身的默认值（首字 30 秒、温度 0.85）；video 的
+    # 设计默认在 ModelTaskConfig.video / GenerationConfig.video 的默认工厂上
+    # （首字 60 秒、温度 0.3、长度交给厂商），这里按默认工厂订正，不另写字面量。
+    video_routing = ModelTaskConfig().video
+    document['model_tasks']['video'].update({
+        'first_token_timeout_ms': video_routing.first_token_timeout_ms,
+        'slow_threshold_ms': video_routing.slow_threshold_ms,
+    })
+    video_generation = GenerationConfig().video
+    document['generation']['video'].update({
+        'temperature': video_generation.temperature,
+        'max_tokens': video_generation.max_tokens,
+    })
     return document
 
 
@@ -549,7 +574,7 @@ def missing_startup_requirements(config_dir: Path) -> List[str]:
         names = '」「'.join(dict.fromkeys(unkeyed))
         missing.append(
             f'providers.toml 里厂商「{names}」的 api_key：填上你自己的密钥。'
-            '厂商地址与六个模型条目都已预填好，换厂商才需要一起改'
+            '厂商地址与七个模型条目都已预填好，换厂商才需要一起改'
         )
     if not usable and not awaiting_key:
         missing.append(

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Tuple
 
 from src.core.platform_io.forward import ForwardMessageTree
+from src.core.platform_io.types import VideoSource
 
 from .config import GroupAccessConfig, PrivateAccessConfig
 from .qq_faces import face_name
@@ -19,6 +20,7 @@ from .segments import (
     image_source_urls,
     mentions_user,
     message_to_text,
+    video_sources,
 )
 
 
@@ -60,6 +62,9 @@ class QqInboundEvent:
     image_sources: tuple[str, ...] = ()
     # 表情包来源单独对齐 [表情包] 占位符，主体使用情绪标签提示词识别。
     emoji_sources: tuple[str, ...] = ()
+    # 视频段来源 (url, file)，顺序与 [视频] 占位符一致；缺来源的项留空串。
+    # 链接会过期且无法重取，主体入库后必须立即决定是否观看。
+    video_sources: tuple[VideoSource, ...] = ()
     # 与 emoji_sources 逐项对齐；主体登记后会在再次发送时还原给 OneBot。
     emoji_sub_types: tuple[int, ...] = ()
     # 本条是「有人戳了 Bot」而不是普通消息。戳一戳没有正文也没有 @，正文里
@@ -68,6 +73,9 @@ class QqInboundEvent:
     # 本条是「有人给 Bot 发的消息贴了表情回应」。与戳一戳同口径：没有正文，
     # 门控靠独立事实抬入 DELIBERATE；贴表情非常频繁，绝不 FORCE。
     emoji_liked_me: bool = False
+    # 本条是「有人回复了 Bot 自己发的消息」。引用段只有被引用消息 ID，发送者
+    # 是不是 Bot 由适配器查询后作为独立事实提交；门控据此抬入 DELIBERATE。
+    replied_to_me: bool = False
     # ``forward`` 段经 get_forward_msg 解析后的完整根树；正文仍保留稳定占位符，
     # 主体用内部消息编号和路径按需读取。
     forward_messages: Tuple[ForwardMessageTree, ...] = ()
@@ -406,6 +414,7 @@ def parse_inbound_event(
     group_access: GroupAccessConfig,
     mention_names: Mapping[str, str] | None = None,
     quote_previews: Mapping[str, str] | None = None,
+    replied_to_me: bool = False,
 ) -> QqInboundEvent | None:
     """解析通过访问策略的私聊或白名单群消息为统一入站事件。
 
@@ -419,6 +428,8 @@ def parse_inbound_event(
         模型无法判断被点名的是谁。机器人自身的映射由本函数补齐，调用方不必传入。
     :param quote_previews: 可选的被引用消息 ID 到摘要映射；缺省时引用只渲染为
         不含内容的占位符。
+    :param replied_to_me: 本条消息引用的那条消息是否由 Bot 自己发出；由调用方
+        按协议端查询结果给出，本函数只透传不判定。
 
     :return: 规范化后的 ``QqInboundEvent``；事件不是允许处理的普通消息时返回 ``None``。
 
@@ -477,6 +488,8 @@ def parse_inbound_event(
         image_sources=image_source_urls(raw_segments),
         emoji_sources=emoji_source_urls(raw_segments),
         emoji_sub_types=emoji_sub_types(raw_segments),
+        video_sources=video_sources(raw_segments),
+        replied_to_me=replied_to_me,
     )
 
 

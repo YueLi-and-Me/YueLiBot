@@ -92,6 +92,7 @@ def test_save_handles_empty_providers_and_models(config_copy: Path) -> None:
     snapshot['models'] = []
     snapshot['vision_enabled'] = False
     snapshot['chat_image_enabled'] = False
+    snapshot['chat_video_enabled'] = False
     features = (config_copy / 'features.toml').read_text(encoding='utf-8')
     lines = features.splitlines()
     in_vector = False
@@ -180,3 +181,20 @@ async def test_connection_and_model_list_probe() -> None:
     finally:
         server.shutdown()
         thread.join(timeout=2)
+
+
+def test_save_round_trips_chat_video_enabled_and_omni(config_copy: Path) -> None:
+    """视频理解开关与「全模态」标记随快照读出、保存后原样写回。"""
+    snapshot = model_webui.snapshot(config_copy)
+    assert 'chat_video_enabled' in snapshot
+    snapshot['chat_video_enabled'] = not snapshot['chat_video_enabled']
+    # 文本模型标 omni 不违反任何准入；改动必须真的落进 models.toml。
+    snapshot['models'][0]['omni'] = True
+
+    result = model_webui.save(config_copy, snapshot)
+
+    assert result['ok'] is True
+    again = model_webui.snapshot(config_copy)
+    assert again['chat_video_enabled'] == snapshot['chat_video_enabled']
+    assert again['models'][0]['omni'] is True
+    assert 'omni = true' in (config_copy / 'models.toml').read_text(encoding='utf-8')

@@ -84,6 +84,9 @@ class GroupObservationMixin:
                 inbound.emoji_sub_types,
             ))
             self._track_background_task(task)
+        # 静默路径与接收路径同口径决定视频看不看：被门控丢弃不等于视频不存在，
+        # 相关的（如 @ 她被深睡压掉的）立即看，无关的登记等补看。
+        self._plan_inbound_video(context.stream.id, message_id, text, inbound)
         if context.stream.kind == 'group':
             self._emit_group_observation(inbound, reason, text, inbound.external_message_id)
             # 只观察不回复的群消息同样推进场景：Bot 对群里的理解不该只在自己开口时才更新。

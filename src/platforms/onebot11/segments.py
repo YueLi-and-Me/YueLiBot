@@ -27,6 +27,7 @@ from .cards import render_card_placeholder
 from .qq_faces import face_id_by_name, face_name
 
 from src.core.agent.action_protocol import REACTION_IDS
+from src.core.platform_io.types import VideoSource
 
 if TYPE_CHECKING:
     from .transport import ActionError
@@ -192,6 +193,31 @@ def image_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
             continue
         data = _segment_data(segment)
         sources.append(_string_value(data.get('url')) or _string_value(data.get('file')))
+    return tuple(sources)
+
+
+def video_sources(segments: Sequence[Segment]) -> tuple[VideoSource, ...]:
+    """提取视频段的下载来源，顺序与正文中的 ``[视频]`` 占位符一致。
+
+    视频段只有 ``data.file``（形如 ``<内容 MD5>.mp4``）与 ``data.url``
+    （会过期的多媒体直链）两个字段，没有时长；看不看、怎么看全由主体判断，
+    适配器不读任何视频配置。缺来源的项保留空值以对齐占位符顺序。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 每个视频段的 ``(url, file)`` 来源对；缺字段的一侧留空串。
+    :raises ValueError: ``segments`` 不是列表，或视频段结构不合法。
+    """
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    sources: list[VideoSource] = []
+    for segment in segments:
+        if segment.get('type') != 'video':
+            continue
+        data = _segment_data(segment)
+        sources.append(VideoSource(
+            url=_string_value(data.get('url')),
+            file=_string_value(data.get('file')),
+        ))
     return tuple(sources)
 
 

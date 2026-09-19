@@ -1355,3 +1355,50 @@ async def test_tool_calling_flattens_history_into_user_stream(db) -> None:
     # 她自己说过的话仍然在，且能看出是谁说的。
     assert '月璃: 你好呀' in merged
     assert '月璃你好' in merged
+
+
+def test_batch_gate_reads_replied_to_me_fact(db) -> None:
+    """批次门控把「回复了她」传进门控并记入本批事实快照。"""
+    config = Config()
+    config.bot.name = "月璃"
+    chat = ChatService(
+        db,
+        _ScriptedProvider([[]]),
+        None,
+        None,
+        _noop,
+        cfg=config,
+        broker=_FakeBroker(),
+    )
+    context = _group_context(chat._registry)
+
+    gate = chat._batch_gate(context, "说得对", False, replied_to_me=True)
+
+    assert gate.result.disposition == 'deliberate'
+    assert gate.result.reason_codes == ('reply_to_bot',)
+    assert gate.replied_to_me is True
+
+
+async def test_shadow_decision_audit_records_reply_to_bot(db) -> None:
+    """决策层审计事件的 replyToBot 取自本批「回复了她」事实。"""
+    config = Config()
+    config.bot.name = "月璃"
+    config.conversation_agent.mode = "shadow"
+    provider = _ScriptedProvider([
+        ['<decision action="silent" reasons="others_conversation"/>'],
+        ['<say>旧管线回复</say>'],
+    ])
+    chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
+    context = _group_context(chat._registry)
+
+    await chat.send(InboundMessage(text="说得对", context=context, replied_to_me=True))
+    await chat._tick()
+    await chat._inflight[context.stream.id].task
+
+    shadow_events = [
+        entry for entry in _action_events()
+        if entry["version"]["modelTask"] == "chat.conversation.shadow"
+    ]
+    assert len(shadow_events) == 1
+    assert shadow_events[0]["inputs"]["replyToBot"] is True
+    assert "reply_to_bot" in shadow_events[0]["gate"]["reasonCodes"]
