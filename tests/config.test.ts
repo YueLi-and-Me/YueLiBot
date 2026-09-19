@@ -72,8 +72,9 @@ afterEach(() => {
 
 describe('拆分配置', () => {
   it('首装模板预填全模态视频理解', () => {
-    // 与 Python bootstrap 的种子一致：omni 模型、video 路由与视频理解开关。
-    expect(DEFAULT_CONFIG.vision.chat_video_enabled).toBe(true)
+    // 与 Python bootstrap 的种子一致：omni 模型与 video 路由；
+    // 开关在 Electron 镜像里按缺键兜底取关闭，新装开启由 Python 种子负责。
+    expect(DEFAULT_CONFIG.vision.chat_video_enabled).toBe(false)
     expect(DEFAULT_CONFIG.vision.chat_video_scope).toBe('related')
     expect(DEFAULT_CONFIG.vision.chat_video_max_seconds).toBe(180)
     expect(DEFAULT_CONFIG.model_tasks.video.model_list).toEqual(['qwen-omni'])
@@ -83,6 +84,23 @@ describe('拆分配置', () => {
     expect(omni?.omni).toBe(true)
     expect(omni?.model_identifier).toBe('qwen3.8-omni-flash')
     expect(omni?.extra_body).toEqual({ modalities: ['text'], reasoning_effort: 'medium' })
+  })
+
+  it('缺 chat_video_enabled 的旧配置按关闭解析', () => {
+    // 缺键兜底与图片开关同口径：默认关闭；新装开启只由 Python bootstrap 的种子负责。
+    const directory = join(makeTemporaryDirectory(), 'config')
+    writeConfigDirectory(directory, baseConfig())
+    const featuresPath = join(directory, 'features.toml')
+    const text = readFileSync(featuresPath, 'utf-8')
+    writeFileSync(
+      featuresPath,
+      text.split(String.fromCharCode(10))
+        .filter((line) => !line.trimStart().startsWith('chat_video_enabled'))
+        .join(String.fromCharCode(10)),
+      'utf-8',
+    )
+
+    expect(readConfigDirectory(directory).vision.chat_video_enabled).toBe(false)
   })
 
   it('自动创建停用的 QQ 配置模板且不覆盖已有内容', () => {

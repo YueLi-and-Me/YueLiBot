@@ -262,8 +262,9 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   vision: {
     enabled: false, chat_image_enabled: false,
-    // 新装模板开启视频理解：模型表已预填全模态条目与 video 路由，装完即可用（D5）。
-    chat_video_enabled: true, chat_video_scope: 'related', chat_video_max_seconds: 180,
+    // 缺键兜底与图片开关同口径取 false：这份默认值同时充当「缺这一项时的兜底」。
+    // 新装开启只由 Python bootstrap 的种子负责（vision.chat_video_enabled = true）。
+    chat_video_enabled: false, chat_video_scope: 'related', chat_video_max_seconds: 180,
     fullscreen_silent: true, capture_mode: 'window',
   },
   perception: {
