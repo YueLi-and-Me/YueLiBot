@@ -260,3 +260,42 @@ async def test_openai_client_passes_video_block_and_extra_body_verbatim(
     assert body['modalities'] == ['text']
     assert body['reasoning_effort'] == 'medium'
     assert 'max_tokens' not in body
+
+
+@pytest.mark.asyncio
+async def test_trace_events_never_carry_the_signed_qq_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """llm_request 与 video_description 事件的序列化结果里都不含视频链接本身。
+
+    QQ 视频链接带一次性签名，有效期内谁拿到都能下载那段视频；追踪事件要落库并
+    显示在 WebUI，与图片服务同口径只记内容标识（file），不记来源。
+    """
+    from src.core.observe.store import event_store
+
+    provider = _FakeOmni(['一段描述'])
+    describer = ChatVideoDescriber(_config(), provider)
+    _stub_duration(monkeypatch, describer, 17.5)
+    source = _source()
+
+    await describer.describe_sources((source,))
+
+    for kind in ('llm_request', 'video_description'):
+        for entry in event_store.search(kinds=[kind]).events:
+            assert source.url not in json.dumps(entry, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_duration_read_failure_message_does_not_carry_url() -> None:
+    """读时长失败的原因文本不含链接本身，追踪与日志可以原样记录它。"""
+    from src.core.services.media.chat_video import read_mp4_duration_seconds
+
+    def refused(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError('connection refused')
+
+    url = 'https://multimedia.nt.qq.com.cn/download?rkey=secret-link'
+    async with httpx.AsyncClient(transport=httpx.MockTransport(refused)) as http:
+        with pytest.raises(VideoDurationUnreadableError) as caught:
+            await read_mp4_duration_seconds(url, http)
+
+    assert url not in str(caught.value)

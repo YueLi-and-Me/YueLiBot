@@ -141,7 +141,9 @@ async def _range_get(
     try:
         response = await http.get(url, headers={'Range': f'bytes={start}-{start + length - 1}'})
     except httpx.HTTPError as exc:
-        raise VideoDurationUnreadableError(f'Range 请求失败：{exc}') from exc
+        # 只记异常类型名：异常文本可能带请求 URL，而链接带一次性签名，
+        # 有效期内谁拿到都能下载，不能落进日志与追踪事件。
+        raise VideoDurationUnreadableError(f'Range 请求失败：{type(exc).__name__}') from exc
     if response.status_code not in (200, 206):
         raise VideoDurationUnreadableError(f'HTTP {response.status_code}')
     total: int | None = None
@@ -395,7 +397,8 @@ class ChatVideoDescriber:
                 messages=[{
                     'role': 'user',
                     'content': [
-                        {'type': 'video', 'url': url},
+                        # 与图片服务同口径：追踪里只记内容标识，不记带签名的来源链接。
+                        {'type': 'video', 'file': key},
                         {'type': 'text', 'text': prompt},
                     ],
                 }],
