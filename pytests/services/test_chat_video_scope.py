@@ -278,3 +278,80 @@ async def test_image_and_video_merge_into_same_body_regardless_of_order(db, firs
     assert chat.memory.message_content(stream_id, buffered.message_id) == expected
     materialized = await chat._materialize_batch_images(chat._buffers[stream_id])
     assert materialized[0].text == expected
+
+
+@pytest.mark.asyncio
+async def test_emoji_registration_await_does_not_clobber_video_description(db) -> None:
+    """表情包入库的 await 之后写回时，必须以库里当前正文为底，不能盖掉视频描述。
+
+    覆盖的交错：图片任务读出正文 → 表情包入库（await）→ 视频任务在此期间写库
+    → 图片任务写回。写回用的底必须是入库之后重新读到的正文。
+    """
+    import base64
+
+    from src.core.services.media.chat_image import DescribedEmoji
+
+    class _GatedEmojiLibrary:
+        def __init__(self) -> None:
+            self.gate = asyncio.Event()
+            self.register_started = asyncio.Event()
+            self.registered: list[str] = []
+
+        async def register(
+            self,
+            image_bytes: bytes,
+            emotion_tags: Any,
+            media_type: str,
+            content_hash: str,
+            sub_type: int,
+        ) -> None:
+            self.register_started.set()
+            await self.gate.wait()
+            self.registered.append(content_hash)
+
+    class _EmojiOnlyImageDescriber:
+        async def describe_sources(self, sources: tuple[str, ...]) -> list[Any]:
+            return [None] * len(sources)
+
+        async def describe_emoji_sources(self, sources: tuple[str, ...]) -> list[Any]:
+            return [DescribedEmoji(
+                content_hash='deadbeef',
+                emotion_tags='笑死',
+                image_bytes=b'emoji-bytes',
+                media_type='image/jpeg',
+            )]
+
+    emoji_library = _GatedEmojiLibrary()
+    video_describer = _FakeVideoDescriber()
+    video_describer.gate.clear()
+    config = _config()
+    config.emoji.collect_enabled = True
+    chat = ChatService(
+        db, None, None, None, _noop, cfg=config,
+        image_describer=_EmojiOnlyImageDescriber(),
+        video_describer=video_describer,
+        emoji_library=emoji_library,
+    )
+    context = _group_context(chat._registry)
+    stream_id = context.stream.id
+
+    await chat.send(InboundMessage(
+        text='[表情包][视频]',
+        context=context,
+        mentioned_me=True,
+        emoji_sources=('base64://' + base64.b64encode(b'emoji').decode('ascii'),),
+        emoji_sub_types=(1,),
+        video_sources=(VideoSource(url='https://multimedia.nt.qq.com.cn/download?rkey=x', file='a1b2.mp4'),),
+    ))
+    buffered = chat._buffers[stream_id][0]
+    # 等图片任务读到旧正文并挂在入库闸门上，再放行视频任务写库，最后放行入库。
+    await emoji_library.register_started.wait()
+    video_describer.gate.set()
+    await buffered.video_description_task
+    assert chat.memory.message_content(stream_id, buffered.message_id) ==         '[表情包][视频：两个人在打射击游戏，配音在说别抓我]'
+    emoji_library.gate.set()
+    await buffered.image_description_task
+
+    final = chat.memory.message_content(stream_id, buffered.message_id)
+    assert '[表情包：笑死]' in final
+    assert '[视频：两个人在打射击游戏，配音在说别抓我]' in final

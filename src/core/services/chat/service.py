@@ -963,13 +963,6 @@ class ChatService(
         )
         descriptions = await image_task if image_task is not None else []
         emoji_descriptions = await emoji_task if emoji_task is not None else []
-        # 回写以库里当前正文为底：同一条消息的图片、表情包与视频描述由不同后台
-        # 任务补齐、完成先后不定，先完成的结果不能被后到任务手里的旧正文覆盖。
-        base = self.memory.message_content(stream_id, message_id)
-        if base is None:
-            base = text
-        enriched = merge_image_descriptions(base, descriptions)
-        enriched = merge_emoji_descriptions(enriched, emoji_descriptions)
         # collect_enabled 关闭时入站图片只识别不入库：识别结果仍回写正文，
         # 但不再把新图收进可发送库。
         if self._emoji_library is not None and self._cfg.emoji.collect_enabled:
@@ -996,6 +989,15 @@ class ChatService(
                         hash=description.content_hash,
                         error=str(exc),
                     )
+        # 读、合并、写回必须紧挨在一起，中间不能再有 await：同一条消息的图片、
+        # 表情包与视频描述由不同后台任务补齐、完成先后不定，上面的表情包入库
+        # 让出执行权期间视频任务可能已经写库；用更早读到的正文写回会把它的结果
+        # 覆盖掉。以此刻库里正文为底合并，先完成的结果才不会被后到的覆盖。
+        base = self.memory.message_content(stream_id, message_id)
+        if base is None:
+            base = text
+        enriched = merge_image_descriptions(base, descriptions)
+        enriched = merge_emoji_descriptions(enriched, emoji_descriptions)
         if enriched != base:
             self.memory.update_message_content(stream_id, message_id, enriched)
         return enriched
@@ -1108,6 +1110,8 @@ class ChatService(
         if self._video_describer is None or not sources:
             return fallback_text
         outcomes = await self._video_describer.describe_sources(sources)
+        # 与图片描述同一约束：读、合并、写回之间不能再有 await，否则后到任务
+        # 会用更早读到的正文把先完成的结果覆盖掉。
         base = self.memory.message_content(stream_id, message_id)
         if base is None:
             base = fallback_text or ''
