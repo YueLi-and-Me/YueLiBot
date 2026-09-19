@@ -23,6 +23,7 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   expression_learn_failed: '表达方式学习失败',
   foreground: '前台活动变化',
   image_description: '图片理解',
+  video_description: '视频理解',
   interest: '兴趣度更新',
   jargon_hit: '黑话命中',
   jargon_inferred: '黑话推断',

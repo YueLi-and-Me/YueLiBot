@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Tuple
 
 from src.core.platform_io.forward import ForwardMessageTree
+from src.core.platform_io.types import VideoSource
 
 from .config import GroupAccessConfig, PrivateAccessConfig
 from .qq_faces import face_name
@@ -19,6 +20,7 @@ from .segments import (
     image_source_urls,
     mentions_user,
     message_to_text,
+    video_sources,
 )
 
 
@@ -60,6 +62,9 @@ class QqInboundEvent:
     image_sources: tuple[str, ...] = ()
     # 表情包来源单独对齐 [表情包] 占位符，主体使用情绪标签提示词识别。
     emoji_sources: tuple[str, ...] = ()
+    # 视频段来源 (url, file)，顺序与 [视频] 占位符一致；缺来源的项留空串。
+    # 链接会过期且无法重取，主体入库后必须立即决定是否观看。
+    video_sources: tuple[VideoSource, ...] = ()
     # 与 emoji_sources 逐项对齐；主体登记后会在再次发送时还原给 OneBot。
     emoji_sub_types: tuple[int, ...] = ()
     # 本条是「有人戳了 Bot」而不是普通消息。戳一戳没有正文也没有 @，正文里
@@ -483,6 +488,7 @@ def parse_inbound_event(
         image_sources=image_source_urls(raw_segments),
         emoji_sources=emoji_source_urls(raw_segments),
         emoji_sub_types=emoji_sub_types(raw_segments),
+        video_sources=video_sources(raw_segments),
         replied_to_me=replied_to_me,
     )
 

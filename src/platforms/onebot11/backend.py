@@ -208,6 +208,11 @@ class BackendClient:
         # 与 forwardMessages 同口径：为假不发送，保持既有精确载荷用例不变。
         if event.replied_to_me:
             body['repliedToMe'] = True
+        if event.video_sources:
+            body['videoSources'] = [
+                {'url': source.url, 'file': source.file}
+                for source in event.video_sources
+            ]
         response = await client.post(
             '/platform/inbound',
             json=body,

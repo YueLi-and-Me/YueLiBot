@@ -57,6 +57,7 @@ from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
 from src.core.services.host.adapter_host import build_adapter_process
 from src.core.services.media.chat_image import ChatImageDescriber
+from src.core.services.media.chat_video import ChatVideoDescriber
 from src.core.services.host.desktop_shell import build_desktop_shell_process
 from src.core.services.media.emoji import EmojiLibrary, VisionEmojiContentFilter
 from src.core.prompts.registry import prompt_metadata
@@ -828,6 +829,13 @@ def main() -> None:
         vision_provider,
         emoji_tag_lookup=emoji_library.emotion_tags_for_hash,
     )
+    # 视频理解服务只在 video 路由有候选时装配；开关在每次调用时读当前配置，
+    # 在 WebUI 里开关后不用重启就生效（改模型仍按现有流程重启）。
+    video_describer = (
+        ChatVideoDescriber(cfg, routers.video)
+        if cfg.routing.video.ready
+        else None
+    )
 
     async def _push_event(
         channel: str,
@@ -860,6 +868,7 @@ def main() -> None:
         scene_provider=routers.scene if routers.scene.ready else None,
         memory_provider=routers.memory if routers.memory.ready else None,
         image_describer=image_describer,
+        video_describer=video_describer,
         emoji_library=emoji_library,
     )
     app_state.chat.set_action_policy(

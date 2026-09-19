@@ -33,6 +33,11 @@ from ..media.chat_image import (
     merge_emoji_descriptions,
     merge_image_descriptions,
 )
+from ..media.chat_video import (
+    ChatVideoDescriber,
+    merge_video_descriptions,
+    message_concerns_her,
+)
 from ..media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
 from ..console.trace_console import mark_turn_start, render_action_decision, render_turn, render_turn_error
 from ..maintenance.vector import VectorService
@@ -127,6 +132,7 @@ from src.core.platform_io.types import (
     OutboundPoke,
     OutboundReaction,
     StreamKind,
+    VideoSource,
 )
 from src.core.prompts.registry import (
     CHAT_CONVERSATION_TEMPLATE_IDS,
@@ -185,6 +191,7 @@ from .state import (
     _RoundResult,
     _SessionState,
     _TurnSink,
+    _UnwatchedVideo,
     _WaitHold,
 )
 
@@ -227,6 +234,7 @@ class ChatService(
         scene_provider: LlmProvider | None = None,
         memory_provider: LlmProvider | None = None,
         image_describer: ChatImageDescriber | None = None,
+        video_describer: ChatVideoDescriber | None = None,
         emoji_library: EmojiLibrary | None = None,
         action_policy: ActionPolicy | None = None,
         action_policies: Mapping[str, ActionPolicy] | None = None,
@@ -244,6 +252,7 @@ class ChatService(
         :param broker: 可选的非桌面平台出站路由器。
         :param expression_provider: 可选的表达样本选择模型。
         :param image_describer: 可选的聊天图片描述服务；为 ``None`` 时图片保持占位符。
+        :param video_describer: 可选的聊天视频理解服务；为 ``None`` 时视频保持占位符。
         :param action_policy: 可选的回合内动作策略；省略时始终回复。
         :param action_policies: 按 stream kind 装配的动作策略；未配置类型使用默认策略。
 
@@ -260,7 +269,13 @@ class ChatService(
         self._speak_audio = speak_audio
         self._broker = broker
         self._image_describer = image_describer
+        self._video_describer = video_describer
         self._emoji_library = emoji_library
+        # 按范围暂不看的视频登记（按 stream）；「跟她有关」的消息入缓冲时按窗口补看。
+        # 进程内状态，重启即丢：链接到那时多半也已过期。
+        self._video_unwatched: dict[int, list[_UnwatchedVideo]] = {}
+        # 本回合开始前必须等待的补看任务（按 stream）；物化批次时取走并清空。
+        self._video_catchup_tasks: dict[int, list[asyncio.Task[str | None]]] = {}
         self._default_action_policy = action_policy or TurnPlanner(AlwaysReplyPolicy())
         self._action_policies = dict(action_policies or {})
         # 打断时用来叫停已经在播的音频；由 __main__ 注入 TtsService.cancel。
@@ -539,6 +554,8 @@ class ChatService(
         self._cfg = cfg
         if self._image_describer is not None:
             self._image_describer.apply_config(cfg)
+        if self._video_describer is not None:
+            self._video_describer.apply_config(cfg)
         # 精力开关不是「下次读到新值」就够的字段：它门控的是带副作用的状态转换——
         # 关闭时记下关闭起点，重新开启时按关闭时长补算基线回归。Persona 在装配期把这
         # 个布尔值拷进了自己身上，换配置引用够不着它，只有 set_energy_enabled 能把转换
@@ -864,6 +881,7 @@ class ChatService(
                 inbound.emoji_sub_types,
             ))
             self._track_background_task(image_task)
+        video_task = self._plan_inbound_video(stream_id, message_id, text, inbound)
         self._buffers.setdefault(stream_id, []).append(_BufferedMessage(
             text=text,
             context=inbound.context,
@@ -878,7 +896,17 @@ class ChatService(
             pokes_in_window=inbound.pokes_in_window,
             replied_to_me=inbound.replied_to_me,
             name_mentioned=inbound.name_mentioned,
+            video_description_task=video_task,
         ))
+        # 「跟她有关」的消息被接收进回合缓冲时，同一 stream 里还没看过、且仍在她
+        # 工作记忆窗口内的视频一起看；覆盖「先发视频、下一条才 @ 她」的发法。
+        if message_concerns_her(
+            inbound.context.stream.kind,
+            inbound.mentioned_me,
+            inbound.name_mentioned,
+            inbound.replied_to_me,
+        ):
+            self._catch_up_unwatched_videos(stream_id)
         self._wake.set()
 
     def _track_background_task(self, task: asyncio.Task[str]) -> None:
@@ -935,7 +963,12 @@ class ChatService(
         )
         descriptions = await image_task if image_task is not None else []
         emoji_descriptions = await emoji_task if emoji_task is not None else []
-        enriched = merge_image_descriptions(text, descriptions)
+        # 回写以库里当前正文为底：同一条消息的图片、表情包与视频描述由不同后台
+        # 任务补齐、完成先后不定，先完成的结果不能被后到任务手里的旧正文覆盖。
+        base = self.memory.message_content(stream_id, message_id)
+        if base is None:
+            base = text
+        enriched = merge_image_descriptions(base, descriptions)
         enriched = merge_emoji_descriptions(enriched, emoji_descriptions)
         # collect_enabled 关闭时入站图片只识别不入库：识别结果仍回写正文，
         # 但不再把新图收进可发送库。
@@ -963,7 +996,125 @@ class ChatService(
                         hash=description.content_hash,
                         error=str(exc),
                     )
-        if enriched != text:
+        if enriched != base:
+            self.memory.update_message_content(stream_id, message_id, enriched)
+        return enriched
+
+    def _plan_inbound_video(
+        self,
+        stream_id: int,
+        message_id: int,
+        text: str,
+        inbound: InboundMessage,
+    ) -> asyncio.Task[str | None] | None:
+        """按范围与本条相关性决定消息里的视频看不看：要看就起任务，暂不看就登记。
+
+        视频链接会过期且无法重取，决定必须在入库后立即做出；开关关闭或没有
+        video 模型时什么都不做（不调用、不登记、不记日志）。
+
+        :param stream_id: 消息所属 stream ID。
+        :param message_id: 已落库消息主键。
+        :param text: 含 ``[视频]`` 占位符的落库正文。
+        :param inbound: 带来源与相关性事实的入站消息。
+        :return: 后台理解任务；暂不看或完全不动用时返回 ``None``。
+        副作用：要看的起后台任务并登记未看的，登记写进程内列表。
+        """
+        if self._video_describer is None or not inbound.video_sources:
+            return None
+        if not self._cfg.vision.chat_video_enabled:
+            return None
+        if self._cfg.vision.chat_video_scope == 'all' or message_concerns_her(
+            inbound.context.stream.kind,
+            inbound.mentioned_me,
+            inbound.name_mentioned,
+            inbound.replied_to_me,
+        ):
+            task = asyncio.create_task(self._describe_video_message(
+                stream_id,
+                message_id,
+                text,
+                inbound.video_sources,
+            ))
+            self._track_background_task(task)
+            return task
+        self._video_unwatched.setdefault(stream_id, []).append(
+            _UnwatchedVideo(message_id=message_id, sources=inbound.video_sources)
+        )
+        logger.info(
+            'chat_video_deferred',
+            streamId=stream_id,
+            messageId=message_id,
+            count=len(inbound.video_sources),
+        )
+        return None
+
+    def _catch_up_unwatched_videos(self, stream_id: int) -> None:
+        """把同一 stream 里还没看过、且仍在她工作记忆窗口内的视频一起补看。
+
+        窗口判据：视频那条之后的消息数小于 ``conversation.working_memory_messages``，
+        即「她上下文里还看得到的消息」；窗口外的不补。链接已过期的会在读时长那一步
+        失败，按「读不出时长」处理。
+
+        :param stream_id: 触发补看的 stream ID。
+        副作用：窗口内的登记改为后台理解任务，并挂到本 stream 的补看任务清单。
+        """
+        entries = self._video_unwatched.get(stream_id)
+        if not entries or self._video_describer is None:
+            return
+        if not self._cfg.vision.chat_video_enabled:
+            return
+        window = self._cfg.conversation.working_memory_messages
+        keep: list[_UnwatchedVideo] = []
+        due: list[_UnwatchedVideo] = []
+        for entry in entries:
+            if self.memory.message_count_after(stream_id, entry.message_id) < window:
+                due.append(entry)
+            else:
+                keep.append(entry)
+        if keep:
+            self._video_unwatched[stream_id] = keep
+        else:
+            self._video_unwatched.pop(stream_id, None)
+        for entry in due:
+            task = asyncio.create_task(self._describe_video_message(
+                stream_id,
+                entry.message_id,
+                None,
+                entry.sources,
+            ))
+            self._track_background_task(task)
+            self._video_catchup_tasks.setdefault(stream_id, []).append(task)
+
+    async def _describe_video_message(
+        self,
+        stream_id: int,
+        message_id: int,
+        fallback_text: str | None,
+        sources: tuple[VideoSource, ...],
+    ) -> str | None:
+        """在后台理解视频来源，并把结果合并回写进已落库的正文。
+
+        回写以库里当前正文为底，与图片描述同口径：同一条消息的图片、表情包与
+        视频描述完成先后不定，先完成的结果不能被后到任务手里的旧正文覆盖。
+
+        :param stream_id: 消息所属 stream ID。
+        :param message_id: 已落库消息主键。
+        :param fallback_text: 库里读不到行时使用的占位正文；补看任务传 ``None``。
+        :param sources: 与正文 ``[视频]`` 占位符顺序一致的视频来源。
+        :return: 合并后的正文；完全失败时返回原占位正文，无正文可合并时返回 ``None``。
+        :raises sqlite3.Error: 描述成功后回写消息失败时抛出。
+        副作用：有变化时用合并后的正文更新对应消息行；不触发回合。
+        """
+        if self._video_describer is None or not sources:
+            return fallback_text
+        outcomes = await self._video_describer.describe_sources(sources)
+        base = self.memory.message_content(stream_id, message_id)
+        if base is None:
+            base = fallback_text or ''
+        if not base:
+            return None
+        enriched = merge_video_descriptions(base, outcomes)
+        if enriched != base:
             self.memory.update_message_content(stream_id, message_id, enriched)
         return enriched
 
@@ -971,31 +1122,55 @@ class ChatService(
         self,
         batch: list[_BufferedMessage],
     ) -> list[_BufferedMessage]:
-        """等待批次内所有后台图片描述完成，并生成使用补齐正文的批次副本。
+        """等待本批全部媒体任务与补看任务完成，并生成与库里正文一致的批次副本。
+
+        除本批消息自带的图片与视频任务外，「喊她时顺带补看」的视频任务也在同一处
+        等待：补看的正文属于更早的消息行，回合上下文从库里读取，必须先落库。
 
         :param batch: 已入缓冲、可能携带后台描述任务的原始消息批次。
-        :return: 每条 ``text`` 均为描述补齐后正文的新批次；无图片的消息原样保留。
+        :return: 每条 ``text`` 均为与库里当前正文一致的新批次；无媒体任务的消息原样保留。
         :raises Exception: 任一后台任务异常时重新抛出，由回合错误处理记录。
-        副作用：只读取任务结果，不回写数据库；数据库回写由后台任务完成。
+        副作用：不回写数据库；数据库回写由各后台任务完成。
         """
         pending = [
-            message.image_description_task
+            task
             for message in batch
-            if message.image_description_task is not None
+            for task in (message.image_description_task, message.video_description_task)
+            if task is not None
         ]
+        if batch:
+            pending.extend(self._video_catchup_tasks.pop(batch[-1].context.stream.id, []))
         if pending:
             await asyncio.gather(*pending)
         return [
-            replace(
-                message,
-                text=(
-                    message.image_description_task.result()
-                    if message.image_description_task is not None
-                    else message.text
-                ),
-            )
+            replace(message, text=self._materialized_text(message))
             for message in batch
         ]
+
+    def _materialized_text(self, message: _BufferedMessage) -> str:
+        """取一条缓冲消息在媒体任务全部结束后的正文：以库里当前正文为准。
+
+        同一条消息的图片与视频任务按「以库里正文为底」回写，后结束的那次写就是
+        最终正文，因此物化直接重读库行；库里没有行（测试替身）时退回任务结果，
+        最后退回占位正文。
+        """
+        if (
+            message.image_description_task is None
+            and message.video_description_task is None
+        ):
+            return message.text
+        current = self.memory.message_content(message.context.stream.id, message.message_id)
+        if current is not None:
+            return current
+        for task in (message.video_description_task, message.image_description_task):
+            if task is None or not task.done() or task.cancelled():
+                continue
+            if task.exception() is not None:
+                continue
+            result = task.result()
+            if result:
+                return result
+        return message.text
 
     async def _start_turn(
         self,

@@ -50,7 +50,7 @@ from src.core.observe.source import source_label
 from src.core.observe.stages import GATED, RECEIVED
 from src.core.observe.store import current_stages, event_store, search_events
 from src.core.platform_io.forward import forward_tree_from_payload
-from src.core.platform_io.types import InboundMessage, OutboundMessage
+from src.core.platform_io.types import InboundMessage, OutboundMessage, VideoSource
 from src.core.prompts.registry import (
     delete_prompt_override,
     list_prompts,
@@ -70,6 +70,24 @@ from src.core.services.console.trace_console import render_action_decision
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+class VideoSourceBody(BaseModel):
+    """一个视频段的下载来源；``url`` 或 ``file`` 缺失时留空串以对齐 [视频] 占位。"""
+
+    model_config = ConfigDict(extra='forbid')
+
+    url: str = ''
+    file: str = ''
+
+
+def _video_source_tuple(body: 'PlatformInboundBody') -> tuple[VideoSource, ...]:
+    """把入站报文里的视频来源规范成 ``VideoSource`` 序列，空项保留以对齐占位。"""
+
+    return tuple(
+        VideoSource(url=source.url.strip(), file=source.file.strip())
+        for source in body.video_sources
+    )
 
 
 class PlatformInboundBody(BaseModel):
@@ -103,6 +121,8 @@ class PlatformInboundBody(BaseModel):
     image_sources: List[str] = Field(default_factory=list, alias='imageSources')
     emoji_sources: List[str] = Field(default_factory=list, alias='emojiSources')
     emoji_sub_types: List[int] = Field(default_factory=list, alias='emojiSubTypes')
+    # 视频段来源；元素为 {url, file}，顺序与正文 [视频] 占位符一致，空列表不发送。
+    video_sources: List['VideoSourceBody'] = Field(default_factory=list, alias='videoSources')
     forward_messages: List[Dict[str, Any]] = Field(
         default_factory=list,
         alias='forwardMessages',
@@ -712,6 +732,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 image_sources=tuple(body.image_sources),
                 emoji_sources=tuple(body.emoji_sources),
                 emoji_sub_types=tuple(body.emoji_sub_types),
+                video_sources=_video_source_tuple(body),
                 forward_messages=forward_messages,
                 replied_to_me=body.replied_to_me,
                 name_mentioned=name_mentioned,
@@ -777,6 +798,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         image_sources=image_sources if not legacy_attachments else (),
         emoji_sources=emoji_sources,
         emoji_sub_types=emoji_sub_types,
+        video_sources=_video_source_tuple(body),
         forward_messages=forward_messages,
         poked_me=body.poked_me,
         pokes_in_window=pokes_in_window,
