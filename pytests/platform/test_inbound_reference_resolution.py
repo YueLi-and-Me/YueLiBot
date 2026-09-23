@@ -9,8 +9,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+import json
+
+import httpx
 import pytest
 
+from src.platforms.onebot11.backend import BackendClient
 from src.platforms.onebot11.config import (
     GroupAccessConfig,
     ProtocolConnectionConfig,
@@ -21,6 +25,7 @@ from src.platforms.onebot11.config import (
 from src.platforms.onebot11.runner import OneBot11Runner
 from src.platforms.onebot11.segments import (
     FORWARD_PLACEHOLDER,
+    authored_text,
     mentioned_user_ids,
     message_to_text,
     quoted_message_ids,
@@ -443,3 +448,109 @@ async def test_quote_query_failure_keeps_replied_to_me_false_and_submits() -> No
 
     assert len(backend.submitted) == 1
     assert backend.submitted[0].replied_to_me is False
+
+
+def test_authored_text_keeps_only_typed_text_segments() -> None:
+    """用户亲手写的正文只取文本段，引用摘要、提及显示名与表情占位都不含。
+
+    非文本段处断开：被表情或提及隔开的两段文字若直接相接，可能拼出用户
+    并没有写过的称呼。
+    """
+    segments = [
+        {'type': 'reply', 'data': {'id': '4177'}},
+        {'type': 'at', 'data': {'qq': '13579'}},
+        {'type': 'text', 'data': {'text': '捐吧，'}},
+        {'type': 'text', 'data': {'text': '我原石现在就八颗'}},
+        {'type': 'face', 'data': {'id': '76'}},
+        {'type': 'at', 'data': {'qq': '900000002'}},
+        {'type': 'text', 'data': {'text': '你也捐'}},
+    ]
+
+    assert authored_text(segments) == '捐吧，我原石现在就八颗\n你也捐'
+    assert authored_text([{'type': 'reply', 'data': {'id': '4177'}}]) == ''
+
+
+def _quote_of_bot_transport(payload: Dict[str, Any]) -> _RecordingTransport:
+    """构造被引用消息为 Bot 自己所发、且原文不含 Bot 名字的传输替身。"""
+    return _RecordingTransport(
+        [payload],
+        {
+            'get_msg': {
+                'data': {
+                    'message_id': 4177,
+                    'sender': {'user_id': 13579, 'nickname': '月璃'},
+                    'message': [{
+                        'type': 'text',
+                        'data': {'text': '再戳就把你池子里的石头全捐了'},
+                    }],
+                },
+            },
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_submits_authored_text_without_quote_preview() -> None:
+    """引用摘要只进正文，用户亲手写的正文里不含摘要与被引用者名字。
+
+    现场：引用她的消息正文形如「[回复 月璃：…]捐吧…」，主体拿整段正文做名字
+    匹配，摘要里的「月璃」让每一条引用都被判成叫了她的名字。
+    """
+    payload = _group_payload([
+        {'type': 'reply', 'data': {'id': '4177'}},
+        {'type': 'at', 'data': {'qq': '13579'}},
+        {'type': 'text', 'data': {'text': '捐吧，我原石现在就八颗'}},
+    ])
+    backend = _CollectingBackend()
+    runner = OneBot11Runner(
+        _document(['86420']),
+        backend_port=1,
+        token='backend-secret',
+        transport=_quote_of_bot_transport(payload),
+        backend=backend,
+    )
+
+    await runner._consume_protocol_events('13579', '月璃')
+
+    assert len(backend.submitted) == 1
+    event = backend.submitted[0]
+    assert event.text == '[回复 月璃：再戳就把你池子里的石头全捐了]捐吧，我原石现在就八颗'
+    assert event.authored_text == '捐吧，我原石现在就八颗'
+    assert event.replied_to_me is True
+
+
+@pytest.mark.asyncio
+async def test_backend_payload_carries_authored_text() -> None:
+    """主体 HTTP 载荷带上用户亲手写的正文，与含摘要的完整正文分开提交。"""
+    seen: List[Dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(json.loads(request.content)))
+        return httpx.Response(200, json={'accepted': True})
+
+    client = BackendClient(1, 'backend-secret')
+    client._http = httpx.AsyncClient(
+        base_url='http://127.0.0.1:1',
+        transport=httpx.MockTransport(handler),
+    )
+    payload = _group_payload([
+        {'type': 'reply', 'data': {'id': '4177'}},
+        {'type': 'text', 'data': {'text': '捐吧'}},
+    ])
+    runner = OneBot11Runner(
+        _document(['86420']),
+        backend_port=1,
+        token='backend-secret',
+        transport=_quote_of_bot_transport(payload),
+        backend=client,
+    )
+
+    try:
+        await runner._consume_protocol_events('13579', '月璃')
+    finally:
+        await client.close()
+
+    assert len(seen) == 1
+    assert seen[0]['text'] == '[回复 月璃：再戳就把你池子里的石头全捐了]捐吧'
+    assert seen[0]['authoredText'] == '捐吧'
+    assert seen[0]['repliedToMe'] is True

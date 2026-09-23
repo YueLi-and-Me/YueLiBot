@@ -1265,12 +1265,6 @@ class ChatService(
         if any(message.context.stream.id != stream_id for message in batch):
             raise ValueError('同一回复批次只能包含一个 stream')
         trimmed = '\n'.join(message.text for message in batch)
-        # 戳一戳的正文由适配器合成（形如「[揉了揉月璃]」），其中的 Bot 名字不是任何人
-        # 说出的点名信号。名字匹配必须排除这些行，否则入口门控刚排除掉的合成点名会在
-        # 批次门控原样复活，审计事件报告的门控态也会与入口对不上。
-        name_match_text = '\n'.join(
-            message.text for message in batch if not message.poked_me
-        )
         inbound = InboundMessage(
             text=trimmed,
             context=context,
@@ -1329,7 +1323,7 @@ class ChatService(
             sleep_gate = self._batch_gate(
                 context, trimmed, inbound.mentioned_me,
                 poked_me=inbound.poked_me, pokes_in_window=inbound.pokes_in_window,
-                name_match_text=name_match_text,
+                name_mentioned=inbound.name_mentioned,
                 replied_to_me=inbound.replied_to_me,
             )
             if sleep_gate.result.disposition == 'drop':
@@ -1420,7 +1414,7 @@ class ChatService(
                     candidate_count=len(materialized_batch),
                     poked_me=inbound.poked_me,
                     pokes_in_window=inbound.pokes_in_window,
-                    name_match_text=name_match_text,
+                    name_mentioned=inbound.name_mentioned,
                     replied_to_me=inbound.replied_to_me,
                 )
                 if batch_gate.result.reason_codes[0] in (

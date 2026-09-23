@@ -150,6 +150,7 @@ class TestReactDelivery:
             text='月璃你看这个',
             context=context,
             external_message_id=external_id,
+            name_mentioned=True,
         ))
         await chat._tick()
         await chat._inflight[context.stream.id].task

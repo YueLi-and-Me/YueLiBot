@@ -190,7 +190,7 @@ class TestWaitBehaviour:
         provider = _ScriptedProvider([[_WAIT]])
         chat = await self._chat(db, provider)
         context = _group(chat._registry)
-        await chat.send(InboundMessage(text='月璃我跟你讲', context=context))
+        await chat.send(InboundMessage(text='月璃我跟你讲', context=context, name_mentioned=True))
         await chat._tick()
         await chat._inflight[context.stream.id].task
 
@@ -210,7 +210,7 @@ class TestWaitBehaviour:
         provider = _ScriptedProvider([[_WAIT], [_REPLY]])
         chat = await self._chat(db, provider)
         context = _group(chat._registry)
-        await chat.send(InboundMessage(text='月璃我跟你讲', context=context))
+        await chat.send(InboundMessage(text='月璃我跟你讲', context=context, name_mentioned=True))
         await chat._tick()
         await chat._inflight[context.stream.id].task
 
@@ -231,7 +231,7 @@ class TestWaitBehaviour:
             db, provider, None, None, _noop, cfg=_config(), broker=broker,
         )
         context = _group(chat._registry)
-        await chat.send(InboundMessage(text='月璃我跟你讲', context=context))
+        await chat.send(InboundMessage(text='月璃我跟你讲', context=context, name_mentioned=True))
         await chat._tick()
         await chat._inflight[context.stream.id].task
 
@@ -244,7 +244,7 @@ class TestWaitBehaviour:
         provider = _ScriptedProvider([[_WAIT], [_REPLY]])
         chat = await self._chat(db, provider)
         context = _direct(chat._registry)
-        await chat.send(InboundMessage(text='月璃我跟你讲', context=context))
+        await chat.send(InboundMessage(text='月璃我跟你讲', context=context, name_mentioned=True))
         await chat._tick()
         await chat._inflight[context.stream.id].task
         assert provider.calls == 1
@@ -272,7 +272,7 @@ class TestWaitBehaviour:
         provider = _ScriptedProvider([[_WAIT], [_REPLY]])
         chat = await self._chat(db, provider)
         context = _direct(chat._registry)
-        await chat.send(InboundMessage(text='月璃我跟你讲', context=context))
+        await chat.send(InboundMessage(text='月璃我跟你讲', context=context, name_mentioned=True))
         await chat._tick()
         await chat._inflight[context.stream.id].task
 
@@ -296,7 +296,7 @@ class TestPoke:
         # 戳一戳不进动作集，这正是能力门控要保证的行为。
         chat.set_platform_capabilities('qq', {'poke'})
         context = _group(chat._registry)
-        await chat.send(InboundMessage(text='月璃在吗', context=context))
+        await chat.send(InboundMessage(text='月璃在吗', context=context, name_mentioned=True))
         await chat._tick()
         await chat._inflight[context.stream.id].task
         return chat, context

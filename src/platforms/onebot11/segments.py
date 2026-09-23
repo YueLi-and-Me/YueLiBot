@@ -12,6 +12,9 @@
 提及显示名与引用原文都不在消息段里，需由 `runner` 先向协议端解析后作为映射传入
 （``mention_names`` / ``quote_previews``）；``mentioned_user_ids`` 和
 ``quoted_message_ids`` 供 `runner` 得知本条消息需要解析哪些对象。
+
+``message_to_text`` 给出的完整正文混有这些合成转述，``authored_text`` 另取只含
+用户亲手输入文字的版本，供主体做名字点名匹配。
 """
 
 from __future__ import annotations
@@ -293,6 +296,37 @@ def message_to_text(
         parts.append(segment_to_text(segment, mention_names, quote_previews))
         previous_type = segment_type
     return ''.join(parts)
+
+
+def authored_text(segments: Sequence[Segment]) -> str:
+    """提取用户亲手输入的文字，只取 ``text`` 段，供主体做名字点名匹配。
+
+    :func:`message_to_text` 的结果混有适配器合成的转述：引用摘要带着被引用者
+    名字与原文，提及渲染为对方显示名，卡片与转发渲染为内容预览。拿完整正文做
+    名字匹配时，引用她的每条消息都被判成叫了她的名字，引用第三人一句带她名字的
+    话去回别人也一样。
+
+    连续的文本段直接拼接；中间隔着非文本段时以换行断开，避免被表情或提及隔开的
+    两段文字拼出用户没有写过的称呼。
+
+    :param segments: OneBot 消息段列表；必须为列表。
+    :return: 用户输入的文字；消息里没有文本段时返回空字符串。
+    :raises ValueError: ``segments`` 不是列表，或文本段的 ``data.text`` 不是字符串。
+    """
+    if not isinstance(segments, list):
+        raise ValueError('message 必须是 array 格式的消息段列表')
+    runs: list[str] = []
+    current: list[str] = []
+    for segment in segments:
+        if _segment_type(segment) == 'text':
+            current.append(segment_to_text(segment))
+            continue
+        if current:
+            runs.append(''.join(current))
+            current = []
+    if current:
+        runs.append(''.join(current))
+    return '\n'.join(runs)
 
 
 def mentioned_user_ids(segments: Sequence[Segment]) -> tuple[str, ...]:

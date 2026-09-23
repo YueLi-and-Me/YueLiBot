@@ -121,7 +121,7 @@ async def test_2_name_mention_enters_deliberate_and_agent_may_stay_silent(db) ->
     provider = _ScriptedProvider([['<decision action="silent" reasons="attention_elsewhere"/>']])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)
-    await chat.send(InboundMessage(text="月璃你好", context=context))
+    await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -214,7 +214,7 @@ async def test_6_deliberate_one_call_produces_decision_and_text(db) -> None:
     broker = _FakeBroker()
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
     context = _group(chat._registry)
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -233,7 +233,7 @@ async def test_7_silent_has_no_side_effects(db) -> None:
     broker = _FakeBroker()
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
     context = _group(chat._registry)
-    await chat.send(InboundMessage(text="月璃你好", context=context))
+    await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
     await chat._tick()
     turn = chat._active_turns[context.stream.id]
     await chat._inflight[context.stream.id].task
@@ -272,7 +272,7 @@ async def test_9_target_outside_selectable_is_illegal(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -383,7 +383,7 @@ async def test_13_illegal_action_never_downgrades_to_plain_reply(db) -> None:
     broker = _FakeBroker()
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
     context = _group(chat._registry)
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     turn = chat._active_turns[context.stream.id]
     await chat._inflight[context.stream.id].task
@@ -406,7 +406,7 @@ async def test_14_action_decision_is_queryable_via_http(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     turn = chat._active_turns[context.stream.id]
     await chat._inflight[context.stream.id].task

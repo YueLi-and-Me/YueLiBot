@@ -97,11 +97,11 @@ class _BufferedMessage:
     accepted_at: int
     # 后台图片描述任务；结果为补齐描述后的完整正文，回合构建前必须等待。
     image_description_task: asyncio.Task[str] | None = None
-    # 入口门控判定过的戳一戳事实，批次门控据此读同一份事实：不重算信号窗口，
-    # 也不拿适配器合成的正文做名字匹配。
+    # 入口门控判定过的戳一戳事实，批次门控据此读同一份事实，不重算信号窗口。
     poked_me: bool = False
     pokes_in_window: int = 0
     # 适配器判定的「回复了她的消息」与入口算好的名字命中，批次门控读同一份事实。
+    # 名字命中不能在批次层拿合并正文重算：正文里有戳一戳合成正文与引用摘要。
     replied_to_me: bool = False
     name_mentioned: bool = False
     # 后台视频理解任务；结果为补齐描述后的完整正文，回合构建前与图片任务一起等待。

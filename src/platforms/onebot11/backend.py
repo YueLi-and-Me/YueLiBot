@@ -208,6 +208,10 @@ class BackendClient:
         # 与 forwardMessages 同口径：为假不发送，保持既有精确载荷用例不变。
         if event.replied_to_me:
             body['repliedToMe'] = True
+        # 空串照常发送：合成事件的正文没有一个字是用户写的，这本身就是要告诉
+        # 主体的事实；只有未提交（None）才由主体按整段 text 处理。
+        if event.authored_text is not None:
+            body['authoredText'] = event.authored_text
         if event.video_sources:
             body['videoSources'] = [
                 {'url': source.url, 'file': source.file}

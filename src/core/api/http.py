@@ -103,6 +103,10 @@ class PlatformInboundBody(BaseModel):
     sender_group_card: str = Field(alias='senderGroupCard')
     bot_name: str | None = Field(default=None, alias='botName')
     text: str
+    # 正文中用户亲手输入的部分。适配器会把引用摘要、提及显示名、卡片与转发预览
+    # 渲染进 text，这些转述里的 Bot 名字不是用户喊出的称呼，名字匹配只读本字段；
+    # 未提交表示 text 里没有合成内容，名字匹配读 text。
+    authored_text: str | None = Field(default=None, alias='authoredText')
     mentioned_me: bool = Field(alias='mentionedMe')
     # 平台消息编号。允许为空：戳一戳这类 notice 通道在协议上就没有消息编号，
     # 下游引用逻辑已按「不带编号的通道」处理，不会拿内部 ID 冒充平台编号发出去。
@@ -655,9 +659,15 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     sleep = app_state.chat.current_sleep()
     asleep = sleep.asleep
     # poke 正文由适配器合成，里面的 Bot 名字不是用户说出的点名信号，不能参与匹配。
+    # 引用摘要「[回复 月璃：…]」同理：摘要带着被引用者名字与原文，只能匹配用户
+    # 亲手写的部分，否则引用她的消息一律算叫了名字，引用第三人一句带她名字的话
+    # 也会越过回复频率上限。
     # 名称匹配也只在群聊门控中有意义；直接对话不读取名称，避免空名称配置报错。
     name_mentioned = (
-        mentions_bot_name(body.text, bot_names)
+        mentions_bot_name(
+            body.text if body.authored_text is None else body.authored_text,
+            bot_names,
+        )
         if context.stream.kind == 'group' and not body.poked_me
         else False
     )

@@ -140,6 +140,8 @@ def test_poke_inbound_event_carries_names_and_no_platform_id() -> None:
     assert event.sender_nickname == '玖璃'
     assert event.sender_group_card == '小玖'
     assert event.text == '[戳了戳月璃]'
+    # 正文整段由适配器合成，没有任何一个字是用户写的，名字匹配不应读到它。
+    assert event.authored_text == ''
     assert event.external_message_id == ''
     assert event.poked_me is True
     assert event.mentioned_me is False

@@ -148,6 +148,7 @@ class TestSpeakDelivery:
         context = _group(chat._registry)
         await chat.send(InboundMessage(
             text='月璃你看', context=context, external_message_id='9001',
+            name_mentioned=True,
         ))
         await chat._tick()
         await chat._inflight[context.stream.id].task

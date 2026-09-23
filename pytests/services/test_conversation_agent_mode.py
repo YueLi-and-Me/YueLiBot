@@ -130,7 +130,7 @@ async def test_shadow_records_decision_and_keeps_legacy_behavior(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -167,7 +167,7 @@ async def test_shadow_prompt_replaces_say_first_protocol(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -213,7 +213,7 @@ async def test_protocol_lists_selectable_messages_with_original_text(db) -> None
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃出来", context=context))
+    await chat.send(InboundMessage(text="月璃出来", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -321,7 +321,7 @@ async def test_long_say_is_delivered_as_several_bubbles(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃出来", context=context))
+    await chat.send(InboundMessage(text="月璃出来", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -348,7 +348,7 @@ async def test_typing_config_drives_bubbles_and_delays(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃出来", context=context))
+    await chat.send(InboundMessage(text="月璃出来", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -370,7 +370,7 @@ async def test_action_protocol_states_how_to_write_each_length(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃出来", context=context))
+    await chat.send(InboundMessage(text="月璃出来", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -395,7 +395,7 @@ async def test_legacy_pipeline_history_keeps_no_message_id_labels(db) -> None:
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃出来", context=context))
+    await chat.send(InboundMessage(text="月璃出来", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -594,7 +594,7 @@ async def test_enabled_group_silent_writes_only_action_event(db) -> None:
     provider = _ScriptedProvider([['<decision action="silent" reasons="others_conversation"/>']])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃你好", context=context))
+    await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
     await chat._tick()
     turn = chat._active_turns[context.stream.id]
     await chat._inflight[context.stream.id].task
@@ -674,7 +674,7 @@ async def test_enabled_batch_drop_skips_agent_and_records_reason(db) -> None:
     provider = _ScriptedProvider([[]])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
-    await chat.send(InboundMessage(text="月璃你好", context=context))
+    await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
     # 入缓冲后、批次处理前进入休眠：批次级门控必须拦截。
     chat.set_sleep_state_provider(
         lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False, level='light')
@@ -706,10 +706,10 @@ async def test_selected_streams_only_routes_listed_streams(db) -> None:
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     listed = _group_context(chat._registry, "86420")
     unlisted = _group_context(chat._registry, "99999")
-    await chat.send(InboundMessage(text="月璃你好", context=listed))
+    await chat.send(InboundMessage(text="月璃你好", context=listed, name_mentioned=True))
     await chat._tick()
     await chat._inflight[listed.stream.id].task
-    await chat.send(InboundMessage(text="月璃你好", context=unlisted))
+    await chat.send(InboundMessage(text="月璃你好", context=unlisted, name_mentioned=True))
     await chat._tick()
     await chat._inflight[unlisted.stream.id].task
 
@@ -804,7 +804,7 @@ async def test_new_message_ends_continuation_and_starts_fresh_turn(
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
 
-    await chat.send(InboundMessage(text="月璃你好", context=context))
+    await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
     await chat._tick()
     first_turn = chat._inflight[context.stream.id]
     await provider.first_started.wait()
@@ -881,7 +881,7 @@ async def test_split_replyer_end_to_end(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -918,7 +918,7 @@ async def test_split_disabled_keeps_single_call(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -950,7 +950,7 @@ async def test_split_layers_persona_between_stages(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -1052,7 +1052,7 @@ async def test_tool_calling_end_to_end(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    await chat.send(InboundMessage(text="月璃在吗", context=context))
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -1121,6 +1121,7 @@ async def test_forward_message_tool_is_wired_into_live_chat(db) -> None:
         text='月璃看一下这个[转发消息]',
         context=context,
         forward_messages=(tree,),
+        name_mentioned=True,
     ))
     planner.message_id = chat._buffers[context.stream.id][0].message_id
     await chat._tick()
@@ -1225,7 +1226,7 @@ async def test_tool_calling_shadow_discards_generated_reply_body(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    await chat.send(InboundMessage(text='月璃在吗', context=context))
+    await chat.send(InboundMessage(text='月璃在吗', context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 
@@ -1402,3 +1403,39 @@ async def test_shadow_decision_audit_records_reply_to_bot(db) -> None:
     assert len(shadow_events) == 1
     assert shadow_events[0]["inputs"]["replyToBot"] is True
     assert "reply_to_bot" in shadow_events[0]["gate"]["reasonCodes"]
+
+
+async def test_batch_gate_reads_name_fact_not_quote_preview(db) -> None:
+    """批次门控读入口算好的名字事实，不拿含引用摘要的合并正文重算。
+
+    正文里的「[回复 月璃：…]」是适配器合成的引用摘要。入口已判定这条没叫她的
+    名字；批次若用合并正文重新匹配，被排除的点名会在批次层复活，审计事件的
+    门控态也与入口对不上。
+    """
+    config = Config()
+    config.bot.name = "月璃"
+    config.conversation_agent.mode = "shadow"
+    provider = _ScriptedProvider([
+        ['<decision action="silent" reasons="others_conversation"/>'],
+        ['<say>旧管线回复</say>'],
+    ])
+    chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
+    context = _group_context(chat._registry)
+
+    await chat.send(InboundMessage(
+        text="[回复 月璃：再戳就把你池子里的石头全捐了]捐吧，我原石现在就八颗",
+        context=context,
+        replied_to_me=True,
+        name_mentioned=False,
+    ))
+    await chat._tick()
+    await chat._inflight[context.stream.id].task
+
+    shadow_events = [
+        entry for entry in _action_events()
+        if entry["version"]["modelTask"] == "chat.conversation.shadow"
+    ]
+    assert len(shadow_events) == 1
+    assert shadow_events[0]["inputs"]["nameMentioned"] is False
+    assert shadow_events[0]["inputs"]["replyToBot"] is True
+    assert "name_mention" not in shadow_events[0]["gate"]["reasonCodes"]

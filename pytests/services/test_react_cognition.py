@@ -420,7 +420,7 @@ async def test_chat_service_wires_react_end_to_end(db) -> None:
         sender_group_card='小李',
         first_seen_at=1_000_000,
     )
-    await chat.send(InboundMessage(text='月璃还记得那个演出吗', context=context))
+    await chat.send(InboundMessage(text='月璃还记得那个演出吗', context=context, name_mentioned=True))
     await chat._tick()
     await chat._inflight[context.stream.id].task
 

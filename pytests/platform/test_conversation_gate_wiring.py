@@ -566,3 +566,102 @@ async def test_sleep_drop_audit_records_reply_to_bot_fact(
         if entry['eventStatus'] == 'gate_dropped'
     ]
     assert gate_events[-1]['inputs']['replyToBot'] is True
+
+
+async def test_quoting_her_without_name_is_reply_not_name_mention(
+    db: sqlite3.Connection,
+) -> None:
+    """引用她、自己写的部分没有她的名字：只算「回复了她」，不算叫了名字。
+
+    现场：正文里的引用摘要「[回复 月璃：…]」带着她的名字，整段做名字匹配时
+    每一条引用她的消息都同时报 name_mention，与 reply_to_bot 重复计了一次。
+    """
+    config = Config()
+    config.bot.name = '月璃'
+    chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(db, config)
+    try:
+        response = await platform_inbound(_body(
+            '[回复 月璃：再戳就把你池子里的石头全捐了]捐吧，我原石现在就八颗',
+            authoredText='捐吧，我原石现在就八颗',
+            repliedToMe=True,
+        ))
+    finally:
+        app_state.chat = prev_chat
+        app_state.registry = prev_registry
+        app_state.register_platform_stream = prev_register
+        app_state.group_chat_config = prev_group_chat
+
+    assert json.loads(response.body)['reason'] == 'reply_to_bot'
+    gate = event_store.search(kinds=['reply_gate']).events[-1]
+    assert gate['nameMentioned'] is False
+    assert gate['replyToBot'] is True
+    assert 'name_mention' not in gate['reasonCodes']
+
+
+async def test_quoting_third_party_line_with_her_name_is_not_a_call(
+    db: sqlite3.Connection,
+) -> None:
+    """引用第三人一句带她名字的话去回别人，不算叫她，也越不过回复频率上限。"""
+    config = Config()
+    config.bot.name = '月璃'
+    config.bot.aliases = ['小璃']
+    chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(db, config)
+    registry: StreamRegistry = app_state.registry
+    context = registry.resolve_inbound(
+        platform='qq',
+        stream_kind='group',
+        stream_external_id='86420',
+        sender_external_id='97531',
+        sender_nickname='账号昵称',
+        sender_group_card='小李',
+        first_seen_at=1_000_000,
+    )
+    for index in range(config.group_chat.max_replies_in_window):
+        chat.memory.append_message(
+            context.stream.id,
+            None,
+            'assistant',
+            f'回复{index}',
+            current_time() - index,
+        )
+    try:
+        response = await platform_inbound(_body(
+            '[回复 阿周：小璃今天是不是有点凶]确实',
+            authoredText='确实',
+        ))
+    finally:
+        app_state.chat = prev_chat
+        app_state.registry = prev_registry
+        app_state.register_platform_stream = prev_register
+        app_state.group_chat_config = prev_group_chat
+
+    payload = json.loads(response.body)
+    assert payload['accepted'] is False
+    assert payload['reason'] == 'rate_limited'
+    gate = event_store.search(kinds=['reply_gate']).events[-1]
+    assert gate['nameMentioned'] is False
+    assert gate['replyToBot'] is False
+
+
+async def test_name_typed_after_quote_still_counts(db: sqlite3.Connection) -> None:
+    """引用别人的同时自己写了她的名字，照常算叫了她。"""
+    config = Config()
+    config.bot.name = '月璃'
+    chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(db, config)
+    try:
+        response = await platform_inbound(_body(
+            '[回复 阿周：今晚吃什么]月璃你说呢',
+            authoredText='月璃你说呢',
+        ))
+    finally:
+        app_state.chat = prev_chat
+        app_state.registry = prev_registry
+        app_state.register_platform_stream = prev_register
+        app_state.group_chat_config = prev_group_chat
+
+    assert json.loads(response.body)['reason'] == 'name_mention'
+    gate = event_store.search(kinds=['reply_gate']).events[-1]
+    assert gate['nameMentioned'] is True
+    assert gate['replyToBot'] is False
+    assert len(chat._buffers) == 1
+    assert next(iter(chat._buffers.values()))[0].name_mentioned is True

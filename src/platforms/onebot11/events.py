@@ -15,6 +15,7 @@ from src.core.platform_io.types import VideoSource
 from .config import GroupAccessConfig, PrivateAccessConfig
 from .qq_faces import face_name
 from .segments import (
+    authored_text,
     emoji_source_urls,
     emoji_sub_types,
     image_source_urls,
@@ -57,6 +58,9 @@ class QqInboundEvent:
     text: str
     mentioned_me: bool
     external_message_id: str
+    # 用户亲手输入的文字，不含引用摘要、提及显示名等适配器合成的转述；主体只拿它
+    # 做名字点名匹配。None 表示不单独提交，主体按 text 全部由用户所写处理。
+    authored_text: str | None = None
     # 普通图片下载来源；顺序与 text 中的 [图片] 占位符一致。
     # 适配器只传来源引用，下载与 VLM 描述由主体后台执行，避免阻塞串行入站循环。
     image_sources: tuple[str, ...] = ()
@@ -123,6 +127,7 @@ def build_poke_inbound_event(
         # raw_info 是协议端可选携带的展示片段（"戳了戳" / 自定义后缀）；缺失时
         # 退回统一措辞，正文始终写明动作对象，避免 Bot 读成「谁戳了谁」。
         text=f'[{_poke_action_text(payload)}{bot_name}]',
+        authored_text='',
         mentioned_me=False,
         external_message_id='',
         poked_me=True,
@@ -216,6 +221,7 @@ def build_emoji_like_inbound_event(
         sender_group_card=sender_group_card,
         bot_name=bot_name,
         text=text,
+        authored_text='',
         mentioned_me=False,
         external_message_id='',
         emoji_liked_me=True,
@@ -483,6 +489,7 @@ def parse_inbound_event(
             {**(mention_names or {}), self_id: self_name},
             quote_previews,
         ),
+        authored_text=authored_text(raw_segments),
         mentioned_me=mentions_user(raw_segments, self_id),
         external_message_id=message_id,
         image_sources=image_source_urls(raw_segments),
