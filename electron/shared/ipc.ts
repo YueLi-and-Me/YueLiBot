@@ -431,6 +431,8 @@ export interface YueliConfig {
     reply_quiet_seconds: number
     /** 回复生成期间对方补发内容时，作废并合并重来的次数上限；0 表示从不作废。 */
     max_reply_restarts: number
+    /** 群聊按场面回复：一起回几个人的话，回复途中有新内容会停下合并重来。 */
+    scene_batching: boolean
   }
   /** 气泡拆分与打字节奏。 */
   typing: {

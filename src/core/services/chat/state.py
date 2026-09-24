@@ -80,6 +80,8 @@ class _InflightTurn:
 
     task: asyncio.Task[None]
     cancel_event: asyncio.Event
+    # 回复回合的打断状态；主动发言等不经缓冲取批的回合没有。
+    control: '_TurnControl | None' = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,32 @@ class _TurnSink:
 
 
 @dataclass
+class _TurnControl:
+    """一次回复回合能否被新消息打断、是否已被打断，以及退回时要交还的批次。
+
+    打断只对 Agent live 回合、在动作定下之前开放。被打断的回合在收尾处统一把
+    ``batch`` 退回缓冲头部，不写助手历史、不保存半截回复、不做人格结算。
+    """
+
+    # 退回缓冲时交还的批次；媒体物化后换成物化版本，补看过的视频描述不会丢。
+    batch: List[_BufferedMessage]
+    # 本批已因新内容重来的次数；达到 conversation_agent.max_reply_restarts 后不再打断。
+    restarts_used: int
+    # 是否按场面取批（群聊且开关打开）：决定打断与复核认哪些人的消息、日志用哪个事件。
+    scene: bool
+    # 为真时新到的内容会立即中止本回合；动作定下后置假，之后的新消息交给投递前复核。
+    interruptible: bool = False
+    # 已被打断或作废：收尾时退回批次。
+    interrupted: bool = False
+    # 打断发生的阶段，只用于日志：preparing / planning / replying / before_dispatch。
+    phase: str = 'preparing'
+    # 触发打断的消息发送者，只用于日志。
+    by_person_id: int | None = None
+    # 本回合的解析状态；判断是否已产生心情或约定副作用。
+    sink: _TurnSink | None = None
+
+
+@dataclass
 class _RetrievalTrace:
     """保存一轮事实召回的无损输入、候选池与单次落账状态。
 
@@ -234,6 +262,9 @@ class _PreparedTurnContext:
     # 当前对话者与 Bot 的共处群（对方显示名, 群标签元组）；仅非群聊会话组装，
     # 无共处群时为 None。与 jargon 同一纪律：组装期取数一次，两次渲染只读。
     shared_groups: tuple[str, tuple[str, ...]] | None = None
+    # 本批消息的发送者，按末次出现倒序；按场面取批时可能有几个人，画像与事实召回
+    # 让他们排在在场者最前。
+    batch_person_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

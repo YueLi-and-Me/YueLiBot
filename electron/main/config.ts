@@ -189,6 +189,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     // 与 Python schema 缺省值一致；新装的 1.5 秒只由 Python bootstrap 的种子负责。
     reply_quiet_seconds: 0,
     max_reply_restarts: 1,
+    scene_batching: true,
   },
   typing: {
     bubble_target_chars: 18,
@@ -913,6 +914,9 @@ function parseConversationAgent(
       : booleanAt(section, 'tool_calling', sectionPath),
     reply_quiet_seconds: replyQuietSeconds,
     max_reply_restarts: maxReplyRestarts,
+    scene_batching: section.scene_batching === undefined
+      ? defaults.scene_batching
+      : booleanAt(section, 'scene_batching', sectionPath),
   }
 }
 
@@ -2393,6 +2397,8 @@ tool_calling = ${cfg.conversation_agent.tool_calling}
 reply_quiet_seconds = ${cfg.conversation_agent.reply_quiet_seconds}
 # 回复生成期间对方补发文字、图片或视频时，作废并合并重来的次数上限，0~5；0 表示从不作废
 max_reply_restarts = ${cfg.conversation_agent.max_reply_restarts}
+# 群聊按场面回复：几个人接连说话时一起回，回复途中有人补充新内容会停下合并重来
+scene_batching = ${cfg.conversation_agent.scene_batching}
 
 [typing]
 # 一句话的目标字符数，超过就按气泡拆开发送

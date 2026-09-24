@@ -193,6 +193,12 @@ class ConversationAgentConfig(BaseModel):
     # 内容合并重来，最多重来几次，取值 0～5。只补表情包、QQ 表情、戳一戳或只 @ 她不算。
     # 上限使对方连发时她不会一直重来、迟迟不回；0 表示从不作废。
     max_reply_restarts: int = Field(default=1, ge=0, le=5)
+    # 群聊按场面回复：一批取出缓冲区里所有人的待回消息，而不是按人逐个回；她准备或写
+    # 回复途中进来任何人的新内容（私聊即对方），立即停下合并重来，受 max_reply_restarts
+    # 约束。静默等待与投递前复核随之对群里任何人生效。只对由 Conversation Agent 真实决策
+    # 的会话生效（mode 为 enabled，或 selected_streams 清单内）；旧管线与 shadow 保持按人
+    # 取批。关闭后回到按人取批、只认同一个人补发的行为。
+    scene_batching: bool = True
 
 
 class TypingNudgeConfig(BaseModel):

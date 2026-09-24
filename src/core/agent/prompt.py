@@ -746,7 +746,7 @@ def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
     return '\n'.join(lines)
 
 
-def _render_turn_scope(target_person: str) -> str:
+def _render_turn_scope(target_persons: Sequence[str]) -> str:
     """渲染「这一轮回应谁」的范围说明。
 
     可选清单只覆盖当前人物这一批消息，是缓冲按人物切批的结果，不是模型选错。
@@ -755,10 +755,19 @@ def _render_turn_scope(target_person: str) -> str:
     Bot 不回话。因此该说明须讲清两点：越界不可行；其他人的消息有各自的回合，
     无需在本轮处理。
 
-    :param target_person: 本轮批次发送者的显示名；私聊传空字符串。
+    按场面取批时清单里有几个人的消息，说明改为「这几条里挑要回应的」：其他人刚发的
+    已经在清单里，不再有「由各自回合处理」的另一批。
+
+    :param target_persons: 本轮批次发送者的显示名，按出现顺序；私聊传空序列。
     :return: 供协议模板插入的单行说明。
     """
-    who = f'{target_person}刚发送的消息' if target_person else '对方刚发送的消息'
+    if len(target_persons) > 1:
+        return (
+            f'本轮处理{"、".join(target_persons)}刚发送的这几条消息，'
+            '可以一起回应，也可以只回应其中一部分；清单以外的编号一律不能填写。'
+            '历史记录中其他消息仍然可以阅读，用于理解上下文，也可以在台词中顺带提及。'
+        )
+    who = f'{target_persons[0]}刚发送的消息' if target_persons else '对方刚发送的消息'
     return (
         f'本轮只处理{who}，清单以外的编号（包括群里其他人刚发的）一律不能填写。'
         '其他人的消息会由各自属于他们的回合处理；如果你真正想回应的是其他人的消息、'
@@ -772,7 +781,7 @@ def render_action_protocol(
     selectable_messages: Iterable[Tuple[int, str]],
     quote_supported: bool,
     emoji_enabled: bool = False,
-    target_person: str = '',
+    target_persons: Sequence[str] = (),
     cognitive_rounds: int = 0,
     available_reactions: Sequence[str] = (),
     stream_kind: str = 'group',
@@ -789,8 +798,8 @@ def render_action_protocol(
     :param quote_supported: 平台是否支持模型在决策里显式指定引用目标；不支持时
         提示词明确禁止 quote。平台投递层的自动引用不受该开关控制。
     :param emoji_enabled: 本轮是否允许发表情包。
-    :param target_person: 本回合批次发送者的显示名，用于说明这一轮在回应谁的消息；
-        私聊传空字符串。
+    :param target_persons: 本回合批次发送者的显示名，按出现顺序，用于说明这一轮在回应谁的
+        消息；私聊传空序列。
     :param cognitive_rounds: 本回合的认知轮次预算；写进提示词使模型预先知道
         检索次数上限。仅向模型复述动作空间的既有约束，实际约束在
         available_actions，两处口径必须一致。
@@ -831,7 +840,7 @@ def render_action_protocol(
     return get_prompt('chat.action.protocol').render(
         available_actions=actions_text,
         selectable_messages=selectable_text,
-        turn_scope=_render_turn_scope(target_person),
+        turn_scope=_render_turn_scope(target_persons),
         quote_rule=quote_rule,
         emotions=' / '.join(EXPRESSION_IDS),
         gestures=' / '.join(GESTURE_IDS),
@@ -849,7 +858,7 @@ def render_action_protocol(
 def render_tool_protocol(
     selectable_messages: Iterable[Tuple[int, str]],
     quote_supported: bool,
-    target_person: str = '',
+    target_persons: Sequence[str] = (),
     cognitive_rounds: int = 0,
     available_actions: Iterable[str] = (),
 ) -> str:
@@ -862,7 +871,7 @@ def render_tool_protocol(
     :param selectable_messages: 本回合可选消息的 ``(消息 ID, 展示原文)`` 序列；
         工具声明里 target 是裸数字，缺少该对照时模型无法确定编号对应的消息。
     :param quote_supported: 平台是否支持模型显式指定引用目标。
-    :param target_person: 本回合批次发送者的显示名；私聊传空字符串。
+    :param target_persons: 本回合批次发送者的显示名，按出现顺序；私聊传空序列。
     :param cognitive_rounds: 本回合的认知轮次预算，用于渲染检索说明。
     :param available_actions: 本轮动作集，决定要不要渲染检索说明。
     :return: 已通过模板占位符严格校验的协议文本。
@@ -876,7 +885,7 @@ def render_tool_protocol(
         else '不要填 quote，需要指向哪一条由 target 决定。'
     )
     return get_prompt('chat.tool.protocol').render(
-        turn_scope=_render_turn_scope(target_person),
+        turn_scope=_render_turn_scope(target_persons),
         selectable_messages=_render_selectable_messages(selectable),
         quote_rule=quote_rule,
         cognition_rule=_cognition_protocol_rule(

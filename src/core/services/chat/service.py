@@ -19,6 +19,7 @@ from typing import (
     Dict,
     Iterable,
     Mapping,
+    Sequence,
 )
 
 import asyncio
@@ -188,6 +189,7 @@ from .state import (
     _PreparedTurnContext,
     _RoundResult,
     _SessionState,
+    _TurnControl,
     _TurnSink,
     _UnwatchedVideo,
     _WaitHold,
@@ -798,16 +800,20 @@ class ChatService(
             if not buffered:
                 self._buffers.pop(stream_id, None)
                 continue
-            # 群聊中不同人物的关系与事实彼此独立，只消费连续同一人物的前缀。
-            person_id = buffered[0].context.person.id
-            boundary = next(
-                (
-                    index
-                    for index, message in enumerate(buffered[1:], start=1)
-                    if message.context.person.id != person_id
-                ),
-                len(buffered),
-            )
+            if self._batches_by_scene(buffered[0].context):
+                # 按场面回复：几个人接连说话时一批取出，这一轮的对方由主要对象决定。
+                boundary = len(buffered)
+            else:
+                # 群聊中不同人物的关系与事实彼此独立，只消费连续同一人物的前缀。
+                person_id = buffered[0].context.person.id
+                boundary = next(
+                    (
+                        index
+                        for index, message in enumerate(buffered[1:], start=1)
+                        if message.context.person.id != person_id
+                    ),
+                    len(buffered),
+                )
             batch = buffered[:boundary]
             # 等待中的 stream 只被新消息唤醒：无下文时保持等待是设计行为而非
             # 停滞，任何一条新消息都会解除等待并要求 Bot 表态。
@@ -823,7 +829,8 @@ class ChatService(
                     continue
             # 开口前静默等待：批次一直延伸到缓冲末尾，说明发送者可能还在连发（「@她 看这个」
             # 之后紧跟视频），等他停一下再开始，连发的几条合成一批。后面已有别人的消息时
-            # 他的这一段已经结束，不再等。桌面端是即时对话，不等。
+            # 他的这一段已经结束，不再等。按场面取批时批次就是整个缓冲，等的是全场安静。
+            # 桌面端是即时对话，不等。
             quiet_ms = int(self._cfg.conversation_agent.reply_quiet_seconds * 1_000)
             if (
                 quiet_ms
@@ -903,7 +910,7 @@ class ChatService(
             ))
             self._track_background_task(image_task)
         video_task = self._plan_inbound_video(stream_id, message_id, text, inbound)
-        self._buffers.setdefault(stream_id, []).append(_BufferedMessage(
+        buffered_message = _BufferedMessage(
             text=text,
             context=inbound.context,
             mentioned_me=inbound.mentioned_me,
@@ -924,7 +931,8 @@ class ChatService(
                 or inbound.video_sources
                 or inbound.forward_messages
             ),
-        ))
+        )
+        self._buffers.setdefault(stream_id, []).append(buffered_message)
         # 「跟她有关」的消息被接收进回合缓冲时，同一 stream 里还没看过、且仍在她
         # 工作记忆窗口内的视频一起看；覆盖「先发视频、下一条才 @ 她」的发法。
         if message_concerns_her(
@@ -934,6 +942,7 @@ class ChatService(
             inbound.replied_to_me,
         ):
             self._catch_up_unwatched_videos(stream_id)
+        self._interrupt_for_new_content(buffered_message)
         self._wake.set()
 
     def _track_background_task(self, task: asyncio.Task[str]) -> None:
@@ -1280,8 +1289,9 @@ class ChatService(
         """
         if not batch:
             raise ValueError('回复批次不能为空')
-        last_message = batch[-1]
-        context = last_message.context
+        # 按场面取批时一批可能有几个人：这一轮的对方（好感度结算、主人专属信号、来源标记）
+        # 取主要对象；按人取批时批次只有一个人，结果与取末条相同。
+        context = self._primary_message(batch).context
         stream_id = context.stream.id
         if any(message.context.stream.id != stream_id for message in batch):
             raise ValueError('同一回复批次只能包含一个 stream')
@@ -1365,6 +1375,18 @@ class ChatService(
             return turn
 
         cancel_event = asyncio.Event()
+        control = _TurnControl(
+            batch=batch,
+            restarts_used=restarts_used,
+            scene=self._batches_by_scene(context),
+        )
+        # 立即打断只对 Agent live 回合开放：旧管线与 shadow 没有退回批次的收尾，
+        # 取消只会把半截回复写进历史。
+        control.interruptible = (
+            self._cfg.conversation_agent.scene_batching
+            and context.stream.platform != 'desktop'
+            and self._agent_runs_live(context)
+        )
 
         async def _run() -> None:
             """执行当前回合的上下文构建、模型流读取、历史持久化和结果投递。
@@ -1393,6 +1415,8 @@ class ChatService(
                 # 赋值前的首次读取会因此抛出 UnboundLocalError。
                 materialized_batch = await self._materialize_batch_images(batch)
                 trimmed = '\n'.join(message.text for message in materialized_batch)
+                # 被打断时交还物化后的批次：补看过的视频只在这里带着描述，原批次仍是占位。
+                control.batch = materialized_batch
 
                 # 用户消息已在确认接收时落库，使用批次首条入队前的历史位置计算会话间隔。
                 self._refresh_session(
@@ -1413,6 +1437,7 @@ class ChatService(
                     now=now,
                     source_text=trimmed,
                 )
+                control.sink = sink
                 self._mark_stage(context, CONTEXT, turn_id=turn)
                 impression = await self._conversation_impression(context, now)
                 prepared_context = self._prepare_turn_context(
@@ -1424,9 +1449,16 @@ class ChatService(
                     batch_message_ids=tuple(
                         message.message_id for message in materialized_batch
                     ),
+                    batch_person_ids=tuple(dict.fromkeys(
+                        message.context.person.id for message in reversed(materialized_batch)
+                    )),
                     impression=impression,
                     turn_id=turn,
                 )
+                # 组装期间可能被新消息打断（会话印象要一次模型调用）；门控之前就退出，
+                # 免得被打断的批次先按旧内容走一遍门控与记账。
+                if cancel_event.is_set():
+                    return
                 render_params: dict[str, dict[str, str]] = {}
                 batch_gate = self._batch_gate(
                     context,
@@ -1449,6 +1481,8 @@ class ChatService(
                     await self._handle_live_drop(context, materialized_batch, turn, batch_gate)
                     return
                 scope = self._agent_scope(context, batch_gate.result.disposition)
+                if scope != 'live':
+                    control.interruptible = False
                 if scope == 'shadow':
                     # shadow 只记录 Agent 决策，之后仍走旧管线，可见行为不变。
                     await self._run_shadow_decision(
@@ -1479,7 +1513,7 @@ class ChatService(
                         sender=sender,
                         render_params=render_params,
                         allow_wait=allow_wait,
-                        restarts_used=restarts_used,
+                        control=control,
                     )
                     return
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
@@ -1634,6 +1668,9 @@ class ChatService(
                 asyncio.create_task(self._maybe_learn_expressions(context.stream.id))
                 asyncio.create_task(self._maybe_refresh_profiles())
             except LlmError as exc:
+                if exc.kind == 'aborted' and control.interrupted:
+                    # 被新消息打断：半截回复作废、不进历史，批次在 finally 里退回。
+                    return
                 if exc.kind == 'aborted':
                     # 用户主动中断不是模型故障，但已生成正文仍须进入历史。
                     if not reply_persisted:
@@ -1702,9 +1739,13 @@ class ChatService(
                 # 选择记录；这样每个实际执行过事实检索的回合都能一一重放。
                 if prepared_context is not None:
                     prepared_context.retrieval_trace.emit_once([])
+                # 被打断或作废的回合，无论停在哪一步（物化、上下文、规划、写回复、投递前），
+                # 都只在这里退回批次一次。
+                if control.interrupted:
+                    self._return_interrupted_batch(context, control, turn)
 
         task = asyncio.create_task(_run())
-        inflight = _InflightTurn(task=task, cancel_event=cancel_event)
+        inflight = _InflightTurn(task=task, cancel_event=cancel_event, control=control)
         self._inflight[stream_id] = inflight
 
         def _remove_completed(done_task: asyncio.Task[None]) -> None:
@@ -2854,19 +2895,25 @@ class ChatService(
             cross_person=stream_kind != 'group' and person_kind == 'owner',
         )
 
-    def _present_person_ids(self, context: ConversationContext) -> list[int]:
-        """给出本轮「在场者」的人物主键，供画像注入取数。
+    def _present_person_ids(
+        self,
+        context: ConversationContext,
+        lead_person_ids: Sequence[int] = (),
+    ) -> list[int]:
+        """给出本轮「在场者」的人物主键，供画像注入与事实召回取数。
 
         口径与认知检索的 ``CognitiveScope`` 保持一致——最近开口过的人，加上当前
         这一位。两处若各定各的「在场」，同一轮里 Bot 检索得到的人和 Bot 有印象的人会
-        对不上，而这种错位在输出上完全看不出来。
+        对不上，而这种错位在输出上完全看不出来。按场面取批时一批可能有几个人，
+        他们排在最前。
 
         :param context: 当前会话上下文。
-        :return: 去重后的人物主键，当前说话人排在最前。
+        :param lead_person_ids: 本批消息的发送者，按末次出现倒序；为空时只以当前说话人领头。
+        :return: 去重后的人物主键，本批发送者与当前说话人排在最前。
         :raises sqlite3.Error: 读取最近发言者失败。
         副作用：只读。
         """
-        ids = [context.person.id]
+        ids = list(dict.fromkeys([*lead_person_ids, context.person.id]))
         watermark = self.memory.latest_message_id(context.stream.id)
         for person_id in self.memory.recent_speakers(context.stream.id, watermark):
             if person_id not in ids:
@@ -2990,7 +3037,7 @@ class ChatService(
         sender: Dict[str, str],
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
-        restarts_used: int = 0,
+        control: _TurnControl | None = None,
     ) -> None:
         """执行一个对话回合，正常路径只运行第一轮。
 
@@ -3009,7 +3056,7 @@ class ChatService(
 
         :param batch: 本回合的原始消息批次。
         :param allow_wait: 本回合是否还能等待；同一批只允许等一次。
-        :param restarts_used: 本批已因发送者补发而作废重来的次数。
+        :param control: 本回合的打断状态；为 ``None`` 时按未重来过、不可打断处理。
         副作用：至多一次模型往返与一次可见产物投递；回合结束后结算后台副作用。
         """
         # 回合级副作用只在整个循环收束后结算一次。人格结算、摘要触发、场景观察
@@ -3037,7 +3084,7 @@ class ChatService(
                 sender,
                 render_params,
                 allow_wait=allow_wait and round_index == 0,
-                restarts_used=restarts_used,
+                control=control,
             )
             acted = acted or result.reason == 'acted'
             if result.reason != 'acted':
@@ -3095,7 +3142,7 @@ class ChatService(
         sender: Dict[str, str],
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
-        restarts_used: int = 0,
+        control: _TurnControl | None = None,
     ) -> _RoundResult:
         """执行一轮 Conversation Agent 调用并处理其结果。
 
@@ -3105,8 +3152,8 @@ class ChatService(
         回复不投递，批次退回缓冲与补发内容合并。
 
         :param allow_wait: 本批是否还能选择「先等等」；已经等过一次时为假。
-        :param restarts_used: 本批已因发送者补发而作废重来的次数；达到
-            ``conversation_agent.max_reply_restarts`` 后照常投递。
+        :param control: 本回合的打断状态；为 ``None`` 时按未重来过、不可打断处理。
+            重来次数达到 ``conversation_agent.max_reply_restarts`` 后照常投递。
         :return: 本轮的收束原因，由 ``_run_conversation_turn`` 据此结算回合。
         """
         frame = self._agent_frame(
@@ -3172,6 +3219,8 @@ class ChatService(
             :return: 回复生成那一次调用的完整消息序列。
             副作用：一次向量检索与一次表达选择模型调用。
             """
+            if control is not None:
+                control.phase = 'replying'
             replyer_protocol = render_replyer_protocol(
                 head.reference or '',
                 head.length,
@@ -3241,37 +3290,52 @@ class ChatService(
             if self._cognitive_rounds > 0
             else None
         )
-        outcome = await self._conversation_agent.run(
-            frame,
-            messages,
-            gate_inputs,
-            batch_gate.result.reason_codes,
-            prompt_hash=metadata['promptHash'],
-            model_task='chat.conversation',
-            provider_name=getattr(self._chat_provider, 'provider', ''),
-            model_name=getattr(self._chat_provider, 'model', ''),
-            cognitive_scope=cognitive_scope,
-            cognitive_rounds=self._cognitive_rounds,
-            tool_context=(
-                ToolContext(
-                    stream_id=context.stream.id,
-                    stream_kind=context.stream.kind,
-                    frame=frame,
-                    turn_id=frame.turn_id,
-                    snapshot_id=frame.snapshot_id,
-                    cross_person=(
-                        cognitive_scope.cross_person if cognitive_scope else False
-                    ),
-                )
-                if self._tool_calling
-                else None
-            ),
-            on_events=on_events,
-            on_chunk=on_chunk,
-            on_round=on_round,
-            replyer_messages=replyer_messages if self._split_replyer else None,
-            signal=cancel_event,
-        )
+        if control is None:
+            control = _TurnControl(batch=list(batch), restarts_used=0, scene=False)
+        control.phase = 'planning'
+        try:
+            outcome = await self._conversation_agent.run(
+                frame,
+                messages,
+                gate_inputs,
+                batch_gate.result.reason_codes,
+                prompt_hash=metadata['promptHash'],
+                model_task='chat.conversation',
+                provider_name=getattr(self._chat_provider, 'provider', ''),
+                model_name=getattr(self._chat_provider, 'model', ''),
+                cognitive_scope=cognitive_scope,
+                cognitive_rounds=self._cognitive_rounds,
+                tool_context=(
+                    ToolContext(
+                        stream_id=context.stream.id,
+                        stream_kind=context.stream.kind,
+                        frame=frame,
+                        turn_id=frame.turn_id,
+                        snapshot_id=frame.snapshot_id,
+                        cross_person=(
+                            cognitive_scope.cross_person if cognitive_scope else False
+                        ),
+                    )
+                    if self._tool_calling
+                    else None
+                ),
+                on_events=on_events,
+                on_chunk=on_chunk,
+                on_round=on_round,
+                replyer_messages=replyer_messages if self._split_replyer else None,
+                signal=cancel_event,
+            )
+        except LlmError as exc:
+            # 被新消息打断：这一轮不产出任何东西，批次由回合收尾处退回。
+            if exc.kind == 'aborted' and control.interrupted:
+                return _RoundResult('paused')
+            raise
+        # 动作已定：之后到的新消息不再中止本回合，由投递前复核或下一回合接住。
+        control.interruptible = False
+        # 取消信号与模型收尾同时发生时调用会正常返回；本回合已判为打断，不再往下
+        # 投递，否则回复发出之后收尾处又会退回批次，同一批被处理两次。
+        if control.interrupted:
+            return _RoundResult('paused')
         raw_text = ''.join(assistant_raw)
         trace.emit('llm_final', turnId=turn, text=raw_text)
         # 终局动作一律先在控制台留一行「Bot 决定做什么、为什么」。此前只有 reply 会
@@ -3344,16 +3408,17 @@ class ChatService(
         if not sink.segments and not sink.emoji_items:
             await self._finish_empty_reply(context, turn)
             return _RoundResult('declined')
-        # 投递前复核：回复是按回合开始时的批次写的，生成期间本批发送者补了一句话或
-        # 发来图片、视频，已写好的回复可能与他后来说的矛盾（例如回复里说对方「光喊
-        # 不说话」，而对方已经补了一句）。此时本回合回复不投递，批次退回缓冲与补发内容
-        # 合并；重来次数有上限。
-        if (
-            restarts_used < self._cfg.conversation_agent.max_reply_restarts
-            and self._sender_added_content_meanwhile(context, sink)
-        ):
-            self._return_superseded_batch(context, batch, turn, restarts_used)
-            return _RoundResult('paused')
+        # 投递前复核：回复是按回合开始时的批次写的，生成期间有人补了一句话或发来图片、
+        # 视频，已写好的回复可能与后来说的矛盾（例如回复里说对方「光喊不说话」，而对方
+        # 已经补了一句）。此时本回合回复不投递，批次由回合收尾处退回、与补发内容合并；
+        # 重来次数有上限。按场面取批时认群里任何人，否则只认本批发送者。
+        if control.restarts_used < self._cfg.conversation_agent.max_reply_restarts:
+            follow_up_person = self._new_content_meanwhile(context, sink, control.scene)
+            if follow_up_person is not None:
+                control.interrupted = True
+                control.phase = 'before_dispatch'
+                control.by_person_id = follow_up_person
+                return _RoundResult('paused')
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
         visible_markup = (
             ''.join(f'<say>{text}</say>' for text in sink.say_texts)
@@ -3460,81 +3525,160 @@ class ChatService(
             turn_id=turn,
         )
 
-    def _sender_added_content_meanwhile(
+    def _batches_by_scene(self, context: ConversationContext) -> bool:
+        """群聊、开启「群聊按场面回复」且由 Agent 真实决策时为真：取批取整个缓冲，打断与复核认任何人。
+
+        旧管线与 shadow 没有多人批次的协议措辞与打断收尾，保持按人取批。
+        """
+        return (
+            context.stream.kind == 'group'
+            and self._cfg.conversation_agent.scene_batching
+            and self._agent_runs_live(context)
+        )
+
+    def _agent_runs_live(self, context: ConversationContext) -> bool:
+        """本会话的回合是否由 Conversation Agent 真实决策，与 ``_agent_scope`` 的 live 同口径。
+
+        shadow 只记录决策、可见行为走旧管线，不算 live。
+        """
+        if self._conversation_agent is None:
+            return False
+        if self._conversation_mode == 'enabled':
+            return True
+        return (
+            self._conversation_mode == 'selected_streams'
+            and context.stream.external_id in self._conversation_selected_streams
+        )
+
+    @staticmethod
+    def _primary_message(batch: list[_BufferedMessage]) -> _BufferedMessage:
+        """取本批的主要对象消息：最后一条 @ 她、叫她名字或回复她的消息，都没有则取末条。"""
+        for message in reversed(batch):
+            if message.mentioned_me or message.name_mentioned or message.replied_to_me:
+                return message
+        return batch[-1]
+
+    @staticmethod
+    def _has_state_side_effects(sink: _TurnSink) -> bool:
+        """本轮是否已写过心情或约定：二者在消费解析事件时立即落库，重来会重复写入。"""
+        return any(
+            effect['kind'] in ('mood_delta', 'promise_stashed')
+            for effect in sink.side_effects
+        )
+
+    def _interrupt_for_new_content(self, message: _BufferedMessage) -> None:
+        """回复途中进来新内容时立即中止在飞回合，使其退回批次、与新消息合并重来。
+
+        只在「群聊按场面回复」开启、且回合仍可打断（Agent live、动作未定）时生效；
+        按场面取批的群聊认任何人，私聊即对方。新内容的判定见 ``carries_content``。
+        以下不打断：重来次数已达上限；本轮已写过心情或约定。
+
+        :param message: 刚进入缓冲区的消息。
+        副作用：置位在飞回合的取消事件并标记为已打断；批次由回合收尾处退回。
+        """
+        inflight = self._inflight.get(message.context.stream.id)
+        if inflight is None or inflight.control is None or inflight.task.done():
+            return
+        control = inflight.control
+        if (
+            not control.interruptible
+            or control.interrupted
+            or not message.carries_content
+            or not self._cfg.conversation_agent.scene_batching
+            or control.restarts_used >= self._cfg.conversation_agent.max_reply_restarts
+        ):
+            return
+        if control.sink is not None and self._has_state_side_effects(control.sink):
+            return
+        control.interrupted = True
+        control.by_person_id = message.context.person.id
+        inflight.cancel_event.set()
+
+    def _new_content_meanwhile(
         self,
         context: ConversationContext,
         sink: _TurnSink,
-    ) -> bool:
-        """判断当前回合生成期间，本批发送者是否紧接着补发了新内容。
+        scene: bool,
+    ) -> int | None:
+        """投递前复核：当前回合生成期间，是否有人接着发来了新内容。
 
         新内容指用户亲手写的文字、图片、视频或合并转发（见 ``carries_content``）。
         只补表情包、QQ 表情、戳一戳或只 @ 一下不算：这些是反应，不会让已写好的回复
         变错，作废只会使回复延后一个回合。
 
-        只检查缓冲区头部连续属于同一发送者的消息：下一次 ``_tick`` 只会把这一段与
-        退回的批次合并；中间有他人消息时合并不成立，作废没有意义。
+        按场面取批时整个缓冲都会与退回的批次合并，认任何人；否则只检查缓冲区头部
+        连续属于本批发送者的消息，中间有他人消息时合并不成立，作废没有意义。
 
         以下情形不作废：
         - 桌面端：回复边生成边展示，此时已呈现给用户。
         - 已产生心情或约定副作用：二者在消费解析事件时立即落库，作废后下一回合会重复写入。
 
-        :param context: 本批会话上下文，``context.person`` 为本批发送者。
+        :param context: 本批会话上下文，``context.person`` 为本批主要对象。
         :param sink: 当前回合已消费的解析结果与副作用。
-        :return: 应作废当前回合回复时为 ``True``。
+        :param scene: 本回合是否按场面取批。
+        :return: 带来新内容的第一位发送者；不应作废时为 ``None``。
         """
-        if context.stream.platform == 'desktop':
-            return False
-        if any(
-            effect['kind'] in ('mood_delta', 'promise_stashed')
-            for effect in sink.side_effects
-        ):
-            return False
+        if context.stream.platform == 'desktop' or self._has_state_side_effects(sink):
+            return None
         for message in self._buffers.get(context.stream.id, ()):
-            if message.context.person.id != context.person.id:
-                return False
+            if not scene and message.context.person.id != context.person.id:
+                return None
             if message.carries_content:
-                return True
-        return False
+                return message.context.person.id
+        return None
 
-    def _return_superseded_batch(
+    def _return_interrupted_batch(
         self,
         context: ConversationContext,
-        batch: list[_BufferedMessage],
+        control: _TurnControl,
         turn: int,
-        restarts_used: int,
     ) -> None:
-        """回复作废后将本批退回缓冲头部，与补发的消息合并为下一批。
+        """被打断或作废后将本批退回缓冲头部，与新到的消息合并为下一批。
 
-        退回头部与回补累计器的原因同 ``_hold_batch_for_wait``。不设等待标记：补发的
-        消息已在缓冲中，``_tick`` 在静默窗口过后即取出合并后的批次；作废次数单独记账，
+        退回头部与回补累计器的原因同 ``_hold_batch_for_wait``。不设等待标记：新消息
+        已在缓冲中，``_tick`` 在静默窗口过后即取出合并后的批次；重来次数单独记账，
         在取批时消费并随批次传入下一回合。
 
+        日志：回复途中被立即打断、或按场面取批时的投递前作废记 ``chat_reply_interrupted``；
+        按人取批时的投递前作废沿用 ``chat_reply_superseded``。
+
         :param context: 当前会话上下文。
-        :param batch: 当前回合取走、回复已作废的消息批次。
+        :param control: 本回合的打断状态，提供要退回的批次与已重来次数。
         :param turn: 对话回合 ID。
-        :param restarts_used: 作废前本批已重来的次数。
-        副作用：修改消息缓冲、扩展累计器与作废计数；不产生用户可见输出，作废的回复不写入历史。
+        副作用：修改消息缓冲、扩展累计器与重来计数；不产生用户可见输出，作废的回复不写入历史。
         """
         stream_id = context.stream.id
+        batch = control.batch
         buffered = self._buffers.setdefault(stream_id, [])
         buffered[:0] = batch
         self._extended_pending[stream_id] = (
             self._extended_pending.get(stream_id, 0) + len(batch)
         )
-        self._reply_restarts[stream_id] = restarts_used + 1
-        logger.info(
-            'chat_reply_superseded',
-            streamId=stream_id,
-            turnId=turn,
-            returnedMessages=len(batch),
-            pendingMessages=len(buffered) - len(batch),
-            restarts=restarts_used + 1,
-        )
-        self._mark_stage(
-            context, GATED,
-            '发送者补发了新内容，回复不投递，与补发内容合并到下一回合',
-            turn_id=turn,
-        )
+        restarts = control.restarts_used + 1
+        self._reply_restarts[stream_id] = restarts
+        if control.scene or control.phase != 'before_dispatch':
+            logger.info(
+                'chat_reply_interrupted',
+                streamId=stream_id,
+                turnId=turn,
+                phase=control.phase,
+                byPersonId=control.by_person_id,
+                returnedMessages=len(batch),
+                pendingMessages=len(buffered) - len(batch),
+                restarts=restarts,
+            )
+            detail = '有新消息进来，停下合并后重来'
+        else:
+            logger.info(
+                'chat_reply_superseded',
+                streamId=stream_id,
+                turnId=turn,
+                returnedMessages=len(batch),
+                pendingMessages=len(buffered) - len(batch),
+                restarts=restarts,
+            )
+            detail = '发送者补发了新内容，回复不投递，与补发内容合并到下一回合'
+        self._mark_stage(context, GATED, detail, turn_id=turn)
 
     async def _apply_poke(
         self,

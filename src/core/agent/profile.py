@@ -495,6 +495,7 @@ def profiles_for_injection(
     limit: int = INJECT_LIMIT,
     *,
     skip_dirty: bool = False,
+    priority_ids: Sequence[int] = (),
 ) -> List[InjectionProfile]:
     """取在场者中最该注入的几份画像。
 
@@ -505,6 +506,8 @@ def profiles_for_injection(
     :param db: 当前库连接。
     :param person_ids: 本轮在场者的人物主键。
     :param limit: 最多返回几份。
+    :param priority_ids: 优先入选的人物主键（本批消息的发送者），按优先顺序；
+        其余在场者按好感度降序补足。
     :param skip_dirty: 为真时跳过带脏位的画像：纠错之后旧快照可能还引用着
         被纠正的事实，宁可在后台刷新前不注入，也不复用过期内容。
     :return: 画像条目列表；确凿档与印象档都为空的人不算数，直接跳过。
@@ -520,9 +523,13 @@ def profiles_for_injection(
         f'WHERE p.person_id IN ({marks}) '
         f"AND (p.summary <> '' OR p.confirmed <> '') "
         f'AND (? = 0 OR p.dirty = 0) '
-        f'ORDER BY COALESCE(b.intimacy, 0) DESC LIMIT ?',
-        (*person_ids, int(skip_dirty), limit),
+        f'ORDER BY COALESCE(b.intimacy, 0) DESC',
+        (*person_ids, int(skip_dirty)),
     ).fetchall()
+    # 本批发送者先入选（按场面取批时一批可能有几个人），其余在场者按好感度补足；
+    # 排序稳定，同一优先级内保持好感度降序。
+    rank = {person_id: index for index, person_id in enumerate(priority_ids)}
+    rows = sorted(rows, key=lambda row: rank.get(int(row[0]), len(rank)))[:limit]
     return [
         InjectionProfile(
             person_id=int(row[0]),

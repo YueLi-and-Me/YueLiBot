@@ -69,6 +69,9 @@ def _config(*, quiet: float = 0.0, restarts: int = 1) -> Config:
     config.conversation_agent.max_cognitive_rounds = 0
     config.conversation_agent.reply_quiet_seconds = quiet
     config.conversation_agent.max_reply_restarts = restarts
+    # 本文件验证关闭「群聊按场面回复」时的按人取批行为；开启时的行为见
+    # test_scene_batching.py。
+    config.conversation_agent.scene_batching = False
     config.group_chat.scene_refresh_messages = 0
     return config
 

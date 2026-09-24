@@ -226,6 +226,7 @@ class ContextBuildMixin:
         query: str,
         impression: str | None,
         now: int,
+        lead_person_ids: tuple[int, ...] = (),
     ) -> list[RecalledFact]:
         """按在场者召回事实，当前文本与会话印象取并集。
 
@@ -248,7 +249,7 @@ class ContextBuildMixin:
         """
 
         limit = int(tuned_value('fact_recall_limit', self._fact_recall_limit))
-        person_ids = self._present_person_ids(context)
+        person_ids = self._present_person_ids(context, lead_person_ids)
         pool: list[RecalledFact] = []
         seen: set[int] = set()
         for text in (query, impression or ''):
@@ -333,6 +334,7 @@ class ContextBuildMixin:
         batch_message_ids: tuple[int, ...] | None = None,
         impression: str | None = None,
         turn_id: int | None = None,
+        batch_person_ids: tuple[int, ...] = (),
     ) -> _PreparedTurnContext:
         """组装不依赖模型调用的完整回合上下文。
 
@@ -352,7 +354,9 @@ class ContextBuildMixin:
             读取记忆、人格、日程和活动状态，并消费一次重逢提示；不调用模型，
             不强化召回事实。
         """
-        fact_candidates = self._recall_turn_facts(context, query, impression, now)
+        fact_candidates = self._recall_turn_facts(
+            context, query, impression, now, batch_person_ids,
+        )
         exclude_rebuild = (
             self._cfg.memory_feedback.enabled
             and self._cfg.memory_feedback.episode_query_block_enabled
@@ -523,7 +527,9 @@ class ContextBuildMixin:
             # 只注入本轮在场者的画像；按亲密度取前 N、空画像不算数与确凿/印象
             # 两档的取数都在 profile.py，渲染分两档呈现在 prompt.py。
             'impressions': profiles_for_injection(
-                self._db, self._present_person_ids(prepared.context),
+                self._db,
+                self._present_person_ids(prepared.context, prepared.batch_person_ids),
+                priority_ids=prepared.batch_person_ids,
                 skip_dirty=(
                     feedback_cfg.enabled
                     and feedback_cfg.profile_force_refresh_on_read

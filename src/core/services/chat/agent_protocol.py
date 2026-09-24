@@ -83,10 +83,14 @@ class AgentProtocolMixin:
         :param context: 当前会话上下文；自主回合没有批次可反查，必须显式给出。
         :return: 已注入运行时动作集与目标锚点清单的协议文本。
         """
-        target_person = (
-            self._registry.stream_display_name(context.person.id, context.stream.id)
+        # 按场面取批时一批可能有几个人，按出现顺序列出；按人取批时只有一个名字。
+        target_persons = (
+            tuple(dict.fromkeys(
+                self._registry.stream_display_name(message.context.person.id, context.stream.id)
+                for message in batch
+            ))
             if context.stream.kind == 'group' and batch
-            else ''
+            else ()
         )
         if self._tool_calling:
             # 工具调用模式下动作空间由函数签名承载，提示词只留目标锚点与选择
@@ -94,7 +98,7 @@ class AgentProtocolMixin:
             return render_tool_protocol(
                 self._selectable_message_previews(batch),
                 quote_supported=frame.capabilities.quote,
-                target_person=target_person,
+                target_persons=target_persons,
                 cognitive_rounds=self._cognitive_rounds,
                 available_actions=frame.available_actions,
             )
@@ -103,7 +107,7 @@ class AgentProtocolMixin:
             self._selectable_message_previews(batch),
             quote_supported=frame.capabilities.quote,
             emoji_enabled=frame.capabilities.emoji,
-            target_person=target_person,
+            target_persons=target_persons,
             cognitive_rounds=self._cognitive_rounds,
             available_reactions=frame.capabilities.available_reactions,
             stream_kind=context.stream.kind,
