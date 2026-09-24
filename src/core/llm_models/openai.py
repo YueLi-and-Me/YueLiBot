@@ -50,6 +50,42 @@ class LlmError(Exception):
         self.detail = detail
 
 
+async def _next_or_abort(
+    stream: AsyncIterator[Dict[str, Any]],
+    signal: asyncio.Event | None,
+) -> Dict[str, Any]:
+    """等待下一个请求增量或取消信号，取消时先收掉读取任务。
+
+    单次读取涵盖连接建立、错误正文和 SSE 行等待；取消读取任务后，
+    内层 ``aclosing`` 与 HTTP 上下文会按原有顺序关闭响应。
+    """
+    if signal is None:
+        return await anext(stream)
+    if signal.is_set():
+        raise LlmError('aborted', '生成已中断')
+
+    read_task = asyncio.create_task(anext(stream))
+    cancel_task = asyncio.create_task(signal.wait())
+    try:
+        done, _ = await asyncio.wait(
+            {read_task, cancel_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # 同一轮同时完成时优先取消，避免把作废回合的增量交给上层。
+        if cancel_task in done or signal.is_set():
+            raise LlmError('aborted', '生成已中断')
+        chunk = await read_task
+        if signal.is_set():
+            raise LlmError('aborted', '生成已中断')
+        return chunk
+    finally:
+        if not read_task.done():
+            read_task.cancel()
+        if not cancel_task.done():
+            cancel_task.cancel()
+        await asyncio.gather(read_task, cancel_task, return_exceptions=True)
+
+
 # 错误类别到「这意味着什么、通常该动哪里」的说明。
 #
 # 类别本身（auth / quota / …）是给路由层判断要不要重试用的，对人没有信息量：
@@ -407,7 +443,7 @@ class OpenAiChatProvider:
         :param messages: OpenAI 兼容消息列表。
         :param temperature: 采样温度，默认 ``0.85``。
         :param max_tokens: 可选最大输出 token 数。
-        :param signal: 可选取消事件；重试间隔期间触发时转换为 ``aborted`` 错误。
+        :param signal: 可选取消事件；网络等待或重试期间触发时抛出 ``aborted``。
         :param response_format: 可选结构化响应格式；当前支持 JSON object 格式。
         :param tools: 可选的 OpenAI 工具声明列表。提供后模型可以返回工具调用，
             拼装完成的调用作为单个 ``{'tool_calls': [...]}`` 增量在流末尾产出，
@@ -448,7 +484,11 @@ class OpenAiChatProvider:
                 buffered_chunks: list[dict] = []
                 buffered_text: list[str] = []
                 async with aclosing(chunks) as request_stream:
-                    async for chunk in request_stream:
+                    while True:
+                        try:
+                            chunk = await _next_or_abort(request_stream, signal)
+                        except StopAsyncIteration:
+                            break
                         for guarded_chunk in policy_guard.push(chunk):
                             if response_validator is None:
                                 if is_committing_chunk(guarded_chunk):
@@ -495,7 +535,15 @@ class OpenAiChatProvider:
                     reason=str(exc),
                 )
                 if self._retry_interval:
-                    await asyncio.sleep(self._retry_interval)
+                    if signal is None:
+                        await asyncio.sleep(self._retry_interval)
+                    else:
+                        try:
+                            await asyncio.wait_for(
+                                signal.wait(), timeout=self._retry_interval,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
                 if signal and signal.is_set():
                     raise LlmError('aborted', '生成已中断')
 
