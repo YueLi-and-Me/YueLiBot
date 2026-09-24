@@ -186,6 +186,9 @@ export const DEFAULT_CONFIG: YueliConfig = {
     max_cognitive_rounds: 2,
     split_replyer: true,
     tool_calling: true,
+    // 与 Python schema 缺省值一致；新装的 1.5 秒只由 Python bootstrap 的种子负责。
+    reply_quiet_seconds: 0,
+    max_reply_restarts: 1,
   },
   typing: {
     bubble_target_chars: 18,
@@ -881,6 +884,18 @@ function parseConversationAgent(
   if (!Number.isInteger(cognitiveRounds) || cognitiveRounds < 0 || cognitiveRounds > 4) {
     throw new Error(`${sectionPath}.max_cognitive_rounds 必须是 0 到 4 的整数`)
   }
+  const replyQuietSeconds = numberAtOr(
+    section, 'reply_quiet_seconds', defaults.reply_quiet_seconds, sectionPath,
+  )
+  if (replyQuietSeconds < 0 || replyQuietSeconds > 10) {
+    throw new Error(`${sectionPath}.reply_quiet_seconds 必须在 0 到 10 之间`)
+  }
+  const maxReplyRestarts = numberAtOr(
+    section, 'max_reply_restarts', defaults.max_reply_restarts, sectionPath,
+  )
+  if (!Number.isInteger(maxReplyRestarts) || maxReplyRestarts < 0 || maxReplyRestarts > 5) {
+    throw new Error(`${sectionPath}.max_reply_restarts 必须是 0 到 5 的整数`)
+  }
   return {
     mode: mode as YueliConfig['conversation_agent']['mode'],
     selected_streams: streams === undefined
@@ -896,6 +911,8 @@ function parseConversationAgent(
     tool_calling: section.tool_calling === undefined
       ? defaults.tool_calling
       : booleanAt(section, 'tool_calling', sectionPath),
+    reply_quiet_seconds: replyQuietSeconds,
+    max_reply_restarts: maxReplyRestarts,
   }
 }
 
@@ -2372,6 +2389,10 @@ max_cognitive_rounds = ${cfg.conversation_agent.max_cognitive_rounds}
 split_replyer = ${cfg.conversation_agent.split_replyer}
 # 工具调用模式：动作空间由工具声明承载，而不是 XML 动作头
 tool_calling = ${cfg.conversation_agent.tool_calling}
+# 对方发完最后一条后安静多少秒才开始回复，0~10；0 表示消息一到就回，桌面端不等
+reply_quiet_seconds = ${cfg.conversation_agent.reply_quiet_seconds}
+# 回复生成期间对方补发文字、图片或视频时，作废并合并重来的次数上限，0~5；0 表示从不作废
+max_reply_restarts = ${cfg.conversation_agent.max_reply_restarts}
 
 [typing]
 # 一句话的目标字符数，超过就按气泡拆开发送

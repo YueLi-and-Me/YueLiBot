@@ -350,6 +350,9 @@ class ChatService(
         # 缓冲；在缓冲长度没有变化（也就是没有任何新消息进来）之前不再重开回合，
         # 否则轮询周期一到就会把同一批重新问一遍模型。
         self._waiting: dict[int, _WaitHold] = {}
+        # stream_id -> 当前这批消息已经因补发而作废重来的次数。回复作废时写入、下一次
+        # 取批时消费，与 wait 各自计数；上限见 conversation_agent.max_reply_restarts。
+        self._reply_restarts: dict[int, int] = {}
         self._speak_enabled = cfg.group_chat.self_started_topics
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
@@ -820,16 +823,29 @@ class ChatService(
                 )
                 if not direct_hold or within_window:
                     continue
+            # 开口前静默等待：批次一直延伸到缓冲末尾，说明发送者可能还在连发（「@她 看这个」
+            # 之后紧跟视频），等他停一下再开始，连发的几条合成一批。后面已有别人的消息时
+            # 他的这一段已经结束，不再等。桌面端是即时对话，不等。
+            quiet_ms = int(self._cfg.conversation_agent.reply_quiet_seconds * 1_000)
+            if (
+                quiet_ms
+                and boundary == len(buffered)
+                and buffered[0].context.stream.platform != 'desktop'
+                and now - batch[-1].accepted_at < quiet_ms
+            ):
+                continue
             if not self.claim_stream(stream_id, 'reply'):
                 continue
             del buffered[:boundary]
             if not buffered:
                 self._buffers.pop(stream_id, None)
-            # 已经退回过一次（等过或回复被作废过）的批次这一轮必须表态；标记在取走
-            # 批次时消费掉。
+            # 已经等过一次的批次这一轮必须表态；标记在取走批次时消费掉。
             waited_once = self._waiting.pop(stream_id, None) is not None
+            restarts_used = self._reply_restarts.pop(stream_id, 0)
             try:
-                await self._start_turn(batch, allow_wait=not waited_once)
+                await self._start_turn(
+                    batch, allow_wait=not waited_once, restarts_used=restarts_used,
+                )
             except Exception:
                 self._buffers.setdefault(stream_id, [])[:0] = batch
                 self.release_stream(stream_id, 'reply')
@@ -904,7 +920,12 @@ class ChatService(
             replied_to_me=inbound.replied_to_me,
             name_mentioned=inbound.name_mentioned,
             video_description_task=video_task,
-            carries_media=bool(inbound.image_sources or inbound.video_sources),
+            carries_content=bool(
+                (inbound.text if inbound.authored_text is None else inbound.authored_text).strip()
+                or inbound.image_sources
+                or inbound.video_sources
+                or inbound.forward_messages
+            ),
         ))
         # 「跟她有关」的消息被接收进回合缓冲时，同一 stream 里还没看过、且仍在她
         # 工作记忆窗口内的视频一起看；覆盖「先发视频、下一条才 @ 她」的发法。
@@ -1252,10 +1273,12 @@ class ChatService(
         batch: list[_BufferedMessage],
         *,
         allow_wait: bool = False,
+        restarts_used: int = 0,
     ) -> int:
         """取一个已持久化的非空消息批次创建并启动回复回合。
 
         :param allow_wait: 本批是否还能选择「先等等」；已经等过一次时传 False。
+        :param restarts_used: 本批已因发送者补发而作废重来的次数。
         """
         if not batch:
             raise ValueError('回复批次不能为空')
@@ -1458,6 +1481,7 @@ class ChatService(
                         sender=sender,
                         render_params=render_params,
                         allow_wait=allow_wait,
+                        restarts_used=restarts_used,
                     )
                     return
                 # 协议 @ 必回属于入口契约，明确绕过群聊存在感策略。
@@ -2977,6 +3001,7 @@ class ChatService(
         sender: Dict[str, str],
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
+        restarts_used: int = 0,
     ) -> None:
         """执行一个对话回合，正常路径只运行第一轮。
 
@@ -2995,6 +3020,7 @@ class ChatService(
 
         :param batch: 本回合的原始消息批次。
         :param allow_wait: 本回合是否还能等待；同一批只允许等一次。
+        :param restarts_used: 本批已因发送者补发而作废重来的次数。
         副作用：至多一次模型往返与一次可见产物投递；回合结束后结算后台副作用。
         """
         # 回合级副作用只在整个循环收束后结算一次。人格结算、摘要触发、场景观察
@@ -3022,6 +3048,7 @@ class ChatService(
                 sender,
                 render_params,
                 allow_wait=allow_wait and round_index == 0,
+                restarts_used=restarts_used,
             )
             acted = acted or result.reason == 'acted'
             if result.reason != 'acted':
@@ -3079,15 +3106,18 @@ class ChatService(
         sender: Dict[str, str],
         render_params: dict[str, dict[str, str]],
         allow_wait: bool = False,
+        restarts_used: int = 0,
     ) -> _RoundResult:
         """执行一轮 Conversation Agent 调用并处理其结果。
 
         silent 只写行动决策事件，不产生任何用户可见输出；reply 复用既有 sink
         消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
-        流出任何正文，按失败状态呈现。回复生成期间本批发送者补发图片或视频时，
+        流出任何正文，按失败状态呈现。回复生成期间本批发送者补发了新内容时，
         回复不投递，批次退回缓冲与补发内容合并。
 
-        :param allow_wait: 这批是否还没退回过缓冲；为假时既不能 wait，也不再作废回复。
+        :param allow_wait: 本批是否还能选择「先等等」；已经等过一次时为假。
+        :param restarts_used: 本批已因发送者补发而作废重来的次数；达到
+            ``conversation_agent.max_reply_restarts`` 后照常投递。
         :return: 本轮的收束原因，由 ``_run_conversation_turn`` 据此结算回合。
         """
         frame = self._agent_frame(
@@ -3325,11 +3355,15 @@ class ChatService(
         if not sink.segments and not sink.emoji_items:
             await self._finish_empty_reply(context, turn)
             return _RoundResult('declined')
-        # 投递前复核：QQ 中视频不能与文字同条发送，「@她 看这个」之后紧跟视频是常见发法，
-        # 视频晚到时会落入下一批。生成期间本批发送者补发了图片或视频，则本回合回复不投递，
-        # 批次退回缓冲与补发内容合并。同一批至多退回一次。
-        if allow_wait and self._sender_sent_media_meanwhile(context, sink):
-            self._return_superseded_batch(context, batch, turn)
+        # 投递前复核：回复是按回合开始时的批次写的，生成期间本批发送者补了一句话或
+        # 发来图片、视频，已写好的回复可能与他后来说的矛盾（例如回复里说对方「光喊
+        # 不说话」，而对方已经补了一句）。此时本回合回复不投递，批次退回缓冲与补发内容
+        # 合并；重来次数有上限。
+        if (
+            restarts_used < self._cfg.conversation_agent.max_reply_restarts
+            and self._sender_added_content_meanwhile(context, sink)
+        ):
+            self._return_superseded_batch(context, batch, turn, restarts_used)
             return _RoundResult('paused')
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
         visible_markup = (
@@ -3437,16 +3471,19 @@ class ChatService(
             turn_id=turn,
         )
 
-    def _sender_sent_media_meanwhile(
+    def _sender_added_content_meanwhile(
         self,
         context: ConversationContext,
         sink: _TurnSink,
     ) -> bool:
-        """判断当前回合生成期间，本批发送者是否紧接着补发了图片或视频。
+        """判断当前回合生成期间，本批发送者是否紧接着补发了新内容。
+
+        新内容指用户亲手写的文字、图片、视频或合并转发（见 ``carries_content``）。
+        只补表情包、QQ 表情、戳一戳或只 @ 一下不算：这些是反应，不会让已写好的回复
+        变错，作废只会使回复延后一个回合。
 
         只检查缓冲区头部连续属于同一发送者的消息：下一次 ``_tick`` 只会把这一段与
-        退回的批次合并；中间有他人消息时合并不成立，作废没有意义。补发文字或表情包
-        时不作废：已生成的回复对原消息仍然成立，作废只会使回复延后一个回合。
+        退回的批次合并；中间有他人消息时合并不成立，作废没有意义。
 
         以下情形不作废：
         - 桌面端：回复边生成边展示，此时已呈现给用户。
@@ -3466,7 +3503,7 @@ class ChatService(
         for message in self._buffers.get(context.stream.id, ()):
             if message.context.person.id != context.person.id:
                 return False
-            if message.carries_media:
+            if message.carries_content:
                 return True
         return False
 
@@ -3475,17 +3512,19 @@ class ChatService(
         context: ConversationContext,
         batch: list[_BufferedMessage],
         turn: int,
+        restarts_used: int,
     ) -> None:
         """回复作废后将本批退回缓冲头部，与补发的消息合并为下一批。
 
-        退回头部与回补累计器的原因同 ``_hold_batch_for_wait``。等待标记的水位取退回
-        条数：补发的消息已在缓冲中，``_tick`` 立即放行；该标记在取批时被消费，下一回合
-        因此视为已退回过一次，既不能 wait，也不会再次作废。
+        退回头部与回补累计器的原因同 ``_hold_batch_for_wait``。不设等待标记：补发的
+        消息已在缓冲中，``_tick`` 在静默窗口过后即取出合并后的批次；作废次数单独记账，
+        在取批时消费并随批次传入下一回合。
 
         :param context: 当前会话上下文。
         :param batch: 当前回合取走、回复已作废的消息批次。
         :param turn: 对话回合 ID。
-        副作用：修改消息缓冲、扩展累计器与等待标记；不产生用户可见输出，作废的回复不写入历史。
+        :param restarts_used: 作废前本批已重来的次数。
+        副作用：修改消息缓冲、扩展累计器与作废计数；不产生用户可见输出，作废的回复不写入历史。
         """
         stream_id = context.stream.id
         buffered = self._buffers.setdefault(stream_id, [])
@@ -3493,17 +3532,18 @@ class ChatService(
         self._extended_pending[stream_id] = (
             self._extended_pending.get(stream_id, 0) + len(batch)
         )
-        self._waiting[stream_id] = _WaitHold(len(batch), current_time())
+        self._reply_restarts[stream_id] = restarts_used + 1
         logger.info(
             'chat_reply_superseded',
             streamId=stream_id,
             turnId=turn,
             returnedMessages=len(batch),
             pendingMessages=len(buffered) - len(batch),
+            restarts=restarts_used + 1,
         )
         self._mark_stage(
             context, GATED,
-            '发送者补发了图片或视频，回复不投递，与补发内容合并到下一回合',
+            '发送者补发了新内容，回复不投递，与补发内容合并到下一回合',
             turn_id=turn,
         )
 

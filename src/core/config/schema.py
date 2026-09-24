@@ -183,6 +183,16 @@ class ConversationAgentConfig(BaseModel):
     # 代价是候选模型必须支持 function calling。依赖 split_replyer：工具调用只
     # 产出决策，正文必须由回复生成那一级写。默认开启。
     tool_calling: bool = True
+    # 对方发完最后一条消息后安静多久才开始回复，单位为秒，取值 0～10。
+    #
+    # QQ 里图片、视频常与「@她 看这个」分两条发，间隔一秒左右；等发送者停一下再开始，
+    # 连发的几条合成一批一起回。每次回复因此最多推迟这么久；桌面端不等。
+    # 0 表示消息一到就开始回复，老配置缺这一项时按 0 处理，行为与引入前一致。
+    reply_quiet_seconds: float = Field(default=0.0, ge=0.0, le=10.0)
+    # 回复生成期间同一个人补发了文字、图片、视频或聊天记录时，这一轮回复作废、与补发
+    # 内容合并重来，最多重来几次，取值 0～5。只补表情包、QQ 表情、戳一戳或只 @ 她不算。
+    # 上限使对方连发时她不会一直重来、迟迟不回；0 表示从不作废。
+    max_reply_restarts: int = Field(default=1, ge=0, le=5)
 
 
 class TypingNudgeConfig(BaseModel):

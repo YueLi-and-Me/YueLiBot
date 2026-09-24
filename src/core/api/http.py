@@ -814,6 +814,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         pokes_in_window=pokes_in_window,
         replied_to_me=body.replied_to_me,
         name_mentioned=name_mentioned,
+        authored_text=body.authored_text,
     ))
     return JSONResponse({
         'streamId': context.stream.id,

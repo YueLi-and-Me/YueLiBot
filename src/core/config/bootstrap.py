@@ -252,6 +252,9 @@ def _bot_document() -> Dict[str, Any]:
             'mode': 'enabled',
             'trigger_mode': 'reply_necessity',
             'max_cognitive_rounds': 4,
+            # 新装默认等发送者安静 1.5 秒再开口：「@她 看这个」与随后的视频实测相隔
+            # 1.025 秒，1 秒会恰好错过。缺省值（老配置缺键）仍是 0，见 schema。
+            'reply_quiet_seconds': 1.5,
         },
         # at_mention_must_reply 要求显式配置（不接受缺省），初值取「@ 必回」——
         # 群里被点名不理人比多回一句更容易被当成故障。

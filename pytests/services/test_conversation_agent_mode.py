@@ -800,6 +800,9 @@ async def test_new_message_ends_continuation_and_starts_fresh_turn(
     config = Config()
     config.bot.name = "月璃"
     config.conversation_agent.mode = "enabled"
+    # 插队消息与首条同一发送者，默认会触发回复作废合并；本用例验证的是不作废时
+    # 回合不拿插队消息续跑、由下一回合接上，因此关闭作废重来。
+    config.conversation_agent.max_reply_restarts = 0
     provider = _CrossedProvider()
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)

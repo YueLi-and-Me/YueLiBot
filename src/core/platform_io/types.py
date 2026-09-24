@@ -118,6 +118,10 @@ class InboundMessage:
     # 用户亲手写的文字里出现了 Bot 的名字/别名，由入口按 bot.toml 的称呼配置算好
     # 后传入；引用摘要等适配器合成的转述不计。
     name_mentioned: bool = False
+    # 正文中用户亲手输入的部分，不含引用摘要、提及显示名与表情等适配器合成的转述；
+    # None 表示适配器未单独提交，按 text 全部由用户所写处理。主体据此判断一条补发
+    # 是否带来了新内容，只补表情包或戳一戳时为空串。
+    authored_text: str | None = None
     # 已由平台适配器完整解析的合并转发根树；主体按内部消息 ID 放入有界会话缓存，
     # 模型只能通过只读工具逐层浏览，不把整棵树直接拼进聊天正文。
     forward_messages: Tuple[ForwardMessageTree, ...] = ()

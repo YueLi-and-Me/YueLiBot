@@ -427,6 +427,10 @@ export interface YueliConfig {
     max_cognitive_rounds: number
     split_replyer: boolean
     tool_calling: boolean
+    /** 对方发完最后一条后安静多少秒才开始回复；0 表示消息一到就回。 */
+    reply_quiet_seconds: number
+    /** 回复生成期间对方补发内容时，作废并合并重来的次数上限；0 表示从不作废。 */
+    max_reply_restarts: number
   }
   /** 气泡拆分与打字节奏。 */
   typing: {
