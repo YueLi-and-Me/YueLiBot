@@ -825,7 +825,8 @@ class ChatService(
             del buffered[:boundary]
             if not buffered:
                 self._buffers.pop(stream_id, None)
-            # 已经等过一次的批次这一轮必须表态；标记在取走批次时消费掉。
+            # 已经退回过一次（等过或回复被作废过）的批次这一轮必须表态；标记在取走
+            # 批次时消费掉。
             waited_once = self._waiting.pop(stream_id, None) is not None
             try:
                 await self._start_turn(batch, allow_wait=not waited_once)
@@ -903,6 +904,7 @@ class ChatService(
             replied_to_me=inbound.replied_to_me,
             name_mentioned=inbound.name_mentioned,
             video_description_task=video_task,
+            carries_media=bool(inbound.image_sources or inbound.video_sources),
         ))
         # 「跟她有关」的消息被接收进回合缓冲时，同一 stream 里还没看过、且仍在她
         # 工作记忆窗口内的视频一起看；覆盖「先发视频、下一条才 @ 她」的发法。
@@ -3088,8 +3090,10 @@ class ChatService(
 
         silent 只写行动决策事件，不产生任何用户可见输出；reply 复用既有 sink
         消费副作用与分句，随后持久化、人格结算与平台投递；模型/协议失败不
-        流出任何正文，按失败状态呈现。
+        流出任何正文，按失败状态呈现。回复生成期间本批发送者补发图片或视频时，
+        回复不投递，批次退回缓冲与补发内容合并。
 
+        :param allow_wait: 这批是否还没退回过缓冲；为假时既不能 wait，也不再作废回复。
         :return: 本轮的收束原因，由 ``_run_conversation_turn`` 据此结算回合。
         """
         frame = self._agent_frame(
@@ -3327,6 +3331,12 @@ class ChatService(
         if not sink.segments and not sink.emoji_items:
             await self._finish_empty_reply(context, turn)
             return _RoundResult('declined')
+        # 投递前复核：QQ 中视频不能与文字同条发送，「@她 看这个」之后紧跟视频是常见发法，
+        # 视频晚到时会落入下一批。生成期间本批发送者补发了图片或视频，则本回合回复不投递，
+        # 批次退回缓冲与补发内容合并。同一批至多退回一次。
+        if allow_wait and self._sender_sent_media_meanwhile(context, sink):
+            self._return_superseded_batch(context, batch, turn)
+            return _RoundResult('paused')
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
         visible_markup = (
             ''.join(f'<say>{text}</say>' for text in sink.say_texts)
@@ -3430,6 +3440,76 @@ class ChatService(
         self._mark_stage(
             context, GATED,
             f'她先等等：{", ".join(outcome.decision.reason_codes)}',
+            turn_id=turn,
+        )
+
+    def _sender_sent_media_meanwhile(
+        self,
+        context: ConversationContext,
+        sink: _TurnSink,
+    ) -> bool:
+        """判断当前回合生成期间，本批发送者是否紧接着补发了图片或视频。
+
+        只检查缓冲区头部连续属于同一发送者的消息：下一次 ``_tick`` 只会把这一段与
+        退回的批次合并；中间有他人消息时合并不成立，作废没有意义。补发文字或表情包
+        时不作废：已生成的回复对原消息仍然成立，作废只会使回复延后一个回合。
+
+        以下情形不作废：
+        - 桌面端：回复边生成边展示，此时已呈现给用户。
+        - 已产生心情或约定副作用：二者在消费解析事件时立即落库，作废后下一回合会重复写入。
+
+        :param context: 本批会话上下文，``context.person`` 为本批发送者。
+        :param sink: 当前回合已消费的解析结果与副作用。
+        :return: 应作废当前回合回复时为 ``True``。
+        """
+        if context.stream.platform == 'desktop':
+            return False
+        if any(
+            effect['kind'] in ('mood_delta', 'promise_stashed')
+            for effect in sink.side_effects
+        ):
+            return False
+        for message in self._buffers.get(context.stream.id, ()):
+            if message.context.person.id != context.person.id:
+                return False
+            if message.carries_media:
+                return True
+        return False
+
+    def _return_superseded_batch(
+        self,
+        context: ConversationContext,
+        batch: list[_BufferedMessage],
+        turn: int,
+    ) -> None:
+        """回复作废后将本批退回缓冲头部，与补发的消息合并为下一批。
+
+        退回头部与回补累计器的原因同 ``_hold_batch_for_wait``。等待标记的水位取退回
+        条数：补发的消息已在缓冲中，``_tick`` 立即放行；该标记在取批时被消费，下一回合
+        因此视为已退回过一次，既不能 wait，也不会再次作废。
+
+        :param context: 当前会话上下文。
+        :param batch: 当前回合取走、回复已作废的消息批次。
+        :param turn: 对话回合 ID。
+        副作用：修改消息缓冲、扩展累计器与等待标记；不产生用户可见输出，作废的回复不写入历史。
+        """
+        stream_id = context.stream.id
+        buffered = self._buffers.setdefault(stream_id, [])
+        buffered[:0] = batch
+        self._extended_pending[stream_id] = (
+            self._extended_pending.get(stream_id, 0) + len(batch)
+        )
+        self._waiting[stream_id] = _WaitHold(len(batch), current_time())
+        logger.info(
+            'chat_reply_superseded',
+            streamId=stream_id,
+            turnId=turn,
+            returnedMessages=len(batch),
+            pendingMessages=len(buffered) - len(batch),
+        )
+        self._mark_stage(
+            context, GATED,
+            '发送者补发了图片或视频，回复不投递，与补发内容合并到下一回合',
             turn_id=turn,
         )
 

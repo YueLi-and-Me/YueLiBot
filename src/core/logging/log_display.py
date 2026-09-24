@@ -40,6 +40,7 @@ EVENT_LABELS: Dict[str, str] = {
     "chat_image_description_timeout": "聊天图片理解超时",
     "chat_image_model_not_multimodal": "聊天图片模型不支持视觉",
     "chat_image_source_failed": "读取聊天图片失败",
+    "chat_reply_superseded": "回复作废：发送者补发了图片或视频",
     "chat_image_too_large": "聊天图片文件过大",
     "chat_tick_failed": "对话轮询失败",
     "config_prune_reverted": "废弃字段删除已回滚",

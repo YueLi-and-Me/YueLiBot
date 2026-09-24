@@ -106,6 +106,9 @@ class _BufferedMessage:
     name_mentioned: bool = False
     # 后台视频理解任务；结果为补齐描述后的完整正文，回合构建前与图片任务一起等待。
     video_description_task: asyncio.Task[str] | None = None
+    # 是否带图片或视频（表情包不计）；回复生成期间发送者补发此类消息时，当前回合
+    # 回复作废并与之合并，见 ChatService._sender_sent_media_meanwhile。
+    carries_media: bool = False
 
 
 @dataclass(frozen=True)
@@ -259,10 +262,11 @@ class _RoundResult:
 
 @dataclass(frozen=True)
 class _WaitHold:
-    """一次 wait 的持有状态。
+    """一次批次退回缓冲（wait 或回复作废）的持有状态；存在即表示该批已退回过一次。
 
-    :ivar watermark: 批次退回缓冲后的消息总数；缓冲长度超过它说明有新消息到达。
-    :ivar since: 开始等待的毫秒时间戳，供私聊的下文超时兜底判断使用。
+    :ivar watermark: 不计为新消息的缓冲条数；缓冲长度超过它说明有新消息到达。
+        wait 取退回后的缓冲总数，回复作废取退回的批次条数（补发的消息已在缓冲中）。
+    :ivar since: 开始持有的毫秒时间戳，供私聊的下文超时兜底判断使用。
     """
 
     watermark: int
