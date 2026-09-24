@@ -1074,15 +1074,16 @@ async def test_tool_calling_end_to_end(db) -> None:
     assert '给 target 用的记号' in tool_protocol
     assert '由 target 决定' in tool_protocol
     assert 'targets' not in tool_protocol
-    # 时间与人物画像各占一个 item，不再和稳定人格糊进同一个 system。
+    # 时间单独占一个 item，不再和稳定人格糊进同一个 system。原先的「人物画像」
+    # item 只装关系深度那一句，该句已不再注入，因此这一项不再出现。
     assert len([
         item for item in planner_messages
         if item.get('content', '').startswith('[当前时间]')
     ]) == 1
-    assert len([
+    assert not [
         item for item in planner_messages
         if item.get('content', '').startswith('[人物画像]')
-    ]) == 1
+    ]
     assert '[当前时间]' not in planner_messages[0]['content']
     assert '[人物画像]' not in planner_messages[0]['content']
     # 工具协议独立留在最后，成为决策侧最近的一条约束。

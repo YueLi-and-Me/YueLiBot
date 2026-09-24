@@ -74,12 +74,12 @@ def test_prompt_without_resumption_is_stable_and_resumption_order_is_unchanged()
     resumption = '距离你们上次说话过了几个小时。'
     resumed_prompt = _prompt(
         now=now,
-        persona='人格状态在这里。',
+        activity='活动背景在这里。',
         resumption=resumption,
     )
 
     assert _prompt(now=now, resumption=None) == base_prompt
-    assert resumed_prompt.index('# 此刻') < resumed_prompt.index(resumption) < resumed_prompt.index('人格状态在这里。')
+    assert resumed_prompt.index('# 此刻') < resumed_prompt.index(resumption) < resumed_prompt.index('活动背景在这里。')
 
 
 async def test_same_session_does_not_add_resumption_context(db) -> None:

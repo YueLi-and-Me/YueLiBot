@@ -120,7 +120,6 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'time_context',
         'birthday_note',
         'resumption',
-        'persona',
         'activity',
         'scene',
         'jargon',

@@ -335,9 +335,12 @@ def test_reply_length_template_mapping_has_single_declaration() -> None:
         # 模板指纹随「共处群注入」更新一次：chat.system.md 新增 {{shared_groups}}
         # 占位符，模板字节改变所以 promptHash 变化；空注入时渲染文本逐字节不变，
         # 三个正文哈希保持原值——这正是「无注入时零差异」的直接证据。
-        (None, '7b3b2c0d38bb897102145bb2cad33d39b7602fa167099a3fc9850689c3942ec2', '2182f42a'),
-        ('brief', 'b6c6e59e68cb4599d78385f3eaea49dba4a4f84309c781c82d93352e185fddf8', '1442d6d1'),
-        ('long', 'f974875ebf5645112c1db96e2773b026211ed990c503e764eb24a6487df76d11', '24965cca'),
+        # 模板指纹随「不再注入关系深度」再更新一次：chat.system.md 删除 {{persona}}
+        # 占位符，模板字节改变所以 promptHash 变化；该块原本在空注入时不渲染任何字符，
+        # 三个正文哈希仍保持原值。
+        (None, '7b3b2c0d38bb897102145bb2cad33d39b7602fa167099a3fc9850689c3942ec2', 'f45fad4a'),
+        ('brief', 'b6c6e59e68cb4599d78385f3eaea49dba4a4f84309c781c82d93352e185fddf8', '16bef62a'),
+        ('long', 'f974875ebf5645112c1db96e2773b026211ed990c503e764eb24a6487df76d11', '81660f7e'),
     ),
 )
 def test_k_cleanup_keeps_prompt_text_and_hash_identical(
@@ -656,7 +659,6 @@ async def test_replay_rejects_event_before_current_prompt_structure(db) -> None:
                 'time_context': '测试时间',
                 'birthday_note': '',
                 'resumption': '',
-                'persona': '',
                 'activity': '',
                 'facts': '',
                 'episodes': '',

@@ -161,25 +161,20 @@ def _identity_context(
 
 
 def _relationship_block(
-    acquaintance: Optional[str],
     user_nickname: Optional[str],
     relationship: Optional[str],
 ) -> str:
-    """把熟悉程度、称呼和关系信息包装成可选提示词段落。
+    """把称呼与关系信息包装成可选提示词段落。
 
-    :param acquaintance: 已计算出的熟悉程度描述；可为空。
+    认识时长不常驻注入：人物首次出现时间只记录本系统首次见到对方的时刻，从别处
+    迁移来的记忆会被算短，常驻写进提示词只会给出错误的「认识了几天」。
+
     :param user_nickname: 对方称呼偏好；可为空。
     :param relationship: 关系文本；可为空。
     :return: 带段落前缀的关系块，所有输入为空时返回空字符串。
     副作用：不修改输入列表或文本。
     """
-    lines: List[str] = []
-    if acquaintance:
-        lines.extend(['# 你们的关系走到哪里了', acquaintance])
-    relationship_context = _relationship_context(user_nickname, relationship)
-    if relationship_context:
-        lines.append(relationship_context)
-    return _prefixed_block('\n\n'.join(lines))
+    return _prefixed_block(_relationship_context(user_nickname, relationship))
 
 
 def _activity_block(activity: Optional[str]) -> str:
@@ -399,8 +394,6 @@ def build_system_prompt(
     personality: str,
     reply_style: str,
     now: Optional[datetime] = None,
-    persona: Optional[str] = None,
-    acquaintance: Optional[str] = None,
     facts: Optional[Sequence['str | MemoryFactItem']] = None,
     episodes: Optional[List[str]] = None,
     activity: Optional[str] = None,
@@ -429,8 +422,6 @@ def build_system_prompt(
     :param personality: 人格和身份描述文本。
     :param reply_style: 回复风格约束文本。
     :param now: 用于时间、年龄和生日判断的当前时间；省略时读取系统时钟。
-    :param persona: 可选的额外人格上下文。
-    :param acquaintance: 可选的熟悉程度描述。
     :param facts: 可选的长期事实记忆列表；条目为 ``MemoryFactItem`` 时，
         同一槽位下对不上的多条会并排渲染并明确标注。
     :param episodes: 可选的近期对话回想列表。
@@ -503,11 +494,10 @@ def build_system_prompt(
     system_values = {
         'name': name,
         'identity': identity,
-        'relationship': _relationship_block(acquaintance, user_nickname, relationship),
+        'relationship': _relationship_block(user_nickname, relationship),
         'time_context': _time_context(now, schedule),
         'birthday_note': birthday_note,
         'resumption': _prefixed_block(resumption),
-        'persona': _prefixed_block(persona),
         'activity': _activity_block(activity),
         'scene': _scene_block(scene),
         'jargon': _jargon_block(jargon),
@@ -550,8 +540,6 @@ def build_itemized_system_prompt(
     personality: str,
     reply_style: str,
     now: Optional[datetime] = None,
-    persona: Optional[str] = None,
-    acquaintance: Optional[str] = None,
     facts: Optional[Sequence['str | MemoryFactItem']] = None,
     episodes: Optional[List[str]] = None,
     activity: Optional[str] = None,
@@ -574,7 +562,7 @@ def build_itemized_system_prompt(
     """把稳定系统规则与运行时上下文拆成可独立裁剪、观测的 item。
 
     工具调用模式不再依赖 assistant/user 角色交替：稳定身份、事实纪律与边界留在
-    system，当前时间、人物画像、重逢背景、活动、场景和记忆分别渲染成独立文本项。
+    system，当前时间、重逢背景、活动、场景、印象和记忆分别渲染成独立文本项。
     动作或回复协议由调用方放在消息流末尾，避免它重新被嵌回 system。
 
     :param name: Bot 的主名称。
@@ -582,8 +570,6 @@ def build_itemized_system_prompt(
     :param personality: 配置中的稳定人格与身份描述。
     :param reply_style: 回复风格约束；决策层会按 ``decision_only`` 省略。
     :param now: 当前本地时间；省略时读取统一时钟。
-    :param persona: 当前人物关系与精力画像。
-    :param acquaintance: 可选相识时长描述。
     :param facts: 可选长期事实记忆；条目为 ``MemoryFactItem`` 时，
         同一槽位下对不上的多条会并排渲染并明确标注。
     :param episodes: 可选近期聊天回想。
@@ -660,7 +646,7 @@ def build_itemized_system_prompt(
     system_values = {
         'name': name,
         'identity': identity,
-        'relationship': _relationship_block(acquaintance, user_nickname, relationship),
+        'relationship': _relationship_block(user_nickname, relationship),
         # 表达层三块与篇幅已经组装成整节；决策层不写正文，那一节整个不渲染。
         'voice': voice_block,
         'discipline': get_prompt('chat.discipline').render().rstrip(),
@@ -673,7 +659,6 @@ def build_itemized_system_prompt(
         time_context = f'{time_context}\n{birthday_note}'
     context_values = [
         ('当前时间', time_context),
-        ('人物画像', persona or ''),
         ('重逢背景', resumption or ''),
         ('当前活动', _activity_block(activity).strip()),
         ('会话场景', _scene_block(scene).strip()),

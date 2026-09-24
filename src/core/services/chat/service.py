@@ -119,8 +119,6 @@ from src.core.observe.stages import (
 from src.core.observe.store import max_turn_id
 from src.core.persona.state import (
     Persona,
-    describe_acquaintance,
-    describe_persona,
     status_label,
 )
 from src.core.platform_io.broker import PlatformBroker
@@ -2599,13 +2597,6 @@ class ChatService(
         if self._schedule:
             await self._schedule.ensure(now)
         # 主动消息使用与普通对话相同的人格和记忆边界，但只读取少量上下文以控制延迟。
-        persona_desc = describe_persona(self.persona.get(context.person.id))
-        # 熟悉程度（认识了多少天）属 owner 专属关系信号，非 owner 不注入。
-        acquaintance = (
-            describe_acquaintance(self.memory.first_seen_at(context.person.id), now)
-            if context.relationship_signals_enabled
-            else ''
-        )
         schedule_desc = (self._schedule.describe(now, self.current_sleep())
                          if self._schedule else '')
         render_params: dict[str, dict[str, str]] = {}
@@ -2631,8 +2622,6 @@ class ChatService(
             )
         base_prompt = build_system_prompt(
             now=datetime.fromtimestamp(now / 1000),
-            persona=persona_desc,
-            acquaintance=acquaintance,
             facts=proactive_facts,
             episodes=[episode.summary for episode in self.memory.recent_episodes(
                 context.stream.id, 2,

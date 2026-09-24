@@ -142,7 +142,7 @@ async def test_v8_v9_replay_preserves_business_tables_and_uses_replay_kinds(
             'chat.system': {
                 'name': '测试角色', 'identity': '测试身份', 'relationship': '',
                 'time_context': '测试时间', 'birthday_note': '', 'resumption': '',
-                'persona': '', 'activity': '', 'scene': '',
+                'activity': '', 'scene': '',
                 'jargon': '', 'impressions': '', 'shared_groups': '',
                 'facts': '', 'episodes': '',
                     'reply_style': '自然回复', 'tone': '', 'expression_habits': '',
@@ -232,7 +232,7 @@ async def test_replay_http_uses_chat_router() -> None:
             'chat.system': {
                 'name': '测试角色', 'identity': '测试身份', 'relationship': '',
                 'time_context': '测试时间', 'birthday_note': '', 'resumption': '',
-                'persona': '', 'activity': '', 'scene': '',
+                'activity': '', 'scene': '',
                 'jargon': '', 'impressions': '', 'shared_groups': '',
                 'facts': '', 'episodes': '',
                     'reply_style': '自然回复', 'tone': '', 'expression_habits': '',

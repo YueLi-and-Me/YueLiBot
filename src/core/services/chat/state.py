@@ -219,8 +219,6 @@ class _PreparedTurnContext:
     fact_candidates: list[RecalledFact]
     retrieval_trace: _RetrievalTrace
     episodes: list[str]
-    persona: str
-    acquaintance: str
     activity: str | None
     schedule: str | None
     resumption: str | None

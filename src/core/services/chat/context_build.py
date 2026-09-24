@@ -35,7 +35,6 @@ from src.core.memory.store import RecalledFact, StoredMessage
 from src.core.memory.tuning import apply_pool_percentile, tuned_value
 from src.core.observe import events as trace
 from src.core.observe.stages import EXPRESSION
-from src.core.persona.state import describe_acquaintance, describe_persona
 from src.core.platform_io.types import ConversationContext
 from src.core.runtime.clock import now as current_time
 from src.core.schedule.plan import asks_about_activity
@@ -377,14 +376,6 @@ class ContextBuildMixin:
                 seen_ids.add(e.id)
                 episodes.append(e)
         episodes = episodes[:self._episode_context_limit]
-        state = self.persona.get(context.person.id)
-        persona_desc = describe_persona(state)
-        # 熟悉程度（认识了多少天）属 owner 专属关系信号，非 owner 不注入。
-        acquaintance = (
-            describe_acquaintance(self.memory.first_seen_at(context.person.id), now)
-            if context.relationship_signals_enabled
-            else ''
-        )
         # 时段里的具体活动只在他这轮真的问起时才注入，否则日程只以情绪和作息影响本轮语气。
         schedule_desc = (
             self._schedule.describe(
@@ -448,8 +439,6 @@ class ContextBuildMixin:
                 ),
             ),
             episodes=[episode.summary for episode in episodes],
-            persona=persona_desc,
-            acquaintance=acquaintance,
             activity=activity,
             schedule=schedule_desc,
             resumption=resumption,
@@ -518,8 +507,6 @@ class ContextBuildMixin:
             )
         shared_context = {
             'now': datetime.fromtimestamp(prepared.now / 1000),
-            'persona': prepared.persona,
-            'acquaintance': prepared.acquaintance,
             'facts': fact_items,
             'episodes': prepared.episodes,
             'activity': prepared.activity,
