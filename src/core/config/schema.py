@@ -933,6 +933,8 @@ class ModelTaskConfig(BaseModel):
     memory: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    # 表情包专用图片与标签融合向量；留空回用 embedding 文本，不继承 chat。
+    multimodal_embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
 
 class ModelCandidate(BaseModel):
@@ -1017,6 +1019,7 @@ class RoutingConfig(BaseModel):
     memory: TaskRouting = Field(default_factory=lambda: TaskRouting(task='memory'))
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
+    multimodal_embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='multimodal_embedding'))
 
 
 class ModelCatalog(BaseModel):

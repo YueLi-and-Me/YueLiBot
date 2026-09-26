@@ -57,7 +57,8 @@ const TASK_LABELS: Array<[keyof YueliConfig['model_tasks'], string, string]> = [
   ['schedule', '每日生活计划', '留空时继承对话候选，也可以单独指定结构化输出模型。'],
   ['vision', '看屏幕', '必须是能接受图片输入的多模态模型。'],
   ['tts', '语音合成', '协议由所属服务商决定：OpenAI 兼容或豆包语音。'],
-  ['embedding', '向量记忆', '同一任务下的候选模型必须输出同样的向量维度。'],
+  ['embedding', '向量记忆', '候选模型的模型 ID、接口协议与维度必须一致。'],
+  ['multimodal_embedding', '多模态向量', '表情包图片与标签融合向量；留空只用 embedding 的标签文字向量。'],
 ]
 
 // DOM 构造工具。

@@ -75,8 +75,14 @@ selection_strategy = "sequential" # sequential 永远优先第一条；random �
 first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
 slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
 
-[model_tasks.embedding] # 向量嵌入：长期记忆向量化与召回模型；同一任务下的候选模型维度必须一致。
+[model_tasks.embedding] # 向量嵌入：长期记忆向量化与召回模型；同一任务下候选的模型 ID、接口协议与维度必须一致。
 model_list = ["qwen-embedding"] # 每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
+[model_tasks.multimodal_embedding] # 多模态向量：表情包图片与标签融合；留空仅使用 embedding 的标签文字向量，不继承其它任务。
+model_list = [] # 每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。
 selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
 first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
 slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。

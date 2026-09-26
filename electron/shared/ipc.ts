@@ -508,6 +508,7 @@ export interface YueliConfig {
     memory: TaskRoutingConfig
     tts: TaskRoutingConfig
     embedding: TaskRoutingConfig
+    multimodal_embedding: TaskRoutingConfig
   }
   tts: {
     enabled: boolean; voice: string

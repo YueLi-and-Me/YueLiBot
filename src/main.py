@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import FrameType
-from typing import Any, List
+from typing import Any, List, Tuple
 
 import argparse
 import asyncio
@@ -28,6 +28,8 @@ from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.app_meta import APP_VERSION, OFFICIAL_GROUP
 from src.core.api.auth import token_manager
 from src.core.api.state import app_state
+from src.core.llm_models.router import ModelRouters
+from src.core.memory.embed import EmbeddingClient, build_client
 from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
 from src.core.runtime.child_process import ChildProcess
 from src.core.runtime.consent import require_consent
@@ -309,15 +311,16 @@ def _announce_model_routing(cfg: Config) -> None:
 
     rows: List[str] = []
     routing = cfg.routing
+    task_width = max(len(task) for task in type(routing).model_fields) + 2
     for task in type(routing).model_fields:
         entry = getattr(routing, task)
         candidates = entry.candidates
         if not candidates:
-            rows.append(f'{task:<11}未配置候选')
+            rows.append(f'{task:<{task_width}}未配置候选')
             continue
         first = candidates[0]
         extra = f'（+{len(candidates) - 1} 个备选）' if len(candidates) > 1 else ''
-        rows.append(f'{task:<11}{first.identifier}  ·  {first.provider}{extra}')
+        rows.append(f'{task:<{task_width}}{first.identifier}  ·  {first.provider}{extra}')
     print_box('模型任务路由', rows, width=96, source=__name__)
 
 
@@ -571,6 +574,15 @@ class _ReadyAnnouncingServer(uvicorn.Server):
         super().handle_exit(sig, frame)
 
 
+def _select_emoji_embedding_client(
+    routers: ModelRouters, text_client: EmbeddingClient | None,
+) -> Tuple[EmbeddingClient | None, str]:
+    """专用槽优先；回用 embedding 时配方恒为 tags，即使其协议支持图片。"""
+    if routers.multimodal_embedding.ready:
+        return build_client(routers.multimodal_embedding), 'image+tags/v1'
+    return text_client, 'tags'
+
+
 def main() -> None:
     """解析命令行参数并启动后端进程。
 
@@ -774,26 +786,27 @@ def main() -> None:
     routers = create_routers(cfg)
     app_state.routers = routers
 
-    # 表情包语义检索与事实召回复用同一个 embedding 客户端；表情包本身即使
-    # 未配置 embedding 也可按标签包含匹配，不影响收侧识别和登记。
+    # 事实与知识使用 embedding；表情包专用槽独立装配，不受 vector.enabled 控制。
+    # 两槽皆空时仍使用既有标签包含匹配，不影响收侧识别和登记。
     embed_client = None
     embedding_client_disabled_reason = 'model_tasks.embedding.model_list 是空的'
     if routers.embedding.ready:
         try:
-            from src.core.memory.embed import build_client
             embed_client = build_client(routers.embedding)
         except Exception as exc:
             embedding_client_disabled_reason = '向量客户端构造失败'
             logger.warning('embedding_client_init_failed', error=str(exc))
 
-    # 首次接管只登记；空间变化先清空再交给后台补算，避免混用旧向量。
-    if embed_client is not None:
-        from src.core.memory.vector_space import VectorSpace, reconcile_space
-        candidate = routers.embedding.candidates[0]
-        if cfg.vector.enabled:
-            for consumer in ('facts', 'knowledge'):
-                reconcile_space(db, consumer, VectorSpace.from_candidate(candidate, 'text'))
-        reconcile_space(db, 'emoji', VectorSpace.from_candidate(candidate, 'tags'))
+    from src.core.memory.vector_space import VectorSpace, reconcile_space
+    if embed_client is not None and cfg.vector.enabled:
+        space = VectorSpace.from_candidate(routers.embedding.candidates[0], 'text')
+        for consumer in ('facts', 'knowledge'):
+            reconcile_space(db, consumer, space)
+    emoji_client, emoji_recipe = _select_emoji_embedding_client(routers, embed_client)
+    if emoji_client is not None:
+        emoji_task = 'multimodal_embedding' if emoji_recipe == 'image+tags/v1' else 'embedding'
+        emoji_candidate = routers.for_task(emoji_task).candidates[0]
+        reconcile_space(db, 'emoji', VectorSpace.from_candidate(emoji_candidate, emoji_recipe))
 
     chat_provider = routers.chat if routers.chat.ready else None
     proactive_provider = routers.proactive if routers.proactive.ready else None
@@ -826,7 +839,8 @@ def main() -> None:
     emoji_library = EmojiLibrary(
         db,
         data_dir / 'emojis',
-        embed_client,
+        emoji_client,
+        use_images=emoji_recipe == 'image+tags/v1',
         config=cfg.emoji,
         content_filter=emoji_content_filter,
     )
@@ -1171,6 +1185,7 @@ def main() -> None:
         )
 
     lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
+    lifecycle.register('emoji_vectors', emoji_library.startup, emoji_library.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
     from src.core.services.maintenance.jargon_learn import JargonLearnService

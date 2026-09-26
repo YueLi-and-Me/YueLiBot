@@ -55,10 +55,10 @@ import {
 
 const TASK_NAMES = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'vision',
-  'video', 'expression', 'memory', 'tts', 'embedding',
+  'video', 'expression', 'memory', 'tts', 'embedding', 'multimodal_embedding',
 ] as const
 // 生成参数（温度、token 上限）覆盖后端 GenerationConfig 里的每一档任务。
-// tts 与 embedding 不在其中：语音合成与向量化没有温度和输出上限可言。
+// tts 与两个向量任务不在其中：语音合成与向量化没有温度和输出上限可言。
 const GENERATION_TASKS = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'expression', 'vision',
   'video', 'memory',
@@ -79,6 +79,7 @@ const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
   memory: '记忆抽取',
   tts: '语音合成',
   embedding: '向量嵌入',
+  multimodal_embedding: '多模态向量',
 }
 
 /** 任务字段的业务用途说明，挂在任务按钮的悬停提示上。 */
@@ -96,6 +97,7 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   memory: '回合结束后回看一段对话、判断有没有值得长期记住的事实。后台任务不在回复关键路径上，做结构化抽取而非发挥，配便宜快的模型即可；留空继承日常对话',
   tts: '把回复文本合成为语音的模型',
   embedding: '为长期记忆生成检索向量的嵌入模型',
+  multimodal_embedding: '表情包图片与标签融合向量；留空只用 embedding 的标签文字向量',
 }
 
 /** 选型建议的四类取向，决定徽标文字与配色。 */
@@ -168,6 +170,10 @@ const TASK_ADVICE: Record<(typeof TASK_NAMES)[number], TaskAdvice> = {
   tts: {
     kind: 'required',
     note: '必须是语音合成模型，与文本模型不通用。',
+  },
+  multimodal_embedding: {
+    kind: 'required',
+    note: '仅接受百炼或方舟多模态向量协议。配置即用于表情包，与事实和知识向量独立；留空维持标签文字向量。',
   },
   embedding: {
     kind: 'required',

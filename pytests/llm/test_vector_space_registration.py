@@ -50,6 +50,18 @@ def test_migration_replay_and_chain_head(db):
     assert db.execute('PRAGMA user_version').fetchone()[0] == max(load_migration_registry()) + 1 == CURRENT_VERSION
 
 
+def test_migration_from_reserved_version_reaches_chain_head(db):
+    from src.core.db.migrations.bootstrap import write_user_version
+    from src.core.db.migrations.manager import CURRENT_VERSION, load_migration_registry, run_migrations
+    from src.core.db.migrations.v32_to_v33 import FROM_VERSION
+    db.execute('DROP TABLE vector_space')
+    write_user_version(db, FROM_VERSION)
+    db.commit()
+    run_migrations(db)
+    assert db.execute('PRAGMA user_version').fetchone()[0] == max(load_migration_registry()) + 1 == CURRENT_VERSION
+    assert db.execute('SELECT count(*) FROM vector_space').fetchone()[0] == 0
+
+
 def test_space_reset_and_registration_are_atomic():
     from src.core.memory.vector_space import VectorSpace, reconcile_space
     db = database()

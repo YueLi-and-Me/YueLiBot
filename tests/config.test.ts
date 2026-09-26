@@ -271,6 +271,8 @@ describe('API 轮询', () => {
     const config = buildRotatingConfig()
     config.models[0]!.api_format = 'responses'
     config.models[0]!.reasoning_parse_mode = 'tag'
+    config.models.push({ ...config.models[0]!, name: '融合向量', model_identifier: 'mm-fixture', api_format: 'dashscope_multimodal', embedding_dim: 768 })
+    config.model_tasks.multimodal_embedding.model_list = ['融合向量']
 
     writeConfigDirectory(directory, config)
 
@@ -281,6 +283,8 @@ describe('API 轮询', () => {
     expect(models).toContain('selection_strategy = "sequential"')
     expect(models).toContain('api_format = "responses"')
     expect(models).toContain('reasoning_parse_mode = "tag"')
+    expect(models).toContain('[model_tasks.multimodal_embedding]')
+    expect(models).toContain('model_list = ["融合向量"]')
   })
 
   it('random 策略照原样保留，不会被写回默认值', () => {

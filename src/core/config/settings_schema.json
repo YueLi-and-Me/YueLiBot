@@ -1481,7 +1481,12 @@
             {
               "key": "embedding",
               "label": "向量嵌入",
-              "description": "长期记忆向量化与召回模型；同一任务下的候选模型维度必须一致。"
+              "description": "长期记忆向量化与召回模型；同一任务下候选的模型 ID、接口协议与维度必须一致。"
+            },
+            {
+              "key": "multimodal_embedding",
+              "label": "多模态向量",
+              "description": "表情包图片与标签融合；留空仅使用 embedding 的标签文字向量，不继承其它任务。"
             }
           ],
           "fields": [

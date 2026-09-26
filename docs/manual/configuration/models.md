@@ -119,3 +119,17 @@ extra_body = { enable_thinking = false }
 走 Responses 且开思考的模型，模型级 `max_tokens` 必须给思考留余量：`max_output_tokens` 包含思考 token。
 `extra_body` 应按所选协议的字段写，Responses 思考档位例如 `reasoning = { effort = "medium" }`。
 Responses 固定关闭服务端存储，不允许覆盖 `model`、`input`、`stream`、`previous_response_id` 或启用 `store`。
+
+### 表情包多模态向量
+
+`model_tasks.multimodal_embedding` 在界面显示为「多模态向量」，仅接受 `dashscope_multimodal` 或 `ark_multimodal`。
+候选的模型 ID、协议和维度必须一致，可以使用同一模型的不同厂商连接作为备份。留空不继承其它任务。
+
+配置此槽后，表情包使用图片首帧与标签的融合向量，查询仍只发送情绪文字；首帧保持透明通道、最长边缩至 1024，再转 PNG。
+百炼融合模型应使用 2026-03-06 及以后的版本，旧版丢弃文字时会明确报错。维度应填写模型实际支持的值。
+
+不配置专用槽时，表情包只使用 `embedding` 任务的标签文字向量，即使该任务的协议本身支持图片也不发送图片。
+两槽都为空时保留现有标签匹配。事实与知识始终使用 `embedding`，仍由 `[vector].enabled` 控制；表情包专用槽不受这个开关限制。
+
+启动时按模型、协议、维度和配方比对向量空间：首次登记假定已有向量来自当前配置，不清空；空间变化时清空该消费方的向量并打印条数。
+表情包的缺失向量在后台补算，含封禁行；单张文件失败会告警并跳过，关停时未完成的行留待下次启动续算。

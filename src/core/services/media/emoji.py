@@ -25,6 +25,7 @@ from urllib.parse import unquote
 
 from PIL import Image, UnidentifiedImageError
 
+import asyncio
 import base64
 import hashlib
 import math
@@ -36,6 +37,7 @@ import warnings
 
 from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
+from src.core.llm_models.embeddings import EmbedInput
 from src.core.config.schema import EmojiConfig
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt
@@ -65,7 +67,16 @@ _PAGE_ORDER_CLAUSES: dict[str, str] = {
 
 
 class EmojiEmbeddingClient(Protocol):
-    """表情包库依赖的最小文本嵌入接口。"""
+    """表情包库依赖的向量接口；是否融合图片由专用任务槽决定。"""
+
+    @property
+    def accepts_images(self) -> bool:
+        """返回协议是否具备图片输入能力。"""
+        ...
+
+    async def embed_inputs(self, items: List[EmbedInput]) -> List[bytes | None]:
+        """返回与输入等长的向量；失败项为 None。"""
+        ...
 
     @property
     def dim(self) -> int:
@@ -307,12 +318,14 @@ class EmojiLibrary:
         choice: Callable[[Sequence[EmojiSelection]], EmojiSelection] | None = None,
         config: EmojiConfig | None = None,
         content_filter: EmojiContentFilter | None = None,
+        use_images: bool = False,
     ) -> None:
         """绑定数据库、表情包目录、可选文本嵌入客户端和库管理配置。
 
         :param db: 已完成迁移的 SQLite 连接。
         :param directory: 表情包文件专用目录；不得与其他运行文件共用。
-        :param embed_client: 文本嵌入客户端；缺失时使用标签包含匹配。
+        :param embed_client: 向量客户端；缺失时使用标签包含匹配。
+        :param use_images: 仅专用多模态槽装配时为 True，默认 False 保持标签输入。
         :param choice: 测试可注入确定性选择函数；缺省按使用次数的倒数加权抽样。
         :param config: 表情包库管理配置；缺省时使用全默认值（0 上限不淘汰、
             5 MB 单文件上限、不过滤、自动收集）。
@@ -323,7 +336,12 @@ class EmojiLibrary:
         self._db = db
         self._directory = directory.resolve()
         self._directory.mkdir(parents=True, exist_ok=True)
+        if use_images and (embed_client is None or not embed_client.accepts_images):
+            raise ValueError('表情包融合向量需要支持图片的专用客户端')
         self._embed_client = embed_client
+        # 协议支持图片不等于启用了专用槽；回用 embedding 时必须仍只发送标签。
+        self._use_images = use_images
+        self._backfill_task: asyncio.Task[None] | None = None
         self._choice = choice
         self._config = config or EmojiConfig()
         self._content_filter = content_filter
@@ -560,7 +578,10 @@ class EmojiLibrary:
                 )
                 raise EmojiContentRejectedError('内容审查未通过')
 
-        vector = await self._embed_tags(tags)
+        if self._use_images:
+            vector = await self._embed_image(image_bytes, tags)
+        else:
+            vector = await self._embed_tags(tags)
         # 所有 await 结束后重新查封禁和视觉身份；到提交之间不再让出执行权，
         # 防止两个入库协程各自看到空库，或审查期间发生的封禁被绕过。
         self._reject_banned(digest, visual_key)
@@ -1152,6 +1173,94 @@ class EmojiLibrary:
         )
         return len(rows)
 
+    async def startup(self) -> None:
+        """挂起表情包补算后立即返回，不等待文件读取或模型调用。"""
+        if self._embed_client is None:
+            return
+        # 生命周期逐个 await startup；把补算本身注册进去会阻塞 READY。
+        # 因此仅创建可取消任务，未完成的 NULL 行由下次启动续算。
+        self._backfill_task = asyncio.create_task(self._run_backfill(), name='emoji-vector-backfill')
+
+    async def shutdown(self) -> None:
+        """取消并收束后台补算，已提交向量保留，尚未完成行保持 NULL。"""
+        if self._backfill_task is None:
+            return
+        if not self._backfill_task.done():
+            self._backfill_task.cancel()
+        try:
+            await self._backfill_task
+        except asyncio.CancelledError:
+            pass
+        self._backfill_task = None
+
+    async def _run_backfill(self) -> None:
+        """记录补算异常，避免后台任务失败无人取回。"""
+        try:
+            await self.backfill_embeddings()
+        except Exception:
+            logger.exception('表情包向量补算失败')
+
+    async def backfill_embeddings(self) -> int:
+        """补算启动快照中的 NULL 行（含封禁行），返回成功写入条数。
+
+        单张文件读取或预处理失败只跳过该张；模型失败项保持 NULL。
+        批次间让出事件循环，每行本次最多尝试一次，避免失败时无限重试。
+        """
+        if self._embed_client is None:
+            return 0
+        pending = self._db.execute(
+            'SELECT hash, send_ref, emotion_tags FROM emoji WHERE emotion_vec IS NULL ORDER BY hash'
+        ).fetchall()
+        logger.info('表情包向量补算开始', count=len(pending))
+        completed = failed = 0
+        for start in range(0, len(pending), 20):
+            hashes = []
+            inputs = []
+            for digest, send_ref, tags in pending[start:start + 20]:
+                try:
+                    if self._use_images:
+                        path = _file_ref_path(send_ref).resolve(strict=True)
+                        if not path.is_relative_to(self._directory):
+                            raise ValueError('文件引用越出表情包目录')
+                        item = EmbedInput(tags, preprocess_embedding_image(path.read_bytes()), 'image/png')
+                    else:
+                        item = EmbedInput(text=tags)
+                except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                    failed += 1
+                    logger.warning('表情包向量补算跳过图片', hash=digest, error=str(exc))
+                    continue
+                hashes.append(digest)
+                inputs.append(item)
+            if inputs:
+                vectors = await self._embed_client.embed_inputs(inputs)
+                with self._db:
+                    for digest, vector in zip(hashes, vectors, strict=True):
+                        if vector is None:
+                            failed += 1
+                            continue
+                        # 请求期间在线入库可能已经刷新该行；只填仍为 NULL 的记录。
+                        completed += self._db.execute(
+                            'UPDATE emoji SET emotion_vec=? WHERE hash=? AND emotion_vec IS NULL',
+                            (vector, digest),
+                        ).rowcount
+            logger.info('表情包向量补算进度', completed=completed, failed=failed, total=len(pending))
+            await asyncio.sleep(0)
+        logger.info('表情包向量补算完成', completed=completed, failed=failed, total=len(pending))
+        return completed
+
+    async def _embed_image(self, image: bytes, tags: str) -> bytes | None:
+        """专用槽用同一条图片与标签融合输入，失败沿用已有向量缺失语义。"""
+        if self._embed_client is None:
+            return None
+        try:
+            result = await self._embed_client.embed_inputs([
+                EmbedInput(tags, preprocess_embedding_image(image), 'image/png'),
+            ])
+            return result[0]
+        except Exception as exc:
+            logger.warning('emoji_embedding_failed', error=str(exc))
+            return None
+
     async def _embed_tags(self, tags: str) -> bytes | None:
         """调用可选嵌入客户端，并把失败收敛为文本匹配信号。"""
 
@@ -1162,6 +1271,22 @@ class EmojiLibrary:
         except Exception as exc:
             logger.warning('emoji_embedding_failed', error=str(exc))
             return None
+
+
+def preprocess_embedding_image(image_bytes: bytes) -> bytes:
+    """按 image+tags/v1 配方取首帧、最长边缩至 1024，并保留透明通道转 PNG。
+
+    :param image_bytes: 原始图片字节；无法解码时向调用方抛出 Pillow 异常。
+    :return: PNG 字节，不修改原文件或视觉身份计算函数。
+    """
+    with Image.open(BytesIO(image_bytes)) as image:
+        image.seek(0)
+        mode = 'RGBA' if image.mode in ('RGBA', 'LA') or 'transparency' in image.info else 'RGB'
+        frame = image.convert(mode)
+        frame.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        frame.save(output, format='PNG')
+        return output.getvalue()
 
 
 def _file_ref_path(send_ref: str) -> Path:

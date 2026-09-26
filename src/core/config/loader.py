@@ -64,6 +64,7 @@ def _model_task_config(
         'memory': catalog.model_tasks.memory,
         'tts': catalog.model_tasks.tts,
         'embedding': catalog.model_tasks.embedding,
+        'multimodal_embedding': catalog.model_tasks.multimodal_embedding,
     }
     try:
         return tasks[task]
@@ -311,6 +312,7 @@ def _load_split_config(directory: Path) -> Config:
         video=_build_routing('video', models_document, models, providers, None),
         tts=_build_routing('tts', models_document, models, providers, None),
         embedding=_build_routing('embedding', models_document, models, providers, None),
+        multimodal_embedding=_build_routing('multimodal_embedding', models_document, models, providers, None),
     )
 
     features_tts = features_document.tts
@@ -339,6 +341,7 @@ def _load_split_config(directory: Path) -> Config:
     if features_tts.enabled and not features_tts.voice.strip():
         raise ValueError('features.toml 里启用了 tts，但没有填 voice（音色 ID）')
     _validate_vector_space(routing.embedding)
+    _validate_vector_space(routing.multimodal_embedding)
 
     return Config(
         bot=bot_document.bot,

@@ -50,7 +50,7 @@ const SUPPORTED_VERSIONS = [
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'video', 'expression',
-  'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding',
+  'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding', 'multimodal_embedding',
 ] as const
 
 /**
@@ -260,6 +260,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     memory: { model_list: ['qwen-max'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     tts: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     embedding: { model_list: ['qwen-embedding'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    multimodal_embedding: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
   },
   tts: {
     enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
@@ -2225,6 +2226,7 @@ const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
   memory: '记忆抽取；后台任务不在回复关键路径，做结构化抽取，配便宜快的模型。留空时继承用户聊天候选',
   tts: '语音合成',
   embedding: '向量记忆召回',
+  multimodal_embedding: '多模态向量；专用于表情包图片与标签融合，留空只用标签',
 }
 
 /**
@@ -2765,7 +2767,8 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
       if (!model) throw new Error(`${TASK_DESCRIPTIONS[task]}引用了不存在的模型：${name}`)
       const allowed = task === 'tts' ? ['openai']
         : task === 'embedding' ? ['openai', 'dashscope_multimodal', 'ark_multimodal']
-          : ['openai', 'responses']
+          : task === 'multimodal_embedding' ? ['dashscope_multimodal', 'ark_multimodal']
+            : ['openai', 'responses']
       if (!allowed.includes(model.api_format)) {
         throw new Error(`model_tasks.${task} 的候选 ${name} 不支持 api_format=${model.api_format}`)
       }
@@ -2797,12 +2800,14 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   if (cfg.tts.enabled && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
 
   // 同维不同模型也不可比较；允许同一模型跨厂商备份，禁止跨空间混用。
-  const spaces = new Set(cfg.model_tasks.embedding.model_list.map((name) => {
-    const model = cfg.models.find((entry) => entry.name === name)!
-    return JSON.stringify([model.model_identifier, model.api_format, model.embedding_dim])
-  }))
-  if (spaces.size > 1) {
-    throw new Error(`model_tasks.embedding 的候选模型 ${cfg.model_tasks.embedding.model_list.join('、')} 必须使用同一模型、同一协议、同一个向量维度`)
+  for (const task of ['embedding', 'multimodal_embedding'] as const) {
+    const spaces = new Set(cfg.model_tasks[task].model_list.map((name) => {
+      const model = cfg.models.find((entry) => entry.name === name)!
+      return JSON.stringify([model.model_identifier, model.api_format, model.embedding_dim])
+    }))
+    if (spaces.size > 1) {
+      throw new Error(`model_tasks.${task} 的候选模型 ${cfg.model_tasks[task].model_list.join('、')} 必须使用同一模型、同一协议、同一个向量维度`)
+    }
   }
 }
 

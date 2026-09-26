@@ -207,6 +207,7 @@ _TASK_LABELS: Dict[str, str] = {
     'memory': '记忆抽取',
     'tts': '语音合成',
     'embedding': '向量生成',
+    'multimodal_embedding': '多模态向量',
 }
 
 # 各级的边框色，按「决策冷色、产出暖色」区分层级。
@@ -224,6 +225,7 @@ _TASK_TINTS: Dict[str, str] = {
     'memory': 'bright_magenta',
     'tts': 'bright_green',
     'embedding': 'bright_blue',
+    'multimodal_embedding': 'bright_cyan',
 }
 
 
