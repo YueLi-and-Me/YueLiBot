@@ -612,6 +612,91 @@ class OpenAiChatProvider:
             async for chunk in http_stream:
                 yield chunk
 
+    def request_headers(self) -> Dict[str, str]:
+        """返回鉴权与自定义请求头，供对话和向量传输共用。"""
+        # 认证类型只影响 URL/header 组装，其他请求字段保持同一协议结构。
+        auth_headers: dict[str, str] = {}
+        if self._auth_type == 'bearer':
+            auth_headers['Authorization'] = f'Bearer {self.api_key}'
+        elif self._auth_type == 'header':
+            auth_headers[self._auth_name] = self.api_key
+        return {
+            'Content-Type': 'application/json',
+            **auth_headers,
+            **self._headers,
+        }
+
+    def request_url(self, path: str) -> str:
+        """拼接端点与查询鉴权；path 为以斜线开头的协议路径。"""
+        url = f'{self.base_url}{path}'
+        query_params = dict(self._query)
+        if self._auth_type == 'query':
+            query_params[self._auth_name] = self.api_key
+        if query_params:
+            url = f'{url}?{urlencode(query_params)}'
+        return url
+
+    def record_request(self, url: str, headers: Dict, body: Dict) -> None:
+        """记录实际请求参数，按当前鉴权方式遮盖凭据。"""
+        record_provider_request(
+            url,
+            headers,
+            body,
+            candidate=current_candidate(),
+            secret_header_name=self._auth_name if self._auth_type == 'header' else '',
+            secret_query_name=self._auth_name if self._auth_type == 'query' else '',
+        )
+
+    async def check_response(self, resp: httpx.Response) -> None:
+        """分类非 200 响应并抛出 LlmError；成功响应不读取正文。"""
+        if resp.status_code == 200:
+            return
+        # 错误响应只读取有限正文用于分类和诊断，不把完整响应缓存到内存。
+        text = await resp.aread()
+        body_text = text.decode('utf-8', errors='replace')
+        code = ''
+        msg = ''
+        try:
+            payload = json.loads(body_text)
+            code, msg = _extract_status_error(payload)
+        except Exception:
+            pass
+        code_kind = _classify_code(code) if code else 'unknown'
+        kind = (
+            _classify_status(resp.status_code)
+            if code_kind == 'unknown'
+            else code_kind
+        )
+        # 错误正文进入 message 供路由日志直接展示；原始响应仍保留在
+        # LlmError.detail 中，避免日志脱敏后丢失诊断信息。
+        if code and msg:
+            suffix = f'：{code} {msg}'
+        elif msg:
+            suffix = f'：{msg}'
+        elif code:
+            suffix = f'：code={code}'
+        else:
+            suffix = ''
+        raise LlmError(kind, f'模型接口返回 HTTP {resp.status_code}{suffix}', body_text[:400])
+
+    def _chat_body(
+        self, messages: List[Dict], temperature: float, max_tokens: int | None,
+        response_format: Dict[str, str] | None, tools: List[Dict] | None,
+    ) -> Dict[str, Any]:
+        """保留 Chat 请求字段的原始插入与覆盖顺序，不改变序列化结果。"""
+        body: dict[str, Any] = {
+            'model': self.model, 'messages': messages, 'stream': True,
+            'temperature': temperature,
+            **self._extra_body,
+        }
+        if max_tokens is not None:
+            body['max_tokens'] = max_tokens
+        if response_format is not None:
+            body['response_format'] = response_format
+        if tools:
+            body['tools'] = tools
+        return body
+
     async def _stream_http(
         self,
         messages: list[dict],
@@ -633,44 +718,11 @@ class OpenAiChatProvider:
         副作用：记录脱敏请求快照并建立一次 HTTP 流式连接。
         :performance: 流式消费响应，不缓存完整模型输出。
         """
-        # 认证类型只影响 URL/header 组装，其他请求字段保持同一协议结构。
-        auth_headers: dict[str, str] = {}
-        if self._auth_type == 'bearer':
-            auth_headers['Authorization'] = f'Bearer {self.api_key}'
-        elif self._auth_type == 'header':
-            auth_headers[self._auth_name] = self.api_key
-        headers = {
-            'Content-Type': 'application/json',
-            **auth_headers,
-            **self._headers,
-        }
-        body: dict[str, Any] = {
-            'model': self.model, 'messages': messages, 'stream': True,
-            'temperature': temperature,
-            **self._extra_body,
-        }
-        if max_tokens is not None:
-            body['max_tokens'] = max_tokens
-        if response_format is not None:
-            body['response_format'] = response_format
-        if tools:
-            body['tools'] = tools
-
+        headers = self.request_headers()
+        body = self._chat_body(messages, temperature, max_tokens, response_format, tools)
         # 记录脱敏请求后再建立连接，保证失败快照包含实际发送的任务参数。
-        url = f'{self.base_url}/chat/completions'
-        query_params = dict(self._query)
-        if self._auth_type == 'query':
-            query_params[self._auth_name] = self.api_key
-        if query_params:
-            url = f'{url}?{urlencode(query_params)}'
-        record_provider_request(
-            url,
-            headers,
-            body,
-            candidate=current_candidate(),
-            secret_header_name=self._auth_name if self._auth_type == 'header' else '',
-            secret_query_name=self._auth_name if self._auth_type == 'query' else '',
-        )
+        url = self.request_url('/chat/completions')
+        self.record_request(url, headers, body)
         tag_parser = (
             _ReasoningTagParser()
             if self._reasoning_parse_mode == 'tag'
@@ -683,33 +735,7 @@ class OpenAiChatProvider:
             try:
                 async with client.stream('POST', url, headers=headers, json=body) as resp:
                     if resp.status_code != 200:
-                        # 错误响应只读取有限正文用于分类和诊断，不把完整响应缓存到内存。
-                        text = await resp.aread()
-                        body_text = text.decode('utf-8', errors='replace')
-                        code = ''
-                        msg = ''
-                        try:
-                            payload = json.loads(body_text)
-                            code, msg = _extract_status_error(payload)
-                        except Exception:
-                            pass
-                        code_kind = _classify_code(code) if code else 'unknown'
-                        kind = (
-                            _classify_status(resp.status_code)
-                            if code_kind == 'unknown'
-                            else code_kind
-                        )
-                        # 错误正文进入 message 供路由日志直接展示；原始响应仍保留在
-                        # LlmError.detail 中，避免日志脱敏后丢失诊断信息。
-                        if code and msg:
-                            suffix = f'：{code} {msg}'
-                        elif msg:
-                            suffix = f'：{msg}'
-                        elif code:
-                            suffix = f'：code={code}'
-                        else:
-                            suffix = ''
-                        raise LlmError(kind, f'模型接口返回 HTTP {resp.status_code}{suffix}', body_text[:400])
+                        await self.check_response(resp)
 
                     async for line in resp.aiter_lines():
                         if signal and signal.is_set():
