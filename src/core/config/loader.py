@@ -254,6 +254,18 @@ def _build_routing(
     )
 
 
+def _validate_vector_space(routing: TaskRouting) -> None:
+    """同维不同模型也不可比较；备份候选必须共享模型、协议和维度。"""
+    spaces = {(candidate.identifier, candidate.api_format, candidate.embedding_dim)
+              for candidate in routing.candidates}
+    if len(spaces) > 1:
+        names = [candidate.name for candidate in routing.candidates]
+        raise ValueError(
+            f'model_tasks.{routing.task} 的候选模型 {names} 向量空间不一致：'
+            'model_identifier、api_format、embedding_dim（维度）必须全部一致'
+        )
+
+
 def _load_split_config(directory: Path) -> Config:
     """读取四份 TOML 并组合为完整运行时配置。
 
@@ -326,14 +338,7 @@ def _load_split_config(directory: Path) -> Config:
             )
     if features_tts.enabled and not features_tts.voice.strip():
         raise ValueError('features.toml 里启用了 tts，但没有填 voice（音色 ID）')
-    # 全部候选向量模型必须维度相同，否则不同模型生成的向量无法进行有效比较，
-    # 召回排序将失去可比性；在加载期拒绝该配置可以避免运行时产生隐蔽错误。
-    dims = {candidate.embedding_dim for candidate in routing.embedding.candidates}
-    if len(dims) > 1:
-        raise ValueError(
-            f'model_tasks.embedding 的候选模型 embedding_dim 不一致：{sorted(dims)}；'
-            '同一任务下的候选向量模型必须输出同样的维度'
-        )
+    _validate_vector_space(routing.embedding)
 
     return Config(
         bot=bot_document.bot,

@@ -27,6 +27,16 @@ PRAGMA foreign_keys = ON;
 
 {EVENTS_DDL}
 
+-- 各消费方的向量空间登记（v33 加）；配方变更与换模型都需要清空对应旧向量。
+CREATE TABLE IF NOT EXISTS vector_space (
+  consumer TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  api_format TEXT NOT NULL,
+  dim INTEGER NOT NULL,
+  recipe TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

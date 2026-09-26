@@ -430,7 +430,7 @@ def _dump_models(
             )
         lines.append(f'price_in = {_toml_value(float(model.get("price_in") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
         lines.append(f'price_out = {_toml_value(float(model.get("price_out") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
-        lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))} # 仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。')
+        lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))} # 仅嵌入模型需要填写；同一任务下候选的模型 ID、接口协议与维度必须一致。')
         lines.append('')
     return '\n'.join(lines)
 

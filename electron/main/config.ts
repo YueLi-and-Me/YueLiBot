@@ -2796,11 +2796,14 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
   }
   if (cfg.tts.enabled && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
 
-  // 候选向量模型必须共享维度，否则换一个候选返回的向量无法与既有索引计算相似度。
-  const dims = new Set(cfg.model_tasks.embedding.model_list.map(
-    (name) => cfg.models.find((model) => model.name === name)!.embedding_dim,
-  ))
-  if (dims.size > 1) throw new Error('向量记忆的候选模型必须是同一个向量维度')
+  // 同维不同模型也不可比较；允许同一模型跨厂商备份，禁止跨空间混用。
+  const spaces = new Set(cfg.model_tasks.embedding.model_list.map((name) => {
+    const model = cfg.models.find((entry) => entry.name === name)!
+    return JSON.stringify([model.model_identifier, model.api_format, model.embedding_dim])
+  }))
+  if (spaces.size > 1) {
+    throw new Error(`model_tasks.embedding 的候选模型 ${cfg.model_tasks.embedding.model_list.join('、')} 必须使用同一模型、同一协议、同一个向量维度`)
+  }
 }
 
 /**

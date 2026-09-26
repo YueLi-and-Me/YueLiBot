@@ -786,6 +786,15 @@ def main() -> None:
             embedding_client_disabled_reason = '向量客户端构造失败'
             logger.warning('embedding_client_init_failed', error=str(exc))
 
+    # 首次接管只登记；空间变化先清空再交给后台补算，避免混用旧向量。
+    if embed_client is not None:
+        from src.core.memory.vector_space import VectorSpace, reconcile_space
+        candidate = routers.embedding.candidates[0]
+        if cfg.vector.enabled:
+            for consumer in ('facts', 'knowledge'):
+                reconcile_space(db, consumer, VectorSpace.from_candidate(candidate, 'text'))
+        reconcile_space(db, 'emoji', VectorSpace.from_candidate(candidate, 'tags'))
+
     chat_provider = routers.chat if routers.chat.ready else None
     proactive_provider = routers.proactive if routers.proactive.ready else None
     summary_provider = routers.summary if routers.summary.ready else None
