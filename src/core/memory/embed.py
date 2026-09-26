@@ -1,21 +1,22 @@
 """调用兼容接口生成记忆向量，并为批量回填提供受控并发入口。
 
-只有 ``[vector].enabled`` 为 ``true`` 时，服务层才会调用本模块；请求使用对话
-模型的认证信息和基础地址。向量生成异步执行，单批最多处理 20 条文本（服务端硬限制，见 ``_BATCH``）；调用失败
-由上层记录并保留 BM25 召回路径，避免向量服务故障中断对话。
+事实与知识在 ``[vector].enabled`` 时使用本客户端，表情包按任务槽独立装配。
+协议请求由模型层执行；本模块仅负责编排批次、编码向量和记录失败。
+批次失败保留 None，供调用方继续使用既有关键词或标签匹配路径。
 """
 
 from __future__ import annotations
+
+from typing import List
 
 import struct
 
 from src.core.logging.logger import get_logger
 from src.core.config.schema import ModelCandidate
-from src.core.llm_models.embeddings import _BATCH, request_embeddings
+from src.core.llm_models.embeddings import EmbedInput, _BATCH, request_embeddings
 from src.core.llm_models.router import ModelRouter
 
 logger = get_logger(__name__)
-
 
 
 class EmbeddingClient:
@@ -44,26 +45,35 @@ class EmbeddingClient:
         """
         return self._dim
 
-    async def embed(self, texts: list[str]) -> list[bytes | None]:
-        """按固定批大小生成文本向量，并保留失败项的位置。
+    @property
+    def accepts_images(self) -> bool:
+        """当前向量空间的协议是否接受已预处理图片。"""
+        return self._router.candidates[0].api_format in ('dashscope_multimodal', 'ark_multimodal')
 
-        :param texts: 待向量化的文本列表；输入为空时返回空列表。
+    async def embed(self, texts: List[str]) -> List[bytes | None]:
+        """文本调用方保持原接口，按纯文本条目进入同一向量协议。"""
+        return await self.embed_inputs([EmbedInput(text=text) for text in texts])
 
-        :return: 与 ``texts`` 等长的列表；成功项为小端 float32 packed 字节串，批量失败项
+    async def embed_inputs(self, items: List[EmbedInput]) -> List[bytes | None]:
+        """按固定批大小生成输入向量，并保留失败项的位置。
+
+        :param items: 文本、图片或融合输入列表；输入为空时返回空列表。
+
+        :return: 与 ``items`` 等长的列表；成功项为小端 float32 packed 字节串，批量失败项
             为 ``None``。字节布局适用于内积相似度计算。
 
         副作用：
-            通过模型路由器发起每批最多 ``_BATCH`` 条文本的网络请求；批次异常仅记录日志，
+            通过模型路由器发起每批最多 ``_BATCH`` 条输入的网络请求；批次异常仅记录日志，
             不阻断其他批次。
 
         性能：
             请求按 ``_BATCH`` 分批，内存占用与输入文本数量及向量维度线性相关。
         """
-        results: list[bytes | None] = [None] * len(texts)
-        for start in range(0, len(texts), _BATCH):
-            batch = texts[start:start + _BATCH]
+        results: list[bytes | None] = [None] * len(items)
+        for start in range(0, len(items), _BATCH):
+            batch = items[start:start + _BATCH]
             try:
-                vecs = await self._call(batch)
+                vecs = await self._call_inputs(batch)
                 for i, vec in enumerate(vecs):
                     results[start + i] = _pack(vec)
             except Exception as exc:
@@ -88,8 +98,12 @@ class EmbeddingClient:
         :raises Exception: provider 网络、HTTP、鉴权或响应结构错误向路由器传播。
         副作用：通过路由器发起一次非流式模型调用。
         """
-        async def request(candidate: ModelCandidate) -> list[list[float]]:
-            return await request_embeddings(candidate, texts)
+        return await self._call_inputs([EmbedInput(text=text) for text in texts])
+
+    async def _call_inputs(self, items: List[EmbedInput]) -> List[List[float]]:
+        """让路由在同一向量空间的候选之间切换；失败完整传播供批次日志记录。"""
+        async def request(candidate: ModelCandidate) -> List[List[float]]:
+            return await request_embeddings(candidate, items)
 
         return await self._router.run(request)
 
