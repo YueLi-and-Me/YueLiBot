@@ -50,6 +50,7 @@ INJECT_LIMIT = 3
 # 参与画像生成的证据上限：确凿档与交给模型的材料共用同一个事实集合，
 # 超过上限的事实等下一轮强度排序进入，不进档也不进材料。
 EVIDENCE_FACT_LIMIT = 20
+# 情节证据条数上限：取该人最近几条有摘要的情节。
 EVIDENCE_EPISODE_LIMIT = 5
 
 
@@ -399,6 +400,12 @@ def _stored_fingerprint(db: sqlite3.Connection, person_id: int) -> str:
     """读取该人上一轮刷新存下的证据指纹；没有行或没刷过（迁移存量）返回空串。
 
     空串永远不等于真实指纹（SHA-256 十六进制），存量行因此必然先完整刷新一次。
+
+    :param db: 进程级 SQLite 连接。
+    :param person_id: 目标人物 ID。
+    :return: 库内指纹；无行或未刷过时为空串。
+    :raises sqlite3.Error: 查询失败时抛出。
+    副作用：无。
     """
 
     row = db.execute(
@@ -409,7 +416,14 @@ def _stored_fingerprint(db: sqlite3.Connection, person_id: int) -> str:
 
 
 def _touch_profile(db: sqlite3.Connection, person_id: int, now: int) -> None:
-    """指纹命中时的轻量落库：只推进时间戳、清脏位，两档正文与指纹不动。"""
+    """指纹命中时的轻量落库：只推进时间戳、清脏位，两档正文与指纹不动。
+
+    :param db: 进程级 SQLite 连接。
+    :param person_id: 目标人物 ID。
+    :param now: 当前毫秒时间戳，写进 ``refreshed_at``。
+    :raises sqlite3.Error: 写入失败时抛出。
+    副作用：更新 ``person_profile`` 的时间戳与脏位并提交。
+    """
 
     db.execute(
         'UPDATE person_profile SET refreshed_at = ?, dirty = 0 WHERE person_id = ?',

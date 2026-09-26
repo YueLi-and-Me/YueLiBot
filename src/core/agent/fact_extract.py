@@ -243,6 +243,10 @@ def _parse_supersedes(raw: Any) -> int:
 
     契约是 ``#ID``；模型也可能直接给数字。布尔、浮点与非数字文本一律视为
     未声明取代——可选字段的脏值丢弃即可，不牵连本条事实。
+
+    :param raw: 模型输出的 ``supersedes`` 字段原始值。
+    :return: 正的事实 ID；未声明或无法解析时为 ``0``。
+    副作用：无。
     """
 
     if isinstance(raw, bool):

@@ -927,6 +927,10 @@ def _replyer_length_rule(length: str | None) -> str:
 
     篇幅由决策层判定，此处仅向回复生成模型转达结论：两级各判一次会使
     短回复口径失效。
+
+    :param length: 决策层选定的篇幅；``None`` 与 ``brief`` 同走短回复口径。
+    :return: 写入模板 ``length_rule`` 占位符的篇幅要求文本。
+    副作用：无。
     """
     if length == 'long':
         return (

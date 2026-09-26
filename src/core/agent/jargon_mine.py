@@ -261,6 +261,14 @@ def _validate_pick(
     过滤规则逐条给理由：空词条、撞已知人名、含 bot 名字族、纯标点数字、
     永不匹配的单 ASCII 字符、行号越界、上下文为空。含 bot 名只查 ≥2 字的
     名字：单字别名做子串包含会产生大量误报。
+
+    :param term: 模型给出的候选词条原文。
+    :param line: 候选声称的语料行号。
+    :param by_line: 行号到消息的映射，来自 :func:`render_corpus`。
+    :param known_names: 归一化后的已知人名集合，来自 :func:`_load_known_names`。
+    :param bot_names: bot 主名、别名与对用户的称呼。
+    :return: 丢弃理由；``None`` 表示通过校验。
+    副作用：无。
     """
 
     key = _normalize_key(term)
@@ -357,7 +365,13 @@ def _merge_evidence(raw: Optional[str], message_id: int) -> str:
 
 
 def _read_evidence_ids(raw: Optional[str]) -> List[int]:
-    """读出 evidence_ids 列的 id 数组；损坏值抛 :exc:`ValueError`，不静默忽略。"""
+    """读出 evidence_ids 列的 id 数组；损坏值抛 :exc:`ValueError`，不静默忽略。
+
+    :param raw: 库里原样的 evidence_ids 文本；``None`` 或空串按空表处理。
+    :return: id 数组；``raw`` 为空时为空列表。
+    :raises ValueError: ``raw`` 不是 JSON 数组或含非整数元素。
+    副作用：无。
+    """
 
     if raw is None or raw == '':
         return []
@@ -544,7 +558,18 @@ async def _call_model(
     max_tokens: Optional[int],
     response_validator: ResponseValidator | None = None,
 ) -> str:
-    """渲染一份学习提示词并执行一次子代理调用，返回模型正文。"""
+    """渲染一份学习提示词并执行一次子代理调用，返回模型正文。
+
+    :param provider: 承担子代理调用的模型提供方。
+    :param template_id: 提示词模板 ID，见 :func:`get_prompt`。
+    :param values: 模板渲染参数。
+    :param temperature: 采样温度。
+    :param max_tokens: 响应 token 上限；``None`` 表示用提供方默认值。
+    :param response_validator: 可选的完整响应校验器，不合格时路由层
+        在交付正文前切换候选。
+    :return: 模型响应正文。
+    副作用：一次模型调用；子代理层自行记录追踪事件。
+    """
 
     prompt = get_prompt(template_id).render(**values)
     result = await run_sub_agent(SubAgentCall(
@@ -596,6 +621,8 @@ def _parse_meaning(raw: str, *, allow_insufficient: bool) -> Optional[str]:
 def _parse_verdict(raw: str) -> bool:
     """严格解析比较步的结论，返回两段含义是否相同。
 
+    :param raw: 模型返回的完整 JSON 文本。
+    :return: ``same`` 字段值；``True`` 表示两段含义相同。
     :raises ValueError: 响应超长、结构不符或字段不是布尔值。
     副作用：无。
     """

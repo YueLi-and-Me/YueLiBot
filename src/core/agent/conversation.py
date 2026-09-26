@@ -111,7 +111,10 @@ class _LocalToolExecutionError(RuntimeError):
     """标记外部执行器的本机故障，使其越过模型错误归因分支。"""
 
     def __init__(self, error: Exception) -> None:
-        """保存原始异常，调用层会按既有本机故障语义原样抛出。"""
+        """保存原始异常，调用层会按既有本机故障语义原样抛出。
+
+        :param error: 外部执行器抛出的原始异常，供调用层归因与日志使用。
+        """
         self.error = error
         super().__init__(str(error))
 
@@ -136,7 +139,11 @@ class _RepairableCallFault(Exception):
     """
 
     def __init__(self, correction: list[dict[str, str]]) -> None:
-        """保存纠错消息，由回合驱动层追加进下一次尝试的消息序列。"""
+        """保存纠错消息，由回合驱动层追加进下一次尝试的消息序列。
+
+        :param correction: 以 user 角色回灌的纠错消息列表，描述协议错误的
+            原因与改法。
+        """
         self.correction = correction
         super().__init__('工具调用协议错误，等待纠错重试')
 
@@ -184,7 +191,15 @@ async def _execute_external_tool(
     invocation: ToolInvocation,
     context: ToolContext,
 ) -> ToolExecutionResult:
-    """执行工具并标记本机异常，使调用层只把真实 wait_for 超时归为超时。"""
+    """执行工具并标记本机异常，使调用层只把真实 wait_for 超时归为超时。
+
+    :param executor: 外部只读工具执行器。
+    :param invocation: 待执行的工具调用。
+    :param context: 工具执行上下文。
+    :return: 执行器的原始结果。
+    :raises _LocalToolExecutionError: 执行器抛出任何异常时改抛本类，
+        原始异常保留在 ``__cause__`` 上。
+    """
     try:
         return await executor.execute(invocation, context)
     except Exception as exc:
@@ -720,7 +735,10 @@ class ConversationAgent:
         prose_only = False
 
         async def release(events: list[ParseEvent]) -> None:
-            """放出已通过动作头校验的事件；无回调时仅聚合到结果。"""
+            """放出已通过动作头校验的事件；无回调时仅聚合到结果。
+
+            :param events: 已通过校验、可对外放出的解析事件。
+            """
             if on_events is not None:
                 await on_events(list(events))
             else:
@@ -818,6 +836,14 @@ class ConversationAgent:
                 }
 
                 def _validate_tool_calls(calls: list[dict]) -> None:
+                    """网关侧工具调用校验回调，拦截结构性故障的增量。
+
+                    以本轮实际下发的必填字段映射为闭包，交由流式通道在每次
+                    增量到达时调用；检出结构性故障即抛 ``ValueError``。
+
+                    :param calls: 网关增量中的已拼装工具调用。
+                    :raises ValueError: 必填字段整段缺失等结构性故障。
+                    """
                     _structural_tool_call_fault(calls, required_by_tool)
 
                 stream_options['tool_call_validator'] = _validate_tool_calls
@@ -1291,6 +1317,13 @@ class ConversationAgent:
         staged_emoji_emotions: List[str] = []
 
         def stage(events: list[ParseEvent]) -> None:
+            """暂存解析事件，过滤动作头并把正文与表情包分流累积。
+
+            暂存是整轮协议校验的前置：只有校验通过后的 ``release`` 才把
+            暂存事件对外放出，动作头在回复生成流中没有意义，直接丢弃。
+
+            :param events: 解析器本轮产出的解析事件。
+            """
             for event in events:
                 if isinstance(event, DecisionEvent):
                     continue

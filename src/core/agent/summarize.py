@@ -218,7 +218,7 @@ async def summarize(
     # - 原因：这里原本用 ``except Exception: return None`` 把任何失败都折叠成
     #   「没有摘要」，与「模型输出不是合法 JSON」共用同一个返回值。
     # - 后果：真实错因（blocked / auth / timeout）在抵达调用方之前就被销毁，
-    #   调用方既没法按错因分流，也没法把原因写进日志。
+    #   调用方既无法按错因分流，也无法把原因写进日志。
     # 摘要请求只传清洗后的对话正文，不把原始协议标签交给模型。
     trace.emit(
         'llm_request',

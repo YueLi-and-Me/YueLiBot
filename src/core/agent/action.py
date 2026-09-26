@@ -73,7 +73,11 @@ class ActionPolicy(Protocol):
         ...
 
     async def decide(self, context: ActionContext) -> TurnAction:
-        """返回本轮应执行的动作。"""
+        """返回本轮应执行的动作。
+
+        :param context: 已组织的回合上下文。
+        :return: 本轮的动作结论与可观测理由。
+        """
         ...
 
 
@@ -81,7 +85,11 @@ class ReplyPolicy(Protocol):
     """仅判断本轮是否回复的内层窄协议。"""
 
     async def decide(self, context: ActionContext) -> ReplyDecision:
-        """返回是否回复及其理由。"""
+        """返回是否回复及其理由。
+
+        :param context: 已组织的回合上下文。
+        :return: 回复判据结论与可观测理由。
+        """
         ...
 
 
@@ -89,7 +97,11 @@ class AlwaysReplyPolicy:
     """保持现有行为的默认回复判据。"""
 
     async def decide(self, context: ActionContext) -> ReplyDecision:
-        """始终选择回复，不读取或修改上下文。"""
+        """始终选择回复，不读取或修改上下文。
+
+        :param context: 已组织的回合上下文，仅用于满足协议签名。
+        :return: 恒为回复的判据结论，理由固定为默认策略文案。
+        """
         return ReplyDecision(should_reply=True, reason='默认策略始终回复')
 
 
@@ -116,6 +128,16 @@ class PresenceActionPolicy:
     ) -> None:
         """保存概率曲线及平台中立的窗口统计依赖。
 
+        :param base_probability: 基础回复概率，取值 0 到 1。
+        :param decay_strength: 存在感衰减强度，非负；越大则主体发言占比
+            对回复概率的压低越明显。
+        :param window_minutes: 统计窗口长度，单位分钟，至少为 1。
+        :param assistant_reply_count_since: 查询窗口内主体回复数的依赖函数，
+            入参为 ``(stream_id, 起始毫秒时间戳)``。
+        :param message_count_since: 查询窗口内消息总数的依赖函数，入参同上。
+        :param probability_draw: 均匀随机数来源，默认 ``random.random``；
+            测试可注入固定值。
+        :param clock: 当前毫秒时间戳来源，默认取运行时时钟；测试可注入。
         :raises ValueError: 概率、衰减强度或窗口长度超出约定范围。
         """
         if not 0.0 <= base_probability <= 1.0:
@@ -133,7 +155,15 @@ class PresenceActionPolicy:
         self._clock = clock
 
     async def decide(self, context: ActionContext) -> ReplyDecision:
-        """按 ``1 / (1 + k * presence)`` 计算实际回复概率。"""
+        """按 ``1 / (1 + k * presence)`` 计算实际回复概率。
+
+        存在感取窗口内主体回复数与消息总数之比；窗口内没有消息时视为 0，
+        即不压低概率。抽样值落在实际概率之下才回复。
+
+        :param context: 已组织的回合上下文，仅读取 ``stream_id``。
+        :return: 是否回复及含占比、概率、抽样值的可观测理由。
+        :raises ValueError: 随机数来源返回值不在 [0, 1) 区间内。
+        """
         since = self._clock() - self._window_ms
         assistant_count = self._assistant_reply_count_since(context.stream_id, since)
         message_count = self._message_count_since(context.stream_id, since)
@@ -163,6 +193,9 @@ class TurnPlanner:
     def __init__(self, reply_policy: ReplyPolicy, *, long_input_chars: int = 80) -> None:
         """保存动作判据与长输入阈值。
 
+        :param reply_policy: 内层回复判据，决定本轮是否回复。
+        :param long_input_chars: 长输入判定阈值，单位字符，至少为 1；
+            本批原文去除首尾空白后达到该值选 long，否则选 brief。
         :raises ValueError: 长输入阈值小于 1 时抛出。
         """
         if long_input_chars < 1:
@@ -176,7 +209,14 @@ class TurnPlanner:
         return f'{type(self).__name__}({type(self._reply_policy).__name__})'
 
     async def decide(self, context: ActionContext) -> TurnAction:
-        """沿用既有动作结论，并以显式传入的本批原文长度选择篇幅。"""
+        """沿用既有动作结论，并以显式传入的本批原文长度选择篇幅。
+
+        不回复时篇幅字段保持缺省；回复时按 ``batch_text`` 去除首尾空白后的
+        字符数与阈值比较，理由中原样附上字符数供审计。
+
+        :param context: 已组织的回合上下文，读取 ``batch_text`` 计算篇幅。
+        :return: 带篇幅的动作结论，理由沿用内层判据并追加字符数。
+        """
         decision = await self._reply_policy.decide(context)
         batch_input_chars = len(context.batch_text.strip())
         reason = f'{decision.reason}；本批输入字符数={batch_input_chars}'

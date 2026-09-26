@@ -19,8 +19,9 @@ from src.core.agent.sub_agent import SubAgentCall, run_sub_agent
 from src.core.llm_models.protocol import LlmProvider
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
+# 表达挑选响应中存放选中编号的字段名，响应必须且只含该字段。
 _SELECTION_KEY = 'selected'
-# 限制模型输出额外正文。
+# 模型响应原始文本的长度上限，单位字符；限制额外正文占用解析与日志空间。
 _MAX_SELECTION_CHARS = 256
 
 

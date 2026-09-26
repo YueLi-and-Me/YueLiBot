@@ -177,6 +177,12 @@ class ConversationImpressions:
     ) -> Optional[str]:
         """重新生成印象并写入缓存；失败时清掉旧缓存。
 
+        :param stream_id: 目标会话 ID。
+        :param bot_name: bot 展示名，进入提示词模板。
+        :param speaker_name: 把消息映射为说话人标签的回调。
+        :param temperature: 采样温度。
+        :param max_tokens: 响应 token 上限；``None`` 表示用提供方默认值。
+        :param now: 当前毫秒时间戳，写入缓存的 ``generated_at``，作为 TTL 的起点。
         :return: 新印象正文；前置条件不满足或模型往返失败时返回 ``None``。
         副作用：可能发起一次模型请求；成功或失败都会更新进程内缓存状态。
         """

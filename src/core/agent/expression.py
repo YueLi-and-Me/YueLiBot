@@ -43,6 +43,10 @@ def _linear_weights(counts: Sequence[int]) -> List[float]:
 
     映射在本组候选的值域内进行：最低频取 1，最高频取 5；全组同频时权重全为 1，
     退化为均匀抽样。
+
+    :param counts: 本组候选的 ``use_count`` 列表。
+    :return: 与 ``counts`` 等长的权重列表，值域 [_WEIGHT_LO, _WEIGHT_HI]。
+    副作用：无。
     """
 
     lo, hi = min(counts), max(counts)
@@ -60,7 +64,14 @@ def _weighted_sample(
     k: int,
     rng: random.Random,
 ) -> List[sqlite3.Row]:
-    """按 use_count 线性权重无放回抽取至多 k 行。"""
+    """按 use_count 线性权重无放回抽取至多 k 行。
+
+    :param rows: 候选行，须含 ``use_count`` 列。
+    :param k: 最多抽取的行数。
+    :param rng: 随机数来源，由调用方注入以保证可复现。
+    :return: 抽中的行，按抽中顺序排列。
+    副作用：无。
+    """
 
     pool = list(rows)
     picked: List[sqlite3.Row] = []

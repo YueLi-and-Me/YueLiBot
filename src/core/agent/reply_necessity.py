@@ -70,7 +70,14 @@ def frequency_trigger_threshold(talk_value: float) -> int:
 
 
 def _is_question(text: str) -> bool:
-    """判断当前文本是否像真实问题，而非单纯短符号。"""
+    """判断当前文本是否像真实问题，而非单纯短符号。
+
+    命中疑问词、疑问语气收尾或问号三种判据之一即算问题；长度上限用于
+    排除整段贴问号的刷屏文本。
+
+    :param text: 单条候选文本。
+    :return: 像真实问题时为 ``True``。
+    """
     if not text or len(text) < 4:
         return False
     if any(term in text for term in QUESTION_TERMS):
@@ -85,6 +92,9 @@ def _request_reason(text: str) -> str:
 
     群聊无直接上下文时，只有明确请人帮忙的措辞才计为请求；「可以吗 /
     要不要」等更偏商量语气，不在无信号群消息里单独计分。
+
+    :param text: 候选文本（跨条批次为拼接后的整段）。
+    :return: 命中的请求词以 ``/`` 连接；未命中时为空串。
     """
     hits = [term for term in STRONG_REQUEST_TERMS if term in text]
     if "能不能" in hits and not text.startswith("能不能"):
@@ -96,7 +106,15 @@ def _request_reason(text: str) -> str:
 
 
 def _short_reaction(texts: Sequence[str]) -> bool:
-    """判断批次是否基本由短反应或表情占位组成。"""
+    """判断批次是否基本由短反应或表情占位组成。
+
+    含任何超过 8 字符的文本即不算短反应，其余情况要求每条都在
+    ``SHORT_REACTIONS`` 内；批次没有有效文本时按短反应处理，避免空批次
+    拿到内容分。
+
+    :param texts: 本批清洗后的候选文本。
+    :return: 基本为短反应时为 ``True``。
+    """
     normalized = [" ".join(text.split()).strip() for text in texts if text.strip()]
     if not normalized:
         return True
@@ -111,6 +129,11 @@ def _pressure_score(pending_count: int, backlog_scale: int) -> int:
     ``backlog_scale`` 不是 0~100 的评分阈值，而是「多少条未处理消息算一份
     完整压力」的条数；调用方使用 frequency 预算折算出的消息阈值，避免评分
     阈值与消息条数量纲耦合。
+
+    :param pending_count: 尚未触发 Agent 的候选累计条数。
+    :param backlog_scale: 压力归一化的消息条数尺度，不足 1 时按 1 处理。
+    :return: 0~100 的压力分：未满一份压力时按平方曲线升到 50，超出部分按
+        对数曲线上升，累计满 5 份压力时封顶 100。
     """
     normalized_scale = max(1, backlog_scale)
     ratio = max(0.0, pending_count / normalized_scale)

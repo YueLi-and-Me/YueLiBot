@@ -129,7 +129,11 @@ class CognitiveAction(Protocol):
     name: str
 
     async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
-        """执行检索并返回可直接回灌给模型的观察。"""
+        """执行检索并返回可直接回灌给模型的观察。
+
+        :param request: 本轮认知动作的输入。
+        :return: 非空观察正文与条目计数；无命中时正文由动作显式声明。
+        """
         ...
 
 
@@ -411,7 +415,7 @@ class RecallAction:
             seeds=len(seeds),
             spread=len(visible_hits),
             hops=HOPS,
-            # 四条判据分别计数，不合并成一个总数：合并之后真机上没法回答
+            # 四条判据分别计数，不合并成一个总数：合并之后真机上无法回答
             # 「是谁挡的」。场合规则的事实数走 memory_fact_scope_blocked 账本
             # （与三个读取入口同账本），其余三项是扩散通道独有的，只在这里出现。
             blockedEpisodes=blocked.other_stream_episodes,
