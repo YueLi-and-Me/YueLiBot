@@ -74,6 +74,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "db.migrations.v31_to_v32": ("#ffd75f", False),
     # 模型
     "llm_models.router": ("#00ffff", True),
+    "llm_models.embeddings": ("#5fafff", False),
     "llm_models.responses": ("#5fd7ff", False),
     "llm_models.openai": ("#00d7d7", False),
     "memory.embed": ("#5fafff", False),
@@ -168,6 +169,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "db.migrations.v28_to_v29": "迁移v28→v29",
     "db.migrations.v31_to_v32": "迁移v31→v32",
     "llm_models.router": "模型路由",
+    "llm_models.embeddings": "向量协议",
     "llm_models.responses": "Responses 协议",
     "llm_models.openai": "模型连接",
     "memory.embed": "记忆嵌入",

@@ -9,22 +9,13 @@ from __future__ import annotations
 
 import struct
 
-import httpx
-
 from src.core.logging.logger import get_logger
 from src.core.config.schema import ModelCandidate
+from src.core.llm_models.embeddings import _BATCH, request_embeddings
 from src.core.llm_models.router import ModelRouter
 
 logger = get_logger(__name__)
 
-# 单次请求的文本条数上限。这是服务端硬限制，不是调优值：
-# - 现象：批量回填时 provider 返回 400，正文写着
-#   `batch size is invalid, it should not be larger than 20`；小批次同样的请求 200。
-# - 原因：兼容模式的 embeddings 端点对 input 条数设了 20 的上限，96 条一律拒收。
-# - 后果：长期无人发现，是因为 facts 表一直只有个位数条目，不足以构成一个大批次；
-#   2026-08-24 迁入 22375 条知识后才第一次触发，当时 22368 条全部留 NULL。
-#   调大这个值会让整个向量层静默退回 BM25——失败只记 warning，不中断调用方。
-_BATCH = 20
 
 
 class EmbeddingClient:
@@ -98,27 +89,7 @@ class EmbeddingClient:
         副作用：通过路由器发起一次非流式模型调用。
         """
         async def request(candidate: ModelCandidate) -> list[list[float]]:
-            """使用单个候选模型请求 embedding 接口。
-
-            :param candidate: 已解析的模型候选配置。
-            :return: 按服务端 `index` 排序的向量列表。
-            :raises httpx.HTTPError: HTTP 请求失败或状态码非成功。
-            :raises (KeyError, TypeError): 响应缺少预期 `data` 或 `embedding` 字段。
-            副作用：建立一次 HTTP 请求，不写入本地存储。
-            """
-            headers = {'Content-Type': 'application/json'}
-            if candidate.api_key:
-                headers['Authorization'] = f'Bearer {candidate.api_key}'
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    f'{candidate.base_url.rstrip("/")}/embeddings',
-                    headers=headers,
-                    json={'input': texts, 'model': candidate.identifier},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            items = sorted(data['data'], key=lambda x: x['index'])
-            return [item['embedding'] for item in items]
+            return await request_embeddings(candidate, texts)
 
         return await self._router.run(request)
 
