@@ -184,8 +184,8 @@ class _TurnControl:
     batch: List[_BufferedMessage]
     # 本批已因新内容重来的次数；达到 conversation_agent.max_reply_restarts 后不再打断。
     restarts_used: int
-    # 是否按场面取批（群聊且开关打开）：决定打断与复核认哪些人的消息、日志用哪个事件。
-    scene: bool
+    # 这批消息此前是否已经用过一次「先等等」；退回缓冲时一并带回，合并后的回合不能再等。
+    waited_once: bool = False
     # 为真时新到的内容会立即中止本回合；动作定下后置假，之后的新消息交给投递前复核。
     interruptible: bool = False
     # 已被打断或作废：收尾时退回批次。

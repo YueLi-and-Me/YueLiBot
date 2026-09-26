@@ -440,6 +440,173 @@ class TestInterrupt:
         assert _segments(broker) == [['问吧']]
 
 
+class _BlockingImageDescriber:
+    """图片描述一直挂到放行为止，模拟回合在等媒体描述。"""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+
+    async def describe_sources(self, sources: tuple[str, ...]) -> list[Any]:
+        await self.release.wait()
+        return ['一只猫'] * len(sources)
+
+    async def describe_emoji_sources(self, sources: tuple[str, ...]) -> list[Any]:
+        return [None] * len(sources)
+
+
+_WAIT = '<decision action="wait" reasons="unfinished_thought"/>'
+
+
+def _action_events() -> List[dict]:
+    return list(reversed(event_store.search(kinds=['action_decision']).events))
+
+
+class TestReviewFindings:
+    async def test_interrupt_while_waiting_for_media_returns_at_once(self, db) -> None:
+        """回合在等图片描述时有人插话，立即退回批次，不等描述完成。"""
+        describer = _BlockingImageDescriber()
+        provider = _Provider([[_reply('猫好看')]])
+        broker = _RecordingBroker()
+        chat = ChatService(
+            db, provider, None, None, _noop, cfg=_config(), broker=broker,
+            image_describer=describer,
+        )
+        a = _person(chat._registry, '97531', '小李')
+        b = _person(chat._registry, '24680', '小王')
+        stream_id = a.stream.id
+
+        await chat.send(InboundMessage(
+            text='@月璃 看这个[图片]', context=a, mentioned_me=True,
+            image_sources=('https://example.invalid/a.png',), authored_text=' 看这个',
+        ))
+        await chat._tick()
+        turn = chat._inflight[stream_id].task
+        await asyncio.sleep(0.05)
+        await chat.send(InboundMessage(text='我也想问', context=b))
+        await asyncio.wait_for(turn, timeout=0.5)
+
+        assert provider.calls == 0
+        assert len(_buffer(chat, stream_id)) == 2
+        describer.release.set()
+        await _run_turn(chat, stream_id)
+        assert _segments(broker) == [['猫好看']]
+
+    async def test_interrupt_while_building_impression_returns_at_once(self, db, monkeypatch) -> None:
+        provider = _Provider([[_reply('在呢')]])
+        broker = _RecordingBroker()
+        chat = _chat(db, provider, broker)
+        a = _person(chat._registry, '97531', '小李')
+        b = _person(chat._registry, '24680', '小王')
+        stream_id = a.stream.id
+        release = asyncio.Event()
+
+        async def slow_impression(_context, _now):
+            await release.wait()
+            return None
+
+        monkeypatch.setattr(chat, '_conversation_impression', slow_impression)
+        await chat.send(_mention(a))
+        await chat._tick()
+        turn = chat._inflight[stream_id].task
+        await asyncio.sleep(0.05)
+        await chat.send(InboundMessage(text='我也想问', context=b))
+        await asyncio.wait_for(turn, timeout=0.5)
+
+        assert provider.calls == 0
+        assert _buffer(chat, stream_id) == ['@月璃 看这个', '我也想问']
+        release.set()
+
+    async def test_interrupted_batch_keeps_its_used_wait(self, db) -> None:
+        """等过一次的批次被打断退回后，合并出的下一回合仍不能再等。"""
+        provider = _Provider([[_WAIT], [], [_reply('好')]], hang_calls=(1,))
+        chat = _chat(db, provider, _RecordingBroker())
+        a = _person(chat._registry, '97531', '小李')
+        b = _person(chat._registry, '24680', '小王')
+        stream_id = a.stream.id
+
+        await chat.send(InboundMessage(text='月璃我跟你讲', context=a, name_mentioned=True))
+        await _run_turn(chat, stream_id)
+        assert stream_id in chat._waiting
+
+        async def b_speaks() -> None:
+            await chat.send(InboundMessage(text='我也想问', context=b))
+
+        provider.before_call[1] = b_speaks
+        await chat.send(InboundMessage(text='就是那个事', context=a))
+        await _run_turn(chat, stream_id)
+        assert chat._reply_restarts[stream_id] == 1
+
+        await _run_turn(chat, stream_id)
+        assert 'wait' not in _action_events()[-1]['gate']['availableActions']
+
+    async def test_switch_turned_off_mid_turn_stops_scene_supersede(self, db) -> None:
+        provider = _Provider([[_reply('在呢')]])
+        broker = _RecordingBroker()
+        chat = _chat(db, provider, broker)
+        a = _person(chat._registry, '97531', '小李')
+        b = _person(chat._registry, '24680', '小王')
+
+        async def switch_off_then_b_speaks() -> None:
+            chat._cfg.conversation_agent.scene_batching = False
+            await chat.send(InboundMessage(text='我也想问', context=b))
+
+        provider.before_call[0] = switch_off_then_b_speaks
+        await chat.send(_mention(a))
+        await _run_turn(chat, a.stream.id)
+        # 关掉后按人取批：别人的话不再作废这一句。
+        assert _segments(broker) == [['在呢']]
+
+    async def test_switch_turned_on_mid_turn_allows_interrupt(self, db) -> None:
+        config = _config()
+        config.conversation_agent.scene_batching = False
+        provider = _Provider([[], [_reply('两个都看到了')]], hang_calls=(0,))
+        broker = _RecordingBroker()
+        chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
+        a = _person(chat._registry, '97531', '小李')
+        b = _person(chat._registry, '24680', '小王')
+        stream_id = a.stream.id
+
+        async def switch_on_then_b_speaks() -> None:
+            chat._cfg.conversation_agent.scene_batching = True
+            await chat.send(InboundMessage(text='我也想问', context=b))
+
+        provider.before_call[0] = switch_on_then_b_speaks
+        await chat.send(_mention(a))
+        await _run_turn(chat, stream_id)
+        assert broker.dispatched == []
+        await _run_turn(chat, stream_id)
+        assert _segments(broker) == [['两个都看到了']]
+
+    async def test_person_batch_keeps_last_message_context(self, db) -> None:
+        """开关关时按人取批，这一轮的来源信息仍取末条（同一人换了群名片）。"""
+        config = _config()
+        config.conversation_agent.scene_batching = False
+        provider = _Provider([[_reply('在呢')]])
+        chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_RecordingBroker())
+        before = _person(chat._registry, '97531', '旧名片')
+        await chat.send(_mention(before))
+        after = _person(chat._registry, '97531', '新名片')
+        await chat.send(InboundMessage(text='补一句', context=after))
+        await _run_turn(chat, before.stream.id)
+
+        inputs = list(reversed(event_store.search(kinds=['user_input']).events))
+        assert inputs[-1]['senderGroupCard'] == '新名片'
+
+    async def test_same_display_name_still_counts_as_two_senders(self, db) -> None:
+        provider = _Provider([[_reply('两个都看到了')]])
+        chat = _chat(db, provider, _RecordingBroker())
+        a = _person(chat._registry, '97531', '同名')
+        b = _person(chat._registry, '24680', '同名')
+
+        await chat.send(InboundMessage(text='哈哈', context=a))
+        await chat.send(_mention(b))
+        await _run_turn(chat, a.stream.id)
+
+        prompt = '\n'.join(str(item.get('content', '')) for item in provider.messages[0])
+        assert '刚发送的这几条消息' in prompt
+        assert '其他人的消息会由各自属于他们的回合处理' not in prompt
+
+
 class TestPresence:
     async def test_batch_senders_lead_present_persons(self, db) -> None:
         chat = _chat(db, _Provider([[]]), _RecordingBroker())

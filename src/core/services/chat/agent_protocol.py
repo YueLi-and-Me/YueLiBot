@@ -83,12 +83,13 @@ class AgentProtocolMixin:
         :param context: 当前会话上下文；自主回合没有批次可反查，必须显式给出。
         :return: 已注入运行时动作集与目标锚点清单的协议文本。
         """
-        # 按场面取批时一批可能有几个人，按出现顺序列出；按人取批时只有一个名字。
+        # 按场面取批时一批可能有几个人，按出现顺序列出；按人物去重而不是按显示名，
+        # 两个人同名时仍算两个人。按人取批时只有一个名字。
         target_persons = (
-            tuple(dict.fromkeys(
-                self._registry.stream_display_name(message.context.person.id, context.stream.id)
-                for message in batch
-            ))
+            tuple(
+                self._registry.stream_display_name(person_id, context.stream.id)
+                for person_id in dict.fromkeys(message.context.person.id for message in batch)
+            )
             if context.stream.kind == 'group' and batch
             else ()
         )

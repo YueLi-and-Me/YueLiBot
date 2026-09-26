@@ -353,6 +353,9 @@ class ChatService(
         # stream_id -> 当前这批消息已经因补发而作废重来的次数。回复作废时写入、下一次
         # 取批时消费，与 wait 各自计数；上限见 conversation_agent.max_reply_restarts。
         self._reply_restarts: dict[int, int] = {}
+        # stream_id -> 退回的批次此前已经用过「先等等」。与 _waiting 分开：后者表示正在等下文、
+        # 会挡住开轮；这里只是随批次带回的事实，取批时消费，使合并后的回合不能再等。
+        self._batch_waited: dict[int, bool] = {}
         self._speak_enabled = cfg.group_chat.self_started_topics
         # 扩展触发模式下的待处理候选累计；一旦产生 DELIBERATE 即清零。
         self._extended_pending: dict[int, int] = {}
@@ -844,8 +847,12 @@ class ChatService(
             del buffered[:boundary]
             if not buffered:
                 self._buffers.pop(stream_id, None)
-            # 已经等过一次的批次这一轮必须表态；标记在取走批次时消费掉。
-            waited_once = self._waiting.pop(stream_id, None) is not None
+            # 已经等过一次的批次这一轮必须表态；标记在取走批次时消费掉。被打断退回的批次
+            # 带着「等过」的事实回来，同样不能再等。
+            waited_once = (
+                self._waiting.pop(stream_id, None) is not None
+                or self._batch_waited.pop(stream_id, False)
+            )
             restarts_used = self._reply_restarts.pop(stream_id, 0)
             try:
                 await self._start_turn(
@@ -1199,7 +1206,8 @@ class ChatService(
     async def _materialize_batch_images(
         self,
         batch: list[_BufferedMessage],
-    ) -> list[_BufferedMessage]:
+        cancel_event: asyncio.Event | None = None,
+    ) -> list[_BufferedMessage] | None:
         """等待本批全部媒体任务与补看任务完成，并生成与库里正文一致的批次副本。
 
         除本批消息自带的图片与视频任务外，「喊她时顺带补看」的视频任务也在同一处
@@ -1236,9 +1244,16 @@ class ChatService(
                 for message in batch
             ):
                 self._catch_up_unwatched_videos(stream_id)
-            for message_id, task in self._video_catchup_tasks.pop(stream_id, []):
+            caught_up = self._video_catchup_tasks.pop(stream_id, [])
+            for message_id, task in caught_up:
                 caught_up_ids.add(message_id)
                 pending.append(task)
+            if pending and cancel_event is not None:
+                if not await self._await_unless_cancelled(pending, cancel_event):
+                    # 回合被打断：补看登记放回，合并后的下一回合物化时接着等、照样读库替换。
+                    if caught_up:
+                        self._video_catchup_tasks.setdefault(stream_id, [])[:0] = caught_up
+                    return None
         if pending:
             await asyncio.gather(*pending)
         return [
@@ -1290,8 +1305,12 @@ class ChatService(
         if not batch:
             raise ValueError('回复批次不能为空')
         # 按场面取批时一批可能有几个人：这一轮的对方（好感度结算、主人专属信号、来源标记）
-        # 取主要对象；按人取批时批次只有一个人，结果与取末条相同。
-        context = self._primary_message(batch).context
+        # 取主要对象。按人取批仍取末条：同一个人中途换了群名片时，来源信息以最新一条为准。
+        context = (
+            self._primary_message(batch)
+            if self._batches_by_scene(batch[-1].context)
+            else batch[-1]
+        ).context
         stream_id = context.stream.id
         if any(message.context.stream.id != stream_id for message in batch):
             raise ValueError('同一回复批次只能包含一个 stream')
@@ -1378,13 +1397,13 @@ class ChatService(
         control = _TurnControl(
             batch=batch,
             restarts_used=restarts_used,
-            scene=self._batches_by_scene(context),
+            waited_once=not allow_wait,
         )
         # 立即打断只对 Agent live 回合开放：旧管线与 shadow 没有退回批次的收尾，
-        # 取消只会把半截回复写进历史。
+        # 取消只会把半截回复写进历史。开关本身不在这里定死，到达时现读，热重载对在飞
+        # 回合同样生效。
         control.interruptible = (
-            self._cfg.conversation_agent.scene_batching
-            and context.stream.platform != 'desktop'
+            context.stream.platform != 'desktop'
             and self._agent_runs_live(context)
         )
 
@@ -1413,7 +1432,10 @@ class ChatService(
                 # 等待只阻塞当前 stream 的回合任务，不阻塞其它 stream 的消息消费。
                 # 结果写入新变量；闭包内重新绑定 batch 会使其成为局部变量，
                 # 赋值前的首次读取会因此抛出 UnboundLocalError。
-                materialized_batch = await self._materialize_batch_images(batch)
+                materialized_batch = await self._materialize_batch_images(batch, cancel_event)
+                if materialized_batch is None:
+                    # 等媒体描述时被新消息打断：描述任务留在后台，合并后的下一回合接着等。
+                    return
                 trimmed = '\n'.join(message.text for message in materialized_batch)
                 # 被打断时交还物化后的批次：补看过的视频只在这里带着描述，原批次仍是占位。
                 control.batch = materialized_batch
@@ -1439,7 +1461,14 @@ class ChatService(
                 )
                 control.sink = sink
                 self._mark_stage(context, CONTEXT, turn_id=turn)
-                impression = await self._conversation_impression(context, now)
+                # 会话印象要一次模型调用；与取消信号竞速，被打断时不必等它结束。
+                impression_task = asyncio.create_task(
+                    self._conversation_impression(context, now)
+                )
+                if not await self._await_unless_cancelled([impression_task], cancel_event):
+                    impression_task.cancel()
+                    return
+                impression = impression_task.result()
                 prepared_context = self._prepare_turn_context(
                     context,
                     trimmed,
@@ -3291,7 +3320,7 @@ class ChatService(
             else None
         )
         if control is None:
-            control = _TurnControl(batch=list(batch), restarts_used=0, scene=False)
+            control = _TurnControl(batch=list(batch), restarts_used=0)
         control.phase = 'planning'
         try:
             outcome = await self._conversation_agent.run(
@@ -3413,7 +3442,9 @@ class ChatService(
         # 已经补了一句）。此时本回合回复不投递，批次由回合收尾处退回、与补发内容合并；
         # 重来次数有上限。按场面取批时认群里任何人，否则只认本批发送者。
         if control.restarts_used < self._cfg.conversation_agent.max_reply_restarts:
-            follow_up_person = self._new_content_meanwhile(context, sink, control.scene)
+            follow_up_person = self._new_content_meanwhile(
+                context, sink, self._batches_by_scene(context),
+            )
             if follow_up_person is not None:
                 control.interrupted = True
                 control.phase = 'before_dispatch'
@@ -3559,6 +3590,39 @@ class ChatService(
         return batch[-1]
 
     @staticmethod
+    async def _await_unless_cancelled(
+        tasks: Sequence[asyncio.Future[Any]],
+        cancel_event: asyncio.Event,
+    ) -> bool:
+        """等一组任务全部结束；取消信号先到则返回 ``False``，任务不取消、留给调用方处理。
+
+        媒体描述是跨回合共享的后台任务，回合被打断时不能随之取消，只是不再等它。
+        任一任务异常时原样抛出，与 ``asyncio.gather`` 一致。
+
+        :param tasks: 要等待的任务。
+        :param cancel_event: 回合的取消信号。
+        :return: 全部任务结束为 ``True``；取消信号先到为 ``False``。
+        """
+        if cancel_event.is_set():
+            return False
+        waiter = asyncio.ensure_future(cancel_event.wait())
+        remaining = set(tasks)
+        try:
+            while remaining:
+                done, _ = await asyncio.wait(
+                    remaining | {waiter}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                if waiter in done:
+                    return False
+                for task in done:
+                    task.result()
+                remaining -= done
+            return True
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+
+    @staticmethod
     def _has_state_side_effects(sink: _TurnSink) -> bool:
         """本轮是否已写过心情或约定：二者在消费解析事件时立即落库，重来会重复写入。"""
         return any(
@@ -3656,7 +3720,9 @@ class ChatService(
         )
         restarts = control.restarts_used + 1
         self._reply_restarts[stream_id] = restarts
-        if control.scene or control.phase != 'before_dispatch':
+        if control.waited_once:
+            self._batch_waited[stream_id] = True
+        if self._batches_by_scene(context) or control.phase != 'before_dispatch':
             logger.info(
                 'chat_reply_interrupted',
                 streamId=stream_id,
