@@ -529,6 +529,7 @@ class ContextBuildMixin:
             'impressions': profiles_for_injection(
                 self._db,
                 self._present_person_ids(prepared.context, prepared.batch_person_ids),
+                name_of=lambda person_id: self._impression_name(person_id, prepared.context),
                 priority_ids=prepared.batch_person_ids,
                 skip_dirty=(
                     feedback_cfg.enabled

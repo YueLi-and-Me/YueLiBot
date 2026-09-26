@@ -245,11 +245,11 @@ class TestFollowUp:
         assert db.execute(
             'SELECT dirty FROM person_profile WHERE person_id = 1'
         ).fetchone()[0] == 1
-        injected = profiles_for_injection(db, [OWNER_PERSON_ID])
+        injected = profiles_for_injection(db, [OWNER_PERSON_ID], name_of=str)
         assert [(item.person_id, item.confirmed, item.impression) for item in injected] == [
             (1, (), '旧快照：他住深圳')
         ]
-        assert profiles_for_injection(db, [OWNER_PERSON_ID], skip_dirty=True) == []
+        assert profiles_for_injection(db, [OWNER_PERSON_ID], name_of=str, skip_dirty=True) == []
 
     @pytest.mark.asyncio
     async def test_episode_queued_for_rebuild_and_blocked_from_recall(self, db):

@@ -176,7 +176,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'sleep_rule',
         'time_context',
     }),
-    'memory.profile': frozenset({'bot_name', 'max_chars'}),
+    'memory.profile': frozenset({'bot_name', 'max_chars', 'subject', 'relation_note'}),
     'chat.tool.protocol': frozenset({
         'turn_scope',
         'selectable_messages',

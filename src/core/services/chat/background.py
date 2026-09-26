@@ -223,6 +223,8 @@ class BackgroundTaskMixin:
                 self._db,
                 self._memory_provider,
                 bot_name=self._bot_display_name,
+                subject_of=self._profile_subject,
+                relation_note=self._profile_relation_note(),
                 temperature=self._memory_temperature,
                 max_tokens=self._memory_max_tokens,
             )

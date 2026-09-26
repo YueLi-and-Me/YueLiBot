@@ -267,3 +267,60 @@ class PersonProfileMixin:
                 return user_nickname
             return '用户本人'
         return f'未绑定联系人 #{person.id}'
+
+    def _profile_subject(self, person_id: int) -> str:
+        """给出画像生成时对目标人物的称呼：账号显示名，附带各群的群名片。
+
+        情节摘要按会话内显示名书写，群聊里即群名片；只给账号昵称时，群名片与
+        昵称不同的人在情节里无法被辨认出来。
+
+        :param person_id: 目标人物主键。
+        :return: 形如 ``雨后`` 或 ``阿七（群名片：七七、阿柒）`` 的称呼。
+        :raises ValueError: 人物不存在。
+        副作用：只读注册表。
+        """
+        person = self._registry.person(person_id)
+        name = self._profile_display_name(
+            person, self._registry.list_identities(person_id), None,
+        )
+        cards = list(dict.fromkeys(
+            membership.group_card
+            for membership in self._registry.group_memberships(person_id)
+            if membership.group_card and membership.group_card != name
+        ))
+        if not cards:
+            return name
+        return f'{name}（群名片：{"、".join(cards)}）'
+
+    def _profile_relation_note(self) -> str:
+        """说明 Bot 与 owner 的关系只属于 owner，供画像生成提示词使用。
+
+        :return: 一句归属说明；``bot.relationship`` 未配置时返回空串。
+        :raises ValueError: owner 人物不存在。
+        副作用：只读配置与注册表。
+        """
+        relationship = self._cfg.bot.relationship.strip()
+        if not relationship:
+            return ''
+        owner = self._registry.owner_person()
+        owner_name = self._profile_display_name(
+            owner, self._registry.list_identities(owner.id), None,
+        )
+        return f'{owner_name}和她是{relationship}关系，这层关系只属于{owner_name}本人。'
+
+    def _impression_name(self, person_id: int, context: ConversationContext) -> str:
+        """给出注入画像时标注的人名，与本会话聊天记录里的称呼保持一致。
+
+        :param person_id: 画像所属人物主键。
+        :param context: 当前会话上下文。
+        :return: 群聊取群名片优先的会话内显示名；私聊与桌面端取本平台账号名。
+        :raises ValueError: 人物不存在，或群聊里此人在本平台没有身份。
+        副作用：只读注册表。
+        """
+        if context.stream.kind == 'group':
+            return self._registry.stream_display_name(person_id, context.stream.id)
+        return self._profile_display_name(
+            self._registry.person(person_id),
+            self._registry.list_identities(person_id),
+            context.stream.platform,
+        )

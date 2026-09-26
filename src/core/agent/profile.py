@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import json
 import sqlite3
@@ -107,11 +107,14 @@ class InjectionProfile:
     """注入提示词的一份人物画像，确凿档与印象档分开呈现。
 
     :ivar person_id: 人物主键。
+    :ivar name: 此人在当前会话里的显示名，与聊天记录中的称呼一致；渲染时标在画像前，
+        使模型能把画像对应到具体的人，而不是默认套在当前对话者身上。
     :ivar confirmed: 确凿档条目，逐条可追溯 fact id；空元组表示暂无确凿内容。
     :ivar impression: 印象档正文；空串表示暂无印象。
     """
 
     person_id: int
+    name: str
     confirmed: Tuple[EvidenceFact, ...]
     impression: str
 
@@ -249,14 +252,24 @@ async def generate_profile(
     evidence: ProfileEvidence,
     *,
     bot_name: str,
+    subject: str,
+    relation_note: str,
     temperature: float,
     max_tokens: Optional[int],
 ) -> Optional[str]:
     """请求模型把一个人的证据收敛成一段印象（只负责「印象」档）。
 
+    情节材料多为群聊摘要，同一段里有许多人；不告诉模型写的是谁时，模型会把
+    材料里最显著的人际关系（Bot 与 owner 的亲属关系）安到目标人物头上，
+    私聊注入后 Bot 便以亲属称呼对方。因此 ``subject`` 与 ``relation_note``
+    都必须显式传入。
+
     :param provider: 提供流式文本输出的模型客户端，用 ``memory`` 任务槽。
     :param evidence: 该人的本地证据。
     :param bot_name: Bot 展示名，进系统提示词。
+    :param subject: 目标人物的称呼，含情节里可能出现的群名片，供模型在多人
+        情节中辨认此人。
+    :param relation_note: 说明 Bot 与 owner 关系归属的一句话；未配置关系时为空串。
     :param temperature: 采样温度。
     :param max_tokens: 输出上限；``None`` 表示由 provider 决定。
     :return: 去掉首尾空白的印象正文。``None`` 只表示模型故障（本轮脏位保留、
@@ -268,13 +281,17 @@ async def generate_profile(
     if evidence.is_empty():
         # 没有证据就不发请求：模型在空材料上只会生成无依据内容，且无法追溯到任何来源。
         return ''
-    render_params = {'memory.profile': {'bot_name': bot_name, 'max_chars': str(PROFILE_MAX_CHARS)}}
+    template_values = {
+        'bot_name': bot_name,
+        'max_chars': str(PROFILE_MAX_CHARS),
+        'subject': subject,
+        'relation_note': relation_note,
+    }
+    render_params = {'memory.profile': template_values}
     request_messages = [
         {
             'role': 'system',
-            'content': get_prompt('memory.profile').render(
-                bot_name=bot_name, max_chars=str(PROFILE_MAX_CHARS),
-            ),
+            'content': get_prompt('memory.profile').render(**template_values),
         },
         {'role': 'user', 'content': render_material(evidence)},
     ]
@@ -437,6 +454,8 @@ async def refresh_profiles(
     provider: LlmProvider,
     *,
     bot_name: str,
+    subject_of: Callable[[int], str],
+    relation_note: str,
     temperature: float,
     max_tokens: Optional[int],
     limit: int = REFRESH_BATCH_LIMIT,
@@ -462,6 +481,9 @@ async def refresh_profiles(
     :param db: 当前库连接。
     :param provider: ``memory`` 任务槽的模型客户端。
     :param bot_name: Bot 展示名。
+    :param subject_of: 按人物主键给出目标人物称呼的回调，见 :func:`generate_profile`
+        的 ``subject``；只在需要调用模型时才被调用。
+    :param relation_note: 见 :func:`generate_profile`。
     :param temperature: 采样温度。
     :param max_tokens: 输出上限。
     :param limit: 本轮最多处理多少人。
@@ -485,7 +507,8 @@ async def refresh_profiles(
             continue
         impression = await generate_profile(
             provider, evidence,
-            bot_name=bot_name, temperature=temperature, max_tokens=max_tokens,
+            bot_name=bot_name, subject=subject_of(person_id), relation_note=relation_note,
+            temperature=temperature, max_tokens=max_tokens,
         )
         if impression is None:
             # 模型故障：保留脏位与旧指纹，下一轮整体重试。确凿档与印象档必须
@@ -508,6 +531,7 @@ def profiles_for_injection(
     person_ids: Sequence[int],
     limit: int = INJECT_LIMIT,
     *,
+    name_of: Callable[[int], str],
     skip_dirty: bool = False,
     priority_ids: Sequence[int] = (),
 ) -> List[InjectionProfile]:
@@ -520,6 +544,7 @@ def profiles_for_injection(
     :param db: 当前库连接。
     :param person_ids: 本轮在场者的人物主键。
     :param limit: 最多返回几份。
+    :param name_of: 按人物主键给出当前会话内显示名的回调，只对入选的几人调用。
     :param priority_ids: 优先入选的人物主键（本批消息的发送者），按优先顺序；
         其余在场者按好感度降序补足。
     :param skip_dirty: 为真时跳过带脏位的画像：纠错之后旧快照可能还引用着
@@ -547,6 +572,7 @@ def profiles_for_injection(
     return [
         InjectionProfile(
             person_id=int(row[0]),
+            name=name_of(int(row[0])),
             confirmed=parse_confirmed(str(row[1])),
             impression=str(row[2]),
         )

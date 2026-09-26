@@ -43,9 +43,14 @@ class _StubProvider:
         yield {'text': self.text}
 
 
+def _name_of(person_id: int) -> str:
+    return f'人物{person_id}'
+
+
 def _refresh(db: sqlite3.Connection, provider: _StubProvider, now: int, **kwargs: Any):
     return refresh_profiles(
-        db, provider, bot_name='月璃', temperature=0.3, max_tokens=None, now=now, **kwargs,
+        db, provider, bot_name='月璃', subject_of=_name_of, relation_note='',
+        temperature=0.3, max_tokens=None, now=now, **kwargs,
     )
 
 
@@ -155,7 +160,7 @@ class TestConfirmedTier:
             "INSERT INTO person_profile (person_id, summary, confirmed, dirty) "
             "VALUES (9, '印象还在', 'not json', 0)"
         )
-        injected = profiles_for_injection(db, [9])
+        injected = profiles_for_injection(db, [9], name_of=_name_of)
         assert [(item.person_id, item.confirmed, item.impression) for item in injected] == [
             (9, (), '印象还在')
         ]
@@ -274,7 +279,7 @@ class TestInjectionRendering:
         mark_dirty(db, [PERSON_ID], NOW)
         await _refresh(db, _StubProvider('她很安静，画画到很晚。'), NOW + 1)
 
-        injected = profiles_for_injection(db, [PERSON_ID])
+        injected = profiles_for_injection(db, [PERSON_ID], name_of=_name_of)
         prompt = build_system_prompt(
             name='月璃', birthday='', personality='观察细节',
             reply_style='简短接话', now=datetime(2032, 7, 15, 12, 5),
@@ -298,7 +303,7 @@ class TestInjectionRendering:
         prompt = build_system_prompt(
             name='月璃', birthday='', personality='观察细节',
             reply_style='简短接话', now=datetime(2032, 7, 15, 12, 5),
-            impressions=profiles_for_injection(db, [3]),
+            impressions=profiles_for_injection(db, [3], name_of=_name_of),
         )
         assert '印象：旧版自由文本画像' in prompt
         assert '记着的：' not in prompt
@@ -308,6 +313,7 @@ class TestInjectionRendering:
 
         item = InjectionProfile(
             person_id=4,
+            name='阿七',
             confirmed=parse_confirmed(
                 json.dumps([{'fact_id': 1, 'label': '昵称', 'content': '他叫阿七'}])
             ),

@@ -255,13 +255,15 @@ def _impressions_block(impressions: Optional[Sequence['InjectionProfile']]) -> s
         return ''
     sections: List[str] = []
     for item in impressions:
-        lines: List[str] = []
+        # 每份画像必须标明是谁的：不标注时模型会把画像默认套在当前对话者身上，
+        # 群聊里多份画像同时注入也无法区分归属。
+        lines: List[str] = [f'关于{item.name}：']
         if item.confirmed:
             lines.append('记着的：')
             lines.extend(f'- {entry.label}：{entry.content}' for entry in item.confirmed)
         if item.impression:
             lines.append(f'印象：{item.impression}')
-        if lines:
+        if len(lines) > 1:
             sections.append('\n'.join(lines))
     if not sections:
         return ''
@@ -270,6 +272,7 @@ def _impressions_block(impressions: Optional[Sequence['InjectionProfile']]) -> s
         '\n\n'.join(sections),
         '',
         '「记着的」逐条有记录可查；「印象」只是你的感觉，未必准确。'
+        '每份只属于标注的那个人，不要套到别人身上。'
         '这些都仅供自己参考，不要向对方复述，也不要作为对人的定论。',
     ]))
 

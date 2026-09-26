@@ -634,12 +634,12 @@ class TestPresence:
             )
         db.commit()
 
-        chosen = [profile.person_id for profile in profiles_for_injection(db, ids, limit=3)]
+        chosen = [profile.person_id for profile in profiles_for_injection(db, ids, limit=3, name_of=str)]
         assert chosen == ids[:3]
         # 好感度最低的丁在本批里：它先入选，其余按好感度补足。
         chosen = [
             profile.person_id
-            for profile in profiles_for_injection(db, ids, limit=3, priority_ids=(ids[3],))
+            for profile in profiles_for_injection(db, ids, limit=3, name_of=str, priority_ids=(ids[3],))
         ]
         assert chosen == [ids[3], ids[0], ids[1]]
 
