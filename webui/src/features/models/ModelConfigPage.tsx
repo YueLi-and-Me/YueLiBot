@@ -267,7 +267,7 @@ function emptyModel(): ModelConfig {
     model_identifier: '',
     api_provider: '',
     extra_body: {},
-    reasoning_parse_mode: 'field',
+    api_format: 'openai', reasoning_parse_mode: 'field',
     visual: false,
     omni: false,
     temperature: null,
@@ -1534,6 +1534,14 @@ function ModelDialog({
                 <Field label="模型级最大 token" help="留空表示继承任务配置。">
                   <Input type="number" min={1} value={form.max_tokens ?? ''} onChange={(event) => updateForm({ max_tokens: event.target.value === '' ? null : Number(event.target.value) })} placeholder="继承任务配置" />
                 </Field>
+                <Field label="接口协议">
+                  <Select value={form.api_format} onChange={(event) => updateForm({ api_format: event.target.value as ModelConfig['api_format'] })}>
+                    <option value="openai">OpenAI 兼容</option>
+                    <option value="responses">OpenAI Responses</option>
+                    <option value="dashscope_multimodal">百炼多模态向量</option>
+                    <option value="ark_multimodal">方舟多模态向量</option>
+                  </Select>
+                </Field>
                 <Field label="思考内容解析" help="这里只决定怎样读取模型已经返回的思考内容，不会开启或关闭模型思考。">
                   <Select value={form.reasoning_parse_mode} onChange={(event) => updateForm({ reasoning_parse_mode: event.target.value as ModelConfig['reasoning_parse_mode'] })}>
                     <option value="field">解析思考字段（field）</option>
@@ -1545,7 +1553,7 @@ function ModelDialog({
                   <Input type="number" min={0} value={form.embedding_dim} onChange={(event) => updateForm({ embedding_dim: Number(event.target.value) })} />
                 </Field>
               </div>
-              <Field label="extra_body（JSON）" className="mt-3" help="需要透传给厂商请求体的额外参数；JSON 对象格式。思考强度等厂商参数写在这里，写法以厂商文档为准（例如百炼全模态模型：{&quot;reasoning_effort&quot;: &quot;medium&quot;}）。">
+              <Field label="extra_body（JSON）" className="mt-3" help="需要透传给厂商请求体的额外参数；JSON 对象格式。思考强度等厂商参数写在这里，写法按所选接口协议填写（Responses 例如：{&quot;reasoning&quot;: {&quot;effort&quot;: &quot;medium&quot;}}）。">
                 <Textarea rows={3} value={JSON.stringify(form.extra_body)} onChange={(event) => {
                   try { updateForm({ extra_body: JSON.parse(event.target.value) }) } catch { /* 编辑中 */ }
                 }} />

@@ -394,7 +394,7 @@ class OpenAiChatProvider:
                  query: dict | None = None,
                  reasoning_parse_mode: ReasoningParseMode = 'field',
                  timeout_ms: int = 120_000, max_retries: int = 2,
-                 retry_interval_ms: int = 800) -> None:
+                 retry_interval_ms: int = 800, api_format: str = 'openai') -> None:
         """创建一个模型接口客户端。
 
         :param base_url: 兼容接口根地址，不应以 `/` 结尾。
@@ -409,12 +409,14 @@ class OpenAiChatProvider:
         :param timeout_ms: 单次 HTTP 超时毫秒数，默认值为 120000。
         :param max_retries: 尚未产出内容时的内部重试次数，默认值为 2。
         :param retry_interval_ms: 重试间隔毫秒数，默认值为 800。
+        :param api_format: 对话线格式 openai 或 responses，默认 openai。
         :raises LlmError: `model` 为空。
         副作用：保存配置，不在构造阶段建立 HTTP 连接。
         """
         # 连接延迟到首次 stream 调用，允许路由器在启动期先完成候选装配。
         if not model.strip():
             raise LlmError('model', '未指定模型 ID，请检查 models.toml')
+        self.api_format = api_format
         self.model = model.strip()
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key.strip()
@@ -661,7 +663,11 @@ class OpenAiChatProvider:
             code, msg = _extract_status_error(payload)
         except Exception:
             pass
-        code_kind = _classify_code(code) if code else 'unknown'
+        if self.api_format == 'responses':
+            from .responses import classify_error
+            code_kind = classify_error(code, msg)
+        else:
+            code_kind = _classify_code(code) if code else 'unknown'
         kind = (
             _classify_status(resp.status_code)
             if code_kind == 'unknown'
@@ -719,9 +725,15 @@ class OpenAiChatProvider:
         :performance: 流式消费响应，不缓存完整模型输出。
         """
         headers = self.request_headers()
-        body = self._chat_body(messages, temperature, max_tokens, response_format, tools)
+        responses_parser = None
+        if self.api_format == 'responses':
+            from .responses import ResponsesParser, build_body
+            body = build_body(self.model, messages, temperature, max_tokens, response_format, tools, self._extra_body)
+            responses_parser = ResponsesParser()
+        else:
+            body = self._chat_body(messages, temperature, max_tokens, response_format, tools)
         # 记录脱敏请求后再建立连接，保证失败快照包含实际发送的任务参数。
-        url = self.request_url('/chat/completions')
+        url = self.request_url('/responses' if responses_parser is not None else '/chat/completions')
         self.record_request(url, headers, body)
         tag_parser = (
             _ReasoningTagParser()
@@ -729,7 +741,7 @@ class OpenAiChatProvider:
             else None
         )
         # 只在声明了工具时累积；没有工具的调用路径连一个空对象都不该多建。
-        tool_calls = _ToolCallAccumulator() if tools else None
+        tool_calls = responses_parser if responses_parser is not None else (_ToolCallAccumulator() if tools else None)
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
@@ -741,7 +753,10 @@ class OpenAiChatProvider:
                         if signal and signal.is_set():
                             raise LlmError('aborted', '生成已中断')
                         # SSE 解析器同时识别文本、推理字段和 [DONE] 标记。
-                        chunk = _parse_sse_line(line, self._reasoning_parse_mode)
+                        chunk = (
+                            responses_parser.parse(line) if responses_parser is not None
+                            else _parse_sse_line(line, self._reasoning_parse_mode)
+                        )
                         if chunk == 'done':
                             if tag_parser is not None:
                                 for parsed in tag_parser.flush():
@@ -764,9 +779,13 @@ class OpenAiChatProvider:
                                         key: value for key, value in chunk.items()
                                         if key != 'tool_call_deltas'
                                     }
+                            elif responses_parser is not None and chunk.get('reasoning') is not None:
+                                yield chunk
                             elif chunk.get('text') is not None:
                                 for parsed in tag_parser.push(chunk['text']):
                                     yield parsed
+                    if responses_parser is not None:
+                        responses_parser.finish()
                     if tag_parser is not None:
                         for parsed in tag_parser.flush():
                             yield parsed

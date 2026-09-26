@@ -811,6 +811,8 @@ class ModelDefinitionConfig(BaseModel):
     model_identifier: str = ''
     api_provider: str
     extra_body: Dict[str, Any] = Field(default_factory=dict)
+    # 模型接口线格式；默认保留 OpenAI 兼容行为。
+    api_format: Literal['openai', 'responses', 'dashscope_multimodal', 'ark_multimodal'] = 'openai'
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     # WebUI 模型能力标记：视觉模型才应进入 vision / 图片描述任务
     visual: bool = False
@@ -951,6 +953,8 @@ class ModelCandidate(BaseModel):
     # 发给厂商接口的真实模型 ID
     identifier: str = ''
     extra_body: Dict[str, Any] = Field(default_factory=dict)
+    # 模型接口线格式；默认保留 OpenAI 兼容行为。
+    api_format: Literal['openai', 'responses', 'dashscope_multimodal', 'ark_multimodal'] = 'openai'
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     visual: bool = False
     omni: bool = False

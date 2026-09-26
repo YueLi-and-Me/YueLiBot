@@ -109,3 +109,13 @@ extra_body = { enable_thinking = false }
 再发一轮消息，在会话观察与调用记录中确认实际使用的任务和候选。
 连接测试或拉取模型列表成功，不能替代该模型的一轮真实请求。
 调用失败时，应依据模型 ID、能力声明及厂商返回信息确定原因，再评估是否调整超时。
+
+### 模型接口协议
+
+每个模型用 `api_format` 选择接口：`openai`（OpenAI 兼容，默认）、`responses`（OpenAI Responses）、
+`dashscope_multimodal`（百炼多模态向量）、`ark_multimodal`（方舟多模态向量）。对话任务支持前两种，
+语音仅支持 `openai`；向量任务支持 `openai` 和两种多模态向量协议。
+
+走 Responses 且开思考的模型，模型级 `max_tokens` 必须给思考留余量：`max_output_tokens` 包含思考 token。
+`extra_body` 应按所选协议的字段写，Responses 思考档位例如 `reasoning = { effort = "medium" }`。
+Responses 固定关闭服务端存储，不允许覆盖 `model`、`input`、`stream`、`previous_response_id` 或启用 `store`。

@@ -177,6 +177,16 @@ def _build_routing(
             raise ValueError(
                 f'models.toml 的 model_tasks.{task}.model_list 引用了不存在的模型：{model_name}'
             ) from exc
+        allowed_formats = (
+            {'openai'} if task == 'tts' else
+            {'openai', 'dashscope_multimodal', 'ark_multimodal'} if task == 'embedding' else
+            {'dashscope_multimodal', 'ark_multimodal'} if task == 'multimodal_embedding' else
+            {'openai', 'responses'}
+        )
+        if model.api_format not in allowed_formats:
+            raise ValueError(
+                f'model_tasks.{task} 的候选 {model_name} 不支持 api_format={model.api_format}'
+            )
         # visual 是模型目录对图片输入能力的显式声明。只在 WebUI 里过滤还不够：
         # 手工编辑 TOML 仍可能把纯文本模型放进视觉路由，最终让模型把图片当作
         # Unsupported Image。加载期直接拒绝，避免错误描述进入聊天上下文和缓存。
@@ -220,6 +230,7 @@ def _build_routing(
             auth_name=provider.auth_name,
             identifier=model.model_identifier.strip(),
             extra_body=model.extra_body,
+            api_format=model.api_format,
             reasoning_parse_mode=model.reasoning_parse_mode,
             visual=model.visual,
             omni=model.omni,

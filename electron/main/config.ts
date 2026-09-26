@@ -131,7 +131,7 @@ function seedModel(
 ): ModelDefinitionConfig {
   return {
     name, model_identifier: identifier, api_provider: provider,
-    extra_body: { ...NO_THINKING }, reasoning_parse_mode: 'field',
+    extra_body: { ...NO_THINKING }, api_format: 'openai', reasoning_parse_mode: 'field',
     visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     embedding_dim: 0,
     ...overrides,
@@ -751,6 +751,10 @@ function parseModels(
       throw new Error(`${itemPath} 的 thinking 已经取消，请改用 extra_body`)
     }
     const extraBody = value.extra_body === undefined ? {} : recordAt(value, 'extra_body', itemPath)
+    const apiFormat = stringAtOr(value, 'api_format', 'openai', itemPath)
+    if (!['openai', 'responses', 'dashscope_multimodal', 'ark_multimodal'].includes(apiFormat)) {
+      throw new Error(`${itemPath} 的 api_format 无效`)
+    }
     const reasoningMode = stringAtOr(value, 'reasoning_parse_mode', 'field', itemPath)
     if (reasoningMode !== 'field' && reasoningMode !== 'tag' && reasoningMode !== 'none') {
       throw new Error(`${itemPath} 的 reasoning_parse_mode 只能是 field、tag 或 none`)
@@ -773,6 +777,7 @@ function parseModels(
       model_identifier: stringAt(value, 'model_identifier', itemPath),
       api_provider: stringAt(value, 'api_provider', itemPath),
       extra_body: structuredClone(extraBody),
+      api_format: apiFormat as ModelDefinitionConfig['api_format'],
       reasoning_parse_mode: reasoningMode,
       visual: value.visual === undefined ? false : booleanAt(value, 'visual', itemPath),
       omni: value.omni === undefined ? false : booleanAt(value, 'omni', itemPath),
@@ -1853,7 +1858,7 @@ function readLegacyConfig(path: string): YueliConfig {
     model_identifier: typeof llm.model === 'string' ? llm.model : '',
     api_provider: chat.providerName,
     extra_body: {},
-    reasoning_parse_mode: 'field',
+    api_format: 'openai', reasoning_parse_mode: 'field',
     visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     embedding_dim: 0,
   })
@@ -1867,7 +1872,7 @@ function readLegacyConfig(path: string): YueliConfig {
     models.push({
       name: 'vision', model_identifier: vision.model,
       api_provider: pushProvider(connection), extra_body: {},
-      reasoning_parse_mode: 'field',
+      api_format: 'openai', reasoning_parse_mode: 'field',
       visual: true, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: 0,
     })
@@ -1879,7 +1884,7 @@ function readLegacyConfig(path: string): YueliConfig {
     models.push({
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
       api_provider: pushProvider(connection), extra_body: {},
-      reasoning_parse_mode: 'none',
+      api_format: 'openai', reasoning_parse_mode: 'none',
       visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: 0,
     })
@@ -1895,7 +1900,7 @@ function readLegacyConfig(path: string): YueliConfig {
     models.push({
       name: 'embedding', model_identifier: vector.embedding_model,
       api_provider: pushProvider(connection), extra_body: {},
-      reasoning_parse_mode: 'none',
+      api_format: 'openai', reasoning_parse_mode: 'none',
       visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
@@ -2147,6 +2152,7 @@ api_provider = ${tomlString(model.api_provider)}
 # 原样并入请求体，按厂商接口填写
 extra_body = ${tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)}
 # field = 接口字段；tag = <think>；none = 不解析
+api_format = ${tomlString(model.api_format)}
 reasoning_parse_mode = ${tomlString(model.reasoning_parse_mode)}
 # 视觉能力标记：只有 true 的模型才能进入 vision / 图片描述任务
 visual = ${model.visual}
@@ -2727,6 +2733,9 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
 
   for (const model of cfg.models) {
     tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)
+    if (!['openai', 'responses', 'dashscope_multimodal', 'ark_multimodal'].includes(model.api_format)) {
+      throw new Error(`模型 ${model.name} 的 api_format 无效`)
+    }
     if (!['field', 'tag', 'none'].includes(model.reasoning_parse_mode)) {
       throw new Error(`模型 ${model.name} 的 reasoning_parse_mode 无效`)
     }
@@ -2754,6 +2763,12 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     for (const name of routing.model_list) {
       const model = cfg.models.find((candidate) => candidate.name === name)
       if (!model) throw new Error(`${TASK_DESCRIPTIONS[task]}引用了不存在的模型：${name}`)
+      const allowed = task === 'tts' ? ['openai']
+        : task === 'embedding' ? ['openai', 'dashscope_multimodal', 'ark_multimodal']
+          : ['openai', 'responses']
+      if (!allowed.includes(model.api_format)) {
+        throw new Error(`model_tasks.${task} 的候选 ${name} 不支持 api_format=${model.api_format}`)
+      }
       const provider = cfg.api_providers.find((item) => item.name === model.api_provider)!
       // 私有语音协议仅允许绑定语音任务；提前拒绝可避免请求阶段才出现协议不匹配。
       if (task !== 'tts' && provider.client_type !== 'openai') {
@@ -2972,7 +2987,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         model_identifier: parsed.LLM_MODEL,
         api_provider: DEFAULT_PROVIDER.name,
         extra_body: extraBody,
-        reasoning_parse_mode: 'field',
+        api_format: 'openai', reasoning_parse_mode: 'field',
         visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
         embedding_dim: 0,
       }] : [],

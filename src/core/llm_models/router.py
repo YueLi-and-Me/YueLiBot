@@ -385,6 +385,7 @@ class ModelRouter:
                 auth_type=candidate.auth_type,
                 auth_name=candidate.auth_name,
                 extra_body=candidate.extra_body,
+                api_format=candidate.api_format,
                 reasoning_parse_mode=candidate.reasoning_parse_mode,
                 headers=candidate.default_headers,
                 query=candidate.default_query,

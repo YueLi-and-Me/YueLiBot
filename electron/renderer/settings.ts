@@ -365,6 +365,10 @@ function renderModel(cfg: YueliConfig, model: ModelDefinitionConfig, index: numb
 
   const advanced = el('details', 'advanced-fields')
   advanced.append(el('summary', '', '高级'))
+  advanced.append(selectField('接口协议', model.api_format, [
+    ['openai', 'OpenAI 兼容'], ['responses', 'OpenAI Responses'],
+    ['dashscope_multimodal', '百炼多模态向量'], ['ark_multimodal', '方舟多模态向量'],
+  ], (value) => { model.api_format = value as ModelDefinitionConfig['api_format'] }))
   advanced.append(selectField('推理内容解析', model.reasoning_parse_mode, [
     ['field', '接口字段'],
     ['tag', '<think> 标签'],
@@ -524,7 +528,7 @@ addModelButton.addEventListener('click', () => {
   loadedConfig.models.push({
     name: uniqueName('模型', loadedConfig.models.map((m) => m.name)),
     model_identifier: '', api_provider: provider.name,
-    extra_body: {}, reasoning_parse_mode: 'field',
+    extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field',
     visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
     embedding_dim: 0,
   })

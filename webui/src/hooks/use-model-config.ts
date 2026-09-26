@@ -34,6 +34,7 @@ export interface ModelConfig {
   model_identifier: string
   api_provider: string
   extra_body: Record<string, unknown>
+  api_format: 'openai' | 'responses' | 'dashscope_multimodal' | 'ark_multimodal'
   reasoning_parse_mode: 'field' | 'tag' | 'none'
   visual: boolean
   omni: boolean

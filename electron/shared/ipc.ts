@@ -343,6 +343,7 @@ export interface ModelDefinitionConfig {
   model_identifier: string
   api_provider: string
   extra_body: Record<string, unknown>
+  api_format: 'openai' | 'responses' | 'dashscope_multimodal' | 'ark_multimodal'
   reasoning_parse_mode: ReasoningParseMode
   /** 视觉能力标记：只有 visual = true 的模型才能进入 vision / 图片描述任务 */
   visual: boolean

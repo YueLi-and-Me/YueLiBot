@@ -1650,6 +1650,30 @@
               "help": "需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {\"thinking\":{\"type\":\"disabled\"}}。"
             },
             {
+              "key": "api_format",
+              "type": "enum",
+              "label": "接口协议",
+              "options": [
+                {
+                  "value": "openai",
+                  "label": "OpenAI 兼容"
+                },
+                {
+                  "value": "responses",
+                  "label": "OpenAI Responses"
+                },
+                {
+                  "value": "dashscope_multimodal",
+                  "label": "百炼多模态向量"
+                },
+                {
+                  "value": "ark_multimodal",
+                  "label": "方舟多模态向量"
+                }
+              ],
+              "help": "按模型选择接口协议；extra_body 必须使用所选协议的字段。"
+            },
+            {
               "key": "reasoning_parse_mode",
               "type": "enum",
               "label": "推理内容解析",

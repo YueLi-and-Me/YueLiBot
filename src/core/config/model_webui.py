@@ -36,7 +36,7 @@ _PROVIDER_FIELDS = (
 )
 _MODEL_FIELDS = (
     'name', 'model_identifier', 'api_provider', 'extra_body',
-    'reasoning_parse_mode', 'visual', 'omni', 'temperature', 'max_tokens',
+    'api_format', 'reasoning_parse_mode', 'visual', 'omni', 'temperature', 'max_tokens',
     'price_in', 'price_out', 'embedding_dim',
 )
 # 任务清单从配置模型派生，不在这里再抄一份。
@@ -317,7 +317,7 @@ def _default_provider() -> Dict[str, Any]:
 def _default_model() -> Dict[str, Any]:
     return {
         'name': '', 'model_identifier': '', 'api_provider': '',
-        'extra_body': {}, 'reasoning_parse_mode': 'field', 'visual': False,
+        'extra_body': {}, 'api_format': 'openai', 'reasoning_parse_mode': 'field', 'visual': False,
         'omni': False, 'temperature': None, 'max_tokens': None,
         'price_in': 0.0, 'price_out': 0.0, 'embedding_dim': 0,
     }
@@ -411,6 +411,7 @@ def _dump_models(
         )
         lines.append(f'api_provider = {_toml_value(model.get("api_provider", ""))} # 引用的厂商名称，必须存在于 providers.toml。')
         lines.append(f'extra_body = {_toml_value(model.get("extra_body", {}))} # 透传给厂商请求体的额外参数；JSON 对象格式。')
+        lines.append(f'api_format = {_toml_value(model.get("api_format", "openai"))}')
         lines.append(
             f'reasoning_parse_mode = {_toml_value(model.get("reasoning_parse_mode", "field"))}'
             ' # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。'

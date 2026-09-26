@@ -131,6 +131,7 @@ name = "deepseek-pro" # 任务候选引用的唯一名称；不能与其他模�
 model_identifier = "deepseek-v4-pro-0813" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
 omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
@@ -142,6 +143,7 @@ name = "deepseek-flash" # 任务候选引用的唯一名称；不能与其他模
 model_identifier = "deepseek-v4-flash-0731" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
 omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
@@ -153,6 +155,7 @@ name = "qwen-flash" # 任务候选引用的唯一名称；不能与其他模型�
 model_identifier = "qwen3.8-flash" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
 omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
@@ -164,6 +167,7 @@ name = "qwen-max" # 任务候选引用的唯一名称；不能与其他模型重
 model_identifier = "qwen3.8-max" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
 omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
@@ -175,6 +179,7 @@ name = "qwen-vision" # 任务候选引用的唯一名称；不能与其他模型
 model_identifier = "qwen3.8-max-0902" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = { enable_thinking = false } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = true # 标记该模型可用于 vision / 图片描述任务。
 omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
@@ -186,6 +191,7 @@ name = "qwen-omni" # 任务候选引用的唯一名称；不能与其他模型�
 model_identifier = "qwen3.8-omni-flash" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = { modalities = ["text"], reasoning_effort = "medium" } # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
 omni = true # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
@@ -197,6 +203,7 @@ name = "qwen-embedding" # 任务候选引用的唯一名称；不能与其他模
 model_identifier = "qwen3.7-text-embedding" # 厂商接口接受的真实模型 ID；留空的模型被任务引用时会在加载期报错。
 api_provider = "dashscope" # 必须引用 providers.toml 中存在的厂商名称。
 extra_body = {} # 需要透传给厂商请求体的额外参数；JSON 对象格式，例如 {"thinking":{"type":"disabled"}}。
+api_format = "openai" # 按模型选择接口协议；extra_body 必须使用所选协议的字段。
 reasoning_parse_mode = "field" # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。
 visual = false # 标记该模型可用于 vision / 图片描述任务。
 omni = false # 用于处理包含音频的视频，使月璃能够理解消息中的视频内容。
