@@ -189,7 +189,8 @@ def _build_routing(
             raise ValueError(
                 f'model_tasks.{task} 的候选 {model_name} 不支持 api_format={model.api_format}'
             )
-        # 请求时才发现冲突会让整个厂商进入冷却；在加载期指出是哪个模型的 extra_body。
+        # 在加载期校验 extra_body 与协议受管字段的冲突：推迟到请求时报错会使路由将
+        # 整个厂商置入冷却期，且启动日志无法指明具体模型。
         conflict = extra_body_conflict(model.extra_body) if model.api_format == 'responses' else ''
         if conflict:
             raise ValueError(f'model_tasks.{task} 的候选 {model_name} 的 extra_body {conflict}')
@@ -262,8 +263,10 @@ def _build_routing(
 
 def _validate_vector_space(routing: TaskRouting) -> None:
     """同维不同模型也不可比较；备份候选必须共享模型、协议和维度。"""
-    # 维度为 0（schema 默认值）时，向量层会按「期望 0 维」拒收每一条返回，
-    # 召回与表情包只留下告警、静默退回关键词和标签匹配；在加载期指出缺项。
+    # embedding_dim 必须为正数：
+    # - 现象：维度为 0（schema 默认值）时，向量层判定每一条返回的维度不符；
+    # - 原因：返回维度与配置维度逐条比对，0 维无法匹配任何向量；
+    # - 后果：事实召回与表情包检索仅记录告警并退回关键词、标签匹配，故障不易察觉。
     for candidate in routing.candidates:
         if candidate.embedding_dim <= 0:
             raise ValueError(

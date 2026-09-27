@@ -784,9 +784,10 @@ class ModelRouter:
                     error_kind=error_kind,
                     message=str(exc),
                 )
-                # 与流式路径同一口径：format 是模型或配置与本任务协议不匹配（向量维度
-                # 不符、旧版模型不支持融合），每次调用都会复现，不是厂商故障。惩罚会让
-                # 同一厂商下的对话候选反复进入冷却、顺序被打乱。
+                # 与流式路径一致，format 与 toolcall 不计入厂商故障：
+                # - format 表示模型或配置与任务协议不匹配（如向量维度不符、旧版模型不支持
+                #   融合输入），每次调用都会复现；
+                # - 计入故障会使同一厂商的全部候选进入冷却期，对话任务的候选顺序随之改变。
                 if error_kind not in ('format', 'toolcall'):
                     self._health.penalize(candidate.provider)
                 if error_kind == 'blocked':

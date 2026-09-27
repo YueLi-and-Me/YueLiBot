@@ -88,7 +88,7 @@ def test_same_dimension_different_model_rejected():
 
 @pytest.mark.parametrize('task', ['embedding', 'multimodal_embedding'])
 def test_zero_dimension_rejected_at_load(task):
-    # 维度 0 是 schema 默认值；放行会让向量层拒收每一条返回，召回静默退回关键词匹配。
+    # 维度 0 为 schema 默认值；加载期放行时，向量层会判定每一条返回不合格，召回退回关键词匹配。
     from src.core.config.loader import _validate_vector_space
     from src.core.config.schema import ModelCandidate, TaskRouting
     routing = TaskRouting(task=task, candidates=[

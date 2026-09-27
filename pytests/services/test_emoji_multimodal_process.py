@@ -60,10 +60,11 @@ print('CONTROLLED_SHUTDOWN=1', flush=True)
 
 @pytest.mark.parametrize('slot', ['multimodal_embedding', 'embedding'])
 def test_real_process_reaches_ready_with_pending_emoji_backfill(tmp_path: Path, slot: str):
-    """真实装配下，表情包是否发图只由所接的槽决定。
+    """在真实装配下验证：表情包是否发送图片仅由所接的任务决定。
 
-    ``slot='embedding'`` 时融合假模型挂在 embedding 槽、多模态向量槽留空：协议虽然能收图，
-    表情包仍只能发标签文字、登记配方 ``tags``。这一条钉住 main.py 里决定 use_images 的那一行。
+    ``slot='embedding'`` 时融合假模型配置在 embedding 任务、多模态向量任务留空：该协议
+    支持图片输入，但表情包仅发送标签文字，登记配方为 ``tags``。用例覆盖 main.py 中决定
+    ``use_images`` 的装配语句。
     """
     config = tmp_path / 'fixture-config'
     data = tmp_path / 'fixture-data'

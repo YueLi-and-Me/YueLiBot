@@ -517,7 +517,7 @@ async def test_run_rotates_for_non_streaming_tasks() -> None:
 
 
 async def test_run_format_error_does_not_cool_down_provider() -> None:
-    """向量维度不符这类 format 失败每次都会复现，不能让同厂商的对话候选跟着冷却。"""
+    """format 错误（如向量维度不符）每次调用都会复现，不应使同一厂商的候选进入冷却期。"""
     health = ProviderHealth()
 
     async def call(candidate: ModelCandidate) -> str:

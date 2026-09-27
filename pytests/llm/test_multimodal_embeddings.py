@@ -143,7 +143,7 @@ async def test_client_batches_and_keeps_failed_batch_null(monkeypatch):
 
 
 async def test_client_uses_smaller_batches_for_images(monkeypatch):
-    # 服务端逐张处理图片，20 张一批在常规 30 秒超时下时成时败；含图片时改为小批。
+    # 服务端逐张处理图片，20 张一批在 30 秒超时下间歇性失败，含图片的请求须按小批发送。
     from src.core.llm_models.embeddings import EmbedInput, _IMAGE_BATCH
     from src.core.llm_models.router import ModelRouter
     from src.core.memory.embed import EmbeddingClient

@@ -24,7 +24,7 @@ def test_invalid_task_protocol(task, api_format):
 
 @pytest.mark.parametrize('extra_body', [{'store': True}, {'input': []}, {'previous_response_id': 'resp_1'}])
 def test_responses_extra_body_conflict_rejected_at_load(extra_body):
-    # 请求时才报会让整个厂商进入冷却，加载期就要点名是哪个模型。
+    # 冲突须在加载期报告并指明模型；推迟到请求时会使整个厂商进入冷却期。
     model = ModelDefinitionConfig(
         name='测试模型', model_identifier='model', api_provider='测试厂商',
         api_format='responses', extra_body=extra_body,

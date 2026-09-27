@@ -577,7 +577,15 @@ class _ReadyAnnouncingServer(uvicorn.Server):
 def _select_emoji_embedding_client(
     routers: ModelRouters, text_client: EmbeddingClient | None,
 ) -> Tuple[EmbeddingClient | None, str]:
-    """专用槽优先；回用 embedding 时配方恒为 tags，即使其协议支持图片。"""
+    """确定表情包使用的向量客户端与输入配方。
+
+    多模态向量任务有候选时优先使用它；否则复用 embedding 任务的客户端，配方固定为
+    ``tags``，即使该任务的协议支持图片输入，也只发送标签文字。
+
+    :param routers: 全部任务路由。
+    :param text_client: embedding 任务的客户端；未配置时为 ``None``。
+    :return: ``(客户端, 配方)``；两个向量任务都未配置时客户端为 ``None``。
+    """
     if routers.multimodal_embedding.ready:
         return build_client(routers.multimodal_embedding), EMOJI_EMBED_RECIPE
     return text_client, 'tags'
@@ -786,8 +794,9 @@ def main() -> None:
     routers = create_routers(cfg)
     app_state.routers = routers
 
-    # 事实与知识使用 embedding；表情包专用槽独立装配，不受 vector.enabled 控制。
-    # 两槽皆空时仍使用既有标签包含匹配，不影响收侧识别和登记。
+    # 事实与知识使用 embedding 任务；表情包的向量客户端按任务单独装配，不受
+    # vector.enabled 控制。两个向量任务都未配置时，表情包使用标签包含匹配，
+    # 入站识别与登记不受影响。
     embed_client = None
     embedding_client_disabled_reason = 'model_tasks.embedding.model_list 是空的'
     if routers.embedding.ready:

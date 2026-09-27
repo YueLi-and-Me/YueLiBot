@@ -43,32 +43,33 @@ def build_body(
                 if kind == 'text':
                     converted.append({'type': 'output_text' if message['role'] == 'assistant' else 'input_text', 'text': block['text']})
                 elif kind == 'image_url':
-                    # 对象写法会被接口拒绝：Responses 的 image_url 是字符串，
-                    # 与 Chat 嵌套对象不同；保留对象会使图片请求直接返回 400。
+                    # Responses 的 image_url 为字符串，与 Chat 的嵌套对象不同；
+                    # 沿用对象写法时接口返回 400。
                     image = block['image_url']
                     item = {'type': 'input_image', 'image_url': image['url']}
                     if 'detail' in image:
                         item['detail'] = image['detail']
                     converted.append(item)
                 elif kind == 'video_url':
-                    # video_url 同样必须为字符串；对象或改名 url 都被判为空，
-                    # 因此只展开值，不改变字段名，否则全模态请求无法使用视频。
+                    # video_url 同样必须为字符串；传入对象或改用 url 字段时，接口均判定
+                    # video_url 为空，全模态请求因此无法携带视频。
                     converted.append({'type': 'input_video', 'video_url': block['video_url']['url']})
                 else:
                     raise ValueError(f'Responses 不支持的内容块：{kind}')
             content = converted
         inputs.append({'role': message['role'], 'content': content})
-    # 缺省 store 会在服务端保存请求与回复；Responses 默认用于会话续接，
-    # 群聊与私聊原文因此可能滞留厂商侧，必须显式关闭存储。
+    # Responses 缺省在服务端保存请求与回复以支持会话续接；为避免群聊与私聊原文
+    # 留存在厂商侧，显式设置 store=false。
     body = {'model': model, 'input': inputs, 'stream': True, 'store': False, 'temperature': temperature}
     if max_tokens is not None:
-        # 此上限包含思考；思考耗尽预算会留下空正文，切换协议时必须留足余量。
+        # max_output_tokens 包含思考 token；思考耗尽额度时正文为空，模型切换到本协议时
+        # 需相应调高上限。
         body['max_output_tokens'] = max_tokens
     if response_format is not None:
         body['text'] = {'format': response_format}
     if tools:
-        # Responses 缺省按 strict=true 规范化 schema，模型会给可选参数填空值；
-        # Chat 缺省为 false，显式关闭才不会静默改变工具参数的省略语义。
+        # Responses 缺省按 strict=true 规范化工具 schema，模型会为可选参数填入空值；
+        # Chat 缺省为 false。显式设置 strict=false，保持可选参数可省略的语义。
         body['tools'] = [{'type': 'function', **tool['function'], 'strict': False} for tool in tools]
     body.update(extra_body)
     return body
@@ -76,8 +77,8 @@ def build_body(
 
 def classify_error(code: str, message: str) -> str:
     """复用错误码分类，仅对接口实测的免费额度消息前缀作精确修正。"""
-    # 免费额度耗尽被包装为 server_error，按码会误判；这个精确前缀表示
-    # 账务拒绝，归为 billing 才不会进行无意义的请求重试。
+    # 百炼在 Responses 上将免费额度耗尽报告为 server_error，仅按错误码会误判为服务端
+    # 故障；该消息前缀表示账务拒绝，归为 billing 可避免无效重试。
     if message.startswith('Free quota exhausted'):
         return 'billing'
     return _classify_code(code)
@@ -104,8 +105,8 @@ class ResponsesParser:
         except ValueError as exc:
             raise LlmError('format', 'Responses data 行不是合法 JSON') from exc
         kind = event.get('type')
-        # 错误有时没有 type，只有 code/message；仅按事件名分派会丢失真实
-        # 拒绝原因并误报断流，所以必须同时识别这个错误信封。
+        # 部分错误以不含 type 的 {code, message} data 行返回；仅按事件名分派会丢失
+        # 拒绝原因，并在流结束时误判为断流。
         if kind in ('response.failed', 'error') or (kind is None and ('code' in event or 'message' in event)):
             self.terminated = True
             source = event['response'] if kind == 'response.failed' else event
@@ -118,8 +119,8 @@ class ResponsesParser:
             return {'reasoning': event['delta']}
         if kind == 'response.output_item.done' and event['item']['type'] == 'function_call':
             item = event['item']
-            # id 是消息条目号，call_id 才是调用号；取错会使工具结果与调用
-            # 无法对应，因此只在完整条目到达时读取 call_id，不拼接 delta。
+            # item.id 为条目编号，item.call_id 为调用编号，工具结果按调用编号对应；
+            # 因此在条目完整到达时读取 call_id，不拼接参数增量。
             self._calls.append({'id': item['call_id'], 'name': item['name'], 'arguments': item['arguments']})
         if kind == 'response.refusal.delta':
             raise LlmError('blocked', f"模型拒绝请求：{event.get('delta', '')}")
@@ -140,6 +141,6 @@ class ResponsesParser:
             raise LlmError('network', 'Responses 流在完成事件前断开')
 
     def drain(self) -> List[Dict[str, str]]:
-        """一次取走已完成的调用，避免向调用方暴露参数分片。"""
+        """取出并清空已完成的工具调用，调用方不接触参数分片。"""
         calls, self._calls = self._calls, []
         return calls

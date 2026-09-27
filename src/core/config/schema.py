@@ -811,7 +811,11 @@ class ModelDefinitionConfig(BaseModel):
     model_identifier: str = ''
     api_provider: str
     extra_body: Dict[str, Any] = Field(default_factory=dict)
-    # 模型接口线格式；默认保留 OpenAI 兼容行为。
+    # 模型请求使用的接口协议：
+    # - openai：OpenAI 兼容，按任务使用 /chat/completions、/embeddings 或 /audio/speech；
+    # - responses：OpenAI Responses（/responses），仅用于对话类任务；
+    # - dashscope_multimodal、ark_multimodal：百炼、方舟多模态向量，仅用于向量任务。
+    # 任务与协议的合法组合由 loader 在加载期校验。
     api_format: Literal['openai', 'responses', 'dashscope_multimodal', 'ark_multimodal'] = 'openai'
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     # WebUI 模型能力标记：视觉模型才应进入 vision / 图片描述任务
@@ -933,7 +937,8 @@ class ModelTaskConfig(BaseModel):
     memory: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     tts: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
     embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
-    # 表情包专用图片与标签融合向量；留空回用 embedding 文本，不继承 chat。
+    # 表情包的图片与标签融合向量。留空时表情包使用 embedding 任务的标签文字向量；
+    # 本任务不继承 chat，候选仅接受多模态向量协议。
     multimodal_embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
 
@@ -955,7 +960,7 @@ class ModelCandidate(BaseModel):
     # 发给厂商接口的真实模型 ID
     identifier: str = ''
     extra_body: Dict[str, Any] = Field(default_factory=dict)
-    # 模型接口线格式；默认保留 OpenAI 兼容行为。
+    # 模型请求使用的接口协议，取值与语义同 ModelDefinitionConfig.api_format。
     api_format: Literal['openai', 'responses', 'dashscope_multimodal', 'ark_multimodal'] = 'openai'
     reasoning_parse_mode: Literal['field', 'tag', 'none'] = 'field'
     visual: bool = False

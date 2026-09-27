@@ -68,7 +68,7 @@ async def test_registration_sends_preprocessed_image_and_tags(db, tmp_path):
 
 
 async def test_embedding_fallback_never_sends_image(db, tmp_path):
-    # 客户端协议支持图片，并不表示给表情包配置了专用多模态槽。
+    # 协议支持图片输入不代表启用了多模态向量任务。
     client = FakeEmbedding()
     library = EmojiLibrary(db, tmp_path, client, use_images=False)
     await library.register(picture(), '开心', 'image/png')
@@ -78,7 +78,7 @@ async def test_embedding_fallback_never_sends_image(db, tmp_path):
 
 @pytest.mark.parametrize('use_images', [True, False])
 async def test_known_emoji_with_same_tags_is_not_embedded_again(db, tmp_path, use_images):
-    # 已入库的表情再次出现时标签从库里复用，重算只会得到同一个向量。
+    # 已入库表情再次出现时沿用库内标签，重新计算只会得到相同向量。
     client = FakeEmbedding()
     library = EmojiLibrary(db, tmp_path, client, use_images=use_images)
     image = picture(color='red', mode='RGB')

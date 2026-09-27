@@ -54,17 +54,20 @@ _IMPORT_MEDIA_TYPES = {
 
 _MB = 1024 * 1024
 
-# 送入多模态向量模型前的图片上限：最长边像素数与 JPEG 质量（0–100）。
-# - 现象：最长边 1024、统一转 PNG 时，本机 20 张一批请求耗时 103.4 秒，超过 30 秒的
-#   连接超时，补算每一批都失败；改为最长边 512、不透明图转 JPEG 后同一批 11.9 秒。
-# - 原因：照片类表情转 PNG 体积反而膨胀（中位 61KB → 114KB，最坏 20 张合计 18.2MB），
-#   base64 再放大三分之一；百炼默认分辨率档单图 402 token，约对应 560 像素，给更大的图
-#   不增加模型看到的信息，只增加上传量。
-# - 后果：调大边长或改回 PNG 会让批量补算重新超时。改动两者之一都要同时改
-#   ``EMOJI_EMBED_RECIPE`` 的版本号，触发已登记向量重算。
+# 送入多模态向量模型前的图片编码参数：
+# - _EMBED_IMAGE_MAX_EDGE：最长边上限，单位：像素，取值为正整数，只缩小不放大；
+# - _EMBED_JPEG_QUALITY：不透明图的 JPEG 编码质量，取值范围 1 至 95。
+# 取值依据：
+# - 现象：最长边 1024、统一编码为 PNG 时，本机 20 张一批请求耗时 103.4 秒，超过 30 秒
+#   的连接超时；改为最长边 512、不透明图编码为 JPEG 后，同一批耗时 11.9 秒。
+# - 原因：照片类表情编码为 PNG 后体积增大（中位 61 KB 增至 114 KB，最大的 20 张合计
+#   18.2 MB），base64 编码再增加三分之一；百炼默认分辨率档单图 402 token，约对应 560 像素，
+#   更大的图片不增加模型可用的信息，只增加上传量。
+# - 后果：调大边长或改回 PNG 会使批量补算重新超时。修改任一参数都须同时提升
+#   ``EMOJI_EMBED_RECIPE`` 的版本号，以触发已登记向量的重算。
 _EMBED_IMAGE_MAX_EDGE = 512
 _EMBED_JPEG_QUALITY = 90
-# 融合向量的输入配方，写入 vector_space.recipe；「/v1」即上面预处理的版本号。
+# 融合向量的输入配方标识，写入 vector_space.recipe；「/v1」为上述预处理规则的版本号。
 EMOJI_EMBED_RECIPE = 'image+tags/v1'
 
 # 管理页列表的排序口径。键是对外的排序名，值直接拼进 ORDER BY——全部为固定
@@ -338,7 +341,7 @@ class EmojiLibrary:
         :param db: 已完成迁移的 SQLite 连接。
         :param directory: 表情包文件专用目录；不得与其他运行文件共用。
         :param embed_client: 向量客户端；缺失时使用标签包含匹配。
-        :param use_images: 仅专用多模态槽装配时为 True，默认 False 保持标签输入。
+        :param use_images: 仅在装配多模态向量任务时为 True；默认 False，只发送标签文字。
         :param choice: 测试可注入确定性选择函数；缺省按使用次数的倒数加权抽样。
         :param config: 表情包库管理配置；缺省时使用全默认值（0 上限不淘汰、
             5 MB 单文件上限、不过滤、自动收集）。
@@ -352,7 +355,7 @@ class EmojiLibrary:
         if use_images and (embed_client is None or not embed_client.accepts_images):
             raise ValueError('表情包融合向量需要支持图片的专用客户端')
         self._embed_client = embed_client
-        # 协议支持图片不等于启用了专用槽；回用 embedding 时必须仍只发送标签。
+        # 协议支持图片输入不代表启用了多模态向量任务；复用 embedding 任务时仅发送标签文字。
         self._use_images = use_images
         self._backfill_task: asyncio.Task[None] | None = None
         self._choice = choice
@@ -591,10 +594,10 @@ class EmojiLibrary:
                 )
                 raise EmojiContentRejectedError('内容审查未通过')
 
-        # 同一张图再次出现且标签未变时，库里已有的向量就是这次会算出的结果：
-        # 向量空间变更时启动期已清空旧向量，留下的都属于当前空间。跳过嵌入可省一次
-        # 请求（图片模式每次约 402 token），也不推迟调用方回写表情描述；传 None 时
-        # 下面的 COALESCE 保留原向量。
+        # 同一哈希的记录已有向量且标签未变时跳过嵌入：
+        # - 向量空间变更时启动期已清空旧向量，现存向量均属于当前空间，重新计算结果相同；
+        # - 跳过可减少一次模型请求（图片输入约 402 token），并避免推迟调用方回写表情描述；
+        # - vector 为 None 时，下方 COALESCE 保留原向量。
         known = self._db.execute(
             'SELECT emotion_tags FROM emoji WHERE hash = ? AND emotion_vec IS NOT NULL',
             (digest,),
@@ -1197,11 +1200,11 @@ class EmojiLibrary:
         return len(rows)
 
     async def startup(self) -> None:
-        """挂起表情包补算后立即返回，不等待文件读取或模型调用。"""
+        """创建表情包向量补算后台任务并立即返回，不等待文件读取或模型调用。"""
         if self._embed_client is None:
             return
-        # 生命周期逐个 await startup；把补算本身注册进去会阻塞 READY。
-        # 因此仅创建可取消任务，未完成的 NULL 行由下次启动续算。
+        # 生命周期按顺序 await 各服务的 startup；在此等待补算完成会推迟 READY。
+        # 因此只创建可取消的后台任务，未完成的 NULL 行在下次启动时继续补算。
         self._backfill_task = asyncio.create_task(self._run_backfill(), name='emoji-vector-backfill')
 
     async def shutdown(self) -> None:
@@ -1217,7 +1220,7 @@ class EmojiLibrary:
         self._backfill_task = None
 
     async def _run_backfill(self) -> None:
-        """记录补算异常，避免后台任务失败无人取回。"""
+        """执行补算并记录异常，避免后台任务的异常未被观察而丢失。"""
         try:
             await self.backfill_embeddings()
         except Exception:
@@ -1226,8 +1229,10 @@ class EmojiLibrary:
     async def backfill_embeddings(self) -> int:
         """补算启动快照中的 NULL 行（含封禁行），返回成功写入条数。
 
-        单张文件读取或预处理失败只跳过该张；模型失败项保持 NULL。
-        批次间让出事件循环，每行本次最多尝试一次，避免失败时无限重试。
+        单张文件读取或预处理失败时跳过该张；模型请求失败的记录保持 NULL。
+        批次之间让出事件循环；一次补算中每行最多尝试一次，避免失败时无限重试。
+
+        :return: 成功写入向量的记录数。
         """
         if self._embed_client is None:
             return 0
@@ -1262,7 +1267,7 @@ class EmojiLibrary:
                         if vector is None:
                             failed += 1
                             continue
-                        # 请求期间在线入库可能已经刷新该行；只填仍为 NULL 的记录。
+                        # 请求期间在线入库可能已写入该行向量；仅更新仍为 NULL 的记录。
                         completed += self._db.execute(
                             'UPDATE emoji SET emotion_vec=? WHERE hash=? AND emotion_vec IS NULL',
                             (vector, digest),
@@ -1273,7 +1278,7 @@ class EmojiLibrary:
         return completed
 
     async def _embed_image(self, image: bytes, tags: str) -> bytes | None:
-        """专用槽用同一条图片与标签融合输入，失败沿用已有向量缺失语义。"""
+        """以图片与标签的融合输入生成向量；失败时记录告警并返回 None，与文本路径一致。"""
         if self._embed_client is None:
             return None
         try:

@@ -1340,6 +1340,7 @@ class ConversationAgent:
                 temperature=self._replyer_temperature,
                 max_tokens=self._replyer_max_tokens,
                 signal=signal,
+                response_validator=_require_reply_text,
             )
         ) as stream:
             async for chunk in stream:
@@ -1446,6 +1447,21 @@ def _observation_messages(
             'content': f'[检索结果] {observation}{notice}\n\n{_OUTPUT_REQUIREMENT}',
         },
     ]
+
+
+def _require_reply_text(text: str) -> None:
+    """校验回复生成的完整正文非空，供路由在返回结果前判定候选是否可用。
+
+    推理模型可能只输出思考、正文为空并正常结束。校验交由路由执行时，该候选按
+    ``format`` 失败处理并切换到下一候选，不计入厂商故障；在路由返回后再判定则只能
+    以协议错误结束本次回复。路由对带校验的请求仍按首个分片计算首字超时，思考阶段
+    较长的正常回复不会因此被判为超时。
+
+    :param text: 路由缓冲的完整正文。
+    :raises ValueError: 正文为空或只含空白字符。
+    """
+    if not text.strip():
+        raise ValueError('回复生成没有产出正文')
 
 
 def _missing_call_messages(reason: str) -> list[dict[str, str]]:

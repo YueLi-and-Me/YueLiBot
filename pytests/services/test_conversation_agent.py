@@ -683,6 +683,55 @@ async def test_split_reply_takes_body_from_replyer_only() -> None:
     assert planner.calls == 1 and replyer.calls == 1
 
 
+async def test_split_reply_switches_candidate_when_replyer_outputs_reasoning_only() -> None:
+    """回复生成的候选只输出思考、正文为空时，路由切换到下一候选，本次回复照常提交。
+
+    该判定必须在路由返回结果之前完成；路由返回后再判定只能以协议错误结束回复，
+    Bot 在这一轮不会说话。
+    """
+    from src.core.config.schema import ModelCandidate
+    from src.core.llm_models.router import ModelRouter, ProviderHealth
+
+    class _RouterClient:
+        def __init__(self, chunks: List[dict[str, str]]) -> None:
+            self._chunks = chunks
+            self.calls = 0
+
+        async def stream(self, messages, temperature, max_tokens=None, signal=None, **_options):
+            self.calls += 1
+            for chunk in self._chunks:
+                yield chunk
+
+    clients = {
+        '只出思考': _RouterClient([{'reasoning': '先想想怎么接'}]),
+        '正常回复': _RouterClient([{'text': '<say>这句来自备用候选</say>'}]),
+    }
+    health = ProviderHealth()
+    replyer = ModelRouter('replyer', [
+        ModelCandidate(name=name, provider=f'厂商{name}', identifier=name)
+        for name in clients
+    ], health=health)
+    replyer.client = lambda candidate: clients[candidate.name]   # type: ignore[method-assign]
+    planner = _ScriptedProvider([
+        '<decision action="reply" targets="101" reasons="can_add_value" '
+        'length="brief" reference="接一句"/>',
+    ])
+    agent = ConversationAgent(planner, temperature=0.8, replyer=replyer)
+
+    outcome = await agent.run(
+        _frame(),
+        [{'role': 'user', 'content': '在吗'}],
+        _gate_inputs(),
+        (),
+        replyer_messages=_messages_from(lambda head: [{'role': 'user', 'content': '接一句'}]),
+    )
+
+    assert outcome.event_status == 'committed'
+    assert outcome.body_text == '这句来自备用候选'
+    assert clients['只出思考'].calls == 1 and clients['正常回复'].calls == 1
+    assert health.available('厂商只出思考') is True
+
+
 async def test_split_reply_rejects_plain_text_without_say() -> None:
     """回复生成的供应商诊断裸文本不能被隐式包装成月璃台词。"""
     planner = _ScriptedProvider([
