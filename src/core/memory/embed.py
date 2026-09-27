@@ -13,7 +13,7 @@ import struct
 
 from src.core.logging.logger import get_logger
 from src.core.config.schema import ModelCandidate
-from src.core.llm_models.embeddings import EmbedInput, _BATCH, request_embeddings
+from src.core.llm_models.embeddings import EmbedInput, _BATCH, _IMAGE_BATCH, request_embeddings
 from src.core.llm_models.router import ModelRouter
 
 logger = get_logger(__name__)
@@ -63,15 +63,17 @@ class EmbeddingClient:
             为 ``None``。字节布局适用于内积相似度计算。
 
         副作用：
-            通过模型路由器发起每批最多 ``_BATCH`` 条输入的网络请求；批次异常仅记录日志，
+            通过模型路由器发起每批最多 ``_BATCH`` 条输入的网络请求（含图片时每批最多
+            ``_IMAGE_BATCH`` 条）；批次异常仅记录日志，
             不阻断其他批次。
 
         性能：
-            请求按 ``_BATCH`` 分批，内存占用与输入文本数量及向量维度线性相关。
+            请求按 ``_BATCH``（含图片时 ``_IMAGE_BATCH``）分批，内存占用与输入数量及向量维度线性相关。
         """
         results: list[bytes | None] = [None] * len(items)
-        for start in range(0, len(items), _BATCH):
-            batch = items[start:start + _BATCH]
+        size = _IMAGE_BATCH if any(item.image is not None for item in items) else _BATCH
+        for start in range(0, len(items), size):
+            batch = items[start:start + size]
             try:
                 vecs = await self._call_inputs(batch)
                 for i, vec in enumerate(vecs):

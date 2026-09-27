@@ -12,6 +12,7 @@ import sys
 import tomllib
 
 from PIL import Image
+import pytest
 
 from src.core.config.bootstrap import render_example_configs
 from src.core.config.schema import CONFIG_VERSION
@@ -38,6 +39,7 @@ async def fake_model(request):
     assert request.url.host == 'models.invalid', str(request.url)
     if 'embeddings' in request.url.path:
         print('FAKE_EMBEDDING_STARTED=1', flush=True)
+        print('FAKE_EMBEDDING_BODY=' + request.content.decode('utf-8'), flush=True)
     await asyncio.sleep(60)
     raise AssertionError('应在假模型返回前关停')
 httpx.AsyncClient = lambda **kw: original_client(transport=httpx.MockTransport(fake_model), **kw)
@@ -56,7 +58,13 @@ print('CONTROLLED_SHUTDOWN=1', flush=True)
 '''
 
 
-def test_real_process_reaches_ready_with_pending_emoji_backfill(tmp_path: Path):
+@pytest.mark.parametrize('slot', ['multimodal_embedding', 'embedding'])
+def test_real_process_reaches_ready_with_pending_emoji_backfill(tmp_path: Path, slot: str):
+    """真实装配下，表情包是否发图只由所接的槽决定。
+
+    ``slot='embedding'`` 时融合假模型挂在 embedding 槽、多模态向量槽留空：协议虽然能收图，
+    表情包仍只能发标签文字、登记配方 ``tags``。这一条钉住 main.py 里决定 use_images 的那一行。
+    """
     config = tmp_path / 'fixture-config'
     data = tmp_path / 'fixture-data'
     render_example_configs(config)
@@ -76,7 +84,7 @@ def test_real_process_reaches_ready_with_pending_emoji_backfill(tmp_path: Path):
                 'name': '融合假模型', 'model_identifier': 'mm-fixture', 'api_provider': document['models'][0]['api_provider'],
                 'api_format': 'dashscope_multimodal', 'embedding_dim': 2,
             })
-            document['model_tasks']['multimodal_embedding']['model_list'] = ['融合假模型']
+            document['model_tasks'][slot]['model_list'] = ['融合假模型']
         elif name == 'features.toml':
             document['telemetry']['enabled'] = False
             document['vision'].update(enabled=False, chat_image_enabled=False, chat_video_enabled=False)
@@ -107,3 +115,10 @@ def test_real_process_reaches_ready_with_pending_emoji_backfill(tmp_path: Path):
     events = [json.loads(line) for line in log.splitlines() if line.startswith('{')]
     registrations = [event for event in events if event.get('event') == '首次登记向量空间']
     assert {event['consumer'] for event in registrations} == {'facts', 'knowledge', 'emoji'}, log
+    emoji_space = next(event['space'] for event in registrations if event['consumer'] == 'emoji')
+    expected_recipe = 'image+tags/v1' if slot == 'multimodal_embedding' else 'tags'
+    assert f"recipe='{expected_recipe}'" in emoji_space, log
+    bodies = [json.loads(line.split('=', 1)[1]) for line in log.splitlines() if line.startswith('FAKE_EMBEDDING_BODY=')]
+    contents = [content for body in bodies for content in body['input']['contents']]
+    assert contents and all(content['text'] == '开心' for content in contents), log
+    assert any('image' in content for content in contents) == (slot == 'multimodal_embedding'), log

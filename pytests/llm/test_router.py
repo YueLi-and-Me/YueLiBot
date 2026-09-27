@@ -516,6 +516,20 @@ async def test_run_rotates_for_non_streaming_tasks() -> None:
     assert tried == ['主力', '备用']
 
 
+async def test_run_format_error_does_not_cool_down_provider() -> None:
+    """向量维度不符这类 format 失败每次都会复现，不能让同厂商的对话候选跟着冷却。"""
+    health = ProviderHealth()
+
+    async def call(candidate: ModelCandidate) -> str:
+        raise LlmError('format', '向量维度错误')
+
+    router = ModelRouter('embedding', [_candidate('向量', '厂商A')], health=health)
+
+    with pytest.raises(LlmError):
+        await router.run(call)
+    assert health.available('厂商A') is True
+
+
 def test_inspect_never_leaks_keys() -> None:
     router = ModelRouter('chat', [_candidate('chat', '厂商A')], 'sequential')
 

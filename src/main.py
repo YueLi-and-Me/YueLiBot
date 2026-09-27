@@ -61,7 +61,7 @@ from src.core.services.host.adapter_host import build_adapter_process
 from src.core.services.media.chat_image import ChatImageDescriber
 from src.core.services.media.chat_video import ChatVideoDescriber
 from src.core.services.host.desktop_shell import build_desktop_shell_process
-from src.core.services.media.emoji import EmojiLibrary, VisionEmojiContentFilter
+from src.core.services.media.emoji import EMOJI_EMBED_RECIPE, EmojiLibrary, VisionEmojiContentFilter
 from src.core.prompts.registry import prompt_metadata
 
 
@@ -579,7 +579,7 @@ def _select_emoji_embedding_client(
 ) -> Tuple[EmbeddingClient | None, str]:
     """专用槽优先；回用 embedding 时配方恒为 tags，即使其协议支持图片。"""
     if routers.multimodal_embedding.ready:
-        return build_client(routers.multimodal_embedding), 'image+tags/v1'
+        return build_client(routers.multimodal_embedding), EMOJI_EMBED_RECIPE
     return text_client, 'tags'
 
 
@@ -804,7 +804,7 @@ def main() -> None:
             reconcile_space(db, consumer, space)
     emoji_client, emoji_recipe = _select_emoji_embedding_client(routers, embed_client)
     if emoji_client is not None:
-        emoji_task = 'multimodal_embedding' if emoji_recipe == 'image+tags/v1' else 'embedding'
+        emoji_task = 'multimodal_embedding' if emoji_recipe == EMOJI_EMBED_RECIPE else 'embedding'
         emoji_candidate = routers.for_task(emoji_task).candidates[0]
         reconcile_space(db, 'emoji', VectorSpace.from_candidate(emoji_candidate, emoji_recipe))
 
@@ -840,7 +840,7 @@ def main() -> None:
         db,
         data_dir / 'emojis',
         emoji_client,
-        use_images=emoji_recipe == 'image+tags/v1',
+        use_images=emoji_recipe == EMOJI_EMBED_RECIPE,
         config=cfg.emoji,
         content_filter=emoji_content_filter,
     )

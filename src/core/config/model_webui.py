@@ -411,7 +411,11 @@ def _dump_models(
         )
         lines.append(f'api_provider = {_toml_value(model.get("api_provider", ""))} # 引用的厂商名称，必须存在于 providers.toml。')
         lines.append(f'extra_body = {_toml_value(model.get("extra_body", {}))} # 透传给厂商请求体的额外参数；JSON 对象格式。')
-        lines.append(f'api_format = {_toml_value(model.get("api_format", "openai"))}')
+        lines.append(
+            f'api_format = {_toml_value(model.get("api_format", "openai"))}'
+            ' # 接口协议：openai 为 OpenAI 兼容，responses 为 OpenAI Responses，'
+            'dashscope_multimodal / ark_multimodal 为百炼 / 方舟多模态向量；按模型选择。'
+        )
         lines.append(
             f'reasoning_parse_mode = {_toml_value(model.get("reasoning_parse_mode", "field"))}'
             ' # 解析模型思考内容的方式：field 从响应字段读取，tag 从文本标签解析，none 不解析。'

@@ -41,11 +41,16 @@ def test_preprocess_first_frame_and_size():
     output = BytesIO()
     Image.new('RGB', (1600, 800), 'red').save(output, format='GIF', save_all=True,
         append_images=[Image.new('RGB', (1600, 800), 'blue')], duration=100, loop=0)
-    result = Image.open(BytesIO(preprocess_embedding_image(output.getvalue())))
-    assert result.format == 'PNG'
-    assert result.size == (1024, 512)
-    assert result.convert('RGB').getpixel((0, 0)) == (255, 0, 0)
-    transparent = Image.open(BytesIO(preprocess_embedding_image(picture(color=(255, 0, 0, 0)))))
+    encoded, media_type = preprocess_embedding_image(output.getvalue())
+    result = Image.open(BytesIO(encoded))
+    # 不透明图转 JPEG、最长边 512：PNG 1024 的批量请求会超过连接超时。
+    assert (result.format, media_type) == ('JPEG', 'image/jpeg')
+    assert result.size == (512, 256)
+    red, green, blue = result.convert('RGB').getpixel((0, 0))
+    assert red > 200 and green < 60 and blue < 60
+    encoded, media_type = preprocess_embedding_image(picture(color=(255, 0, 0, 0)))
+    transparent = Image.open(BytesIO(encoded))
+    assert (transparent.format, media_type) == ('PNG', 'image/png')
     assert transparent.mode == 'RGBA'
     assert transparent.getpixel((0, 0))[3] == 0
 
@@ -53,11 +58,11 @@ def test_preprocess_first_frame_and_size():
 async def test_registration_sends_preprocessed_image_and_tags(db, tmp_path):
     client = FakeEmbedding()
     library = EmojiLibrary(db, tmp_path, client, use_images=True)
-    await library.register(picture((1600, 800)), '开心', 'image/png')
+    await library.register(picture((1600, 800), mode='RGB'), '开心', 'image/png')
     assert len(client.inputs) == 1
     entry = client.inputs[0]
-    assert entry.text == '开心' and entry.media_type == 'image/png'
-    assert Image.open(BytesIO(entry.image)).size == (1024, 512)
+    assert entry.text == '开心' and entry.media_type == 'image/jpeg'
+    assert Image.open(BytesIO(entry.image)).size == (512, 256)
     await library.select('开心')
     assert client.texts == ['开心']
 
@@ -69,6 +74,22 @@ async def test_embedding_fallback_never_sends_image(db, tmp_path):
     await library.register(picture(), '开心', 'image/png')
     assert client.inputs == []
     assert client.texts == ['开心']
+
+
+@pytest.mark.parametrize('use_images', [True, False])
+async def test_known_emoji_with_same_tags_is_not_embedded_again(db, tmp_path, use_images):
+    # 已入库的表情再次出现时标签从库里复用，重算只会得到同一个向量。
+    client = FakeEmbedding()
+    library = EmojiLibrary(db, tmp_path, client, use_images=use_images)
+    image = picture(color='red', mode='RGB')
+    await library.register(image, '开心', 'image/png')
+    await library.register(image, '开心', 'image/png')
+    calls = len(client.inputs) if use_images else len(client.texts)
+    assert calls == 1
+    await library.register(image, '开心,得意', 'image/png')
+    calls = len(client.inputs) if use_images else len(client.texts)
+    assert calls == 2
+    assert db.execute('SELECT seen_count FROM emoji').fetchone()[0] == 3
 
 
 async def test_backfill_null_rows_including_banned_and_bad_file(db, tmp_path):

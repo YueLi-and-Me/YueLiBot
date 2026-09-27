@@ -54,6 +54,19 @@ _IMPORT_MEDIA_TYPES = {
 
 _MB = 1024 * 1024
 
+# 送入多模态向量模型前的图片上限：最长边像素数与 JPEG 质量（0–100）。
+# - 现象：最长边 1024、统一转 PNG 时，本机 20 张一批请求耗时 103.4 秒，超过 30 秒的
+#   连接超时，补算每一批都失败；改为最长边 512、不透明图转 JPEG 后同一批 11.9 秒。
+# - 原因：照片类表情转 PNG 体积反而膨胀（中位 61KB → 114KB，最坏 20 张合计 18.2MB），
+#   base64 再放大三分之一；百炼默认分辨率档单图 402 token，约对应 560 像素，给更大的图
+#   不增加模型看到的信息，只增加上传量。
+# - 后果：调大边长或改回 PNG 会让批量补算重新超时。改动两者之一都要同时改
+#   ``EMOJI_EMBED_RECIPE`` 的版本号，触发已登记向量重算。
+_EMBED_IMAGE_MAX_EDGE = 512
+_EMBED_JPEG_QUALITY = 90
+# 融合向量的输入配方，写入 vector_space.recipe；「/v1」即上面预处理的版本号。
+EMOJI_EMBED_RECIPE = 'image+tags/v1'
+
 # 管理页列表的排序口径。键是对外的排序名，值直接拼进 ORDER BY——全部为固定
 # 字面量，不含调用方数据，没有注入面；参数化做不到这件事（要变的是子句结构）。
 # 每档都以 hash 收尾保证同值行的次序稳定，翻页不会出现重复或漏行。
@@ -578,7 +591,17 @@ class EmojiLibrary:
                 )
                 raise EmojiContentRejectedError('内容审查未通过')
 
-        if self._use_images:
+        # 同一张图再次出现且标签未变时，库里已有的向量就是这次会算出的结果：
+        # 向量空间变更时启动期已清空旧向量，留下的都属于当前空间。跳过嵌入可省一次
+        # 请求（图片模式每次约 402 token），也不推迟调用方回写表情描述；传 None 时
+        # 下面的 COALESCE 保留原向量。
+        known = self._db.execute(
+            'SELECT emotion_tags FROM emoji WHERE hash = ? AND emotion_vec IS NOT NULL',
+            (digest,),
+        ).fetchone()
+        if known is not None and known[0] == tags:
+            vector = None
+        elif self._use_images:
             vector = await self._embed_image(image_bytes, tags)
         else:
             vector = await self._embed_tags(tags)
@@ -1222,7 +1245,8 @@ class EmojiLibrary:
                         path = _file_ref_path(send_ref).resolve(strict=True)
                         if not path.is_relative_to(self._directory):
                             raise ValueError('文件引用越出表情包目录')
-                        item = EmbedInput(tags, preprocess_embedding_image(path.read_bytes()), 'image/png')
+                        encoded, media_type = preprocess_embedding_image(path.read_bytes())
+                        item = EmbedInput(tags, encoded, media_type)
                     else:
                         item = EmbedInput(text=tags)
                 except (OSError, ValueError, Image.DecompressionBombError) as exc:
@@ -1253,9 +1277,8 @@ class EmojiLibrary:
         if self._embed_client is None:
             return None
         try:
-            result = await self._embed_client.embed_inputs([
-                EmbedInput(tags, preprocess_embedding_image(image), 'image/png'),
-            ])
+            encoded, media_type = preprocess_embedding_image(image)
+            result = await self._embed_client.embed_inputs([EmbedInput(tags, encoded, media_type)])
             return result[0]
         except Exception as exc:
             logger.warning('emoji_embedding_failed', error=str(exc))
@@ -1273,20 +1296,26 @@ class EmojiLibrary:
             return None
 
 
-def preprocess_embedding_image(image_bytes: bytes) -> bytes:
-    """按 image+tags/v1 配方取首帧、最长边缩至 1024，并保留透明通道转 PNG。
+def preprocess_embedding_image(image_bytes: bytes) -> Tuple[bytes, str]:
+    """按 image+tags/v1 配方取首帧并缩放编码，供多模态向量请求使用。
+
+    不透明图编码为 JPEG，带透明通道的图保留 PNG；最长边不超过
+    ``_EMBED_IMAGE_MAX_EDGE``，只缩小不放大。
 
     :param image_bytes: 原始图片字节；无法解码时向调用方抛出 Pillow 异常。
-    :return: PNG 字节，不修改原文件或视觉身份计算函数。
+    :return: ``(编码后字节, MIME 类型)``；不修改原文件或视觉身份计算函数。
     """
     with Image.open(BytesIO(image_bytes)) as image:
         image.seek(0)
-        mode = 'RGBA' if image.mode in ('RGBA', 'LA') or 'transparency' in image.info else 'RGB'
-        frame = image.convert(mode)
-        frame.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        has_alpha = image.mode in ('RGBA', 'LA') or 'transparency' in image.info
+        frame = image.convert('RGBA' if has_alpha else 'RGB')
+        frame.thumbnail((_EMBED_IMAGE_MAX_EDGE, _EMBED_IMAGE_MAX_EDGE), Image.Resampling.LANCZOS)
         output = BytesIO()
-        frame.save(output, format='PNG')
-        return output.getvalue()
+        if has_alpha:
+            frame.save(output, format='PNG')
+            return output.getvalue(), 'image/png'
+        frame.save(output, format='JPEG', quality=_EMBED_JPEG_QUALITY)
+        return output.getvalue(), 'image/jpeg'
 
 
 def _file_ref_path(send_ref: str) -> Path:

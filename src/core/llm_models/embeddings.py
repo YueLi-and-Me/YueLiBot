@@ -26,6 +26,13 @@ from src.core.config.schema import ModelCandidate
 #   调大这个值会让整个向量层静默退回 BM25——失败只记 warning，不中断调用方。
 _BATCH = 20
 
+# 含图片输入时的单次请求条数上限（条），取值 1–``_BATCH``。
+# - 现象：预处理已压到最长边 512、20 张合计约 1MB 后，百炼 20 张一批仍要 12–37 秒，
+#   同一批不同时刻相差三倍，常规 30 秒连接超时下时成时败；5 张一批 4 秒左右。
+# - 原因：耗时主要在服务端逐张处理图片（约 1–2 秒一张且随负载波动），不在上传体积。
+# - 后果：调大会让批量补算随服务端负载间歇性整批超时，失败的整批保持 NULL。
+_IMAGE_BATCH = 5
+
 # 方舟一条融合输入对应一次请求；限制同批在途连接，避免批量补算打满服务商额度。
 ARK_CONCURRENCY = 4
 _DASHSCOPE_PATH = '/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding'

@@ -31,6 +31,7 @@ from .toml_io import read_versioned_toml
 
 from src.core.logging.logger import get_logger
 from src.core.llm_models.openai import resolve_base_url
+from src.core.llm_models.responses import extra_body_conflict
 
 _config: Config | None = None
 _config_dir: Path | None = None
@@ -188,6 +189,10 @@ def _build_routing(
             raise ValueError(
                 f'model_tasks.{task} 的候选 {model_name} 不支持 api_format={model.api_format}'
             )
+        # 请求时才发现冲突会让整个厂商进入冷却；在加载期指出是哪个模型的 extra_body。
+        conflict = extra_body_conflict(model.extra_body) if model.api_format == 'responses' else ''
+        if conflict:
+            raise ValueError(f'model_tasks.{task} 的候选 {model_name} 的 extra_body {conflict}')
         # visual 是模型目录对图片输入能力的显式声明。只在 WebUI 里过滤还不够：
         # 手工编辑 TOML 仍可能把纯文本模型放进视觉路由，最终让模型把图片当作
         # Unsupported Image。加载期直接拒绝，避免错误描述进入聊天上下文和缓存。
@@ -257,6 +262,14 @@ def _build_routing(
 
 def _validate_vector_space(routing: TaskRouting) -> None:
     """同维不同模型也不可比较；备份候选必须共享模型、协议和维度。"""
+    # 维度为 0（schema 默认值）时，向量层会按「期望 0 维」拒收每一条返回，
+    # 召回与表情包只留下告警、静默退回关键词和标签匹配；在加载期指出缺项。
+    for candidate in routing.candidates:
+        if candidate.embedding_dim <= 0:
+            raise ValueError(
+                f'model_tasks.{routing.task} 的候选 {candidate.name} 没有填写 embedding_dim，'
+                '请按模型文档填写它输出的向量维度'
+            )
     spaces = {(candidate.identifier, candidate.api_format, candidate.embedding_dim)
               for candidate in routing.candidates}
     if len(spaces) > 1:

@@ -784,7 +784,11 @@ class ModelRouter:
                     error_kind=error_kind,
                     message=str(exc),
                 )
-                self._health.penalize(candidate.provider)
+                # 与流式路径同一口径：format 是模型或配置与本任务协议不匹配（向量维度
+                # 不符、旧版模型不支持融合），每次调用都会复现，不是厂商故障。惩罚会让
+                # 同一厂商下的对话候选反复进入冷却、顺序被打乱。
+                if error_kind not in ('format', 'toolcall'):
+                    self._health.penalize(candidate.provider)
                 if error_kind == 'blocked':
                     blocked_scopes.add(scope)
                 logger.warning(

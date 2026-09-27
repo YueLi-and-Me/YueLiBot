@@ -20,3 +20,20 @@ def test_invalid_task_protocol(task, api_format):
     assert task in str(exc.value)
     assert model.name in str(exc.value)
 
+
+
+@pytest.mark.parametrize('extra_body', [{'store': True}, {'input': []}, {'previous_response_id': 'resp_1'}])
+def test_responses_extra_body_conflict_rejected_at_load(extra_body):
+    # 请求时才报会让整个厂商进入冷却，加载期就要点名是哪个模型。
+    model = ModelDefinitionConfig(
+        name='测试模型', model_identifier='model', api_provider='测试厂商',
+        api_format='responses', extra_body=extra_body,
+    )
+    catalog = ModelCatalog.model_validate({
+        'inner': {'version': CONFIG_VERSION}, 'models': [model],
+        'model_tasks': {'planner': {'model_list': [model.name]}},
+    })
+    provider = ApiProviderConfig(name='测试厂商', kind='openai', api_key='fake')
+    with pytest.raises(ValueError) as exc:
+        _build_routing('planner', catalog, {model.name: model}, {provider.name: provider}, None)
+    assert 'planner' in str(exc.value) and model.name in str(exc.value) and 'extra_body' in str(exc.value)

@@ -84,3 +84,16 @@ def test_same_dimension_different_model_rejected():
     with pytest.raises(ValueError) as exc:
         _validate_vector_space(routing)
     assert all(value in str(exc.value) for value in ('embedding', '模型甲', '模型乙'))
+
+
+@pytest.mark.parametrize('task', ['embedding', 'multimodal_embedding'])
+def test_zero_dimension_rejected_at_load(task):
+    # 维度 0 是 schema 默认值；放行会让向量层拒收每一条返回，召回静默退回关键词匹配。
+    from src.core.config.loader import _validate_vector_space
+    from src.core.config.schema import ModelCandidate, TaskRouting
+    routing = TaskRouting(task=task, candidates=[
+        ModelCandidate(name='未填维度', provider='p', identifier='a', api_format='dashscope_multimodal', embedding_dim=0),
+    ])
+    with pytest.raises(ValueError) as exc:
+        _validate_vector_space(routing)
+    assert all(value in str(exc.value) for value in (task, '未填维度', 'embedding_dim'))

@@ -10,14 +10,29 @@ import json
 from .openai import LlmError, _classify_code, _extract_status_error
 
 
+# 由本协议管理、不允许 extra_body 覆盖的请求字段；store 另需恒为 false。
+RESERVED_EXTRA_BODY_KEYS = frozenset({'model', 'input', 'stream', 'previous_response_id'})
+
+
+def extra_body_conflict(extra_body: Dict) -> str:
+    """返回 extra_body 与受管字段的冲突说明，无冲突返回空串；加载期与请求时共用。"""
+    problems = []
+    reserved = sorted(RESERVED_EXTRA_BODY_KEYS & extra_body.keys())
+    if reserved:
+        problems.append(f'不得覆盖 {reserved}')
+    if 'store' in extra_body and extra_body['store'] is not False:
+        problems.append('store 必须为 false')
+    return '，'.join(problems)
+
+
 def build_body(
     model: str, messages: List[Dict], temperature: float, max_tokens: int | None,
     response_format: Dict | None, tools: List[Dict] | None, extra_body: Dict,
 ) -> Dict[str, Any]:
     """转换完整消息序列；未知内容块报 ValueError，受管字段冲突报模型错误。"""
-    reserved = {'model', 'input', 'stream', 'previous_response_id'} & extra_body.keys()
-    if reserved or ('store' in extra_body and extra_body['store'] is not False):
-        raise LlmError('model', f'Responses extra_body 不得覆盖 {sorted(reserved)}，store 必须为 false')
+    conflict = extra_body_conflict(extra_body)
+    if conflict:
+        raise LlmError('model', f'Responses extra_body {conflict}')
     inputs = []
     for message in messages:
         content = message['content']

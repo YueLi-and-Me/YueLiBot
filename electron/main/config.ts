@@ -2152,8 +2152,9 @@ model_identifier = ${tomlString(model.model_identifier)}
 api_provider = ${tomlString(model.api_provider)}
 # 原样并入请求体，按厂商接口填写
 extra_body = ${tomlObject(model.extra_body, `模型 ${model.name} 的 extra_body`)}
-# field = 接口字段；tag = <think>；none = 不解析
+# 接口协议：openai = OpenAI 兼容；responses = OpenAI Responses；dashscope_multimodal / ark_multimodal = 百炼 / 方舟多模态向量
 api_format = ${tomlString(model.api_format)}
+# field = 接口字段；tag = <think>；none = 不解析
 reasoning_parse_mode = ${tomlString(model.reasoning_parse_mode)}
 # 视觉能力标记：只有 true 的模型才能进入 vision / 图片描述任务
 visual = ${model.visual}

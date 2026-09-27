@@ -140,3 +140,25 @@ async def test_client_batches_and_keeps_failed_batch_null(monkeypatch):
     assert [len(batch) for batch in calls] == [_BATCH, 1]
     assert result[:_BATCH] == [None] * _BATCH
     assert _unpack(result[-1], 2) == pytest.approx([0.6, 0.8])
+
+
+async def test_client_uses_smaller_batches_for_images(monkeypatch):
+    # 服务端逐张处理图片，20 张一批在常规 30 秒超时下时成时败；含图片时改为小批。
+    from src.core.llm_models.embeddings import EmbedInput, _IMAGE_BATCH
+    from src.core.llm_models.router import ModelRouter
+    from src.core.memory.embed import EmbeddingClient
+    calls = []
+    original = httpx.AsyncClient
+
+    def handler(request):
+        contents = json.loads(request.content)['input']['contents']
+        calls.append(len(contents))
+        entries = [{'index': i, 'type': 'fused', 'embedding': [3, 4]} for i in range(len(contents))]
+        return httpx.Response(200, json={'output': {'embeddings': entries}})
+
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    client = EmbeddingClient(ModelRouter('multimodal_embedding', [candidate('dashscope_multimodal')]))
+    items = [EmbedInput(str(i), b'\x89PNG', 'image/png') for i in range(_IMAGE_BATCH * 2 + 1)]
+    result = await client.embed_inputs(items)
+    assert calls == [_IMAGE_BATCH, _IMAGE_BATCH, 1]
+    assert all(vector is not None for vector in result)
