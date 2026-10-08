@@ -125,9 +125,13 @@ HttpOnly Cookie，前端不持有 token；严格 CSP 禁止内联脚本与外部
 - `webui/src/features/memory/MemoryManagePage.tsx`
   记忆人工管理：事实检视与手工修正、同槽冲突裁决、操作流水与撤销；后端对
   不允许的状态转移返回 409，页面原样展示。
-- `webui/src/features/memory/RetrievalTuningPage.tsx`
+- `webui/src/features/memory/RetrievalTuningPage.tsx` /
+  `webui/src/features/memory/tuning-compare.ts`
   检索调优中心：白名单参数表、命名 profile 的保存 / 应用 / 回滚 / 导出、
-  弱监督评估报告。
+  弱监督评估。评估默认「现行 vs 草稿」一键对照：先后跑两次评估，由
+  `tuning-compare.ts` 按回合配对，给出「更接近 / 更远 / 差不多」的结论
+  （平均吻合度变化不到 0.02 判为差不多）；所有读数用大白话呈现，文案不得把
+  「更接近」写成「更好」。
 - `webui/src/features/memory/MemoryGraphPage.tsx` /
   `webui/src/features/memory/AssociationGraph.tsx` /
   `webui/src/features/memory/force-layout.ts`
