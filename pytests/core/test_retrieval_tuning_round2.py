@@ -518,7 +518,7 @@ class TestE4StreamGroups:
 
 
 class TestReadonlyAndRestore:
-    """评估只读、覆盖表还原。"""
+    """评估只读、不改动生效覆盖表。"""
 
     async def test_evaluation_restores_overrides_and_writes_nothing(self, db):
         store = _make_store(db)

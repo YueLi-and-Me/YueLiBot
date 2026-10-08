@@ -2745,13 +2745,14 @@ async def retrieval_tuning_export(name: str = Query(default='')) -> dict:
 async def retrieval_tuning_evaluate(body: TuningEvaluateBody) -> dict:
     """按给定参数重放检索并返回 nDCG@k 与召回条数报告。
 
-    评估样本从事件账本与提示词转储实时构建；重放只读，评估期间临时切换
-    进程内覆盖表、结束后还原。样本量受快照滚动保留量限制。
+    评估样本从事件账本与提示词转储实时构建；重放只读。评估在线程池里执行，
+    期间事件循环照常处理聊天：待评估参数只沿重放路径显式传递，不写进程内
+    覆盖表，线上召回仍按已生效 profile。样本量受快照滚动保留量限制。
 
     :param body: ``profile`` 或 ``params`` 二选一；都不给时按当前生效覆盖评估。
     :return: :class:`~src.core.memory.tuning.EvalReport` 的字典形态。
     :raises fastapi.HTTPException: 参数不在白名单时 400；服务未就绪时 503。
-    副作用：临时切换并还原进程内覆盖表；发一条 ``retrieval_eval_done`` 事件。
+    副作用：发一条 ``retrieval_eval_done`` 事件。
     """
     db = _read_db_or_503()
     store, config_limit = _tuning_store_or_503()

@@ -8,11 +8,15 @@
 2. **profile**：一组参数覆盖的命名快照，落 ``retrieval_profiles`` 表
    （由链尾 DDL 幂等建表，同 ``jargon`` 先例，不占迁移号）。生效机制是
    进程内覆盖表：检索链路的读取点先查覆盖、没有再用配置初值，
-   ``default`` profile 的覆盖集为空，等于现状。
+   ``default`` profile 的覆盖集为空，等于现状。覆盖表只随 profile 的
+   应用、删除与启动恢复而整体替换。
 3. **评估**：从 ``pipeline_events`` 与其指向的提示词转储抽弱监督样本，
    正例 = 进了提示词且该回合产生了回复的事实条目；重放检索按待评估参数
-   排序后以 nDCG@k 与召回条数打分。评估期间临时切换进程内覆盖表，
-   结束后原样还原；评估是同步调用，不与生产检索并发。
+   排序后以 nDCG@k 与召回条数打分。评估不读写进程内覆盖表：待评估参数
+   作为显式参数沿重放路径传到各打分点（召回打分、融合重排、候选池百分位、
+   进提示词条数）。评估与生产检索会并发——WebUI 评估端点在线程池里执行
+   评估，第二轮评估在等待查询向量时让出事件循环——线上读取因此始终只看
+   已生效 profile。
 4. **第二轮评估（留痕重放）**：从 ``memory_retrieval_trace`` 留痕取生产
    当轮的真实检索词（当前文本与会话印象）复现两次召回并集，与留痕
    ``candidatePool`` 逐位对账；重排走生产 ``rank_recalled_facts`` 的向量
@@ -113,11 +117,21 @@ def validate_overrides(values: Mapping[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------- 进程内生效
 
 # 当前生效的覆盖表。default profile 为空表，检索链路各读取点回落配置初值。
+#
+# 评估不得写入此表，草稿参数一律经各读取函数的 ``overrides`` 参数显式传入。
+# - 现象：评估期间临时替换此表时，同一时段到达的线上聊天回合按草稿参数召回。
+# - 原因：WebUI 评估端点经 run_in_thread 在线程池里执行评估，第二轮评估在
+#   await 查询向量时让出事件循环；线上召回在事件循环线程上同步读取此表，
+#   两者共享同一个模块级对象。
+# - 后果：草稿参数会改变线上提示词里的事实条目与条数，且不留任何生效记录。
+# 替换只做整体重新绑定、不原地修改，读取方持有的引用始终是一致的快照。
 _active_overrides: Dict[str, Any] = {}
 
 
 def set_active_overrides(values: Mapping[str, Any]) -> None:
     """替换进程内生效的参数覆盖表。
+
+    仅供 profile 的应用、删除与启动恢复使用；评估不调用本函数。
 
     :param values: 待生效的覆盖；先经 :func:`validate_overrides` 校验。
     :return: 无返回值。
@@ -135,20 +149,38 @@ def active_overrides() -> Dict[str, Any]:
     return dict(_active_overrides)
 
 
-def tuned_value(name: str, config_default: Any) -> Any:
-    """读取一个白名单参数的当前生效值。
+def _overrides_for(overrides: Optional[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """选定一次读取所用的覆盖表：评估传入的草稿优先，省略时取已生效 profile。
+
+    空表是合法草稿（即配置初值），只有 ``None`` 表示省略。
+    """
+
+    return _active_overrides if overrides is None else overrides
+
+
+def tuned_value(
+    name: str,
+    config_default: Any,
+    overrides: Optional[Mapping[str, Any]] = None,
+) -> Any:
+    """读取一个白名单参数的取值。
 
     :param name: 白名单参数名。
     :param config_default: 配置提供的初值；覆盖表未含该参数时使用。
+    :param overrides: 评估重放的草稿覆盖表；省略时读已生效 profile。
     :return: 覆盖值或配置初值。
     副作用：无。
     """
 
-    return _active_overrides.get(name, config_default)
+    return _overrides_for(overrides).get(name, config_default)
 
 
-def blend_score(relevance: float, retention_value: float) -> float:
-    """按当前生效参数计算检索排序分。
+def blend_score(
+    relevance: float,
+    retention_value: float,
+    overrides: Optional[Mapping[str, Any]] = None,
+) -> float:
+    """按调优参数计算检索排序分。
 
     与 :func:`src.core.memory.decay.score` 的关系：两个权重取默认值
     （``bm25_weight=1.0``、``retention_weight_floor=0.35``）时与该函数
@@ -156,12 +188,14 @@ def blend_score(relevance: float, retention_value: float) -> float:
 
     :param relevance: 词面相关度，通常已含向量融合。
     :param retention_value: 当前留存度。
+    :param overrides: 评估重放的草稿覆盖表；省略时读已生效 profile。
     :return: 排序分数。
-    副作用：读进程内覆盖表。
+    副作用：无。
     """
 
-    weight = float(_active_overrides.get('bm25_weight', 1.0))
-    floor = float(_active_overrides.get('retention_weight_floor', 0.35))
+    table = _overrides_for(overrides)
+    weight = float(table.get('bm25_weight', 1.0))
+    floor = float(table.get('retention_weight_floor', 0.35))
     relevance = max(0.0, relevance)
     return (relevance ** weight) * (floor + (1.0 - floor) * retention_value)
 
@@ -178,22 +212,29 @@ def ppr_hops(default_hops: int) -> int:
     return int(_active_overrides.get('ppr_hops', default_hops))
 
 
-def pool_percentile() -> float:
-    """读取候选池分数百分位过滤阈值；``0.0`` 表示不过滤（现状）。"""
+def pool_percentile(overrides: Optional[Mapping[str, Any]] = None) -> float:
+    """读取候选池分数百分位过滤阈值；``0.0`` 表示不过滤（现状）。
 
-    return float(_active_overrides.get('pool_score_percentile', 0.0))
+    :param overrides: 评估重放的草稿覆盖表；省略时读已生效 profile。
+    """
+
+    return float(_overrides_for(overrides).get('pool_score_percentile', 0.0))
 
 
-def apply_pool_percentile(scores: Sequence[float]) -> int:
+def apply_pool_percentile(
+    scores: Sequence[float],
+    overrides: Optional[Mapping[str, Any]] = None,
+) -> int:
     """计算百分位过滤后应保留的候选条数。
 
     :param scores: 池内分数（顺序与池一致）。
+    :param overrides: 评估重放的草稿覆盖表；省略时读已生效 profile。
     :return: 保留条数；阈值为 ``0`` 时返回全长。阈值对分数最低的尾部生效，
         因此保留的总是分数最高的一段前缀（池已按分数降序排列）。
     副作用：无。
     """
 
-    threshold = pool_percentile()
+    threshold = pool_percentile(overrides)
     if threshold <= 0.0 or not scores:
         return len(scores)
     ordered = sorted(scores)
@@ -626,52 +667,49 @@ def evaluate(
 ) -> EvalReport:
     """按给定参数重放检索并输出 nDCG@k 与召回条数。
 
-    评估期间临时替换进程内覆盖表，结束后还原；重放只读，
-    不强化、不回补、不写库。
+    待评估参数显式传给重放的召回打分，不经过进程内覆盖表，因此可与线上
+    检索并发执行；重放只读，不强化、不回补、不写库。
 
     :param store: MemoryStore 实例。
     :param samples: :func:`build_turn_samples` 的产物。
-    :param overrides: 本次评估的参数覆盖（先经白名单校验）。
+    :param overrides: 本次评估的参数覆盖（先经白名单校验）；空表表示按配置
+        初值评估，与当前生效 profile 无关。
     :param profile_name: 来源 profile 名；匿名评估为 ``None``。
     :param config_fact_limit: 配置提供的进提示词条数初值。
     :return: 汇总报告。
     :raises ValueError: 参数不在白名单。
-    副作用：临时切换并还原进程内覆盖表；发出一条 ``retrieval_eval_done`` 事件。
+    副作用：发出一条 ``retrieval_eval_done`` 事件。
     """
 
     evaluated = validate_overrides(overrides)
-    previous = active_overrides()
     per_turn: List[Dict[str, Any]] = []
     displaced_total = 0
-    try:
-        set_active_overrides(evaluated)
-        k = int(tuned_value('fact_recall_limit', config_fact_limit))
-        for sample in samples:
-            pool = store.recall_facts_in_scope(
-                sample.present_person_ids,
-                sample.query,
-                EVAL_POOL_LIMIT,
-                now=sample.at,
-                stream_kind=sample.stream_kind,
-                return_candidates=True,
-            )
-            ranked = sorted(pool, key=lambda fact: fact.score, reverse=True)
-            ranked_ids = [fact.id for fact in ranked[:k]]
-            value = ndcg_at_k(ranked_ids, sample.positive_fact_ids, k)
-            displaced = sum(
-                1 for fact_id in sample.positive_fact_ids if fact_id not in set(ranked_ids)
-            )
-            displaced_total += displaced
-            per_turn.append({
-                'turn_id': sample.turn_id,
-                'stream_kind': sample.stream_kind,
-                'positive_count': len(sample.positive_fact_ids),
-                'recall_count': len(ranked_ids),
-                'ndcg': round(value, 4),
-                'displaced_positive': displaced,
-            })
-    finally:
-        set_active_overrides(previous)
+    k = int(tuned_value('fact_recall_limit', config_fact_limit, evaluated))
+    for sample in samples:
+        pool = store.recall_facts_in_scope(
+            sample.present_person_ids,
+            sample.query,
+            EVAL_POOL_LIMIT,
+            now=sample.at,
+            stream_kind=sample.stream_kind,
+            return_candidates=True,
+            overrides=evaluated,
+        )
+        ranked = sorted(pool, key=lambda fact: fact.score, reverse=True)
+        ranked_ids = [fact.id for fact in ranked[:k]]
+        value = ndcg_at_k(ranked_ids, sample.positive_fact_ids, k)
+        displaced = sum(
+            1 for fact_id in sample.positive_fact_ids if fact_id not in set(ranked_ids)
+        )
+        displaced_total += displaced
+        per_turn.append({
+            'turn_id': sample.turn_id,
+            'stream_kind': sample.stream_kind,
+            'positive_count': len(sample.positive_fact_ids),
+            'recall_count': len(ranked_ids),
+            'ndcg': round(value, 4),
+            'displaced_positive': displaced,
+        })
 
     sample_count = len(per_turn)
     ndcg_values = [row['ndcg'] for row in per_turn]
@@ -868,6 +906,7 @@ def replay_union_recall(
     *,
     stream_kind: str,
     private_in_group: bool = False,
+    overrides: Optional[Mapping[str, Any]] = None,
 ) -> list:
     """复现回合组装期的两次召回并集，作为融合重排的候选池。
 
@@ -884,6 +923,8 @@ def replay_union_recall(
     :param now: 留痕事件毫秒时间戳。
     :param stream_kind: 会话类型。
     :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+    :param overrides: 评估的草稿覆盖表，用于召回打分与百分位截尾；省略时
+        读已生效 profile。
     :return: 词面阶段候选池，按分数降序。
     :raises sqlite3.Error: 检索失败。
     副作用：只读；被可见性规则挡下时与生产同源发出事件。
@@ -899,12 +940,13 @@ def replay_union_recall(
             stream_kind=stream_kind,
             private_in_group=private_in_group,
             return_candidates=True,
+            overrides=overrides,
         ):
             if fact.id not in seen:
                 seen.add(fact.id)
                 pool.append(fact)
     pool.sort(key=lambda fact: fact.score, reverse=True)
-    kept = apply_pool_percentile([fact.score for fact in pool])
+    kept = apply_pool_percentile([fact.score for fact in pool], overrides)
     return pool[:kept]
 
 
@@ -1079,13 +1121,15 @@ async def evaluate_round2(
     与累计耗时记入报告。``embed_query`` 为 ``None`` 时融合退化为词面排序，
     与生产在向量服务未装配时的行为一致。
 
-    评估期间临时替换进程内覆盖表，结束后原样还原；重放只读，
-    不强化、不回补、不写库。
+    待评估参数显式传给重放召回、百分位截尾与融合重排，不经过进程内覆盖表：
+    等待查询向量时事件循环会调度线上聊天，线上读取仍只看已生效 profile。
+    重放只读，不强化、不回补、不写库。
 
     :param store: MemoryStore 实例。
     :param traced: :func:`build_trace_samples` 的产物。
     :param untraced: :func:`build_turn_samples` 的产物（无留痕回合）。
-    :param overrides: 本次评估的参数覆盖（先经白名单校验）。
+    :param overrides: 本次评估的参数覆盖（先经白名单校验）；空表表示按配置
+        初值评估，与当前生效 profile 无关。
     :param embed_query: 异步查询向量函数，签名与 ``VectorService.embed_query``
         一致；省略时融合退化。
     :param profile_name: 来源 profile 名；匿名评估为 ``None``。
@@ -1093,12 +1137,12 @@ async def evaluate_round2(
     :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
     :return: 汇总报告。
     :raises ValueError: 参数不在白名单。
-    副作用：临时切换并还原进程内覆盖表；发出一条 ``retrieval_eval_round2_done``
-        事件；对账期间可见性规则挡下条目时会发与生产同源的事件。
+    副作用：发出一条 ``retrieval_eval_round2_done`` 事件；对账期间可见性规则
+        挡下条目时会发与生产同源的事件。
     """
 
     evaluated = validate_overrides(overrides)
-    previous = active_overrides()
+    k = int(tuned_value('fact_recall_limit', config_fact_limit, evaluated))
     per_turn: List[Dict[str, Any]] = []
     vector_cache: Dict[str, Optional[bytes]] = {}
     embed_calls = 0
@@ -1156,50 +1200,51 @@ async def evaluate_round2(
             'displaced_positive': displaced,
         })
 
-    try:
-        set_active_overrides(evaluated)
-        k = int(tuned_value('fact_recall_limit', config_fact_limit))
-        for sample in traced:
-            present = approximate_present_persons(store, sample.stream_id, sample.at)
-            replay = replay_union_recall(
-                store, present, sample.current_text, sample.impression,
-                k, sample.at,
-                stream_kind=sample.stream_kind,
-                private_in_group=private_in_group,
-            )
-            reconcile = reconcile_trace_pool(replay, sample.candidate_pool)
-            query_embedding = await query_vector(sample.current_text)
-            ranked = store.rank_recalled_facts(replay, query_embedding, k)
-            record_turn(
-                pool='traced',
-                turn_id=sample.turn_id,
-                stream_kind=sample.stream_kind,
-                reconcile=reconcile,
-                prompt_fact_ids=sample.prompt_fact_ids if sample.scorable else [],
-                ranked_ids=[fact.id for fact in ranked],
-                recall_source_count=len(replay),
-            )
-        for sample in untraced:
-            present = approximate_present_persons(store, sample.stream_id, sample.at)
-            replay = replay_union_recall(
-                store, present, sample.query, '',
-                k, sample.at,
-                stream_kind=sample.stream_kind,
-                private_in_group=private_in_group,
-            )
-            query_embedding = await query_vector(sample.query)
-            ranked = store.rank_recalled_facts(replay, query_embedding, k)
-            record_turn(
-                pool='untraced',
-                turn_id=sample.turn_id,
-                stream_kind=sample.stream_kind,
-                reconcile=None,
-                prompt_fact_ids=sample.positive_fact_ids,
-                ranked_ids=[fact.id for fact in ranked],
-                recall_source_count=len(replay),
-            )
-    finally:
-        set_active_overrides(previous)
+    for sample in traced:
+        present = approximate_present_persons(store, sample.stream_id, sample.at)
+        replay = replay_union_recall(
+            store, present, sample.current_text, sample.impression,
+            k, sample.at,
+            stream_kind=sample.stream_kind,
+            private_in_group=private_in_group,
+            overrides=evaluated,
+        )
+        reconcile = reconcile_trace_pool(replay, sample.candidate_pool)
+        query_embedding = await query_vector(sample.current_text)
+        ranked = store.rank_recalled_facts(
+            replay, query_embedding, k, overrides=evaluated,
+        )
+        record_turn(
+            pool='traced',
+            turn_id=sample.turn_id,
+            stream_kind=sample.stream_kind,
+            reconcile=reconcile,
+            prompt_fact_ids=sample.prompt_fact_ids if sample.scorable else [],
+            ranked_ids=[fact.id for fact in ranked],
+            recall_source_count=len(replay),
+        )
+    for sample in untraced:
+        present = approximate_present_persons(store, sample.stream_id, sample.at)
+        replay = replay_union_recall(
+            store, present, sample.query, '',
+            k, sample.at,
+            stream_kind=sample.stream_kind,
+            private_in_group=private_in_group,
+            overrides=evaluated,
+        )
+        query_embedding = await query_vector(sample.query)
+        ranked = store.rank_recalled_facts(
+            replay, query_embedding, k, overrides=evaluated,
+        )
+        record_turn(
+            pool='untraced',
+            turn_id=sample.turn_id,
+            stream_kind=sample.stream_kind,
+            reconcile=None,
+            prompt_fact_ids=sample.positive_fact_ids,
+            ranked_ids=[fact.id for fact in ranked],
+            recall_source_count=len(replay),
+        )
 
     traced_rows = [row for row in per_turn if row['pool'] == 'traced']
     untraced_rows = [row for row in per_turn if row['pool'] == 'untraced']

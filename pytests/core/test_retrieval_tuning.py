@@ -1,15 +1,18 @@
 """检索调优中心的机检断言。
 
 覆盖：参数白名单的拒绝语义、nDCG 手算值、blend 与现状打分的等价性、
-profile 的保存/应用/回滚/导出/删除生命周期、评估的参数生效与还原、
-候选池百分位过滤。评估集构建（build_turn_samples）依赖事件账本与转储
+profile 的保存/应用/回滚/导出/删除生命周期、评估的参数生效、评估与线上
+召回并发时的参数隔离、候选池百分位过滤。评估集构建（build_turn_samples）依赖事件账本与转储
 文件，其端到端正确性由真机库副本验收覆盖，此处只测纯函数件。
 """
 
 from __future__ import annotations
 
+import asyncio
 import pytest
+import threading
 
+from src.core.db.connection import run_in_thread
 from src.core.memory import tuning
 from src.core.memory.store import FactInput, MemoryStore
 
@@ -187,7 +190,7 @@ class TestProfileLifecycle:
 
 
 class TestEvaluate:
-    """评估：参数生效、只读、结束后还原。"""
+    """评估：参数生效、只读、不改动生效覆盖表。"""
 
     def test_evaluate_runs_and_restores(self, db):
         store = MemoryStore(db)
@@ -227,6 +230,182 @@ class TestEvaluate:
     def test_evaluate_rejects_bad_params(self, db):
         with pytest.raises(ValueError, match='不在调优白名单'):
             tuning.evaluate(MemoryStore(db), [], {'nope': 1})
+
+
+class TestEvaluateIsolation:
+    """评估与线上召回并发：线上读取只看已生效 profile，重放只看草稿。"""
+
+    ACTIVE = {'bm25_weight': 2.0}
+    DRAFT = {
+        'bm25_weight': 4.0,
+        'retention_weight_floor': 0.9,
+        'ppr_alpha': 0.3,
+        'ppr_hops': 4,
+        'pool_score_percentile': 0.5,
+        'fact_recall_limit': 2,
+    }
+
+    @staticmethod
+    def _live_reading() -> dict:
+        """按线上召回各读取点（context_build / store / association）的口径取一次参数。"""
+
+        return {
+            'fact_recall_limit': tuning.tuned_value('fact_recall_limit', 6),
+            'blend': tuning.blend_score(0.5, 0.2),
+            'ppr_alpha': tuning.ppr_alpha(),
+            'ppr_hops': tuning.ppr_hops(2),
+            'pool_kept': tuning.apply_pool_percentile([0.9, 0.5, 0.1]),
+        }
+
+    @staticmethod
+    def _coffee_sample(store: MemoryStore) -> tuning.TurnSample:
+        fid = store.add_fact(
+            OWNER_PERSON_ID,
+            FactInput(content='他喜欢喝冰美式咖啡', kind='偏好', origin_kind='direct'),
+            NOW,
+        ).fact_id
+        return tuning.TurnSample(
+            turn_id=1,
+            stream_id=1,
+            stream_kind='direct',
+            at=NOW + 1,
+            query='美式咖啡',
+            present_person_ids=[OWNER_PERSON_ID],
+            positive_fact_ids=[fid],
+        )
+
+    async def test_threaded_evaluate_does_not_leak_draft(self, db, monkeypatch):
+        """与 WebUI 评估端点同路径：评估在线程池里跑，事件循环照常处理聊天。"""
+
+        store = MemoryStore(db)
+        sample = self._coffee_sample(store)
+        entered = threading.Event()
+        release = threading.Event()
+        replay = store.recall_facts_in_scope
+
+        def gated_recall(*args, **kwargs):
+            # 停在重放入口：此刻评估已开始、尚未结束。
+            entered.set()
+            assert release.wait(5)
+            return replay(*args, **kwargs)
+
+        monkeypatch.setattr(store, 'recall_facts_in_scope', gated_recall)
+        tuning.set_active_overrides(self.ACTIVE)
+        try:
+            expected = self._live_reading()
+            running = asyncio.ensure_future(
+                run_in_thread(tuning.evaluate, store, [sample], self.DRAFT)
+            )
+            try:
+                assert await run_in_thread(entered.wait, 5)
+                during = self._live_reading()
+            finally:
+                release.set()
+            report = await running
+            assert during == expected
+            assert tuning.active_overrides() == self.ACTIVE
+        finally:
+            tuning.set_active_overrides({})
+        assert report.k == 2
+        assert report.params == self.DRAFT
+
+    async def test_round2_await_does_not_leak_draft(self, db):
+        """第二轮评估在 await 查询向量时让出事件循环，同线程的其他协程也不得看到草稿。"""
+
+        store = MemoryStore(db)
+        sample = self._coffee_sample(store)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def gated_embed(text: str) -> bytes | None:
+            entered.set()
+            await release.wait()
+            return None
+
+        tuning.set_active_overrides(self.ACTIVE)
+        try:
+            expected = self._live_reading()
+            running = asyncio.ensure_future(tuning.evaluate_round2(
+                store, [], [sample], self.DRAFT, embed_query=gated_embed,
+            ))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                during = self._live_reading()
+            finally:
+                release.set()
+            report = await running
+            assert during == expected
+            assert tuning.active_overrides() == self.ACTIVE
+        finally:
+            tuning.set_active_overrides({})
+        assert report.k == 2
+
+    def test_evaluate_ranks_by_draft_not_active(self, db):
+        """重放排序必须按草稿参数：生效 profile 与草稿给出相反排序时，读数跟草稿走。"""
+
+        store = MemoryStore(db)
+        # 词面更贴合但已衰减的旧事实，与词面稍弱但新鲜的事实。
+        stale = store.add_fact(
+            OWNER_PERSON_ID,
+            FactInput(content='他喜欢喝冰美式咖啡', kind='偏好', origin_kind='direct'),
+            NOW - 90 * 24 * 3600 * 1000,
+        ).fact_id
+        store.add_fact(
+            OWNER_PERSON_ID,
+            FactInput(content='他去咖啡馆自习', kind='习惯', origin_kind='direct'),
+            NOW,
+        )
+        sample = tuning.TurnSample(
+            turn_id=1,
+            stream_id=1,
+            stream_kind='direct',
+            at=NOW,
+            query='咖啡',
+            present_person_ids=[OWNER_PERSON_ID],
+            positive_fact_ids=[stale],
+        )
+        # 留存度权重下限为 0 时排序由留存度主导，为 1 时只看词面。
+        tuning.set_active_overrides({'retention_weight_floor': 0.0})
+        try:
+            under_active = tuning.evaluate(store, [sample], {'fact_recall_limit': 1})
+            under_draft = tuning.evaluate(
+                store, [sample], {'retention_weight_floor': 1.0, 'fact_recall_limit': 1},
+            )
+            under_empty = tuning.evaluate(store, [sample], {})
+        finally:
+            tuning.set_active_overrides({})
+        assert under_active.per_turn[0]['ndcg'] == 0.0
+        assert under_draft.per_turn[0]['ndcg'] == 1.0
+        # 空草稿表示「回到配置初值」，不得被当成「沿用生效 profile」。
+        assert under_empty.params == {}
+        assert under_empty.k == 6
+
+    def test_replay_scores_follow_explicit_overrides(self, db):
+        """显式覆盖表与把同一组参数设为生效时的打分逐位一致，且不受生效 profile 影响。"""
+
+        store = MemoryStore(db)
+        store.add_fact(
+            OWNER_PERSON_ID, FactInput(content='他喜欢喝冰美式咖啡', kind='偏好'), NOW
+        )
+        draft = {'bm25_weight': 4.0, 'retention_weight_floor': 0.6}
+        try:
+            tuning.set_active_overrides({})
+            explicit = store.recall_facts_in_scope(
+                [OWNER_PERSON_ID], '咖啡', 6, NOW, stream_kind='direct', overrides=draft,
+            )
+            live = store.recall_facts_in_scope(
+                [OWNER_PERSON_ID], '咖啡', 6, NOW, stream_kind='direct',
+            )
+            reranked = store.rank_recalled_facts(explicit, None, 6, overrides=draft)
+            tuning.set_active_overrides(draft)
+            applied = store.recall_facts_in_scope(
+                [OWNER_PERSON_ID], '咖啡', 6, NOW, stream_kind='direct',
+            )
+        finally:
+            tuning.set_active_overrides({})
+        assert [fact.score for fact in explicit] == [fact.score for fact in applied]
+        assert [fact.score for fact in explicit] != [fact.score for fact in live]
+        assert [fact.id for fact in reranked] == [fact.id for fact in applied]
 
 
 class TestFactMatching:

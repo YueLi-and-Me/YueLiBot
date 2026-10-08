@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Optional, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 
 import json
 import sqlite3
@@ -1519,6 +1519,7 @@ class MemoryStore:
         stream_kind: str,
         private_in_group: bool = False,
         return_candidates: bool = False,
+        overrides: Mapping[str, Any] | None = None,
     ) -> list[ScopedFact]:
         """在若干人物范围内一次性召回事实，供认知动作按会话在场者检索。
 
@@ -1540,6 +1541,8 @@ class MemoryStore:
         :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
         :param return_candidates: 是否返回截取前的候选池，供同一轮的向量重排
             与多检索词并集合并；候选随 ``embedding`` 一并带回。
+        :param overrides: 检索调优评估重放的草稿覆盖表；线上召回不传，按已生效
+            profile 打分。
 
         :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
 
@@ -1588,7 +1591,7 @@ class MemoryStore:
                 kind=r[1],
                 content=r[2],
                 retention=ret,
-                score=blend_score(relevance, ret),
+                score=blend_score(relevance, ret, overrides),
                 lexical_relevance=relevance,
                 embedding=r[9],
                 half_life_hours=r[5],
@@ -1837,12 +1840,16 @@ class MemoryStore:
         candidates: list[RecalledFact],
         query_embedding: bytes | None,
         limit: int,
+        *,
+        overrides: Mapping[str, Any] | None = None,
     ) -> list[RecalledFact]:
         """在已召回候选上附加向量相关度，不重新查询数据库。
 
         :param candidates: 同一轮决策前通过 :meth:`recall_facts` 取得的候选池。
         :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时保留词面排序。
         :param limit: 最多返回的事实数量。
+        :param overrides: 检索调优评估重放的草稿覆盖表；线上重排不传，按已生效
+            profile 打分。
         :return: 按增强后分数降序截取的原候选对象列表。
         :raises ValueError: ``limit`` 小于零。
         副作用：不读写数据库，不修改传入候选对象。
@@ -1861,7 +1868,7 @@ class MemoryStore:
                 except Exception:
                     # 与召回入口保持一致：单条坏向量只放弃该条语义融合。
                     pass
-            ranked.append((blend_score(relevance, fact.retention), fact))
+            ranked.append((blend_score(relevance, fact.retention, overrides), fact))
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [fact for _, fact in ranked[:limit]]
 
