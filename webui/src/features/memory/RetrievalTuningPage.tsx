@@ -5,7 +5,8 @@
  * 代码常量与配置里，改一处要看哪里生效只能靠重启后翻日志。本页把它们
  * 收进一张白名单参数表，配上三件事：
  *
- * 1. 评估——从事件账本与提示词转储抽弱监督样本，按参数重放检索。界面默认
+ * 1. 评估——重放事件账本里的召回留痕：检索词是她当时实际用的（本轮消息
+ *    与会话印象），正例是当时实际进了提示词的记忆，按参数重排后打分。界面默认
  *    「现行 vs 草稿」一键对照：先后跑两次评估，按回合配对后用大白话给出
  *    「更接近 / 更远 / 差不多」的结论；也可以只跑现行参数看单份报告；
  * 2. profile 的保存 / 应用 / 回滚 / 导出——应用立即生效并进启动横幅；
@@ -15,7 +16,7 @@
  * 页面文案必须保持这个口径，不得把「更接近」写成「更好」。
  *
  * 数据来自 `@/hooks/use-retrieval-tuning`，对照计算在 `./tuning-compare`；
- * 评估是同步请求，样本量受提示词快照滚动保留量限制。
+ * 评估是同步请求，样本量受事件账本保留时长限制。
  */
 import { Download, Minus, Play, RotateCcw, Save, TrendingDown, TrendingUp } from 'lucide-react'
 import { useMemo, useState, type ReactNode } from 'react'
@@ -531,7 +532,12 @@ function SingleReport({ report }: { report: TuningEvalReport }) {
         <Reading
           label="重演的回合"
           value={`${report.sample_count} 次`}
-          detail="数量取决于提示词存档保留了多少"
+          detail={`共重演 ${report.replayed_count} 次，其中她回了话、当时也用上了记忆的回合参与打分；数量取决于事件记录保留了多久`}
+        />
+        <Reading
+          label="跟当时对不上"
+          value={`${report.reconcile_mismatched} / ${report.replayed_count} 次`}
+          detail="按她当时的检索词重新找一遍候选记忆，和当时留下的记录逐条比，顺序或条目有出入的回合。多半是这些记忆后来又被用过、强度变了；这个数越大，吻合度越要打折看"
         />
         <Reading
           label="吻合度"
@@ -688,7 +694,7 @@ function ReadingGuide() {
       <p className="font-medium text-foreground">怎么读这些数</p>
       <ul className="mt-1.5 list-disc space-y-1 pl-5">
         <li>
-          {'吻合度单看没有意义。评估里的重演是简化版，和她平时真实挑记忆的过程不完全一样（比如少了按意思重新排序这一步），所以即使参数不变，分数也到不了 1。只拿两组参数的分数对比。'}
+          {'吻合度单看没有意义。重演用的是她当时的检索词，但那些记忆的强度后来又变过（用过的会变强、久不用的会变淡），当时在场的人也只能按聊天记录估，所以即使参数不变，分数也到不了 1。只拿两组参数的分数对比。'}
         </li>
         <li>
           {'分数高只说明和她以往的挑法更像，不说明挑得更对。她以往用的记忆本来就是现行参数挑出来的，所以这里真正能看的是：换成草稿后，她挑记忆的结果会变多少。'}

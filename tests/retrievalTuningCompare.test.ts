@@ -11,6 +11,8 @@ function report(rows: Array<[number, number, number]>): TuningEvalReport {
     params: {},
     k: 6,
     sample_count: rows.length,
+    replayed_count: rows.length,
+    reconcile_mismatched: 0,
     ndcg_mean: 0,
     recall_count_median: 6,
     recall_count_mean: 6,

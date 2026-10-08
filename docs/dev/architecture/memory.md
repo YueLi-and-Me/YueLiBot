@@ -149,10 +149,12 @@
    （`bm25_weight`、`retention_weight_floor`、`ppr_alpha`、`ppr_hops`、
    `pool_score_percentile` 与三个条数上限）；冻结阈值、半衰期表、0.4/0.6
    混合比不在调优范围内。profile 落 `retrieval_profiles` 表，进程内覆盖表
-   生效（tuning.py:113-147）；评估用弱监督样本重放检索算 nDCG@k，另有
-   「留痕重放」把重放候选池与生产 `memory_retrieval_trace` 事件逐位对账
-   （tuning.py:707 起），对不上的回合单独计数——那说明重放与生产仍有
-   差异，其读数比 nDCG 本身重要。
+   生效；评估用弱监督样本重放检索算 nDCG@k。WebUI 评估走「留痕重放」：
+   检索词取生产 `memory_retrieval_trace` 事件记录的当前文本与会话印象，
+   重放候选池与留痕逐位对账，对不上的回合单独计数——那说明重放与生产
+   仍有差异，其读数比 nDCG 本身重要。从提示词转储反推检索词的第一轮只收
+   无留痕回合：决策提示词逐条排列后，转储里最后一条 user 消息是动作协议
+   说明，不再是本轮聊天内容。
 8. **可见性在打分之前**：`fact_visible_in_stream`（scope.py:39）按事实
    「被听见的场合」过滤候选——私聊来源的事实在群聊默认不可见，
    `legacy` 存量放行，被挡下时发 `memory_fact_scope_blocked` 事件，

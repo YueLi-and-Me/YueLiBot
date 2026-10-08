@@ -10,9 +10,11 @@
    进程内覆盖表：检索链路的读取点先查覆盖、没有再用配置初值，
    ``default`` profile 的覆盖集为空，等于现状。覆盖表只随 profile 的
    应用、删除与启动恢复而整体替换。
-3. **评估**：从 ``pipeline_events`` 与其指向的提示词转储抽弱监督样本，
-   正例 = 进了提示词且该回合产生了回复的事实条目；重放检索按待评估参数
-   排序后以 nDCG@k 与召回条数打分。评估不读写进程内覆盖表：待评估参数
+3. **评估（转储反推）**：从 ``pipeline_events`` 与其指向的提示词转储抽弱监督
+   样本，正例 = 进了提示词且该回合产生了回复的事实条目；重放检索按待评估参数
+   排序后以 nDCG@k 与召回条数打分。只收没有召回留痕的回合：检索词取自转储里
+   最后一条 user 消息，决策提示词逐条排列后那一条是动作协议说明，该取法
+   不再成立。评估不读写进程内覆盖表：待评估参数
    作为显式参数沿重放路径传到各打分点（召回打分、融合重排、候选池百分位、
    进提示词条数）。评估与生产检索会并发——WebUI 评估端点在线程池里执行
    评估，第二轮评估在等待查询向量时让出事件循环——线上读取因此始终只看
@@ -22,6 +24,7 @@
    ``candidatePool`` 逐位对账；重排走生产 ``rank_recalled_facts`` 的向量
    融合。有留痕与无留痕的回合在报告里永远分成两个样本池，对不上留痕池
    的回合单独计数——那说明重放与生产仍有差异，其读数比 nDCG 本身重要。
+   WebUI 的评估接口只跑留痕池，响应取 :meth:`Round2Report.traced_as_dict`。
 
 弱监督的已知局限：正例本身来自当前参数的选择，评估度量的是
 「换参数后既定选择的稳定性」，不是绝对相关性。该口径已于 2026-09-02
@@ -443,7 +446,7 @@ class TurnSample:
     :ivar stream_id: 会话 ID。
     :ivar stream_kind: 会话类型，决定可见性口径。
     :ivar at: 回合毫秒时间戳。
-    :ivar query: 该回合的用户文本，作为重放检索词。
+    :ivar query: 从提示词转储反推的该回合用户文本，作为重放检索词。
     :ivar present_person_ids: 近似在场者；评估时按其召回。
     :ivar positive_fact_ids: 进了提示词且该回合产生了回复的事实 ID。
     """
@@ -504,13 +507,23 @@ def build_turn_samples(
     *,
     max_turns: Optional[int] = None,
 ) -> List[TurnSample]:
-    """从事件账本与提示词转储构建评估样本。
+    """从事件账本与提示词转储构建评估样本（无留痕样本池）。
 
     样本条件（正例定义的前提）：planner 任务的 ``prompt_record``、
-    转储文件可读、事实块至少匹配到一条、同一 ``turn_id`` 内产生了回复。
+    转储文件可读、事实块至少匹配到一条、同一 ``turn_id`` 内产生了回复、
+    该回合没有 ``memory_retrieval_trace`` 留痕。
     同一回合只取首条合格转储：planner 在一个回合内可能因纠错重试被调用
     多次，逐条计入会把该回合的 nDCG 权重放大数倍。转储路径取自事件
     payload 本身，因此观察窗口受快照滚动保留量限制。
+
+    有留痕的回合一律排除，由 :func:`build_trace_samples` 接手：
+
+    - 现象：决策提示词逐条排列后，转储里最后一条 user 消息是动作协议说明，
+      按它反推出的检索词对所有回合几乎相同（2026-10-08 生产 117 个回合里
+      116 个如此）。
+    - 原因：本函数按「最后一条 user 消息」取检索词，只对逐条排列之前、把当前
+      回合用户文本放在末尾的提示词格式成立；留痕则无损记录了当轮真实检索词。
+    - 后果：去掉这条过滤，同一回合会以错误检索词同时进入两个样本池。
 
     :param db: 当前库连接。
     :param max_turns: 最多保留的样本数；省略时不限。
@@ -530,6 +543,13 @@ def build_turn_samples(
             " WHERE kind IN ('outbound_delivered', 'llm_final') AND turn_id IS NOT NULL"
         ).fetchall()
     }
+    traced_turns = {
+        int(row[0])
+        for row in db.execute(
+            "SELECT DISTINCT turn_id FROM pipeline_events"
+            " WHERE kind = 'memory_retrieval_trace' AND turn_id IS NOT NULL"
+        ).fetchall()
+    }
     samples: List[TurnSample] = []
     seen_turns: set[int] = set()
     for at, stream_id, turn_id, payload in db.execute(
@@ -538,7 +558,7 @@ def build_turn_samples(
     ):
         if turn_id is None or int(turn_id) not in replied_turns:
             continue
-        if int(turn_id) in seen_turns:
+        if int(turn_id) in seen_turns or int(turn_id) in traced_turns:
             continue
         try:
             task = json.loads(str(payload)).get('task')
@@ -1095,6 +1115,51 @@ class Round2Report:
             'untraced': self.untraced,
             'embedding': self.embedding,
             'per_turn': self.per_turn,
+            'generated_at': self.generated_at,
+        }
+
+    def traced_as_dict(self) -> Dict[str, Any]:
+        """只取留痕池，按 :meth:`EvalReport.as_dict` 的字段名序列化，供 WebUI 评估接口返回。
+
+        字段名沿用第一轮报告，页面与「现行 vs 草稿」对照按回合配对的逻辑不必
+        区分来源；无留痕池的行不进入本视图。
+
+        - ``sample_count`` / ``ndcg_mean`` / ``displaced_positive_total`` 与
+          ``per_turn`` 只含可评分回合（产生了回复且有事实进了提示词）：
+          无正例回合的 nDCG 恒为 0，计入逐回合配对会使均值偏低。
+        - ``recall_count_median`` / ``recall_count_mean`` 统计全部重放回合，
+          与 :func:`_aggregate_stream_groups` 同口径。
+        - ``replayed_count`` 是重放的留痕回合总数，``reconcile_mismatched``
+          是其中候选池与留痕对不上的回合数。
+
+        :return: API 响应字典。
+        副作用：无。
+        """
+
+        overall = self.traced['groups']['all']
+        return {
+            'profile': self.profile,
+            'params': self.params,
+            'k': self.k,
+            'sample_count': overall['scorable_count'],
+            'replayed_count': overall['sample_count'],
+            'reconcile_mismatched': self.traced['reconcile_mismatched'],
+            'ndcg_mean': overall['ndcg_mean'],
+            'recall_count_median': overall['recall_count_median'],
+            'recall_count_mean': overall['recall_count_mean'],
+            'displaced_positive_total': overall['displaced_positive_total'],
+            'per_turn': [
+                {
+                    'turn_id': row['turn_id'],
+                    'stream_kind': row['stream_kind'],
+                    'positive_count': row['positive_count'],
+                    'recall_count': row['recall_count'],
+                    'ndcg': row['ndcg'],
+                    'displaced_positive': row['displaced_positive'],
+                }
+                for row in self.per_turn
+                if row['pool'] == 'traced' and row['scorable']
+            ],
             'generated_at': self.generated_at,
         }
 

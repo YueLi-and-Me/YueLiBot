@@ -220,6 +220,12 @@ class ContextBuildMixin:
 
         return self._fact_recall_limit
 
+    @property
+    def private_facts_in_group(self) -> bool:
+        """``conversation.private_facts_in_group`` 的启动值；检索评估重放按它复现可见性规则。"""
+
+        return self._private_facts_in_group
+
     def _recall_turn_facts(
         self,
         context: ConversationContext,

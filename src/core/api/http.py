@@ -2605,8 +2605,12 @@ class TuningEvaluateBody(BaseModel):
     max_turns: int | None = Field(default=None, alias='maxTurns', ge=1, le=500)
 
 
-def _tuning_store_or_503() -> Any:
-    """返回评估重放所需的 MemoryStore，聊天服务未就绪时按 503 拒绝。"""
+def _tuning_store_or_503() -> tuple[Any, int, bool]:
+    """返回评估重放所需的 MemoryStore 与两项召回配置，聊天服务未就绪时按 503 拒绝。
+
+    :return: ``(MemoryStore, fact_recall_limit 配置初值, private_facts_in_group)``。
+    :raises fastapi.HTTPException: 聊天服务未初始化时 503。
+    """
 
     chat = app_state.chat
     if chat is None or getattr(chat, 'memory', None) is None:
@@ -2614,7 +2618,7 @@ def _tuning_store_or_503() -> Any:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail='聊天服务尚未初始化，无法评估',
         )
-    return chat.memory, int(chat.fact_recall_limit)
+    return chat.memory, int(chat.fact_recall_limit), chat.private_facts_in_group
 
 
 @router.get('/api/memory/tuning', dependencies=[Depends(_auth)])
@@ -2743,19 +2747,19 @@ async def retrieval_tuning_export(name: str = Query(default='')) -> dict:
 
 @router.post('/api/memory/tuning/evaluate', dependencies=[Depends(_auth)])
 async def retrieval_tuning_evaluate(body: TuningEvaluateBody) -> dict:
-    """按给定参数重放检索并返回 nDCG@k 与召回条数报告。
+    """按给定参数重放召回留痕，返回 nDCG@k 与召回条数报告。
 
-    评估样本从事件账本与提示词转储实时构建；重放只读。评估在线程池里执行，
-    期间事件循环照常处理聊天：待评估参数只沿重放路径显式传递，不写进程内
-    覆盖表，线上召回仍按已生效 profile。样本量受快照滚动保留量限制。
+    评估样本取自事件账本里的 ``memory_retrieval_trace`` 留痕；重放只读。评估在
+    线程池里执行，期间事件循环照常处理聊天：待评估参数只沿重放路径显式传递，
+    不写进程内覆盖表，线上召回仍按已生效 profile。样本量受事件账本保留量限制。
 
     :param body: ``profile`` 或 ``params`` 二选一；都不给时按当前生效覆盖评估。
-    :return: :class:`~src.core.memory.tuning.EvalReport` 的字典形态。
+    :return: :meth:`~src.core.memory.tuning.Round2Report.traced_as_dict` 的字典形态。
     :raises fastapi.HTTPException: 参数不在白名单时 400；服务未就绪时 503。
-    副作用：发一条 ``retrieval_eval_done`` 事件。
+    副作用：发一条 ``retrieval_eval_round2_done`` 事件。
     """
     db = _read_db_or_503()
-    store, config_limit = _tuning_store_or_503()
+    store, config_limit, private_in_group = _tuning_store_or_503()
     if body.profile is not None:
         params = tuning.load_profile_params(db, body.profile.strip())
         if params is None:
@@ -2770,7 +2774,7 @@ async def retrieval_tuning_evaluate(body: TuningEvaluateBody) -> dict:
     try:
         report = await run_in_thread(
             _retrieval_eval_run, db, store, params, profile_name,
-            config_limit, body.max_turns,
+            config_limit, private_in_group, body.max_turns,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -2786,19 +2790,44 @@ def _retrieval_eval_run(
     params: dict[str, float],
     profile_name: str | None,
     config_limit: int,
+    private_in_group: bool,
     max_turns: int | None,
 ) -> dict:
-    """工作线程里执行评估全流程：建样本、重放、汇总。"""
+    """工作线程里按召回留痕重放评估：建样本、重放、汇总。
 
-    samples = tuning.build_turn_samples(db, max_turns=max_turns)
-    report = tuning.evaluate(
+    检索词取留痕记录的当轮真实检索词（当前文本与会话印象），不从提示词转储
+    反推：决策提示词逐条排列后，转储里最后一条 user 消息是动作协议说明，反推
+    出的检索词对所有回合几乎相同，分数失去参考意义。
+
+    不传查询向量。留痕的正例取自本回合首份生产提示词；拆分决策与回复（默认）
+    时那是决策提示词，按词面排序截取、不经向量重排，不调向量的重放与之同口径，
+    也不产生模型调用。拆分关闭时首份提示词经过向量重排，吻合度会系统性偏低。
+
+    :param db: 进程级 SQLite 连接，用于构建评估样本。
+    :param store: 记忆存储实例，重放检索在其上执行。
+    :param params: 待评估的检索参数。
+    :param profile_name: 参数来源 profile 名；``None`` 表示临时参数集。
+    :param config_limit: 配置里的进提示词事实条数上限，作为 ``config_fact_limit`` 传入。
+    :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+    :param max_turns: 最多重放的留痕回合数；``None`` 表示事件账本里的全部留痕。
+    :return: :meth:`~src.core.memory.tuning.Round2Report.traced_as_dict` 的字典形态。
+    :raises ValueError: 参数不在白名单。
+    副作用：只读库与存储；发一条 ``retrieval_eval_round2_done`` 事件。
+    """
+
+    samples = tuning.build_trace_samples(db, max_turns=max_turns)
+    # 没有查询向量函数时 evaluate_round2 全程不挂起，在工作线程里以独立事件
+    # 循环同步执行完毕，不占用服务主循环。
+    report = asyncio.run(tuning.evaluate_round2(
         store,
         samples,
+        [],
         params,
         profile_name=profile_name,
         config_fact_limit=config_limit,
-    )
-    return report.as_dict()
+        private_in_group=private_in_group,
+    ))
+    return report.traced_as_dict()
 
 
 class ImportRunBody(BaseModel):
