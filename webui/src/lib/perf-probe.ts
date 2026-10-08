@@ -180,12 +180,37 @@ export function initPerfProbe(): void {
   window.addEventListener('unhandledrejection', () => marks.push('unhandledrejection'))
 
   /* ---- HUD：右下角单行状态条，1Hz 用 textContent 刷新，成本可忽略 ---- */
+  // 摆放约束：
+  // - bottom 56px：各页面的保存、翻页、批量操作都在 48px 面板底栏的右侧，
+  //   贴底放置会把这些按钮整块盖住，因此抬到底栏之上；
+  // - z-index 55：高于对话框与导航抽屉（z-50），低于通知（z-60），不遮挡操作反馈；
+  // - 指针靠近时淡出，露出下层被遮的内容；pointer-events:none 保证点击落到下层。
   const hud = document.createElement('div')
   hud.style.cssText =
-    'position:fixed;right:8px;bottom:8px;z-index:2147483647;padding:4px 8px;' +
+    'position:fixed;right:8px;bottom:56px;z-index:55;padding:4px 8px;' +
     'font:11px/1.5 ui-monospace,monospace;color:#e6ebf6;background:rgba(20,24,38,.88);' +
-    'border-radius:6px;pointer-events:none;white-space:pre'
+    'border-radius:6px;pointer-events:none;white-space:pre;transition:opacity .15s'
   document.body.appendChild(hud)
+
+  /* 淡出判定用缓存的 HUD 矩形，避免每次 pointermove 都触发布局计算干扰采样 */
+  const HUD_FADE_MARGIN = 24
+  let hudRect = hud.getBoundingClientRect()
+  const refreshHudRect = () => {
+    hudRect = hud.getBoundingClientRect()
+  }
+  window.addEventListener('resize', refreshHudRect, { passive: true })
+  document.addEventListener(
+    'pointermove',
+    (event) => {
+      const near =
+        event.clientX > hudRect.left - HUD_FADE_MARGIN &&
+        event.clientX < hudRect.right + HUD_FADE_MARGIN &&
+        event.clientY > hudRect.top - HUD_FADE_MARGIN &&
+        event.clientY < hudRect.bottom + HUD_FADE_MARGIN
+      hud.style.opacity = near ? '0.12' : '1'
+    },
+    { passive: true },
+  )
 
   const takeSample = () => {
     const heap =
@@ -231,6 +256,8 @@ export function initPerfProbe(): void {
     hud.textContent =
       `fps ${sample.fps}  gap ${sample.gap}ms  task ${sample.worstTask}ms×${sample.longTasks}  ` +
       `heap ${(sample.heap / 1048576).toFixed(0)}MB  dom ${sample.dom}  ws ${wsTotal}/s  fetch ${sample.fetches}/s`
+    // 文本宽度随数值变化，矩形跟着每秒的刷新一起更新。
+    refreshHudRect()
   }
 
   /* DOM 节点数 5 秒刷一次，全量计数本身有成本不宜每秒做 */

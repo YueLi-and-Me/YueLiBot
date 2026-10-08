@@ -39,16 +39,16 @@ export function Checkbox({ checked, onChange, label, className, disabled }: Chec
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'inline-flex cursor-pointer items-center gap-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex cursor-pointer items-center gap-2 text-[13px] text-foreground disabled:cursor-not-allowed disabled:opacity-50',
         className,
       )}
     >
       <span
         className={cn(
-          'inline-flex size-4 flex-none items-center justify-center rounded-[5px] border-[1.5px] transition-colors duration-150',
+          'inline-flex size-4 flex-none items-center justify-center rounded border transition-colors duration-150',
           checked
-            ? 'border-ink bg-primary text-primary-foreground'
-            : 'border-ink/50 bg-card hover:border-ink',
+            ? 'border-primary bg-primary text-primary-foreground'
+            : 'border-input bg-card hover:border-ring/60',
         )}
         aria-hidden="true"
       >

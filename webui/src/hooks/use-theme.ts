@@ -1,11 +1,11 @@
 /**
  * React 侧的主题读取与切换 hook。
  *
- * 初始值直接读取 `<html data-theme>`（由 lib/theme.ts 的 initTheme 在挂载前
- * 写入），切换时同步更新 DOM 属性与本地存储；被布局侧栏与登录页的主题开关
- * 引用。
+ * 主题的唯一事实来源是 `<html data-theme>`（由 lib/theme.ts 的 initTheme 在挂载
+ * 前写入）：本 hook 通过 MutationObserver 订阅该属性，侧栏、窄屏抽屉与登录页
+ * 等多处开关因此始终显示同一状态，系统偏好触发的自动切换也会同步到界面。
  */
-import { useState } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 
 import { applyTheme, type ThemeName } from '@/lib/theme'
 
@@ -20,20 +20,31 @@ interface ThemeState {
 }
 
 /**
+ * 订阅 `<html data-theme>` 的变化。
+ *
+ * @param onChange 属性变化时的通知回调。
+ * @returns 取消订阅函数。
+ */
+function subscribe(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange)
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  return () => observer.disconnect()
+}
+
+/** 读取当前生效的主题名。 */
+function currentTheme(): ThemeName {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
+}
+
+/**
  * 读取当前主题并提供切换方法。
  *
  * @returns 主题状态与切换函数。
  */
 export function useTheme(): ThemeState {
-  const [theme, setTheme] = useState<ThemeName>(() =>
-    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
-  )
-  const toggle = () => {
-    setTheme((current) => {
-      const next: ThemeName = current === 'dark' ? 'light' : 'dark'
-      applyTheme(next)
-      return next
-    })
-  }
+  const theme = useSyncExternalStore(subscribe, currentTheme)
+  const toggle = useCallback(() => {
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark')
+  }, [])
   return { theme, dark: theme === 'dark', toggle }
 }

@@ -2,8 +2,8 @@
  * 弹窗基础组件，替代各页面手写的 fixed 遮罩盒子。
  *
  * 通过 createPortal 挂载到 body，提供：ESC 关闭、遮罩点击关闭、简易焦点陷阱
- * （Tab 在弹窗内循环）、背景滚动锁定与 scale+fade 入场动画；遮罩带轻微
- * backdrop-blur 营造景深。确认类弹窗请使用 confirm-dialog.tsx 的封装。
+ * （Tab 在弹窗内循环）、背景滚动锁定与 scale+fade 入场动画。确认类弹窗请使用
+ * confirm-dialog.tsx 的封装。
  */
 import { X } from 'lucide-react'
 import { useEffect, useRef, type ReactNode } from 'react'
@@ -105,7 +105,7 @@ export function Dialog({
     <div className="fixed inset-0 z-50">
       {/* 遮罩：半透明前景色 + 轻微模糊，点击关闭 */}
       <div
-        className="absolute inset-0 animate-fade-in bg-foreground/35 backdrop-blur-[2px]"
+        className="absolute inset-0 animate-fade-in bg-black/40"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -116,14 +116,14 @@ export function Dialog({
           aria-modal="true"
           tabIndex={-1}
           className={cn(
-            'pointer-events-auto w-full animate-scale-in rounded-xl border-[1.5px] border-ink bg-card text-card-foreground shadow-dialog outline-none',
+            'pointer-events-auto w-full animate-scale-in rounded-xl border border-border bg-card text-card-foreground shadow-dialog outline-none',
             width,
             className,
           )}
         >
           <header className="flex items-start justify-between gap-4 px-5 pt-4 pb-1">
             <div className="min-w-0">
-              <h2 className="text-[15px] font-semibold tracking-tight">{title}</h2>
+              <h2 className="text-sm font-semibold">{title}</h2>
               {description ? (
                 <p className="mt-0.5 text-[13px] text-muted-foreground">{description}</p>
               ) : null}
@@ -132,14 +132,14 @@ export function Dialog({
               type="button"
               onClick={onClose}
               aria-label="关闭"
-              className="-mt-0.5 -mr-1.5 inline-flex size-7 flex-none cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="-mt-0.5 -mr-1.5 inline-flex size-7 flex-none cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             >
               <X className="size-4" aria-hidden="true" />
             </button>
           </header>
           <div className="px-5 py-3">{children}</div>
           {footer ? (
-            <footer className="flex items-center justify-end gap-2 rounded-b-xl border-t border-border bg-muted/40 px-5 py-3">
+            <footer className="flex items-center justify-end gap-2 rounded-b-xl border-t border-border bg-muted/50 px-5 py-3">
               {footer}
             </footer>
           ) : null}

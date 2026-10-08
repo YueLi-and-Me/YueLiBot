@@ -26,18 +26,16 @@
 import { Search, X } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { PaneFooter, ScrollArea, Toolbar } from '@/components/layout/panes'
 import {
   BatchBar,
   Button,
-  Card,
-  CardBody,
   Checkbox,
   Chip,
   ConfirmDialog,
   Empty,
   ErrorText,
-  Field,
   Input,
   Loading,
   Pager,
@@ -103,14 +101,14 @@ function JargonRow({
   return (
     <li
       className={cn(
-        'flex flex-col gap-1.5 border-b border-border/50 px-4 py-3 last:border-b-0',
+        'flex flex-col gap-1.5 border-b border-border-subtle px-6 py-3',
         rejected && 'opacity-55',
       )}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {/* 勾选框在行首，只喂批量动作；行内确认/驳回/删除与选择集互不影响。 */}
         <Checkbox checked={selected} onChange={() => onToggleSelect(entry.id)} disabled={pending} />
-        <span className={cn('text-[15px] font-semibold', rejected && 'line-through')}>
+        <span className={cn('text-sm font-semibold', rejected && 'line-through')}>
           「{entry.term}」
         </span>
         <Chip
@@ -169,7 +167,7 @@ function JargonRow({
         </Button>
       </div>
       {/* 释义普遍是长段落，默认收两行，完整内容悬停可见。 */}
-      <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground" title={entry.meaning}>
+      <p className="line-clamp-2 pl-7 text-[13px] leading-relaxed text-muted-foreground" title={entry.meaning}>
         {entry.meaning}
       </p>
     </li>
@@ -308,14 +306,10 @@ export function JargonPage() {
   const viewingRejected = status === 'rejected'
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="YUELI · CONSOLE"
-        title="黑话词表"
-        subtitle="只有他们才懂的说法与含义，默认后学到的排在最前。"
-      />
-      <div className="flex flex-wrap items-end gap-3">
+    <PageFrame hint="只有他们才懂的说法与含义，默认后学到的排在最前。">
+      <Toolbar>
         <SegmentedTabs
+          label="复核状态"
           tabs={[
             { value: 'confirmed', label: '已确认' },
             { value: 'pending', label: '待定' },
@@ -326,34 +320,33 @@ export function JargonPage() {
         />
         {/* 两个按钮表达四种口径：点已激活的按钮翻方向，箭头写在激活项的文案里。 */}
         <SegmentedTabs
+          label="排序"
           tabs={listOrderTabs(order)}
           value={listOrderField(order)}
           onChange={(field) => changeFilter(() => setOrder(nextListOrder(order, field)))}
         />
-        <Field label="范围" htmlFor="jargon-scope" className="w-64">
-          <Select
-            id="jargon-scope"
-            value={scope}
-            onChange={(event) => changeFilter(() => setScope(event.target.value))}
-          >
-            <option value="all">全部词条</option>
-            <option value="global">仅全局通用</option>
-            {streams.map((stream) => (
-              <option key={stream.id} value={stream.id}>
-                仅 {streamLabel(stream)}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        <form className="flex items-end gap-2" onSubmit={submitKeyword}>
-          <Field label="关键词" htmlFor="jargon-keyword" className="w-56">
-            <Input
-              id="jargon-keyword"
-              value={keywordInput}
-              placeholder="匹配词条或释义"
-              onChange={(event) => setKeywordInput(event.target.value)}
-            />
-          </Field>
+        <Select
+          aria-label="范围"
+          className="w-56"
+          value={scope}
+          onChange={(event) => changeFilter(() => setScope(event.target.value))}
+        >
+          <option value="all">全部词条</option>
+          <option value="global">仅全局通用</option>
+          {streams.map((stream) => (
+            <option key={stream.id} value={stream.id}>
+              仅 {streamLabel(stream)}
+            </option>
+          ))}
+        </Select>
+        <form className="ml-auto flex items-center gap-2" onSubmit={submitKeyword}>
+          <Input
+            aria-label="关键词"
+            className="w-56"
+            value={keywordInput}
+            placeholder="匹配词条或释义"
+            onChange={(event) => setKeywordInput(event.target.value)}
+          />
           <Button type="submit" variant="secondary" disabled={loading}>
             <Search className="size-4" aria-hidden="true" />
             搜索
@@ -361,7 +354,7 @@ export function JargonPage() {
           {keyword ? (
             <Button
               type="button"
-              variant="secondary"
+              variant="ghost"
               onClick={() => {
                 setKeywordInput('')
                 changeFilter(() => setKeyword(''))
@@ -372,78 +365,88 @@ export function JargonPage() {
             </Button>
           ) : null}
         </form>
-      </div>
+      </Toolbar>
 
-      {streamsError ? <ErrorText>{streamsError}</ErrorText> : null}
-      {error ? <ErrorText>{error}</ErrorText> : null}
-      {writeError ? <ErrorText>{writeError}</ErrorText> : null}
-      {loading ? <Loading>正在读取黑话词表…</Loading> : null}
-      {!loading && !error && entries.length === 0 ? (
-        <Empty>
-          {status === 'pending'
-            ? '没有待定词条——既没有等待判定的候选，也没有被判定为普通词的条目。'
-            : status === 'rejected'
-              ? '还没有驳回过词条。'
-              : '没有符合条件的词条。'}
-        </Empty>
-      ) : null}
       {entries.length > 0 ? (
-        <>
-          <BatchBar
-            pageAllSelected={selection.pageAllSelected}
-            onTogglePage={selection.togglePage}
-            selectedCount={selection.size}
-            onClear={selection.clear}
-            busy={batchPending}
+        <BatchBar
+          className="min-h-11 flex-none border-b border-border bg-primary-soft/60 px-6 py-1.5"
+          pageAllSelected={selection.pageAllSelected}
+          onTogglePage={selection.togglePage}
+          selectedCount={selection.size}
+          onClear={selection.clear}
+          busy={batchPending}
+        >
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={batchPending || selection.size === 0}
+            onClick={() => void reviewSelected('confirmed')}
           >
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={batchPending || selection.size === 0}
-              onClick={() => void reviewSelected('confirmed')}
-            >
-              批量确认
-            </Button>
-            {/* 已驳回页签上，同一个位置变成批量撤销：那里再点「驳回」没有意义。 */}
-            <Button
-              variant={viewingRejected ? 'secondary' : 'danger-outline'}
-              size="sm"
-              disabled={batchPending || selection.size === 0}
-              onClick={() => void reviewSelected(viewingRejected ? 'pending' : 'rejected')}
-            >
-              {viewingRejected ? '批量撤销驳回' : '批量驳回'}
-            </Button>
-            <Button
-              variant="danger-outline"
-              size="sm"
-              disabled={batchPending || selection.size === 0}
-              onClick={() => setBatchConfirm(true)}
-            >
-              {`批量删除 ${selection.size} 条`}
-            </Button>
-          </BatchBar>
-          <Card>
-            <CardBody className="p-0">
-              <ol>
-                {entries.map((entry) => (
-                  <JargonRow
-                    key={entry.id}
-                    entry={entry}
-                    streamLabelOf={streamLabelOf}
-                    pending={pendingId === entry.id || batchPending}
-                    selected={selection.selected.has(entry.id)}
-                    onReview={review}
-                    onDelete={setPendingDelete}
-                    onToggleSelect={selection.toggle}
-                  />
-                ))}
-              </ol>
-            </CardBody>
-          </Card>
-        </>
+            批量确认
+          </Button>
+          {/* 已驳回页签上，同一个位置变成批量撤销：那里再点「驳回」没有意义。 */}
+          <Button
+            variant={viewingRejected ? 'secondary' : 'danger-outline'}
+            size="sm"
+            disabled={batchPending || selection.size === 0}
+            onClick={() => void reviewSelected(viewingRejected ? 'pending' : 'rejected')}
+          >
+            {viewingRejected ? '批量撤销驳回' : '批量驳回'}
+          </Button>
+          <Button
+            variant="danger-outline"
+            size="sm"
+            disabled={batchPending || selection.size === 0}
+            onClick={() => setBatchConfirm(true)}
+          >
+            {`批量删除 ${selection.size} 条`}
+          </Button>
+        </BatchBar>
       ) : null}
 
-      <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+      <ScrollArea>
+        {streamsError || error || writeError ? (
+          <div className="px-6 pt-3">
+            {streamsError ? <ErrorText>{streamsError}</ErrorText> : null}
+            {error ? <ErrorText>{error}</ErrorText> : null}
+            {writeError ? <ErrorText>{writeError}</ErrorText> : null}
+          </div>
+        ) : null}
+        {loading ? <Loading>正在读取黑话词表…</Loading> : null}
+        {!loading && !error && entries.length === 0 ? (
+          <Empty>
+            {status === 'pending'
+              ? '没有待定词条——既没有等待判定的候选，也没有被判定为普通词的条目。'
+              : status === 'rejected'
+                ? '还没有驳回过词条。'
+                : '没有符合条件的词条。'}
+          </Empty>
+        ) : null}
+        {entries.length > 0 ? (
+          <ol>
+            {entries.map((entry) => (
+              <JargonRow
+                key={entry.id}
+                entry={entry}
+                streamLabelOf={streamLabelOf}
+                pending={pendingId === entry.id || batchPending}
+                selected={selection.selected.has(entry.id)}
+                onReview={review}
+                onDelete={setPendingDelete}
+                onToggleSelect={selection.toggle}
+              />
+            ))}
+          </ol>
+        ) : null}
+      </ScrollArea>
+
+      {total > 0 ? (
+        <PaneFooter>
+          <div className="flex-1">
+            <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+          </div>
+        </PaneFooter>
+      ) : null}
 
       <ConfirmDialog
         open={pendingDelete !== null}
@@ -477,6 +480,6 @@ export function JargonPage() {
         onCancel={() => setBatchConfirm(false)}
         onConfirm={() => void removeSelected()}
       />
-    </div>
+    </PageFrame>
   )
 }

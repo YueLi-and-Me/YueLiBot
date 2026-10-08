@@ -11,22 +11,12 @@
  * 因此看到的就是她真会想起的东西。数据来自 `@/hooks/use-memory-graph`，图形
  * 渲染在 `./AssociationGraph`。
  */
-import { Network, RefreshCw, Sparkles } from 'lucide-react'
+import { RefreshCw, Sparkles } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
-import {
-  Button,
-  Card,
-  CardBody,
-  Chip,
-  Empty,
-  ErrorText,
-  Loading,
-  Metric,
-  SectionHeading,
-  Toggle,
-} from '@/components/ui'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { Pane, PaneHeader, PaneTitle, Panes, ScrollArea, Toolbar } from '@/components/layout/panes'
+import { Button, Chip, Empty, ErrorText, Loading, Toggle } from '@/components/ui'
 import {
   useMemoryGraph,
   useSpreadPreview,
@@ -129,7 +119,7 @@ function MemoryRow({
       <button
         type="button"
         onClick={onClick}
-        className="flex w-full cursor-pointer items-baseline gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-muted"
+        className="-mx-2 flex w-[calc(100%+1rem)] cursor-pointer items-baseline gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted"
       >
         <KindDot kind={node.kind} />
         <span className="min-w-0 flex-1 truncate text-[13px]" title={node.text}>
@@ -138,6 +128,22 @@ function MemoryRow({
         <span className="flex-none font-mono text-[11px] text-muted-foreground">{badge}</span>
       </button>
     </li>
+  )
+}
+
+/**
+ * 渲染工具栏里的一项网络统计。
+ *
+ * @param props.label 统计名。
+ * @param props.value 统计值。
+ * @param props.detail 悬停时显示的口径说明。
+ * @returns 「名称 值」的行内片段。
+ */
+function GraphStat({ label, value, detail }: { label: string; value: number | string; detail: string }) {
+  return (
+    <span title={detail} className="whitespace-nowrap">
+      {label} <strong className="font-mono text-[13px] font-semibold text-foreground tabular-nums">{value}</strong>
+    </span>
   )
 }
 
@@ -188,100 +194,85 @@ export function MemoryGraphPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="YUELI · CONSOLE"
-        title="记忆联想网络"
-        subtitle="记忆之间「总是一起被想起」的那张边，以及从任意一条出发的扩散结果。"
-        actions={
-          <>
-            <Toggle
-              checked={includeFrozen}
-              onChange={setIncludeFrozen}
-              label="包含已冻结的边"
-            />
-            <Button variant="ghost" onClick={reload} disabled={loading}>
-              <RefreshCw className="size-4" aria-hidden="true" />
-              刷新
-            </Button>
-          </>
-        }
-      />
-
-      <Card>
-        <CardBody className="grid grid-cols-2 gap-x-6 gap-y-0 sm:grid-cols-3 lg:grid-cols-6">
-          <Metric label="节点" value={stats.nodeTotal} detail="三层记忆的指针" />
-          <Metric label="边" value={stats.edgeTotal} detail="一起被想起过的配对" />
-          <Metric label="活跃边" value={stats.activeEdges} detail="正在参与扩散" />
-          <Metric label="已冻结" value={stats.frozenEdges} detail="暂停参与，未删除" />
-          <Metric label="孤立节点" value={stats.isolated} detail="还没和谁一起出现过" />
-          <Metric
-            label="扩散跑过"
-            value={`${stats.spreadRuns} 次`}
-            detail="来自事件账本"
-          />
-        </CardBody>
-      </Card>
-
-      {stats.spreadRuns === 0 && stats.edgeTotal > 0 ? (
-        <Card>
-          <CardBody className="text-[13px] leading-relaxed text-muted-foreground">
-            <strong className="text-foreground">边在长，但还没有被读过。</strong>
-            {' '}
-            已经建起 {stats.edgeTotal} 条边，扩散却一次都没跑过——扩散只在她主动
-            选择「回忆」这个动作时才会发生。可以先用下面的扩散预览，看看这些边
-            真的被用起来时会牵出什么。
-          </CardBody>
-        </Card>
-      ) : null}
-
-      {error ? <ErrorText>{error}</ErrorText> : null}
-
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="min-h-[560px]">
-          <SectionHeading
-            title="联想网络"
-            subtitle={
-              stats.truncated
+    <PageFrame
+      hint="记忆之间「总是一起被想起」的那张边，以及从任意一条出发的扩散结果。"
+      actions={
+        <>
+          <Toggle checked={includeFrozen} onChange={setIncludeFrozen} label="包含已冻结的边" />
+          <Button variant="secondary" onClick={reload} disabled={loading}>
+            <RefreshCw className="size-4" aria-hidden="true" />
+            刷新
+          </Button>
+        </>
+      }
+    >
+      <Panes>
+        <Pane aria-label="联想网络">
+          <Toolbar className="gap-x-5 text-xs text-muted-foreground">
+            <GraphStat label="节点" value={stats.nodeTotal} detail="三层记忆的指针" />
+            <GraphStat label="边" value={stats.edgeTotal} detail="一起被想起过的配对" />
+            <GraphStat label="活跃边" value={stats.activeEdges} detail="正在参与扩散" />
+            <GraphStat label="已冻结" value={stats.frozenEdges} detail="暂停参与，未删除" />
+            <GraphStat label="孤立节点" value={stats.isolated} detail="还没和谁一起出现过" />
+            <GraphStat label="扩散跑过" value={`${stats.spreadRuns} 次`} detail="来自事件账本" />
+            <span className="ml-auto">
+              {stats.truncated
                 ? `节点过多，只画出连接最密的 ${nodes.length} 个`
-                : `${nodes.length} 个节点 · ${edges.length} 条边`
-            }
-            icon={<Network />}
-            tint="olive"
-          />
-          <div className="h-[520px] w-full">
+                : `画出 ${nodes.length} 个节点 · ${edges.length} 条边`}
+            </span>
+          </Toolbar>
+
+          {stats.spreadRuns === 0 && stats.edgeTotal > 0 ? (
+            <div className="flex-none border-b border-border bg-warning-soft px-6 py-2.5 text-[13px] leading-relaxed text-muted-foreground">
+              <strong className="text-warning">边在长，但还没有被读过。</strong>
+              {' '}
+              已经建起 {stats.edgeTotal} 条边，扩散却一次都没跑过——扩散只在她主动
+              选择「回忆」这个动作时才会发生。可以先在右侧的扩散预览里看看这些边
+              真的被用起来时会牵出什么。
+            </div>
+          ) : null}
+
+          {error ? <div className="flex-none px-6 pt-3"><ErrorText>{error}</ErrorText></div> : null}
+
+          <div
+            className="relative min-h-[420px] flex-1 bg-muted/40"
+            style={{
+              backgroundImage: 'radial-gradient(hsl(var(--border)) 1px, transparent 1px)',
+              backgroundSize: '20px 20px',
+            }}
+          >
             {loading ? (
-              <div className="grid h-full place-items-center">
+              <div className="absolute inset-0 grid place-items-center">
                 <Loading>正在读取联想网络…</Loading>
               </div>
             ) : nodes.length === 0 ? (
-              <div className="grid h-full place-items-center px-6">
+              <div className="absolute inset-0 grid place-items-center px-6">
                 <Empty>
                   还没有任何记忆被连起来。边只在两条记忆「一起被点亮」时才长出来：
                   同一批被提取，或同一次回忆里一起进了提示词。
                 </Empty>
               </div>
             ) : (
-              <AssociationGraph
-                nodes={nodes}
-                edges={edges}
-                selectedId={selectedId}
-                onSelect={selectNode}
-                spreadIds={spreadIds}
-                seedId={spread.seedNodeId}
-              />
+              <div className="absolute inset-0">
+                <AssociationGraph
+                  nodes={nodes}
+                  edges={edges}
+                  selectedId={selectedId}
+                  onSelect={selectNode}
+                  spreadIds={spreadIds}
+                  seedId={spread.seedNodeId}
+                />
+              </div>
             )}
           </div>
-        </Card>
+        </Pane>
 
-        <Card className="h-fit">
-          <SectionHeading
-            title={selected ? `${KIND_LABEL[selected.kind]} #${selected.refId}` : '怎么读这张图'}
-            subtitle={selected ? selected.label || '未分类' : '点击节点查看详情'}
-            icon={<Sparkles />}
-            tint="coral"
-          />
-          <CardBody>
+        <Pane width="inspector" aria-label="节点详情">
+          <PaneHeader>
+            <PaneTitle>{selected ? `${KIND_LABEL[selected.kind]} #${selected.refId}` : '怎么读这张图'}</PaneTitle>
+            {selected ? <span className="truncate text-xs text-subtle-foreground">{selected.label || '未分类'}</span> : null}
+          </PaneHeader>
+          <ScrollArea className="px-6 py-4">
             {selected === null ? (
               <GraphLegend />
             ) : (
@@ -300,7 +291,7 @@ export function MemoryGraphPage() {
                   <ErrorText>这条记忆已被删除，图上只剩下指向它的指针。</ErrorText>
                 ) : null}
 
-                <div className="border-t border-border pt-3">
+                <div className="border-t border-border pt-4">
                   <Button
                     onClick={() => spread.run(selected)}
                     disabled={spread.loading}
@@ -309,7 +300,7 @@ export function MemoryGraphPage() {
                     <Sparkles className="size-4" aria-hidden="true" />
                     从这里扩散
                   </Button>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-subtle-foreground">
                     跑的是她真实使用的那份扩散实现，只读不建边。与真机的唯一差别是
                     面板没有对话上下文，因此不含「刚才聊到过」的短期加成。
                   </p>
@@ -318,11 +309,11 @@ export function MemoryGraphPage() {
                 {spread.error ? <ErrorText>{spread.error}</ErrorText> : null}
                 {spread.seedNodeId === selected.id && !spread.loading ? (
                   <div>
-                    <h3 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground">
+                    <h3 className="mb-1 text-[11px] font-semibold tracking-[0.04em] text-subtle-foreground">
                       顺带想起来的
                     </h3>
                     {spread.hits.length === 0 ? (
-                      <p className="px-2 text-xs text-muted-foreground">
+                      <p className="text-xs text-muted-foreground">
                         没有牵出任何东西。它的邻居要么留存度太低被跳过，要么本身就是种子。
                       </p>
                     ) : (
@@ -341,10 +332,10 @@ export function MemoryGraphPage() {
                 ) : null}
 
                 <div>
-                  <h3 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground">
+                  <h3 className="mb-1 text-[11px] font-semibold tracking-[0.04em] text-subtle-foreground">
                     直接相连（{neighbours.length}）
                   </h3>
-                  <ul className="flex max-h-64 flex-col overflow-y-auto">
+                  <ul className="flex flex-col">
                     {neighbours.map(({ node, edge }) => (
                       <MemoryRow
                         key={edge.id}
@@ -357,9 +348,9 @@ export function MemoryGraphPage() {
                 </div>
               </div>
             )}
-          </CardBody>
-        </Card>
-      </div>
-    </div>
+          </ScrollArea>
+        </Pane>
+      </Panes>
+    </PageFrame>
   )
 }

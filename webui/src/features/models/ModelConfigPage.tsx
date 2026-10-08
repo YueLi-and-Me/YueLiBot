@@ -22,7 +22,8 @@ import {
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { Pane, PaneFooter, PaneHeader, PaneTitle, Panes, ScrollArea, Toolbar } from '@/components/layout/panes'
 import { hasDraftChanges, useRestart } from '@/hooks/use-restart'
 import {
   Button,
@@ -33,6 +34,7 @@ import {
   Dialog,
   ErrorText,
   Field,
+  FlatCards,
   Input,
   Loading,
   Metric,
@@ -41,6 +43,7 @@ import {
   Select,
   Textarea,
   Toggle,
+  cn,
   toast,
 } from '@/components/ui'
 import {
@@ -350,16 +353,18 @@ export function ModelConfigPage() {
 
   if (state.loading && !draft) {
     return (
-      <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
+      <PageFrame>
         <Loading>正在读取模型配置…</Loading>
-      </div>
+      </PageFrame>
     )
   }
   if (!draft) {
     return (
-      <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
-        <ErrorText>{state.error || '模型配置不可用'}</ErrorText>
-      </div>
+      <PageFrame>
+        <div className="px-6 pt-4">
+          <ErrorText>{state.error || '模型配置不可用'}</ErrorText>
+        </div>
+      </PageFrame>
     )
   }
 
@@ -572,118 +577,90 @@ export function ModelConfigPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="YUELI · CONSOLE"
-        title="模型管理"
-        subtitle="模型设置负责厂商与模型表；功能分配负责每个任务的候选模型。保存后重启后端生效。"
-        actions={
-          <>
-            <Button variant="secondary" onClick={state.reload} disabled={state.busy}>
-              <RefreshCw className="size-4" aria-hidden="true" />
-              重新读取
-            </Button>
-            <Button onClick={saveDraft} disabled={state.busy}>
-              <Save className="size-4" aria-hidden="true" />
-              保存配置
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => setRestartConfirmOpen(true)}
-              disabled={state.busy || restarting}
-            >
-              <RefreshCw className="size-4" aria-hidden="true" />
-              重启后端
-            </Button>
-          </>
-        }
-      />
-
-      {state.error ? <ErrorText>{state.error}</ErrorText> : null}
+    <PageFrame
+      hint="模型设置负责厂商与模型表；功能分配负责每个任务的候选模型。保存后重启后端生效。"
+      actions={
+        <>
+          <Button variant="secondary" onClick={state.reload} disabled={state.busy}>
+            <RefreshCw className="size-4" aria-hidden="true" />
+            重新读取
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setRestartConfirmOpen(true)}
+            disabled={state.busy || restarting}
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            重启后端
+          </Button>
+        </>
+      }
+    >
+      {state.error ? <div className="flex-none px-6 pt-3"><ErrorText>{state.error}</ErrorText></div> : null}
       {validationErrors.length ? (
-        <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
-          <p className="text-sm font-semibold text-destructive">保存前请先修正以下问题：</p>
-          <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-5 text-sm text-destructive">
+        <div role="alert" className="flex-none border-b border-destructive/30 bg-destructive-soft px-6 py-3">
+          <p className="text-[13px] font-semibold text-destructive">保存前请先修正以下问题：</p>
+          <ul className="mt-1.5 flex list-disc flex-col gap-1 pl-5 text-[13px] text-destructive">
             {validationErrors.map((message) => <li key={message}>{message}</li>)}
           </ul>
         </div>
       ) : null}
 
-      <Card className="animate-rise">
-        <CardBody className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <strong className="text-sm">桌面视觉（屏幕识别）</strong>
-              <p className="mt-1 text-xs text-muted-foreground">
-                控制桌宠截图识别；需要桌面视觉模型已在 vision 任务中可用。
-              </p>
-            </div>
+      {/* 三个视觉开关是全局功能开关，与当前页签无关，放在页签同一行的右侧；
+          每个开关的完整说明在悬停提示里。 */}
+      <Toolbar>
+        <SegmentedTabs
+          label="模型配置分页"
+          tabs={[
+            { value: 'models', label: '模型设置' },
+            { value: 'tasks', label: '功能分配' },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+        <div className="ml-auto flex flex-wrap items-center gap-x-5">
+          <span title="控制桌宠截图识别；需要桌面视觉模型已在 vision 任务中可用。">
             <Toggle
               checked={draft.vision_enabled}
               onChange={(checked) => setDraft((current) => current ? { ...current, vision_enabled: checked } : current)}
-              label={draft.vision_enabled ? '已开启' : '未开启'}
+              label="桌面视觉"
             />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-            <div className="min-w-0">
-              <strong className="text-sm">QQ 图片识别（聊天图片描述）</strong>
-              <p className="mt-1 text-xs text-muted-foreground">
-                控制 QQ 群聊/私聊图片的视觉描述；需要视觉模型并分配给 vision 任务。
-              </p>
-            </div>
+          </span>
+          <span title="控制 QQ 群聊/私聊图片的视觉描述；需要视觉模型并分配给 vision 任务。">
             <Toggle
               checked={draft.chat_image_enabled}
               onChange={(checked) => setDraft((current) => current ? { ...current, chat_image_enabled: checked } : current)}
-              label={draft.chat_image_enabled ? '已开启' : '未开启'}
+              label="QQ 图片识别"
             />
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-            <div className="min-w-0">
-              <strong className="text-sm">QQ 视频理解</strong>
-              <p className="mt-1 text-xs text-muted-foreground">
-                用全模态模型理解私聊和群聊里的视频（画面和声音）；需要全模态模型并分配给「视频理解」任务。关闭后视频只显示为 [视频]，不影响聊天。
-              </p>
-            </div>
+          </span>
+          <span title="用全模态模型理解私聊和群聊里的视频（画面和声音）；需要全模态模型并分配给「视频理解」任务。关闭后视频只显示为 [视频]，不影响聊天。">
             <Toggle
               checked={draft.chat_video_enabled}
               onChange={(checked) => setDraft((current) => current ? { ...current, chat_video_enabled: checked } : current)}
-              label={draft.chat_video_enabled ? '已开启' : '未开启'}
+              label="QQ 视频理解"
             />
-          </div>
-        </CardBody>
-      </Card>
-
-      <SegmentedTabs
-        tabs={[
-          { value: 'models', label: '模型设置' },
-          { value: 'tasks', label: '功能分配' },
-        ]}
-        value={tab}
-        onChange={setTab}
-        className="w-full"
-        tabClassName="flex-1"
-      />
+          </span>
+        </div>
+      </Toolbar>
 
       {tab === 'models' ? (
-        <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <Card className="animate-rise">
-            <SectionHeading
-              icon={<Cpu className="size-4.5" aria-hidden="true" />}
-              tint="coral"
-              title="模型厂商"
-              subtitle={`${draft.models.length} 个模型 · ${draft.providers.length} 个厂商`}
+        <Panes>
+          <Pane width="list" aria-label="模型厂商">
+            <PaneHeader
               actions={
                 <Button size="sm" variant="secondary" onClick={addProvider}>
-                  <Plus className="size-4" aria-hidden="true" />
+                  <Plus className="size-3.5" aria-hidden="true" />
                   添加厂商
                 </Button>
               }
-            />
-            <CardBody className="flex flex-col gap-1 p-2">
+            >
+              <PaneTitle count={draft.providers.length}>模型厂商</PaneTitle>
+            </PaneHeader>
+            <ScrollArea className="flex flex-col gap-px p-2">
               <button
                 type="button"
                 onClick={() => setProviderFilter('all')}
-                className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === 'all' ? 'bg-primary/10 font-semibold text-primary-strong' : 'hover:bg-muted'}`}
+                className={`flex w-full cursor-pointer items-center justify-between rounded-md px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === 'all' ? 'bg-primary-soft font-medium text-primary-strong' : 'hover:bg-muted'}`}
               >
                 <span>全部厂商</span>
                 <span className="font-mono text-xs">{draft.models.length}</span>
@@ -695,7 +672,7 @@ export function ModelConfigPage() {
                     <button
                       type="button"
                       onClick={() => setProviderFilter(provider.name)}
-                      className={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === provider.name ? 'bg-primary/10 font-semibold text-primary-strong' : 'hover:bg-muted'}`}
+                      className={`flex w-full cursor-pointer items-center justify-between rounded-md px-3 py-2 text-left text-[13px] transition-colors ${providerFilter === provider.name ? 'bg-primary-soft font-medium text-primary-strong' : 'hover:bg-muted'}`}
                     >
                       <span className="min-w-0">
                         <strong className="block truncate">{provider.name}</strong>
@@ -724,10 +701,15 @@ export function ModelConfigPage() {
                   </div>
                 )
               })}
-            </CardBody>
-          </Card>
+            </ScrollArea>
+          </Pane>
 
-          <div className="flex min-w-0 flex-col gap-4">
+          <Pane aria-label="模型列表">
+            <PaneHeader>
+              <PaneTitle count={visibleModels.length}>{providerFilter === 'all' ? '全部厂商' : providerFilter}</PaneTitle>
+            </PaneHeader>
+            <ScrollArea>
+            <FlatCards>
             {selectedProvider ? (
               <Card className="animate-rise">
                 <CardBody className="flex flex-wrap items-start justify-between gap-3">
@@ -962,18 +944,17 @@ export function ModelConfigPage() {
                 </div>
               </CardBody>
             </Card>
-          </div>
-        </div>
+            </FlatCards>
+            </ScrollArea>
+          </Pane>
+        </Panes>
       ) : (
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <Card className="animate-rise">
-            <SectionHeading
-              icon={<Cpu className="size-4.5" aria-hidden="true" />}
-              tint="plum"
-              title="模型类别"
-              subtitle="选择要配置的任务"
-            />
-            <CardBody className="flex flex-col gap-1 p-2">
+        <Panes>
+          <Pane width="list" aria-label="模型类别">
+            <PaneHeader>
+              <PaneTitle count={TASK_NAMES.length}>模型类别</PaneTitle>
+            </PaneHeader>
+            <ScrollArea className="flex flex-col gap-px p-2">
               {TASK_NAMES.map((task) => {
                 const config = draft.tasks[task]
                 const assigned = config?.model_list ?? []
@@ -982,7 +963,7 @@ export function ModelConfigPage() {
                     key={task}
                     type="button"
                     onClick={() => setSelectedTask(task)}
-                    className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${selectedTask === task ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+                    className={`flex w-full cursor-pointer items-center justify-between gap-3 rounded-md px-3 py-2 text-left text-[13px] transition-colors ${selectedTask === task ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
                     aria-pressed={selectedTask === task}
                     title={`${TASK_LABELS[task]}（${task}）：${TASK_DESCRIPTIONS[task]}
 选型建议：${TASK_ADVICE[task].note}`}
@@ -1013,13 +994,17 @@ export function ModelConfigPage() {
                   </button>
                 )
               })}
-            </CardBody>
-          </Card>
+            </ScrollArea>
+          </Pane>
 
-          <Card className="animate-rise">
+          <Pane aria-label="功能分配">
+          <PaneHeader>
+            <PaneTitle>{`功能分配 · ${taskLabel(selectedTask)}`}</PaneTitle>
+          </PaneHeader>
+          <ScrollArea>
+          <FlatCards hideTitles>
+          <Card>
             <SectionHeading
-              icon={<Cpu className="size-4.5" aria-hidden="true" />}
-              tint="plum"
               title={`功能分配 · ${taskLabel(selectedTask)}`}
               subtitle={`任务字段 ${selectedTask} · ${taskDescription(selectedTask)}；列表顺序只在「顺序优先」策略下决定先后`}
             />
@@ -1103,8 +1088,29 @@ export function ModelConfigPage() {
               })()}
             </CardBody>
           </Card>
-        </div>
+          </FlatCards>
+          </ScrollArea>
+          </Pane>
+        </Panes>
       )}
+
+      <PaneFooter className={cn(hasDraftChanges(draft, state.snapshot) && 'bg-warning-soft')}>
+        <span
+          className={cn(
+            'flex items-center gap-2 text-[13px]',
+            hasDraftChanges(draft, state.snapshot) ? 'text-warning' : 'text-subtle-foreground',
+          )}
+        >
+          {hasDraftChanges(draft, state.snapshot) ? (
+            <span className="size-1.5 rounded-full bg-tint-amber" aria-hidden="true" />
+          ) : null}
+          {hasDraftChanges(draft, state.snapshot) ? '有未保存的修改，保存后重启后端生效' : '与已保存的配置一致'}
+        </span>
+        <Button className="ml-auto" onClick={saveDraft} disabled={state.busy}>
+          <Save className="size-4" aria-hidden="true" />
+          保存配置
+        </Button>
+      </PaneFooter>
 
       {providerDialog ? (
         <ProviderDialog
@@ -1141,7 +1147,7 @@ export function ModelConfigPage() {
         }}
         onCancel={() => setProviderDeleteTarget(null)}
       />
-    </div>
+    </PageFrame>
   )
 }
 

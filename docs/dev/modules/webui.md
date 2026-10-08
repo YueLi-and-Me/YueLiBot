@@ -10,8 +10,8 @@ HttpOnly Cookie，前端不持有 token；严格 CSP 禁止内联脚本与外部
 - `webui/vite.config.ts`
   Vite 开发与构建配置：只处理前端资源打包，不启动 Python 服务；开发模式下
   由钩子移除 index.html 的 CSP meta 以放行 react-refresh。
-- `webui/index.html` / `webui/favicon.svg`
-  入口文档（只声明元信息与 `#root` 挂载容器）与站点图标。
+- `webui/index.html` / `webui/favicon.png`
+  入口文档（只声明元信息与 `#root` 挂载容器）与站点图标（月璃大头照，与文档站同源）。
 - `webui/src/main.tsx`
   挂载入口：React 渲染前先写主题属性避免首帧闪白，性能探针先于 `createRoot`
   初始化以接管 WebSocket / fetch 统计。
@@ -19,18 +19,38 @@ HttpOnly Cookie，前端不持有 token；严格 CSP 禁止内联脚本与外部
   根组件：路由容器、认证上下文与登录门禁。业务页面全部走 `React.lazy` 动态
   导入，登录页静态引入保证首屏直出。
 - `webui/src/components/layout/AppShell.tsx`
-  布局壳：桌面「浮动侧栏 + 主区」，窄屏退化为顶部导航条；路由切换播放入场
-  动画避免硬切。
+  布局壳：左侧导航栏 + 右侧工作区；页面块按需加载时只替换工作区，侧栏不闪；
+  持有窄屏导航抽屉的开关状态。
 - `webui/src/components/layout/Sidebar.tsx`
-  侧栏：品牌区、主导航、会话分区锚点、主题开关与登出；激活态用共享元素
-  转场在导航项间滑动。
+  导航栏与窄屏抽屉：品牌区、按 `nav.ts` 分组的页面入口、明暗主题与登出；
+  可收起为 56px 图标栏，收起状态存在 localStorage。
+- `webui/src/components/layout/nav.ts`
+  分组导航表与路由归属判定（最长前缀），侧栏、抽屉、页面顶栏的位置路径与
+  浏览器标题共用，新增页面只在这里登记一次。
+- `webui/src/components/layout/PageFrame.tsx`
+  每个业务页面的最外层：56px 顶栏（位置路径、用途提示、页面操作）+ 不滚动的
+  正文区域；滚动发生在正文里的面板内部，顶栏始终可见。
+- `webui/src/components/layout/panes.tsx`
+  面板式布局的积木：面板组、单个面板（列表 300 / 导航 260 / 检查器 320 /
+  填充）、48px 面板标题栏、工具栏、滚动区、底栏、小节与空态。
 - `webui/src/components/layout/BrandMark.tsx`
-  品牌标识组件，侧栏、窄屏顶栏与登录页共用。
-- `webui/src/components/layout/PageHeader.tsx`
-  页面头部：eyebrow 标识、标题、副标题与右侧工具区，业务页面统一使用。
+  品牌头像（月璃大头照），侧栏、抽屉与登录页共用。
 - `webui/src/index.css`
   设计令牌与全局样式的唯一入口：语义色 → Tailwind 主题映射 → 组件语义类名；
-  主题切换由 `<html data-theme>` 驱动。
+  主题切换由 `<html data-theme>` 驱动。配色取自月璃本人的形象：银白框架、
+  雾蓝主色、淡粉与琥珀点缀。
+
+## 页面模板
+
+工作区用细线切成面板，不使用浮动卡片；所有面板标题栏与工具栏都是 48px，
+底栏同样 48px，相邻面板的横线天然对齐。十二个页面归入五种模板：
+
+- 收件箱三栏（会话流 / 页签切换的详情 / 她的状态）：会话观察。
+- 列表加详情：人物与关系、模型与厂商、记忆管理。
+- 表格页（工具栏 + 批量操作条 + 列表 + 翻页底栏）：黑话词表、表达方式、
+  开发者命令；表情包库是它的宫格变体，右侧加容量检查栏。
+- 主内容加检查器：记忆联想网络（画布）、导入中心、检索调优。
+- 分区导航加表单加保存底栏：月璃设置。
 
 ## components/ui —— 基础组件
 
@@ -40,8 +60,9 @@ HttpOnly Cookie，前端不持有 token；严格 CSP 禁止内联脚本与外部
   Tailwind 类名组合工具，注册了本项目的自定义语义令牌参与冲突合并。
 - `webui/src/components/ui/button.tsx` / `webui/src/components/ui/card.tsx` /
   `webui/src/components/ui/data.tsx`
-  按钮形态全集、卡片与分区标题、指标行 / 进度条 / 标签 / 翻页条与空态、
-  加载、错误状态组件。
+  按钮形态全集；卡片与分区标题（放进面板时由 `FlatCards` 切换为无框的扁平
+  分区，可选隐藏与面板标题重复的分区名）；指标行 / 进度条 / 标签 / 翻页条
+  （含 300px 列表面板用的紧凑形态）与空态、加载、错误状态组件。
 - `webui/src/components/ui/field.tsx` / `webui/src/components/ui/checkbox.tsx` /
   `webui/src/components/ui/toggle.tsx`
   表单控件（字段包装器、输入框、文本域、原生下拉）、多选勾选框与即时开关。
@@ -49,25 +70,26 @@ HttpOnly Cookie，前端不持有 token；严格 CSP 禁止内联脚本与外部
   弹窗基座（Portal、焦点陷阱、ESC 与遮罩关闭）与替代 `window.confirm` 的
   确认弹窗封装。
 - `webui/src/components/ui/tabs.tsx`
-  分段选项卡：激活指示块用共享元素转场滑动；点击已激活项同样触发回调，
-  排序控件据此用两个按钮表达四种口径。
+  分段控件（筛选、排序）与下划线页签（面板标题栏里切换正文）；指示块用共享
+  元素转场滑动；点击已激活项同样触发回调，排序控件据此用两个按钮表达四种口径。
 - `webui/src/components/ui/batch-bar.tsx`
   批量操作工具条，表情包、黑话、表达方式三个词表页共用，选择态表述一致。
 - `webui/src/components/ui/toast.tsx` / `webui/src/components/ui/theme-switch.tsx`
-  模块级发布订阅的全局通知，以及日月昼夜动画主题开关。
+  模块级发布订阅的全局通知，以及登录页右上角的日月昼夜动画主题开关（控制台
+  内的主题切换是侧栏底部的两段控件）。
 
 ## features —— 业务页面
 
 - `webui/src/features/auth/LoginScreen.tsx`
   登录页：token 校验前的唯一可见界面，凭据只进 HttpOnly Cookie。
 - `webui/src/features/observe/ObservePage.tsx`
-  会话观察页（默认主页）：编排快照分区、阶段看板、事件账本、调用记录、
-  提示词工作台与实时日志；本组件只管会话选中态与自动刷新，不直接发请求。
-  - `webui/src/features/observe/StatusStrip.tsx`：顶部四张关键状态卡。
-  - `webui/src/features/observe/StageBoard.tsx`：各会话当前停在哪一步、停了
-    多久，秒级轮询。
-  - `webui/src/features/observe/SnapshotSections.tsx`：七个快照业务分区的
-    网格展示映射。
+  会话观察页（默认主页），收件箱三栏：左栏会话流（合并阶段看板的实时状态，
+  秒级轮询），中栏页签切换事件账本、调用记录、提示词工作台与实时日志（四个
+  面板始终挂载，切页签不断流），右栏「她现在」；本组件只管会话选中态、页签
+  与自动刷新，不直接发请求。
+  - `webui/src/features/observe/StatusStrip.tsx`：右栏顶部的关键状态摘要。
+  - `webui/src/features/observe/SnapshotSections.tsx`：七个快照业务分区，
+    在右栏纵向堆叠。
   - `webui/src/features/observe/TracePanel.tsx`：事件账本——轮次卡片、后台
     事件、历史检索与隔离重放对照。
   - `webui/src/features/observe/PromptRecordPanel.tsx`：分阶段调用记录，按
@@ -83,14 +105,16 @@ HttpOnly Cookie，前端不持有 token；严格 CSP 禁止内联脚本与外部
   月璃设置页：按后端返回的 settings_schema.json 动态渲染配置表单，页面不
   写死具体配置项；保存整包提交，后端启动级校验后原子写回。
 - `webui/src/features/persons/PersonsPage.tsx` /
-  `webui/src/features/persons/PersonDetailPage.tsx` /
+  `webui/src/features/persons/PersonProfilePane.tsx` /
+  `webui/src/features/persons/PersonAvatar.tsx` /
   `webui/src/features/persons/IdentityChips.tsx`
-  人物与关系列表、单人画像详情（关系、身份会话、事实记忆）与两端共用的
-  身份标签组渲染。
+  人物与关系页（列表加详情，`/persons` 与 `/persons/:id` 同一页，选中项写在
+  URL 里）、右侧画像面板（指标带、事实记忆、身份与会话）、人物字标头像与身份
+  标签组渲染。
 - `webui/src/features/emojis/EmojisPage.tsx`
   表情包库管理：浏览、封禁 / 解封 / 删除（封禁按内容哈希独立于记录存在，
-  删除不解封），逐张与批量两条路径，顶部给出库容量、目录占用与孤儿文件
-  总览。
+  删除不解封），逐张与批量两条路径，右侧检查栏给出库容量、目录占用与孤儿
+  文件总览。
 - `webui/src/features/expressions/ExpressionsPage.tsx`
   表达方式人工复核：确认（永不自动淘汰）、驳回（退出候选池但保留行）、
   删除（不可逆，可被重新学到）；「在用」与「在学」分开表述，自动淘汰只碰

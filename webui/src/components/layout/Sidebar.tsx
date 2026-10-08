@@ -1,268 +1,322 @@
 /**
- * 应用侧栏：随主题切换的一体化品牌与导航容器。
+ * 左侧导航栏与窄屏导航抽屉。
  *
- * 自上而下为品牌区（渐变水母标识 +「月璃」）、主导航（会话观察/模型与厂商/人物与
- * 关系/黑话词表/表达方式/记忆联想网络/月璃设置）、会话分区锚点组（仅会话观察页
- * 可见）、底部操作区（主题开关 + 登出）。
- * 导航激活态为浅青底 pill，通过 motion 的 `layoutId` 共享元素转场在导航项间
- * 滑动；窄屏时整体隐藏，由 AppShell 的顶部条替代。
+ * 导航栏铺在银白框架色上，自上而下为品牌区（月璃头像与名称）、按 nav.ts 分组的
+ * 页面入口、底部操作区（明暗主题、登出、收起）。品牌区高 56px，与工作区顶栏
+ * 同高，两者的底边连成一条横线。可收起为只显示图标的窄栏，收起状态持久化到
+ * localStorage。窄屏下导航栏隐藏，由页面顶栏的菜单按钮唤出同一份内容的抽屉。
  */
-import {
-  Activity,
-  BookMarked,
-  Cpu,
-  FileText,
-  LayoutGrid,
-  List,
-  ListChecks,
-  LogOut,
-  MessageSquare,
-  Network,
-  PackagePlus,
-  Quote,
-  Settings,
-  SlidersHorizontal,
-  SquareTerminal,
-  Sticker,
-  Terminal,
-  Users,
-} from 'lucide-react'
+import { LogOut, Moon, PanelLeftClose, PanelLeftOpen, Sun, X } from 'lucide-react'
 import { LayoutGroup, motion } from 'motion/react'
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useLocation } from 'react-router'
 
-import { ThemeSwitch, cn } from '@/components/ui'
+import { cn } from '@/components/ui'
 import { useAuth } from '@/hooks/use-auth'
 import { useTheme } from '@/hooks/use-theme'
 
 import { BrandMark } from './BrandMark'
+import { NAV_GROUPS, findActiveNav, type NavItem } from './nav'
 
-/** 会话观察页内的锚点分区导航项。 */
-const ANCHOR_ITEMS = [
-  { hash: '#overview', label: '运行总览', icon: LayoutGrid },
-  { hash: '#events', label: '事件账本', icon: List },
-  { hash: '#prompts', label: '提示词工作台', icon: FileText },
-  { hash: '#logs', label: '实时日志', icon: Terminal },
-] as const
+/** 激活底色的弹簧参数。 */
+const PILL_SPRING = { type: 'spring', stiffness: 520, damping: 40, mass: 0.6 } as const
 
-/** 激活 pill 的弹簧参数，全站导航滑动统一使用。 */
-const PILL_SPRING = { type: 'spring', stiffness: 480, damping: 38, mass: 0.6 } as const
+/** 侧栏收起状态的本地存储键名；值为 `'1'` 表示收起。 */
+const COLLAPSED_STORAGE_KEY = 'yueli-webui-sidebar-collapsed'
 
 /**
- * 渲染品牌区：渐变水母标识与面板名称。
+ * 读取并持久化侧栏收起状态。
  *
- * @returns 品牌区元素。
+ * @returns 当前是否收起与切换函数；存储不可用（如隐私模式）时只在本次会话内生效。
  */
-function Brand() {
+function useCollapsed(): [boolean, () => void] {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_STORAGE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggle = () => {
+    setCollapsed((current) => {
+      const next = !current
+      try {
+        localStorage.setItem(COLLAPSED_STORAGE_KEY, next ? '1' : '0')
+      } catch {
+        // 写入失败只影响持久化，收起状态在本次会话内已生效。
+      }
+      return next
+    })
+  }
+  return [collapsed, toggle]
+}
+
+interface IconButtonProps {
+  /** 无障碍名称，同时作为悬停提示。 */
+  label: string
+  onClick: () => void
+  children: ReactNode
+}
+
+/**
+ * 渲染导航栏里的方形图标按钮。
+ *
+ * @param props.label 无障碍名称与悬停提示。
+ * @param props.onClick 点击回调。
+ * @returns 28px 图标按钮。
+ */
+function IconButton({ label, onClick, children }: IconButtonProps) {
   return (
-    <div className="flex items-center gap-3 px-5 pt-6 pb-5">
-      <BrandMark className="size-9 rounded-xl" />
-      <div className="min-w-0 leading-tight">
-        <strong className="block truncate text-[15px] font-semibold text-sidebar-foreground">月璃</strong>
-        <span className="text-[10px] font-medium tracking-[0.18em] text-sidebar-muted">YUELI CONSOLE</span>
-      </div>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="inline-flex size-7 flex-none cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-nav-active hover:text-foreground [&>svg]:size-4"
+    >
+      {children}
+    </button>
+  )
+}
+
+/**
+ * 渲染明暗主题的两段切换。
+ *
+ * @returns radiogroup 元素；收起态改用单个图标按钮，见 Sidebar。
+ */
+function ThemeSegment() {
+  const { dark, toggle } = useTheme()
+  const option = (isDark: boolean, label: string, icon: ReactNode) => {
+    const checked = dark === isDark
+    return (
+      <button
+        type="button"
+        role="radio"
+        aria-checked={checked}
+        aria-label={label}
+        title={label}
+        onClick={() => {
+          if (!checked) toggle()
+        }}
+        className={cn(
+          'inline-flex h-6 w-7 cursor-pointer items-center justify-center rounded transition-colors [&>svg]:size-3.5',
+          checked ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground',
+        )}
+      >
+        {icon}
+      </button>
+    )
+  }
+  return (
+    <div role="radiogroup" aria-label="界面主题" className="mr-auto flex gap-0.5 rounded-md bg-nav-active p-0.5">
+      {option(false, '亮色主题', <Sun />)}
+      {option(true, '暗色主题', <Moon />)}
     </div>
   )
 }
 
-interface NavLinkProps {
-  /** 链接目标（路由路径或页内锚点）。 */
-  to: string
-  /** 是否当前激活。 */
-  active?: boolean
-  /** lucide 图标节点。 */
-  icon: ReactNode
-  /** 导航文本。 */
-  label: string
+/**
+ * 渲染品牌区：月璃头像与面板名称。
+ *
+ * @param props.collapsed 收起态只显示头像。
+ * @param props.trailing 品牌区右侧的附加按钮（抽屉里的关闭按钮），可选。
+ * @returns 品牌区元素，高 56px，带底部分隔线。
+ */
+function Brand({ collapsed, trailing }: { collapsed: boolean; trailing?: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        'flex h-14 flex-none items-center gap-2.5 border-b border-border',
+        collapsed ? 'justify-center' : 'pr-3 pl-5',
+      )}
+    >
+      <BrandMark className="size-7" />
+      {collapsed ? null : (
+        <div className="min-w-0 flex-1 leading-tight">
+          <strong className="block truncate text-sm font-semibold">月璃</strong>
+          <span className="block truncate text-[11px] text-subtle-foreground">管理控制台</span>
+        </div>
+      )}
+      {trailing}
+    </div>
+  )
+}
+
+interface NavEntryProps {
+  item: NavItem
+  active: boolean
+  collapsed: boolean
+  /** 激活底色的 layoutId 命名空间；侧栏与抽屉各用一个，互不串扰。 */
+  pillId: string
 }
 
 /**
- * 渲染单个侧栏导航项。
+ * 渲染单个页面入口。
  *
- * @param props.to 链接目标。
- * @param props.active 激活态：浅青底 pill（layoutId 滑动）+ 主色文字。
- * @returns 导航链接元素；锚点项使用原生 a，路由项使用 Link。
- * @remarks 必须位于 LayoutGroup 内，激活 pill 才能在导航项间滑动。
+ * @param props.item 入口定义。
+ * @param props.active 激活态：灰蓝底色（layoutId 滑动）+ 主色图标。
+ * @param props.collapsed 收起态只显示图标，名称移入悬停提示。
+ * @returns 路由链接元素。
  */
-function NavLink({ to, active = false, icon, label }: NavLinkProps) {
-  const classes = cn(
-    'relative flex items-center rounded-lg px-3 py-2 text-[13px] font-medium transition-colors duration-150',
-    active
-      ? 'text-sidebar-active-foreground'
-      : 'text-sidebar-muted hover:bg-sidebar-active/50 hover:text-sidebar-foreground',
-  )
-  const content = (
-    <>
+function NavEntry({ item, active, collapsed, pillId }: NavEntryProps) {
+  const Icon = item.icon
+  return (
+    <Link
+      to={item.to}
+      title={collapsed ? item.label : undefined}
+      aria-label={collapsed ? item.label : undefined}
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'relative flex h-8 items-center gap-2.5 rounded-md text-[13px] whitespace-nowrap transition-colors duration-150',
+        collapsed ? 'justify-center' : 'px-3',
+        active ? 'font-medium text-foreground' : 'text-muted-foreground hover:bg-nav-active/60 hover:text-foreground',
+      )}
+    >
       {active ? (
         <motion.span
-          layoutId="nav-active-pill"
-          className="absolute inset-0 rounded-lg bg-sidebar-active"
+          layoutId={pillId}
+          className="absolute inset-0 rounded-md bg-nav-active"
           transition={PILL_SPRING}
           aria-hidden="true"
         />
       ) : null}
-      <span className="relative z-10 flex items-center gap-2.5">
-        <span className="[&>svg]:size-4" aria-hidden="true">{icon}</span>
-        {label}
-      </span>
-    </>
-  )
-  if (to.startsWith('#')) {
-    return (
-      <a href={to} className={classes}>
-        {content}
-      </a>
-    )
-  }
-  return (
-    <Link to={to} className={classes}>
-      {content}
+      <Icon className={cn('relative z-10 size-4 flex-none', active ? 'text-primary' : null)} aria-hidden="true" />
+      {collapsed ? null : <span className="relative z-10 truncate">{item.label}</span>}
     </Link>
   )
 }
 
 /**
- * 渲染分区小标题。
+ * 渲染分组导航列表。
  *
- * @param props.children 标题文本。
- * @returns 小号大写字距的分区标题。
+ * @param props.collapsed 收起态用细分隔线代替分组标题。
+ * @param props.pillId 激活底色的 layoutId。
+ * @returns 可纵向滚动的 nav 元素。
  */
-function SectionTitle({ children }: { children: ReactNode }) {
+function NavList({ collapsed, pillId }: { collapsed: boolean; pillId: string }) {
+  const { pathname } = useLocation()
+  const active = findActiveNav(pathname)
   return (
-    <p className="px-3 pt-4 pb-1.5 text-[10px] font-semibold tracking-[0.16em] text-sidebar-muted/80">
-      {children}
-    </p>
+    <LayoutGroup id={pillId}>
+      <nav aria-label="主导航" className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-2 pt-1 pb-3">
+        {NAV_GROUPS.map((group, index) => (
+          <div key={group.label} className="flex flex-col gap-px">
+            {collapsed ? (
+              index > 0 ? <div className="mx-2 my-2 h-px bg-border" aria-hidden="true" /> : <div className="h-2" />
+            ) : (
+              <p className="px-3 pt-3.5 pb-1.5 text-[11px] font-semibold tracking-[0.04em] text-subtle-foreground">
+                {group.label}
+              </p>
+            )}
+            {group.items.map((item) => (
+              <NavEntry
+                key={item.to}
+                item={item}
+                active={active.item === item}
+                collapsed={collapsed}
+                pillId={`${pillId}-pill`}
+              />
+            ))}
+          </div>
+        ))}
+      </nav>
+    </LayoutGroup>
   )
 }
 
 /**
- * 渲染一体化侧栏。
+ * 渲染桌面端导航栏。
  *
- * @returns aside 侧栏元素；宽 244px，桌面端常驻。
- * @remarks 「会话分区」锚点组仅在会话观察页展示，人物与关系页整组隐藏（与旧版
- * 行为一致，避免锚点指向不存在的分区）。
+ * @returns aside 元素；展开 240px、收起 56px，仅在 lg 及以上断点显示。
  */
 export function Sidebar() {
   const { logout } = useAuth()
-  const { dark, toggle } = useTheme()
-  const location = useLocation()
-  const onPersons = location.pathname.startsWith('/persons')
-  const onModels = location.pathname.startsWith('/models')
-  const onSettings = location.pathname.startsWith('/settings')
-  const onDeveloperCommands = location.pathname.startsWith('/developer/commands')
-  const onJargon = location.pathname.startsWith('/jargon')
-  const onExpressions = location.pathname.startsWith('/expressions')
-  const onMemoryTuning = location.pathname.startsWith('/memory/tuning')
-  const onMemoryImport = location.pathname.startsWith('/memory/import')
-  const onMemoryManage = location.pathname.startsWith('/memory/manage')
-  const onMemory =
-    location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport && !onMemoryManage
-  const onEmojis = location.pathname.startsWith('/emojis')
-  const onHome =
-    !onPersons && !onModels && !onSettings && !onDeveloperCommands && !onJargon && !onExpressions && !onMemory
-    && !onMemoryTuning && !onMemoryImport && !onMemoryManage && !onEmojis
+  const { dark, toggle: toggleTheme } = useTheme()
+  const [collapsed, toggleCollapsed] = useCollapsed()
 
   return (
-    <aside className="m-3 mr-0 hidden w-(--sidebar-width) flex-none flex-col rounded-2xl border border-sidebar-border bg-sidebar shadow-card lg:flex">
-      <Brand />
-      <LayoutGroup id="sidebar-nav">
-        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-3">
-          <SectionTitle>概览</SectionTitle>
-          <NavLink to="/" active={onHome} icon={<MessageSquare />} label="会话观察" />
-          <NavLink to="/models" active={location.pathname.startsWith('/models')} icon={<Cpu />} label="模型与厂商" />
-          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
-          <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
-          <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
-          <NavLink to="/memory" active={onMemory} icon={<Network />} label="记忆联想网络" />
-          <NavLink to="/memory/tuning" active={onMemoryTuning} icon={<SlidersHorizontal />} label="检索调优" />
-          <NavLink to="/memory/import" active={onMemoryImport} icon={<PackagePlus />} label="导入中心" />
-          <NavLink to="/memory/manage" active={onMemoryManage} icon={<ListChecks />} label="记忆管理" />
-          <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
-          <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
-          <NavLink to="/developer/commands" active={onDeveloperCommands} icon={<SquareTerminal />} label="开发者命令" />
-          {onHome ? (
-            <div className="mt-1 border-t border-sidebar-border/60 pt-1">
-              <SectionTitle>会话分区</SectionTitle>
-              {ANCHOR_ITEMS.map((item) => (
-                <NavLink key={item.hash} to={item.hash} icon={<item.icon />} label={item.label} />
-              ))}
-            </div>
-          ) : null}
-        </nav>
-      </LayoutGroup>
-      <div className="flex items-center justify-between gap-2 border-t border-sidebar-border px-4 py-3.5">
-        <ThemeSwitch dark={dark} onToggle={toggle} />
-        <button
-          type="button"
-          onClick={() => void logout()}
-          className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-sidebar-muted transition-colors hover:bg-sidebar-active/50 hover:text-sidebar-foreground"
-        >
-          <LogOut className="size-4" aria-hidden="true" />
-          登出
-        </button>
-      </div>
+    <aside
+      className={cn(
+        'hidden flex-none flex-col border-r border-border bg-chrome transition-[width] duration-200 ease-emphasized lg:flex',
+        collapsed ? 'w-(--sidebar-width-collapsed)' : 'w-(--sidebar-width)',
+      )}
+    >
+      <Brand collapsed={collapsed} />
+      <NavList collapsed={collapsed} pillId="sidebar-nav" />
+      {collapsed ? (
+        <div className="flex flex-none flex-col items-center gap-1 border-t border-border py-3">
+          <IconButton label={dark ? '切换到亮色主题' : '切换到暗色主题'} onClick={toggleTheme}>
+            {dark ? <Moon /> : <Sun />}
+          </IconButton>
+          <IconButton label="登出" onClick={() => void logout()}>
+            <LogOut />
+          </IconButton>
+          <IconButton label="展开侧栏" onClick={toggleCollapsed}>
+            <PanelLeftOpen />
+          </IconButton>
+        </div>
+      ) : (
+        <div className="flex h-14 flex-none items-center gap-1 border-t border-border pr-3 pl-5">
+          <ThemeSegment />
+          <IconButton label="登出" onClick={() => void logout()}>
+            <LogOut />
+          </IconButton>
+          <IconButton label="收起侧栏" onClick={toggleCollapsed}>
+            <PanelLeftClose />
+          </IconButton>
+        </div>
+      )}
     </aside>
   )
 }
 
 /**
- * 渲染窄屏顶部导航条（侧栏的移动退化形态）。
+ * 渲染窄屏导航抽屉。
  *
- * @returns 顶部条元素；仅在小屏显示，横向滚动容纳导航项。
+ * @param props.open 是否打开。
+ * @param props.onClose 关闭回调（遮罩点击、ESC、关闭按钮）。
+ * @returns 打开时经 portal 挂到 body 的抽屉；关闭时不渲染。
  */
-export function MobileTopbar() {
+export function NavDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { logout } = useAuth()
-  const { dark, toggle } = useTheme()
-  const location = useLocation()
-  const onPersons = location.pathname.startsWith('/persons')
-  const onModels = location.pathname.startsWith('/models')
-  const onSettings = location.pathname.startsWith('/settings')
-  const onDeveloperCommands = location.pathname.startsWith('/developer/commands')
-  const onJargon = location.pathname.startsWith('/jargon')
-  const onExpressions = location.pathname.startsWith('/expressions')
-  const onMemoryTuning = location.pathname.startsWith('/memory/tuning')
-  const onMemoryImport = location.pathname.startsWith('/memory/import')
-  const onMemoryManage = location.pathname.startsWith('/memory/manage')
-  const onMemory =
-    location.pathname.startsWith('/memory') && !onMemoryTuning && !onMemoryImport && !onMemoryManage
-  const onEmojis = location.pathname.startsWith('/emojis')
 
-  return (
-    <div className="flex flex-none items-center gap-2 border-b border-sidebar-border bg-sidebar px-3 py-2 lg:hidden">
-      <BrandMark className="size-7 rounded-lg" />
-      <LayoutGroup id="mobile-topbar">
-        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          <NavLink
-            to="/"
-            active={
-              !onPersons && !onModels && !onSettings && !onDeveloperCommands && !onJargon && !onExpressions
-              && !onMemory && !onMemoryTuning && !onMemoryImport && !onMemoryManage && !onEmojis
-            }
-            icon={<Activity />}
-            label="会话观察"
-          />
-          <NavLink to="/models" active={onModels} icon={<Cpu />} label="模型与厂商" />
-          <NavLink to="/persons" active={onPersons} icon={<Users />} label="人物与关系" />
-          <NavLink to="/jargon" active={onJargon} icon={<BookMarked />} label="黑话词表" />
-          <NavLink to="/expressions" active={onExpressions} icon={<Quote />} label="表达方式" />
-          <NavLink to="/memory" active={onMemory} icon={<Network />} label="记忆联想网络" />
-          <NavLink to="/memory/tuning" active={onMemoryTuning} icon={<SlidersHorizontal />} label="检索调优" />
-          <NavLink to="/memory/import" active={onMemoryImport} icon={<PackagePlus />} label="导入中心" />
-          <NavLink to="/memory/manage" active={onMemoryManage} icon={<ListChecks />} label="记忆管理" />
-          <NavLink to="/emojis" active={onEmojis} icon={<Sticker />} label="表情包库" />
-          <NavLink to="/settings" active={onSettings} icon={<Settings />} label="月璃设置" />
-          <NavLink to="/developer/commands" active={onDeveloperCommands} icon={<SquareTerminal />} label="开发者命令" />
-        </nav>
-      </LayoutGroup>
-      <ThemeSwitch dark={dark} onToggle={toggle} className="scale-[0.85]" />
-      <button
-        type="button"
-        onClick={() => void logout()}
-        aria-label="登出"
-        className="cursor-pointer rounded-lg p-1.5 text-sidebar-muted transition-colors hover:bg-sidebar-active/50 hover:text-sidebar-foreground"
+  useEffect(() => {
+    if (!open) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open, onClose])
+
+  if (!open) return null
+  return createPortal(
+    <div className="fixed inset-0 z-50 lg:hidden">
+      <div className="absolute inset-0 animate-fade-in bg-black/40" onClick={onClose} aria-hidden="true" />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label="导航"
+        className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] animate-drawer-in flex-col bg-chrome shadow-dialog"
       >
-        <LogOut className="size-4" aria-hidden="true" />
-      </button>
-    </div>
+        <Brand
+          collapsed={false}
+          trailing={
+            <IconButton label="关闭导航" onClick={onClose}>
+              <X />
+            </IconButton>
+          }
+        />
+        <NavList collapsed={false} pillId="drawer-nav" />
+        <div className="flex h-14 flex-none items-center gap-1 border-t border-border pr-3 pl-5">
+          <ThemeSegment />
+          <IconButton label="登出" onClick={() => void logout()}>
+            <LogOut />
+          </IconButton>
+        </div>
+      </aside>
+    </div>,
+    document.body,
   )
 }

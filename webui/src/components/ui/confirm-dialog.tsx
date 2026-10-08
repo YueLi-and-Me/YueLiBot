@@ -63,7 +63,8 @@ export function ConfirmDialog({
         </>
       }
     >
-      {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
+      {/* 用 div 而不是 p：调用方的 description 里常带自己的段落，p 套 p 是非法嵌套。 */}
+      {description ? <div className="text-[13px] leading-relaxed text-muted-foreground">{description}</div> : null}
     </Dialog>
   )
 }

@@ -14,19 +14,17 @@
  * 提示词快照滚动保留量限制，报告里的样本数就是窗口内可评估的回合数。
  */
 import { Download, Play, RotateCcw, Save, SlidersHorizontal } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { Pane, PaneHeader, PaneTitle, Panes, ScrollArea } from '@/components/layout/panes'
 import {
   Button,
-  Card,
-  CardBody,
   Chip,
   Empty,
   ErrorText,
   Loading,
   Metric,
-  SectionHeading,
 } from '@/components/ui'
 import {
   useRetrievalTuning,
@@ -168,31 +166,31 @@ export function RetrievalTuningPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        eyebrow="YUELI · MEMORY"
-        title="检索调优"
-        subtitle="事实召回的排序参数、命名 profile 与弱监督评估；当前生效项同时出现在启动横幅里"
-        actions={
-          <Button variant="ghost" size="sm" onClick={() => void reload()}>
-            <RotateCcw className="h-4 w-4" /> 刷新
-          </Button>
-        }
-      />
-
-      {error && <ErrorText>{error}</ErrorText>}
-      {message && (
-        <Card>
-          <CardBody className="py-2 text-sm">{message}</CardBody>
-        </Card>
-      )}
-      {loading && !overview && <Loading>正在读取调优状态…</Loading>}
+    <PageFrame
+      hint="事实召回的排序参数、命名 profile 与弱监督评估；当前生效项同时出现在启动横幅里"
+      actions={
+        <Button variant="secondary" onClick={() => void reload()}>
+          <RotateCcw className="size-4" aria-hidden="true" />
+          刷新
+        </Button>
+      }
+    >
+      <Panes>
+        <Pane aria-label="参数与评估">
+          <PaneHeader>
+            <PaneTitle>参数与评估</PaneTitle>
+          </PaneHeader>
+          <ScrollArea>
+      {error ? <div className="px-6 pt-3"><ErrorText>{error}</ErrorText></div> : null}
+      {message ? (
+        <div className="border-b border-border bg-primary-soft px-6 py-2.5 text-[13px]">{message}</div>
+      ) : null}
+      {loading && !overview ? <Loading>正在读取调优状态…</Loading> : null}
 
       {overview && (
         <>
-          <Card>
-            <CardBody className="space-y-3">
-              <SectionHeading
+          <section className="space-y-3 border-b border-border px-6 py-5">
+              <SectionTitle
                 title="当前生效"
                 actions={
                   <div className="flex items-center gap-2">
@@ -216,12 +214,10 @@ export function RetrievalTuningPage() {
                   `：${Object.keys(activeOverrides).join('、')}`}
                 。应用新 profile 后立即生效，无需重启。
               </p>
-            </CardBody>
-          </Card>
+          </section>
 
-          <Card>
-            <CardBody className="space-y-3">
-              <SectionHeading
+          <section className="space-y-3 border-b border-border px-6 py-5">
+              <SectionTitle
                 title="参数表（白名单）"
                 actions={
                   <div className="flex items-center gap-2">
@@ -301,20 +297,95 @@ export function RetrievalTuningPage() {
                   <Play className="h-4 w-4" /> 按当前生效评估
                 </Button>
               </div>
-            </CardBody>
-          </Card>
+          </section>
 
-          <Card>
-            <CardBody className="space-y-3">
-              <SectionHeading title="已保存的 profile" />
+
+          <section className="space-y-3 border-b border-border px-6 py-5">
+              <SectionTitle title="评估报告" />
+              {busy && <Loading>正在重放检索……</Loading>}
+              {!busy && !report && <Empty>还没跑过评估；点上面的评估按钮开始</Empty>}
+              {report && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <Metric label="样本回合" value={report.sample_count} />
+                    <Metric label={`nDCG@${report.k}`} value={report.ndcg_mean.toFixed(4)} />
+                    <Metric
+                      label="召回条数 中位/均值"
+                      value={`${report.recall_count_median}/${report.recall_count_mean}`}
+                    />
+                    <Metric
+                      label="被挤掉的正例"
+                      value={report.displaced_positive_total}
+                      detail="该进而没进前 k 的条数"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    弱监督口径：正例 = 进了提示词且该回合产生了回复的事实；报告度量的是
+                    「换参数后既定选择的稳定性」。被挤掉的正例是首要观察项——
+                    它直接回答「该进的有没有被顶出去」。
+                  </p>
+                  {report.per_turn.length > 0 && (
+                    <details className="rounded border p-2">
+                      <summary className="cursor-pointer text-sm text-muted-foreground">
+                        逐回合明细（{report.per_turn.length} 条）
+                      </summary>
+                      <div className="mt-2 max-h-72 overflow-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b text-left text-muted-foreground">
+                              <th className="py-1 pr-3">turn</th>
+                              <th className="py-1 pr-3">场合</th>
+                              <th className="py-1 pr-3">正例</th>
+                              <th className="py-1 pr-3">重放召回</th>
+                              <th className="py-1 pr-3">nDCG</th>
+                              <th className="py-1">被挤掉</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {report.per_turn.map((row) => (
+                              <tr key={row.turn_id} className="border-b last:border-0">
+                                <td className="py-1 pr-3 font-mono">{row.turn_id}</td>
+                                <td className="py-1 pr-3">{row.stream_kind}</td>
+                                <td className="py-1 pr-3">{row.positive_count}</td>
+                                <td className="py-1 pr-3">{row.recall_count}</td>
+                                <td className="py-1 pr-3">{row.ndcg.toFixed(4)}</td>
+                                <td className="py-1">{row.displaced_positive}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </details>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    生成于 {new Date(report.generated_at).toLocaleString()}；参数：
+                    {Object.keys(report.params).length > 0
+                      ? Object.entries(report.params)
+                          .map(([key, value]) => `${key}=${value}`)
+                          .join('、')
+                      : '（default，无覆盖）'}
+                  </p>
+                </div>
+              )}
+          </section>
+        </>
+      )}
+          </ScrollArea>
+        </Pane>
+        {overview ? (
+          <Pane width="inspector" aria-label="已保存的 profile">
+            <PaneHeader>
+              <PaneTitle count={overview.profiles.length}>已保存的 profile</PaneTitle>
+            </PaneHeader>
+            <ScrollArea className="px-6 py-2">
               {overview.profiles.length === 0 ? (
                 <Empty>还没有保存过 profile</Empty>
               ) : (
-                <div className="space-y-2">
+                <div>
                   {overview.profiles.map((profile) => (
                     <div
                       key={profile.name}
-                      className="flex flex-wrap items-center gap-2 rounded border px-3 py-2 text-sm"
+                      className="flex flex-wrap items-center gap-2 border-b border-border-subtle py-3 text-[13px] last:border-b-0"
                     >
                       <span className="font-mono text-xs">{profile.name}</span>
                       {profile.name === activeName && (
@@ -348,81 +419,26 @@ export function RetrievalTuningPage() {
                   ))}
                 </div>
               )}
-            </CardBody>
-          </Card>
+            </ScrollArea>
+          </Pane>
+        ) : null}
+      </Panes>
+    </PageFrame>
+  )
+}
 
-          <Card>
-            <CardBody className="space-y-3">
-              <SectionHeading title="评估报告" />
-              {busy && <Loading>正在重放检索……</Loading>}
-              {!busy && !report && <Empty>还没跑过评估；点上面的评估按钮开始</Empty>}
-              {report && (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                    <Metric label="样本回合" value={report.sampleCount} />
-                    <Metric label={`nDCG@${report.k}`} value={report.ndcgMean.toFixed(4)} />
-                    <Metric
-                      label="召回条数 中位/均值"
-                      value={`${report.recallCountMedian}/${report.recallCountMean}`}
-                    />
-                    <Metric
-                      label="被挤掉的正例"
-                      value={report.displacedPositiveTotal}
-                      detail="该进而没进前 k 的条数"
-                    />
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    弱监督口径：正例 = 进了提示词且该回合产生了回复的事实；报告度量的是
-                    「换参数后既定选择的稳定性」。被挤掉的正例是首要观察项——
-                    它直接回答「该进的有没有被顶出去」。
-                  </p>
-                  {report.perTurn.length > 0 && (
-                    <details className="rounded border p-2">
-                      <summary className="cursor-pointer text-sm text-muted-foreground">
-                        逐回合明细（{report.perTurn.length} 条）
-                      </summary>
-                      <div className="mt-2 max-h-72 overflow-auto">
-                        <table className="w-full text-xs">
-                          <thead>
-                            <tr className="border-b text-left text-muted-foreground">
-                              <th className="py-1 pr-3">turn</th>
-                              <th className="py-1 pr-3">场合</th>
-                              <th className="py-1 pr-3">正例</th>
-                              <th className="py-1 pr-3">重放召回</th>
-                              <th className="py-1 pr-3">nDCG</th>
-                              <th className="py-1">被挤掉</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {report.perTurn.map((row) => (
-                              <tr key={row.turnId} className="border-b last:border-0">
-                                <td className="py-1 pr-3 font-mono">{row.turnId}</td>
-                                <td className="py-1 pr-3">{row.streamKind}</td>
-                                <td className="py-1 pr-3">{row.positiveCount}</td>
-                                <td className="py-1 pr-3">{row.recallCount}</td>
-                                <td className="py-1 pr-3">{row.ndcg.toFixed(4)}</td>
-                                <td className="py-1">{row.displacedPositive}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </details>
-                  )}
-                  <p className="text-xs text-muted-foreground">
-                    生成于 {new Date(report.generatedAt).toLocaleString()}；参数：
-                    {Object.keys(report.params).length > 0
-                      ? Object.entries(report.params)
-                          .map(([key, value]) => `${key}=${value}`)
-                          .join('、')
-                      : '（default，无覆盖）'}
-                  </p>
-                </div>
-              )}
-            </CardBody>
-          </Card>
-        </>
-      )}
+/**
+ * 渲染面板内分区的标题行。
+ *
+ * @param props.title 分区标题。
+ * @param props.actions 标题右侧的操作，可选。
+ * @returns 标题行。
+ */
+function SectionTitle({ title, actions }: { title: string; actions?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <h2 className="text-[13px] font-semibold">{title}</h2>
+      {actions}
     </div>
   )
 }

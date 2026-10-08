@@ -1,9 +1,9 @@
 /**
  * 表单控件基础组件：字段包装器、输入框、文本域与原生下拉框。
  *
- * 控件统一 12px 圆角与发丝描边；悬停时描边加深，聚焦时主色描边 + 双层柔光
- * 焦点环（叠加在全局 outline 焦点环之上，视觉更细腻）；Select 使用原生 select
- * 保证键盘与读屏行为，右侧内嵌 chevron 图标替换浏览器默认箭头。
+ * 控件统一高 32px、6px 圆角与细描边，与按钮等高，便于在工具栏里排成一行；
+ * 悬停时描边加深，聚焦时主色描边加柔光焦点环；Select 使用原生 select 保证键盘
+ * 与读屏行为，右侧内嵌 chevron 图标替换浏览器默认箭头。
  */
 import { ChevronDown, Info } from 'lucide-react'
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react'
@@ -11,7 +11,7 @@ import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTML
 import { cn } from './cn'
 
 const CONTROL_CLASSES =
-  'w-full rounded-lg border border-input bg-card px-3 text-sm text-foreground transition-[border-color,box-shadow] duration-150 placeholder:text-muted-foreground/60 hover:border-ring/45 focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60'
+  'w-full rounded-md border border-input bg-card px-2.5 text-[13px] text-foreground transition-[border-color,box-shadow] duration-150 placeholder:text-subtle-foreground hover:border-ring/50 focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60'
 
 interface FieldProps {
   /** 字段标签文本；不传则不渲染 label。 */
@@ -59,10 +59,10 @@ export function Field({ label, htmlFor, className, help, children }: FieldProps)
  * 渲染统一风格的单行输入框。
  *
  * @param props 原生 input 属性。
- * @returns input 元素，高度固定为 36px。
+ * @returns input 元素，高度固定为 32px。
  */
 export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cn(CONTROL_CLASSES, 'h-9', className)} {...rest} />
+  return <input className={cn(CONTROL_CLASSES, 'h-8', className)} {...rest} />
 }
 
 /**
@@ -72,7 +72,7 @@ export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputEleme
  * @returns textarea 元素。
  */
 export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea className={cn(CONTROL_CLASSES, 'py-2 leading-relaxed', className)} {...rest} />
+  return <textarea className={cn(CONTROL_CLASSES, 'py-1.5 leading-relaxed', className)} {...rest} />
 }
 
 /**
@@ -86,13 +86,13 @@ export function Select({ className, children, ...rest }: SelectHTMLAttributes<HT
   return (
     <div className={cn('relative min-w-0', className)}>
       <select
-        className={cn(CONTROL_CLASSES, 'h-9 cursor-pointer appearance-none pr-8', className)}
+        className={cn(CONTROL_CLASSES, 'h-8 cursor-pointer appearance-none pr-8', className)}
         {...rest}
       >
         {children}
       </select>
       <ChevronDown
-        className="pointer-events-none absolute top-1/2 right-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+        className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-subtle-foreground"
         aria-hidden="true"
       />
     </div>

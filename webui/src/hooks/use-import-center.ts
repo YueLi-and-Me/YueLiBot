@@ -17,19 +17,24 @@ export interface ImportLimits {
   batchItems: number
 }
 
-/** 一个来源批次；liveCount 按库实时数出，与 added 不一致即被删除过。 */
+/**
+ * 一个来源批次；live_count 按库实时数出，与 added 不一致即被删除过。
+ *
+ * 字段名照搬后端 `import_center.list_batches` / `batch_detail` 的 snake_case：
+ * 这一组接口没有转换层，按 camelCase 声明会让来源名、条数、时间全部读成 undefined。
+ */
 export interface ImportBatch {
   id: number
   kind: string
-  originName: string
+  origin_name: string
   summary: string
   submitted: number
   added: number
   status: string
-  createdAt: number
-  finishedAt: number | null
+  created_at: number
+  finished_at: number | null
   error: string
-  liveCount: number
+  live_count: number
 }
 
 /** 批次详情：批次字段 + 条目样本。 */

@@ -29,18 +29,16 @@
  */
 import { useState } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { PaneFooter, ScrollArea, Toolbar } from '@/components/layout/panes'
 import {
   BatchBar,
   Button,
   ConfirmDialog,
-  Card,
-  CardBody,
   Checkbox,
   Chip,
   Empty,
   ErrorText,
-  Field,
   Loading,
   Pager,
   Select,
@@ -112,7 +110,7 @@ function ExpressionRow({
   return (
     <li
       className={cn(
-        'flex flex-col gap-1.5 border-b border-border/50 px-4 py-3 last:border-b-0',
+        'flex flex-col gap-1.5 border-b border-border-subtle px-6 py-3',
         rejected && 'opacity-55',
       )}
     >
@@ -124,7 +122,7 @@ function ExpressionRow({
           disabled={pending}
         />
         <span
-          className={cn('text-[15px] font-semibold', rejected && 'line-through')}
+          className={cn('text-sm font-semibold', rejected && 'line-through')}
         >
           「{entry.style}」
         </span>
@@ -162,7 +160,7 @@ function ExpressionRow({
           删除
         </Button>
       </div>
-      <p className="text-sm leading-relaxed text-muted-foreground">{entry.situation}</p>
+      <p className="pl-7 text-[13px] leading-relaxed text-muted-foreground">{entry.situation}</p>
     </li>
   )
 }
@@ -293,20 +291,17 @@ export function ExpressionsPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="YUELI · CONSOLE"
-        title="表达方式"
-        subtitle="她说话时可选的说法与情境，默认后学到的排在最前。"
-      />
-      <div className="flex flex-wrap items-end gap-3">
+    <PageFrame hint="她说话时可选的说法与情境，默认后学到的排在最前。">
+      <Toolbar>
         {/* 两个按钮表达四种口径：点已激活的按钮翻方向，箭头写在激活项的文案里。 */}
         <SegmentedTabs
+          label="排序"
           tabs={listOrderTabs(order)}
           value={listOrderField(order)}
           onChange={(field) => changeFilter(() => setOrder(nextListOrder(order, field)))}
         />
         <SegmentedTabs
+          label="复核状态"
           tabs={[
             { value: 'all', label: '全部' },
             { value: '0', label: '未复核' },
@@ -316,89 +311,98 @@ export function ExpressionsPage() {
           value={checkedFilter}
           onChange={(next) => changeFilter(() => setCheckedFilter(next))}
         />
-        <Field label="会话" htmlFor="expressions-scope" className="w-64">
-          <Select
-            id="expressions-scope"
-            value={scope}
-            onChange={(event) => changeFilter(() => setScope(event.target.value))}
-          >
-            <option value="all">全部会话</option>
-            {streams.map((stream) => (
-              <option key={stream.id} value={stream.id}>
-                {streamLabel(stream)}
-              </option>
-            ))}
-          </Select>
-        </Field>
-      </div>
+        <Select
+          aria-label="会话"
+          className="ml-auto w-56"
+          value={scope}
+          onChange={(event) => changeFilter(() => setScope(event.target.value))}
+        >
+          <option value="all">全部会话</option>
+          {streams.map((stream) => (
+            <option key={stream.id} value={stream.id}>
+              {streamLabel(stream)}
+            </option>
+          ))}
+        </Select>
+      </Toolbar>
 
-      {streamsError ? <ErrorText>{streamsError}</ErrorText> : null}
-      {error ? <ErrorText>{error}</ErrorText> : null}
-      {reviewError ? <ErrorText>{reviewError}</ErrorText> : null}
-      {lowPools.map((pool) => (
-        <ErrorText key={pool.streamId}>
-          {streamLabelOf(pool.streamId)} 删除后只剩 {pool.candidates} 条候选，已低于起用下限：
-          该会话的表达注入现在直接停摆，补回下限之前她不会再按表达习惯说话。
-        </ErrorText>
-      ))}
-      {loading ? <Loading>正在读取表达方式…</Loading> : null}
-      {!loading && !error && entries.length === 0 ? <Empty>没有符合条件的表达方式。</Empty> : null}
       {entries.length > 0 ? (
-        <>
-          <BatchBar
-            pageAllSelected={selection.pageAllSelected}
-            onTogglePage={selection.togglePage}
-            selectedCount={selection.size}
-            onClear={selection.clear}
-            busy={batchPending}
+        <BatchBar
+          className="min-h-11 flex-none border-b border-border bg-primary-soft/60 px-6 py-1.5"
+          pageAllSelected={selection.pageAllSelected}
+          onTogglePage={selection.togglePage}
+          selectedCount={selection.size}
+          onClear={selection.clear}
+          busy={batchPending}
+        >
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={batchPending || selection.size === 0}
+            onClick={() => void reviewSelected(1)}
           >
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={batchPending || selection.size === 0}
-              onClick={() => void reviewSelected(1)}
-            >
-              批量确认
-            </Button>
-            <Button
-              variant="danger-outline"
-              size="sm"
-              disabled={batchPending || selection.size === 0}
-              onClick={() => void reviewSelected(-1)}
-            >
-              批量驳回
-            </Button>
-            <Button
-              variant="danger-outline"
-              size="sm"
-              disabled={batchPending || selection.size === 0}
-              onClick={() => setBatchConfirm(true)}
-            >
-              {`批量删除 ${selection.size} 条`}
-            </Button>
-          </BatchBar>
-          <Card>
-            <CardBody className="p-0">
-              <ol>
-                {entries.map((entry) => (
-                  <ExpressionRow
-                    key={entry.id}
-                    entry={entry}
-                    streamLabelOf={streamLabelOf}
-                    pending={pendingId === entry.id || batchPending}
-                    selected={selection.selected.has(entry.id)}
-                    onReview={review}
-                    onDelete={setPendingDelete}
-                    onToggleSelect={selection.toggle}
-                  />
-                ))}
-              </ol>
-            </CardBody>
-          </Card>
-        </>
+            批量确认
+          </Button>
+          <Button
+            variant="danger-outline"
+            size="sm"
+            disabled={batchPending || selection.size === 0}
+            onClick={() => void reviewSelected(-1)}
+          >
+            批量驳回
+          </Button>
+          <Button
+            variant="danger-outline"
+            size="sm"
+            disabled={batchPending || selection.size === 0}
+            onClick={() => setBatchConfirm(true)}
+          >
+            {`批量删除 ${selection.size} 条`}
+          </Button>
+        </BatchBar>
       ) : null}
 
-      <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+      <ScrollArea>
+        {streamsError || error || reviewError || lowPools.length ? (
+          <div className="px-6 pt-3">
+            {streamsError ? <ErrorText>{streamsError}</ErrorText> : null}
+            {error ? <ErrorText>{error}</ErrorText> : null}
+            {reviewError ? <ErrorText>{reviewError}</ErrorText> : null}
+            {lowPools.map((pool) => (
+              <ErrorText key={pool.streamId}>
+                {streamLabelOf(pool.streamId)} 删除后只剩 {pool.candidates} 条候选，已低于起用下限：
+                该会话的表达注入现在直接停摆，补回下限之前她不会再按表达习惯说话。
+              </ErrorText>
+            ))}
+          </div>
+        ) : null}
+        {loading ? <Loading>正在读取表达方式…</Loading> : null}
+        {!loading && !error && entries.length === 0 ? <Empty>没有符合条件的表达方式。</Empty> : null}
+        {entries.length > 0 ? (
+          <ol>
+            {entries.map((entry) => (
+              <ExpressionRow
+                key={entry.id}
+                entry={entry}
+                streamLabelOf={streamLabelOf}
+                pending={pendingId === entry.id || batchPending}
+                selected={selection.selected.has(entry.id)}
+                onReview={review}
+                onDelete={setPendingDelete}
+                onToggleSelect={selection.toggle}
+              />
+            ))}
+          </ol>
+        ) : null}
+      </ScrollArea>
+
+      {total > 0 ? (
+        <PaneFooter>
+          <div className="flex-1">
+            <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+          </div>
+        </PaneFooter>
+      ) : null}
 
       <ConfirmDialog
         open={pendingDelete !== null}
@@ -434,6 +438,6 @@ export function ExpressionsPage() {
         onCancel={() => setBatchConfirm(false)}
         onConfirm={() => void removeSelected()}
       />
-    </div>
+    </PageFrame>
   )
 }

@@ -20,12 +20,12 @@ export interface TuningParamSpec {
   label: string
 }
 
-/** 一个已保存的 profile。 */
+/** 一个已保存的 profile，字段名照搬后端 `tuning.list_profiles` 的 snake_case。 */
 export interface TuningProfile {
   name: string
   params: Record<string, number>
-  createdAt: number | null
-  lastAppliedAt: number | null
+  created_at: number | null
+  last_applied_at: number | null
 }
 
 /** 调优中心的总览响应。 */
@@ -35,26 +35,32 @@ export interface TuningOverview {
   profiles: TuningProfile[]
 }
 
-/** 一次评估的汇总报告，字段与后端 EvalReport 一一对应。 */
+/**
+ * 一次评估的汇总报告，与后端 `EvalReport.as_dict()` 逐字段对应。
+ *
+ * 后端这一组接口原样返回 snake_case，没有转换层。曾按 camelCase 声明本类型，
+ * 类型检查无从发现，运行时 `ndcgMean` 为 undefined，点评估后页面渲染崩溃。
+ */
 export interface TuningEvalReport {
   profile: string | null
   params: Record<string, number>
   k: number
-  sampleCount: number
-  ndcgMean: number
-  recallCountMedian: number
-  recallCountMean: number
+  sample_count: number
+  ndcg_mean: number
+  recall_count_median: number
+  recall_count_mean: number
   /** 正例落在前 k 之外的总条数：「该进的有没有被挤掉」的直接读数。 */
-  displacedPositiveTotal: number
-  perTurn: Array<{
-    turnId: number
-    streamKind: string
-    positiveCount: number
-    recallCount: number
+  displaced_positive_total: number
+  per_turn: Array<{
+    turn_id: number
+    stream_kind: string
+    positive_count: number
+    recall_count: number
     ndcg: number
-    displacedPositive: number
+    displaced_positive: number
   }>
-  generatedAt: string
+  /** ISO 8601 时刻（UTC）。 */
+  generated_at: string
 }
 
 /** 使用检索调优中心状态与操作的 hook。 */
@@ -115,7 +121,7 @@ export function useRetrievalTuning() {
   }, [reload])
 
   const exportProfile = useCallback(async (name: string) => {
-    return apiFetch<{ profile: string; params: Record<string, number>; exportedAt: string }>(
+    return apiFetch<{ profile: string; params: Record<string, number>; exported_at: string }>(
       `/api/memory/tuning/export?name=${encodeURIComponent(name)}`,
     )
   }, [])

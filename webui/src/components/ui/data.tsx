@@ -4,9 +4,9 @@
  * 指标行采用「左侧 muted 名称 + 右侧等宽数字值」的双栏排布；进度条用原生
  * progress 语义的重绘实现，保证无障碍名称可读；翻页条把「共 N 条 · 第 X / Y 页」
  * 与上下页按钮统一成一行，供各列表面板复用；状态组件统一空数据、加载中与错误
- * 提示的呈现。进度条为樱粉填充，呼应设计语言主色。
+ * 提示的呈现。进度条为主色细条，标签片段为无描边的灰底小块。
  */
-import { LoaderCircle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { Button } from './button'
@@ -53,7 +53,7 @@ interface ProgressProps {
 }
 
 /**
- * 渲染樱粉色进度条。
+ * 渲染主色细进度条。
  *
  * @param props.value 当前值。
  * @param props.max 最大值。
@@ -70,7 +70,7 @@ export function Progress({ value, max, label, className }: ProgressProps) {
       aria-valuemin={0}
       aria-valuemax={max}
       aria-valuenow={clamped}
-      className={cn('h-1.5 w-full overflow-hidden rounded-full bg-muted', className)}
+      className={cn('h-1 w-full overflow-hidden rounded-full bg-muted', className)}
     >
       <div
         className="h-full rounded-full bg-primary transition-[width] duration-300 ease-out"
@@ -96,11 +96,25 @@ interface ChipProps {
  */
 export function Chip({ label, value }: ChipProps) {
   return (
-    <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-border/70 bg-secondary px-2.5 py-0.5 text-xs text-secondary-foreground">
-      <strong className="font-medium">{label}</strong>
+    <span className="inline-flex max-w-full items-center gap-1 rounded bg-muted px-2 py-0.5 text-xs text-secondary-foreground">
+      <strong className="font-medium text-muted-foreground">{label}</strong>
       <span className="truncate">{value}</span>
     </span>
   )
+}
+
+/**
+ * 找出翻页条对应的滚动区。
+ *
+ * @param from 翻页条内的元素。
+ * @returns 翻页条所在的滚动区；翻页条位于滚动区之外（面板底栏）时，取同一面板内的
+ * 第一个滚动区；都找不到时返回 `null`。
+ */
+function scrollAreaOf(from: HTMLElement): HTMLElement | null {
+  const inside = from.closest<HTMLElement>('[data-scroll-area]')
+  if (inside) return inside
+  const pane = from.closest<HTMLElement>('[data-pane], [data-page-frame]')
+  return pane?.querySelector<HTMLElement>('[data-scroll-area]') ?? null
 }
 
 interface PagerProps {
@@ -114,6 +128,8 @@ interface PagerProps {
   onChange: (page: number) => void
   /** 是否禁用翻页按钮，用于服务端分页在取新一页期间锁住操作，默认值为 `false`。 */
   disabled?: boolean
+  /** 紧凑形态：上下页改为图标按钮、省去「回到第一页」，用于 300px 宽的列表面板。 */
+  compact?: boolean
 }
 
 /**
@@ -123,19 +139,38 @@ interface PagerProps {
  * 「第 1 / 1 页」和几个恒禁用的按钮；多页时才是完整形态。
  *
  * 「回到第一页」在翻了很多页之后单独有用：靠「上一页」退回去要点很多次。它同时
- * 把窗口滚回顶部——翻页条在页尾，只换页不滚动会停在第一页的**底部**，看起来
- * 像没生效。
+ * 把所在面板的滚动区滚回顶部：只换页不滚动会停在第一页的底部，看起来像没生效。
+ * 页面本身不滚动（滚动发生在面板内的 `[data-scroll-area]` 里），所以不能用
+ * `window.scrollTo`。
  *
  * @param props.page 当前页码，0 起。
  * @param props.pageCount 总页数。
  * @param props.total 条目总数。
  * @param props.onChange 翻页回调，入参为目标页码。
  * @param props.disabled 是否禁用翻页按钮。
+ * @param props.compact 紧凑形态。
  * @returns 翻页条元素；`total` 为 0 时返回 `null`。
  */
-export function Pager({ page, pageCount, total, onChange, disabled = false }: PagerProps) {
+export function Pager({ page, pageCount, total, onChange, disabled = false, compact = false }: PagerProps) {
   if (total <= 0) return null
   const paged = pageCount > 1
+  if (compact) {
+    return (
+      <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+        <span className="tabular-nums">{paged ? `${page + 1} / ${pageCount} 页` : `共 ${total} 条`}</span>
+        {paged ? (
+          <div className="flex gap-1">
+            <Button variant="secondary" size="sm" className="w-7 px-0" aria-label="上一页" disabled={disabled || page <= 0} onClick={() => onChange(page - 1)}>
+              <ChevronLeft className="size-4" aria-hidden="true" />
+            </Button>
+            <Button variant="secondary" size="sm" className="w-7 px-0" aria-label="下一页" disabled={disabled || page + 1 >= pageCount} onClick={() => onChange(page + 1)}>
+              <ChevronRight className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
   return (
     <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
       <span className="tabular-nums">
@@ -147,9 +182,9 @@ export function Pager({ page, pageCount, total, onChange, disabled = false }: Pa
             variant="ghost"
             size="sm"
             disabled={disabled || page <= 0}
-            onClick={() => {
+            onClick={(event) => {
               onChange(0)
-              window.scrollTo({ top: 0, behavior: 'smooth' })
+              scrollAreaOf(event.currentTarget)?.scrollTo({ top: 0, behavior: 'smooth' })
             }}
           >
             回到第一页

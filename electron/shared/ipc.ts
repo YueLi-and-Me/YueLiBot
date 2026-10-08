@@ -91,11 +91,19 @@ export interface GroupMembership {
   groupCard: string
 }
 
-export interface PersonSummary {
+/** 人物摘要与详情共有的字段，对应后端 `PersonProfileMixin._person_summary`。 */
+interface PersonBase {
   id: number
   kind: 'owner' | 'contact'
   displayName: string
   firstSeenAt: number
+  identities: PersonIdentity[]
+  streams: ObservabilityStream[]
+  groupMemberships: GroupMembership[]
+}
+
+/** `/api/persons` 列表中的一行：在共有字段之上附带排序所需的关系与计数。 */
+export interface PersonSummary extends PersonBase {
   /** 好感度（`persona_bond.intimacy`）。 */
   intimacy: number
   /** 事实条数；`active` 为当前生效条数，`total` 含已冻结。 */
@@ -105,9 +113,6 @@ export interface PersonSummary {
    * owner 行会被每小时结算推进，不代表互动，界面不要按「最后互动」渲染。
    */
   bondUpdatedAt: number
-  identities: PersonIdentity[]
-  streams: ObservabilityStream[]
-  groupMemberships: GroupMembership[]
 }
 
 export interface ConversationParticipant {
@@ -119,7 +124,15 @@ export interface ConversationParticipant {
   groupCard: string
 }
 
-export interface PersonProfile extends PersonSummary {
+/**
+ * `/api/persons/{id}` 的人物详情。
+ *
+ * 不含列表专有的 `intimacy`、`factCount`、`bondUpdatedAt`：后端 `person_profile`
+ * 不返回这三项，好感度与更新时间在 `bond` 里，事实条数由 `facts` 自己数。
+ * 曾经把本类型声明为 `PersonSummary` 的扩展，类型检查因此放过了对 `factCount`
+ * 的读取，运行时取到 undefined，人物详情整页白屏。
+ */
+export interface PersonProfile extends PersonBase {
   bond: PersonBond
   facts: ObservabilityFact[]
 }

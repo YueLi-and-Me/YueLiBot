@@ -1,8 +1,8 @@
 /**
  * 小型开关组件，用于「自动刷新」等布尔控制项。
  *
- * 以 `role="switch"` 的按钮实现，轨道/滑块全部为主色语义色；滑块位移使用
- * 全站统一的强调缓动曲线，比主题开关更小巧，适合工具栏内嵌。
+ * 以 `role="switch"` 的按钮实现，轨道开启时为主色、关闭时为控件描边色；滑块位移
+ * 使用全站统一的强调缓动曲线。整体高 32px，可与按钮、输入框排在同一行。
  */
 import { cn } from './cn'
 
@@ -33,21 +33,21 @@ export function Toggle({ checked, onChange, label, className }: ToggleProps) {
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={cn(
-        'inline-flex cursor-pointer items-center gap-2 text-[13px] text-muted-foreground transition-colors hover:text-foreground',
+        'inline-flex h-8 cursor-pointer items-center gap-2 text-[13px] text-muted-foreground transition-colors hover:text-foreground',
         className,
       )}
     >
       <span
         className={cn(
-          'relative inline-flex h-[22px] w-10 flex-none items-center rounded-full border-[1.5px] border-ink/50 transition-colors duration-200',
-          checked ? 'bg-primary' : 'bg-muted',
+          'relative inline-flex h-4 w-[30px] flex-none items-center rounded-full transition-colors duration-200',
+          checked ? 'bg-primary' : 'bg-input',
         )}
         aria-hidden="true"
       >
         <span
           className={cn(
-            'inline-block size-3.5 rounded-full border border-ink/40 bg-white transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
-            checked ? 'translate-x-[20px]' : 'translate-x-[2.5px]',
+            'inline-block size-3 rounded-full bg-white shadow-xs transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+            checked ? 'translate-x-4' : 'translate-x-0.5',
           )}
         />
       </span>

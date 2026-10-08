@@ -76,7 +76,7 @@ export function LogPanel({ enabled }: { enabled: boolean }) {
         <div
           ref={scrollRef}
           aria-live="polite"
-          className="flex h-96 flex-col gap-1 overflow-y-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs leading-6 text-terminal-foreground"
+          className="flex h-[max(24rem,calc(100vh-13rem))] flex-col gap-1 overflow-y-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs leading-6 text-terminal-foreground"
         >
           {lines.map((row) => (
             <LogRow key={row.id} segments={row.segments} />

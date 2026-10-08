@@ -4,11 +4,16 @@
  * schema 是字段、中文说明、类型与约束的唯一映射来源，因此本页不写死具体配置项；
  * 支持 object、map（model_tasks/generation）和 table_list（厂商/模型目录）三类
  * 结构。保存时整包提交，后端完成启动级校验后原子写回五个 TOML 文件。
+ *
+ * 套用「设置表单」模板：左栏列出配置文件及当前文件的分区（点击滚动到对应分区），
+ * 中栏为表单，字段一行一项、说明在左控件在右；底部保存条常驻，有未保存的修改时
+ * 以琥珀色提示，并提供放弃修改。
  */
-import { Database, FileCog, Layers, Plus, RefreshCw, Save, SlidersHorizontal, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { FileCog, Plus, RefreshCw, Save, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { Pane, PaneFooter, PaneHeader, PaneTitle, Panes, ScrollArea } from '@/components/layout/panes'
 import {
   Button,
   Card,
@@ -16,13 +21,14 @@ import {
   Checkbox,
   ConfirmDialog,
   ErrorText,
+  FlatCards,
   Input,
   Loading,
   SectionHeading,
-  SegmentedTabs,
   Select,
   Textarea,
   Toggle,
+  cn,
   toast,
 } from '@/components/ui'
 import {
@@ -178,20 +184,46 @@ function MultiEnumField({ field, value, onChange }: { field: SettingsFieldSchema
   )
 }
 
-/** 渲染带可见中文说明的单个配置字段。 */
+/** 字段行的列模板：宽屏时说明在左（固定 15rem）、控件在右；窄屏上下排列。 */
+const FIELD_ROW = 'grid min-w-0 gap-x-8 gap-y-1.5 py-3.5 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)]'
+
+/** 渲染带可见中文说明的单个配置字段：一行一项，说明在左、控件在右。 */
 function SettingsField({ field, value, onChange }: {
   field: SettingsFieldSchema
   value: unknown
   onChange: (value: unknown) => void
 }) {
-  const label = field.label + (field.required ? ' *' : '')
   return (
-    <label className="flex min-w-0 flex-col gap-1">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      <span className="text-[11px] leading-relaxed text-muted-foreground/80">{field.help}</span>
-      <FieldControl field={field} value={value} onChange={onChange} />
+    <label className={FIELD_ROW}>
+      <span className="min-w-0">
+        <span className="block text-[13px] font-medium text-foreground">
+          {field.label}
+          {field.required ? <span className="ml-0.5 text-destructive">*</span> : null}
+        </span>
+        {field.help ? (
+          <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{field.help}</span>
+        ) : null}
+      </span>
+      <span className="min-w-0 max-w-xl self-start">
+        <FieldControl field={field} value={value} onChange={onChange} />
+      </span>
     </label>
   )
+}
+
+/** 字段行列表：行与行之间以细线分隔。 */
+function FieldRows({ children }: { children: ReactNode }) {
+  return <div className="flex flex-col divide-y divide-border-subtle">{children}</div>
+}
+
+/**
+ * 计算分区在页面里的锚点 id，供左栏的分区导航滚动定位。
+ *
+ * @param sectionKey schema 中的分区键。
+ * @returns DOM id。
+ */
+function sectionAnchor(sectionKey: string): string {
+  return `settings-section-${sectionKey}`
 }
 
 /** 按 schema 类型选择控件。 */
@@ -201,7 +233,7 @@ function FieldControl({ field, value, onChange }: {
   onChange: (value: unknown) => void
 }) {
   if (field.type === 'boolean') {
-    return <Toggle checked={Boolean(value)} onChange={(next) => onChange(next)} label={String(value === true ? '已开启' : '已关闭')} className="pt-1" />
+    return <Toggle checked={Boolean(value)} onChange={(next) => onChange(next)} label={String(value === true ? '已开启' : '已关闭')} />
   }
   if (field.type === 'enum') {
     return (
@@ -281,10 +313,10 @@ function ObjectSection({ section, values, onChange }: {
   onChange: (fieldKey: string, value: unknown) => void
 }) {
   return (
-    <Card className="animate-rise">
-      <SectionHeading title={section.label} subtitle={section.description} icon={<SlidersHorizontal />} tint="coral" />
-      <CardBody>
-        <div className="grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
+    <Card id={sectionAnchor(section.key)} className="scroll-mt-2">
+      <SectionHeading title={section.label} subtitle={section.description} />
+      <CardBody className="pt-0">
+        <FieldRows>
           {section.fields.map((field) => (
             <SettingsField
               key={field.key}
@@ -293,7 +325,7 @@ function ObjectSection({ section, values, onChange }: {
               onChange={(value) => onChange(field.key, value)}
             />
           ))}
-        </div>
+        </FieldRows>
       </CardBody>
     </Card>
   )
@@ -306,33 +338,31 @@ function MapSection({ section, values, onChange }: {
   onChange: (entryKey: string, fieldKey: string, value: unknown) => void
 }) {
   return (
-    <div className="space-y-4">
-      <div className="px-1">
-        <h2 className="text-[15px] font-semibold">{section.label}</h2>
-        <p className="mt-0.5 text-xs text-muted-foreground">{section.description}</p>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
+    <Card id={sectionAnchor(section.key)} className="scroll-mt-2">
+      <SectionHeading title={section.label} subtitle={section.description} />
+      <CardBody className="flex flex-col gap-5 pt-0">
         {section.entries.map((entry) => (
-          <Card key={entry.key} className="animate-rise">
-            <SectionHeading title={entry.label} subtitle={entry.description} icon={<Layers />} tint="amber" />
-            <CardBody>
-              <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
-                {section.fields
-                  .filter((field) => fieldAppliesToEntry(field, entry.key))
-                  .map((field) => (
-                    <SettingsField
-                      key={field.key}
-                      field={field}
-                      value={asRecord(values[entry.key])[field.key]}
-                      onChange={(value) => onChange(entry.key, field.key, value)}
-                    />
-                  ))}
-              </div>
-            </CardBody>
-          </Card>
+          <div key={entry.key} className="rounded-lg border border-border px-4">
+            <div className="flex flex-wrap items-baseline gap-x-2 border-b border-border-subtle py-2.5">
+              <h3 className="text-[13px] font-semibold">{entry.label}</h3>
+              {entry.description ? <p className="text-xs text-subtle-foreground">{entry.description}</p> : null}
+            </div>
+            <FieldRows>
+              {section.fields
+                .filter((field) => fieldAppliesToEntry(field, entry.key))
+                .map((field) => (
+                  <SettingsField
+                    key={field.key}
+                    field={field}
+                    value={asRecord(values[entry.key])[field.key]}
+                    onChange={(value) => onChange(entry.key, field.key, value)}
+                  />
+                ))}
+            </FieldRows>
+          </div>
         ))}
-      </div>
-    </div>
+      </CardBody>
+    </Card>
   )
 }
 
@@ -352,54 +382,51 @@ function TableListSection({ section, values, onChange, onAdd, onRemove }: {
     return name ? `第 ${index + 1} 条 · ${name}` : `第 ${index + 1} 条（未命名）`
   }
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3 px-1">
-        <div>
-          <h2 className="text-[15px] font-semibold">{section.label}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{section.description}</p>
-        </div>
-        <Button size="sm" variant="secondary" onClick={onAdd}>
-          <Plus className="size-4" aria-hidden="true" />
-          添加条目
-        </Button>
-      </div>
+    <Card id={sectionAnchor(section.key)} className="scroll-mt-2">
+      <SectionHeading
+        title={section.label}
+        subtitle={section.description}
+        actions={
+          <Button size="sm" variant="secondary" onClick={onAdd}>
+            <Plus className="size-3.5" aria-hidden="true" />
+            添加条目
+          </Button>
+        }
+      />
+      <CardBody className="flex flex-col gap-5 pt-0">
       {rows.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+        <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-[13px] text-muted-foreground">
           暂无条目，点击「添加条目」创建。
         </p>
       ) : null}
       {rows.map((row, rowIndex) => (
-        <Card key={`${section.key}-${rowIndex}-${String(row.name ?? '')}`} className="animate-rise">
-          <SectionHeading
-            title={rowTitle(row, rowIndex)}
-            icon={<Database />}
-            tint="olive"
-            actions={
-              <Button
-                size="sm"
-                variant="danger-outline"
-                onClick={() => setPendingRemove(rowIndex)}
-                title="删除条目"
-              >
-                <Trash2 className="size-3.5" aria-hidden="true" />
-                删除
-              </Button>
-            }
-          />
-          <CardBody>
-            <div className="grid gap-x-5 gap-y-4 md:grid-cols-2 xl:grid-cols-3">
-              {section.fields.map((field) => (
-                <SettingsField
-                  key={field.key}
-                  field={field}
-                  value={row[field.key]}
-                  onChange={(value) => onChange(rowIndex, field.key, value)}
-                />
-              ))}
-            </div>
-          </CardBody>
-        </Card>
+        <div key={`${section.key}-${rowIndex}-${String(row.name ?? '')}`} className="rounded-lg border border-border px-4">
+          <div className="flex items-center justify-between gap-3 border-b border-border-subtle py-2">
+            <h3 className="truncate text-[13px] font-semibold">{rowTitle(row, rowIndex)}</h3>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-destructive hover:bg-destructive-soft hover:text-destructive"
+              onClick={() => setPendingRemove(rowIndex)}
+              title="删除条目"
+            >
+              <Trash2 className="size-3.5" aria-hidden="true" />
+              删除
+            </Button>
+          </div>
+          <FieldRows>
+            {section.fields.map((field) => (
+              <SettingsField
+                key={field.key}
+                field={field}
+                value={row[field.key]}
+                onChange={(value) => onChange(rowIndex, field.key, value)}
+              />
+            ))}
+          </FieldRows>
+        </div>
       ))}
+      </CardBody>
       <ConfirmDialog
         open={pendingRemove !== null}
         title="删除条目"
@@ -415,7 +442,7 @@ function TableListSection({ section, values, onChange, onAdd, onRemove }: {
         }}
         onCancel={() => setPendingRemove(null)}
       />
-    </div>
+    </Card>
   )
 }
 
@@ -425,6 +452,8 @@ export function SettingsConfigPage() {
   const [draft, setDraft] = useState<SettingsValues | null>(null)
   const [activeFile, setActiveFile] = useState('bot.toml')
   const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
+  // 表单滚动区顶端的定位点：切换配置文件时回到表单开头。
+  const formTopRef = useRef<HTMLDivElement>(null)
   // 与模型页共用同一段重启逻辑；确认弹窗在草稿有未保存改动时加丢失提醒。
   const { restarting, restartBackend } = useRestart()
 
@@ -451,16 +480,18 @@ export function SettingsConfigPage() {
 
   if (state.loading && !draft) {
     return (
-      <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
+      <PageFrame>
         <Loading>正在读取月璃设置…</Loading>
-      </div>
+      </PageFrame>
     )
   }
   if (!draft || !state.snapshot) {
     return (
-      <div className="mx-auto w-full max-w-[1440px] px-6 py-8">
-        <ErrorText>{state.error || '月璃设置不可用'}</ErrorText>
-      </div>
+      <PageFrame>
+        <div className="px-6 pt-4">
+          <ErrorText>{state.error || '月璃设置不可用'}</ErrorText>
+        </div>
+      </PageFrame>
     )
   }
 
@@ -529,87 +560,153 @@ export function SettingsConfigPage() {
     state.clearStatus()
     void state.save(draft)
   }
+  const discardDraft = () => {
+    if (state.snapshot) setDraft(cloneSnapshot(state.snapshot).values)
+  }
+
+  const dirty = hasDraftChanges(draft, state.snapshot.values)
+  const visibleSections = selectedFile ? selectedFile.sections.filter((section) => !section.hidden) : []
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="YUELI · CONSOLE"
-        title="月璃设置"
-        subtitle="直接编辑五份配置文件；字段说明来自 settings_schema.json，保存后重启后端生效。"
-        actions={
-          <>
-            <Button variant="secondary" onClick={state.reload} disabled={state.busy}>
-              <RefreshCw className="size-4" aria-hidden="true" />
-              重新读取
-            </Button>
-            <Button onClick={saveDraft} disabled={state.busy}>
-              <Save className="size-4" aria-hidden="true" />
-              保存配置
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => setRestartConfirmOpen(true)}
-              disabled={state.busy || restarting}
-            >
-              <RefreshCw className="size-4" aria-hidden="true" />
-              重启后端
-            </Button>
-          </>
-        }
-      />
+    <PageFrame
+      hint="直接编辑五份配置文件；字段说明来自 settings_schema.json，保存后重启后端生效。"
+      actions={
+        <>
+          <Button variant="secondary" onClick={state.reload} disabled={state.busy}>
+            <RefreshCw className="size-4" aria-hidden="true" />
+            重新读取
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setRestartConfirmOpen(true)}
+            disabled={state.busy || restarting}
+          >
+            <RefreshCw className="size-4" aria-hidden="true" />
+            重启后端
+          </Button>
+        </>
+      }
+    >
+      <Panes>
+        <Pane width="nav" aria-label="配置分区">
+          <PaneHeader>
+            <PaneTitle>配置文件</PaneTitle>
+          </PaneHeader>
+          <ScrollArea className="px-2 py-2">
+            <nav aria-label="配置文件与分区" className="flex flex-col gap-px">
+              {files.map((file) => {
+                const active = file.file === selectedFile?.file
+                return (
+                  <div key={file.file}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveFile(file.file)
+                        formTopRef.current?.scrollIntoView({ block: 'start' })
+                      }}
+                      aria-current={active ? 'true' : undefined}
+                      className={cn(
+                        'flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-3 text-left text-[13px] transition-colors',
+                        active ? 'bg-nav-active font-medium text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                      )}
+                    >
+                      <FileCog className={cn('size-4 flex-none', active && 'text-primary')} aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate">{file.label}</span>
+                      <span className="flex-none font-mono text-[11px] text-subtle-foreground">{file.file}</span>
+                    </button>
+                    {active && visibleSections.length > 1 ? (
+                      <div className="my-1 ml-[22px] flex flex-col gap-px border-l border-border pl-2">
+                        {visibleSections.map((section) => (
+                          <button
+                            key={section.key}
+                            type="button"
+                            onClick={() =>
+                              document.getElementById(sectionAnchor(section.key))?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                            }
+                            className="flex h-7 cursor-pointer items-center truncate rounded-md px-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          >
+                            {section.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </nav>
+          </ScrollArea>
+        </Pane>
 
-      {state.error ? <ErrorText>{state.error}</ErrorText> : null}
-
-      <SegmentedTabs
-        tabs={files.map((file) => ({ value: file.file, label: `${file.label}（${file.file}）` }))}
-        value={selectedFile?.file ?? activeFile}
-        onChange={setActiveFile}
-        className="max-w-full flex-wrap"
-      />
-      {selectedFile ? (
-        <div className="space-y-4">
-          <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/20 px-4 py-3">
-            <FileCog className="mt-0.5 size-4 flex-none text-primary-strong" aria-hidden="true" />
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              <strong className="text-foreground">{selectedFile.label}（{selectedFile.file}）</strong>
-              {' '}— {selectedFile.description}
-            </p>
-          </div>
-          {selectedFile.sections.filter((section) => !section.hidden).map((section) => {
-            const fileValues = asRecord(draft[selectedFile.file])
-            if (section.kind === 'object') {
-              return (
-                <ObjectSection
-                  key={section.key}
-                  section={section}
-                  values={asRecord(fileValues[section.key])}
-                  onChange={(fieldKey, value) => updateObjectField(selectedFile.file, section.key, fieldKey, value)}
-                />
-              )
-            }
-            if (section.kind === 'map') {
-              return (
-                <MapSection
-                  key={section.key}
-                  section={section}
-                  values={asRecord(fileValues[section.key])}
-                  onChange={(entryKey, fieldKey, value) => updateMapEntryField(selectedFile.file, section.key, entryKey, fieldKey, value)}
-                />
-              )
-            }
-            return (
-              <TableListSection
-                key={section.key}
-                section={section}
-                values={fileValues}
-                onChange={(rowIndex, fieldKey, value) => updateTableRow(selectedFile.file, section.key, rowIndex, fieldKey, value)}
-                onAdd={() => addTableRow(section)}
-                onRemove={(rowIndex) => removeTableRow(section.key, rowIndex)}
-              />
-            )
-          })}
-        </div>
-      ) : null}
+        <Pane aria-label="配置表单">
+          <PaneHeader>
+            <PaneTitle>{selectedFile?.label ?? '配置'}</PaneTitle>
+            {selectedFile ? <span className="font-mono text-xs text-subtle-foreground">{selectedFile.file}</span> : null}
+          </PaneHeader>
+          <ScrollArea>
+            <div ref={formTopRef} />
+            {state.error ? <div className="px-6 pt-3"><ErrorText>{state.error}</ErrorText></div> : null}
+            {selectedFile ? (
+              <div className="max-w-5xl">
+                {selectedFile.description ? (
+                  <p className="px-6 pt-4 text-xs leading-relaxed text-muted-foreground">{selectedFile.description}</p>
+                ) : null}
+                <FlatCards>
+                  {visibleSections.map((section) => {
+                    const fileValues = asRecord(draft[selectedFile.file])
+                    if (section.kind === 'object') {
+                      return (
+                        <ObjectSection
+                          key={section.key}
+                          section={section}
+                          values={asRecord(fileValues[section.key])}
+                          onChange={(fieldKey, value) => updateObjectField(selectedFile.file, section.key, fieldKey, value)}
+                        />
+                      )
+                    }
+                    if (section.kind === 'map') {
+                      return (
+                        <MapSection
+                          key={section.key}
+                          section={section}
+                          values={asRecord(fileValues[section.key])}
+                          onChange={(entryKey, fieldKey, value) => updateMapEntryField(selectedFile.file, section.key, entryKey, fieldKey, value)}
+                        />
+                      )
+                    }
+                    return (
+                      <TableListSection
+                        key={section.key}
+                        section={section}
+                        values={fileValues}
+                        onChange={(rowIndex, fieldKey, value) => updateTableRow(selectedFile.file, section.key, rowIndex, fieldKey, value)}
+                        onAdd={() => addTableRow(section)}
+                        onRemove={(rowIndex) => removeTableRow(section.key, rowIndex)}
+                      />
+                    )
+                  })}
+                </FlatCards>
+              </div>
+            ) : null}
+          </ScrollArea>
+          <PaneFooter className={cn(dirty && 'bg-warning-soft')}>
+            <span className={cn('flex items-center gap-2 text-[13px]', dirty ? 'text-warning' : 'text-subtle-foreground')}>
+              {dirty ? <span className="size-1.5 rounded-full bg-tint-amber" aria-hidden="true" /> : null}
+              {dirty ? '有未保存的修改' : '与已保存的配置一致'}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              {dirty ? (
+                <Button variant="ghost" onClick={discardDraft} disabled={state.busy}>
+                  放弃修改
+                </Button>
+              ) : null}
+              <Button onClick={saveDraft} disabled={state.busy}>
+                <Save className="size-4" aria-hidden="true" />
+                保存配置
+              </Button>
+            </div>
+          </PaneFooter>
+        </Pane>
+      </Panes>
 
       <ConfirmDialog
         open={restartConfirmOpen}
@@ -625,6 +722,6 @@ export function SettingsConfigPage() {
         }}
         onCancel={() => setRestartConfirmOpen(false)}
       />
-    </div>
+    </PageFrame>
   )
 }

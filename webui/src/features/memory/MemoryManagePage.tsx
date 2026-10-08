@@ -11,9 +11,10 @@
  * 用分段选项卡切换，人物选择器在页头，对三个分区同时生效。
  */
 import { RotateCcw } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { Pane, PaneHeader, PaneTitle, Panes, ScrollArea } from '@/components/layout/panes'
 import {
   Button,
   Card,
@@ -25,11 +26,9 @@ import {
   Empty,
   ErrorText,
   Loading,
-  SectionHeading,
-  SegmentedTabs,
-  Select,
   Textarea,
   Toggle,
+  UnderlineTabs,
 } from '@/components/ui'
 import {
   useMemoryManage,
@@ -62,6 +61,16 @@ const OP_LABELS: Record<string, string> = {
   supersede: '标记取代',
   undo: '撤销',
   unpin: '取消永久保留',
+}
+
+/**
+ * 渲染分区顶部的说明与开关条；分区名已由面板标题栏的页签给出，这里不再重复。
+ *
+ * @param props.actions 右对齐的说明文字与控件。
+ * @returns 一行右对齐的工具条。
+ */
+function SectionBar({ actions }: { actions: ReactNode }) {
+  return <div className="flex flex-wrap items-center justify-end gap-3">{actions}</div>
 }
 
 /** 人物选择器里的展示标签。 */
@@ -219,57 +228,64 @@ export function MemoryManagePage() {
   }
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        eyebrow="YUELI · MEMORY"
-        title="记忆管理"
-        subtitle="逐条检视人物事实：标失效与恢复、永久保留、人工取代、同槽冲突裁决，误操作可在流水里撤销"
-        actions={
-          <>
-            <Select
-              className="w-52"
-              aria-label="选择人物"
-              value={personId === null ? '' : String(personId)}
-              onChange={(event) =>
-                setPersonId(event.target.value === '' ? null : Number(event.target.value))
-              }
-            >
-              <option value="">全部人物</option>
-              {persons.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {personLabel(person)}
-                </option>
-              ))}
-            </Select>
-            <Button variant="ghost" size="sm" onClick={() => void reload()}>
-              <RotateCcw className="h-4 w-4" /> 刷新
-            </Button>
-          </>
-        }
-      />
+    <PageFrame
+      hint="逐条检视人物事实：标失效与恢复、永久保留、人工取代、同槽冲突裁决，误操作可在流水里撤销"
+      actions={
+        <Button variant="secondary" onClick={() => void reload()}>
+          <RotateCcw className="size-4" aria-hidden="true" />
+          刷新
+        </Button>
+      }
+    >
+      <Panes>
+        <Pane width="list" aria-label="人物">
+          <PaneHeader>
+            <PaneTitle count={persons.length}>人物</PaneTitle>
+          </PaneHeader>
+          <ScrollArea className="flex flex-col gap-px p-2">
+            {[null, ...persons].map((person) => {
+              const id = person === null ? null : person.id
+              const active = personId === id
+              return (
+                <button
+                  key={id ?? 'all'}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setPersonId(id)}
+                  className={cn(
+                    'flex h-9 w-full flex-none cursor-pointer items-center rounded-md px-3 text-left text-[13px] transition-colors',
+                    active ? 'bg-primary-soft font-medium text-primary-strong' : 'text-foreground hover:bg-muted',
+                  )}
+                >
+                  <span className="truncate">{person === null ? '全部人物' : personLabel(person)}</span>
+                </button>
+              )
+            })}
+          </ScrollArea>
+        </Pane>
 
-      <SegmentedTabs<Section>
-        tabs={[
-          { value: 'facts', label: '人物事实' },
-          { value: 'conflicts', label: '冲突组' },
-          { value: 'operations', label: '操作流水' },
-        ]}
-        value={section}
-        onChange={setSection}
-      />
-
-      {error && <ErrorText>{error}</ErrorText>}
-      {message && (
-        <Card>
-          <CardBody className="py-2 text-sm">{message}</CardBody>
-        </Card>
-      )}
+        <Pane aria-label="记忆管理">
+          <PaneHeader>
+            <UnderlineTabs<Section>
+              label="管理分区"
+              tabs={[
+                { value: 'facts', label: '人物事实' },
+                { value: 'conflicts', label: '冲突组' },
+                { value: 'operations', label: '操作流水' },
+              ]}
+              value={section}
+              onChange={setSection}
+            />
+          </PaneHeader>
+          <ScrollArea>
+      {error ? <div className="px-6 pt-3"><ErrorText>{error}</ErrorText></div> : null}
+      {message ? (
+        <div className="border-b border-border bg-primary-soft px-6 py-2.5 text-[13px]">{message}</div>
+      ) : null}
 
       {section === 'facts' && (
-        <Card>
-          <CardBody className="space-y-3">
-            <SectionHeading
-              title="人物事实"
+        <div className="space-y-3 px-6 py-4">
+            <SectionBar
               actions={
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-muted-foreground">粉色行处于待裁决冲突组</span>
@@ -278,7 +294,7 @@ export function MemoryManagePage() {
               }
             />
             {personId === null ? (
-              <Empty>在右上角选择具体人物后逐条管理；「全部人物」口径只对冲突组与操作流水有效</Empty>
+              <Empty>在左侧选择具体人物后逐条管理；「全部人物」口径只对冲突组与操作流水有效</Empty>
             ) : loading && facts.length === 0 ? (
               <Loading>正在读取事实…</Loading>
             ) : facts.length === 0 ? (
@@ -397,15 +413,12 @@ export function MemoryManagePage() {
                 </table>
               </div>
             )}
-          </CardBody>
-        </Card>
+        </div>
       )}
 
       {section === 'conflicts' && (
-        <Card>
-          <CardBody className="space-y-3">
-            <SectionHeading
-              title="冲突组"
+        <div className="space-y-3 px-6 py-4">
+            <SectionBar
               actions={
                 <span className="text-xs text-muted-foreground">
                   同一槽位并存多条活跃事实；裁决保留一条，其余标失效
@@ -453,15 +466,12 @@ export function MemoryManagePage() {
                 ))}
               </div>
             )}
-          </CardBody>
-        </Card>
+        </div>
       )}
 
       {section === 'operations' && (
-        <Card>
-          <CardBody className="space-y-3">
-            <SectionHeading
-              title="操作流水"
+        <div className="space-y-3 px-6 py-4">
+            <SectionBar
               actions={
                 <span className="text-xs text-muted-foreground">
                   {personId === null ? '全部人物' : '按当前人物过滤'} · 最近 50 条
@@ -532,9 +542,12 @@ export function MemoryManagePage() {
                 </table>
               </div>
             )}
-          </CardBody>
-        </Card>
+        </div>
       )}
+
+          </ScrollArea>
+        </Pane>
+      </Panes>
 
       <ConfirmDialog
         open={invalidateTarget !== null}
@@ -597,6 +610,6 @@ export function MemoryManagePage() {
         onConfirm={() => void confirmUndo()}
         onCancel={() => setUndoTarget(null)}
       />
-    </div>
+    </PageFrame>
   )
 }

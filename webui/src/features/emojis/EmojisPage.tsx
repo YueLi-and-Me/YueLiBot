@@ -11,7 +11,8 @@
 import { Ban, ImageOff, RotateCcw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
-import { PageHeader } from '@/components/layout/PageHeader'
+import { PageFrame } from '@/components/layout/PageFrame'
+import { Pane, PaneFooter, PaneHeader, PaneSection, PaneTitle, Panes, ScrollArea, Toolbar } from '@/components/layout/panes'
 import {
   BatchBar,
   Button,
@@ -248,97 +249,115 @@ export function EmojisPage() {
   const actionLabel = pending ? ACTION_LABEL[pending.type] : ''
 
   return (
-    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-6 sm:px-6 lg:px-8">
-      <PageHeader
-        eyebrow="YUELI · CONSOLE"
-        title="表情包库"
-        subtitle="她能发出去的表情都在这里；把「按使用次数」翻成升序就是真会先被淘汰的顺序。"
-      />
-      {stats ? <StatsOverview stats={stats} /> : null}
-      <div className="flex flex-wrap items-center gap-3">
-        <SegmentedTabs
-          tabs={[
-            { value: 'all', label: '全部' },
-            { value: 'active', label: '未封禁' },
-            { value: 'banned', label: `已封禁${stats ? ` (${stats.bannedInLibrary})` : ''}` },
-          ]}
-          value={scope}
-          onChange={(next) => changeFilter(() => setScope(next))}
-        />
-        {/* 两个按钮表达四种口径：点已激活的按钮翻方向，箭头写在激活项的文案里。 */}
-        <SegmentedTabs
-          tabs={listOrderTabs(order)}
-          value={listOrderField(order)}
-          onChange={(field) => changeFilter(() => setOrder(nextListOrder(order, field)))}
-        />
-      </div>
-      {error ? <ErrorText>{error}</ErrorText> : null}
-      {loading ? <Loading>正在读取表情包库…</Loading> : null}
-      {!loading && !error && entries.length === 0 ? (
-        <Empty>
-          <ImageOff className="mx-auto mb-2 size-8 text-muted-foreground" aria-hidden="true" />
-          {scope === 'banned' ? '还没有封禁过表情包。'
-            : scope === 'active' ? '库里的表情包全部被封禁了。'
-            : '库里还没有表情包。'}
-        </Empty>
-      ) : null}
-      {entries.length > 0 ? (
-        <>
-          <BatchBar
-            pageAllSelected={selection.pageAllSelected}
-            onTogglePage={selection.togglePage}
-            selectedCount={selection.size}
-            onClear={selection.clear}
-            busy={busy}
-          >
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy || selection.size === 0}
-              onClick={() => setPending({ type: 'ban', entry: null })}
+    <PageFrame hint="她能发出去的表情都在这里；把「按使用次数」翻成升序就是真会先被淘汰的顺序。">
+      <Panes>
+        <Pane aria-label="表情宫格">
+          <Toolbar>
+            <SegmentedTabs
+              label="封禁状态"
+              tabs={[
+                { value: 'all', label: '全部' },
+                { value: 'active', label: '未封禁' },
+                { value: 'banned', label: `已封禁${stats ? ` (${stats.bannedInLibrary})` : ''}` },
+              ]}
+              value={scope}
+              onChange={(next) => changeFilter(() => setScope(next))}
+            />
+            {/* 两个按钮表达四种口径：点已激活的按钮翻方向，箭头写在激活项的文案里。 */}
+            <SegmentedTabs
+              label="排序"
+              tabs={listOrderTabs(order)}
+              value={listOrderField(order)}
+              onChange={(field) => changeFilter(() => setOrder(nextListOrder(order, field)))}
+            />
+          </Toolbar>
+          {entries.length > 0 ? (
+            <BatchBar
+              className="min-h-11 flex-none border-b border-border bg-primary-soft/60 px-6 py-1.5"
+              pageAllSelected={selection.pageAllSelected}
+              onTogglePage={selection.togglePage}
+              selectedCount={selection.size}
+              onClear={selection.clear}
+              busy={busy}
             >
-              <Ban className="size-3.5" aria-hidden="true" />
-              批量封禁
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busy || selection.size === 0}
-              onClick={() => setPending({ type: 'unban', entry: null })}
-            >
-              <RotateCcw className="size-3.5" aria-hidden="true" />
-              批量解封
-            </Button>
-            <Button
-              variant="danger-outline"
-              size="sm"
-              disabled={busy || selection.size === 0}
-              onClick={() => setPending({ type: 'delete', entry: null })}
-            >
-              <Trash2 className="size-3.5" aria-hidden="true" />
-              {`批量删除 ${selection.size} 张`}
-            </Button>
-          </BatchBar>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-            {entries.map((entry) => (
-              <EmojiCard
-                key={entry.hash}
-                entry={entry}
-                busy={busy}
-                selected={selection.selected.has(entry.hash)}
-                onBan={(item) => setPending({ type: 'ban', entry: item })}
-                onUnban={(item) => setPending({ type: 'unban', entry: item })}
-                onDelete={(item) => setPending({ type: 'delete', entry: item })}
-                onToggleSelect={selection.toggle}
-              />
-            ))}
-          </div>
-        </>
-      ) : null}
-
-      {/* 这里原本自己抄了一份翻页条；换成共用 Pager 后行为一致，且「回到第一页」
-          与其余列表页保持同一个控件，不必两处各加一次。 */}
-      <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy || selection.size === 0}
+                onClick={() => setPending({ type: 'ban', entry: null })}
+              >
+                <Ban className="size-3.5" aria-hidden="true" />
+                批量封禁
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busy || selection.size === 0}
+                onClick={() => setPending({ type: 'unban', entry: null })}
+              >
+                <RotateCcw className="size-3.5" aria-hidden="true" />
+                批量解封
+              </Button>
+              <Button
+                variant="danger-outline"
+                size="sm"
+                disabled={busy || selection.size === 0}
+                onClick={() => setPending({ type: 'delete', entry: null })}
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                {`批量删除 ${selection.size} 张`}
+              </Button>
+            </BatchBar>
+          ) : null}
+          <ScrollArea className="px-6 py-5">
+            {error ? <ErrorText>{error}</ErrorText> : null}
+            {loading ? <Loading>正在读取表情包库…</Loading> : null}
+            {!loading && !error && entries.length === 0 ? (
+              <Empty>
+                <ImageOff className="mx-auto mb-2 size-8 text-muted-foreground" aria-hidden="true" />
+                {scope === 'banned' ? '还没有封禁过表情包。'
+                  : scope === 'active' ? '库里的表情包全部被封禁了。'
+                  : '库里还没有表情包。'}
+              </Empty>
+            ) : null}
+            {entries.length > 0 ? (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+                {entries.map((entry) => (
+                  <EmojiCard
+                    key={entry.hash}
+                    entry={entry}
+                    busy={busy}
+                    selected={selection.selected.has(entry.hash)}
+                    onBan={(item) => setPending({ type: 'ban', entry: item })}
+                    onUnban={(item) => setPending({ type: 'unban', entry: item })}
+                    onDelete={(item) => setPending({ type: 'delete', entry: item })}
+                    onToggleSelect={selection.toggle}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </ScrollArea>
+          {/* 这里原本自己抄了一份翻页条；换成共用 Pager 后行为一致，且「回到第一页」
+              与其余列表页保持同一个控件，不必两处各加一次。 */}
+          {total > 0 ? (
+            <PaneFooter>
+              <div className="flex-1">
+                <Pager page={page} pageCount={pageCount} total={total} onChange={setPage} disabled={loading} />
+              </div>
+            </PaneFooter>
+          ) : null}
+        </Pane>
+        {stats ? (
+          <Pane width="inspector" aria-label="库容量">
+            <PaneHeader>
+              <PaneTitle>库容量</PaneTitle>
+            </PaneHeader>
+            <ScrollArea>
+              <StatsOverview stats={stats} />
+            </ScrollArea>
+          </Pane>
+        ) : null}
+      </Panes>
 
       <ConfirmDialog
         open={pending !== null}
@@ -363,15 +382,15 @@ export function EmojisPage() {
           if (pending && !busy) void runAction(pending)
         }}
       />
-    </div>
+    </PageFrame>
   )
 }
 
 /**
- * 渲染库容量总览卡。
+ * 渲染库容量检查栏的内容：容量进度与四项记录统计。
  *
  * @param props.stats 后端返回的容量统计。
- * @returns 指标卡；maxCount 为 0 时不渲染容量进度条。
+ * @returns 两个面板小节；maxCount 为 0 时不渲染容量进度条。
  */
 function StatsOverview({ stats }: { stats: EmojiStats }) {
   // 容量按 countedCount 算：已封禁的记录不占名额（服务端 evict_to_limit 同口径），
@@ -379,41 +398,39 @@ function StatsOverview({ stats }: { stats: EmojiStats }) {
   const capacityPercent =
     stats.maxCount > 0 ? Math.min(100, (stats.countedCount / stats.maxCount) * 100) : 0
   return (
-    <Card>
-      <CardBody className="grid grid-cols-2 gap-x-6 gap-y-1 md:grid-cols-4">
-        <Metric
-          label="库内记录"
-          value={stats.count}
-          detail={stats.bannedInLibrary > 0 ? `其中 ${stats.bannedInLibrary} 条已封禁，不占容量` : '全部计入容量'}
-        />
-        <Metric
-          label="封禁哈希"
-          value={stats.bannedCount}
-          detail={stats.bannedCount > stats.bannedInLibrary
-            ? `${stats.bannedCount - stats.bannedInLibrary} 条对应的图已不在库里`
-            : '独立于记录存在'}
-        />
-        <Metric label="目录占用" value={formatBytes(stats.directoryBytes)} detail={`${stats.fileCount} 个文件`} />
-        <Metric
-          label="孤儿文件"
-          value={stats.orphanCount}
-          detail={formatBytes(stats.orphanBytes)}
-        />
-        {stats.maxCount > 0 ? (
-          <div className="col-span-2 md:col-span-4">
-            <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
-              <span>库容量{stats.bannedInLibrary > 0 ? '（不含已封禁）' : ''}</span>
-              <span className="font-mono">{stats.countedCount} / {stats.maxCount}</span>
-            </div>
-            <Progress value={capacityPercent} max={100} label="表情包库容量" />
-          </div>
-        ) : null}
+    <>
+      {stats.maxCount > 0 ? (
+        <PaneSection title={`容量${stats.bannedInLibrary > 0 ? '（不含已封禁）' : ''}`}>
+          <p className="mb-2 font-mono text-[22px] leading-7 font-semibold tabular-nums">
+            {stats.countedCount}
+            <span className="text-sm font-normal text-subtle-foreground"> / {stats.maxCount}</span>
+          </p>
+          <Progress value={capacityPercent} max={100} label="表情包库容量" />
+        </PaneSection>
+      ) : null}
+      <PaneSection title="记录">
+        <div className="flex flex-col divide-y divide-border-subtle">
+          <Metric
+            label="库内记录"
+            value={stats.count}
+            detail={stats.bannedInLibrary > 0 ? `其中 ${stats.bannedInLibrary} 条已封禁，不占容量` : '全部计入容量'}
+          />
+          <Metric
+            label="封禁哈希"
+            value={stats.bannedCount}
+            detail={stats.bannedCount > stats.bannedInLibrary
+              ? `${stats.bannedCount - stats.bannedInLibrary} 条对应的图已不在库里`
+              : '独立于记录存在'}
+          />
+          <Metric label="目录占用" value={formatBytes(stats.directoryBytes)} detail={`${stats.fileCount} 个文件`} />
+          <Metric label="孤儿文件" value={stats.orphanCount} detail={formatBytes(stats.orphanBytes)} />
+        </div>
         {/* use_count / last_used_at 两列自 2026-08-25 才开始落账，库里更早的发送
             天然记为 0；不说明的话，「她发过很多次」和卡片上的小数字对不上。 */}
-        <p className="col-span-2 md:col-span-4 text-xs text-muted-foreground">
+        <p className="mt-3 text-xs leading-relaxed text-subtle-foreground">
           使用次数自 2026-08-25 起统计，此前的发送不计入。
         </p>
-      </CardBody>
-    </Card>
+      </PaneSection>
+    </>
   )
 }

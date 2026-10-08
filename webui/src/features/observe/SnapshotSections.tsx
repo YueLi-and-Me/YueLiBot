@@ -1,8 +1,9 @@
 /**
  * 观察快照的七个业务分区：自身状态、活动时间线、今日方向、打扰预算、感知视觉、会话与语音。
  *
- * 分区以 12 列网格排布，常规分区占 4 列、宽分区占 8 列，dense 自动流回填空隙；
- * 数据全部来自后端已聚合的快照值，本模块只做展示映射。被会话观察页引用。
+ * 分区在会话观察页右侧的检查栏里纵向堆叠，以面板内的扁平分区呈现（由外层的
+ * FlatCards 决定）；数据全部来自后端已聚合的快照值，本模块只做展示映射。被
+ * 会话观察页引用。
  */
 import {
   BatteryCharging,
@@ -21,11 +22,6 @@ import { Card, CardBody, Chip, Metric, Pager, Progress, SectionHeading, cn } fro
 import { dateTime, displayValue, fixed, numeric, qqSenderLabel, record, text } from '@/lib/format'
 import type { ObservabilityPayload } from '../../../../electron/shared/ipc.ts'
 
-/** 网格跨度：常规分区。 */
-const SPAN_NORMAL = 'md:col-span-6 xl:col-span-4'
-/** 网格跨度：宽分区。 */
-const SPAN_WIDE = 'md:col-span-12 xl:col-span-8'
-
 /** 活动时间线每页条数。 */
 const TIMELINE_PAGE_SIZE = 6
 
@@ -38,20 +34,17 @@ interface SectionCardProps {
   icon: ReactNode
   /** 图标色调。 */
   tint: 'coral' | 'amber' | 'olive' | 'plum'
-  /** 是否宽版布局，默认值为 `false`。 */
-  wide?: boolean
   children: ReactNode
 }
 
 /**
- * 渲染单个快照分区卡片。
+ * 渲染单个快照分区。
  *
- * @param props.wide 宽版分区占 8 列，常规分区占 4 列。
  * @returns 分区卡片。
  */
-function SectionCard({ title, subtitle, icon, tint, wide = false, children }: SectionCardProps) {
+function SectionCard({ title, subtitle, icon, tint, children }: SectionCardProps) {
   return (
-    <Card className={cn('animate-rise', wide ? SPAN_WIDE : SPAN_NORMAL)}>
+    <Card>
       <SectionHeading title={title} subtitle={subtitle} icon={icon} tint={tint} />
       <CardBody>{children}</CardBody>
     </Card>
@@ -116,7 +109,7 @@ function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
   const current = Math.min(page, pageCount - 1)
   const visible = ordered.slice(current * TIMELINE_PAGE_SIZE, (current + 1) * TIMELINE_PAGE_SIZE)
   return (
-    <SectionCard title="活动时间线" subtitle="实际发生的生活记录" icon={<History />} tint="coral" wide>
+    <SectionCard title="活动时间线" subtitle="实际发生的生活记录" icon={<History />} tint="coral">
       {activity === undefined ? (
         <p className="text-sm text-muted-foreground">活动时间线当前不可用。</p>
       ) : (
@@ -136,7 +129,7 @@ function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
             {visible.map((item) => (
               <li key={item.id} className="relative">
                 <span
-                  className="absolute top-[7px] -left-[23.5px] size-2 rounded-full bg-primary"
+                  className="absolute top-[7px] -left-[23.5px] size-2 rounded-full bg-primary ring-2 ring-card"
                   aria-hidden="true"
                 />
                 <strong className="text-[13px] font-semibold">
@@ -148,7 +141,7 @@ function ActivitySection({ payload }: { payload: ObservabilityPayload }) {
               </li>
             ))}
           </ol>
-          <Pager page={current} pageCount={pageCount} total={ordered.length} onChange={setPage} />
+          <Pager compact page={current} pageCount={pageCount} total={ordered.length} onChange={setPage} />
         </div>
       )}
     </SectionCard>
@@ -170,7 +163,6 @@ function ScheduleSection({ payload }: { payload: ObservabilityPayload }) {
       subtitle={schedule?.date ?? '今日方向'}
       icon={<CalendarClock />}
       tint="amber"
-      wide
     >
       {schedule === null ? (
         <p className="text-sm text-muted-foreground">每日方向服务当前不可用。</p>
@@ -284,7 +276,7 @@ function SensingSection({ payload }: { payload: ObservabilityPayload }) {
 function ConversationSection({ payload }: { payload: ObservabilityPayload }) {
   const participants = payload.conversation.participants
   return (
-    <SectionCard title="会话状态" subtitle="当前工作记忆" icon={<MessageSquare />} tint="coral" wide>
+    <SectionCard title="会话状态" subtitle="当前工作记忆" icon={<MessageSquare />} tint="coral">
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap gap-1.5">
           <Chip label="工作消息" value={`${payload.conversation.workingMessages} 条`} />
@@ -298,7 +290,7 @@ function ConversationSection({ payload }: { payload: ObservabilityPayload }) {
               <Link
                 key={person.id}
                 to={`/persons/${person.id}`}
-                className="inline-flex max-w-full items-center truncate rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-accent-foreground transition-colors hover:border-primary/40 hover:bg-accent"
+                className="inline-flex max-w-full items-center truncate rounded bg-accent px-2 py-0.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-nav-active"
               >
                 {qqSenderLabel(person.displayName, person.nickname, person.externalId, person.groupCard)}
               </Link>
@@ -352,11 +344,11 @@ function VoiceSection({ payload }: { payload: ObservabilityPayload }) {
  * 按固定顺序渲染观察快照的全部分区。
  *
  * @param props.payload 后端观察快照。
- * @returns 分区网格。
+ * @returns 纵向堆叠的分区。
  */
 export function SnapshotSections({ payload }: { payload: ObservabilityPayload }) {
   return (
-    <div className="grid grid-cols-1 gap-4 [grid-auto-flow:dense] md:grid-cols-12">
+    <div className="flex flex-col">
       <SelfStateSection payload={payload} />
       <ActivitySection payload={payload} />
       <ScheduleSection payload={payload} />
