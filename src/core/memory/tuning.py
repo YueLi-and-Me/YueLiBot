@@ -1,6 +1,6 @@
 """检索调优中心：参数白名单、命名 profile 与弱监督评估。
 
-四个部分：
+三个部分：
 
 1. **参数白名单**：允许调优的参数只有下表所列，其余检索链路上的数值
    （冻结阈值、半衰期、BM25 与向量的 0.4/0.6 混合等）不在调优范围内。
@@ -10,21 +10,16 @@
    进程内覆盖表：检索链路的读取点先查覆盖、没有再用配置初值，
    ``default`` profile 的覆盖集为空，等于现状。覆盖表只随 profile 的
    应用、删除与启动恢复而整体替换。
-3. **评估（转储反推）**：从 ``pipeline_events`` 与其指向的提示词转储抽弱监督
-   样本，正例 = 进了提示词且该回合产生了回复的事实条目；重放检索按待评估参数
-   排序后以 nDCG@k 与召回条数打分。只收没有召回留痕的回合：检索词取自转储里
-   最后一条 user 消息，决策提示词逐条排列后那一条是动作协议说明，该取法
-   不再成立。评估不读写进程内覆盖表：待评估参数
-   作为显式参数沿重放路径传到各打分点（召回打分、融合重排、候选池百分位、
-   进提示词条数）。评估与生产检索会并发——WebUI 评估端点在线程池里执行
-   评估，第二轮评估在等待查询向量时让出事件循环——线上读取因此始终只看
-   已生效 profile。
-4. **第二轮评估（留痕重放）**：从 ``memory_retrieval_trace`` 留痕取生产
-   当轮的真实检索词（当前文本与会话印象）复现两次召回并集，与留痕
-   ``candidatePool`` 逐位对账；重排走生产 ``rank_recalled_facts`` 的向量
-   融合。有留痕与无留痕的回合在报告里永远分成两个样本池，对不上留痕池
-   的回合单独计数——那说明重放与生产仍有差异，其读数比 nDCG 本身重要。
-   WebUI 的评估接口只跑留痕池，响应取 :meth:`Round2Report.traced_as_dict`。
+3. **评估（留痕重放）**：从 ``memory_retrieval_trace`` 留痕取生产当轮的真实
+   检索词（当前文本与会话印象）复现两次召回并集，与留痕 ``candidatePool``
+   逐位对账，对不上的回合单独计数——那说明重放与生产仍有差异，其读数比
+   nDCG 本身重要。重排走生产 ``rank_recalled_facts`` 的向量融合，再以
+   nDCG@k 与召回条数打分；弱监督正例 = 首份生产提示词里的事实条目，且该
+   回合产生了回复。WebUI 的评估接口响应取 :meth:`Round2Report.traced_as_dict`。
+   评估不读写进程内覆盖表：待评估参数作为显式参数沿重放路径传到各打分点
+   （召回打分、融合重排、候选池百分位、进提示词条数）。评估与生产检索会
+   并发——WebUI 评估端点在线程池里执行评估，等待查询向量时也会让出事件
+   循环——线上读取因此始终只看已生效 profile。
 
 弱监督的已知局限：正例本身来自当前参数的选择，评估度量的是
 「换参数后既定选择的稳定性」，不是绝对相关性。该口径已于 2026-09-02
@@ -38,7 +33,6 @@ import math
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from time import monotonic
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -47,13 +41,6 @@ from src.core.observe import events as trace
 
 logger = get_logger(__name__)
 
-# 提示词转储中事实块的分节标记，与 agent/prompt.py 的渲染标题一致。
-FACT_BLOCK_TAG = '长期记忆'
-# 评估重放时每次召回取的候选池上限：远大于任何合法的 top-k，
-# 保证 nDCG 的排名有足够深度容纳全部正例。
-EVAL_POOL_LIMIT = 100
-# 评估近似在场者时回看的消息条数。
-PRESENCE_WINDOW_MESSAGES = 200
 
 DEFAULT_PROFILE_NAME = 'default'
 ACTIVE_PROFILE_META_KEY = 'retrieval_tuning_active_profile'
@@ -123,7 +110,7 @@ def validate_overrides(values: Mapping[str, Any]) -> Dict[str, Any]:
 #
 # 评估不得写入此表，草稿参数一律经各读取函数的 ``overrides`` 参数显式传入。
 # - 现象：评估期间临时替换此表时，同一时段到达的线上聊天回合按草稿参数召回。
-# - 原因：WebUI 评估端点经 run_in_thread 在线程池里执行评估，第二轮评估在
+# - 原因：WebUI 评估端点经 run_in_thread 在线程池里执行评估，评估也会在
 #   await 查询向量时让出事件循环；线上召回在事件循环线程上同步读取此表，
 #   两者共享同一个模块级对象。
 # - 后果：草稿参数会改变线上提示词里的事实条目与条数，且不留任何生效记录。
@@ -438,176 +425,6 @@ def bootstrap_active(db: sqlite3.Connection) -> str:
 # ---------------------------------------------------------------- 评估
 
 
-@dataclass
-class TurnSample:
-    """一个可评估的回合样本（弱监督）。
-
-    :ivar turn_id: 事件账本中的回合 ID。
-    :ivar stream_id: 会话 ID。
-    :ivar stream_kind: 会话类型，决定可见性口径。
-    :ivar at: 回合毫秒时间戳。
-    :ivar query: 从提示词转储反推的该回合用户文本，作为重放检索词。
-    :ivar present_person_ids: 近似在场者；评估时按其召回。
-    :ivar positive_fact_ids: 进了提示词且该回合产生了回复的事实 ID。
-    """
-
-    turn_id: int
-    stream_id: int
-    stream_kind: str
-    at: int
-    query: str
-    present_person_ids: List[int] = field(default_factory=list)
-    positive_fact_ids: List[int] = field(default_factory=list)
-
-
-def _fact_lines_from_dump(dump: Mapping[str, Any]) -> List[str]:
-    """从转储的请求消息里取出事实块条目行。"""
-
-    for message in dump.get('request', {}).get('messages', []):
-        content = message.get('content', '')
-        if isinstance(content, str) and content.startswith(f'[{FACT_BLOCK_TAG}]'):
-            return [line[2:] for line in content.splitlines() if line.startswith('- ')]
-    return []
-
-
-def _match_fact_ids(db: sqlite3.Connection, lines: Sequence[str]) -> List[int]:
-    """把渲染条目行匹配回事实 ID。
-
-    条目行是 ``<人名> <正文>``（冲突时带槽位标注），正文才是稳定锚：
-    正文整段出现在渲染行内即视为命中。渲染格式再有变化也只是漏配
-    （该回合退出样本集），不会把正文错配到另一条事实上。
-
-    :param db: 只读连接。
-    :param lines: 渲染条目行。
-    :return: 匹配到的事实 ID 列表；匹配不到的行丢弃。
-    副作用：无。
-    """
-
-    rows = [
-        (int(row[0]), str(row[1]).strip())
-        for row in db.execute(
-            'SELECT id, content FROM facts WHERE superseded_by IS NULL AND active = 1'
-        ).fetchall()
-    ]
-    matched: List[int] = []
-    seen: set[int] = set()
-    for line in lines:
-        for fact_id, content in rows:
-            if fact_id in seen or not content:
-                continue
-            if content in line:
-                matched.append(fact_id)
-                seen.add(fact_id)
-                break
-    return matched
-
-
-def build_turn_samples(
-    db: sqlite3.Connection,
-    *,
-    max_turns: Optional[int] = None,
-) -> List[TurnSample]:
-    """从事件账本与提示词转储构建评估样本（无留痕样本池）。
-
-    样本条件（正例定义的前提）：planner 任务的 ``prompt_record``、
-    转储文件可读、事实块至少匹配到一条、同一 ``turn_id`` 内产生了回复、
-    该回合没有 ``memory_retrieval_trace`` 留痕。
-    同一回合只取首条合格转储：planner 在一个回合内可能因纠错重试被调用
-    多次，逐条计入会把该回合的 nDCG 权重放大数倍。转储路径取自事件
-    payload 本身，因此观察窗口受快照滚动保留量限制。
-
-    有留痕的回合一律排除，由 :func:`build_trace_samples` 接手：
-
-    - 现象：决策提示词逐条排列后，转储里最后一条 user 消息是动作协议说明，
-      按它反推出的检索词对所有回合几乎相同（2026-10-08 生产 117 个回合里
-      116 个如此）。
-    - 原因：本函数按「最后一条 user 消息」取检索词，只对逐条排列之前、把当前
-      回合用户文本放在末尾的提示词格式成立；留痕则无损记录了当轮真实检索词。
-    - 后果：去掉这条过滤，同一回合会以错误检索词同时进入两个样本池。
-
-    :param db: 当前库连接。
-    :param max_turns: 最多保留的样本数；省略时不限。
-    :return: 按事件序排列的样本列表。
-    :raises sqlite3.Error: 查询失败。
-    副作用：只读。
-    """
-
-    kind_by_stream = {
-        int(row[0]): str(row[1])
-        for row in db.execute('SELECT id, kind FROM streams').fetchall()
-    }
-    replied_turns = {
-        int(row[0])
-        for row in db.execute(
-            "SELECT DISTINCT turn_id FROM pipeline_events"
-            " WHERE kind IN ('outbound_delivered', 'llm_final') AND turn_id IS NOT NULL"
-        ).fetchall()
-    }
-    traced_turns = {
-        int(row[0])
-        for row in db.execute(
-            "SELECT DISTINCT turn_id FROM pipeline_events"
-            " WHERE kind = 'memory_retrieval_trace' AND turn_id IS NOT NULL"
-        ).fetchall()
-    }
-    samples: List[TurnSample] = []
-    seen_turns: set[int] = set()
-    for at, stream_id, turn_id, payload in db.execute(
-        "SELECT at, stream_id, turn_id, payload FROM pipeline_events"
-        " WHERE kind = 'prompt_record' ORDER BY seq"
-    ):
-        if turn_id is None or int(turn_id) not in replied_turns:
-            continue
-        if int(turn_id) in seen_turns or int(turn_id) in traced_turns:
-            continue
-        try:
-            task = json.loads(str(payload)).get('task')
-            path = json.loads(str(payload)).get('path')
-        except (TypeError, ValueError):
-            continue
-        if task != 'planner' or not path:
-            continue
-        dump_file = Path(str(path))
-        if not dump_file.is_file():
-            continue
-        try:
-            with open(dump_file, encoding='utf-8') as handle:
-                dump = json.load(handle)
-        except (OSError, ValueError):
-            continue
-        query = ''
-        for message in dump.get('request', {}).get('messages', []):
-            if message.get('role') == 'user' and message.get('content'):
-                query = str(message.get('content'))
-        lines = _fact_lines_from_dump(dump)
-        if not query or not lines:
-            continue
-        positive = _match_fact_ids(db, lines)
-        if not positive:
-            continue
-        present = [
-            int(row[0]) for row in db.execute(
-                'SELECT DISTINCT sender_person_id FROM messages'
-                ' WHERE stream_id = ? AND created_at <= ? AND sender_person_id IS NOT NULL'
-                ' ORDER BY id DESC LIMIT ?',
-                (stream_id, at, PRESENCE_WINDOW_MESSAGES),
-            ).fetchall()
-        ]
-        seen_turns.add(int(turn_id))
-        samples.append(TurnSample(
-            turn_id=int(turn_id),
-            stream_id=int(stream_id),
-            stream_kind=kind_by_stream.get(int(stream_id), 'direct'),
-            at=int(at),
-            query=query,
-            present_person_ids=present,
-            positive_fact_ids=positive,
-        ))
-        if max_turns is not None and len(samples) >= max_turns:
-            break
-    return samples
-
-
 def ndcg_at_k(ranked_ids: Sequence[int], positive_ids: Sequence[int], k: int) -> float:
     """计算单回合 nDCG@k。
 
@@ -633,136 +450,7 @@ def ndcg_at_k(ranked_ids: Sequence[int], positive_ids: Sequence[int], k: int) ->
     return dcg / ideal if ideal > 0 else 0.0
 
 
-@dataclass
-class EvalReport:
-    """一次评估的汇总结果。
-
-    :ivar profile: 被评估的 profile 名；匿名参数集为 ``None``。
-    :ivar params: 本次评估实际生效的覆盖表。
-    :ivar k: nDCG 截断深度（进提示词条数上限）。
-    :ivar sample_count: 样本数。
-    :ivar ndcg_mean: 各回合 nDCG@k 的算术平均。
-    :ivar recall_count_median / mean: 重放下进入提示词条数的中位与均值。
-    :ivar displaced_positive_total: 正例落在前 k 之外的总条数——
-        「该进的有没有被挤掉」的直接读数。
-    :ivar per_turn: 每回合一行明细。
-    :ivar generated_at: 报告生成时刻。
-    """
-
-    profile: Optional[str]
-    params: Dict[str, Any]
-    k: int
-    sample_count: int
-    ndcg_mean: float
-    recall_count_median: float
-    recall_count_mean: float
-    displaced_positive_total: int
-    per_turn: List[Dict[str, Any]] = field(default_factory=list)
-    generated_at: str = ''
-
-    def as_dict(self) -> Dict[str, Any]:
-        """序列化为 API 响应友好的字典。"""
-
-        return {
-            'profile': self.profile,
-            'params': self.params,
-            'k': self.k,
-            'sample_count': self.sample_count,
-            'ndcg_mean': round(self.ndcg_mean, 4),
-            'recall_count_median': self.recall_count_median,
-            'recall_count_mean': round(self.recall_count_mean, 2),
-            'displaced_positive_total': self.displaced_positive_total,
-            'per_turn': self.per_turn,
-            'generated_at': self.generated_at,
-        }
-
-
-def evaluate(
-    store: Any,
-    samples: Sequence[TurnSample],
-    overrides: Mapping[str, Any],
-    *,
-    profile_name: Optional[str] = None,
-    config_fact_limit: int = 6,
-) -> EvalReport:
-    """按给定参数重放检索并输出 nDCG@k 与召回条数。
-
-    待评估参数显式传给重放的召回打分，不经过进程内覆盖表，因此可与线上
-    检索并发执行；重放只读，不强化、不回补、不写库。
-
-    :param store: MemoryStore 实例。
-    :param samples: :func:`build_turn_samples` 的产物。
-    :param overrides: 本次评估的参数覆盖（先经白名单校验）；空表表示按配置
-        初值评估，与当前生效 profile 无关。
-    :param profile_name: 来源 profile 名；匿名评估为 ``None``。
-    :param config_fact_limit: 配置提供的进提示词条数初值。
-    :return: 汇总报告。
-    :raises ValueError: 参数不在白名单。
-    副作用：发出一条 ``retrieval_eval_done`` 事件。
-    """
-
-    evaluated = validate_overrides(overrides)
-    per_turn: List[Dict[str, Any]] = []
-    displaced_total = 0
-    k = int(tuned_value('fact_recall_limit', config_fact_limit, evaluated))
-    for sample in samples:
-        pool = store.recall_facts_in_scope(
-            sample.present_person_ids,
-            sample.query,
-            EVAL_POOL_LIMIT,
-            now=sample.at,
-            stream_kind=sample.stream_kind,
-            return_candidates=True,
-            overrides=evaluated,
-        )
-        ranked = sorted(pool, key=lambda fact: fact.score, reverse=True)
-        ranked_ids = [fact.id for fact in ranked[:k]]
-        value = ndcg_at_k(ranked_ids, sample.positive_fact_ids, k)
-        displaced = sum(
-            1 for fact_id in sample.positive_fact_ids if fact_id not in set(ranked_ids)
-        )
-        displaced_total += displaced
-        per_turn.append({
-            'turn_id': sample.turn_id,
-            'stream_kind': sample.stream_kind,
-            'positive_count': len(sample.positive_fact_ids),
-            'recall_count': len(ranked_ids),
-            'ndcg': round(value, 4),
-            'displaced_positive': displaced,
-        })
-
-    sample_count = len(per_turn)
-    ndcg_values = [row['ndcg'] for row in per_turn]
-    recalls = [row['recall_count'] for row in per_turn]
-    report = EvalReport(
-        profile=profile_name,
-        params=evaluated,
-        k=k,
-        sample_count=sample_count,
-        ndcg_mean=(sum(ndcg_values) / sample_count) if sample_count else 0.0,
-        recall_count_median=(sorted(recalls)[len(recalls) // 2] if recalls else 0),
-        recall_count_mean=(sum(recalls) / sample_count) if sample_count else 0.0,
-        displaced_positive_total=displaced_total,
-        per_turn=per_turn,
-        generated_at=datetime.now(timezone.utc).isoformat(),
-    )
-    trace.emit(
-        'retrieval_eval_done',
-        profile=profile_name or '',
-        samples=sample_count,
-        ndcgMean=round(report.ndcg_mean, 4),
-    )
-    logger.info(
-        'retrieval_eval_done',
-        profile=profile_name or 'anonymous',
-        samples=sample_count,
-        ndcg=round(report.ndcg_mean, 4),
-        displaced=displaced_total,
-    )
-    return report
-
-
-# ---------------------------------------------------------------- 第二轮评估：留痕重放
+# ---------------------------------------------------------------- 留痕重放
 
 # 留痕对账的分数比较容差。两侧分数来自同一组浮点表达式，输入一致时逐位
 # 相同；容差只吸收浮点环境的表示差，不掩盖任何排序级差异。
@@ -812,7 +500,7 @@ def build_trace_samples(
 
     全部留痕都进样本：对账不依赖正例，``promptFactIds`` 为空的回合同样要
     比对候选池。同一回合只取首条留痕（生产侧同轮只发一条，这里按回合去重
-    兜底）。留痕事件不存在时返回空列表，调用方据此把回合划入无留痕样本池。
+    兜底）。没有留痕的回合不进样本。
 
     :param db: 当前库连接。
     :param max_turns: 最多保留的样本数；省略时不限。
@@ -1083,15 +771,14 @@ def _aggregate_stream_groups(rows: Sequence[Mapping[str, Any]]) -> Dict[str, Dic
 
 @dataclass
 class Round2Report:
-    """第二轮评估的汇总结果。
+    """留痕重放评估的汇总结果。
 
     :ivar profile: 被评估的 profile 名；匿名参数集为 ``None``。
     :ivar params: 本次评估实际生效的覆盖表。
     :ivar k: nDCG 截断深度（进提示词条数上限）。
-    :ivar traced: 留痕样本池的汇总（含对账）。
-    :ivar untraced: 无留痕样本池的汇总。
+    :ivar traced: 留痕回合的汇总：样本数、按会话类型分组的读数与对账计数。
     :ivar embedding: 查询向量成本：调用次数、缓存命中与累计耗时毫秒。
-    :ivar per_turn: 每回合一行明细，两个池的行混排、以 ``pool`` 字段区分。
+    :ivar per_turn: 每回合一行明细。
     :ivar generated_at: 报告生成时刻。
     """
 
@@ -1099,7 +786,6 @@ class Round2Report:
     params: Dict[str, Any]
     k: int
     traced: Dict[str, Any]
-    untraced: Dict[str, Any]
     embedding: Dict[str, Any]
     per_turn: List[Dict[str, Any]] = field(default_factory=list)
     generated_at: str = ''
@@ -1112,25 +798,29 @@ class Round2Report:
             'params': self.params,
             'k': self.k,
             'traced': self.traced,
-            'untraced': self.untraced,
             'embedding': self.embedding,
             'per_turn': self.per_turn,
             'generated_at': self.generated_at,
         }
 
     def traced_as_dict(self) -> Dict[str, Any]:
-        """只取留痕池，按 :meth:`EvalReport.as_dict` 的字段名序列化，供 WebUI 评估接口返回。
+        """取整体列与可评分回合的明细，序列化为 WebUI 评估接口的响应。
 
-        字段名沿用第一轮报告，页面与「现行 vs 草稿」对照按回合配对的逻辑不必
-        区分来源；无留痕池的行不进入本视图。
+        字段与 WebUI 的 ``TuningEvalReport`` 逐一对应，「现行 vs 草稿」对照按
+        ``per_turn`` 的 ``turn_id`` 配对：
 
-        - ``sample_count`` / ``ndcg_mean`` / ``displaced_positive_total`` 与
-          ``per_turn`` 只含可评分回合（产生了回复且有事实进了提示词）：
-          无正例回合的 nDCG 恒为 0，计入逐回合配对会使均值偏低。
-        - ``recall_count_median`` / ``recall_count_mean`` 统计全部重放回合，
-          与 :func:`_aggregate_stream_groups` 同口径。
-        - ``replayed_count`` 是重放的留痕回合总数，``reconcile_mismatched``
-          是其中候选池与留痕对不上的回合数。
+        - ``profile`` / ``params`` / ``k`` / ``generated_at``：同本报告。
+        - ``sample_count``：可评分回合数（产生了回复且有事实进了提示词）。
+          ``ndcg_mean``（nDCG@k 均值）、``displaced_positive_total``（正例落在
+          前 k 之外的总条数）与 ``per_turn`` 只在这些回合上统计：无正例回合的
+          nDCG 恒为 0，计入逐回合配对会使均值偏低。
+        - ``replayed_count``：重放的留痕回合总数；``reconcile_mismatched``：
+          其中候选池与留痕对不上的回合数。
+        - ``recall_count_median`` / ``recall_count_mean``：重放下进提示词的
+          条数，统计全部重放回合，与 :func:`_aggregate_stream_groups` 同口径。
+        - ``per_turn`` 每行含 ``turn_id``、``stream_kind``、``positive_count``
+          （正例条数）、``recall_count``（进提示词条数）、``ndcg`` 与
+          ``displaced_positive``（该回合被挤掉的正例条数）。
 
         :return: API 响应字典。
         副作用：无。
@@ -1158,7 +848,7 @@ class Round2Report:
                     'displaced_positive': row['displaced_positive'],
                 }
                 for row in self.per_turn
-                if row['pool'] == 'traced' and row['scorable']
+                if row['scorable']
             ],
             'generated_at': self.generated_at,
         }
@@ -1167,7 +857,6 @@ class Round2Report:
 async def evaluate_round2(
     store: Any,
     traced: Sequence[TraceSample],
-    untraced: Sequence[TurnSample],
     overrides: Mapping[str, Any],
     *,
     embed_query: Optional[Callable[[str], Awaitable[Optional[bytes]]]] = None,
@@ -1177,10 +866,8 @@ async def evaluate_round2(
 ) -> Round2Report:
     """按留痕检索词重放召回、并入向量融合重排，输出按会话类型分组的报告。
 
-    两个样本池在报告里永远分开：留痕池用留痕检索词复现两次召回并集并与
-    ``candidatePool`` 对账；无留痕池沿用提示词转储反推的当前文本，检索词
-    近似造成的偏差继续存在，数字不可与留痕池混读。融合重排直接调用生产
-    的 ``rank_recalled_facts``，查询向量按生产口径取当前文本。
+    每个回合用留痕检索词复现两次召回并集，并与 ``candidatePool`` 对账。融合
+    重排直接调用生产的 ``rank_recalled_facts``，查询向量按生产口径取当前文本。
 
     查询向量按文本缓存：同一文本只调用一次 ``embed_query``，实际调用次数
     与累计耗时记入报告。``embed_query`` 为 ``None`` 时融合退化为词面排序，
@@ -1192,7 +879,6 @@ async def evaluate_round2(
 
     :param store: MemoryStore 实例。
     :param traced: :func:`build_trace_samples` 的产物。
-    :param untraced: :func:`build_turn_samples` 的产物（无留痕回合）。
     :param overrides: 本次评估的参数覆盖（先经白名单校验）；空表表示按配置
         初值评估，与当前生效 profile 无关。
     :param embed_query: 异步查询向量函数，签名与 ``VectorService.embed_query``
@@ -1232,39 +918,6 @@ async def evaluate_round2(
         vector_cache[text] = vector
         return vector
 
-    def record_turn(
-        *,
-        pool: str,
-        turn_id: Optional[int],
-        stream_kind: str,
-        reconcile: Optional[ReconcileResult],
-        prompt_fact_ids: Sequence[int],
-        ranked_ids: Sequence[int],
-        recall_source_count: int,
-    ) -> None:
-        # 正例是否进入 nDCG 统计由调用方按各池口径先行判定（留痕池见
-        # TraceSample.scorable，无留痕池进样本即有正例），这里只看正例
-        # 是否非空。
-        scorable = bool(prompt_fact_ids)
-        value = ndcg_at_k(ranked_ids, prompt_fact_ids, k) if prompt_fact_ids else 0.0
-        displaced = (
-            sum(1 for fact_id in prompt_fact_ids if fact_id not in set(ranked_ids))
-            if prompt_fact_ids else 0
-        )
-        per_turn.append({
-            'turn_id': turn_id,
-            'pool': pool,
-            'stream_kind': stream_kind,
-            'scorable': scorable,
-            'reconcile': reconcile.as_dict() if reconcile is not None else None,
-            'positive_count': len(prompt_fact_ids),
-            'candidate_count': recall_source_count,
-            'recall_count': len(ranked_ids),
-            'ranked_ids': list(ranked_ids),
-            'ndcg': round(value, 4),
-            'displaced_positive': displaced,
-        })
-
     for sample in traced:
         present = approximate_present_persons(store, sample.stream_id, sample.at)
         replay = replay_union_recall(
@@ -1276,65 +929,39 @@ async def evaluate_round2(
         )
         reconcile = reconcile_trace_pool(replay, sample.candidate_pool)
         query_embedding = await query_vector(sample.current_text)
-        ranked = store.rank_recalled_facts(
-            replay, query_embedding, k, overrides=evaluated,
-        )
-        record_turn(
-            pool='traced',
-            turn_id=sample.turn_id,
-            stream_kind=sample.stream_kind,
-            reconcile=reconcile,
-            prompt_fact_ids=sample.prompt_fact_ids if sample.scorable else [],
-            ranked_ids=[fact.id for fact in ranked],
-            recall_source_count=len(replay),
-        )
-    for sample in untraced:
-        present = approximate_present_persons(store, sample.stream_id, sample.at)
-        replay = replay_union_recall(
-            store, present, sample.query, '',
-            k, sample.at,
-            stream_kind=sample.stream_kind,
-            private_in_group=private_in_group,
-            overrides=evaluated,
-        )
-        query_embedding = await query_vector(sample.query)
-        ranked = store.rank_recalled_facts(
-            replay, query_embedding, k, overrides=evaluated,
-        )
-        record_turn(
-            pool='untraced',
-            turn_id=sample.turn_id,
-            stream_kind=sample.stream_kind,
-            reconcile=None,
-            prompt_fact_ids=sample.positive_fact_ids,
-            ranked_ids=[fact.id for fact in ranked],
-            recall_source_count=len(replay),
-        )
+        ranked_ids = [
+            fact.id for fact in store.rank_recalled_facts(
+                replay, query_embedding, k, overrides=evaluated,
+            )
+        ]
+        # 不可评分的回合照样重放与对账，只是不带正例、不进 nDCG 统计。
+        positives = sample.prompt_fact_ids if sample.scorable else []
+        per_turn.append({
+            'turn_id': sample.turn_id,
+            'stream_kind': sample.stream_kind,
+            'scorable': sample.scorable,
+            'reconcile': reconcile.as_dict(),
+            'positive_count': len(positives),
+            'candidate_count': len(replay),
+            'recall_count': len(ranked_ids),
+            'ranked_ids': ranked_ids,
+            'ndcg': round(ndcg_at_k(ranked_ids, positives, k), 4),
+            'displaced_positive': sum(
+                1 for fact_id in positives if fact_id not in ranked_ids
+            ),
+        })
 
-    traced_rows = [row for row in per_turn if row['pool'] == 'traced']
-    untraced_rows = [row for row in per_turn if row['pool'] == 'untraced']
-    reconciles = [row['reconcile'] for row in traced_rows]
-
-    def pool_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        return {
-            'sample_count': len(rows),
-            'groups': _aggregate_stream_groups(rows),
-        }
-
+    statuses = [row['reconcile']['status'] for row in per_turn]
     report = Round2Report(
         profile=profile_name,
         params=evaluated,
         k=k,
         traced={
-            **pool_summary(traced_rows),
-            'reconcile_matched': sum(
-                1 for item in reconciles if item and item['status'] == 'match'
-            ),
-            'reconcile_mismatched': sum(
-                1 for item in reconciles if item and item['status'] == 'mismatch'
-            ),
+            'sample_count': len(per_turn),
+            'groups': _aggregate_stream_groups(per_turn),
+            'reconcile_matched': statuses.count('match'),
+            'reconcile_mismatched': statuses.count('mismatch'),
         },
-        untraced=pool_summary(untraced_rows),
         embedding={
             'calls': embed_calls,
             'cache_hits': embed_cache_hits,
@@ -1346,16 +973,14 @@ async def evaluate_round2(
     trace.emit(
         'retrieval_eval_round2_done',
         profile=profile_name or '',
-        traced=len(traced_rows),
-        untraced=len(untraced_rows),
+        traced=len(per_turn),
         reconcileMismatched=report.traced['reconcile_mismatched'],
         embeddingCalls=embed_calls,
     )
     logger.info(
         'retrieval_eval_round2_done',
         profile=profile_name or 'anonymous',
-        traced=len(traced_rows),
-        untraced=len(untraced_rows),
+        traced=len(per_turn),
         reconcile_mismatched=report.traced['reconcile_mismatched'],
         embedding_calls=embed_calls,
     )

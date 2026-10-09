@@ -2821,7 +2821,6 @@ def _retrieval_eval_run(
     report = asyncio.run(tuning.evaluate_round2(
         store,
         samples,
-        [],
         params,
         profile_name=profile_name,
         config_fact_limit=config_limit,

@@ -128,7 +128,6 @@ EVENT_LABELS: Dict[str, str] = {
     "memory_conflict_resolved": "记忆冲突已裁决",
     "memory_operation_undone": "记忆操作已撤销",
     "retrieval_profile_applied": "检索调优 profile 已生效",
-    "retrieval_eval_done": "检索评估完成",
     "retrieval_eval_round2_done": "检索评估完成（留痕重放）",
     "runtime_self_check_failed": "运行时自检发现问题",
     "runtime_self_check_passed": "运行时自检通过",
@@ -482,7 +481,6 @@ FIELD_LABELS: Dict[str, str] = {
     "messageCount": "消息条数",
     "cursor": "游标",
     "traced": "留痕回合数",
-    "untraced": "无留痕回合数",
     "reconcileMismatched": "对不上留痕的回合数",
     "embeddingCalls": "查询向量调用次数",
 }

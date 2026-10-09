@@ -1,12 +1,10 @@
-"""真机库副本上的检索评估第二迭代跑数脚本。
+"""真机库副本上的检索评估（留痕重放）跑数脚本。
 
 流程：
 1. 把真机 data/memory.db 拷到系统临时目录（原库只读）；
-2. 复现旧口径（BM25-only、提示词转储反推检索词），对照 0.2875 基线；旧口径
-   只收无留痕回合，库里的回合都有留痕时样本为空；
-3. 跑第二轮评估：留痕池（memory_retrieval_trace 重放 + 对账）与
-   无留痕池分开，向量融合同生产口径，按 stream_kind 三列分组；
-4. 汇总打印验收数字，明细落 JSON。
+2. 重放 memory_retrieval_trace 留痕并与 candidatePool 对账，向量融合同生产
+   口径，按 stream_kind 三列分组；
+3. 汇总打印验收数字，明细落 JSON。
 
 用法：.venv/Scripts/python.exe scripts/eval/retrieval_eval_round2.py
 """
@@ -88,73 +86,41 @@ async def main(dry_run: bool) -> None:
     version = con.execute('PRAGMA user_version').fetchone()[0]
     print(f'副本 user_version = {version}')
 
-    untraced = tuning.build_turn_samples(con)
     traced = tuning.build_trace_samples(con)
-    print(f'无留痕样本: {len(untraced)} 回合；有留痕样本: {len(traced)} 回合')
+    print(f'留痕样本: {len(traced)} 回合')
 
-    # ---- 旧口径复现（对照 0.2875）：不改任何输入。 ----
-    legacy = tuning.evaluate(
-        store, untraced, {},
-        config_fact_limit=config_limit,
-    )
-    print(
-        f'[旧口径复现] samples={legacy.sample_count} k={legacy.k}'
-        f' nDCG@{legacy.k}={legacy.ndcg_mean:.4f}'
-        f' displaced={legacy.displaced_positive_total}'
-        f' positives={sum(r["positive_count"] for r in legacy.per_turn)}'
-    )
-
-    # ---- 第二轮：双池 + 对账 + 融合 + 分组。 ----
+    # ---- 留痕重放 + 对账 + 融合 + 分组。 ----
     embed_query = None if dry_run else _build_embed_query(cfg)
     report = await tuning.evaluate_round2(
-        store, traced, untraced, {},
+        store, traced, {},
         embed_query=embed_query,
         config_fact_limit=config_limit,
         private_in_group=private_in_group,
     )
-    for pool_name in ('traced', 'untraced'):
-        pool = report.as_dict()[pool_name]
-        groups = pool['groups']
-        line = (
-            f"[{pool_name}] samples={pool['sample_count']}"
-            f" | all: n={groups['all']['sample_count']}"
-            f" scorable={groups['all']['scorable_count']}"
-            f" nDCG={groups['all']['ndcg_mean']:.4f}"
-            f" displaced={groups['all']['displaced_positive_total']}"
-            f" | group: n={groups['group']['sample_count']}"
-            f" nDCG={groups['group']['ndcg_mean']:.4f}"
-            f" displaced={groups['group']['displaced_positive_total']}"
-            f" | direct: n={groups['direct']['sample_count']}"
-            f" nDCG={groups['direct']['ndcg_mean']:.4f}"
-            f" displaced={groups['direct']['displaced_positive_total']}"
-        )
-        print(line)
-        if pool_name == 'traced':
-            print(
-                f"[traced 对账] matched={pool['reconcile_matched']}"
-                f" mismatched={pool['reconcile_mismatched']}"
-                f" / {pool['sample_count']}"
-            )
-    positives_traced = sum(
-        r['positive_count'] for r in report.per_turn
-        if r['pool'] == 'traced' and r['scorable']
-    )
-    displaced_traced = sum(
-        r['displaced_positive'] for r in report.per_turn
-        if r['pool'] == 'traced'
-    )
-    positives_untraced = sum(
-        r['positive_count'] for r in report.per_turn
-        if r['pool'] == 'untraced'
-    )
-    displaced_untraced = sum(
-        r['displaced_positive'] for r in report.per_turn
-        if r['pool'] == 'untraced'
+    pool = report.traced
+    groups = pool['groups']
+    print(
+        f"[traced] samples={pool['sample_count']}"
+        f" | all: n={groups['all']['sample_count']}"
+        f" scorable={groups['all']['scorable_count']}"
+        f" nDCG={groups['all']['ndcg_mean']:.4f}"
+        f" displaced={groups['all']['displaced_positive_total']}"
+        f" | group: n={groups['group']['sample_count']}"
+        f" nDCG={groups['group']['ndcg_mean']:.4f}"
+        f" displaced={groups['group']['displaced_positive_total']}"
+        f" | direct: n={groups['direct']['sample_count']}"
+        f" nDCG={groups['direct']['ndcg_mean']:.4f}"
+        f" displaced={groups['direct']['displaced_positive_total']}"
     )
     print(
-        f'[正例/挤掉] traced: {displaced_traced}/{positives_traced}'
-        f' untraced: {displaced_untraced}/{positives_untraced}'
+        f"[traced 对账] matched={pool['reconcile_matched']}"
+        f" mismatched={pool['reconcile_mismatched']}"
+        f" / {pool['sample_count']}"
     )
+    # 不可评分回合的 positive_count 与 displaced_positive 恒为 0，直接全量求和。
+    positives = sum(r['positive_count'] for r in report.per_turn)
+    displaced = sum(r['displaced_positive'] for r in report.per_turn)
+    print(f'[正例/挤掉] {displaced}/{positives}')
     print(
         f"[embedding] calls={report.embedding['calls']}"
         f" cache_hits={report.embedding['cache_hits']}"
@@ -162,7 +128,6 @@ async def main(dry_run: bool) -> None:
     )
 
     payload = {
-        'legacy': legacy.as_dict(),
         'round2': report.as_dict(),
         'wall_seconds': round(time.monotonic() - started, 1),
         'db_user_version': version,

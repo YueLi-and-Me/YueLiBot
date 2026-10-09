@@ -134,7 +134,7 @@
 3. **留存度权重**：`retention_weight`（decay.py:130）把留存度线性映射到
    `[0.35, 1.0]`——下限不是 0，因此一条快被遗忘但词面高度相关的事实仍然
    能被召回，只是排不到前面。
-4. **融合形态**：`blend_score`（tuning.py:150）= `relevance^bm25_weight ×
+4. **融合形态**：`blend_score`（tuning.py:168）= `relevance^bm25_weight ×
    (floor + (1-floor) × retention)`。两个权重取默认值时与旧的
    `decay.score` 逐字节等价；调优只改系数，不改乘法形态。
 5. **向量融合**：查询向量与事实向量都在时，余弦 `[-1,1]` 映射到 `[0,1]`
@@ -145,16 +145,16 @@
    向量分支会绕过遗忘曲线。
 6. **知识层复用同一套公式**，唯一差别是留存度恒取 1
    （knowledge.py:173-226）。
-7. **调优中心**：`tuning.py` 的白名单（tuning.py:74）只允许调八个参数
+7. **调优中心**：`tuning.py` 的白名单（tuning.py:68）只允许调八个参数
    （`bm25_weight`、`retention_weight_floor`、`ppr_alpha`、`ppr_hops`、
    `pool_score_percentile` 与三个条数上限）；冻结阈值、半衰期表、0.4/0.6
    混合比不在调优范围内。profile 落 `retrieval_profiles` 表，进程内覆盖表
-   生效；评估用弱监督样本重放检索算 nDCG@k。WebUI 评估走「留痕重放」：
+   生效；评估用弱监督样本重放检索算 nDCG@k，评估只有「留痕重放」一种：
    检索词取生产 `memory_retrieval_trace` 事件记录的当前文本与会话印象，
    重放候选池与留痕逐位对账，对不上的回合单独计数——那说明重放与生产
-   仍有差异，其读数比 nDCG 本身重要。从提示词转储反推检索词的第一轮只收
-   无留痕回合：决策提示词逐条排列后，转储里最后一条 user 消息是动作协议
-   说明，不再是本轮聊天内容。
+   仍有差异，其读数比 nDCG 本身重要。检索词不从提示词转储反推：决策提示词
+   逐条排列后，转储里最后一条 user 消息是动作协议说明，不再是本轮聊天内容；
+   生产每个回合都写留痕，没有留痕的回合不参与评估。
 8. **可见性在打分之前**：`fact_visible_in_stream`（scope.py:39）按事实
    「被听见的场合」过滤候选——私聊来源的事实在群聊默认不可见，
    `legacy` 存量放行，被挡下时发 `memory_fact_scope_blocked` 事件，

@@ -24,7 +24,7 @@
    stream、按 turn 的三个索引（`src/core/db/schema.py:9` 的 `EVENTS_DDL`）；payload
    是完整 JSON，不做任何展示裁剪。消费方都靠它工作：`/ws/events` 增量推流、
    `/events` 历史检索、`/stages` 阶段看板、`/replay` 重放，以及检索调优的统计查询
-   （`src/core/memory/tuning.py:489` 直接按 kind 统计 `llm_final` 等事件）。
+   （`src/core/memory/tuning.py:516` 直接按 kind 统计 `llm_final` 等事件）。
 3. 合并成一套会怎样：把账本写进 JSONL，就没有游标分页和按 turn 的索引；把日志塞进
    SQLite，每条扫读都要先反序列化再去 ANSI。两者的保留周期也天然不同——日志文件
    要留几周备查，账本 72 小时外的细节已经由调用记录文件接管。

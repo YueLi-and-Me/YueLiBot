@@ -3,7 +3,7 @@
 覆盖四条验收断言：
 ★E-1 重放使用留痕检索词，候选集合与 candidatePool 一致（含对不上时的
    单独计数与 missing/extra 归因）；
-★E-2 无留痕的回合不进入新口径统计（样本池分离）；
+★E-2 没有留痕的回合不进入评估；
 ★E-3 融合打分与生产同口径（评估重排结果与生产 rank_recalled_facts 直调
    逐条一致，默认参数下 blend_score 与 decay.score 逐字节等价）；
 ★E-4 报告按 stream_kind 分组，整体 / 群聊 / 私聊三列各自独立。
@@ -123,41 +123,6 @@ async def _fixed_vector(vector: bytes):
     return embed
 
 
-class TestTurnDedup:
-    """无留痕样本构建的回合去重：planner 同回合多次调用只计一次。"""
-
-    def test_duplicate_prompt_records_collapse_to_one_turn(self, db, tmp_path):
-        store = _make_store(db)
-        _seed_stream(db, 102, 'direct')
-        _seed_message(db, 102, OWNER_PERSON_ID, '聊聊咖啡', NOW - 1_000)
-        coffee = store.add_fact(
-            OWNER_PERSON_ID,
-            FactInput(content='他只喝手冲咖啡', kind='偏好', origin_kind='direct'),
-            NOW,
-        ).fact_id
-        _insert_event(
-            db, 'outbound_delivered', {'text': 'ok'},
-            at=NOW, stream_id=102, turn_id=40,
-        )
-        # 同一回合两份合格转储：planner 纠错重试的形态。
-        for index in (1, 2):
-            dump = {
-                'request': {'messages': [
-                    {'role': 'system', 'content': f'[长期记忆]\n- 某人 他只喝手冲咖啡\n（第 {index} 份）'},
-                    {'role': 'user', 'content': '咖啡 手冲'},
-                ]}
-            }
-            path = tmp_path / f'planner-turn40-{index}.json'
-            path.write_text(json.dumps(dump, ensure_ascii=False), encoding='utf-8')
-            _insert_event(
-                db, 'prompt_record', {'task': 'planner', 'path': str(path)},
-                at=NOW, stream_id=102, turn_id=40,
-            )
-        samples = tuning.build_turn_samples(db)
-        assert [sample.turn_id for sample in samples] == [40]
-        assert samples[0].positive_fact_ids == [coffee]
-
-
 class TestReconcilePool:
     """留痕对账纯函数件。"""
 
@@ -228,7 +193,7 @@ class TestE1ReplayUsesTraceQueries:
         samples = tuning.build_trace_samples(db)
         assert len(samples) == 1
         assert samples[0].scorable is True
-        report = await tuning.evaluate_round2(store, samples, [], {})
+        report = await tuning.evaluate_round2(store, samples, {})
         assert report.traced['sample_count'] == 1
         assert report.traced['reconcile_matched'] == 1
         assert report.traced['reconcile_mismatched'] == 0
@@ -256,7 +221,7 @@ class TestE1ReplayUsesTraceQueries:
             pool=tampered, prompt_fact_ids=[replay[0].id],
         )
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), [], {}
+            store, tuning.build_trace_samples(db), {}
         )
         assert report.traced['reconcile_mismatched'] == 1
         assert report.per_turn[0]['reconcile']['missing'] == [99_999]
@@ -277,81 +242,35 @@ class TestE1ReplayUsesTraceQueries:
             pool=pool, prompt_fact_ids=[], replied=False,
         )
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), [], {}
+            store, tuning.build_trace_samples(db), {}
         )
         assert report.traced['sample_count'] == 1
         assert report.per_turn[0]['scorable'] is False
         assert report.per_turn[0]['reconcile']['status'] == 'match'
 
 
-class TestE2PoolSeparation:
-    """★E-2：无留痕的回合不进入新口径统计。"""
+class TestE2UntracedTurnsExcluded:
+    """★E-2：没有留痕的回合不进入评估。"""
 
-    async def test_turn_without_trace_never_enters_traced_pool(self, db):
+    async def test_turn_without_trace_is_not_replayed(self, db):
         store = _make_store(db)
         _seed_stream(db, 101, 'direct')
         _seed_message(db, 101, OWNER_PERSON_ID, '聊聊咖啡', NOW - 1_000)
-        coffee = store.add_fact(
+        store.add_fact(
             OWNER_PERSON_ID,
             FactInput(content='他只喝手冲咖啡', kind='偏好', origin_kind='direct'),
             NOW,
-        ).fact_id
+        )
         # 只有回复事件，没有任何 memory_retrieval_trace。
         _insert_event(
             db, 'outbound_delivered', {'text': 'ok'},
             at=NOW, stream_id=101, turn_id=3,
         )
-        assert tuning.build_trace_samples(db) == []
-        untraced = [
-            tuning.TurnSample(
-                turn_id=3, stream_id=101, stream_kind='direct', at=NOW,
-                query='咖啡 手冲',
-                present_person_ids=[OWNER_PERSON_ID],
-                positive_fact_ids=[coffee],
-            )
-        ]
-        report = await tuning.evaluate_round2(store, [], untraced, {})
+        samples = tuning.build_trace_samples(db)
+        assert samples == []
+        report = await tuning.evaluate_round2(store, samples, {})
         assert report.traced['sample_count'] == 0
-        assert report.untraced['sample_count'] == 1
-        assert report.per_turn[0]['pool'] == 'untraced'
-        assert report.per_turn[0]['reconcile'] is None
-
-    async def test_traced_and_untraced_never_merge(self, db):
-        """两池同跑时 per_turn 各自标记，汇总各自计数。"""
-
-        store = _make_store(db)
-        _seed_stream(db, 101, 'direct')
-        _seed_message(db, 101, OWNER_PERSON_ID, '聊聊咖啡', NOW - 1_000)
-        coffee = store.add_fact(
-            OWNER_PERSON_ID,
-            FactInput(content='他只喝手冲咖啡', kind='偏好', origin_kind='direct'),
-            NOW,
-        ).fact_id
-        present = tuning.approximate_present_persons(store, 101, NOW)
-        replay = tuning.replay_union_recall(
-            store, present, '咖啡 手冲', '', 6, NOW, stream_kind='direct',
-        )
-        _insert_retrieval_trace(
-            db, turn_id=1, stream_id=101, at=NOW,
-            current_text='咖啡 手冲', impression='',
-            pool=[(fact.id, fact.score) for fact in replay],
-            prompt_fact_ids=[coffee],
-        )
-        untraced = [
-            tuning.TurnSample(
-                turn_id=2, stream_id=101, stream_kind='direct', at=NOW,
-                query='咖啡 手冲',
-                present_person_ids=[OWNER_PERSON_ID],
-                positive_fact_ids=[coffee],
-            )
-        ]
-        report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), untraced, {}
-        )
-        assert report.traced['sample_count'] == 1
-        assert report.untraced['sample_count'] == 1
-        pools = {row['pool'] for row in report.per_turn}
-        assert pools == {'traced', 'untraced'}
+        assert report.traced_as_dict()['replayed_count'] == 0
 
 
 class TestE3FusionMatchesProduction:
@@ -387,7 +306,7 @@ class TestE3FusionMatchesProduction:
             prompt_fact_ids=[near, far],
         )
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), [], {},
+            store, tuning.build_trace_samples(db), {},
             embed_query=await _fixed_vector(query_vector),
         )
         assert report.per_turn[0]['ranked_ids'] == [fact.id for fact in production]
@@ -436,7 +355,7 @@ class TestE3FusionMatchesProduction:
             return _pack(1.0, 0.0, 0.0, 0.0)
 
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), [], {}, embed_query=counting_embed,
+            store, tuning.build_trace_samples(db), {}, embed_query=counting_embed,
         )
         assert calls == 1
         assert report.embedding['calls'] == 1
@@ -464,7 +383,7 @@ class TestE3FusionMatchesProduction:
             prompt_fact_ids=[coffee],
         )
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), [], {},
+            store, tuning.build_trace_samples(db), {},
         )
         assert report.embedding['calls'] == 0
         assert report.per_turn[0]['ndcg'] > 0.0
@@ -511,7 +430,7 @@ class TestE4StreamGroups:
                 prompt_fact_ids=positives,
             )
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), [], {},
+            store, tuning.build_trace_samples(db), {},
         )
         groups = report.traced['groups']
         assert groups['all']['sample_count'] == 3
@@ -551,7 +470,7 @@ class TestReadonlyAndRestore:
         tuning.set_active_overrides({'ppr_alpha': 0.9})
         try:
             await tuning.evaluate_round2(
-                store, tuning.build_trace_samples(db), [],
+                store, tuning.build_trace_samples(db),
                 {'fact_recall_limit': 4},
             )
         finally:
@@ -685,29 +604,6 @@ class TestWebuiEvaluateReplaysTrace:
             'displaced_positive': 0,
         }]
 
-    def test_traced_turn_leaves_dump_pool(self, db, tmp_path):
-        """有留痕的回合不进转储反推样本池；没有留痕的回合照旧进入。"""
-
-        self._prepare(db, tmp_path)
-        legacy_dump = tmp_path / 'planner-turn51.json'
-        legacy_dump.write_text(json.dumps({'request': {'messages': [
-            {'role': 'system', 'content': '[长期记忆]\n- 某人 他只喝手冲咖啡'},
-            {'role': 'user', 'content': '咖啡 手冲'},
-        ]}}, ensure_ascii=False), encoding='utf-8')
-        _insert_event(
-            db, 'prompt_record', {'task': 'planner', 'path': str(legacy_dump)},
-            at=NOW, stream_id=101, turn_id=51,
-        )
-        _insert_event(
-            db, 'outbound_delivered', {'text': 'ok'},
-            at=NOW + 1, stream_id=101, turn_id=51,
-        )
-
-        samples = tuning.build_turn_samples(db)
-
-        assert [sample.turn_id for sample in samples] == [51]
-        assert samples[0].query == '咖啡 手冲'
-
     def test_endpoint_passes_private_facts_in_group(self, db, tmp_path, monkeypatch):
         """私聊来源事实在群聊里是否可见，按聊天服务的配置值重放。"""
 
@@ -748,7 +644,7 @@ class TestWebuiEvaluateReplaysTrace:
 
 
 class TestTracedView:
-    """``Round2Report.traced_as_dict``：只取留痕池，逐回合明细只含可评分回合。"""
+    """``Round2Report.traced_as_dict``：重放总数含全部回合，逐回合明细只含可评分回合。"""
 
     async def test_only_scorable_traced_rows_enter_per_turn(self, db):
         store = _make_store(db)
@@ -775,17 +671,9 @@ class TestTracedView:
             current_text='咖啡 手冲', impression='',
             pool=[*pool, (99_999, 0.01)], prompt_fact_ids=[coffee], replied=False,
         )
-        untraced = [
-            tuning.TurnSample(
-                turn_id=72, stream_id=101, stream_kind='direct', at=NOW,
-                query='咖啡 手冲',
-                present_person_ids=[OWNER_PERSON_ID],
-                positive_fact_ids=[coffee],
-            )
-        ]
 
         report = await tuning.evaluate_round2(
-            store, tuning.build_trace_samples(db), untraced, {},
+            store, tuning.build_trace_samples(db), {},
         )
         view = report.traced_as_dict()
 
