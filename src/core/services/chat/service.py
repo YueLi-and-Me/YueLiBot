@@ -493,6 +493,11 @@ class ChatService(
                             cfg.memory_feedback.enabled
                             and cfg.memory_feedback.episode_query_block_enabled
                         ),
+                        # 与 context_build 的事实召回同一个开关表达式，理由同上。
+                        exclude_marked=(
+                            cfg.memory_feedback.enabled
+                            and cfg.memory_feedback.hard_filter_enabled
+                        ),
                     )
                 ),
             )
@@ -2671,6 +2676,7 @@ class ChatService(
                          if self._schedule else '')
         render_params: dict[str, dict[str, str]] = {}
         feedback_cfg = self._cfg.memory_feedback
+        exclude_marked = self._exclude_marked_facts
         proactive_facts = _facts_for_prompt(
             self.memory,
             context.person.id,
@@ -2678,15 +2684,15 @@ class ChatService(
                 context.person.id, 5, now,
                 stream_kind=context.stream.kind,
                 private_in_group=self._private_facts_in_group,
+                exclude_marked=exclude_marked,
             ),
-            hard_filter_marked=feedback_cfg.enabled and feedback_cfg.hard_filter_enabled,
+            exclude_marked=exclude_marked,
         )
         # 反馈纠错锚点：主动消息注入的事实同样进入观察；链路默认关闭，关闭时零写入。
         if feedback_cfg.enabled and proactive_facts:
             register_prompt_entries(
                 self._db,
-                [(item.fact_id, context.person.id)
-                 for item in proactive_facts if item.fact_id],
+                [item.fact_id for item in proactive_facts if item.fact_id],
                 context.stream.id,
                 now,
             )

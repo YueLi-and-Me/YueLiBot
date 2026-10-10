@@ -199,8 +199,8 @@ def _seed_traced_turn(
 ) -> None:
     """登记一个可评分的私聊回合：主人发言、一条召回留痕与一次回复。
 
-    留痕的 ``candidatePool`` 留空：本文件只看排序与参数隔离，对账见
-    ``test_retrieval_tuning_round2.py``。
+    留痕的 ``candidatePool`` 只放正例本身：正例只认候选池内的事实。分数不参与
+    本文件的断言（本文件只看排序与参数隔离），对账见 ``test_retrieval_tuning_round2.py``。
     """
 
     db.execute(
@@ -217,7 +217,9 @@ def _seed_traced_turn(
         ('memory_retrieval_trace', {
             'currentText': current_text,
             'conversationImpression': '',
-            'candidatePool': [],
+            'candidatePool': [
+                {'factId': fact_id, 'score': 0.0} for fact_id in prompt_fact_ids
+            ],
             'promptFactIds': prompt_fact_ids,
         }),
         ('outbound_delivered', {'text': 'ok'}),

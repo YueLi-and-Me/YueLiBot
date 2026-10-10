@@ -3,13 +3,18 @@
 链路分四段，全部默认关闭（``memory_feedback.enabled = false``）：
 
 1. 锚点：一条事实真的进了提示词时，``register_prompt_entries`` 把它登记为
-   待观察项（事实、stream、时刻）。锚点不是「被检索到」——检索到但没注入的
-   事实用户根本没机会反驳。
-2. 预筛：观察窗口内的用户消息先过关键词（不对 / 错了 / 记错 / 不是……），
-   未过筛的消息不触发模型调用，否则每条闲聊都要烧一次判定。
+   待观察项（事实、事实主人、stream、时刻）。锚点不是「被检索到」——检索到
+   但没注入的事实用户根本没机会反驳。
+2. 预筛：观察窗口内**事实主人本人**的消息先过关键词（不对 / 错了 / 记错 /
+   不是……），未过筛的消息不触发模型调用，否则每条闲聊都要烧一次判定。
+   只看主人本人：群聊里提示词同时带着多位在场者的事实，若读全群消息，任何人
+   一句「不是」都会被拿去比对别人的事实，判定提示词又不知道事实是谁的，
+   结果是别人的正确记忆被标成「已被纠正」、更正被写到说话人名下。别人替主人
+   纠正的情况因此放弃不判。私聊与桌面会话只有一位发言人，口径不变。
 3. 判定：模型给出「是否被否定」与置信度；过 ``auto_apply_threshold`` 才动手。
 4. 应用：有更正正文时走事实账本的 ``superseded_by``（写新行、回填旧行）；
-   纯否定没有新说法时不造事实，只按配置写「已被纠正」标记，由注入侧硬过滤。
+   纯否定没有新说法时不造事实，只按配置写「已被纠正」标记，由事实读取入口
+   （``MemoryStore`` 的 ``exclude_marked``）在截断之前排除。
 
 画像与情节的后续处理复用既有机制：画像置脏走 ``person_profile.dirty``，
 情节重建走 ``episodes.needs_rebuild``，都不新增队列表。
@@ -109,7 +114,7 @@ def parse_judgment(raw: str) -> Optional[FeedbackJudgment]:
 
 def register_prompt_entries(
     db: sqlite3.Connection,
-    entries: Sequence[Tuple[int, int]],
+    fact_ids: Sequence[int],
     stream_id: int,
     now: Optional[int] = None,
 ) -> int:
@@ -119,25 +124,32 @@ def register_prompt_entries(
     进入时刻（观察窗口从第一次注入起算，随后消息都在窗口内）；已有结论
     （done / expired / failed）的重新进入则开启新一轮观察。
 
+    事实主人取自 ``facts.person_id``，不由调用方传入：群聊提示词里的事实分属
+    多位在场者，按当前说话人登记会把别人的事实记到说话人名下。重新进入时
+    一并改写主人，早先按说话人登记的行随之归位。
+
     :param db: 当前库连接。
-    :param entries: ``(fact_id, person_id)`` 列表。
+    :param fact_ids: 进了提示词的事实 ID；库里已不存在的 ID 跳过。
     :param stream_id: 事实进入提示词所在的 stream ID。
     :param now: 可选当前毫秒时钟。
     :return: 本次新插入的行数（刷新既有行不计入）。
     :raises sqlite3.Error: 写入失败时传播。
-    副作用：写入 memory_feedback_pending 并提交事务。
+    副作用：读取 facts，写入 memory_feedback_pending 并提交事务。
     """
 
-    if not entries:
+    if not fact_ids:
         return 0
     now = now if now is not None else current_time()
     inserted = 0
-    for fact_id, person_id in entries:
+    for fact_id in dict.fromkeys(int(fact_id) for fact_id in fact_ids):
+        # INSERT ... SELECT 接 upsert 时 SELECT 必须带 WHERE，否则 SQLite 会把
+        # ON CONFLICT 误解析成联接条件；这里的 WHERE 本来就要按 ID 取主人。
         cur = db.execute(
             '''INSERT INTO memory_feedback_pending
                  (fact_id, person_id, stream_id, entered_at, status, attempts, updated_at)
-               VALUES (?, ?, ?, ?, 'pending', 0, ?)
+               SELECT id, person_id, ?, ?, 'pending', 0, ? FROM facts WHERE id = ?
                ON CONFLICT(fact_id, stream_id) DO UPDATE SET
+                 person_id = excluded.person_id,
                  entered_at = CASE
                    WHEN memory_feedback_pending.status = 'pending'
                    THEN memory_feedback_pending.entered_at
@@ -146,7 +158,7 @@ def register_prompt_entries(
                  status = 'pending',
                  attempts = 0,
                  updated_at = excluded.updated_at''',
-            (int(fact_id), int(person_id), int(stream_id), now, now),
+            (int(stream_id), now, now, fact_id),
         )
         inserted += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
     db.commit()
@@ -296,15 +308,17 @@ class MemoryFeedbackService:
         :return: 本轮统计：``checked`` 处理的锚点数、``prefiltered`` 过了预筛的
             消息批数、``judged`` 实际调用模型的次数、``applied`` 应用纠正的次数。
         :raises sqlite3.Error: 读写失败时传播。
-        副作用：读取窗口内用户消息，可能调用模型并写入 facts / 结果表。
+        副作用：读取窗口内事实主人本人的消息，可能调用模型并写入 facts / 结果表。
         """
 
         now = now if now is not None else current_time()
         stats = {'checked': 0, 'prefiltered': 0, 'judged': 0, 'applied': 0}
         if self._judge_provider is None:
             return stats
+        # 主人取 facts.person_id 而不是待观察项的 person_id：早先的登记按当前说话人
+        # 记主人，群聊里大多记错；以事实表为准，这些旧行也按真正的主人判定。
         items = self._db.execute(
-            '''SELECT p.id, p.fact_id, p.person_id, p.stream_id, p.entered_at,
+            '''SELECT p.id, p.fact_id, f.person_id, p.stream_id, p.entered_at,
                       f.content, f.kind, f.slot
                FROM memory_feedback_pending p
                JOIN facts f ON f.id = p.fact_id
@@ -319,11 +333,13 @@ class MemoryFeedbackService:
             )
             fact_content, fact_kind, fact_slot = str(row[5]), str(row[6]), str(row[7])
             stats['checked'] += 1
+            # 只读事实主人本人的消息，理由见模块说明第 2 段。
             messages = self._db.execute(
                 '''SELECT content FROM messages
-                   WHERE stream_id = ? AND role = 'user' AND created_at >= ?
+                   WHERE stream_id = ? AND role = 'user' AND sender_person_id = ?
+                     AND created_at >= ?
                    ORDER BY id LIMIT ?''',
-                (stream_id, entered_at, self._cfg.max_feedback_messages),
+                (stream_id, person_id, entered_at, self._cfg.max_feedback_messages),
             ).fetchall()
             texts = [str(message[0]) for message in messages]
             if self._cfg.prefilter_enabled:
@@ -411,7 +427,8 @@ class MemoryFeedbackService:
         """应用一次判定成立的纠正。
 
         有更正正文时按事实账本写新行并取代旧行；纯否定只留「已被纠正」标记。
-        之后按配置置脏画像、把受影响情节排进重建。
+        之后按配置置脏画像、把受影响情节排进重建。``person_id`` 必须是事实主人：
+        新行写在他名下，取代要求新旧两行同属一人，画像也只置脏他的。
         """
 
         new_fact_id = 0
@@ -606,24 +623,3 @@ class MemoryFeedbackService:
             )
         self._db.commit()
         return True
-
-
-def marked_fact_ids(db: sqlite3.Connection, fact_ids: Sequence[int]) -> set[int]:
-    """返回给定事实里带「已被纠正」标记的 ID 集合，供注入侧硬过滤。
-
-    :param db: 当前库连接。
-    :param fact_ids: 待检查的事实 ID。
-    :return: 其中有生效标记的事实 ID 集合。
-    :raises sqlite3.Error: 查询失败。
-    副作用：只读 memory_feedback_results。
-    """
-
-    if not fact_ids:
-        return set()
-    marks = ', '.join('?' for _ in fact_ids)
-    rows = db.execute(
-        f'SELECT DISTINCT fact_id FROM memory_feedback_results '
-        f'WHERE marked = 1 AND fact_id IN ({marks})',
-        [int(fact_id) for fact_id in fact_ids],
-    ).fetchall()
-    return {int(row[0]) for row in rows}

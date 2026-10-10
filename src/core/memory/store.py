@@ -39,6 +39,14 @@ _MESSAGE_QUERY_TERMS = 6
 # 超出上界时优先保留时间靠后的消息，与「最近提过的那次」这一检索意图一致。
 _MESSAGE_SCAN_LIMIT = 200
 
+# 事实读取入口的「已被纠正」过滤条件，首个占位参数传 ``int(exclude_marked)``；
+# 查询里事实表的别名必须是 ``f``。标记由反馈纠错写入 ``memory_feedback_results``，
+# 条件放在 ``WHERE`` 里，先于 ``LIMIT`` 生效：被纠正的事实不占任何截断名额。
+_MARKED_FILTER_SQL = (
+    '(? = 0 OR NOT EXISTS (SELECT 1 FROM memory_feedback_results r'
+    ' WHERE r.fact_id = f.id AND r.marked = 1))'
+)
+
 # 助手动作伪消息既要进入普通历史供 Bot 回看，又不能被后台模型当成亲口说过的话。
 # 格式化与识别共用这些片段，避免写入方和消费方各维护一套字符串口径。
 _ASSISTANT_POKE_ACTION_PREFIX = '[戳了戳 '
@@ -942,6 +950,8 @@ class MemoryStore:
         self,
         person_id: int,
         fact_ids: Iterable[int],
+        *,
+        exclude_marked: bool = False,
     ) -> dict[int, tuple[str, list[tuple[int, str]]]]:
         """读取给定事实所属的槽位冲突组，供提示词把对不上的几条并排渲染。
 
@@ -950,21 +960,24 @@ class MemoryStore:
 
         :param person_id: 事实所属人物 ID。
         :param fact_ids: 待检查的事实 ID 集合，通常为即将注入提示词的那批。
+        :param exclude_marked: 为真时带「已被纠正」标记的事实不算组员：同槽对手
+            被纠正后，剩下那条不再算冲突。
         :return: ``fact_id -> (slot, [(成员 ID, 成员正文), ...])``；成员列表含该
             槽位下全部活跃事实（包括传入者自身），按 ID 升序。不在映射里的
             事实没有冲突。
         :raises sqlite3.Error: 查询失败。
-        副作用：只读 facts 表。
+        副作用：只读 facts 与 memory_feedback_results 表。
         """
 
         wanted = {int(fact_id) for fact_id in fact_ids}
         if not wanted:
             return {}
         rows = self._db.execute(
-            '''SELECT id, slot, content FROM facts
-               WHERE person_id = ? AND active = 1 AND superseded_by IS NULL AND slot <> ''
-               ORDER BY id''',
-            (person_id,),
+            f'''SELECT f.id, f.slot, f.content FROM facts f
+                WHERE f.person_id = ? AND f.active = 1 AND f.superseded_by IS NULL
+                  AND f.slot <> '' AND {_MARKED_FILTER_SQL}
+                ORDER BY f.id''',
+            (person_id, int(exclude_marked)),
         ).fetchall()
         by_slot: dict[str, list[tuple[int, str]]] = {}
         for row_id, slot, content in rows:
@@ -1520,6 +1533,7 @@ class MemoryStore:
         private_in_group: bool = False,
         return_candidates: bool = False,
         overrides: Mapping[str, Any] | None = None,
+        exclude_marked: bool = False,
     ) -> list[ScopedFact]:
         """在若干人物范围内一次性召回事实，供认知动作按会话在场者检索。
 
@@ -1543,13 +1557,16 @@ class MemoryStore:
             与多检索词并集合并；候选随 ``embedding`` 一并带回。
         :param overrides: 检索调优评估重放的草稿覆盖表；线上召回不传，按已生效
             profile 打分。
+        :param exclude_marked: 为真时排除带「已被纠正」标记的事实，取
+            ``memory_feedback.enabled and memory_feedback.hard_filter_enabled``；
+            排除先于 ``limit * 3`` 截断，被纠正的事实不占候选名额。
 
         :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
 
         :raises sqlite3.Error: FTS 查询失败。
 
-        副作用：只读 facts_fts 与 facts 表，不写任何列、不提交事务；
-            有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
+        副作用：只读 facts_fts、facts 与 memory_feedback_results 表，不写任何列、
+            不提交事务；有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
 
         性能：单次 FTS 查询，最多读取 ``limit * 3`` 个候选。
         """
@@ -1567,9 +1584,9 @@ class MemoryStore:
                        f.origin_kind, f.embedding
                 FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                 WHERE facts_fts MATCH ? AND f.person_id IN ({placeholders})
-                  AND f.superseded_by IS NULL
+                  AND f.superseded_by IS NULL AND {_MARKED_FILTER_SQL}
                 ORDER BY bm ASC LIMIT ?''',
-            (match, *scope, limit * 3),
+            (match, *scope, int(exclude_marked), limit * 3),
         ).fetchall()
         blocked = 0
         visible_rows = []
@@ -1609,6 +1626,7 @@ class MemoryStore:
         stream_kind: str,
         private_in_group: bool = False,
         return_candidates: bool = False,
+        exclude_marked: bool = False,
     ) -> list[ScopedFact]:
         """不按人物过滤的事实召回，供 owner 非群聊会话里的主动检索使用。
 
@@ -1627,13 +1645,15 @@ class MemoryStore:
         :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
         :param return_candidates: 是否返回截取前的候选池；候选随 ``embedding``
             一并带回。
+        :param exclude_marked: 为真时排除带「已被纠正」标记的事实，口径同
+            :meth:`recall_facts_in_scope`。
 
         :return: 按留存度加权相关度降序排列的事实列表；无有效查询词时为空列表。
 
         :raises sqlite3.Error: FTS 查询失败。
 
-        副作用：只读 facts_fts 与 facts 表，不写任何列、不提交事务；
-            有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
+        副作用：只读 facts_fts、facts 与 memory_feedback_results 表，不写任何列、
+            不提交事务；有事实被可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
 
         性能：单次 FTS 查询，最多读取 ``limit * 3`` 个候选。
         """
@@ -1642,13 +1662,14 @@ class MemoryStore:
             return []
         now = now if now is not None else current_time()
         rows = self._db.execute(
-            '''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
-                      f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
-                      f.origin_kind, f.embedding
-               FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
-               WHERE facts_fts MATCH ? AND f.superseded_by IS NULL
-               ORDER BY bm ASC LIMIT ?''',
-            (match, limit * 3),
+            f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
+                       f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
+                       f.origin_kind, f.embedding
+                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
+                WHERE facts_fts MATCH ? AND f.superseded_by IS NULL
+                  AND {_MARKED_FILTER_SQL}
+                ORDER BY bm ASC LIMIT ?''',
+            (match, int(exclude_marked), limit * 3),
         ).fetchall()
         blocked = 0
         visible_rows = []
@@ -1965,7 +1986,8 @@ class MemoryStore:
     def top_facts(self, person_id: int, limit: int = 8,
                   now: int | None = None, *,
                   stream_kind: str,
-                  private_in_group: bool = False) -> list[RecalledFact]:
+                  private_in_group: bool = False,
+                  exclude_marked: bool = False) -> list[RecalledFact]:
         """按当前留存度返回人物的活跃事实。
 
         已被取代（``superseded_by`` 非空）的事实不返回：它只留在库里构成取代链。
@@ -1976,17 +1998,20 @@ class MemoryStore:
         :param stream_kind: 当前读取发生的会话类型；唯一例外是抽取去重清单
             传旁路值 ``'all'``——清单的目的是去重不是输出，必须看到全部事实。
         :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+        :param exclude_marked: 为真时排除带「已被纠正」标记的事实，先于 ``limit``
+            截断；抽取去重清单不传，理由同 ``stream_kind='all'``。
         :return: 按留存度降序排列的事实列表。
-        副作用：只读 facts 表，不执行命中回补；有事实被可见性规则挡下时
-            发出一条 ``memory_fact_scope_blocked`` 事件。
+        副作用：只读 facts 与 memory_feedback_results 表，不执行命中回补；有事实被
+            可见性规则挡下时发出一条 ``memory_fact_scope_blocked`` 事件。
         """
         now = now if now is not None else current_time()
         rows = self._db.execute(
-            '''SELECT id, kind, content, strength, updated_at, half_life_hours,
-                      origin_kind
-               FROM facts
-               WHERE person_id = ? AND active = 1 AND superseded_by IS NULL''',
-            (person_id,)
+            f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
+                       f.half_life_hours, f.origin_kind
+                FROM facts f
+                WHERE f.person_id = ? AND f.active = 1 AND f.superseded_by IS NULL
+                  AND {_MARKED_FILTER_SQL}''',
+            (person_id, int(exclude_marked))
         ).fetchall()
         blocked = 0
         visible_rows = []

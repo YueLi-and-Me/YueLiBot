@@ -12,7 +12,6 @@ from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.core.services.maintenance.memory_feedback import (
     MemoryFeedbackService,
     has_correction_signal,
-    marked_fact_ids,
     parse_judgment,
     register_prompt_entries,
 )
@@ -42,9 +41,18 @@ def _service(db, provider, **overrides) -> MemoryFeedbackService:
     return MemoryFeedbackService(db, _cfg(**overrides), judge_provider=provider)
 
 
+def _recalled_ids(store: MemoryStore, *, exclude_marked: bool) -> list[int]:
+    return [
+        fact.id for fact in store.recall_facts_in_scope(
+            [OWNER_PERSON_ID], '深圳', 5, NOW + 2,
+            stream_kind='direct', exclude_marked=exclude_marked,
+        )
+    ]
+
+
 def _seed_fact_and_anchor(db, store: MemoryStore, *, content: str = '凌白住在深圳宝安区') -> int:
     fact_id = store.add_fact(OWNER_PERSON_ID, FactInput(content=content, kind='身份', slot='居住地'), NOW).fact_id
-    register_prompt_entries(db, [(fact_id, OWNER_PERSON_ID)], STREAM_ID, NOW)
+    register_prompt_entries(db, [fact_id], STREAM_ID, NOW)
     return fact_id
 
 
@@ -53,8 +61,8 @@ class TestAnchor:
         fact_id = MemoryStore(db).add_fact(
             OWNER_PERSON_ID, FactInput(content='他喜欢手冲咖啡'), NOW,
         ).fact_id
-        register_prompt_entries(db, [(fact_id, OWNER_PERSON_ID)], STREAM_ID, NOW)
-        register_prompt_entries(db, [(fact_id, OWNER_PERSON_ID)], STREAM_ID, NOW + 1000)
+        register_prompt_entries(db, [fact_id], STREAM_ID, NOW)
+        register_prompt_entries(db, [fact_id], STREAM_ID, NOW + 1000)
 
         row = db.execute(
             'SELECT entered_at, status FROM memory_feedback_pending'
@@ -66,14 +74,134 @@ class TestAnchor:
         fact_id = MemoryStore(db).add_fact(
             OWNER_PERSON_ID, FactInput(content='他喜欢手冲咖啡'), NOW,
         ).fact_id
-        register_prompt_entries(db, [(fact_id, OWNER_PERSON_ID)], STREAM_ID, NOW)
+        register_prompt_entries(db, [fact_id], STREAM_ID, NOW)
         db.execute("UPDATE memory_feedback_pending SET status = 'done'")
-        register_prompt_entries(db, [(fact_id, OWNER_PERSON_ID)], STREAM_ID, NOW + 5000)
+        register_prompt_entries(db, [fact_id], STREAM_ID, NOW + 5000)
 
         row = db.execute(
             'SELECT entered_at, status, attempts FROM memory_feedback_pending'
         ).fetchone()
         assert row[0] == NOW + 5000 and row[1] == 'pending' and row[2] == 0
+
+
+GROUP_STREAM_ID = 2
+FRIEND_PERSON_ID = 2
+
+
+def _seed_group_fact(db, store: MemoryStore) -> int:
+    """在群聊里登记一条属于群友（非当前说话人）的事实。"""
+
+    db.execute(
+        "INSERT INTO persons (id, kind, first_seen_at) VALUES (?, 'contact', ?)",
+        (FRIEND_PERSON_ID, NOW),
+    )
+    db.execute(
+        "INSERT INTO streams (id, platform, kind, external_id) VALUES (?, 'qq', 'group', 'g-1')",
+        (GROUP_STREAM_ID,),
+    )
+    db.commit()
+    return store.add_fact(
+        FRIEND_PERSON_ID,
+        FactInput(content='群友住在深圳宝安区', kind='身份', slot='居住地'),
+        NOW,
+    ).fact_id
+
+
+class TestGroupAttribution:
+    """群聊里事实的主人不是当前说话人时，锚点、判定与应用都按事实主人走。"""
+
+    def test_anchor_records_fact_owner_and_heals_old_rows(self, db):
+        store = MemoryStore(db)
+        fact_id = _seed_group_fact(db, store)
+        # 旧版按当前说话人登记的行：主人记成了 owner。
+        db.execute(
+            "INSERT INTO memory_feedback_pending"
+            " (fact_id, person_id, stream_id, entered_at, status, attempts, updated_at)"
+            " VALUES (?, ?, ?, ?, 'done', 0, ?)",
+            (fact_id, OWNER_PERSON_ID, GROUP_STREAM_ID, NOW, NOW),
+        )
+        db.commit()
+
+        register_prompt_entries(db, [fact_id], GROUP_STREAM_ID, NOW + 1)
+
+        assert tuple(db.execute(
+            'SELECT person_id, status FROM memory_feedback_pending WHERE fact_id = ?', (fact_id,),
+        ).fetchone()) == (FRIEND_PERSON_ID, 'pending')
+
+    @pytest.mark.asyncio
+    async def test_other_speakers_signal_is_not_judged(self, db):
+        """别人的「不是」不拿去比对这条事实：不调模型，也不留结果。"""
+
+        store = MemoryStore(db)
+        fact_id = _seed_group_fact(db, store)
+        register_prompt_entries(db, [fact_id], GROUP_STREAM_ID, NOW)
+        store.append_message(GROUP_STREAM_ID, OWNER_PERSON_ID, 'user', '不是吧，我住杭州', NOW + 1)
+        provider = _StubProvider(
+            '{"negated": true, "confidence": 0.95, "corrected_content": "群友住在杭州"}'
+        )
+
+        stats = await _service(db, provider).check_once(NOW + 60_000)
+
+        assert provider.calls == 0
+        assert stats['prefiltered'] == 0
+        assert db.execute('SELECT COUNT(*) FROM memory_feedback_results').fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_owner_correction_lands_on_owner(self, db):
+        """主人本人纠正时，新事实写在主人名下并取代旧行，结果也记在主人名下。"""
+
+        store = MemoryStore(db)
+        old_id = _seed_group_fact(db, store)
+        register_prompt_entries(db, [old_id], GROUP_STREAM_ID, NOW)
+        store.append_message(GROUP_STREAM_ID, OWNER_PERSON_ID, 'user', '今天好热', NOW + 1)
+        store.append_message(GROUP_STREAM_ID, FRIEND_PERSON_ID, 'user', '不对，我搬到杭州了', NOW + 2)
+        provider = _StubProvider(
+            '{"negated": true, "confidence": 0.95, "corrected_content": "群友住在杭州"}'
+        )
+
+        stats = await _service(db, provider).check_once(NOW + 60_000)
+
+        assert stats['applied'] == 1
+        new_id, result_person = db.execute(
+            'SELECT new_fact_id, person_id FROM memory_feedback_results'
+        ).fetchone()
+        assert result_person == FRIEND_PERSON_ID
+        assert db.execute('SELECT person_id FROM facts WHERE id = ?', (new_id,)).fetchone()[0] == FRIEND_PERSON_ID
+        assert db.execute('SELECT superseded_by FROM facts WHERE id = ?', (old_id,)).fetchone()[0] == new_id
+
+    @pytest.mark.asyncio
+    async def test_old_row_with_speaker_as_owner_is_judged_by_fact_owner(self, db):
+        """旧版登记的行主人记错了，判定照样按事实表里的主人取消息。"""
+
+        store = MemoryStore(db)
+        old_id = _seed_group_fact(db, store)
+        db.execute(
+            "INSERT INTO memory_feedback_pending"
+            " (fact_id, person_id, stream_id, entered_at, status, attempts, updated_at)"
+            " VALUES (?, ?, ?, ?, 'pending', 0, ?)",
+            (old_id, OWNER_PERSON_ID, GROUP_STREAM_ID, NOW, NOW),
+        )
+        db.commit()
+        store.append_message(GROUP_STREAM_ID, OWNER_PERSON_ID, 'user', '不是，你记错了', NOW + 1)
+        store.append_message(GROUP_STREAM_ID, FRIEND_PERSON_ID, 'user', '不对，我搬到杭州了', NOW + 2)
+        provider = _StubProvider(
+            '{"negated": true, "confidence": 0.95, "corrected_content": "群友住在杭州"}'
+        )
+        judged: list[list[str]] = []
+        service = _service(db, provider)
+        original_judge = service._judge
+
+        async def spy(fact_content, messages):
+            judged.append(list(messages))
+            return await original_judge(fact_content, messages)
+
+        service._judge = spy
+
+        await service.check_once(NOW + 60_000)
+
+        assert judged == [['不对，我搬到杭州了']]
+        new_id = db.execute('SELECT new_fact_id FROM memory_feedback_results').fetchone()[0]
+        assert db.execute('SELECT person_id FROM facts WHERE id = ?', (new_id,)).fetchone()[0] == FRIEND_PERSON_ID
 
 
 class TestPrefilter:
@@ -180,12 +308,12 @@ class TestApply:
         assert db.execute(
             'SELECT superseded_by FROM facts WHERE id = ?', (old_id,)
         ).fetchone()[0] is None
-        assert marked_fact_ids(db, [old_id]) == {old_id}
-        # 标记事实被硬过滤出注入。
-        from src.core.services.chat import _facts_for_prompt
-        recalled = store.recall_facts(OWNER_PERSON_ID, '深圳', 5, NOW + 2, stream_kind='direct')
-        assert [item.fact_id for item in _facts_for_prompt(store, OWNER_PERSON_ID, recalled, hard_filter_marked=True)] == []
-        assert [item.fact_id for item in _facts_for_prompt(store, OWNER_PERSON_ID, recalled, hard_filter_marked=False)] == [old_id]
+        assert db.execute(
+            'SELECT marked FROM memory_feedback_results WHERE fact_id = ?', (old_id,)
+        ).fetchone()[0] == 1
+        # 标记事实在读取入口被排除；开关关闭时照常召回。
+        assert _recalled_ids(store, exclude_marked=True) == []
+        assert _recalled_ids(store, exclude_marked=False) == [old_id]
 
     @pytest.mark.asyncio
     async def test_mark_disabled_keeps_result_unmarked(self, db):
@@ -197,10 +325,11 @@ class TestApply:
 
         await service.check_once(NOW + 60_000)
 
-        assert marked_fact_ids(db, [old_id]) == set()
         assert db.execute(
             'SELECT marked FROM memory_feedback_results'
         ).fetchone()[0] == 0
+        # 没有标记就没有可排除的：开关打开也照常召回。
+        assert _recalled_ids(store, exclude_marked=True) == [old_id]
 
     @pytest.mark.asyncio
     async def test_model_failure_retries_then_fails(self, db):

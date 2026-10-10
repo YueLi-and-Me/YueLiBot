@@ -105,8 +105,11 @@
   有表可用。
 - `src/core/services/maintenance/memory_feedback.py`
   反馈纠错：事实进过提示词之后被用户纠正时写回库里。链路四段（登记锚点、
-  关键词预筛、模型判定、按置信度应用），默认全关；纯否定不造事实，只写
-  「已被纠正」标记由注入侧硬过滤。
+  关键词预筛、模型判定、按置信度应用），默认全关；锚点的主人取自
+  `facts.person_id`，预筛与判定只读事实主人本人的消息，群聊里别人的话不参与；
+  纯否定不造事实，只写
+  「已被纠正」标记，由 `MemoryStore` 的事实读取入口在截断之前排除
+  （`exclude_marked`）。
 - `src/core/services/maintenance/vector.py`
   向量服务：事实与知识向量的生成、历史数据补算、查询向量计算。未配置嵌入
   客户端时保持禁用；嵌入失败只影响对应向量操作，不阻断正文写入与关键词
@@ -179,8 +182,8 @@
 - 各后台服务（`VectorService`、`TtsService`、`EdgeDecayService`、
   `JargonStatsService`、`JargonLearnService`、`MemoryFeedbackService`）：
   `src/main.py` 构造并经 `lifecycle` 注册启停。
-- `register_prompt_entries` / `marked_fact_ids`：被 `chat/context_build.py` 与
-  `chat/helpers.py` 调用——锚点登记发生在事实真正进提示词的时刻。
+- `register_prompt_entries`：被 `chat/context_build.py` 与 `chat/service.py`
+  （主动消息）调用——锚点登记发生在事实真正进提示词的时刻。
 - `note_model_call` / `begin_turn`：模型路由写入、`trace_console` 渲染；
   `render_observation` 被 `chat/group_observe.py` 复用。
 - `replay_event` 与 `prompt_records` 的三个读取函数：被

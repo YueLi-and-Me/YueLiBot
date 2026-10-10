@@ -211,6 +211,8 @@ class _RetrievalTrace:
     current_text: str
     conversation_impression: str
     candidate_pool: Tuple[Tuple[int, float], ...]
+    # 候选池是否已在读取入口排除「已被纠正」的事实；检索评估重放按它复现同一个池子。
+    exclude_marked: bool
     emitted: bool = False
 
     def emit_once(self, prompt_fact_ids: Sequence[int]) -> None:
@@ -231,6 +233,7 @@ class _RetrievalTrace:
                 {'factId': fact_id, 'score': score}
                 for fact_id, score in self.candidate_pool
             ],
+            excludeMarked=self.exclude_marked,
             promptFactIds=list(prompt_fact_ids),
         )
         self.emitted = True
@@ -245,6 +248,8 @@ class _PreparedTurnContext:
     now: int
     platform_bot_name: str | None
     fact_candidates: list[RecalledFact]
+    # 候选池是否已排除「已被纠正」的事实；两次渲染的冲突分组沿用同一个判据。
+    exclude_marked: bool
     retrieval_trace: _RetrievalTrace
     episodes: list[str]
     activity: str | None

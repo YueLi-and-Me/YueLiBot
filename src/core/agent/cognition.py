@@ -141,18 +141,20 @@ class CognitiveAction(Protocol):
 class _SpreadBlocked:
     """一次扩散里被读取侧规则挡下的命中数，按理由分类。
 
-    四条理由分属两类规则：``scope_facts`` 与 ``other_stream_episodes`` 是会话
-    可见性；``superseded_facts`` 与 ``pending_rebuild_episodes`` 是「这条记忆
-    已经不作数」——取代与纠错重建。两类都由三个读取入口强制执行。
+    五条理由分属两类规则：``scope_facts`` 与 ``other_stream_episodes`` 是会话
+    可见性；``superseded_facts``、``marked_facts`` 与 ``pending_rebuild_episodes``
+    是「这条记忆已经不作数」——取代、纠正与纠错重建。两类都由三个读取入口强制执行。
 
     :ivar scope_facts: 被场合规则挡下的事实数。
     :ivar superseded_facts: 已被新事实取代（``superseded_by`` 非空）的事实数。
+    :ivar marked_facts: 带「已被纠正」标记的事实数。
     :ivar other_stream_episodes: 属于别的 stream 的情节数。
     :ivar pending_rebuild_episodes: 待纠错重建（``needs_rebuild = 1``）的情节数。
     """
 
     scope_facts: int = 0
     superseded_facts: int = 0
+    marked_facts: int = 0
     other_stream_episodes: int = 0
     pending_rebuild_episodes: int = 0
 
@@ -175,6 +177,7 @@ class RecallAction:
         episode_limit: int = 3,
         private_in_group: bool = False,
         exclude_pending_rebuild: bool = False,
+        exclude_marked: bool = False,
     ) -> None:
         """保存记忆检索依赖与每类结果的条数上限。
 
@@ -190,6 +193,10 @@ class RecallAction:
             打开后待重建的情节不参与联想扩散，与 ``recall_episodes`` 同口径。
             与 ``private_in_group`` 同样在构造时取值：配置热重载只换引用不重建
             本对象，两个开关都要下次重启才生效。
+        :param exclude_marked: 反馈纠错的事实硬过滤开关当前值，取
+            ``memory_feedback.enabled and memory_feedback.hard_filter_enabled``；
+            打开后带「已被纠正」标记的事实既不进检索结果，也不经联想扩散回来。
+            取值时机与上两个开关相同。
         :raises ValueError: 任一上限小于 1。
         """
         if fact_limit < 1 or episode_limit < 1:
@@ -201,6 +208,7 @@ class RecallAction:
         self._episode_limit = episode_limit
         self._private_in_group = private_in_group
         self._exclude_pending_rebuild = exclude_pending_rebuild
+        self._exclude_marked = exclude_marked
         # 短期激活留在动作实例上，作用范围因此仅限进程内：进程重启后重新构造，残留自动消失。
         self._activation = ShortTermActivation()
 
@@ -241,7 +249,7 @@ class RecallAction:
 
         扩散沿「一起被点亮过」的边走，边不携带任何读取侧约束，这些约束必须在
         这里补回，否则三个读取入口一条都不放的记忆能经两跳进入当前提示词。
-        四条判据：
+        五条判据：
 
         1. 事实的场合可见性，走与三个读取入口相同的 ``fact_visible_in_stream``；
         2. 事实是否已被取代。三个入口一律带 ``superseded_by IS NULL``；而取代
@@ -249,9 +257,11 @@ class RecallAction:
            扩散侧的留存度计算又只看 ``active = 1``，被新值替换掉的旧事实因此
            能以「还想到关于 X」的形式复活；``memory_nodes`` / ``memory_edges``
            全程没有删除入口，这条路径不会自行消失；
-        3. 情节严格限定 ``episodes.stream_id`` 等于当前 stream，与
+        3. 事实是否带「已被纠正」标记，仅在 ``exclude_marked`` 打开时生效，
+           与读取入口的同名参数同口径；纯否定只打标、不取代，第 2 条挡不住它；
+        4. 情节严格限定 ``episodes.stream_id`` 等于当前 stream，与
            ``recall_episodes`` 的 ``e.stream_id = ?`` 同口径；
-        4. 情节是否待纠错重建，仅在 ``exclude_pending_rebuild`` 打开时生效，
+        5. 情节是否待纠错重建，仅在 ``exclude_pending_rebuild`` 打开时生效，
            与 ``recall_episodes`` 的同名参数同口径——用户明确纠正过的情节不该
            换条通道回来。
 
@@ -259,8 +269,8 @@ class RecallAction:
         已不存在的命中原样保留：那是数据已删，由 ``_describe_node`` 渲染为空串
         处理，与读取侧规则是两回事。
 
-        同一条命中可能同时踩中两条判据，事实按「先取代后场合」、情节按「先会话
-        后重建」的固定顺序归因并只计一次，保证计数可复现。
+        同一条命中可能同时踩中多条判据，事实按「先取代、再纠正、后场合」、情节按
+        「先会话后重建」的固定顺序归因并只计一次，保证计数可复现。
 
         批量取数：事实与情节各一次 IN 查询，不在循环里逐条查库。
 
@@ -273,14 +283,16 @@ class RecallAction:
         """
         fact_ids = [hit.ref_id for hit in hits if hit.ref_kind == 'fact']
         episode_ids = [hit.ref_id for hit in hits if hit.ref_kind == 'episode']
-        fact_rows: dict[int, tuple[str, int | None]] = {}
+        fact_rows: dict[int, tuple[str, int | None, bool]] = {}
         if fact_ids:
             placeholders = ','.join('?' * len(fact_ids))
             fact_rows = {
-                int(row[0]): (str(row[1]), row[2])
+                int(row[0]): (str(row[1]), row[2], bool(row[3]))
                 for row in self._db.execute(
-                    'SELECT id, origin_kind, superseded_by FROM facts'
-                    f' WHERE id IN ({placeholders})',
+                    'SELECT f.id, f.origin_kind, f.superseded_by,'
+                    ' EXISTS (SELECT 1 FROM memory_feedback_results r'
+                    '         WHERE r.fact_id = f.id AND r.marked = 1)'
+                    f' FROM facts f WHERE f.id IN ({placeholders})',
                     fact_ids,
                 )
             }
@@ -298,15 +310,19 @@ class RecallAction:
         visible: list[SpreadHit] = []
         scope_facts = 0
         superseded_facts = 0
+        marked_facts = 0
         other_stream_episodes = 0
         pending_rebuild_episodes = 0
         for hit in hits:
             if hit.ref_kind == 'fact':
                 fact = fact_rows.get(hit.ref_id)
                 if fact is not None:
-                    origin_kind, superseded_by = fact
+                    origin_kind, superseded_by, marked = fact
                     if superseded_by is not None:
                         superseded_facts += 1
+                        continue
+                    if marked and self._exclude_marked:
+                        marked_facts += 1
                         continue
                     if not fact_visible_in_stream(
                         origin_kind, stream_kind, private_in_group=self._private_in_group,
@@ -328,6 +344,7 @@ class RecallAction:
         return visible, _SpreadBlocked(
             scope_facts=scope_facts,
             superseded_facts=superseded_facts,
+            marked_facts=marked_facts,
             other_stream_episodes=other_stream_episodes,
             pending_rebuild_episodes=pending_rebuild_episodes,
         )
@@ -347,12 +364,14 @@ class RecallAction:
                 request.query, limit=self._fact_limit,
                 stream_kind=request.stream_kind,
                 private_in_group=self._private_in_group,
+                exclude_marked=self._exclude_marked,
             )
         else:
             facts = self._store.recall_facts_in_scope(
                 request.person_ids, request.query, limit=self._fact_limit,
                 stream_kind=request.stream_kind,
                 private_in_group=self._private_in_group,
+                exclude_marked=self._exclude_marked,
             )
         episodes = self._store.recall_episodes(
             request.stream_id, request.query, limit=self._episode_limit,
@@ -415,11 +434,12 @@ class RecallAction:
             seeds=len(seeds),
             spread=len(visible_hits),
             hops=HOPS,
-            # 四条判据分别计数，不合并成一个总数：合并之后真机上无法回答
+            # 五条判据分别计数，不合并成一个总数：合并之后真机上无法回答
             # 「是谁挡的」。场合规则的事实数走 memory_fact_scope_blocked 账本
-            # （与三个读取入口同账本），其余三项是扩散通道独有的，只在这里出现。
+            # （与三个读取入口同账本），其余四项是扩散通道独有的，只在这里出现。
             blockedEpisodes=blocked.other_stream_episodes,
             blockedSuperseded=blocked.superseded_facts,
+            blockedMarked=blocked.marked_facts,
             blockedRebuild=blocked.pending_rebuild_episodes,
             # 真机上靠它区分「跨人生效了但没命中」与「门没开」两种零命中。
             crossPerson=request.cross_person,

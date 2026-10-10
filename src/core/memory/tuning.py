@@ -14,8 +14,11 @@
    检索词（当前文本与会话印象）复现两次召回并集，与留痕 ``candidatePool``
    逐位对账，对不上的回合单独计数——那说明重放与生产仍有差异，其读数比
    nDCG 本身重要。重排走生产 ``rank_recalled_facts`` 的向量融合，再以
-   nDCG@k 与召回条数打分；弱监督正例 = 首份生产提示词里的事实条目，且该
-   回合产生了回复。WebUI 的评估接口响应取 :meth:`Round2Report.traced_as_dict`。
+   nDCG@k 与召回条数打分；弱监督正例 = 首份生产提示词里、且在留痕候选池
+   内的事实条目，且该回合产生了回复。冲突组补齐的成员不经检索，排序永远
+   排不到，不算正例。「已被纠正」事实的排除按每条留痕记录的
+   ``excludeMarked`` 复现；早于该字段的留痕当时未在读取入口排除，按 ``False``
+   重放。WebUI 的评估接口响应取 :meth:`Round2Report.traced_as_dict`。
    评估不读写进程内覆盖表：待评估参数作为显式参数沿重放路径传到各打分点
    （召回打分、融合重排、候选池百分位、进提示词条数）。评估与生产检索会
    并发——WebUI 评估端点在线程池里执行评估，等待查询向量时也会让出事件
@@ -472,6 +475,8 @@ class TraceSample:
     :ivar candidate_pool: 生产词面阶段的候选池，``(factId, score)`` 按序。
     :ivar prompt_fact_ids: 首份生产提示词实际使用的事实 ID。
     :ivar replied: 该回合是否产生了回复；无法判定时为 ``False``。
+    :ivar exclude_marked: 生产候选池是否已在读取入口排除「已被纠正」的事实；
+        留痕没有该字段时为 ``False``（当时的排除发生在注入侧，候选池里仍有）。
     """
 
     turn_id: Optional[int]
@@ -483,12 +488,24 @@ class TraceSample:
     candidate_pool: Tuple[Tuple[int, float], ...]
     prompt_fact_ids: List[int] = field(default_factory=list)
     replied: bool = False
+    exclude_marked: bool = False
+
+    @property
+    def positive_ids(self) -> List[int]:
+        """弱监督正例：首份生产提示词里、同时在候选池内的事实 ID，保持提示词顺序。
+
+        提示词里还有冲突组补齐的成员，它们按槽位直接取自库，不经检索，任何参数
+        都排不到，算作正例只会压低分数上限。
+        """
+
+        pool_ids = {fact_id for fact_id, _ in self.candidate_pool}
+        return [fact_id for fact_id in self.prompt_fact_ids if fact_id in pool_ids]
 
     @property
     def scorable(self) -> bool:
         """该回合能否进入 nDCG 统计：正例非空且确实产生了回复。"""
 
-        return bool(self.prompt_fact_ids) and self.replied
+        return bool(self.positive_ids) and self.replied
 
 
 def build_trace_samples(
@@ -554,6 +571,7 @@ def build_trace_samples(
             candidate_pool=tuple(pool),
             prompt_fact_ids=prompt_ids,
             replied=(int(turn_id) in replied_turns) if turn_id is not None else False,
+            exclude_marked=bool(data.get('excludeMarked', False)),
         ))
         if max_turns is not None and len(samples) >= max_turns:
             break
@@ -615,6 +633,7 @@ def replay_union_recall(
     stream_kind: str,
     private_in_group: bool = False,
     overrides: Optional[Mapping[str, Any]] = None,
+    exclude_marked: bool = False,
 ) -> list:
     """复现回合组装期的两次召回并集，作为融合重排的候选池。
 
@@ -633,6 +652,8 @@ def replay_union_recall(
     :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
     :param overrides: 评估的草稿覆盖表，用于召回打分与百分位截尾；省略时
         读已生效 profile。
+    :param exclude_marked: 是否排除「已被纠正」的事实，取留痕记录的值。标记按
+        当前库判断：留痕之后才被纠正的事实也会被排除，在对账里显示为缺失。
     :return: 词面阶段候选池，按分数降序。
     :raises sqlite3.Error: 检索失败。
     副作用：只读；被可见性规则挡下时与生产同源发出事件。
@@ -649,6 +670,7 @@ def replay_union_recall(
             private_in_group=private_in_group,
             return_candidates=True,
             overrides=overrides,
+            exclude_marked=exclude_marked,
         ):
             if fact.id not in seen:
                 seen.add(fact.id)
@@ -810,7 +832,7 @@ class Round2Report:
         ``per_turn`` 的 ``turn_id`` 配对：
 
         - ``profile`` / ``params`` / ``k`` / ``generated_at``：同本报告。
-        - ``sample_count``：可评分回合数（产生了回复且有事实进了提示词）。
+        - ``sample_count``：可评分回合数（产生了回复，且候选池里有事实进了提示词）。
           ``ndcg_mean``（nDCG@k 均值）、``displaced_positive_total``（正例落在
           前 k 之外的总条数）与 ``per_turn`` 只在这些回合上统计：无正例回合的
           nDCG 恒为 0，计入逐回合配对会使均值偏低。
@@ -926,6 +948,7 @@ async def evaluate_round2(
             stream_kind=sample.stream_kind,
             private_in_group=private_in_group,
             overrides=evaluated,
+            exclude_marked=sample.exclude_marked,
         )
         reconcile = reconcile_trace_pool(replay, sample.candidate_pool)
         query_embedding = await query_vector(sample.current_text)
@@ -935,7 +958,7 @@ async def evaluate_round2(
             )
         ]
         # 不可评分的回合照样重放与对账，只是不带正例、不进 nDCG 统计。
-        positives = sample.prompt_fact_ids if sample.scorable else []
+        positives = sample.positive_ids if sample.scorable else []
         per_turn.append({
             'turn_id': sample.turn_id,
             'stream_kind': sample.stream_kind,

@@ -24,7 +24,6 @@ from src.core.agent.segmentation import split_into_bubbles
 from src.core.config.schema import TypingConfig
 from src.core.memory.store import MemoryStore, RecalledFact
 from src.core.schedule.plan import DayPlan
-from src.core.services.maintenance.memory_feedback import marked_fact_ids
 
 
 def _facts_for_prompt(
@@ -32,7 +31,7 @@ def _facts_for_prompt(
     person_id: int,
     facts: Sequence[RecalledFact],
     *,
-    hard_filter_marked: bool = False,
+    exclude_marked: bool = False,
 ) -> list[MemoryFactItem]:
     """把召回事实组装成提示词条目，同槽冲突的整组标注并补齐缺失成员。
 
@@ -40,25 +39,23 @@ def _facts_for_prompt(
     因此同槽冲突组的全体成员（包括本轮没被召回的）都进入提示词并排呈现，
     不按时间取新、不按分数取高。
 
+    「已被纠正」的事实由读取入口在截断之前排除，``facts`` 里不应含有；这里只
+    负责冲突组补齐的那部分成员，它们不经读取入口，直接按槽位从库里取。
+
     :param memory: 记忆存储实例。
     :param person_id: 事实所属人物 ID。
     :param facts: 本轮已选中的召回事实。
-    :param hard_filter_marked: 为真时把带「已被纠正」标记的事实整体滤出注入
-        （含冲突组补齐的成员）；反馈纠错关闭或开关关闭时保持原行为。
+    :param exclude_marked: 为真时带「已被纠正」标记的事实不参与冲突分组，
+        也不作为同组成员补齐；取值与读取入口的同名参数一致。
     :return: 供 ``build_system_prompt`` 渲染的事实条目列表。
     副作用：只读 facts 与 memory_feedback_results 表。
     """
 
     if not facts:
         return []
-    marked = (
-        marked_fact_ids(memory._db, [fact.id for fact in facts])
-        if hard_filter_marked else set()
+    groups = memory.slot_conflicts(
+        person_id, [fact.id for fact in facts], exclude_marked=exclude_marked,
     )
-    facts = [fact for fact in facts if fact.id not in marked]
-    if not facts:
-        return []
-    groups = memory.slot_conflicts(person_id, [fact.id for fact in facts])
     items = [
         MemoryFactItem(
             content=fact.content,
@@ -73,7 +70,7 @@ def _facts_for_prompt(
     appended: set[int] = set()
     for slot, members in groups.values():
         for member_id, content in members:
-            if member_id not in selected and member_id not in appended and member_id not in marked:
+            if member_id not in selected and member_id not in appended:
                 appended.add(member_id)
                 items.append(MemoryFactItem(content=content, slot=slot, conflicting=True, fact_id=member_id))
     return items

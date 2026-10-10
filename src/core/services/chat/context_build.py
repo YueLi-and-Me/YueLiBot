@@ -226,6 +226,13 @@ class ContextBuildMixin:
 
         return self._private_facts_in_group
 
+    @property
+    def _exclude_marked_facts(self) -> bool:
+        """反馈纠错的事实硬过滤是否生效；事实读取入口与冲突分组共用这一个判据。"""
+
+        feedback_cfg = self._cfg.memory_feedback
+        return feedback_cfg.enabled and feedback_cfg.hard_filter_enabled
+
     def _recall_turn_facts(
         self,
         context: ConversationContext,
@@ -233,6 +240,8 @@ class ContextBuildMixin:
         impression: str | None,
         now: int,
         lead_person_ids: tuple[int, ...] = (),
+        *,
+        exclude_marked: bool,
     ) -> list[RecalledFact]:
         """按在场者召回事实，当前文本与会话印象取并集。
 
@@ -243,12 +252,16 @@ class ContextBuildMixin:
 
         候选池不在这里截断：与单人召回时代一致，保留 ``limit * 3`` 量级的
         池子供确认回复后的向量重排；进提示词的条数由渲染层按
-        ``fact_recall_limit`` 截取。
+        ``fact_recall_limit`` 截取。「已被纠正」的事实在读取入口排除，不进
+        这个池子，因此决策截断、向量重排与强化写回都碰不到它们。
 
         :param context: 当前会话上下文。
         :param query: 当前用户文本。
         :param impression: 会话印象；``None`` 时退回只用当前文本检索。
         :param now: 当前毫秒时间戳。
+        :param lead_person_ids: 本批发送者，排在在场者最前。
+        :param exclude_marked: 是否在读取入口排除「已被纠正」的事实；由组装方取一次，
+            同一个值也写进召回留痕。
         :return: 去重排序后的事实候选池。
         :raises sqlite3.Error: 检索失败。
         副作用：只读；被可见性规则挡下的条数会发一条事件。
@@ -266,6 +279,7 @@ class ContextBuildMixin:
                 stream_kind=context.stream.kind,
                 private_in_group=self._private_facts_in_group,
                 return_candidates=True,
+                exclude_marked=exclude_marked,
             ):
                 if fact.id not in seen:
                     seen.add(fact.id)
@@ -360,8 +374,10 @@ class ContextBuildMixin:
             读取记忆、人格、日程和活动状态，并消费一次重逢提示；不调用模型，
             不强化召回事实。
         """
+        exclude_marked = self._exclude_marked_facts
         fact_candidates = self._recall_turn_facts(
             context, query, impression, now, batch_person_ids,
+            exclude_marked=exclude_marked,
         )
         exclude_rebuild = (
             self._cfg.memory_feedback.enabled
@@ -439,6 +455,7 @@ class ContextBuildMixin:
             now=now,
             platform_bot_name=platform_bot_name,
             fact_candidates=fact_candidates,
+            exclude_marked=exclude_marked,
             retrieval_trace=_RetrievalTrace(
                 turn_id=turn_id,
                 stream_id=context.stream.id,
@@ -447,6 +464,7 @@ class ContextBuildMixin:
                 candidate_pool=tuple(
                     (fact.id, float(fact.score)) for fact in fact_candidates
                 ),
+                exclude_marked=exclude_marked,
             ),
             episodes=[episode.summary for episode in episodes],
             activity=activity,
@@ -504,14 +522,13 @@ class ContextBuildMixin:
             self.memory,
             prepared.context.person.id,
             selected_facts,
-            hard_filter_marked=feedback_cfg.enabled and feedback_cfg.hard_filter_enabled,
+            exclude_marked=prepared.exclude_marked,
         )
         # 反馈纠错锚点：事实真的进了提示词才登记待观察；链路默认关闭，关闭时零写入。
         if feedback_cfg.enabled and fact_items:
             register_prompt_entries(
                 self._db,
-                [(item.fact_id, prepared.context.person.id)
-                 for item in fact_items if item.fact_id],
+                [item.fact_id for item in fact_items if item.fact_id],
                 prepared.context.stream.id,
                 prepared.now,
             )

@@ -208,6 +208,7 @@ def test_retrieval_trace_keeps_full_queries_candidates_and_emits_once() -> None:
         current_text='嗯嗯，那后来呢',
         conversation_impression=impression,
         candidate_pool=((12, 0.875), (9, 0.625)),
+        exclude_marked=True,
     )
 
     retrieval.emit_once([12, 9])
@@ -228,6 +229,7 @@ def test_retrieval_trace_keeps_full_queries_candidates_and_emits_once() -> None:
         {'factId': 12, 'score': 0.875},
         {'factId': 9, 'score': 0.625},
     ]
+    assert entries[0]['excludeMarked'] is True
     assert entries[0]['promptFactIds'] == [12, 9]
 
 

@@ -404,7 +404,9 @@ class TestE4StreamGroups:
             FactInput(content='他只喝手冲咖啡', kind='偏好', origin_kind='group'),
             NOW,
         ).fact_id
-        # 与检索词无关的事实永远进不了池：把它设为正例即得 nDCG=0、被挤掉 1。
+        # 与检索词无关的事实重放永远捞不到。留痕池里放上它，模拟生产当时选中、
+        # 重放却丢掉的情形：设为正例即得 nDCG=0、被挤掉 1。正例只认候选池内的事实，
+        # 不放进留痕池就不算正例。
         outside = store.add_fact(
             OWNER_PERSON_ID,
             FactInput(content='他在学爵士钢琴', kind='习惯', origin_kind='group'),
@@ -423,10 +425,13 @@ class TestE4StreamGroups:
             )
             assert inside in {fact.id for fact in replay}
             assert outside not in {fact.id for fact in replay}
+            trace_pool = [(fact.id, fact.score) for fact in replay]
+            if outside in positives:
+                trace_pool.append((outside, 0.0))
             _insert_retrieval_trace(
                 db, turn_id=20 + index, stream_id=stream_id, at=NOW,
                 current_text='咖啡 手冲', impression='',
-                pool=[(fact.id, fact.score) for fact in replay],
+                pool=trace_pool,
                 prompt_fact_ids=positives,
             )
         report = await tuning.evaluate_round2(
