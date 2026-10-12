@@ -11,21 +11,26 @@ from pathlib import Path
 from typing import Any, List
 
 import json
+import sqlite3
 
 import pytest
 
 from src.core.app_meta import APP_VERSION
 from src.core.config.bootstrap import _feature_document
 from src.core.config.schema import UpdateAnnounceConfig
+from src.core.memory.knowledge import add_knowledge, search_knowledge
+from src.core.memory.store import MemoryStore
 from src.core.runtime import update_notes
 from src.core.runtime.update_notes import announce_update, read_state
 from src.core.services import update_announce
 from src.core.services.update_announce import (
     ANNOUNCED_FIELD,
+    KNOWLEDGE_SOURCE,
     UpdateAnnounceService,
     announcement_text,
     is_newer,
     parse_version,
+    release_note_knowledge,
 )
 
 ANNOUNCE_GROUP = '424949962'
@@ -77,6 +82,7 @@ class _FakeBroker:
 
 def _service(
     tmp_path: Path,
+    db: sqlite3.Connection,
     config: UpdateAnnounceConfig,
     *,
     broker: _FakeBroker | None = None,
@@ -100,6 +106,9 @@ def _service(
         registry=registry or _FakeRegistry(),
         broker=broker or _FakeBroker(),
         register_stream=registered.append,
+        store=MemoryStore(db),
+        db=db,
+        embed_knowledge=None,
         endpoint='https://例子',
         interval_s=600.0,
         previous_version=previous_version,
@@ -142,16 +151,16 @@ def test_默认配置下永不触发() -> None:
     assert UpdateAnnounceConfig().group == ''
 
 
-def test_开关关闭时链路惰性(tmp_path: Path) -> None:
+def test_开关关闭时链路惰性(tmp_path: Path, db: sqlite3.Connection) -> None:
     """显式填了群号但没开开关，同样不许发。"""
-    service = _service(tmp_path, UpdateAnnounceConfig(enabled=False, group=ANNOUNCE_GROUP))
+    service = _service(tmp_path, db, UpdateAnnounceConfig(enabled=False, group=ANNOUNCE_GROUP))
 
     assert service.active is False
 
 
-def test_群号为空时链路惰性(tmp_path: Path) -> None:
+def test_群号为空时链路惰性(tmp_path: Path, db: sqlite3.Connection) -> None:
     """开了开关却没有目标群，什么都不该发生。"""
-    service = _service(tmp_path, UpdateAnnounceConfig(enabled=True, group=''))
+    service = _service(tmp_path, db, UpdateAnnounceConfig(enabled=True, group=''))
 
     assert service.active is False
 
@@ -189,10 +198,12 @@ def test_用户的配置模板里没有这一段() -> None:
 
 
 @pytest.mark.asyncio
-async def test_远端版本不比本机新时不公告(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_远端版本不比本机新时不公告(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """远端落后或相同时什么都不做，否则每次发版都会公告一个「未来版本」。"""
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker)
+    service = _service(tmp_path, db, _enabled(), broker=broker)
 
     async def _latest() -> str:
         return '0.0.1'
@@ -204,7 +215,9 @@ async def test_远端版本不比本机新时不公告(tmp_path: Path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_升级先于公告时仍然公告(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_升级先于公告时仍然公告(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """本机已经升到远端说的那一版，也不能把公告吞掉。
 
     - 现象：发版后立刻 pull + 重启，公告永远不出现。
@@ -216,7 +229,7 @@ async def test_升级先于公告时仍然公告(tmp_path: Path, monkeypatch: py
     broker = _FakeBroker()
     # 启动流程在改写状态文件之前读出的是旧版本，而本机已经跑在新版本上。
     service = _service(
-        tmp_path, _enabled(), broker=broker,
+        tmp_path, db, _enabled(), broker=broker,
         notes_text=_changelog_for('0.1.3'), previous_version='0.1.2',
     )
     monkeypatch.setattr(update_announce, 'APP_VERSION', '0.1.3')
@@ -234,13 +247,13 @@ async def test_升级先于公告时仍然公告(tmp_path: Path, monkeypatch: py
 
 @pytest.mark.asyncio
 async def test_未升级时远端新版本照样公告(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """本机还停在旧版、远端已经发新版：最常见的公告场景。"""
     newer = _one_minor_above(APP_VERSION)
     broker = _FakeBroker()
     service = _service(
-        tmp_path, _enabled(), broker=broker,
+        tmp_path, db, _enabled(), broker=broker,
         notes_text=_changelog_for(newer), previous_version=APP_VERSION,
     )
 
@@ -255,7 +268,7 @@ async def test_未升级时远端新版本照样公告(
 
 @pytest.mark.asyncio
 async def test_远端广播落后时不公告旧版本(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """远端广播的是一个比过去版本还旧的版本（广播写漏、回滚）时不该往群里发。
 
@@ -264,7 +277,7 @@ async def test_远端广播落后时不公告旧版本(
     older = '0.1.0'
     broker = _FakeBroker()
     service = _service(
-        tmp_path, _enabled(), broker=broker,
+        tmp_path, db, _enabled(), broker=broker,
         notes_text=_changelog_for(older), previous_version=APP_VERSION,
     )
 
@@ -279,12 +292,12 @@ async def test_远端广播落后时不公告旧版本(
 
 @pytest.mark.asyncio
 async def test_全新安装不会把历史版本刷进群(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """刚装好、没有过去版本时，不能把远端那个更旧的版本当更新发出来。"""
     older = '0.0.1'
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(older))
+    service = _service(tmp_path, db, _enabled(), broker=broker, notes_text=_changelog_for(older))
 
     async def _latest() -> str:
         return older
@@ -296,11 +309,13 @@ async def test_全新安装不会把历史版本刷进群(
 
 
 @pytest.mark.asyncio
-async def test_已公告的同版本不再重复(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_已公告的同版本不再重复(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """重复公告由状态文件兜住，与门槛无关。"""
     version = _one_minor_above(APP_VERSION)
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker, notes_text=_changelog_for(version))
+    service = _service(tmp_path, db, _enabled(), broker=broker, notes_text=_changelog_for(version))
     update_notes.write_state(tmp_path, {ANNOUNCED_FIELD: version})
 
     async def _latest() -> str:
@@ -313,11 +328,13 @@ async def test_已公告的同版本不再重复(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_新版本公告一次且只公告一次(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_新版本公告一次且只公告一次(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """公告正文来自更新日志，状态记在同一个状态文件里。"""
     broker = _FakeBroker()
     registry = _FakeRegistry()
-    service = _service(tmp_path, _enabled(), broker=broker, registry=registry)
+    service = _service(tmp_path, db, _enabled(), broker=broker, registry=registry)
 
     async def _latest() -> str:
         return '9.9.9'
@@ -339,11 +356,11 @@ async def test_新版本公告一次且只公告一次(tmp_path: Path, monkeypat
 
 @pytest.mark.asyncio
 async def test_更新日志缺该版本时不公告也不记状态(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """广播端点说发了新版、更新日志却还没补：等补上以后下一轮自动补发。"""
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker, notes_text='# 更新日志\n')
+    service = _service(tmp_path, db, _enabled(), broker=broker, notes_text='# 更新日志\n')
 
     async def _latest() -> str:
         return '9.9.9'
@@ -356,10 +373,12 @@ async def test_更新日志缺该版本时不公告也不记状态(
 
 
 @pytest.mark.asyncio
-async def test_投递失败不记状态(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_投递失败不记状态(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """发不出去就不算公告过，下一轮还要再试。"""
     broker = _FakeBroker(fail=RuntimeError('适配器没有订阅者'))
-    service = _service(tmp_path, _enabled(), broker=broker)
+    service = _service(tmp_path, db, _enabled(), broker=broker)
 
     async def _latest() -> str:
         return '9.9.9'
@@ -383,14 +402,14 @@ async def test_公告正文与更新日志逐字一致(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_端点尚未广播过时不公告也不报错(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """首次发布之前端点的 version 是空串，那是空态而不是畸形响应。
 
     当成错误处理的话，每次检查都会在日志里留一条没人能处理的警告。
     """
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker)
+    service = _service(tmp_path, db, _enabled(), broker=broker)
 
     async def _latest() -> str:
         return ''
@@ -402,10 +421,12 @@ async def test_端点尚未广播过时不公告也不报错(
 
 
 @pytest.mark.asyncio
-async def test_远端返回结构不符时不公告(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_远端返回结构不符时不公告(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """结构不对就按"没有更新"处理，而不是把畸形内容发进群。"""
     broker = _FakeBroker()
-    service = _service(tmp_path, _enabled(), broker=broker)
+    service = _service(tmp_path, db, _enabled(), broker=broker)
 
     async def _latest() -> str:
         raise ValueError('/update/latest 返回的顶层不是对象')
@@ -417,7 +438,7 @@ async def test_远端返回结构不符时不公告(tmp_path: Path, monkeypatch:
     assert broker.sent == []
 
 
-def test_检查间隔必须为正() -> None:
+def test_检查间隔必须为正(db: sqlite3.Connection) -> None:
     """间隔写错会在启动期就暴露，而不是变成每秒钟一次的忙轮询。"""
     with pytest.raises(ValueError, match='间隔必须为正数'):
         UpdateAnnounceService(
@@ -427,6 +448,9 @@ def test_检查间隔必须为正() -> None:
             registry=_FakeRegistry(),
             broker=_FakeBroker(),
             register_stream=lambda _stream: None,
+            store=MemoryStore(db),
+            db=db,
+            embed_knowledge=None,
             endpoint='https://例子',
             interval_s=0,
         )
@@ -440,3 +464,116 @@ def test_状态文件始终可解析(tmp_path: Path) -> None:
     document = json.loads(update_notes.state_path(tmp_path).read_text(encoding='utf-8'))
 
     assert document == {'version': '0.1.3', ANNOUNCED_FIELD: '0.1.3'}
+
+
+RELEASE_CHANGELOG = """\
+# 更新日志
+
+## [9.9.9] - 2026-12-31
+
+### 聊天
+
+- 新增 QQ 聊天视频理解：私聊与群聊视频经全模态模型理解画面与声音
+- 新增群聊按场面回复：多人连续发言合并为同一批次回复
+
+### 记忆与画像
+
+- 已被纠正的事实在召回阶段排除，不再占用提示词名额
+"""
+
+
+def _announce_at(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    """让广播端点报告指定版本。"""
+
+    async def _latest() -> str:
+        return version
+
+    monkeypatch.setattr(UpdateAnnounceService, 'fetch_latest', lambda self: _latest())
+
+
+def test_更新条目逐条成知识且自带版本与日期() -> None:
+    """每条单独被检索出来也要读得懂：项目名、版本号、发布日期与小节都在条目里。"""
+    _date, lines = update_notes.parse_changelog(RELEASE_CHANGELOG)['9.9.9']
+
+    entries = release_note_knowledge('9.9.9', '2026-12-31', lines)
+
+    assert entries == [
+        'YueLiBot 9.9.9 版本（2026-12-31 发布）的聊天更新：'
+        '新增 QQ 聊天视频理解：私聊与群聊视频经全模态模型理解画面与声音',
+        'YueLiBot 9.9.9 版本（2026-12-31 发布）的聊天更新：'
+        '新增群聊按场面回复：多人连续发言合并为同一批次回复',
+        'YueLiBot 9.9.9 版本（2026-12-31 发布）的记忆与画像更新：'
+        '已被纠正的事实在召回阶段排除，不再占用提示词名额',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_版本消息作为她自己的发言写进该群历史(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """版本消息是她用自己的号发的，发出去之后她必须知道自己说过。
+
+    - 现象：0.1.5 的版本消息发进官方群后，有人在别处问她更新了什么，她答不上来。
+    - 原因：消息直接走出站 broker，没有落进任何消息历史。
+    - 后果：该群后续的对话与摘要都看不到她说过这段话。
+    """
+    broker = _FakeBroker()
+    service = _service(tmp_path, db, _enabled(), broker=broker, notes_text=RELEASE_CHANGELOG)
+    _announce_at(monkeypatch, '9.9.9')
+
+    assert await service.check_once() is True
+
+    history = MemoryStore(db).messages_after(_FakeStream().id, 0, 10)
+    assert [(message.role, message.content) for message in history] == [
+        ('assistant', broker.sent[0]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_更新内容在别的会话里也查得到(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """消息历史与情节都不跨会话，别的群和私聊只能经 consult 从知识库查到。
+
+    检索词取自真机：0.1.5 那次别的群里问的是「yulibot 0.1.5更新了什么」（拼错了），
+    她的 consult 检索词是「yuelibot 0.1.5 版本更新内容 changelog」，当时只查到无关的梗。
+    """
+    for unrelated in (
+        '梗的禁忌与注意事项：慎用嘲讽梗，避免在逆风局刷屏',
+        'Gemini 2.5 Pro 是谷歌发布的大模型',
+        '版本控制工具 git 可以用 git log 查看提交记录',
+    ):
+        add_knowledge(db, unrelated, 'fact_extract', 0)
+    service = _service(tmp_path, db, _enabled(), notes_text=RELEASE_CHANGELOG)
+    _announce_at(monkeypatch, '9.9.9')
+
+    assert await service.check_once() is True
+
+    rows = db.execute(
+        'SELECT COUNT(*) FROM knowledge WHERE source = ?', (KNOWLEDGE_SOURCE,),
+    ).fetchone()
+    assert rows[0] == 3
+    for query in ('yulibot 9.9.9更新了什么', 'yuelibot 9.9.9 版本更新内容 changelog'):
+        hits = search_knowledge(db, query, 3)
+        assert hits and all(hit.content.startswith('YueLiBot 9.9.9 版本') for hit in hits), query
+
+
+@pytest.mark.asyncio
+async def test_写记忆失败时不重发版本消息(
+    tmp_path: Path, db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """消息已经发进群，写记忆失败只能少一份记忆，不能让下一轮再往群里发一遍。"""
+    broker = _FakeBroker()
+    service = _service(tmp_path, db, _enabled(), broker=broker, notes_text=RELEASE_CHANGELOG)
+    _announce_at(monkeypatch, '9.9.9')
+
+    def _broken(*_args: Any, **_kwargs: Any) -> int:
+        raise sqlite3.OperationalError('database is locked')
+
+    monkeypatch.setattr(MemoryStore, 'append_message', _broken)
+
+    with pytest.raises(sqlite3.OperationalError):
+        await service.check_once()
+    assert read_state(tmp_path)[ANNOUNCED_FIELD] == '9.9.9'
+    assert await service.check_once() is False
+    assert len(broker.sent) == 1

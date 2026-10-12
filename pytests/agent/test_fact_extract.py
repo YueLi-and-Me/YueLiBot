@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Sequence
 
 import pytest
@@ -23,10 +24,11 @@ from src.core.agent.fact_extract import (
     read_cursor,
     render_dialogue,
     render_known_facts,
+    render_time_span,
     run_extraction,
 )
 from src.core.memory.knowledge import search_knowledge
-from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
+from src.core.memory.store import EpisodeInput, FactInput, MemoryStore, StoredMessage
 from src.core.platform_io.registry import StreamRegistry
 
 STREAM_ID = 1
@@ -440,6 +442,62 @@ class TestRendering:
         rendered, _shown_ids = render_known_facts(store, people, NOW)
 
         assert 0 < len(rendered.splitlines()) <= 6
+
+    def test_time_span_within_one_day(self):
+        """同一天只写一次日期；时间取消息本身，不取抽取发生的时刻。"""
+        messages = [
+            _message_at(datetime(2026, 10, 12, 9, 1)),
+            _message_at(datetime(2026, 10, 12, 8, 55)),
+        ]
+
+        assert render_time_span(messages) == '2026年10月12日（周一）08:55～09:01'
+
+    def test_time_span_across_midnight(self):
+        """跨天时两端都带日期，否则「昨天」「今天」换算会差一天。"""
+        messages = [
+            _message_at(datetime(2026, 10, 11, 23, 50)),
+            _message_at(datetime(2026, 10, 12, 0, 10)),
+        ]
+
+        assert render_time_span(messages) == '2026年10月11日（周日）23:50～2026年10月12日（周一）00:10'
+
+    def test_time_span_rejects_empty_batch(self):
+        with pytest.raises(ValueError):
+            render_time_span([])
+
+    @pytest.mark.asyncio
+    async def test_dialogue_time_enters_the_prompt(self, db):
+        """抽取模型必须看到对话日期，否则相对日期的年份只能靠猜。
+
+        - 现象：2026-10-12 的对话里说「这都10.12了」，抽出的事实写成「2024年10月12日」。
+        - 原因：输入里只有对话正文，没有任何日期。
+        - 后果：Bot 召回这条事实后对人说「都两年前的事了」。
+        """
+        store = MemoryStore(db)
+        people = _participants(store, db)
+        _fill(store, 10)
+        provider = _StubProvider('{"facts": [], "knowledge": []}')
+
+        await run_extraction(
+            store, provider, db, stream_id=STREAM_ID, stream_kind='direct', participants=people,
+            bot_name='月璃', trigger_messages=8, batch_messages=4,
+            temperature=0.1, max_tokens=256, now=NOW,
+        )
+
+        user_message = provider.requests[0][1]['content']
+        start = datetime.fromtimestamp(NOW / 1000)
+        assert user_message.startswith(f'对话时间：{start.year}年{start.month}月{start.day}日')
+
+
+def _message_at(moment: datetime) -> StoredMessage:
+    """造一条指定本地时间的消息，只供时间渲染使用。"""
+    return StoredMessage(
+        role='user',
+        content='随便聊聊',
+        created_at=int(moment.timestamp() * 1000),
+        sender_person_id=OWNER_PERSON_ID,
+        message_id=1,
+    )
 
 
 class TestParseLedgerFields:

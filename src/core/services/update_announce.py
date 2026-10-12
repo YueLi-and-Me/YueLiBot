@@ -13,6 +13,15 @@
 **默认关闭**：配置段缺失或 ``enabled`` 为假时整条链路惰性。把它发布出去也不会让
 别人的 bot 跟着发公告——别人的配置里没有这个群号。
 
+公告发出后还要进她自己的记忆，否则她在群里说过的话自己不知道：
+
+- 现象：0.1.5 公告发进群后，在私聊和别的群问她「0.1.5 更新了什么」，她答不上来，
+  还把旧版本的内容当成新版本说。
+- 原因：公告直接走出站 broker，既不写消息历史也不进任何记忆层；而情节按设计不跨会话，
+  事实只记关于人的事，关于版本的内容在别的会话里没有任何通道能被找到。
+- 后果：因此两处都要写——公告原文作为她的发言落进该群的消息历史，更新条目逐条写进
+  全局知识库，供任何会话里的 ``consult`` 查到。
+
 任何失败都只记 warning，不影响任何功能路径；与 :mod:`src.core.runtime.telemetry`
 同一取向。
 """
@@ -24,12 +33,15 @@ from typing import Any, Callable, List, Tuple
 
 import asyncio
 import json
+import sqlite3
 
 import httpx
 
+from src.core.agent.fact_extract import EmbedKnowledgeFn, persist_knowledge
 from src.core.app_meta import APP_VERSION
 from src.core.config.schema import UpdateAnnounceConfig
 from src.core.logging.logger import get_logger
+from src.core.memory.store import MemoryStore
 from src.core.platform_io.types import OutboundMessage, StreamRef
 from src.core.runtime.clock import now as current_time
 from src.core.runtime.telemetry import REQUEST_TIMEOUT_S
@@ -45,6 +57,13 @@ ANNOUNCED_FIELD = 'announced_version'
 ANNOUNCE_PLATFORM = 'qq'
 # 公告正文的首行。
 _HEADING = '月璃更新到 {version}'
+# 更新条目写入知识库时的来源标识，与事实抽取学到的知识区分开。
+KNOWLEDGE_SOURCE = 'release_notes'
+# 知识正文里的项目名。群里的问法是「yuelibot 0.1.5 更新了什么」，每条带上项目名与
+# 版本号，词面检索才能把它们与其他知识区分开，也不会和别的版本的条目混淆。
+_PROJECT_NAME = 'YueLiBot'
+# 更新日志小节标题的前缀，例如 ``### 聊天``。
+_SUBSECTION_PREFIX = '###'
 
 
 def parse_version(text: str) -> Tuple[int, ...] | None:
@@ -98,6 +117,37 @@ def announcement_text(version: str, lines: List[str]) -> str:
     return '\n'.join([_HEADING.format(version=version), '', *lines])
 
 
+def release_note_knowledge(version: str, date: str, lines: List[str]) -> List[str]:
+    """把某个版本的更新条目拆成逐条知识正文。
+
+    逐条而不是整节写入：``consult`` 一次只返回少量条目、每条还会截断，整节塞进一行
+    只能被看到开头几十个字。每条自带项目名、版本号、发布日期与所属小节，单独被检索
+    出来也读得懂，且日期写死，不会被说成「两年前的事」。
+
+    :param version: 版本号。
+    :param date: 发布日期，取自更新日志小节标题；为空时省略。
+    :param lines: 该版本小节下的原始行，含 ``###`` 小节标题、空行与 ``-`` 条目。
+    :return: 知识正文列表，顺序与更新日志一致；小节标题与空行不单独成条。
+    副作用：无。
+    """
+    released = f'（{date} 发布）' if date else ''
+    section = ''
+    entries: List[str] = []
+    for raw in lines:
+        text = raw.strip()
+        if not text:
+            continue
+        if text.startswith(_SUBSECTION_PREFIX):
+            section = text.lstrip('#').strip()
+            continue
+        item = text[1:].strip() if text.startswith('-') else text
+        if not item:
+            continue
+        topic = f'的{section}更新' if section else '的更新'
+        entries.append(f'{_PROJECT_NAME} {version} 版本{released}{topic}：{item}')
+    return entries
+
+
 class UpdateAnnounceService:
     """定时检查广播端点并在群公告新版本的后台服务。"""
 
@@ -110,6 +160,9 @@ class UpdateAnnounceService:
         registry: Any,
         broker: Any,
         register_stream: Callable[[StreamRef], None],
+        store: MemoryStore,
+        db: sqlite3.Connection,
+        embed_knowledge: EmbedKnowledgeFn | None,
         endpoint: str,
         interval_s: float,
         previous_version: str | None = None,
@@ -123,6 +176,10 @@ class UpdateAnnounceService:
         :param broker: ``PlatformBroker``，出站投递的唯一接缝。
         :param register_stream: 为该 stream 注册平台驱动的回调；群会话从未收到过消息时
             注册表里只有 stream 而没有驱动，缺这一步投递会直接失败。
+        :param store: 记忆存储，公告原文作为她的发言写进该群的消息历史。
+        :param db: 记忆库连接，更新条目写进知识库。
+        :param embed_knowledge: 知识向量写入回调；向量服务未配置时为 ``None``，
+            此时知识仍可经词面检索找到。
         :param endpoint: 广播端点根地址，不带尾斜杠。
         :param interval_s: 两次检查之间的间隔，单位秒，必须为正。
         :param previous_version: **启动那一刻**从状态文件读到的上次运行版本。必须由启动
@@ -140,6 +197,9 @@ class UpdateAnnounceService:
         self._registry = registry
         self._broker = broker
         self._register_stream = register_stream
+        self._store = store
+        self._db = db
+        self._embed_knowledge = embed_knowledge
         self._endpoint = endpoint.strip().rstrip('/')
         self._interval_s = interval_s
         self._previous_version = previous_version
@@ -208,6 +268,8 @@ class UpdateAnnounceService:
         :raises ValueError: 端点返回的结构不符合约定。
         :raises OSError: 更新日志不可读。
         :raises RuntimeError: 出站 broker 未装配。
+        :raises sqlite3.Error: 公告已发出，但写进记忆时失败；已公告的版本号此前已记下，
+            下一轮不会重发。
         """
         if not self.active:
             return False
@@ -238,10 +300,22 @@ class UpdateAnnounceService:
             # 等你补上更新日志后下一轮会自动补发。
             logger.warning('update_announce_notes_missing', version=version)
             return False
-        if not await self.post_to_group(announcement_text(version, notes[1])):
+        date, lines = notes
+        text = announcement_text(version, lines)
+        stream = await self.post_to_group(text)
+        if stream is None:
             return False
+        # 先记状态再写记忆：写记忆失败时异常经检查循环记成 warning，若此时状态还没记下，
+        # 下一轮会把同一份公告再往群里发一遍——记忆缺一份可以补，群里重复刷屏收不回来。
         self._remember(version)
-        logger.info('update_announced_to_group', version=version, group=self._config.group)
+        message_id, knowledge_ids = await self._record_in_memory(stream, text, version, date, lines)
+        logger.info(
+            'update_announced_to_group',
+            version=version,
+            group=self._config.group,
+            messageId=message_id,
+            knowledge=len(knowledge_ids),
+        )
         return True
 
     async def fetch_latest(self) -> str:
@@ -266,11 +340,11 @@ class UpdateAnnounceService:
             raise ValueError(f'{LATEST_VERSION_PATH} 的 version 必须是字符串')
         return version.strip()
 
-    async def post_to_group(self, text: str) -> bool:
+    async def post_to_group(self, text: str) -> StreamRef | None:
         """把公告正文发到配置指定的群。
 
         :param text: 公告正文。
-        :return: 投递成功时为真；失败只记 warning 并返回假。
+        :return: 投递成功时返回该群的 stream，供随后写消息历史；失败只记 warning 并返回 ``None``。
         :raises RuntimeError: 出站 broker 未装配（装配错误必须暴露，不当成投递失败）。
         """
         if self._broker is None:
@@ -288,8 +362,48 @@ class UpdateAnnounceService:
                 kind=type(exc).__name__,
                 error=str(exc),
             )
-            return False
-        return True
+            return None
+        return stream
+
+    async def _record_in_memory(
+        self,
+        stream: StreamRef,
+        text: str,
+        version: str,
+        date: str,
+        lines: List[str],
+    ) -> Tuple[int, List[int]]:
+        """把已经发出的公告写进她自己的记忆。
+
+        原文以她的身份落进该群的消息历史，与开发者命令回复同一做法：该群后续的对话、
+        摘要都能看到她说过这段话。更新条目另外逐条写进知识库，因为消息历史和由它生成的
+        情节都不跨会话，别的群和私聊只能经 ``consult`` 从知识库里查到。
+
+        :param stream: 公告所在群的 stream。
+        :param text: 已发出的公告原文。
+        :param version: 公告的版本号。
+        :param date: 该版本的发布日期，可为空串。
+        :param lines: 更新日志里该版本的原始行。
+        :return: ``(消息 ID, 知识 ID 列表)``；同一条目已在库里时返回既有知识 ID。
+        :raises sqlite3.Error: 写入失败。
+        副作用：写 ``messages``、``knowledge`` 与 ``knowledge_fts`` 并提交；配置了向量服务时
+            为新条目生成向量。
+        """
+        message_id = self._store.append_message(
+            stream_id=stream.id,
+            sender_person_id=None,
+            role='assistant',
+            content=text,
+            now=current_time(),
+        )
+        knowledge_ids = await persist_knowledge(
+            self._db,
+            release_note_knowledge(version, date, lines),
+            current_time(),
+            embed_knowledge=self._embed_knowledge,
+            source=KNOWLEDGE_SOURCE,
+        )
+        return message_id, knowledge_ids
 
     def _remember(self, version: str) -> None:
         """记下已公告的版本号，写不进去只记日志。
@@ -308,9 +422,11 @@ class UpdateAnnounceService:
 
 __all__ = [
     'ANNOUNCED_FIELD',
+    'KNOWLEDGE_SOURCE',
     'LATEST_VERSION_PATH',
     'UpdateAnnounceService',
     'announcement_text',
     'is_newer',
     'parse_version',
+    'release_note_knowledge',
 ]

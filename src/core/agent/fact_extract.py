@@ -9,8 +9,9 @@
 
 - :func:`read_cursor` / :func:`advance_cursor`：抽取自己的进度游标，存在 ``meta``
   键值表里，与摘要的 ``episode_id`` 队列完全解耦。
-- :func:`render_dialogue` / :func:`render_participants` / :func:`render_known_facts`：
-  组装模型输入；既有事实清单用于查重，见 :func:`render_known_facts`。
+- :func:`render_dialogue` / :func:`render_participants` / :func:`render_known_facts` /
+  :func:`render_time_span`：组装模型输入；既有事实清单用于查重，见
+  :func:`render_known_facts`；对话时间用于把相对日期换算成具体日期。
 - :func:`parse_extraction`：严格校验模型输出，非法即整批丢弃；同一次往返
   同时给出人物事实与知识候选。
 - :func:`extract_facts`：一次模型往返。
@@ -26,6 +27,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Collection, Dict, List, Optional, Sequence
 
 import json
@@ -63,6 +65,8 @@ KNOWN_FACT_PER_PERSON = 6
 KNOWLEDGE_SOURCE = 'fact_extract'
 # 对话正文短于此长度时不发起模型请求：无可抽取内容。
 MIN_DIALOGUE_CHARS = 40
+# 对话时间里的星期写法，与聊天提示词的时间背景一致。
+_WEEKDAYS = ('周一', '周二', '周三', '周四', '周五', '周六', '周日')
 
 EmbedFactFn = Callable[[int, str], Awaitable[None]]
 EmbedKnowledgeFn = Callable[[int, str], Awaitable[None]]
@@ -223,6 +227,34 @@ def render_dialogue(
     return '\n'.join(lines)
 
 
+def render_time_span(messages: Sequence[StoredMessage]) -> str:
+    """把消息批覆盖的本地时间范围渲染成一行，供模型换算相对日期。
+
+    抽取模型只看得到对话正文时，「今天」「10.12」这类说法的年份只能靠它猜：
+    2026-10-12 的一批对话被写成「2024年10月12日发布了 0.1.5」，之后被召回时
+    Bot 据此说出「两年前的事」。给出这批对话实际发生的日期，换算才有依据。
+
+    取的是消息时间而不是抽取时间：游标可能落后很多条，一批对话可能是几天前的。
+
+    :param messages: 非空消息批，顺序不限。
+    :return: 同一天时形如 ``2026年10月12日（周一）08:50～09:01``；跨天时两端都带日期。
+    :raises ValueError: ``messages`` 为空。
+    副作用：无；按本机时区解释时间戳，与聊天提示词的时间背景同一口径。
+    """
+    if not messages:
+        raise ValueError('渲染对话时间需要至少一条消息')
+    stamps = [message.created_at for message in messages]
+    first = datetime.fromtimestamp(min(stamps) / 1000)
+    last = datetime.fromtimestamp(max(stamps) / 1000)
+
+    def day(moment: datetime) -> str:
+        return f'{moment.year}年{moment.month}月{moment.day}日（{_WEEKDAYS[moment.weekday()]}）'
+
+    if first.date() == last.date():
+        return f'{day(first)}{first:%H:%M}～{last:%H:%M}'
+    return f'{day(first)}{first:%H:%M}～{day(last)}{last:%H:%M}'
+
+
 @dataclass
 class Extraction:
     """一次抽取的完整产出：人物事实与知识候选。
@@ -364,6 +396,7 @@ async def extract_facts(
     participants: Sequence[Participant],
     known_facts: str,
     dialogue: str,
+    time_span: str,
     temperature: float,
     max_tokens: Optional[int],
     known_fact_ids: Collection[int] = (),
@@ -375,6 +408,7 @@ async def extract_facts(
     :param participants: 在场者名单。
     :param known_facts: :func:`render_known_facts` 的产物，可为空字符串。
     :param dialogue: :func:`render_dialogue` 的产物。
+    :param time_span: :func:`render_time_span` 的产物；模型据此把相对日期换算成具体日期。
     :param temperature: 采样温度。
     :param max_tokens: 输出上限；``None`` 表示由 provider 决定。
     :param known_fact_ids: ``known_facts`` 清单里出现过的事实 ID，用于校验
@@ -387,7 +421,10 @@ async def extract_facts(
     if len(dialogue) < MIN_DIALOGUE_CHARS or not participants:
         return None
     render_params = {'memory.extract': {'bot_name': bot_name}}
-    sections = [f'在场的人：\n{render_participants(participants)}']
+    sections = [
+        f'对话时间：{time_span}',
+        f'在场的人：\n{render_participants(participants)}',
+    ]
     if known_facts:
         sections.append(
             '你已经记住的（每条以 [平台编号] #事实编号 开头；不要重复写这些；'
@@ -534,6 +571,7 @@ async def persist_knowledge(
     now: Optional[int] = None,
     *,
     embed_knowledge: Optional[EmbedKnowledgeFn] = None,
+    source: str = KNOWLEDGE_SOURCE,
 ) -> List[int]:
     """把与人无关的客观信息写入知识层（L3）。
 
@@ -542,9 +580,11 @@ async def persist_knowledge(
 
     :param db: 当前库连接；与 ``lookup_jargon`` 同惯例直接收连接，
         不访问 ``MemoryStore`` 私有属性。
-    :param candidates: :func:`parse_extraction` 校验过的知识正文列表。
+    :param candidates: 待写入的知识正文列表；来自抽取时已经过 :func:`parse_extraction` 校验。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
     :param embed_knowledge: 可选知识向量写入回调；提供时在知识落库后于同一后台链路等待完成。
+    :param source: 写入 ``knowledge.source`` 的来源标识；默认是事实抽取，
+        更新公告等其他写入方传自己的标识，以便在管理面板里区分来路。
     :return: 新建或命中的知识行 ID 列表。
     :raises sqlite3.Error: 写入失败时由 ``add_knowledge`` 抛出。
     副作用：写入 ``knowledge`` 与 ``knowledge_fts`` 并提交事务；可选生成并持久化知识向量。
@@ -553,7 +593,7 @@ async def persist_knowledge(
     now = now if now is not None else current_time()
     ids: List[int] = []
     for content in candidates:
-        kid = add_knowledge(db, content, KNOWLEDGE_SOURCE, now)
+        kid = add_knowledge(db, content, source, now)
         # 同一批里换个说法重复提到同一件事时 add_knowledge 会返回同一行 ID。
         # 去重后再计数，否则观察事件里的「数量」会大于库里实际新增的行数。
         if kid and kid not in ids:
@@ -561,7 +601,7 @@ async def persist_knowledge(
                 await embed_knowledge(kid, content)
             ids.append(kid)
     if ids:
-        trace.emit('knowledge_learned', count=len(ids), source=KNOWLEDGE_SOURCE)
+        trace.emit('knowledge_learned', count=len(ids), source=source)
     return ids
 
 
@@ -621,6 +661,7 @@ async def run_extraction(
         participants=participants,
         known_facts=known_facts,
         dialogue=render_dialogue(batch, participants, bot_name),
+        time_span=render_time_span(batch),
         temperature=temperature,
         max_tokens=max_tokens,
         known_fact_ids=known_fact_ids,
