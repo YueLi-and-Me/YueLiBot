@@ -72,7 +72,12 @@ def configure_exchanges(directory: Path | None, max_files_per_task: int = 200) -
 
 
 def bind_render_params(render_params: Dict[str, Dict[str, str]]) -> None:
-    """把本次模型调用的提示词渲染参数绑定到当前异步上下文。"""
+    """把本次模型调用的提示词渲染参数绑定到当前异步上下文。
+
+    :param render_params: 模板 ID 到渲染参数的映射；绑定深拷贝，
+        调用方后续修改不影响已绑定值。
+    副作用：写入当前异步上下文的 ContextVar。
+    """
     _render_params.set(deepcopy(render_params))
 
 
@@ -446,6 +451,10 @@ def _task_directory_name(task: str) -> str:
 
     任务名形如 ``chat.conversation.shadow``，点号在 Windows 上虽然合法，但会让
     目录看起来像文件；统一换成连字符，同时挡掉路径分隔符防止越级写入。
+
+    :param task: 模型任务名。
+    :return: 替换后的安全目录名；空白任务名为 ``unknown``。
+    副作用：无。
     """
     safe = task.strip() or 'unknown'
     for char in ('/', '\\', ':', '.'):

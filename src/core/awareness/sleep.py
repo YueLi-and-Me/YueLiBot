@@ -14,7 +14,9 @@ from src.core.schedule.timeline import ActivityTimeline
 
 SleepLevel = Literal['awake', 'drowsy', 'light', 'deep']
 
+# 外部唤醒后保持可回应的宽限时长，单位毫秒。
 WAKE_GRACE_MS = 10 * 60_000
+# 醒转后 just_woke 状态的存续窗口，单位毫秒。
 WAKE_TRANSITION_MS = 40 * 60_000
 
 
@@ -58,7 +60,15 @@ class SleepStateController:
         *,
         energy_enabled: bool = True,
     ) -> None:
-        """绑定唯一活动时间线；构造阶段不读库、不创建后台任务。"""
+        """绑定唯一活动时间线；构造阶段不读库、不创建后台任务。
+
+        :param timeline: 唯一的活动时间线来源。
+        :param wake_grace_ms: 外部唤醒宽限时长，单位毫秒；默认
+            :data:`WAKE_GRACE_MS`。
+        :param energy_enabled: 精力系统开关，默认开启；关闭时 ``sleep`` 段
+            会在读取时被打断。
+        副作用：只初始化进程内状态，不执行 I/O。
+        """
 
         self._timeline = timeline
         self._energy_enabled = energy_enabled
@@ -169,6 +179,10 @@ class SleepStateController:
         外部唤醒也要走与自然醒转同一套深睡区间收集，否则刚被消息叫醒时
         ``just_woke`` 已为真、汇总窗口却还是空的。只有真实处于睡眠中时才允许
         保留本轮的区间；不在睡眠中调用唤醒不能把上一轮的区间残留到下一次。
+
+        :param now: 可选的当前毫秒时间戳；省略时读取统一时钟。
+        :return: 唤醒后的最新睡眠状态，宽限期内 ``asleep`` 恒为 ``False``。
+        副作用：打断 ``sleep`` 段（时间线写回），并置位进程内宽限与刚醒状态。
         """
 
         now = now if now is not None else current_time()

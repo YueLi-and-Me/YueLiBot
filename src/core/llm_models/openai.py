@@ -58,6 +58,12 @@ async def _next_or_abort(
 
     单次读取涵盖连接建立、错误正文和 SSE 行等待；取消读取任务后，
     内层 ``aclosing`` 与 HTTP 上下文会按原有顺序关闭响应。
+
+    :param stream: provider 的流式增量迭代器。
+    :param signal: 取消信号；``None`` 表示不监听取消。
+    :return: 下一个流式增量字典。
+    :raises LlmError: 信号已置位时抛 ``aborted``；流结束由迭代器自行抛出。
+    副作用：创建并回收两个任务；取消时中断读取任务。
     """
     if signal is None:
         return await anext(stream)
@@ -265,7 +271,12 @@ class _StreamPolicyNoticeGuard:
 
     @staticmethod
     def _is_blocked(normalized: str) -> bool:
-        """判断折叠后的正文是否包含完整且特异的 Google 拦截签名。"""
+        """判断折叠后的正文是否包含完整且特异的 Google 拦截签名。
+
+        :param normalized: 折叠空白后的正文前缀。
+        :return: 命中全部拦截签名要素时为 ``True``。
+        副作用：无。
+        """
 
         return (
             normalized.startswith(_POLICY_NOTICE_LEAD)
@@ -274,7 +285,12 @@ class _StreamPolicyNoticeGuard:
 
     @staticmethod
     def _could_still_match(normalized: str) -> bool:
-        """判断当前前缀是否仍可能成长为已知拦截签名。"""
+        """判断当前前缀是否仍可能成长为已知拦截签名。
+
+        :param normalized: 折叠空白后的正文前缀。
+        :return: 仍可能匹配时为 ``True``，此时继续暂存而不放行。
+        副作用：无。
+        """
 
         if len(normalized) > _POLICY_NOTICE_BUFFER_LIMIT:
             return False
@@ -285,13 +301,24 @@ class _StreamPolicyNoticeGuard:
         )
 
     def _release_with(self, chunk: Dict) -> List[Dict]:
-        """把一个非文本终局块追加到暂存序列后统一释放。"""
+        """把一个非文本终局块追加到暂存序列后统一释放。
+
+        :param chunk: 非文本增量块（工具调用等）。
+        :return: 按原顺序排列的全部暂存块。
+        副作用：清空守卫的暂存缓冲并置已解决标记。
+        """
 
         self._chunks.append(chunk)
         return self._release(resolved=True)
 
     def _release(self, *, resolved: bool = False) -> List[Dict]:
-        """按原顺序取走全部暂存块并清空守卫状态。"""
+        """按原顺序取走全部暂存块并清空守卫状态。
+
+        :param resolved: 暂存块是否已确认不属于拦截签名；确认后不再暂存
+            后续文本。
+        :return: 按原顺序排列的全部暂存块。
+        副作用：清空暂存缓冲并更新已解决标记。
+        """
 
         chunks = self._chunks
         self._chunks = []
@@ -629,7 +656,12 @@ class OpenAiChatProvider:
         }
 
     def request_url(self, path: str) -> str:
-        """拼接端点与查询鉴权；path 为以斜线开头的协议路径。"""
+        """拼接端点与查询鉴权；path 为以斜线开头的协议路径。
+
+        :param path: 以 ``/`` 开头的端点路径。
+        :return: 完整请求 URL；query 鉴权时已附加含密钥的查询参数。
+        副作用：无。
+        """
         url = f'{self.base_url}{path}'
         query_params = dict(self._query)
         if self._auth_type == 'query':
@@ -639,7 +671,13 @@ class OpenAiChatProvider:
         return url
 
     def record_request(self, url: str, headers: Dict, body: Dict) -> None:
-        """记录实际请求参数，按当前鉴权方式遮盖凭据。"""
+        """记录实际请求参数，按当前鉴权方式遮盖凭据。
+
+        :param url: 完整请求 URL。
+        :param headers: 实际发送的请求头。
+        :param body: 实际发送的请求体。
+        副作用：向观测快照链路写入一条脱敏请求记录。
+        """
         record_provider_request(
             url,
             headers,
@@ -650,7 +688,14 @@ class OpenAiChatProvider:
         )
 
     async def check_response(self, resp: httpx.Response) -> None:
-        """分类非 200 响应并抛出 LlmError；成功响应不读取正文。"""
+        """分类非 200 响应并抛出 LlmError；成功响应不读取正文。
+
+        :param resp: 已收到的 HTTP 响应。
+        :return: 无返回值；200 时直接返回。
+        :raises LlmError: 非 200 响应，类别优先取错误码分类，
+            其次按 HTTP 状态分类；detail 保留响应正文前 400 字符。
+        副作用：读取错误响应的有限正文。
+        """
         if resp.status_code == 200:
             return
         # 错误响应只读取有限正文用于分类和诊断，不把完整响应缓存到内存。
@@ -689,7 +734,16 @@ class OpenAiChatProvider:
         self, messages: List[Dict], temperature: float, max_tokens: int | None,
         response_format: Dict[str, str] | None, tools: List[Dict] | None,
     ) -> Dict[str, Any]:
-        """保留 Chat 请求字段的原始插入与覆盖顺序，不改变序列化结果。"""
+        """保留 Chat 请求字段的原始插入与覆盖顺序，不改变序列化结果。
+
+        :param messages: OpenAI 兼容消息列表。
+        :param temperature: 采样温度。
+        :param max_tokens: 可选最大输出 token 数；``None`` 不下发该字段。
+        :param response_format: 可选结构化响应格式。
+        :param tools: 可选工具声明列表。
+        :return: Chat Completions 协议请求体，extra_body 在基础字段之后合并。
+        副作用：无。
+        """
         body: dict[str, Any] = {
             'model': self.model, 'messages': messages, 'stream': True,
             'temperature': temperature,
@@ -809,12 +863,17 @@ class _ToolCallAccumulator:
     """
 
     def __init__(self) -> None:
+        """创建空拼接状态。
+
+        副作用：仅初始化进程内状态。
+        """
         self._calls: dict[int, dict[str, str]] = {}
 
     def push(self, deltas: list[dict]) -> None:
         """累积一批工具调用分片。
 
         :param deltas: SSE delta 里的 ``tool_calls`` 数组。
+        副作用：按 index 就地累积 id、name 与参数文本。
         """
         for delta in deltas:
             if not isinstance(delta, dict):

@@ -48,6 +48,7 @@ from src.platforms.onebot11.config import (
 logger = get_logger(__name__)
 
 _SCHEMA_PATH = Path(__file__).with_name('settings_schema.json')
+# 读取版本不符的配置时随错误展示给用户的提示语，与 loader 的同名提示一致。
 _VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
 # 配置目录内的主体文件，保存时在同一目录里原子替换。
 _CONFIG_FILES = (
@@ -181,7 +182,13 @@ def _require_task_entries_match_config(schema: Dict[str, Any]) -> None:
 
 
 def file_schema(filename: str) -> Dict[str, Any]:
-    """取得单个配置文件名对应的 schema 节点。"""
+    """取得单个配置文件名对应的 schema 节点。
+
+    :param filename: 配置文件名（如 ``bot.toml``），对应 schema 的 ``file`` 字段。
+    :return: 该文件的 schema 节点，含 label、description、sections。
+    :raises ValueError: settings_schema.json 未声明该配置文件。
+    副作用：无。
+    """
     for item in load_schema()['files']:
         if item.get('file') == filename:
             return item
@@ -256,7 +263,12 @@ def _adapter_write_schema(section: str) -> Dict[str, Any]:
 
 
 def _without_inner(document: Dict[str, Any]) -> Dict[str, Any]:
-    """去掉文档中的 inner 版本段，只把业务字段交给前端。"""
+    """去掉文档中的 inner 版本段，只把业务字段交给前端。
+
+    :param document: Pydantic 模型 ``model_dump`` 出的配置文档。
+    :return: 不含 ``inner`` 键的新字典。
+    副作用：无。
+    """
     return {key: value for key, value in document.items() if key != 'inner'}
 
 
@@ -338,7 +350,12 @@ def _toml_inline(value: Any) -> str:
 
 
 def _comment_lines(text: str) -> List[str]:
-    """把一段中文说明转换为逐行 ``# `` 注释，便于写入 TOML 源文件。"""
+    """把一段中文说明转换为逐行 ``# `` 注释，便于写入 TOML 源文件。
+
+    :param text: 说明文本，按换行拆分。
+    :return: 每行以 ``# `` 开头的注释行列表。
+    副作用：无。
+    """
     return ['# ' + line for line in str(text).splitlines()]
 
 
@@ -347,6 +364,13 @@ def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[s
 
     注释采用紧邻配置项的行尾风格 ``key = value # 说明``；说明本身含换行时
     才退回键上方的注释块。
+
+    :param lines: 输出行缓冲，就地追加。
+    :param fields: schema 声明的字段列表，顺序即写盘顺序。
+    :param values: 该表当前的业务字段值；schema 未声明或值为 ``None`` 的
+        字段跳过不写。
+    :return: 无返回值，通过 ``lines`` 带回结果。
+    副作用：向 ``lines`` 追加配置行与注释行。
     """
     for field in fields:
         key = field.get('key', '')
@@ -365,7 +389,14 @@ def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[s
 
 
 def _section_header(key: str, label: str, description: str) -> List[str]:
-    """构造小节头；说明单行时挂在表头行尾，多行时保留上方注释块。"""
+    """构造小节头；说明单行时挂在表头行尾，多行时保留上方注释块。
+
+    :param key: 段键，可为点号嵌套段。
+    :param label: schema 声明的中文标签，可为空。
+    :param description: schema 声明的说明，可为空。
+    :return: 该段的表头行列表。
+    副作用：无。
+    """
     text = '：'.join(part for part in (label, description) if part)
     if not text:
         return [f'[{key}]']
@@ -432,7 +463,15 @@ def _write_documented_toml(
     document: Dict[str, Any],
     version: str,
 ) -> None:
-    """用 schema 中的标签与字段说明生成一份带完整注释的 TOML 文件。"""
+    """用 schema 中的标签与字段说明生成一份带完整注释的 TOML 文件。
+
+    :param path: 目标文件路径。
+    :param schema: 该文件的 schema 节点，决定段顺序、标签与字段说明。
+    :param document: 已通过模型校验的写盘文档。
+    :param version: 写入 ``[inner]`` 段的配置版本号。
+    :return: 无返回值。
+    副作用：覆盖写入 ``path``。
+    """
     lines = [
         f'# {schema.get("label", path.name)}：{schema.get("description", "")}',
         '',

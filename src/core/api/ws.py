@@ -37,7 +37,9 @@ router = APIRouter()
 # ─────────────────────────────────────────────────────────────────────
 
 ClientKind = Literal['desktop', 'platform']
+# ``ClientKind`` 的运行时取值集合，握手登记时校验客户端自报的类型。
 _CLIENT_KINDS = frozenset({'desktop', 'platform'})
+# 桌面客户端固定订阅的 stream ID；其他 stream 一律按 platform 分区。
 _DESKTOP_STREAM_ID = 1
 
 

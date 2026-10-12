@@ -49,14 +49,25 @@ class EmbedInput:
 
 
 def _image_uri(item: EmbedInput) -> str:
-    """编码已预处理图片；缺少图片或 MIME 时立即报告配置错误。"""
+    """编码已预处理图片；缺少图片或 MIME 时立即报告配置错误。
+
+    :param item: 待编码的输入项。
+    :return: ``data:<media_type>;base64,<...>`` 形式的 data URI。
+    :raises LlmError: 图片字节与 ``media_type`` 未同时提供。
+    副作用：无。
+    """
     if item.image is None or not item.media_type:
         raise LlmError('model', '图片向量输入必须同时提供图片字节与 media_type')
     return f'data:{item.media_type};base64,{base64.b64encode(item.image).decode("ascii")}'
 
 
 def _snapshot(value: Any) -> Any:
-    """复制请求体并省略图片 data URI；实际 HTTP 请求仍使用原始值。"""
+    """复制请求体并省略图片 data URI；实际 HTTP 请求仍使用原始值。
+
+    :param value: 请求体的任意嵌套值。
+    :return: 结构相同的副本，data URI 字符串替换为含原始长度的占位文本。
+    副作用：无。
+    """
     if isinstance(value, str) and value.startswith('data:'):
         return f'<data URI 已省略，原始长度 {len(value)}>'
     if isinstance(value, dict):
@@ -67,7 +78,17 @@ def _snapshot(value: Any) -> Any:
 
 
 def _normalized(vectors: List, count: int, dim: int) -> List[List[float]]:
-    """校验完整批次的数量、维度与数值后归一化；失败不返回任何向量。"""
+    """校验完整批次的数量、维度与数值后归一化；失败不返回任何向量。
+
+    归一化为 L2：先按最大绝对值缩放再求范数（见函数体内的注释）。
+
+    :param vectors: 服务端返回的原始向量列表。
+    :param count: 期望的向量条数，等于本批输入条数。
+    :param dim: 期望的向量维度，来自 ``candidate.embedding_dim``。
+    :return: 与输入等长、每条单位长度的向量。
+    :raises LlmError: 条数、维度、元素类型或零向量任一校验失败。
+    副作用：无。
+    """
     if len(vectors) != count:
         raise LlmError('format', f'向量返回条数错误：期望 {count}，实际 {len(vectors)}')
     result = []
@@ -87,7 +108,14 @@ def _normalized(vectors: List, count: int, dim: int) -> List[List[float]]:
 
 
 def _ordered(items: List[Dict], count: int) -> List[Dict]:
-    """按 index 恢复输入顺序，同时拒绝缺号、重复号和超出输入范围的响应。"""
+    """按 index 恢复输入顺序，同时拒绝缺号、重复号和超出输入范围的响应。
+
+    :param items: 服务端返回的向量条目列表，每条含 ``index`` 字段。
+    :param count: 期望的条目数，等于本批输入条数。
+    :return: 按 ``index`` 升序排列的条目。
+    :raises LlmError: 条数不符或 index 非连续整数。
+    副作用：无。
+    """
     if not isinstance(items, list) or len(items) != count:
         raise LlmError('format', f'向量返回条数错误：期望 {count}')
     indices = [item['index'] for item in items]
@@ -127,6 +155,13 @@ async def request_embeddings(candidate: ModelCandidate, items: List[EmbedInput])
     headers = provider.request_headers()
     async with httpx.AsyncClient(timeout=candidate.timeout_ms / 1000) as client:
         async def post(path: str, body: Dict) -> Dict:
+            """发送一次向量请求并校验响应。
+
+            :param path: 端点路径，与 ``base_url`` 拼接。
+            :param body: 请求体；账本快照经 :func:`_snapshot` 脱敏。
+            :return: 服务端响应的 JSON 对象。
+            :raises LlmError: HTTP 状态或响应体不合法。
+            """
             url = provider.request_url(path)
             provider.record_request(url, headers, _snapshot(body))
             response = await client.post(url, headers=headers, json=body)
@@ -159,6 +194,15 @@ async def request_embeddings(candidate: ModelCandidate, items: List[EmbedInput])
                 semaphore = asyncio.Semaphore(ARK_CONCURRENCY)
 
                 async def fused(item: EmbedInput) -> List[float]:
+                    """把一条融合输入拼装为请求体并发送，返回原始向量。
+
+                    文本与图片按服务端 content 数组约定拼装：仅图片时省略
+                    text 项，与 dashscope 协议的 expected 判据对应。
+
+                    :param item: 单条输入，文本或图片至少有其一。
+                    :return: 该条的原始（未归一化）向量。
+                    :raises LlmError: 请求失败或响应结构不合法。
+                    """
                     content = [{'type': 'text', 'text': item.text}] if item.text or item.image is None else []
                     if item.image is not None:
                         content.append({'type': 'image_url', 'image_url': {'url': _image_uri(item)}})

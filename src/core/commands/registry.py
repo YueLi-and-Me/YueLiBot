@@ -34,10 +34,11 @@ class CommandContext:
 class CommandReply:
     """处理器的富返回值：一段文本，外加若干张要一并发出的本地图片。
 
-    存在的理由只有一个——``/inst`` 要发折线图。处理器仍可直接返回 ``str``，
-    :func:`dispatch_developer_command` 会把它归一成本类型，既有命令一个都不用改。
+    引入本类型是因为 ``/inst`` 需要随文附发折线图。处理器仍可直接返回
+    ``str``，:func:`dispatch_developer_command` 会把它归一成本类型，
+    既有命令一个都不用改。
 
-    :ivar text: 给人看的回复正文，不能为空；图再多也要有一句话说明数字。
+    :ivar text: 给人看的回复正文，不能为空；数字结果必须配一句文字说明。
     :ivar image_refs: 本地图片路径，按顺序各成一个气泡；空元组表示纯文本回复。
     """
 
@@ -109,6 +110,12 @@ def register_command(
     compiled = re.compile(pattern)
 
     def decorator(handler: CommandHandler) -> CommandHandler:
+        """把处理器连同已编译规则登记进进程内命令目录。
+
+        :param handler: 命令处理器，同步或异步均可。
+        :return: 原样返回的处理器，装饰处代码保持可读。
+        副作用：向 ``_commands`` 追加一条规格并登记命令名。
+        """
         _commands.append(CommandSpec(
             name=normalized_name,
             pattern=compiled,
@@ -146,10 +153,10 @@ async def dispatch_developer_command(
     且完整命中注册规则时才消费消息。非 owner 与关闭态都走普通聊天，
     不返回任何权限提示——那等于向所有人宣告存在一套隐藏命令。
 
-    会话面不设限：私聊与群聊都可触发（2026-09-05 由私聊限制放开）。
-    代价是**回复会被整群看到**；这是权衡后接受的——能触发的只有 owner 一人，
-    群本身又是白名单群，而现有命令的输出都是正常长度的中文句子。
-    真要收回来只需在这里加回 `context.stream.kind != 'direct'` 一个条件。
+    会话面不设限：私聊与群聊都可触发。回复会投递到原会话，群聊场景下对
+    全体成员可见；能触发的只有 owner 一人，群本身是白名单群，且现有命令
+    的输出都是正常长度的中文句子，该暴露面经权衡接受。若需收回为仅私聊，
+    在 owner 校验之后追加 ``context.stream.kind != 'direct'`` 判断即可。
 
     :param enabled: `[developer].enabled` 的当前运行值。
     :param text: 平台入站原始正文。
@@ -206,7 +213,12 @@ async def dispatch_developer_command(
     description='列出当前已注册的开发者命令',
 )
 def _help_command(context: CommandContext) -> str:
-    """列出命令目录；目录增长后无需修改本处理器。"""
+    """列出命令目录；目录增长后无需修改本处理器。
+
+    :param context: 入站上下文，本命令不使用。
+    :return: 逐行列出全部已注册命令名与说明的纯文本。
+    副作用：无。
+    """
     del context
     lines = ['开发者命令：']
     lines.extend(f'{item.name} — {item.description}' for item in registered_commands())

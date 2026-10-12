@@ -29,11 +29,13 @@ from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 表单允许提交的厂商行字段集合，与 _default_provider 的键一致。
 _PROVIDER_FIELDS = (
     'name', 'kind', 'base_url', 'api_key', 'auth_type', 'auth_name',
     'client_type', 'app_id', 'model_list_endpoint', 'default_headers',
     'default_query', 'timeout_ms', 'max_retries', 'retry_interval_ms',
 )
+# 表单允许提交的模型行字段集合，与 _default_model 的键一致。
 _MODEL_FIELDS = (
     'name', 'model_identifier', 'api_provider', 'extra_body',
     'api_format', 'reasoning_parse_mode', 'visual', 'omni', 'temperature', 'max_tokens',
@@ -119,6 +121,13 @@ def _write_vision_bool(directory: Path, field: str, enabled: bool) -> None:
     """只更新 features.toml 的 vision 段布尔字段，保留其余内容。
 
     段头与字段行都可能带行尾注释，比较前先剥掉。
+
+    :param directory: 目标配置目录。
+    :param field: ``[vision]`` 段内的布尔字段名。
+    :param enabled: 字段写入 ``true`` 还是 ``false``。
+    :return: 无返回值。
+    :raises ValueError: 更新后的文本不能通过 ``FeatureDocument`` 校验。
+    副作用：就地重写 ``features.toml``；字段不存在时插入到段头之后。
     """
     path = directory / 'features.toml'
     text = path.read_text(encoding='utf-8')
@@ -151,7 +160,14 @@ def _write_vision_bool(directory: Path, field: str, enabled: bool) -> None:
 
 
 def read_versioned_toml_with_text(text: str, name: str) -> Dict[str, Any]:
-    """用文本解析 TOML 并校验 inner 版本。"""
+    """用文本解析 TOML 并校验 inner 版本。
+
+    :param text: 待解析的完整 TOML 文本。
+    :param name: 配置文件名，仅用于错误消息定位。
+    :return: 解析后的 TOML 文档。
+    :raises ValueError: ``inner.version`` 与 :data:`CONFIG_VERSION` 不一致。
+    副作用：无。
+    """
     import tomllib
     document = tomllib.loads(text)
     version = document.get('inner', {}).get('version')
@@ -222,7 +238,14 @@ def save(directory: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _normalize_providers(items: Any, existing: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """把表单厂商列表转换为完整配置行，并复用留空的旧 API Key。"""
+    """把表单厂商列表转换为完整配置行，并复用留空的旧 API Key。
+
+    :param items: WebUI 提交的厂商行列表；非字典项跳过。
+    :param existing: 保存前的配置快照，用于按名称取旧密钥。
+    :return: 补齐默认值后的厂商配置行；留空密钥且旧配置有同名厂商时沿用
+        旧密钥，``auth_type=none`` 时密钥强制清空。
+    副作用：无。
+    """
     old_by_name = {item['name']: item for item in existing['providers']}
     result: List[Dict[str, Any]] = []
     for item in items or []:
@@ -248,7 +271,13 @@ def _normalize_providers(items: Any, existing: Dict[str, Any]) -> List[Dict[str,
 
 
 def _normalize_models(items: Any) -> List[Dict[str, Any]]:
-    """把表单模型列表转换为完整模型行。"""
+    """把表单模型列表转换为完整模型行。
+
+    :param items: WebUI 提交的模型行列表；非字典项跳过。
+    :return: 补齐默认值、字符串去空白、数值字段定型后的模型配置行；
+        空白 ``temperature``/``max_tokens`` 归一为 ``None``（不覆盖）。
+    副作用：无。
+    """
     result: List[Dict[str, Any]] = []
     for item in items or []:
         if not isinstance(item, dict):
@@ -276,7 +305,12 @@ def _normalize_models(items: Any) -> List[Dict[str, Any]]:
 
 
 def _normalize_tasks(items: Any) -> Dict[str, Dict[str, Any]]:
-    """把表单任务路由转换为 models.toml 的任务段。"""
+    """把表单任务路由转换为 models.toml 的任务段。
+
+    :param items: WebUI 提交的按任务名的路由配置；缺失任务补默认值。
+    :return: 覆盖全部 :data:`TASK_NAMES` 的任务路由行。
+    副作用：无。
+    """
     result: Dict[str, Dict[str, Any]] = {}
     for task in TASK_NAMES:
         raw = items.get(task, {}) if isinstance(items, dict) else {}
@@ -291,7 +325,13 @@ def _normalize_tasks(items: Any) -> Dict[str, Dict[str, Any]]:
 
 
 def _normalize_generation(items: Any) -> Dict[str, Dict[str, Any]]:
-    """把表单生成参数转换为 models.toml 的 generation 段。"""
+    """把表单生成参数转换为 models.toml 的 generation 段。
+
+    :param items: WebUI 提交的按任务名的生成参数；缺失任务补默认值。
+    :return: 覆盖全部 :data:`GENERATION_TASKS` 的生成参数行；proactive
+        额外携带 ``enabled`` 开关。
+    副作用：无。
+    """
     result: Dict[str, Dict[str, Any]] = {}
     for task in GENERATION_TASKS:
         raw = items.get(task, {}) if isinstance(items, dict) else {}
@@ -305,6 +345,10 @@ def _normalize_generation(items: Any) -> Dict[str, Dict[str, Any]]:
 
 
 def _default_provider() -> Dict[str, Any]:
+    """构造一个厂商行的完整默认值模板，字段集合须与 :data:`_PROVIDER_FIELDS` 一致。
+
+    :return: 含全部厂商字段的字典，名称与地址为空串。
+    """
     return {
         'name': '', 'kind': 'openai', 'base_url': '', 'api_key': '',
         'auth_type': 'bearer', 'auth_name': '', 'client_type': 'openai',
@@ -315,6 +359,10 @@ def _default_provider() -> Dict[str, Any]:
 
 
 def _default_model() -> Dict[str, Any]:
+    """构造一个模型行的完整默认值模板，字段集合须与 :data:`_MODEL_FIELDS` 一致。
+
+    :return: 含全部模型字段的字典，名称与模型标识为空串，覆盖类参数为 ``None``。
+    """
     return {
         'name': '', 'model_identifier': '', 'api_provider': '',
         'extra_body': {}, 'api_format': 'openai', 'reasoning_parse_mode': 'field', 'visual': False,
@@ -324,6 +372,12 @@ def _default_model() -> Dict[str, Any]:
 
 
 def _dump_providers(providers: List[Dict[str, Any]]) -> str:
+    """把厂商列表渲染成带字段注释的 providers.toml 文本。
+
+    :param providers: 已归一化的厂商配置行。
+    :return: 完整的 TOML 文件文本，首行注明由 WebUI 生成。
+    副作用：无。
+    """
     lines = [
         '# API 厂商与连接策略；由 WebUI 模型工作台生成，手工改动会在下次保存时被覆盖。',
         '',
@@ -363,6 +417,14 @@ def _dump_models(
     generation: Dict[str, Dict[str, Any]],
     models: List[Dict[str, Any]],
 ) -> str:
+    """把任务路由、生成参数与模型列表渲染成带字段注释的 models.toml 文本。
+
+    :param tasks: 已归一化的按任务名路由配置。
+    :param generation: 已归一化的按任务名生成参数。
+    :param models: 已归一化的模型配置行。
+    :return: 完整的 TOML 文件文本，首行注明由 WebUI 生成。
+    副作用：无。
+    """
     lines = [
         '# 模型定义、任务路由与生成参数；由 WebUI 模型工作台生成，手工改动会在下次保存时被覆盖。',
         '',
@@ -472,7 +534,12 @@ def _toml_value(value: Any) -> str:
 
 
 def normalize_base_url(value: str) -> str:
-    """规范化厂商基地址，去除尾部斜杠。"""
+    """规范化厂商基地址，去除首尾空白与尾部斜杠。
+
+    :param value: 原始基地址；``None`` 按空串处理。
+    :return: 规范化后的基地址，可直接与端点路径拼接。
+    副作用：无。
+    """
     return str(value or '').strip().rstrip('/')
 
 
@@ -486,7 +553,24 @@ async def test_connection(
     default_headers: Dict[str, str] | None = None,
     default_query: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
-    """测试厂商网络连通性，并在提供 Key 时验证模型列表端点。"""
+    """测试厂商网络连通性，并在提供 Key 时验证模型列表端点。
+
+    两段探测互相独立：连通性只打基地址本身，不携带鉴权；Key 校验打模型
+    列表端点。任何失败都不抛异常，错误以文本进入结果字典。
+
+    :param base_url: 厂商 API 基础地址。
+    :param api_key: 待验证的 API Key；空串时跳过 Key 校验。
+    :param client_type: 客户端协议类型，决定鉴权附加方式。
+    :param auth_type: ``bearer``/``header``/``query``/``none``。
+    :param auth_name: header/query 鉴权的字段名。
+    :param model_list_endpoint: 模型列表端点路径，默认 ``/models``。
+    :param default_headers: 额外请求头，可为 ``None``。
+    :param default_query: 固定查询参数，可为 ``None``。
+    :return: 含 ``network_ok``、``api_key_valid``、``latency_ms``、
+        ``http_status``、``error`` 的结果字典；``api_key_valid`` 为 ``None``
+        表示未验证或无法判定。
+    副作用：发起最多两次 HTTP GET 请求（连通性 10 秒超时、Key 校验 15 秒超时）。
+    """
     normalized = normalize_base_url(base_url)
     result: Dict[str, Any] = {
         'network_ok': False,
@@ -547,7 +631,20 @@ async def list_models(
     default_headers: Dict[str, str] | None = None,
     default_query: Dict[str, str] | None = None,
 ) -> List[Dict[str, str]]:
-    """从 OpenAI 兼容或 Gemini 风格端点拉取可用模型列表。"""
+    """从 OpenAI 兼容或 Gemini 风格端点拉取可用模型列表。
+
+    :param base_url: 厂商 API 基础地址；空串直接返回空列表。
+    :param api_key: 请求使用的 API Key。
+    :param client_type: ``openai`` 或 ``gemini``，决定响应结构与模型 ID 提取方式。
+    :param auth_type: ``bearer``/``header``/``query``/``none``。
+    :param auth_name: header/query 鉴权的字段名。
+    :param model_list_endpoint: 模型列表端点路径，默认 ``/models``。
+    :param default_headers: 额外请求头，可为 ``None``。
+    :param default_query: 固定查询参数，可为 ``None``。
+    :return: ``{id, name}`` 行列表；上游 HTTP 错误原样抛出，由路由层转 502。
+    :raises httpx.HTTPStatusError: 上游返回非 2xx 状态。
+    副作用：发起一次 HTTP GET 请求（30 秒超时）。
+    """
     normalized = normalize_base_url(base_url)
     if not normalized:
         return []
@@ -587,7 +684,20 @@ def _apply_auth(
     auth_name: str,
     client_type: str,
 ) -> None:
-    """按配置给模型列表探测请求附加鉴权。"""
+    """按配置给模型列表探测请求附加鉴权。
+
+    gemini 一律走 query 参数 ``key``；其余按 ``auth_type`` 写 Authorization 头、
+    自定义头或自定义查询参数，字段名缺失时不附加。
+
+    :param headers: 就地更新的请求头字典。
+    :param params: 就地更新的查询参数字典。
+    :param api_key: 待附加的 API Key。
+    :param auth_type: ``bearer``/``header``/``query``/``none``。
+    :param auth_name: header/query 鉴权的字段名。
+    :param client_type: ``openai`` 或 ``gemini``。
+    :return: 无返回值，通过入参字典带回结果。
+    副作用：修改传入的 ``headers`` 与 ``params``。
+    """
     if client_type == 'gemini':
         params['key'] = api_key
         return

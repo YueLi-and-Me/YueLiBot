@@ -82,8 +82,12 @@ class VideoSourceBody(BaseModel):
 
 
 def _video_source_tuple(body: 'PlatformInboundBody') -> tuple[VideoSource, ...]:
-    """把入站报文里的视频来源规范成 ``VideoSource`` 序列，空项保留以对齐占位。"""
+    """把入站报文里的视频来源规范成 ``VideoSource`` 序列，空项保留以对齐占位。
 
+    :param body: 平台适配器提交的入站消息体。
+    :return: 与 ``video_sources`` 等长的来源序列，逐项去除首尾空白。
+    副作用：无。
+    """
     return tuple(
         VideoSource(url=source.url.strip(), file=source.file.strip())
         for source in body.video_sources
@@ -137,13 +141,22 @@ class PlatformInboundBody(BaseModel):
     @field_validator('image_sources', 'emoji_sources')
     @classmethod
     def _normalize_image_sources(cls, values: List[str]) -> List[str]:
-        """规范图片来源字符串，空项保留以对齐正文占位符。"""
+        """规范图片来源字符串，空项保留以对齐正文占位符。
+
+        :param values: 适配器提交的来源串列表。
+        :return: 逐项转字符串并去除首尾空白后的列表。
+        """
         return [str(value).strip() for value in values]
 
     @field_validator('emoji_sub_types')
     @classmethod
     def _validate_emoji_sub_types(cls, values: List[int]) -> List[int]:
-        """拒绝普通图片子类型，保证后续登记内容都可作为表情包发送。"""
+        """拒绝普通图片子类型，保证后续登记内容都可作为表情包发送。
+
+        :param values: 适配器提交的表情包子类型整数列表。
+        :return: 原样返回；含布尔、负数或普通图片子类型（0/4/9）时抛错。
+        :raises ValueError: 任一元素不是合法的表情包子类型。
+        """
 
         if any(
             isinstance(value, bool) or value < 0 or value in {0, 4, 9}
@@ -158,7 +171,12 @@ class PlatformInboundBody(BaseModel):
         cls,
         values: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """在进入业务副作用前严格验证每棵合并转发消息树。"""
+        """在进入业务副作用前严格验证每棵合并转发消息树。
+
+        :param values: 适配器提交的合并转发消息载荷列表。
+        :return: 原样返回；任一棵树结构非法时整批拒绝。
+        :raises ValueError: 非法载荷的下标与原因。
+        """
         for index, payload in enumerate(values):
             try:
                 forward_tree_from_payload(payload)
@@ -238,7 +256,11 @@ class InboundImageBody(BaseModel):
     @field_validator('mime')
     @classmethod
     def _normalize_mime(cls, value: str) -> str:
-        """规范化图片 MIME 类型。"""
+        """规范化图片 MIME 类型，空白值回退默认 JPEG。
+
+        :param value: 适配器提交的 MIME 字符串。
+        :return: 去除首尾空白后的 MIME；空白时返回 ``image/jpeg``。
+        """
         value = value.strip()
         return value or 'image/jpeg'
 
@@ -368,7 +390,12 @@ async def health() -> dict:
 
 @router.post('/auth/auto', dependencies=[Depends(_require_loopback)])
 async def web_auto_login(response: Response) -> dict:
-    """本机浏览器免手输 token：回环地址直接创建登录会话。"""
+    """本机浏览器免手输 token：回环地址直接创建登录会话。
+
+    :param response: FastAPI 注入的响应对象，用于写入会话 Cookie。
+    :return: 固定 ``{'ok': True}``。
+    副作用：在响应上设置 HttpOnly 会话 Cookie 并禁用缓存。
+    """
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=create_session(),
@@ -891,7 +918,12 @@ class PlatformGroupDisplayNameBody(BaseModel):
     @field_validator('stream_external_id', 'display_name')
     @classmethod
     def _require_text(cls, value: str) -> str:
-        """去除首尾空白并拒绝无法落库或展示的空值。"""
+        """去除首尾空白并拒绝无法落库或展示的空值。
+
+        :param value: Pydantic 待校验的字符串字段。
+        :return: 去除首尾空白后的非空字符串。
+        :raises ValueError: 规范化结果为空。
+        """
 
         normalized = value.strip()
         if not normalized:
@@ -1219,6 +1251,16 @@ async def event_history(
 
     返回结果按 ``seq`` 倒序；``nextCursor`` 非空时可继续向前翻页。时间区间
     使用左闭右开语义，重复 ``kind`` 参数表示多选。
+
+    :param stream_id: 限定目标 stream 的数据库 ID，从 1 起。
+    :param turn_id: 限定目标回合 ID，从 1 起。
+    :param kind: 事件类型多选，可重复传参。
+    :param since: 时间区间起点（毫秒时间戳），含端点。
+    :param until: 时间区间终点（毫秒时间戳），不含端点。
+    :param limit: 单页条数上限，1 到 1000，默认 200。
+    :param cursor: 上一页返回的 ``nextCursor``，从 1 起。
+    :return: 含 ``events`` 与 ``nextCursor`` 的分页结果。
+    :raises fastapi.HTTPException: 组合条件非法时返回 400。
     """
     try:
         page = search_events(
@@ -1243,7 +1285,12 @@ async def prompts() -> dict:
 
 @router.get('/prompts/{prompt_id}', dependencies=[Depends(_auth)])
 async def prompt(prompt_id: str) -> dict:
-    """返回一份提示词的生效文本与内置文本。"""
+    """返回一份提示词的生效文本与内置文本。
+
+    :param prompt_id: 路径参数，提示词模板 ID。
+    :return: 含生效文本与内置文本的详情字典。
+    :raises fastapi.HTTPException: 模板 ID 不存在时返回 404。
+    """
     try:
         return prompt_detail(prompt_id)
     except KeyError as exc:
@@ -1255,7 +1302,14 @@ async def prompt(prompt_id: str) -> dict:
     dependencies=[Depends(_auth), Depends(_require_loopback)],
 )
 async def put_prompt(prompt_id: str, body: PromptWriteBody) -> dict:
-    """校验、写入并热重载一份提示词覆盖。"""
+    """校验、写入并热重载一份提示词覆盖。
+
+    :param prompt_id: 路径参数，提示词模板 ID。
+    :param body: 请求体，携带新的模板正文。
+    :return: 更新后的提示词详情。
+    :raises fastapi.HTTPException: 模板只读返回 403，ID 不存在返回 404，
+        内容校验失败返回 400，热重载所需注册表未就绪返回 503。
+    """
     try:
         return update_prompt(prompt_id, body.content)
     except PermissionError as exc:
@@ -1276,7 +1330,13 @@ async def put_prompt(prompt_id: str, body: PromptWriteBody) -> dict:
     dependencies=[Depends(_auth), Depends(_require_loopback)],
 )
 async def delete_prompt(prompt_id: str) -> dict:
-    """删除一份提示词覆盖并热重载内置版本。"""
+    """删除一份提示词覆盖并热重载内置版本。
+
+    :param prompt_id: 路径参数，提示词模板 ID。
+    :return: 删除后的提示词详情。
+    :raises fastapi.HTTPException: 模板只读返回 403，ID 不存在返回 404，
+        热重载所需注册表未就绪返回 503。
+    """
     try:
         return delete_prompt_override(prompt_id)
     except PermissionError as exc:
@@ -1292,7 +1352,12 @@ async def delete_prompt(prompt_id: str) -> dict:
 
 @router.get('/prompts/{prompt_id}/history', dependencies=[Depends(_auth)])
 async def prompt_versions(prompt_id: str) -> dict:
-    """列出一份提示词的有限历史归档。"""
+    """列出一份提示词的有限历史归档。
+
+    :param prompt_id: 路径参数，提示词模板 ID。
+    :return: 含 ``history`` 归档列表的字典，按时间倒序。
+    :raises fastapi.HTTPException: 模板 ID 不存在时返回 404。
+    """
     try:
         return {'history': prompt_history(prompt_id)}
     except KeyError as exc:
@@ -1301,7 +1366,13 @@ async def prompt_versions(prompt_id: str) -> dict:
 
 @router.post('/replay', dependencies=[Depends(_auth)])
 async def replay(body: ReplayBody) -> dict:
-    """使用当前模板隔离重放一条历史模型请求。"""
+    """使用当前模板隔离重放一条历史模型请求。
+
+    :param body: 请求体，携带目标事件的 ``seq``。
+    :return: 重放的模型响应结果。
+    :raises fastapi.HTTPException: 序号不存在返回 404，序号对应事件不是
+        模型请求返回 400，模型路由未就绪返回 503。
+    """
     try:
         task = replay_task_for_seq(event_store, body.seq)
     except LookupError as exc:
@@ -1357,7 +1428,14 @@ async def prompt_records(
 
 @router.get('/prompt-records/{task}/{name}', dependencies=[Depends(_auth)])
 async def prompt_record(task: str, name: str) -> dict:
-    """读取单份调用记录的完整内容，含全部请求消息与模型产出。"""
+    """读取单份调用记录的完整内容，含全部请求消息与模型产出。
+
+    :param task: 路径参数，模型任务名。
+    :param name: 路径参数，记录文件名（不含扩展名）。
+    :return: 该条记录的完整内容字典。
+    :raises fastapi.HTTPException: 记录功能未启用返回 503，记录不存在
+        返回 404。
+    """
     try:
         return read_prompt_record(task, name)
     except RecordsDisabled as exc:

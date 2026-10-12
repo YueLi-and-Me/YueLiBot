@@ -40,6 +40,8 @@ logger = get_logger(__name__)
 
 # 版本号定义在 schema 里，这里只导入：两处各写一份必然漂移。
 _VERSION_HINT = '正常情况下 Electron 启动时会自动升级，手工改过的话请对照模板补齐'
+# 未配置模型列表时允许整段继承 chat 任务路由的任务；不在清单内的任务
+# 模型列表为空即加载失败。
 CHAT_INHERITING_TASKS = (
     'proactive', 'summary', 'schedule', 'expression', 'planner', 'replyer', 'scene',
     'memory',
@@ -50,7 +52,14 @@ def _model_task_config(
     catalog: ModelCatalog,
     task: str,
 ) -> TaskRoutingConfig:
-    """按封闭任务名取得模型目录中的任务配置。"""
+    """按封闭任务名取得模型目录中的任务配置。
+
+    :param catalog: 已完成 Pydantic 校验的模型目录。
+    :param task: 封闭枚举的模型任务名，如 ``chat``、``embedding``。
+    :return: 该任务的模型任务路由配置。
+    :raises ValueError: 任务名不在目录映射内。
+    副作用：无。
+    """
     tasks = {
         'chat': catalog.model_tasks.chat,
         'proactive': catalog.model_tasks.proactive,
@@ -262,7 +271,15 @@ def _build_routing(
 
 
 def _validate_vector_space(routing: TaskRouting) -> None:
-    """同维不同模型也不可比较；备份候选必须共享模型、协议和维度。"""
+    """校验备份候选之间向量空间一致：同维不同模型不可比较。
+
+    备份候选必须共享模型标识、协议与维度，否则轮询切换后召回结果不可比。
+
+    :param routing: 单个模型任务的路由及其候选列表。
+    :raises ValueError: 任一候选未填 ``embedding_dim``，或候选间
+        ``model_identifier``/``api_format``/``embedding_dim`` 不一致。
+    副作用：无。
+    """
     # embedding_dim 必须为正数：
     # - 现象：维度为 0（schema 默认值）时，向量层判定每一条返回的维度不符；
     # - 原因：返回维度与配置维度逐条比对，0 维无法匹配任何向量；
@@ -463,6 +480,7 @@ def reset_config() -> None:
 # 3. 需要改代码才能热重载——被拷进实例属性（chat.py:408 一类），本包不动。
 # 下面前缀表只登记第 2、3 类；不在表里的即第 1 类。前缀匹配按点分段做，
 # 避免 'log' 误命中 'logging' 这类同前缀字段名。
+# 第 2 类：必须重启。
 RESTART_REQUIRED_PREFIXES: Tuple[str, ...] = (
     'routing',                    # 厂商/模型/任务路由：模型客户端与熔断状态一次装配
     'tts.enabled',                # TtsService 只在启动时创建；voice/speed/format 动态读
@@ -473,6 +491,7 @@ RESTART_REQUIRED_PREFIXES: Tuple[str, ...] = (
     'memory_feedback',            # MemoryFeedbackService 启动装配；关闭时根本不建服务
     'log',                        # 日志管道、快照与事件保留策略启动定型
 )
+# 第 3 类：被拷进实例属性，须改代码才能热重载。
 DEFERRED_PREFIXES: Tuple[str, ...] = (
     'conversation',               # chat.py __init__ 全段拷贝
     'conversation_agent',         # 同上

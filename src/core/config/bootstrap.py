@@ -1,19 +1,17 @@
 """在配置文件缺失时按 schema 默认值生成一份可编辑的初始配置。
 
-配置文件此前只有 Electron 会写：首次启动弹设置窗口，用户填完再落盘。入口反转之后
-桌宠可以整个不在场（``[desktop_pet] enabled = false``），于是一份全新签出在无头形态下
-根本起不来——``config/`` 不入版本库，没有任何进程去创建它。本模块补上这一段。
+``config/`` 不入版本库，无头形态下没有任何进程会创建初始配置，因此由本模块
+在加载配置前生成。除少数「必填且没有合理默认」的字段外，默认值全部取自
+``src.core.config.schema`` 的 Pydantic 默认值，与配置对账脚本认定的真相源
+同一处，本模块不维护第二份默认值表；渲染复用 ``settings_webui`` 的带注释
+TOML 写入器，不另写序列化器。
 
-生成的内容不是第二份默认值表：除少数「必填且没有合理默认」的字段之外，全部取自
-``src.core.config.schema`` 的 Pydantic 默认值，与配置对账脚本认定的真相源同一处；
-渲染复用 ``settings_webui`` 的带注释 TOML 写入器，不另写一个序列化器。
+产出是故意不完整的：模型 ID 与 API Key 只能由人工填写，生成的 providers.toml
+无法通过 schema 校验（``auth_type = bearer`` 要求 api_key 非空）。调用方据此
+停止启动并提示用户补填，不得带着这份未完成的配置继续启动。
 
-产出是**故意不完整的**：模型 ID 与 API Key 只能由人填，写出来的 providers.toml 连
-自身的 schema 校验都过不了（``auth_type = bearer`` 要求 api_key 非空）。因此调用方在
-创建了主体配置之后应当停下来提示用户，而不是带着一份填不满的配置继续启动。
-
-被 ``src.main`` 在加载配置之前调用；与 ``upgrade`` 的分工是「文件不存在时创建整份」
-对「文件已存在时补齐新增字段」。
+被 ``src.main`` 在加载配置之前调用；与 ``upgrade`` 的分工：本模块在文件不存在时
+创建整份，``upgrade`` 在文件已存在时补齐新增字段。
 """
 
 from __future__ import annotations
@@ -60,31 +58,31 @@ logger = get_logger(__name__)
 # 主体配置目录内的四个文件；创建了其中任何一个都意味着本次是首次安装。
 MAIN_CONFIG_FILES = ('bot.toml', 'features.toml', 'providers.toml', 'models.toml')
 
-# 新装预填的厂商连接。七个模型全部走这一条：DeepSeek 系列也由百炼托管，
-# 不需要单独开一个 DeepSeek 账号。模型条目通过 api_provider 引用这个名字，
-# 改名字要顺着这条链一起改，否则加载期会因悬空引用直接报错退出。
+# 新装预填的厂商连接。七个模型全部引用这一条：DeepSeek 系列也由百炼托管，
+# 无需单独注册 DeepSeek。模型条目通过 api_provider 引用这个名字，重命名时
+# 必须同步更新全部模型条目，否则加载期因悬空引用直接报错退出。
 #
-# 只留一条连接是刻意的：schema 对目录里每个厂商都要求非空 api_key，不区分是否
-# 被任务引用。多预填一条就等于多逼用户开一个账号，而不是「用不到就放着」。
+# 只保留一条连接是刻意的：schema 对目录里每个厂商都要求非空 api_key，不区分
+# 是否被任务引用；多预填一个厂商就多要求用户注册一个账号并配置密钥。
 _DASHSCOPE_PROVIDER = 'dashscope'
 DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
 
 # 关掉思考。本项目不设任务级的 thinking 开关：思考是模型属性，厂商参数原样写进
 # 模型条目的 extra_body（见 schema.GenerationConfig._reject_thinking）。两家厂商
-# 目前用同一个键名。注意这个键拼错时接口通常直接忽略，思考照开且不报错，
-# 改动前先确认厂商文档。
+# 目前用同一个键名。注意这个键拼错时接口通常直接忽略且不报错，思考仍会
+# 开启；改动前先确认厂商文档。
 _NO_THINKING: Dict[str, Any] = {'enable_thinking': False}
 
 # 嵌入模型的输出维度。该模型支持 256/512/768/1024/1536/2048，不指定时返回 1024。
 # 这里声明的维度必须与接口实际返回的一致，否则建出来的索引算相似度全错。
 #
 # 注意：嵌入请求体在 memory/embed.py 里写死为 {'input', 'model'}，不带 extra_body，
-# 因此没法在配置里用 dimensions 参数把维度钉死——当前靠的是「厂商默认值恰好是
-# 1024」。厂商改默认值时这里会静默失配。
+# 因此无法在配置里用 dimensions 参数固定维度——当前依赖厂商默认值恰为 1024；
+# 厂商调整默认值时这里会静默失配。
 _EMBEDDING_DIM = 1024
 
 # 新装预填的模型条目：(条目名, 厂商接口的真实模型 ID, 所属厂商, 额外字段)。
-# 条目名不带版本号：厂商换代时只需改 model_identifier，不必顺着改 model_tasks。
+# 条目名不带版本号：厂商换代时只需改 model_identifier，不必连带修改 model_tasks。
 _SEED_MODELS: List[tuple[str, str, str, Dict[str, Any]]] = [
     ('deepseek-pro', 'deepseek-v4-pro-0813', _DASHSCOPE_PROVIDER, {}),
     ('deepseek-flash', 'deepseek-v4-flash-0731', _DASHSCOPE_PROVIDER, {}),
@@ -93,7 +91,7 @@ _SEED_MODELS: List[tuple[str, str, str, Dict[str, Any]]] = [
     ('qwen-vision', 'qwen3.8-max-0902', _DASHSCOPE_PROVIDER, {'visual': True}),
     # 聊天视频理解要同时看画面、听声音，只能预填全模态模型。思考强度等厂商参数
     # 原样写进 extra_body：modalities 只要文本输出（理解结果是一段描述），
-    # reasoning_effort 取中档——实测它不比更高档不准，却快得多。
+    # reasoning_effort 取中档——实测质量与更高档相当且明显更快。
     ('qwen-omni', 'qwen3.8-omni-flash', _DASHSCOPE_PROVIDER, {
         'omni': True,
         'extra_body': {'modalities': ['text'], 'reasoning_effort': 'medium'},
@@ -102,9 +100,9 @@ _SEED_MODELS: List[tuple[str, str, str, Dict[str, Any]]] = [
      {'embedding_dim': _EMBEDDING_DIM, 'extra_body': {}}),
 ]
 
-# 任务到候选模型的预填分配。分档依据是「这一步值不值得为质量多付钱」：
+# 任务到候选模型的预填分配。分档依据是各任务对输出质量的敏感度：
 #
-# - 对话、回复生成、主动搭话直接产出她说的话，质量档最高。
+# - 对话、回复生成、主动搭话直接产出对用户的发言，质量档最高。
 # - 决策、摘要、场景观察每回合都跑且不面向用户，走快档。
 # - 表达选择只做短文本判别，用最便宜的一档。
 # - 记忆与日程要长上下文和稳定的结构化输出。
@@ -231,8 +229,8 @@ def _bot_document() -> Dict[str, Any]:
     return _default_document(BotDocument, {
         'inner': {'version': CONFIG_VERSION},
         'bot': {'name': '月璃'},
-        # 上下文与记忆的容量：schema 默认值偏小，装出来的实例记不住几轮，
-        # 而「关掉再打开她还记得」正是这个项目的主要能力。代价是每轮提示词更长。
+        # 上下文与记忆的容量：schema 默认值偏小，默认容量下跨会话记忆很有限，
+        # 而长记忆正是本项目的主要能力，因此整体上调。代价是每轮提示词更长。
         'conversation': {
             'episode_context_limit': 8,
             'fact_extract_batch_messages': 24,
@@ -257,7 +255,7 @@ def _bot_document() -> Dict[str, Any]:
             'reply_quiet_seconds': 1.5,
         },
         # at_mention_must_reply 要求显式配置（不接受缺省），初值取「@ 必回」——
-        # 群里被点名不理人比多回一句更容易被当成故障。
+        # 群聊中被点名而不回应，比多回应一句更容易被用户当成故障。
         'group_chat': {
             'at_mention_must_reply': True,
             'max_replies_in_window': 15,
@@ -350,9 +348,9 @@ def _adapter_document() -> Dict[str, Any]:
         'inner': {'version': NAPCAT_CONFIG_VERSION},
         'napcat': {
             'enabled': False,
-            # 占位号：显然不是真号，但把格式说清楚了（纯数字，不带任何前缀）。
+            # 占位号：非真实号码，仅用于说明格式（纯数字，不带任何前缀）。
             # 与 owner.qq 取同一个值是刻意的——两者相同会在 enabled 置为 true 时
-            # 被互斥校验拦下并指名道姓报错，比留空后默默连上一个陌生号安全。
+            # 被互斥校验拦截并明确报错，比留空后静默连上陌生号码安全。
             'self_qq': '114514',
             'host': '127.0.0.1',
             'port': 8095,

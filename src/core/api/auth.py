@@ -16,6 +16,7 @@ from fastapi import HTTPException, WebSocket, status
 
 import secrets
 
+# 浏览器登录会话的 HttpOnly Cookie 名，HTTP 与 WebSocket 握手共用。
 SESSION_COOKIE_NAME = 'yueli_session'
 
 
@@ -33,11 +34,21 @@ class SessionManager:
         return credential
 
     def verify(self, credential: str) -> bool:
-        """判断候选凭据是否属于当前进程的有效浏览器会话。"""
+        """判断候选凭据是否属于当前进程的有效浏览器会话。
+
+        :param credential: 待校验的候选会话凭据。
+        :return: 凭据在当前进程会话集合内时返回 ``True``。
+        副作用：无。
+        """
         return credential in self._sessions
 
     def revoke(self, credential: str) -> bool:
-        """仅作废指定浏览器会话，并返回它此前是否有效。"""
+        """仅作废指定浏览器会话，并返回它此前是否有效。
+
+        :param credential: 待作废的会话凭据。
+        :return: 凭据此前有效并已移除时返回 ``True``；不存在时返回 ``False``。
+        副作用：命中时从进程内会话集合移除该凭据。
+        """
         if credential not in self._sessions:
             return False
         self._sessions.remove(credential)
@@ -125,12 +136,22 @@ def create_session() -> str:
 
 
 def verify_session(credential: str) -> bool:
-    """校验浏览器会话凭据，不接受后端主 token。"""
+    """校验浏览器会话凭据，不接受后端主 token。
+
+    :param credential: 待校验的候选会话凭据。
+    :return: 凭据属于当前进程的有效会话时返回 ``True``。
+    副作用：无。
+    """
     return session_manager.verify(credential)
 
 
 def revoke_session(credential: str) -> bool:
-    """作废指定浏览器会话，不影响其他会话或主 token。"""
+    """作废指定浏览器会话，不影响其他会话或主 token。
+
+    :param credential: 待作废的会话凭据。
+    :return: 凭据此前有效并已移除时返回 ``True``。
+    副作用：命中时从进程内会话集合移除该凭据。
+    """
     return session_manager.revoke(credential)
 
 

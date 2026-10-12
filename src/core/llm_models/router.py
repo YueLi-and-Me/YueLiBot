@@ -109,6 +109,11 @@ class _ExchangeRecord:
     """
 
     def __init__(self, task: str) -> None:
+        """创建空记录并启动耗时计时。
+
+        :param task: 模型任务名，决定记录写进哪个子目录。
+        副作用：仅初始化进程内状态，启动单调时钟计时。
+        """
         self.task = task
         self._started = time.monotonic()
         self._text: list[str] = []
@@ -125,6 +130,10 @@ class _ExchangeRecord:
         选定新候选时清空已累积的产出：失败候选可能已经吐出 reasoning 并流到调用
         方，不清空会让它的思考文本挂在下一个候选的模型名下，面板与落盘记录都会
         把两个模型的输出拼成一段。总耗时起点不重置，仍覆盖全部尝试。
+
+        :param model: 选中的模型标识。
+        :param provider: 选中的厂商名。
+        副作用：覆盖候选记录并清空已累积的文本、推理与工具调用。
         """
         self._model = model
         self._provider = provider
@@ -134,11 +143,19 @@ class _ExchangeRecord:
         self._chunks = 0
 
     def first_token(self, elapsed_ms: int) -> None:
-        """记录首字耗时；候选切换后以真正产出的那一次为准。"""
+        """记录首字耗时；候选切换后以真正产出的那一次为准。
+
+        :param elapsed_ms: 从调用开始到首个增量的毫秒数。
+        副作用：覆盖已记录的首字耗时。
+        """
         self._first_token_ms = elapsed_ms
 
     def observe(self, chunk: dict) -> None:
-        """累计一条流式增量的可见文本与推理文本。"""
+        """累计一条流式增量的可见文本与推理文本。
+
+        :param chunk: 统一增量字典，可含 ``text``、``reasoning``、``tool_calls``。
+        副作用：累计计数与文本缓冲。
+        """
         self._chunks += 1
         text = chunk.get('text')
         if text:
@@ -151,7 +168,12 @@ class _ExchangeRecord:
             self._tool_calls.extend(tool_calls)
 
     def fail(self, error_type: str, message: str) -> None:
-        """记录本次调用最终失败的类型与消息。"""
+        """记录本次调用最终失败的类型与消息。
+
+        :param error_type: 统一错误类别（如 ``network``、``billing``）。
+        :param message: 错误消息原文。
+        副作用：覆盖已记录的失败信息。
+        """
         self._error_type = error_type
         self._error = message
 

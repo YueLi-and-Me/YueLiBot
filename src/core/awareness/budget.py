@@ -1,6 +1,7 @@
 """管理主动搭话的每日预算、场景预留和节流决策。
 
-所有默认值偏保守：少说一句只是平淡，多说一句会让人想卸载。
+默认值一律偏保守：主动搭话过频会打扰用户甚至导致其关闭功能，其代价高于
+过稀导致的存在感平淡，故预算与槽位取值宁小勿大。
 
 状态按本地日期滚动；高优先级事件可以绕过普通预算，但普通场景会预留固定
 数量的事件槽位，避免低价值搭话耗尽整日额度。
@@ -12,7 +13,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+# 普通主动搭话的每日额度，单位次；按本地日期滚动清零。
 DAILY_BUDGET = 5
+# 高优先级事件保留的每日槽位数，单位次：普通场景决策提前两档停用，
+# 最多只能耗掉 ``DAILY_BUDGET - SCENE_RESERVED_EVENT_SLOTS``。
 SCENE_RESERVED_EVENT_SLOTS = 2
 
 

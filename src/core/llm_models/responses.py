@@ -15,7 +15,12 @@ RESERVED_EXTRA_BODY_KEYS = frozenset({'model', 'input', 'stream', 'previous_resp
 
 
 def extra_body_conflict(extra_body: Dict) -> str:
-    """返回 extra_body 与受管字段的冲突说明，无冲突返回空串；加载期与请求时共用。"""
+    """返回 extra_body 与受管字段的冲突说明，无冲突返回空串；加载期与请求时共用。
+
+    :param extra_body: 调用方叠加的 extra_body 字典。
+    :return: 逐条冲突说明以顿号连接的文本；无冲突时为空串。
+    副作用：无。
+    """
     problems = []
     reserved = sorted(RESERVED_EXTRA_BODY_KEYS & extra_body.keys())
     if reserved:
@@ -29,7 +34,20 @@ def build_body(
     model: str, messages: List[Dict], temperature: float, max_tokens: int | None,
     response_format: Dict | None, tools: List[Dict] | None, extra_body: Dict,
 ) -> Dict[str, Any]:
-    """转换完整消息序列；未知内容块报 ValueError，受管字段冲突报模型错误。"""
+    """转换完整消息序列；未知内容块报 ValueError，受管字段冲突报模型错误。
+
+    :param model: 模型标识。
+    :param messages: 统一消息序列，content 可为字符串或内容块列表。
+    :param temperature: 采样温度。
+    :param max_tokens: 输出上限（含思考）；``None`` 表示不下发该字段。
+    :param response_format: JSON 输出格式声明，可为 ``None``。
+    :param tools: 工具声明列表，可为 ``None``；统一以 ``strict=false`` 下发。
+    :param extra_body: 调用方叠加的额外字段，最后合并进请求体。
+    :return: Responses 协议请求体。
+    :raises LlmError: extra_body 覆盖受管字段或 store 非 false。
+    :raises ValueError: 消息含本协议不支持的内容块。
+    副作用：无。
+    """
     conflict = extra_body_conflict(extra_body)
     if conflict:
         raise LlmError('model', f'Responses extra_body {conflict}')
@@ -76,7 +94,13 @@ def build_body(
 
 
 def classify_error(code: str, message: str) -> str:
-    """复用错误码分类，仅对接口实测的免费额度消息前缀作精确修正。"""
+    """复用错误码分类，仅对接口实测的免费额度消息前缀作精确修正。
+
+    :param code: 服务端返回的错误码。
+    :param message: 服务端返回的错误消息。
+    :return: 统一错误类别（如 ``billing``、``server``）。
+    副作用：无。
+    """
     # 百炼在 Responses 上将免费额度耗尽报告为 server_error，仅按错误码会误判为服务端
     # 故障；该消息前缀表示账务拒绝，归为 billing 可避免无效重试。
     if message.startswith('Free quota exhausted'):
@@ -88,12 +112,23 @@ class ResponsesParser:
     """保存单次 Responses 流的终止状态、正文存在性与完整工具调用。"""
 
     def __init__(self) -> None:
+        """创建未终止、无正文的空解析器。
+
+        副作用：仅初始化进程内状态。
+        """
         self.terminated = False
         self.has_text = False
         self._calls: List[Dict[str, str]] = []
 
     def parse(self, line: str) -> Dict | str | None:
-        """解析 data 行；拒绝、错误及无正文截断抛出分类明确的 LlmError。"""
+        """解析 data 行；拒绝、错误及无正文截断抛出分类明确的 LlmError。
+
+        :param line: SSE 流中的一行。
+        :return: 文本增量 ``{'text': ...}``、思考增量 ``{'reasoning': ...}``；
+            终止事件返回 ``'done'``，其余行返回 ``None``。
+        :raises LlmError: data 行非法、模型返回错误信封、内容被拒或截断。
+        副作用：更新解析器的终止与正文状态；完整工具调用条目入队待 :meth:`drain`。
+        """
         line = line.strip()
         if not line.startswith('data:'):
             return None

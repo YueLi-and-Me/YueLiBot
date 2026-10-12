@@ -24,7 +24,15 @@ async def settings_config() -> Dict[str, Any]:
 
 @router.put('/config', dependencies=[Depends(_auth), Depends(_require_loopback)])
 async def save_settings_config(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """校验并保存五份配置；任一文件不完整时整体回滚。"""
+    """校验并保存五份配置；任一文件不完整时整体回滚。
+
+    :param request: FastAPI 注入的请求对象，由 ``_require_loopback`` 依赖
+        读取客户端地址，本函数不直接使用。
+    :param payload: 浏览器提交的配置；取 ``values`` 字段（须为对象），缺失
+        或类型不对时把整个 payload 当作 values 使用。
+    :return: 保存结果（含 ``ok`` 标记与重载后的快照等字段）。
+    :raises fastapi.HTTPException: 校验失败时返回 400，detail 携带原因。
+    """
     values = payload.get('values') if isinstance(payload.get('values'), dict) else payload
     result = settings_webui.save(_config_dir(), values)
     if not result.get('ok'):
