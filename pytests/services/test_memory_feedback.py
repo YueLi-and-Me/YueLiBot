@@ -275,6 +275,28 @@ class TestApply:
         assert result[0] == 1 and result[1] == new_id and abs(result[2] - 0.9) < 1e-6
 
     @pytest.mark.asyncio
+    async def test_number_only_correction_supersedes_instead_of_reinforcing(self, db):
+        """更正只改了门牌号时写新行取代旧行，不并回旧行。"""
+
+        store = MemoryStore(db)
+        old_content = '凌白住在深圳宝安区西乡街道28栋1203室，平时骑车上班'
+        new_content = '凌白住在深圳宝安区西乡街道28栋1302室，平时骑车上班'
+        old_id = _seed_fact_and_anchor(db, store, content=old_content)
+        store.append_message(STREAM_ID, OWNER_PERSON_ID, 'user', '不对，是1302', NOW + 1)
+        provider = _StubProvider(
+            '{"negated": true, "confidence": 0.9, "corrected_content": "%s"}' % new_content
+        )
+
+        stats = await _service(db, provider).check_once(NOW + 60_000)
+
+        assert stats['applied'] == 1
+        new_id = db.execute('SELECT superseded_by FROM facts WHERE id = ?', (old_id,)).fetchone()[0]
+        assert new_id is not None and new_id != old_id
+        assert db.execute('SELECT content FROM facts WHERE id = ?', (new_id,)).fetchone()[0] == new_content
+        assert db.execute('SELECT hit_count FROM facts WHERE id = ?', (old_id,)).fetchone()[0] == 0
+        assert db.execute('SELECT new_fact_id FROM memory_feedback_results').fetchone()[0] == new_id
+
+    @pytest.mark.asyncio
     async def test_below_threshold_does_not_apply(self, db):
         store = MemoryStore(db)
         old_id = _seed_fact_and_anchor(db, store)

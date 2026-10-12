@@ -472,7 +472,8 @@ async def persist_facts(
     """按平台编号归属把事实写入长期记忆。
 
     去重完全交给 ``MemoryStore.add_fact``：它先按 ``exact_key`` 精确命中，未命中时
-    取 FTS 候选逐个过 ``is_same_fact`` 的字符与 bigram 双阈值，命中即强化既有行。
+    取 FTS 候选逐个过 ``is_same_fact``（字符与 bigram 双阈值，且数字不得有出入），
+    命中即强化既有行。
     本函数不再叠任何一层判重——那会让同一件事算两遍。
 
     事实的 ``slot``、``supersedes`` 与 ``origin_kind`` 原样传给写入层：显式取代在

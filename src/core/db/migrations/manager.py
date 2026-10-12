@@ -31,7 +31,7 @@ from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 33  # 当前 schema 版本：登记各消费方的向量空间
+CURRENT_VERSION = 34  # 当前 schema 版本：去重键保留数字之间的分隔
 
 
 def load_migration_registry() -> Dict[int, MigrationFn]:
@@ -75,6 +75,7 @@ def load_migration_registry() -> Dict[int, MigrationFn]:
         v30_to_v31,
         v31_to_v32,
         v32_to_v33,
+        v33_to_v34,
     )
 
     return get_registry()
