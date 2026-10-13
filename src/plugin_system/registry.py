@@ -22,9 +22,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src.core.commands.registry import register_command
 from src.core.logging.logger import get_logger
@@ -33,11 +33,27 @@ from src.core.platform_io.types import InboundMessage
 from .context import PluginContext
 from .loader import MANIFEST_FILENAME, load_tool_plugin
 from .config import ensure_plugin_config, read_enabled_flag
-from .manifest import load_manifest
+from .manifest import PluginManifest, check_host_compatibility, load_manifest, report_host_compatibility
 from .tools import ToolPlugin
 
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class PluginStatus:
+    """保留每个扫描目录的身份、来源、版本判定与失败原因，供管理页查询。"""
+
+    directory: Path
+    plugin_id: str = ''
+    name: str = ''
+    version: str = ''
+    source: str = '内置'
+    host_application: Mapping[str, str] = field(default_factory=dict)
+    decision: str = '清单错误'
+    reason: str = ''
+    tool_names: Tuple[str, ...] = ()
+    manifest: Optional[PluginManifest] = None
 
 
 class PluginRegistry:
@@ -51,6 +67,7 @@ class PluginRegistry:
     def __init__(
         self,
         context_factory: Optional[Callable[[str, Path], PluginContext]] = None,
+        *, force_compatibility: bool = False,
     ) -> None:
         """初始化空注册表。
 
@@ -65,23 +82,33 @@ class PluginRegistry:
         # 已成功 on_load 的插件；unload_all 只卸载它们，据此保证自身幂等。
         self._loaded: List[ToolPlugin] = []
         self._context_factory = context_factory
+        self._force_compatibility = force_compatibility
+        self._statuses: Dict[Path, PluginStatus] = {}
 
-    def discover(self, roots: Sequence[Path]) -> None:
+    def discover(self, roots: Sequence[Tuple[Path, bool]]) -> None:
         """按序扫描插件根目录，加载全部已启用的合法工具插件。
 
         插件的启用开关在它自己的目录里（``config.toml`` 的 ``[plugin] enabled``），
         不在主体配置里——开关随插件一起装、一起删，主配置里不会留下指向已删插件
         的孤儿项，用户也不必为了开一个插件去改另一个文件。
 
-        :param roots: 插件根目录，按优先级从高到低排列——同 id 冲突时先扫描到的
+        :param roots: 根目录与是否第三方的序列，按优先级从高到低排列——同 id 冲突时先扫描到的
             生效，后者被忽略并记 warning；内置根目录因此应排在第三方之前。不存在
             的根目录直接跳过（用户可能从未放置第三方插件）。
         :return: ``None``。
         副作用：读取各插件目录的清单、开关与入口文件，执行入口模块顶层代码；单个
             插件的任何失败只记 error 并跳过，不中断其余插件的发现。
         """
-        for root in roots:
-            self._discover_root(root)
+        for root, third_party in roots:
+            self._discover_root(root, third_party)
+
+    def statuses(self) -> List[PluginStatus]:
+        """返回目录级状态快照；被停用、版本拒绝及加载失败的目录也保留一条。"""
+        return list(self._statuses.values())
+
+    def _record_failure(self, directory: Path, reason: str, decision: str = '加载失败') -> None:
+        """更新已扫描目录的失败原因，不改变其清单身份与来源。"""
+        self._statuses[directory] = replace(self._statuses[directory], decision=decision, reason=reason)
 
     def tool_plugins(self) -> Sequence[ToolPlugin]:
         """返回当前已发现的全部工具插件。
@@ -110,6 +137,7 @@ class PluginRegistry:
                     error=str(exc),
                 )
                 self._plugins.remove(plugin)
+                self._record_failure(self._origins[plugin.manifest.plugin_id], str(exc))
             else:
                 self._loaded.append(plugin)
 
@@ -245,7 +273,7 @@ class PluginRegistry:
                 )
         return frozenset(capabilities)
 
-    def _discover_root(self, root: Path) -> None:
+    def _discover_root(self, root: Path, third_party: bool) -> None:
         """扫描单个根目录；目录不存在或无法列举时跳过，不当作错误。"""
         if not root.is_dir():
             logger.debug('插件根目录不存在，跳过', root=str(root))
@@ -258,7 +286,7 @@ class PluginRegistry:
             logger.error('插件根目录无法列举，已跳过', root=str(root), error=str(exc))
             return
         for directory in directories:
-            self._discover_one(directory)
+            self._discover_one(directory, third_party)
 
     def _log_disabled(self, plugin_id: str, directory: Path) -> None:
         """记录一条「已被关闭」。
@@ -271,9 +299,13 @@ class PluginRegistry:
             plugin=plugin_id,
             directory=str(directory),
         )
+        self._record_failure(directory, '工具插件已在自身配置中关闭，跳过加载', '已停用')
 
-    def _discover_one(self, directory: Path) -> None:
+    def _discover_one(self, directory: Path, third_party: bool) -> None:
         """发现并加载单个插件目录；任何失败都只影响该插件自身。"""
+        self._statuses[directory] = PluginStatus(
+            directory=directory, name=directory.name, source='第三方' if third_party else '内置',
+        )
         try:
             manifest = load_manifest(directory / MANIFEST_FILENAME)
         except Exception as exc:
@@ -283,6 +315,19 @@ class PluginRegistry:
                 directory=str(directory),
                 error=str(exc),
             )
+            self._record_failure(directory, str(exc), '清单错误')
+            return
+        compatibility = check_host_compatibility(
+            manifest, third_party=third_party, force=self._force_compatibility,
+        )
+        self._statuses[directory] = PluginStatus(
+            directory=directory, plugin_id=manifest.plugin_id, name=manifest.name,
+            version=manifest.version, source='第三方' if third_party else '内置',
+            host_application=manifest.host_application, decision=compatibility.decision,
+            reason=compatibility.reason, manifest=manifest,
+        )
+        report_host_compatibility(manifest, compatibility)
+        if compatibility.decision == '不兼容':
             return
         # 第一阶段：只读文件，不导入插件代码。已生成过配置的插件在这里就能被挡下，
         # 因此入口写坏了的插件可以靠把 enabled 改成 false 彻底绕开，不必删目录。
@@ -298,9 +343,12 @@ class PluginRegistry:
                 plugin=manifest.plugin_id,
                 plugin_type=manifest.plugin_type,
             )
+            self._record_failure(directory, '插件根目录下发现非工具插件，已忽略', '清单错误')
             return
         origin = self._origins.get(manifest.plugin_id)
         if origin is not None:
+            if origin == directory:
+                return
             # 先扫描到的生效：根目录按优先级排序，内置在前，因此冲突时内置优先。
             # 后者的入口模块根本不会被执行。
             logger.warning(
@@ -309,9 +357,10 @@ class PluginRegistry:
                 kept=str(origin),
                 ignored=str(directory),
             )
+            self._record_failure(directory, f'插件 id 冲突，已保留 {origin}')
             return
         try:
-            plugin = load_tool_plugin(directory, manifest)
+            plugin = load_tool_plugin(directory, manifest, third_party=third_party, force=self._force_compatibility)
         except Exception as exc:
             logger.error(
                 '工具插件加载失败，已跳过该插件',
@@ -319,6 +368,7 @@ class PluginRegistry:
                 plugin=manifest.plugin_id,
                 error=str(exc),
             )
+            self._record_failure(directory, str(exc))
             return
         # 第二阶段：配置文件尚不存在时按插件声明的模型生成它。这一步要拿到插件类，
         # 所以必须在导入之后——首次安装因此会执行一次入口模块，之后走不到这里。
@@ -331,6 +381,7 @@ class PluginRegistry:
                 plugin=manifest.plugin_id,
                 error=str(exc),
             )
+            self._record_failure(directory, str(exc))
             return
         if not config.enabled:
             self._log_disabled(manifest.plugin_id, directory)
@@ -342,6 +393,9 @@ class PluginRegistry:
             plugin.bind_context(self._context_factory(manifest.plugin_id, directory))
         self._origins[manifest.plugin_id] = directory
         self._plugins.append(plugin)
+        self._statuses[directory] = replace(
+            self._statuses[directory], tool_names=tuple(spec.name for spec, _executor in plugin.tools()),
+        )
         logger.info(
             '工具插件已加载',
             plugin=manifest.plugin_id,

@@ -165,7 +165,7 @@ async def test_star4_real_chat_service_assembles_materials(db, monkeypatch, tmp_
     """从真实消息接收与回合编排进入真实回调，禁止替换回调及协议渲染。"""
     from src.core.services.chat import service as service_module
 
-    monkeypatch.setattr(service_module, 'PLUGIN_ROOTS', (tmp_path,))
+    monkeypatch.setattr(service_module, 'PLUGIN_ROOTS', ((tmp_path, False),))
     config = Config()
     config.bot.name = '月璃'
     config.conversation_agent.mode = 'enabled'

@@ -1134,6 +1134,12 @@
               "type": "string",
               "label": "HTTP(S) 代理",
               "help": "全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连。"
+            },
+            {
+              "key": "force_compatibility",
+              "type": "boolean",
+              "label": "强制兼容",
+              "help": "打开后跳过插件的主程序版本区间校验与 MCP 协议版本区间校验，仅用于应急；每个被放行的插件或服务都会在控制台提示。"
             }
           ]
         }

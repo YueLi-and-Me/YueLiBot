@@ -144,6 +144,9 @@ enabled = false    # 关掉后不再有任何上报
 `[advanced] https_proxy` 是全局 HTTP(S) 代理，留空直连；不是浏览器访问面板的代理。
 
 开发者命令通道由可选 `[developer] enabled = true` 显式开启。
+`[advanced] force_compatibility` 默认关闭。打开后跳过插件的主程序版本区间校验与
+MCP 协议版本区间校验，仅用于应急；每个被放行的插件或服务都会在控制台提示。
+它不跳过 SDK 包版本检查，正常使用时应关闭并修正插件清单或服务协议版本。
 模板未生成该段时默认关闭；普通日志排查不必开启命令通道。
 保存并重启后，检查日志落点和保留策略确实改变。
 更多边界见[开发手册：可观测性](../../dev/architecture/observability.md)。

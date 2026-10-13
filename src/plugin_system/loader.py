@@ -23,7 +23,7 @@ import inspect
 import sys
 
 from .adapter import AdapterPlugin
-from .manifest import AdapterManifest, PluginManifest, load_manifest
+from .manifest import AdapterManifest, PluginManifest, load_manifest, require_host_compatibility
 from .plugin import Plugin
 from .tools import ToolPlugin
 
@@ -106,10 +106,11 @@ def _single_plugin_class(
     return candidates[0]
 
 
-def load_adapter_plugin(directory: Path, **options: object) -> AdapterPlugin:
+def load_adapter_plugin(directory: Path, *, force_compatibility: bool = False, **options: object) -> AdapterPlugin:
     """加载一个适配器目录，返回可用的插件实例。
 
     :param directory: 适配器目录，需包含 ``_manifest.json`` 与 ``plugin.py``。
+    :param force_compatibility: 是否应急跳过宿主版本区间限制，默认关闭。
     :param options: 透传给插件构造函数的具名参数。宿主用它注入随部署变化的路径，
         目前只有 ``runtime_path``——主体运行时信息的位置随数据目录配置变化，
         插件的默认值只在数据目录取默认位置时成立。
@@ -123,6 +124,7 @@ def load_adapter_plugin(directory: Path, **options: object) -> AdapterPlugin:
     if not directory.is_dir():
         raise PluginLoadError(f'适配器目录不存在：{directory}')
     manifest = load_manifest(directory / MANIFEST_FILENAME)
+    require_host_compatibility(manifest, third_party=False, force=force_compatibility)
     if not isinstance(manifest, AdapterManifest):
         raise PluginLoadError(
             f'{directory} 的清单类型是 {manifest.plugin_type}，不是适配器'
@@ -134,7 +136,9 @@ def load_adapter_plugin(directory: Path, **options: object) -> AdapterPlugin:
     return plugin_class(manifest, **options)
 
 
-def load_tool_plugin(directory: Path, manifest: PluginManifest) -> ToolPlugin:
+def load_tool_plugin(
+    directory: Path, manifest: PluginManifest, *, third_party: bool = False, force: bool = False,
+) -> ToolPlugin:
     """用已解析的清单加载一个工具插件目录，返回可用的插件实例。
 
     清单由调用方（注册表）先行解析：扫目录发现时必须先拿到插件类型与标识做分派
@@ -142,6 +146,8 @@ def load_tool_plugin(directory: Path, manifest: PluginManifest) -> ToolPlugin:
 
     :param directory: 插件目录，需包含 ``plugin.py``。
     :param manifest: 该目录已校验的清单，``plugin_type`` 必须为 ``tool``。
+    :param third_party: 明确的来源标记；独立加载内置实现时默认为 False。
+    :param force: 应急跳过版本区间限制，默认 False。
     :return: 已用清单构造、尚未 ``on_load`` 的工具插件实例。
     :raises PluginLoadError: 清单类型不符、入口缺失或实现不唯一。
     :raises TypeError: 插件构造函数拒绝清单以外的参数。
@@ -151,6 +157,7 @@ def load_tool_plugin(directory: Path, manifest: PluginManifest) -> ToolPlugin:
         raise PluginLoadError(
             f'{directory} 的清单类型是 {manifest.plugin_type}，不是工具插件'
         )
+    require_host_compatibility(manifest, third_party=third_party, force=force)
     entry = directory / PLUGIN_FILENAME
     module = _load_module(entry, manifest.plugin_id.replace('.', '_'))
     plugin_class = _single_plugin_class(module, entry, ToolPlugin)

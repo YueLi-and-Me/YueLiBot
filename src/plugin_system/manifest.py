@@ -12,15 +12,88 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Dict, FrozenSet, Literal, Mapping, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, Literal, Mapping, Optional, Set, Tuple, Union
 
 import json
 import re
 
 from src.core.app_meta import APP_VERSION
+from src.core.logging.logger import get_logger
 
 from .capabilities import AdapterCapability, parse_capabilities
 
+logger = get_logger(__name__)
+
+# 同一插件、同一兼容判定在一个进程内只提示一次，避免多条加载路径重复告警。
+_warned_compatibility: Set[Tuple[str, str]] = set()
+
+
+@dataclass(frozen=True)
+class HostCompatibility:
+    """保存宿主版本判定与可直接展示的中文原因；格式校验由清单解析负责。"""
+
+    decision: Literal['正常', '兼容模式', '强制兼容', '不兼容']
+    reason: str
+
+
+def check_host_compatibility(
+    manifest: 'PluginManifest', *, third_party: bool, force: bool,
+) -> HostCompatibility:
+    """判定已解析清单是否支持当前宿主，不执行入口或记录日志。
+
+    :param manifest: 已完成格式校验的插件清单。
+    :param third_party: 调用方明确提供的来源标记，不依据路径猜测。
+    :param force: 是否允许版本不符或声明缺失的插件应急加载。
+    :return: 正常、兼容模式、强制兼容或不兼容及其原因原文。
+    """
+    bounds = manifest.host_application
+    minimum = bounds.get('min_version')
+    maximum = bounds.get('max_version')
+    current = _version_tuple(APP_VERSION, '宿主版本')
+    missing = minimum is None or maximum is None
+    if third_party and missing:
+        result = HostCompatibility('不兼容',
+            f'插件 {manifest.name} 未声明支持的主程序版本区间（min_version 与 max_version 均必填），已跳过')
+    elif minimum is not None and current < _version_tuple(minimum, 'min_version'):
+        result = HostCompatibility('不兼容',
+            f'插件 {manifest.name} 不支持当前版本 {APP_VERSION}（声明支持 {minimum}～{maximum or "不限"}），已跳过')
+    elif maximum is not None and current > _version_tuple(maximum, 'max_version'):
+        if current[:2] == _version_tuple(maximum, 'max_version')[:2]:
+            return HostCompatibility('兼容模式',
+                f'插件 {manifest.name} 声明最高支持 {maximum}，当前 {APP_VERSION}，按兼容模式加载')
+        result = HostCompatibility('不兼容',
+            f'插件 {manifest.name} 不支持当前版本 {APP_VERSION}（声明支持 {minimum or "不限"}～{maximum}），已跳过')
+    else:
+        return HostCompatibility('正常', '')
+    if force:
+        declared = '未声明' if missing else f'{minimum}～{maximum}'
+        return HostCompatibility('强制兼容',
+            f'已开启强制兼容：插件 {manifest.name} 声明 {declared}，当前 {APP_VERSION}，仍然加载')
+    return result
+
+
+def report_host_compatibility(manifest: 'PluginManifest', result: HostCompatibility) -> None:
+    """展示版本拒绝原因，兼容模式与强制兼容按插件去重告警。
+
+    :param manifest: 日志关联的插件身份。
+    :param result: 纯判定函数的结果；正常判定不输出日志。
+    :return: 无；更新进程内告警去重集合。
+    """
+    if result.decision == '不兼容':
+        logger.error(result.reason)
+    elif result.decision in ('兼容模式', '强制兼容'):
+        key = (manifest.plugin_id, result.decision)
+        if key not in _warned_compatibility:
+            _warned_compatibility.add(key)
+            logger.warning(result.reason)
+
+
+def require_host_compatibility(manifest: 'PluginManifest', *, third_party: bool, force: bool) -> None:
+    """在入口执行前实施版本判定；拒绝时抛出含中文原因的 ManifestError。"""
+    result = check_host_compatibility(manifest, third_party=third_party, force=force)
+    report_host_compatibility(manifest, result)
+    if result.decision == '不兼容':
+        raise ManifestError(result.reason)
 
 # 当前支持的清单格式版本。宿主与清单必须逐字相等而不是「大于等于」：
 # 格式变更意味着字段语义变化，静默接受旧版本会让插件按旧语义运行而无人察觉。
@@ -47,7 +120,7 @@ class PluginManifest:
     :ivar name: 人类可读名称，出现在日志与控制台。
     :ivar version: 插件自身版本，与主体版本无关。
     :ivar description: 一句话说明这个插件是做什么的。
-    :ivar host_application: 可选 min_version / max_version，闭区间且在解析时校验。
+    :ivar host_application: 版本闭区间；解析校验格式，加载前另行判定当前版本。
     :ivar author: 作者字符串或含 name、可选 url 的只读映射；未声明时为 None。
     :ivar license: SPDX 标识字符串；未声明时为 None，不内置许可证目录。
     :ivar urls: 可选 repository 地址的只读映射。
@@ -185,11 +258,11 @@ def _optional_text_map(payload: Mapping[str, Any], key: str) -> Mapping[str, str
 
 
 def _host_compatibility(payload: Mapping[str, Any]) -> Mapping[str, str]:
-    """校验宿主版本闭区间，避免不兼容插件执行任何入口代码。
+    """只校验宿主版本闭区间格式，当前宿主版本由加载入口另行比较。
 
     :param payload: 可选含 host_application 的清单映射。
     :return: 已复制且不可变的版本声明。
-    :raises ManifestError: 版本格式非法、上下界倒置或当前宿主不在区间内。
+    :raises ManifestError: 版本格式非法或上下界倒置。
     """
     bounds = _optional_text_map(payload, 'host_application')
     minimum = (
@@ -202,17 +275,6 @@ def _host_compatibility(payload: Mapping[str, Any]) -> Mapping[str, str]:
     )
     if minimum is not None and maximum is not None and minimum > maximum:
         raise ManifestError('host_application 版本区间非法：min_version 高于 max_version')
-    if minimum is not None or maximum is not None:
-        current = _version_tuple(APP_VERSION, '宿主版本')
-        if (
-            (minimum is not None and current < minimum)
-            or (maximum is not None and current > maximum)
-        ):
-            raise ManifestError(
-                f'插件与宿主版本不匹配：当前宿主 {APP_VERSION}，'
-                f'要求 min_version={bounds.get("min_version", "不限")}，'
-                f'max_version={bounds.get("max_version", "不限")}'
-            )
     return bounds
 
 

@@ -15,7 +15,7 @@ from src.core.config.schema import ConversationConfig
 
 # 插件根目录，按发现顺序排列：内置在前、第三方在后。同一插件标识冲突时先扫到的
 # 生效，因此随程序发布的内置实现不会被用户目录里的同名插件顶掉。
-PLUGIN_ROOTS = (Path('src/plugins/built_in'), Path('plugins'))
+PLUGIN_ROOTS = ((Path('src/plugins/built_in'), False), (Path('plugins'), True))
 
 CHAT_POLL_INTERVAL_S = 0.1
 

@@ -736,10 +736,13 @@ class AdvancedConfig(BaseModel):
     """保存全局高级运行参数。
 
     :ivar https_proxy: 可选的 HTTP(S) 代理地址，默认值为空字符串。
+    :ivar force_compatibility: 应急跳过插件与 MCP 协议版本区间校验，默认关闭。
     """
 
     # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890
     https_proxy: str = ''
+    # 仅用于应急；每个被放行的插件或服务都会在控制台提示，不跳过 SDK 包版本检查。
+    force_compatibility: bool = False
 
 
 class DeveloperConfig(BaseModel):

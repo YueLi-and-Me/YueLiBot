@@ -235,18 +235,17 @@ def test_manifest_metadata_is_preserved_and_immutable() -> None:
 @pytest.mark.parametrize('host_version,bounds,accepted', [
     ('1.2.9', {'min_version': '1.2.10'}, False),
     ('1.2.10', {'min_version': '1.2.9'}, True),
-    ('1.2.10', {'max_version': '1.2.9'}, False),
+    ('1.2.10', {'max_version': '1.2.9'}, True),
     ('1.2.9', {'max_version': '1.2.10'}, True),
     ('1.2.9', {'min_version': '1.2.9', 'max_version': '1.2.9'}, True),
 ])
 def test_host_version_interval(monkeypatch, host_version, bounds, accepted) -> None:
     """闭区间按整数比较，不能把 10 排到 9 前面。"""
     monkeypatch.setattr('src.plugin_system.manifest.APP_VERSION', host_version)
-    if accepted:
-        manifest_from_payload(_payload(host_application=bounds))
-    else:
-        with pytest.raises(ManifestError, match='宿主版本不匹配'):
-            manifest_from_payload(_payload(host_application=bounds))
+    from src.plugin_system.manifest import check_host_compatibility
+    manifest = manifest_from_payload(_payload(host_application=bounds))
+    result = check_host_compatibility(manifest, third_party=False, force=False)
+    assert (result.decision != '不兼容') is accepted
 
 
 def test_too_new_manifest_rejected_before_entry_executes(tmp_path: Path) -> None:
@@ -260,7 +259,7 @@ def test_too_new_manifest_rejected_before_entry_executes(tmp_path: Path) -> None
         protocol='onebot11', config_section='sample', capabilities={},
     )), encoding='utf-8')
     (tmp_path / 'plugin.py').write_text('raise AssertionError("不能执行入口")\n', encoding='utf-8')
-    with pytest.raises(ManifestError, match='宿主版本不匹配'):
+    with pytest.raises(ManifestError, match='不支持当前版本'):
         load_adapter_plugin(tmp_path)
 
 

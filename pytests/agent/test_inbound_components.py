@@ -197,7 +197,7 @@ def test_inbound_observe_rejects_async_handler_at_declaration() -> None:
 def _registry_with(root: Path) -> PluginRegistry:
     """发现指定根目录并返回注册表。"""
     registry = PluginRegistry()
-    registry.discover([root])
+    registry.discover([(root, False)])
     return registry
 
 
@@ -416,7 +416,7 @@ def _chat_with_plugins(db: Any, monkeypatch: pytest.MonkeyPatch, root: Path) -> 
     """把插件根目录指到临时目录后构造聊天服务。"""
     import src.core.services.chat.service as service_module
 
-    monkeypatch.setattr(service_module, 'PLUGIN_ROOTS', (root,))
+    monkeypatch.setattr(service_module, 'PLUGIN_ROOTS', ((root, False),))
     return ChatService(db, None, None, None, _noop, cfg=_agent_config())
 
 
@@ -837,7 +837,7 @@ class ContextualPlugin(ToolPlugin):
         return stub
 
     registry = PluginRegistry(context_factory=factory)
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     await registry.load_all()
 

@@ -399,6 +399,7 @@ class ChatService(
             context_factory=lambda plugin_id, plugin_dir: PluginContext(
                 plugin_id, plugin_dir, data_dir, cfg,
             ),
+            force_compatibility=cfg.advanced.force_compatibility,
         )
         self._plugins.discover(PLUGIN_ROOTS)
         for plugin in self._plugins.tool_plugins():

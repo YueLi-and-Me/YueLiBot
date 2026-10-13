@@ -605,6 +605,7 @@ export interface YueliConfig {
   }
   advanced: {
     https_proxy: string
+    force_compatibility: boolean
   }
   /** owner 私聊专用开发者命令通道；默认关闭。 */
   developer: {

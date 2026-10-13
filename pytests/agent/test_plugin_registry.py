@@ -216,7 +216,7 @@ def test_discover_finds_all_valid_tool_plugins(tmp_path: Path) -> None:
     _write_plugin(root, 'beta-tool', 'test.beta-tool', _HISTORY_PLUGIN)
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert sorted(
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
@@ -227,7 +227,7 @@ def test_discover_tolerates_missing_root(tmp_path: Path) -> None:
     """根目录不存在不是错误：用户可能从未放置第三方插件。"""
     registry = _registry()
 
-    registry.discover([tmp_path / 'nope'])
+    registry.discover([(tmp_path / 'nope', False)])
 
     assert registry.tool_plugins() == ()
 
@@ -244,7 +244,7 @@ def test_invalid_manifest_does_not_block_other_plugins(tmp_path: Path) -> None:
     registry = _registry()
 
     with capture_logs() as logs:
-        registry.discover([root])
+        registry.discover([(root, False)])
 
     assert sorted(
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
@@ -266,7 +266,7 @@ def test_broken_entry_does_not_block_other_plugins(tmp_path: Path) -> None:
     registry = _registry()
 
     with capture_logs() as logs:
-        registry.discover([root])
+        registry.discover([(root, False)])
 
     assert [
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
@@ -285,7 +285,7 @@ def test_adapter_manifest_in_scanned_root_is_skipped(tmp_path: Path) -> None:
     registry = _registry()
 
     with capture_logs() as logs:
-        registry.discover([root])
+        registry.discover([(root, False)])
 
     assert [
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
@@ -306,7 +306,7 @@ def test_raising_observer_does_not_break_inbound_aggregation(tmp_path: Path) -> 
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     _write_plugin(root, 'raising-tool', 'test.raising-tool', _RAISING_OBSERVER_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     with capture_logs() as logs:
         registry.observe_inbound(3, 9, object())
@@ -330,7 +330,7 @@ def test_stream_capabilities_unions_all_plugins(tmp_path: Path) -> None:
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     _write_plugin(root, 'beta-tool', 'test.beta-tool', _HISTORY_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert registry.stream_capabilities(3) == frozenset({'forward_message', 'group_history'})
 
@@ -341,7 +341,7 @@ def test_raising_capabilities_does_not_break_union(tmp_path: Path) -> None:
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     _write_plugin(root, 'raising-tool', 'test.raising-tool', _RAISING_CAPABILITIES_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     with capture_logs() as logs:
         capabilities = registry.stream_capabilities(3)
@@ -362,7 +362,7 @@ def test_first_scanned_root_wins_on_id_conflict(tmp_path: Path) -> None:
     registry = _registry()
 
     with capture_logs() as logs:
-        registry.discover([built_in, third_party])
+        registry.discover([(built_in, False), (third_party, False)])
 
     plugins = registry.tool_plugins()
     assert [plugin.manifest.plugin_id for plugin in plugins] == ['test.shared-tool']
@@ -385,7 +385,7 @@ async def test_load_all_drives_on_load_for_every_plugin(tmp_path: Path) -> None:
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     _write_plugin(root, 'beta-tool', 'test.beta-tool', _OBSERVER_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     await registry.load_all()
 
@@ -399,7 +399,7 @@ async def test_load_all_isolates_failing_plugin(tmp_path: Path) -> None:
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     _write_plugin(root, 'failing-tool', 'test.failing-tool', _FAILING_LOAD_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     with capture_logs() as logs:
         await registry.load_all()
@@ -421,7 +421,7 @@ async def test_unload_all_is_idempotent(tmp_path: Path) -> None:
     root = tmp_path / 'plugins'
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
     await registry.load_all()
 
     await registry.unload_all()
@@ -435,7 +435,7 @@ async def test_unload_all_without_load_is_noop(tmp_path: Path) -> None:
     root = tmp_path / 'plugins'
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     registry = _registry()
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     await registry.unload_all()
 
@@ -521,7 +521,7 @@ def test_声明里默认关闭的插件不进注册表(tmp_path: Path) -> None:
     _write_plugin(root, 'beta-tool', 'test.beta-tool', _HISTORY_PLUGIN)
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert [
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
@@ -534,7 +534,7 @@ def test_首次发现按声明生成配置文件(tmp_path: Path) -> None:
     directory = _write_plugin(root, 'cfg-tool', 'test.cfg-tool', _CONFIGURED_PLUGIN)
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     text = (directory / 'config.toml').read_text(encoding='utf-8')
     assert '[plugin]' in text
@@ -549,7 +549,7 @@ def test_插件能读到配置文件里的值(tmp_path: Path) -> None:
     _write_switch(directory, '[plugin]\nenabled = true\ngreeting = "改过的"\n')
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert registry.tool_plugins()[0].config.greeting == '改过的'
 
@@ -562,7 +562,7 @@ def test_已生成配置的插件关闭时入口不会被执行(tmp_path: Path) 
     registry = _registry()
 
     with capture_logs() as logs:
-        registry.discover([root])
+        registry.discover([(root, False)])
 
     assert registry.tool_plugins() == ()
     assert not [entry for entry in logs if entry['log_level'] == 'error'], logs
@@ -575,7 +575,7 @@ def test_没有声明配置模型的插件默认启用(tmp_path: Path) -> None:
     _write_plugin(root, 'alpha-tool', 'test.alpha-tool', _OBSERVER_PLUGIN)
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert len(registry.tool_plugins()) == 1
 
@@ -593,7 +593,7 @@ def test_坏配置按启用处理(tmp_path: Path, body: str) -> None:
     _write_switch(directory, body)
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert len(registry.tool_plugins()) == 1
 
@@ -610,6 +610,6 @@ def test_可强转的假值仍然关闭插件(tmp_path: Path, literal: str) -> N
     _write_switch(directory, f'[plugin]\nenabled = {literal}\n')
     registry = _registry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert registry.tool_plugins() == ()

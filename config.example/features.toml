@@ -67,4 +67,5 @@ event_retention_hours = 72 # 管线事件最多保留多少小时。
 
 [advanced] # 高级：全局代理等高级运行参数。
 https_proxy = "" # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连。
+force_compatibility = false # 打开后跳过插件的主程序版本区间校验与 MCP 协议版本区间校验，仅用于应急；每个被放行的插件或服务都会在控制台提示。
 

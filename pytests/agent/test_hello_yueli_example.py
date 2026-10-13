@@ -147,7 +147,7 @@ def test_首次发现会生成一份带注释的配置(tmp_path: Path) -> None:
     root = _copy_example(tmp_path)
     destination = root / 'hello-yueli'
 
-    PluginRegistry().discover([root])
+    PluginRegistry().discover([(root, False)])
 
     text = plugin_config_path(destination).read_text(encoding='utf-8')
     document = tomllib.loads(text)
@@ -162,7 +162,7 @@ def test_示例默认关闭且确实不被加载(tmp_path: Path) -> None:
     root = _copy_example(tmp_path)
     registry = PluginRegistry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     assert EXAMPLE_ID not in [
         plugin.manifest.plugin_id for plugin in registry.tool_plugins()
@@ -182,7 +182,7 @@ def test_打开开关后示例能被加载并读到配置(tmp_path: Path) -> Non
     )
     registry = PluginRegistry()
 
-    registry.discover([root])
+    registry.discover([(root, False)])
 
     loaded = [
         plugin for plugin in registry.tool_plugins()
@@ -201,7 +201,7 @@ async def test_配置里的问候词进入了观察正文(tmp_path: Path) -> Non
         encoding='utf-8',
     )
     registry = PluginRegistry()
-    registry.discover([root])
+    registry.discover([(root, False)])
     plugin = next(
         item for item in registry.tool_plugins()
         if item.manifest.plugin_id == EXAMPLE_ID

@@ -39,6 +39,7 @@ from src.core.memory.vector_health import (
 )
 from src.platforms.onebot11.config import read_section_config
 from src.plugin_system import AdapterManifest, load_manifest
+from src.plugin_system.manifest import check_host_compatibility, report_host_compatibility
 
 logger = get_logger(__name__)
 
@@ -176,7 +177,7 @@ def run_self_check(
             f'4 份 TOML 的版本均为 {CONFIG_VERSION}，字段、引用与路由校验通过',
         ))
     categories['配置一致性'].extend(
-        check_adapter_configs(config_dir, adapters_root)
+        check_adapter_configs(config_dir, adapters_root, force=config.advanced.force_compatibility if config is not None else False)
     )
 
     vector_health: VectorHealth | None = None
@@ -478,7 +479,7 @@ def _configured_embedding_dimension(config: Config | None) -> int | None:
     return config.routing.embedding.candidates[0].embedding_dim
 
 
-def check_adapter_configs(config_dir: Path, adapters_root: Path) -> List[CheckItem]:
+def check_adapter_configs(config_dir: Path, adapters_root: Path, *, force: bool = False) -> List[CheckItem]:
     """用插件清单和现有适配器配置读取器核对目录、段名与版本。"""
     items: List[CheckItem] = []
     try:
@@ -522,6 +523,11 @@ def check_adapter_configs(config_dir: Path, adapters_root: Path) -> List[CheckIt
         if not isinstance(manifest, AdapterManifest):
             continue
         adapter_count += 1
+        compatibility = check_host_compatibility(manifest, third_party=False, force=force)
+        report_host_compatibility(manifest, compatibility)
+        if compatibility.decision == '不兼容':
+            items.append(CheckItem('配置一致性', manifest.name, FAIL, compatibility.reason))
+            continue
         directory = manifest_path.parent
         expected_directory = f'yueli-{manifest.config_section}-adapter'
         if directory.name != expected_directory:

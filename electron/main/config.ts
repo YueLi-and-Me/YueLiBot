@@ -309,6 +309,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
   },
   advanced: {
     https_proxy: '',
+    force_compatibility: false,
   },
   developer: {
     enabled: false,
@@ -1498,6 +1499,10 @@ function readSplitConfig(directory: string): YueliConfig {
     log: parseLog(features, featuresPath),
     advanced: {
       https_proxy: stringAt(advanced, 'https_proxy', featuresPath),
+      // 可选新增字段缺失时关闭；显式写错类型仍须报错，避免应急开关被意外启用。
+      force_compatibility: advanced.force_compatibility === undefined
+        ? DEFAULT_CONFIG.advanced.force_compatibility
+        : booleanAt(advanced, 'force_compatibility', featuresPath),
     },
     developer: {
       enabled: developer === null
@@ -2612,6 +2617,8 @@ event_retention_hours = ${tomlValue(cfg.log.event_retention_hours)}
 [advanced]
 # 全局 HTTP(S) 代理，例如 http://127.0.0.1:7890；留空表示直连
 https_proxy = ${tomlValue(cfg.advanced.https_proxy)}
+# 打开后跳过插件的主程序版本区间校验与 MCP 协议版本区间校验，仅用于应急；每个被放行的插件或服务都会在控制台提示
+force_compatibility = ${tomlValue(cfg.advanced.force_compatibility)}
 `
 }
 
