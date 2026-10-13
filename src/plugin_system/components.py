@@ -17,7 +17,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterable, Mapping, Optional
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterable,
+    Mapping,
+    Optional,
+    TypeVar,
+)
 
 import inspect
 
@@ -51,6 +60,34 @@ InboundObserveHandler = Callable[[int, int, InboundMessage], None]
 # 命令执行体的签名：与 src.core.commands.registry 的 CommandHandler 一致，
 # 同步与异步都接受，分发侧会归一。
 PluginCommandHandler = Callable[[CommandContext], Any]
+
+# 装饰器约束的是方法形状，不是绑定后的执行体。
+# - 现象：直接用上面四个签名标注装饰器入参，Pylance/ty 会在每个被装饰方法上报
+#   参数不兼容（self 被对到第一个业务参数上）。
+# - 原因：装饰器在类体内执行，拿到的是未绑定函数，首参是 self；上面的签名描述的
+#   是收集期经 getattr 取到的绑定方法。
+# - 做法：上界首位用 Any 承接 self、其余位置校验形状；装饰器原样返回同一类型，
+#   被装饰方法的完整签名不会被抹成上界。
+_ToolMethodT = TypeVar(
+    '_ToolMethodT',
+    bound=Callable[[Any, ToolInvocation, ToolContext], Any],
+)
+# 改写体上界的返回值写 Coroutine 而不是 Awaitable：写 Awaitable 时 typeshed 让
+# inspect.iscoroutinefunction 命中返回 TypeGuard 的重载，decorate 里的 handler
+# 被收窄成具体类型，ty 随即报 return handler 与类型变量不符。改写体本就被运行期
+# 检查限定为 async def，Coroutine 不收紧实际约束。
+_InboundRewriteMethodT = TypeVar(
+    '_InboundRewriteMethodT',
+    bound=Callable[[Any, InboundMessage], Coroutine[Any, Any, Optional[str]]],
+)
+_InboundObserveMethodT = TypeVar(
+    '_InboundObserveMethodT',
+    bound=Callable[[Any, int, int, InboundMessage], None],
+)
+_CommandMethodT = TypeVar(
+    '_CommandMethodT',
+    bound=Callable[[Any, CommandContext], Any],
+)
 
 
 @dataclass(frozen=True)
@@ -86,7 +123,7 @@ def tool(
     side_effect: ToolSideEffect = 'readonly',
     capabilities: Iterable[str] = (),
     timeout_ms: int = DEFAULT_TOOL_TIMEOUT_MS,
-) -> Callable[[ToolHandler], ToolHandler]:
+) -> Callable[[_ToolMethodT], _ToolMethodT]:
     """把一个方法声明为插件提供的外部工具。
 
     ``kind`` 固定为 ``external`` 而不开放给插件：终局动作与认知动作都是封闭枚举，
@@ -112,7 +149,7 @@ def tool(
         timeout_ms=timeout_ms,
     )
 
-    def decorate(handler: ToolHandler) -> ToolHandler:
+    def decorate(handler: _ToolMethodT) -> _ToolMethodT:
         """把声明挂到方法上，方法本身原样返回。"""
         if not inspect.iscoroutinefunction(handler):
             raise ValueError(f'工具 {name} 的执行体必须是 async 方法')
@@ -142,7 +179,10 @@ class _BoundToolExecutor:
         return await self._handler(invocation, context)
 
 
-def inbound_rewrite(*, order: int = 0) -> Callable[[InboundRewriteHandler], InboundRewriteHandler]:
+def inbound_rewrite(
+    *,
+    order: int = 0,
+) -> Callable[[_InboundRewriteMethodT], _InboundRewriteMethodT]:
     """把一个方法声明为入站正文改写组件。
 
     改写发生在消息落库**之前**：改后的正文进入历史、记忆与摘要。执行体收到整个
@@ -157,7 +197,7 @@ def inbound_rewrite(*, order: int = 0) -> Callable[[InboundRewriteHandler], Inbo
     """
     spec = InboundRewriteSpec(order=order)
 
-    def decorate(handler: InboundRewriteHandler) -> InboundRewriteHandler:
+    def decorate(handler: _InboundRewriteMethodT) -> _InboundRewriteMethodT:
         """把声明挂到方法上，方法本身原样返回。"""
         if not inspect.iscoroutinefunction(handler):
             raise ValueError('入站改写组件的执行体必须是 async 方法')
@@ -167,7 +207,7 @@ def inbound_rewrite(*, order: int = 0) -> Callable[[InboundRewriteHandler], Inbo
     return decorate
 
 
-def inbound_observe() -> Callable[[InboundObserveHandler], InboundObserveHandler]:
+def inbound_observe() -> Callable[[_InboundObserveMethodT], _InboundObserveMethodT]:
     """把一个方法声明为入站观察组件。
 
     观察发生在消息落库**之后**：执行体拿到落库行一致的 ``message_id``，只读，
@@ -179,7 +219,7 @@ def inbound_observe() -> Callable[[InboundObserveHandler], InboundObserveHandler
         返回的协程对象无人 await，观察会静默丢失。
     """
 
-    def decorate(handler: InboundObserveHandler) -> InboundObserveHandler:
+    def decorate(handler: _InboundObserveMethodT) -> _InboundObserveMethodT:
         """把标记挂到方法上，方法本身原样返回。"""
         if inspect.iscoroutinefunction(handler):
             raise ValueError('入站观察组件的执行体必须是同步方法')
@@ -194,7 +234,7 @@ def command(
     name: str,
     pattern: str,
     description: str,
-) -> Callable[[PluginCommandHandler], PluginCommandHandler]:
+) -> Callable[[_CommandMethodT], _CommandMethodT]:
     """把一个方法声明为插件提供的命令组件。
 
     声明在此，注册不在此：宿主在发现阶段把收集到的声明转交给
@@ -219,7 +259,7 @@ def command(
         description=description,
     )
 
-    def decorate(handler: PluginCommandHandler) -> PluginCommandHandler:
+    def decorate(handler: _CommandMethodT) -> _CommandMethodT:
         """把声明挂到方法上，方法本身原样返回。"""
         setattr(handler, _COMMAND_ATTR, declaration)
         return handler
