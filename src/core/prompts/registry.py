@@ -185,6 +185,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
     }),
     'chat.replyer': frozenset({
         'reference',
+        'materials',
         'length_rule',
         'emotions',
         'gestures',

@@ -628,7 +628,7 @@ async def test_action_protocol_template_placeholders_strict() -> None:
 def _messages_from(build):
     """把同步的消息组装函数包成 Agent 需要的异步回调。"""
 
-    async def call(head):
+    async def call(head, _materials):
         return build(head)
 
     return call

@@ -200,7 +200,7 @@ async def test_registered_tool_executes_and_observation_returns_to_next_round() 
         cognitive_rounds=2,
         tool_context=_tool_context(frame),
         on_round=intermediate.append,
-        replyer_messages=lambda _head: _replyer_messages(),
+        replyer_messages=lambda _head, _materials: _replyer_messages(),
     )
 
     assert outcome.event_status == 'committed'

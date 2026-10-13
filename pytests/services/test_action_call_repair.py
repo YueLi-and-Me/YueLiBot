@@ -136,7 +136,7 @@ def _gate_inputs() -> GateInputFacts:
     )
 
 
-async def _replyer_messages(_head: Any) -> list[dict]:
+async def _replyer_messages(_head: Any, _materials: Any) -> list[dict]:
     return [
         {'role': 'system', 'content': '只负责把话说出来'},
         {'role': 'user', 'content': '请输出 say'},

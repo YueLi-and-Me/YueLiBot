@@ -18,8 +18,10 @@ from typing import (
     Deque,
     Dict,
     Iterable,
+    List,
     Mapping,
     Sequence,
+    Tuple,
 )
 
 import asyncio
@@ -29,19 +31,19 @@ import random
 import re
 import sqlite3
 
-from ..media.chat_image import (
+from src.core.services.media.chat_image import (
     ChatImageDescriber,
     merge_emoji_descriptions,
     merge_image_descriptions,
 )
-from ..media.chat_video import (
+from src.core.services.media.chat_video import (
     ChatVideoDescriber,
     merge_video_descriptions,
     message_concerns_her,
 )
-from ..media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
-from ..console.trace_console import mark_turn_start, render_action_decision, render_turn, render_turn_error
-from ..maintenance.vector import VectorService
+from src.core.services.media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
+from src.core.services.console.trace_console import mark_turn_start, render_action_decision, render_turn, render_turn_error
+from src.core.services.maintenance.vector import VectorService
 
 from src.core.agent.character import pick_tone
 from src.core.agent.action import ActionContext, ActionPolicy, AlwaysReplyPolicy, TurnPlanner
@@ -2302,12 +2304,15 @@ class ChatService(
                 reasoning=chunk.get('reasoning'),
             )
 
-        async def replyer_messages(head: DecisionHead) -> list[dict]:
+        async def replyer_messages(
+            head: DecisionHead, materials: Sequence[Tuple[str, str, str]],
+        ) -> List[Dict]:
             """为工具决策选中的主动回复组装表达层 item 流。"""
             replyer_protocol = render_replyer_protocol(
                 head.reference or '',
                 head.length,
                 emoji_enabled=False,
+                materials=materials,
             )
             replyer_context = add_follow_up_context(
                 await self._enrich_prepared_context(
@@ -2999,12 +3004,15 @@ class ChatService(
         )
         bind_render_params(render_params)
 
-        async def replyer_messages(head: DecisionHead) -> list[dict]:
+        async def replyer_messages(
+            head: DecisionHead, materials: Sequence[Tuple[str, str, str]],
+        ) -> List[Dict]:
             """为工具模式的影子发言生成随后会被完整丢弃的合法正文。"""
             replyer_protocol = render_replyer_protocol(
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
+                materials=materials,
             )
             replyer_context = self._render_prepared_context(
                 prepared,
@@ -3242,7 +3250,9 @@ class ChatService(
         bind_render_params(render_params)
         assistant_raw: list[str] = []
 
-        async def replyer_messages(head: DecisionHead) -> list[dict]:
+        async def replyer_messages(
+            head: DecisionHead, materials: Sequence[Tuple[str, str, str]],
+        ) -> List[Dict]:
             """按已定的动作头组装回复生成那一次调用的消息序列。
 
             人格分两层：决策那一次只拿身份、关系与记忆，这一次才补上表达层
@@ -3251,6 +3261,7 @@ class ChatService(
             各说各话；差别只在表达增强与协议段。
 
             :param head: 已通过校验的动作头，提供背景说明与篇幅。
+            :param materials: 本回合外部工具观察明细，含失败；由协议渲染器原样加入资料段。
             :return: 回复生成那一次调用的完整消息序列。
             副作用：一次向量检索与一次表达选择模型调用。
             """
@@ -3260,6 +3271,7 @@ class ChatService(
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
+                materials=materials,
             )
             replyer_context = await self._enrich_prepared_context(
                 prepared,

@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from contextlib import aclosing
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, List, Mapping, Sequence, cast
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import asyncio
 import json
@@ -224,7 +224,7 @@ def _truncate(text: str, limit: int) -> str:
 def _clip_total(text: str, limit: int) -> str:
     """按总预算截断回灌文本，并显式标注截断。
 
-    多条工具观察共享同一预算：整段拼接后一次性截断，而不是逐条各自截断——
+    多条认知观察共享同一预算：整段拼接后一次性截断，而不是逐条各自截断——
     逐条截断会让先执行的工具占满全部预算，后续观察无法进入回灌。
 
     :param text: 待截断的完整文本。
@@ -243,7 +243,7 @@ def _merge_observation_text(
     """把一轮执行的工具观察合并为单段文本，供事件账本使用。
 
     按执行顺序逐条拼接「工具名 + 入参 + 结果」；认知动作与外部只读工具共用
-    同一份明细，前者的入参是检索词，后者是 JSON 参数。预算截断发生在回灌消息的
+    同一份明细，前者的入参是检索词，后者是 JSON 参数。认知观察的预算截断发生在回灌消息的
     渲染处（_observation_messages），这里只拼文本不截断，账本字段的截断由
     finish 按 OBSERVATION_EVENT_MAX_CHARS 统一处理。
 
@@ -499,7 +499,7 @@ class ConversationAgent:
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None = None,
         on_chunk: Callable[[dict[str, Any]], None] | None = None,
         on_round: Callable[[AgentOutcome], None] | None = None,
-        replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None = None,
+        replyer_messages: Callable[[DecisionHead, Sequence[Tuple[str, str, str]]], Awaitable[List[Dict]]] | None = None,
         signal: asyncio.Event | None = None,
     ) -> AgentOutcome:
         """执行一个回合：若干认知轮之后给出终局动作，并逐轮落账。
@@ -526,7 +526,9 @@ class ConversationAgent:
         :param on_round: 可选的逐轮回调，每个认知轮结束后以该轮结果调用一次；
             终局轮不调用（调用方可直接取得返回值）。用于向调用方展示认知轮的
             中间过程；认知轮不产生任何用户可见产物。
-        :param replyer_messages: 按动作头组装回复生成消息序列的异步回调。提示词、
+        :param replyer_messages: 接收动作头与本回合外部工具明细（工具名、参数文本、
+            观察原文），组装回复生成消息序列的异步回调；明细包含失败观察，不含认知动作。
+            提示词、
             人格与历史都属于调用方，Agent 不自行拼装；组装本身可能包含向量检索与
             表达选择这类模型往返，因此是异步的。省略它（或未注入 replyer）即退回
             单次调用，正文仍从决策流里取。
@@ -551,6 +553,7 @@ class ConversationAgent:
         )
         rounds_left = cognitive_rounds if react_enabled else 0
         working_messages = list(messages)
+        external_materials: List[Tuple[str, str, str]] = []
         round_index = 0
         while True:
             # 调用方给的动作集是权威的：它已经按 stream、门控态、平台能力与初始
@@ -580,6 +583,7 @@ class ConversationAgent:
                 on_events=on_events,
                 on_chunk=on_chunk,
                 replyer_messages=replyer_messages,
+                external_materials=external_materials,
                 signal=signal,
             )
             if outcome.event_status != 'cognitive_step':
@@ -587,6 +591,9 @@ class ConversationAgent:
             # 只执行了外部只读工具的轮没有 ConversationDecision，明细在
             # cognitive_steps 里；这里只断言该轮确实做了事。
             assert outcome.cognitive_steps
+            external_materials.extend(
+                step for step in outcome.cognitive_steps if step[0] not in COGNITIVE_ACTIONS
+            )
             if on_round is not None:
                 on_round(outcome)
             # 一轮响应可以执行多个认知工具：预算按工具条数扣减，不允许先超支
@@ -620,7 +627,8 @@ class ConversationAgent:
         tool_context: ToolContext | None,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
         on_chunk: Callable[[dict[str, Any]], None] | None,
-        replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None,
+        replyer_messages: Callable[[DecisionHead, Sequence[Tuple[str, str, str]]], Awaitable[List[Dict]]] | None,
+        external_materials: Sequence[Tuple[str, str, str]],
         signal: asyncio.Event | None,
     ) -> AgentOutcome:
         """执行一轮模型调用，并在选到工具时就地完成执行。
@@ -638,6 +646,7 @@ class ConversationAgent:
             调用方传入的列表不被修改。
         :param round_index: 轮次序号，从 0 开始。
         :param cognitive_rounds_used: 进入本轮之前已用掉的认知轮次数。
+        :param external_materials: 此前各轮的外部工具明细，供本轮回复生成原样使用。
         :param rounds_left: 进入本轮时的剩余认知预算；一轮响应执行多个认知工具
             后若预算为负且未给出终局动作，按协议错误记账。
         :return: 本轮结果；工具轮返回 ``cognitive_step`` 并带上观察正文。
@@ -664,6 +673,7 @@ class ConversationAgent:
                     on_events=on_events,
                     on_chunk=on_chunk,
                     replyer_messages=replyer_messages,
+                    external_materials=external_materials,
                     signal=signal,
                     started=started,
                     repairs_used=repairs_used,
@@ -690,7 +700,8 @@ class ConversationAgent:
         tool_context: ToolContext | None,
         on_events: Callable[[list[ParseEvent]], Awaitable[None]] | None,
         on_chunk: Callable[[dict[str, Any]], None] | None,
-        replyer_messages: Callable[[DecisionHead], Awaitable[list[dict]]] | None,
+        replyer_messages: Callable[[DecisionHead, Sequence[Tuple[str, str, str]]], Awaitable[List[Dict]]] | None,
+        external_materials: Sequence[Tuple[str, str, str]],
         signal: asyncio.Event | None,
         started: float,
         repairs_used: int,
@@ -702,6 +713,7 @@ class ConversationAgent:
         :param round_index: 轮次序号，从 0 开始。
         :param cognitive_rounds_used: 进入本轮之前已用掉的认知轮次数。
         :param started: 本轮计时起点，跨纠错尝试不变，事件耗时因此覆盖重试。
+        :param external_materials: 此前各轮的外部工具明细，不含认知观察。
         :param repairs_used: 进入本次尝试前已用掉的纠错次数，用于预算判断与
             审计事件中的纠错记数。
         :return: 本次尝试的结果。
@@ -1069,8 +1081,14 @@ class ConversationAgent:
                 assert replyer_messages is not None
                 body_parts.clear()
                 emoji_emotions.clear()
+                # 同一响应中的终局动作尚未看过前序工具结果；回复生成必须同时
+                # 取得此前各轮与当前响应的外部观察，不能依赖动作头转述。
+                materials = (
+                    *external_materials,
+                    *(step for step in steps if step[0] not in COGNITIVE_ACTIONS),
+                )
                 await self._stream_body(
-                    await replyer_messages(planned_head),
+                    await replyer_messages(planned_head, materials),
                     release=release,
                     on_chunk=on_chunk,
                     body_parts=body_parts,
@@ -1406,8 +1424,9 @@ def _observation_messages(
 ) -> list[dict[str, str]]:
     """把一轮执行的工具及其观察渲染为下一轮可读的消息。
 
-    一条工具一块，保持因果清晰；多块共享 OBSERVATION_MAX_CHARS 总预算，
-    超出部分在最后一块截断并显式标注。XML 角色模式保留 assistant 动作头与
+    一条工具一块，保持因果清晰；认知动作共享 600 字预算，外部工具的长度由
+    工具自己控制。工具模式先放认知观察，再按执行顺序原样放外部观察。
+    XML 角色模式保留 assistant 动作头与
     user 结果两条消息；工具模式已经由函数调用表达动作，不再回灌 XML：
     把调用与结果折叠成一个 user item，不重新引入 assistant 角色与第二套协议。
 
@@ -1423,18 +1442,24 @@ def _observation_messages(
     """
     notice = f'\n\n{_FINAL_ROUND_NOTICE}' if final_round else ''
     if flattened:
-        blocks = [
-            (
-                f'[已完成的工具调用]\n动作：{name}\n查询：{argument}\n\n'
-                f'[工具返回]\n{observation}'
-                if name in COGNITIVE_ACTIONS
-                else
-                f'[已完成的工具调用]\n工具：{name}\n参数：{argument}\n\n'
-                f'[工具返回]\n{observation}'
-            )
-            for name, argument, observation in steps
-        ]
-        content = _clip_total('\n\n'.join(blocks), OBSERVATION_MAX_CHARS) + notice
+        cognitive_blocks: List[str] = []
+        external_blocks: List[str] = []
+        for name, argument, observation in steps:
+            if name in COGNITIVE_ACTIONS:
+                cognitive_blocks.append(
+                    f'[已完成的工具调用]\n动作：{name}\n查询：{argument}\n\n'
+                    f'[工具返回]\n{observation}'
+                )
+            else:
+                external_blocks.append(
+                    f'[已完成的工具调用]\n工具：{name}\n参数：{argument}\n\n'
+                    f'[工具返回]\n{observation}'
+                )
+        blocks = (
+            [_clip_total('\n\n'.join(cognitive_blocks), OBSERVATION_MAX_CHARS)]
+            if cognitive_blocks else []
+        )
+        content = '\n\n'.join([*blocks, *external_blocks]) + notice
         return [{'role': 'user', 'content': content}]
     action, query, observation = steps[0]
     return [

@@ -309,7 +309,7 @@ async def _run_tool_round(cross_person: bool) -> None:
         tool_registry=registry,
     )
 
-    async def replyer_messages(_head: Any) -> list[dict]:
+    async def replyer_messages(_head: Any, _materials: Any) -> list[dict]:
         return [
             {'role': 'system', 'content': '只负责把话说出来'},
             {'role': 'user', 'content': '请输出 say'},
