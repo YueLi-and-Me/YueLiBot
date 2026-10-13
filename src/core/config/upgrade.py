@@ -365,7 +365,10 @@ def backup_config_directory(directory: Path, data_dir: Path) -> Path:
     副作用：在 ``data/backups/config/<时间戳>/`` 下复制整个配置目录。
     """
 
-    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    # 现象：主配置与独立配置在同一秒升级时备份目录冲突。
+    # 原因：原命名只精确到秒，两个整目录备份共享同一路径。
+    # 后果：保留微秒，避免第二份配置在写入前因已有备份而中断。
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     dest = data_dir / 'backups' / 'config' / stamp
     shutil.copytree(directory, dest)
     logger.info('config_backup_created', dest=str(dest))

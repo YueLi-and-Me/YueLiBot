@@ -40,6 +40,9 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     # 插件宿主
     "plugin_system.registry": ("#87d787", False),
     "plugin_system.manifest": ("#ffd787", False),
+    "mcp.manager": ("#5fd7ff", True),
+    "mcp.compat.sdk": ("#87d7ff", True),
+    "mcp.snapshot": ("#ffd787", False),
     "plugin_system.config": ("#afd7af", False),
     "plugin_system.components": ("#d7d787", False),
     # 适配器插件
@@ -143,6 +146,9 @@ MODULE_ALIASES: Dict[str, str] = {
     "plugin_system.context": "插件",
     "plugin_system.registry": "插件注册表",
     "plugin_system.manifest": "插件版本",
+    "mcp.manager": "MCP 管理",
+    "mcp.compat.sdk": "MCP 连接",
+    "mcp.snapshot": "MCP 清单",
     "plugin_system.config": "插件配置",
     "plugin_system.components": "插件组件",
     "adapters.yueli_napcat_adapter.plugin": "NapCat适配",

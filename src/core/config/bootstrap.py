@@ -34,6 +34,7 @@ from .adapter_selection import (
     read_active_adapter,
 )
 from .loader import CONFIG_VERSION
+from src.core.mcp.config import mcp_template
 from .schema import (
     ApiProviderConfig,
     BotDocument,
@@ -444,6 +445,11 @@ def bootstrap_config_directory(config_dir: Path) -> List[Path]:
             NAPCAT_CONFIG_VERSION,
         )
         created.append(adapter_path)
+
+    mcp_path = config_dir / 'mcp.toml'
+    if not mcp_path.is_file():
+        mcp_path.write_text(mcp_template(), encoding='utf-8')
+        created.append(mcp_path)
 
     for path in created:
         logger.info('config_file_created', path=str(path))

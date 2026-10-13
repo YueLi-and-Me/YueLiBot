@@ -97,6 +97,8 @@ from src.core.awareness.sleep import SleepState
 from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
 from src.core.config.schema import Config, TypingConfig
+from src.core.mcp.config import McpConfig
+from src.core.mcp.manager import McpManager
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params, dump as dump_llm_request
@@ -227,6 +229,7 @@ class ChatService(
         *,
         cfg: Config,
         data_dir: Path = Path('data'),
+        mcp: McpManager | None = None,
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
         broker: PlatformBroker | None = None,
@@ -249,6 +252,7 @@ class ChatService(
         :param summary_provider: 摘要模型；可为 ``None``。
         :param push_event: 接收频道、载荷和 stream ID 的事件推送回调。
         :param cfg: 已校验的运行时配置。
+        :param mcp: 组合根提供的 MCP 管理器；独立构造时使用不连接服务的关闭态实例。
         :param speak_audio: 可选的同步或异步语音回调。
         :param vector: 可选向量服务；省略时创建禁用实例。
         :param broker: 可选的非桌面平台出站路由器。
@@ -388,6 +392,7 @@ class ChatService(
         # 工具注册表按进程装配一次：动作声明按回合帧动态生成，外部工具也按
         # 当前会话能力与剩余认知预算过滤后再下发。
         self._tool_registry = build_builtin_action_registry()
+        self._mcp = mcp if mcp is not None else McpManager(McpConfig(enabled=False), data_dir=data_dir, providers={})
         # 插件在构造期发现并登记工具与命令，与 on_load 的先后是刻意的：登记必须在
         # ConversationAgent 拿到注册表之前完成，而 on_load 可能要做 I/O，只能等到
         # startup。因此 tools() 不得依赖 on_load 建立的状态，该约束写在契约里。
@@ -405,6 +410,7 @@ class ChatService(
         for plugin in self._plugins.tool_plugins():
             for spec, executor in plugin.tools():
                 self._tool_registry.register_tool(spec, executor)
+        self._mcp.bind_registry(self._tool_registry)
         # 命令与工具同批注册：重名当场抛错终止启动，而不是静默丢一条命令。
         self._plugins.register_commands()
         # 灰度关闭时不持有 Agent，避免任何意外调用；provider 未注入时同样置空。
@@ -2885,7 +2891,7 @@ class ChatService(
             react=react_enabled,
             available_reactions=REACTION_IDS if react_enabled else (),
             poke=self._poke_available(context),
-            plugin_capabilities=self._plugins.stream_capabilities(context.stream.id),
+            plugin_capabilities=self._plugins.stream_capabilities(context.stream.id) | self._mcp.stream_capabilities(context.stream.id),
         )
         return DecisionFrame(
             turn_id=turn,

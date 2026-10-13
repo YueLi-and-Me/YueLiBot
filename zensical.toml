@@ -48,6 +48,7 @@ nav = [
       { "models.toml" = "manual/configuration/models.md" },
       { "providers.toml" = "manual/configuration/providers.md" },
       { "features.toml" = "manual/configuration/features.md" },
+      { "MCP 工具" = "manual/configuration/mcp.md" },
       { "适配器配置" = "manual/configuration/adapter.md" },
     ] },
     { "功能" = [
@@ -100,6 +101,7 @@ nav = [
       { "core/services" = "dev/modules/core-services.md" },
       { "core/db" = "dev/modules/core-db.md" },
       { "core/config" = "dev/modules/core-config.md" },
+      { "core/mcp" = "dev/modules/core-mcp.md" },
       { "core/platform_io" = "dev/modules/core-platform-io.md" },
       { "core/logging 与 observe" = "dev/modules/core-observability.md" },
       { "electron" = "dev/modules/electron.md" },

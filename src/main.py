@@ -54,6 +54,7 @@ from src.core.config.schema import (
     ProviderCatalog,
 )
 from src.core.config.upgrade import upgrade_config_directory
+from src.core.mcp.manager import McpManager
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
@@ -885,6 +886,9 @@ def main() -> None:
 
         return await push(stream_id, channel, payload)
 
+    mcp = McpManager.from_directory(config_dir, data_dir=data_dir,
+        proxy=cfg.advanced.https_proxy, force=cfg.advanced.force_compatibility)
+    app_state.mcp = mcp
     app_state.chat = ChatService(
         db=db,
         chat_provider=chat_provider,
@@ -893,6 +897,7 @@ def main() -> None:
         push_event=_push_event,
         cfg=cfg,
         data_dir=data_dir,
+        mcp=mcp,
         broker=broker,
         expression_provider=routers.expression if routers.expression.ready else None,
         planner_provider=routers.planner if routers.planner.ready else None,
@@ -1240,6 +1245,7 @@ def main() -> None:
         _emoji_maintenance,
         _stop_emoji_maintenance,
     )
+    lifecycle.register('mcp', mcp.startup, mcp.shutdown)
     lifecycle.register('chat', app_state.chat.startup, app_state.chat.shutdown)
     lifecycle.register("awareness", awareness.startup, awareness.shutdown)
 

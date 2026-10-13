@@ -97,6 +97,7 @@ def test_空目录生成整套配置(tmp_path: Path, adapters_root: Path) -> Non
 
     names = {path.name for path in created}
     assert names >= set(MAIN_CONFIG_FILES)
+    assert 'mcp.toml' in names
     assert 'adapter.toml' in names
     assert (adapters_root / DEFAULT_ADAPTER_PLUGIN / 'config.toml').is_file()
     for name in MAIN_CONFIG_FILES:
