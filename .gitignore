@@ -98,6 +98,7 @@ __pycache__/
 .claude/
 .cursor/
 .aider*
+.copilot/
 .mimosa/
 .scrape/
 
@@ -107,3 +108,19 @@ __pycache__/
 
 # WebUI 性能探针的本地采样产物，随每次开发运行增长，属运行日志不入库。
 /webui/logs/
+
+# 凭证、编辑器交换文件与测试构建产物不得随源码提交。
+*.pem
+*.key
+*.p12
+*.swp
+*.swo
+*.iml
+*.pyc
+*.sqlite
+.coverage
+htmlcov/
+build/
+.DS_Store
+Thumbs.db
+desktop.ini
