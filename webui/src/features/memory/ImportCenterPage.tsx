@@ -139,7 +139,7 @@ export function ImportCenterPage() {
               <Textarea
                 aria-label="要导入的资料"
                 className="min-h-64"
-                placeholder="粘贴要导入的资料；空行分段，一段一条知识条目"
+                placeholder="粘贴要导入的资料；空行分段，较短的相邻段落合并为一条，单独一行的小标题挂在其下各条开头"
                 value={text}
                 disabled={busy || inProgress}
                 onChange={(event) => setText(event.target.value)}

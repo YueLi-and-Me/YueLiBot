@@ -149,7 +149,7 @@ async def test_materials_preserve_order_across_rounds_and_terminal_response() ->
 
 
 def test_mixed_observations_keep_cognitive_budget_and_complete_external_blocks() -> None:
-    steps = [('read_material', '{}', '外部一' * 800), ('recall', '过去', '认知' * 800),
+    steps = [('read_material', '{}', '外部一' * 800), ('recall', '过去', '认知' * OBSERVATION_MAX_CHARS),
              ('read_material', '{"page": 2}', '外部二' * 800)]
     content = _observation_messages(steps, final_round=True, flattened=True)[0]['content']
     assert content.startswith('[已完成的工具调用]\n动作：recall')

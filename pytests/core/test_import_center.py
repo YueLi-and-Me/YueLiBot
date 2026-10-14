@@ -13,6 +13,7 @@ import pytest
 from src.core.db.migrations.bootstrap import write_user_version
 from src.core.db.migrations.manager import CURRENT_VERSION, get_user_version, run_migrations
 from src.core.memory import import_center
+from src.core.memory.chunking import CHUNK_MAX_CHARS, CHUNK_TARGET_CHARS
 from src.core.memory.knowledge import add_knowledge, search_knowledge
 
 NOW = 1_800_000_000_000
@@ -22,12 +23,29 @@ def _reset_lock():
     import_center._release_import_lock()
 
 
+def _item(text: str) -> str:
+    """把一条用例条目补足到切块目标长度，使它单独成块。
+
+    导入走通用切块，短段会合并成一块；这里的用例按「一段一条」计数，
+    条目必须够长才不会与相邻段合并。补足部分对每条都不同，不会触发去重。
+    """
+    filler = f'（{text}的补充说明）'
+    padded = text
+    while len(padded) < CHUNK_TARGET_CHARS:
+        padded += filler
+    return padded
+
+
+def _paste(*items: str) -> str:
+    return '\n\n'.join(_item(item) for item in items)
+
+
 @pytest.mark.asyncio
 async def test_star_i1_import_creates_batched_knowledge(db):
     """★I-1：导入 N 条产出 N 条 knowledge，全部指向同一批次。"""
 
     _reset_lock()
-    text = '月璃是一个 QQ 聊天机器人项目。\n\n她的检索层用 BM25 与向量混合排序。'
+    text = _paste('月璃是一个 QQ 聊天机器人项目。', '她的检索层用 BM25 与向量混合排序。')
     result = await import_center.run_import(db, text, '测试资料', NOW)
 
     assert result['submitted'] == 2 and result['added'] == 2
@@ -45,9 +63,9 @@ async def test_star_i2_dedup_reflected_in_added_count(db):
     """★I-2：重复导入去重生效，批次计数是实际新增数而非提交数。"""
 
     _reset_lock()
-    first = await import_center.run_import(db, '他喜欢喝冰美式。\n\n他养了一只猫。', '批一', NOW)
+    first = await import_center.run_import(db, _paste('他喜欢喝冰美式。', '他养了一只猫。'), '批一', NOW)
     second = await import_center.run_import(
-        db, '他喜欢喝冰美式。\n\n他在成都工作。', '批二', NOW + 1,
+        db, _paste('他喜欢喝冰美式。', '他在成都工作。'), '批二', NOW + 1,
     )
 
     assert first['added'] == 2
@@ -66,8 +84,8 @@ async def test_star_i3_delete_only_touches_own_batch(db):
     """★I-3：按批次删除只删该批次，其他批次与无批次存量一条不动。"""
 
     _reset_lock()
-    batch_a = await import_center.run_import(db, '第一批第一条。\n\n第一批第二条。', '批A', NOW)
-    batch_b = await import_center.run_import(db, '第二批唯一一条。', '批B', NOW + 1)
+    batch_a = await import_center.run_import(db, _paste('第一批第一条。', '第一批第二条。'), '批A', NOW)
+    batch_b = await import_center.run_import(db, _paste('第二批唯一一条。'), '批B', NOW + 1)
     legacy_id = add_knowledge(db, '无批次的存量知识。', 'legacy', NOW)
 
     deleted = import_center.delete_batch(db, batch_a['batch_id'])
@@ -76,7 +94,7 @@ async def test_star_i3_delete_only_touches_own_batch(db):
     remaining = {
         row[0] for row in db.execute('SELECT content FROM knowledge').fetchall()
     }
-    assert remaining == {'第二批唯一一条。', '无批次的存量知识。'}
+    assert remaining == {_item('第二批唯一一条。'), '无批次的存量知识。'}
     assert db.execute(
         'SELECT import_batch_id FROM knowledge WHERE id = ?', (legacy_id,)
     ).fetchone()[0] is None
@@ -88,7 +106,7 @@ async def test_star_i4_preview_matches_actual(db):
     """★I-4：删除预览的条数与实际删除数一致。"""
 
     _reset_lock()
-    created = await import_center.run_import(db, '预览条一。\n\n预览条二。\n\n预览条三。', '批', NOW)
+    created = await import_center.run_import(db, _paste('预览条一。', '预览条二。', '预览条三。'), '批', NOW)
 
     preview = import_center.delete_preview(db, created['batch_id'])
     actual = import_center.delete_batch(db, created['batch_id'])
@@ -171,25 +189,20 @@ def test_star_i7_migration_preserves_unbatched_knowledge():
 
 
 class TestChunking:
-    """分块：段落优先、超长段按句切、空段丢弃、无标点硬切。"""
+    """导入走通用切块：短段合并成块，单块不超上限。切块细节见 test_chunking.py。"""
 
-    def test_paragraphs_become_chunks(self):
+    def test_short_paragraphs_are_merged(self):
+        """几个字的短段不再各成一条：一条知识太短，检索时只剩字面碰撞。"""
         text = '第一段。\n\n第二段。\n\n\n第三段。'
-        assert import_center.split_into_chunks(text) == ['第一段。', '第二段。', '第三段。']
+        assert import_center.split_into_chunks(text) == ['第一段。\n第二段。\n第三段。']
 
     def test_long_paragraph_split_by_sentence(self):
         sentence = '这是一个完整的句子。'
         paragraph = sentence * 150
         chunks = import_center.split_into_chunks(paragraph)
         assert len(chunks) > 1
-        assert all(len(chunk) <= import_center.CHUNK_MAX_CHARS for chunk in chunks)
-        assert ''.join(chunk.replace(' ', '') for chunk in chunks) == paragraph
-
-    def test_unpunctuated_wall_is_hard_cut(self):
-        wall = '字' * (import_center.CHUNK_MAX_CHARS * 2 + 10)
-        chunks = import_center.split_into_chunks(wall)
-        assert len(chunks) == 3
-        assert all(len(chunk) <= import_center.CHUNK_MAX_CHARS for chunk in chunks)
+        assert all(len(chunk) <= CHUNK_MAX_CHARS for chunk in chunks)
+        assert ''.join(chunk.replace('\n', '') for chunk in chunks) == paragraph
 
 
 @pytest.mark.asyncio
@@ -207,9 +220,9 @@ async def test_batch_item_limit_rejected(db):
     """分块超过单批条目上限被拒绝。"""
 
     _reset_lock()
-    text = '\n\n'.join(f'独立条目 {i}。' for i in range(import_center.MAX_BATCH_ITEMS + 1))
+    text = _paste(*(f'独立条目 {i}。' for i in range(import_center.MAX_BATCH_ITEMS + 1)))
     with pytest.raises(ValueError, match='单批上限'):
-        await import_center.run_import(db, text, '超条数', NOW)
+        await import_center.run_import(db, text, '超条数', NOW, kind='upload')
 
 
 @pytest.mark.asyncio

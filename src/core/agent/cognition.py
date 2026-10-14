@@ -37,13 +37,17 @@ from src.core.memory.store import MemoryStore, StoredMessage
 from src.core.observe import events as trace
 from src.core.platform_io.types import StreamKind
 
-# 回灌给模型的观察正文上限。观察会占用本回合上下文预算，且每多一轮 ReAct 就再占一次；
-# 超出上限只截断观察，不截断 Bot 原本的历史。
-OBSERVATION_MAX_CHARS = 600
+# 回灌给模型的观察正文上限（字符），同一轮各认知动作共享。观察会占用本回合上下文
+# 预算，且每多一轮 ReAct 就再占一次；超出上限只截断观察，不截断 Bot 原本的历史。
+# 取值须容下一次 consult 的全部命中：5 条知识、每条至多 _KNOWLEDGE_ITEM_MAX_CHARS。
+OBSERVATION_MAX_CHARS = 3000
 # 写入行动事件账本的观察摘要上限；账本仅反映查询内容与命中情况。
 OBSERVATION_EVENT_MAX_CHARS = 300
-# 单条检索结果的展示上限。一条超长消息不应挤掉其余命中项。
+# 单条记忆、情节与历史消息的展示上限。一条超长消息不应挤掉其余命中项。
 _ITEM_MAX_CHARS = 80
+# 单条知识的展示上限（字符）：切块上限 500 字加小标题，知识块整块展示。按 80 字
+# 截断时一块知识只露出开头一句，检索命中了也读不到内容。
+_KNOWLEDGE_ITEM_MAX_CHARS = 600
 
 # (人物 ID, stream ID) -> 该 stream 内的显示名。群聊历史正文不存储说话人前缀，
 # 渲染检索结果时必须实时查询，否则观察结果中会出现无归属的发言。
@@ -618,6 +622,6 @@ class ConsultAction:
             )
         lines = [f'关于「{request.query}」，你查到这些知识：']
         for hit in hits:
-            lines.append(f'- {_clip(hit.content, _ITEM_MAX_CHARS)}')
+            lines.append(f'- {_clip(hit.content, _KNOWLEDGE_ITEM_MAX_CHARS)}')
         touch_knowledge(self._db, [hit.id for hit in hits], current_time())
         return CognitiveObservation(text='\n'.join(lines), hit_count=len(hits))

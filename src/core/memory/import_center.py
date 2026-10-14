@@ -2,8 +2,8 @@
 
 第三方 clone 下来的库是空的——知识、情节、事实全部为零，此前唯一的填充
 通道是只对作者历史库有效的一次性迁移。本模块给任何部署者一个最小导入
-通道：粘贴文本或上传文件，切成条目后逐条走 :func:`add_knowledge`
-（去重与全文索引复用既有判据），向量由向量服务按既有链路补齐。
+通道：粘贴文本或上传文件，经 ``chunking.split_into_chunks`` 清洗切块后逐条走
+:func:`add_knowledge`（去重与全文索引复用既有判据），向量由向量服务按既有链路补齐。
 
 来源批次是撤销的最小单位：每次导入登记一行 ``import_batches``，新建的知识
 行携带批次外键；「这批资料过时了」按批次删除即可整批撤掉，NULL 批次的
@@ -16,13 +16,14 @@
 
 from __future__ import annotations
 
-import re
-import sqlite3
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+import sqlite3
 
 from src.core.logging.logger import get_logger
 from src.core.observe import events as trace
 
+from .chunking import split_into_chunks
 from .knowledge import add_knowledge
 
 logger = get_logger(__name__)
@@ -37,9 +38,6 @@ MAX_PASTE_CHARS = 200_000
 MAX_FILE_BYTES = 2_000_000
 # 单批最多产出的条目数；分块后超过即拒绝，防止一次误操作灌爆知识层。
 MAX_BATCH_ITEMS = 5_000
-# 单条目的目标长度区间（字符）。分块按段落优先，超出上限的段再按句切。
-CHUNK_TARGET_CHARS = 600
-CHUNK_MAX_CHARS = 1_200
 
 # 批次状态机：running -> done / failed。没有重试态——失败批次留下的条目
 # 仍指向该批次，可以按批次撤掉后重导，不需要半途恢复。
@@ -55,51 +53,6 @@ EmbedKnowledgeFn = Callable[[int, str], Awaitable[None]]
 
 class ImportBusyError(RuntimeError):
     """已有一个导入正在进行时抛出；调用方应提示稍后再试，不排队。"""
-
-
-def split_into_chunks(text: str) -> List[str]:
-    """把一段长文本切成知识条目，段落优先、超长段按句二切。
-
-    项目里此前没有「长文本 → 多条 knowledge」的现成实现（运行期抽取的
-    条目由模型直接产出），因此导入侧补了这个最小分块：空行分段，段落在
-    目标区间内整段成条；超过上限的段按句号类标点再切，仍超限的硬切。
-    不做重叠窗口与语义切分——去重靠 content_key，导入内容也不该被
-    期待成连贯语料，按段切已经保住「一条知识一件事」的粒度。
-
-    :param text: 原始文本。
-    :return: 条目列表；全部条目已去空白，空段丢弃。
-    副作用：无。
-    """
-
-    chunks: List[str] = []
-    for paragraph in re.split(r'\n\s*\n', text):
-        paragraph = paragraph.strip()
-        if not paragraph:
-            continue
-        if len(paragraph) <= CHUNK_MAX_CHARS:
-            chunks.append(paragraph)
-            continue
-        current = ''
-        for sentence in re.split(r'(?<=[。！？!?\.])\s*', paragraph):
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            if len(current) + len(sentence) + 1 > CHUNK_MAX_CHARS and current:
-                chunks.append(current)
-                current = sentence
-            else:
-                current = f'{current} {sentence}'.strip() if current else sentence
-        if current:
-            chunks.append(current)
-    # 硬切兜底：无标点的超长段（例如连续粘贴的密文或表格）。
-    finalized: List[str] = []
-    for chunk in chunks:
-        while len(chunk) > CHUNK_MAX_CHARS:
-            finalized.append(chunk[:CHUNK_MAX_CHARS])
-            chunk = chunk[CHUNK_MAX_CHARS:]
-        if chunk:
-            finalized.append(chunk)
-    return finalized
 
 
 def _summary_of(text: str) -> str:
