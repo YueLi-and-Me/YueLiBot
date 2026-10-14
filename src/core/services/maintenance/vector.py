@@ -17,7 +17,6 @@ from src.core.memory.knowledge import knowledge_without_embedding
 from src.core.memory.quantize import (
     backfill_quantized_embeddings,
     pending_quantization_counts,
-    store_fact_quantized,
     store_knowledge_vector_pair,
 )
 from src.core.memory.vector_health import pending_embedding_counts
@@ -166,7 +165,9 @@ class VectorService:
         try:
             return await self._client.embed_one(text)
         except Exception as exc:
-            logger.debug("embed_query_failed", error=str(exc))
+            # 查询向量失败会让本轮检索整体退回纯词面，命中质量明显下降；按 warning
+            # 记录，生产日志不含 debug 级，记成 debug 时这类退化在线上完全不可见。
+            logger.warning("embed_query_failed", error=str(exc))
             return None
 
     async def embed_fact(self, fact_id: int, content: str) -> None:
@@ -185,15 +186,10 @@ class VectorService:
             vec = await self._client.embed_one(content)
             if vec is None:
                 return
+            # 原向量与 SQ8 由 store_embedding 在同一条 UPDATE 里写齐。
             self._store.store_embedding(fact_id, vec)
         except Exception as exc:
             logger.debug("embed_fact_failed", id=fact_id, error=str(exc))
-            return
-        if self._db is not None:
-            try:
-                store_fact_quantized(self._db, fact_id, vec)
-            except Exception as exc:
-                logger.error('embed_fact_quantize_failed', id=fact_id, error=str(exc))
 
     async def embed_knowledge(self, knowledge_id: int, content: str) -> None:
         """为一条知识生成并同步持久化原向量与 SQ8。

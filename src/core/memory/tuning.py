@@ -889,7 +889,8 @@ async def evaluate_round2(
     """按留痕检索词重放召回、并入向量融合重排，输出按会话类型分组的报告。
 
     每个回合用留痕检索词复现两次召回并集，并与 ``candidatePool`` 对账。融合
-    重排直接调用生产的 ``rank_recalled_facts``，查询向量按生产口径取当前文本。
+    重排直接调用生产的 ``rank_recalled_facts``，查询向量按生产口径取当前文本；
+    有查询向量时与生产同源地并上 ``dense_fact_candidates`` 的稠密通道候选。
 
     查询向量按文本缓存：同一文本只调用一次 ``embed_query``，实际调用次数
     与累计耗时记入报告。``embed_query`` 为 ``None`` 时融合退化为词面排序，
@@ -952,9 +953,21 @@ async def evaluate_round2(
         )
         reconcile = reconcile_trace_pool(replay, sample.candidate_pool)
         query_embedding = await query_vector(sample.current_text)
+        # 与生产的回复增强阶段同源：有查询向量时并上稠密通道候选再融合重排。
+        # 留痕的候选池只记词面一路，对账因此只比词面池，稠密候选按当前库重算。
+        candidates = list(replay)
+        if query_embedding is not None:
+            candidates.extend(store.dense_fact_candidates(
+                present, sample.current_text, query_embedding, k, sample.at,
+                stream_kind=sample.stream_kind,
+                private_in_group=private_in_group,
+                exclude_marked=sample.exclude_marked,
+                exclude_ids={fact.id for fact in replay},
+                overrides=evaluated,
+            ))
         ranked_ids = [
             fact.id for fact in store.rank_recalled_facts(
-                replay, query_embedding, k, overrides=evaluated,
+                candidates, query_embedding, k, overrides=evaluated,
             )
         ]
         # 不可评分的回合照样重放与对账，只是不带正例、不进 nDCG 统计。
@@ -966,6 +979,7 @@ async def evaluate_round2(
             'reconcile': reconcile.as_dict(),
             'positive_count': len(positives),
             'candidate_count': len(replay),
+            'dense_candidate_count': len(candidates) - len(replay),
             'recall_count': len(ranked_ids),
             'ranked_ids': ranked_ids,
             'ndcg': round(ndcg_at_k(ranked_ids, positives, k), 4),

@@ -507,6 +507,7 @@ class ChatService(
                             cfg.memory_feedback.enabled
                             and cfg.memory_feedback.hard_filter_enabled
                         ),
+                        embed_query=self._embed_query,
                     )
                 ),
             )
@@ -519,7 +520,7 @@ class ChatService(
             self._tool_registry.bind_action_executor(
                 'consult',
                 CognitiveToolExecutor(
-                    ConsultAction(db, embed_query=self._vector.embed_query)
+                    ConsultAction(db, embed_query=self._embed_query)
                 ),
             )
         self._desktop_context = self._registry.desktop_context()
@@ -696,6 +697,23 @@ class ChatService(
         if s is None:
             return SleepState(asleep=False, just_woke=False, resting=False)
         return s
+
+    async def _embed_query(self, text: str) -> bytes | None:
+        """经当前装配的向量服务取查询向量，供认知动作在执行时调用。
+
+        [WORKAROUND] 向量服务晚于本服务装配。
+        - 现象：构造期把 ``self._vector.embed_query`` 交给认知动作，绑定的是占位
+          服务的方法，动作永远拿到 ``None``，检索恒为纯词面且不报任何错。
+        - 原因：``VectorService`` 依赖本服务创建的 ``MemoryStore``，``__main__``
+          只能在构造完成后再把真实服务赋给 ``_vector``。
+        - 后果：认知动作必须持有本方法而不是向量服务的绑定方法，每次调用时
+          才解析 ``_vector``；改回绑定方法会让 recall / consult 的向量通道静默失效。
+
+        :param text: 待向量化的查询文本。
+        :return: 小端 float32 packed 向量；服务禁用或调用失败时为 ``None``。
+        副作用：向量服务启用时发起一次 embedding 请求。
+        """
+        return await self._vector.embed_query(text)
 
     async def ensure_schedule(self, now: int | None = None) -> None:
         """确保指定时间对应的日程已经可用。

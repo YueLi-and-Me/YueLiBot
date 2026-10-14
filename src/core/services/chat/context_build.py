@@ -624,11 +624,24 @@ class ContextBuildMixin:
         副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID。
         """
         query_embedding = await self._vector.embed_query(prepared.query)
-        facts = self.memory.rank_recalled_facts(
-            prepared.fact_candidates,
-            query_embedding,
-            int(tuned_value('fact_recall_limit', self._fact_recall_limit)),
-        )
+        limit = int(tuned_value('fact_recall_limit', self._fact_recall_limit))
+        candidates: list[RecalledFact] = list(prepared.fact_candidates)
+        if query_embedding is not None:
+            # 稠密通道只在这里接入：查询向量是确认回复之后才取的，决策阶段的候选
+            # 池只有词面一路。稠密候选不经过组装期的分数百分位截尾——那道阈值按
+            # 词面阶段分计算，稠密候选的词面分天然偏低，进去就会被整批截掉。
+            candidates.extend(self.memory.dense_fact_candidates(
+                self._present_person_ids(prepared.context, prepared.batch_person_ids),
+                prepared.query,
+                query_embedding,
+                limit,
+                prepared.now,
+                stream_kind=prepared.context.stream.kind,
+                private_in_group=self._private_facts_in_group,
+                exclude_marked=prepared.exclude_marked,
+                exclude_ids={fact.id for fact in candidates},
+            ))
+        facts = self.memory.rank_recalled_facts(candidates, query_embedding, limit)
         self.memory.reinforce_recalled_facts(facts, prepared.now)
         expression_habits = render_expression_habits(
             await self._pick_expression_habits(

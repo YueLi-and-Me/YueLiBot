@@ -9,7 +9,8 @@ knowledge 不是「Bot 的记忆」而是「Bot 知道的事」：没有衰减�
 - 向量重算：待办集合就是 ``embedding IS NULL``，无需游标表即可断点续跑。
 
 检索侧（``search_knowledge`` / ``related_concepts`` / ``touch_knowledge``）
-在同模块的检索一节。
+在同模块的检索一节；``search_knowledge`` 的稠密向量路依赖 ``dense.py`` 的
+SQ8 打分与常驻索引，由 ``agent/cognition.py`` 的 ``ConsultAction`` 调用。
 """
 
 from __future__ import annotations
@@ -19,7 +20,16 @@ from typing import Sequence
 
 import sqlite3
 
-from .decay import relevance_from_bm25, retention_weight, score
+import numpy as np
+
+from .decay import relevance_from_bm25, retention_weight
+from .dense import (
+    KnowledgeVectorIndex,
+    cosine_scores,
+    fused_relevance,
+    query_unit_vector,
+    top_k,
+)
 from .similarity import exact_key
 from .tokenize import index_tokens, match_query
 
@@ -136,22 +146,6 @@ def knowledge_without_embedding(db: sqlite3.Connection, limit: int) -> list[tupl
     return [(r[0], r[1]) for r in rows]
 
 
-def store_knowledge_embedding(
-    db: sqlite3.Connection, knowledge_id: int, embedding: bytes
-) -> None:
-    """把一条重算出的向量写回知识行。
-
-    :param db: 当前库连接。
-    :param knowledge_id: ``knowledge.id`` 稳定主键。
-    :param embedding: 小端 float32 packed 字节串；维度由调用方保证与当前
-        向量模型一致——不同模型的向量空间不可比，旧值一个数值都不许搬。
-    :raises sqlite3.Error: 更新或提交失败。
-    副作用：更新 ``knowledge.embedding`` 并提交事务；不存在的 id 不会新增记录。
-    """
-    db.execute('UPDATE knowledge SET embedding = ? WHERE id = ?', (embedding, knowledge_id))
-    db.commit()
-
-
 # ---------------------------------------------------------------- 检索
 
 
@@ -176,52 +170,95 @@ def search_knowledge(
     limit: int,
     *,
     query_embedding: bytes | None = None,
+    vector_index: KnowledgeVectorIndex | None = None,
 ) -> list[KnowledgeHit]:
-    """按 BM25 + 向量联合打分检索知识。
+    """按 BM25 与 SQ8 稠密向量两路取候选、融合打分检索知识。
 
-    打分口径与 ``MemoryStore.recall_facts`` 完全一致：FTS 按 BM25 取候选，
-    查询向量与行向量都在时按 0.4/0.6 融合语义相关度——复用
-    ``decay.relevance_from_bm25()`` 与 ``decay.score()``，不另造公式。唯一的
-    差别是知识不衰减，``retention`` 恒取 1（此时 ``score(bm25, 1.0)`` 就是
-    词面相关度本身）。任一向量缺失或坏掉时退回 BM25，不抛异常。
+    两路各取 ``limit * 3`` 条候选后取并集：
+
+    1. 词面路：FTS5 按 BM25 取前若干条；
+    2. 稠密路：查询向量与全部知识的 SQ8 向量算余弦取前若干条。用词不同、
+       BM25 排不进前列的条目由这一路补进候选池。
+
+    并集内每条按 ``dense.fused_relevance`` 打分，与事实召回同一个公式。只在
+    稠密路出现的条目按同一检索式补算真实 BM25，而不是记作零：
+    ``relevance_from_bm25`` 在高分段趋于饱和，词面路的条目普遍在 0.8 以上，
+    记零会让稠密路的条目在融合分上几乎不可能胜出，这条通道等于没接。
+    行内没有 SQ8（刚写入、尚未补算向量）的条目只取词面相关度。知识不衰减，
+    留存度恒取 1。
 
     :param db: 当前库连接。
     :param query: 待检索的自然语言查询。
     :param limit: 最多返回的条数。
     :param query_embedding: 查询文本的小端 float32 packed 向量；``None`` 时
-        仅使用 BM25。
-    :return: 按相关度降序的命中列表；查询无有效词时返回空列表。
-    :raises sqlite3.Error: FTS 查询失败。
-    副作用：只读 knowledge_fts 与 knowledge；不写任何列、不提交事务。
+        只走词面路，结果与引入稠密路之前一致。
+    :param vector_index: 常驻的知识向量索引，长期存活的调用方（``ConsultAction``）
+        应持有一个复用；省略时本次临时整表读取 SQ8，只适合脚本与用例。
+    :return: 按相关度降序的命中列表；查询既无有效词又无查询向量时返回空列表。
+    :raises ValueError: 查询向量非法，或其维度与库内 SQ8 向量不一致。
+    :raises RuntimeError: meta 表缺少知识向量修订号。
+    :raises sqlite3.Error: 查询失败。
+    副作用：只读 knowledge_fts、knowledge 与 meta；不写任何列、不提交事务。
         命中计数由调用方在确认采用后经 :func:`touch_knowledge` 单独记录。
     """
-    match = match_query(query)
-    if not match or limit < 1:
+    if limit < 1:
         return []
-    rows = db.execute(
-        '''SELECT k.id, k.content, bm25(knowledge_fts) AS bm, k.embedding
-           FROM knowledge_fts JOIN knowledge k ON k.id = knowledge_fts.rowid
-           WHERE knowledge_fts MATCH ?
-           ORDER BY bm ASC LIMIT ?''',
-        (match, limit * 3),
-    ).fetchall()
+    match = match_query(query)
+    if not match and query_embedding is None:
+        return []
+    candidate_limit = limit * 3
+    lexical: dict[int, float] = {}
+    contents: dict[int, str] = {}
+    if match:
+        for row in db.execute(
+            '''SELECT k.id, k.content, bm25(knowledge_fts) AS bm
+               FROM knowledge_fts JOIN knowledge k ON k.id = knowledge_fts.rowid
+               WHERE knowledge_fts MATCH ?
+               ORDER BY bm ASC LIMIT ?''',
+            (match, candidate_limit),
+        ):
+            lexical[int(row[0])] = relevance_from_bm25(row[2])
+            contents[int(row[0])] = row[1]
+    cosines: dict[int, float] = {}
+    if query_embedding is not None:
+        index = vector_index if vector_index is not None else KnowledgeVectorIndex(db)
+        matrix = index.matrix()
+        scores = cosine_scores(matrix, query_unit_vector(query_embedding))
+        dense_only = [
+            kid for kid, _ in top_k(matrix, scores, candidate_limit) if kid not in lexical
+        ]
+        if dense_only:
+            placeholders = ','.join('?' * len(dense_only))
+            for row in db.execute(
+                f'SELECT id, content FROM knowledge WHERE id IN ({placeholders})',
+                dense_only,
+            ):
+                contents[int(row[0])] = row[1]
+            if match:
+                for row in db.execute(
+                    f'''SELECT rowid, bm25(knowledge_fts) FROM knowledge_fts
+                        WHERE knowledge_fts MATCH ? AND rowid IN ({placeholders})''',
+                    (match, *dense_only),
+                ):
+                    lexical[int(row[0])] = relevance_from_bm25(row[1])
+            for kid in dense_only:
+                lexical.setdefault(kid, 0.0)
+        # 两路候选的余弦都取自同一次整库打分；矩阵行按 id 升序，二分定位行号。
+        candidate_ids = np.fromiter(lexical, dtype=np.int64, count=len(lexical))
+        rows_at = np.searchsorted(matrix.ids, candidate_ids)
+        for kid, at in zip(candidate_ids.tolist(), rows_at.tolist()):
+            if at < len(matrix) and int(matrix.ids[at]) == kid:
+                cosines[kid] = float(scores[at])
     scored: list[KnowledgeHit] = []
-    for r in rows:
-        final = score(r[2], 1.0)
-        embedding = r[3]
-        if query_embedding is not None and embedding is not None:
-            try:
-                from .embed import cosine
-                # 查询向量按 float32 打包，每个分量占 4 字节；维度必须与解包结果一致。
-                dim = len(query_embedding) // 4
-                cos = cosine(query_embedding, embedding, dim)
-                # 余弦 [-1, 1] 映射到 [0, 1]，与 BM25 同一分数域后 0.4/0.6 融合。
-                relevance = 0.4 * relevance_from_bm25(r[2]) + 0.6 * ((cos + 1) / 2)
-                final = relevance * retention_weight(1.0)
-            except Exception:
-                # 向量计算失败时保留 BM25 相关度，单条坏向量不阻断整批召回。
-                pass
-        scored.append(KnowledgeHit(id=r[0], content=r[1], score=final))
+    for kid, relevance in lexical.items():
+        # 稠密路命中的行可能在打分与取正文之间被删除，取不到正文即视为已不存在。
+        if kid not in contents:
+            continue
+        if kid in cosines:
+            relevance = fused_relevance(relevance, cosines[kid])
+        scored.append(KnowledgeHit(
+            id=kid, content=contents[kid], score=relevance * retention_weight(1.0),
+        ))
     scored.sort(key=lambda hit: hit.score, reverse=True)
     return scored[:limit]
 

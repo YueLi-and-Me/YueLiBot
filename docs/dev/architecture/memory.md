@@ -110,16 +110,20 @@
    （services/chat/helpers.py:30）把同槽冲突组的**全体成员**（包括本轮没被
    召回的）补齐进提示词——冲突事实只注入一半等于没注入，模型只看到一边
    就会把那边当定论。
-5. **确认要回复之后才做写回**（`_enrich_prepared_context`，
-   context_build.py:556）：为当前文本取向量，`rank_recalled_facts`
-   （store.py:1699）在既有候选池上纯内存重排（不重新查库），然后
-   `reinforce_recalled_facts`（store.py:1732）只对最终实际进提示词的事实
-   回补强度。决策期的检索不回补——`recall_facts_in_scope` 整体是只读的，
+5. **确认要回复之后才做写回**（`_enrich_prepared_context`）：为当前文本取
+   向量，`dense_fact_candidates` 在同一在场者范围内按 SQ8 余弦补进稠密通道
+   候选（与词面池按 ID 去重，不经组装期的分数百分位截尾——那道阈值按词面
+   阶段分计算，稠密候选的词面分天然偏低），`rank_recalled_facts` 对合并后的
+   池子做融合重排，然后 `reinforce_recalled_facts` 只对最终实际进提示词的
+   事实回补强度。稠密通道只在这一步接入：查询向量在确认回复后才取，决策
+   阶段的候选池只有词面一路。决策期的检索不回补——`recall_facts_in_scope` 整体是只读的，
    否则「被反复检索」本身会改写遗忘曲线，一条没人用的事实会越查越牢。
 6. **主动检索走认知动作**（agent/cognition.py）：ReAct 回环里模型可调
-   `recall`（事实+情节，cognition.py:128）、`inspect`（水位之前的聊天原文，
-   走 store.py:1639 的 `search_messages`）、`consult`（知识层，
-   knowledge.py:173 的 `search_knowledge`）。`search_messages` 有意不建 FTS
+   `recall`（事实+情节，装配了查询向量时同样并上稠密通道候选再融合重排）、
+   `inspect`（水位之前的聊天原文，走 `search_messages`）、`consult`（知识层，
+   `search_knowledge`）。两个动作的查询向量回调是 `ChatService._embed_query`，
+   每次调用时才解析向量服务：真实服务由 `__main__` 在聊天服务构造之后装配，
+   构造期绑定会拿到占位服务，检索恒为纯词面且不报错。`search_messages` 有意不建 FTS
    表，用「分词 → LIKE 预筛（硬上界 200 行）→ 内存按命中词数打分」代替，
    代价可控且行为可单测（store.py:1648 的注释）。
 
@@ -141,14 +145,26 @@
 4. **融合形态**：`blend_score`（tuning.py:168）= `relevance^bm25_weight ×
    (floor + (1-floor) × retention)`。两个权重取默认值时与旧的
    `decay.score` 逐字节等价；调优只改系数，不改乘法形态。
-5. **向量融合**：查询向量与事实向量都在时，余弦 `[-1,1]` 映射到 `[0,1]`
-   后按 0.4/0.6 与词面相关度加权（store.py:1413-1421）。任一侧缺失或单条
-   坏向量只放弃该条的语义融合，退回 BM25。词面权重要保留的原因写在
-   store.py:1408-1412 的注释里：BM25 对专名、数字、代码关键字的精确匹配
-   不可由语义相似度完全替代；留存度也必须在融合**之后**统一施加，否则
-   向量分支会绕过遗忘曲线。
-6. **知识层复用同一套公式**，唯一差别是留存度恒取 1
-   （knowledge.py:173-226）。
+5. **两路候选与向量融合**：候选来自两路——FTS5 BM25 取前 `limit * 3` 条，
+   稠密通道在 SQ8 向量上按余弦取前 `limit * 3` 条（dense.py），两路取并集。
+   稠密独有的条目按同一检索式补算真实 BM25，词面不匹配的记 0：
+   `relevance_from_bm25` 在高分段饱和，词面路的条目普遍在 0.8 以上，一律
+   记零会让稠密候选几乎不可能胜出。并集内查询向量与条目 SQ8 都在时，余弦
+   `[-1,1]` 映射到 `[0,1]` 后按 0.4/0.6 与词面相关度加权（`fused_relevance`）；
+   条目尚无 SQ8 时只取词面相关度。查询向量缺失时只走词面路，结果与引入
+   稠密通道之前一致；SQ8 非法或维度与查询向量不一致时报错而不跳过——向量
+   空间登记（vector_space.py）在换模型时会清空旧向量，正常运行不会出现。
+   词面权重要保留的原因写在 store.py 的 `recall_facts` 注释里：BM25 对
+   专名、数字、代码关键字的精确匹配不可由语义相似度完全替代；留存度也必须
+   在融合**之后**统一施加，否则向量分支会绕过遗忘曲线。
+6. **知识层复用同一套公式**，唯一差别是留存度恒取 1（`search_knowledge`）。
+   知识有两万余条，SQ8 列排在 4 KB 的 float32 原向量之后，SQLite 读它要走
+   完整条溢出页链，整表现读一次约 0.3～1 秒；因此 `KnowledgeVectorIndex`
+   把全部知识 SQ8 常驻为 int8 矩阵（1024 维约 23 MB），`consult` 动作持有
+   一个复用。失效判据是 meta 表的 `knowledge_vector_revision`，由
+   `knowledge_q8_*` 三个触发器在 SQ8 写入、改写、随行删除时递增，覆盖维护
+   脚本与其他进程的写入；修订号变化后的首次检索整表重建。事实只有数百条，
+   稠密通道每次按范围现读，不常驻。
 7. **调优中心**：`tuning.py` 的白名单（tuning.py:68）只允许调八个参数
    （`bm25_weight`、`retention_weight_floor`、`ppr_alpha`、`ppr_hops`、
    `pool_score_percentile` 与三个条数上限）；冻结阈值、半衰期表、0.4/0.6
@@ -198,9 +214,12 @@
 7. **「永久保留」是编码不是状态**：pin 就是把半衰期改成 87.6 万小时
    （`PIN_HALF_LIFE_HOURS`，decay.py:38），衰减在人的时间尺度上不再可见，
    facts 表无需为此加列；被召回强化命中时天然安全（`reinforce(1.0)=1.0`）。
-8. **量化是存储优化不是语义**：SQ8（quantize.py）把 float32 向量压成带
-   自解释头（版本、维度、单向量 scale）的 int8 blob，原 float32 列保留，
-   补算是 `embedding_q8 IS NULL` 驱动的幂等扫描。召回打分目前读原向量列。
+8. **召回打分只读 SQ8**：SQ8（quantize.py）把 float32 向量压成带自解释头
+   （版本、维度、单向量 scale）的 int8 blob，原 float32 列保留供校验与回滚，
+   补算是 `embedding_q8 IS NULL` 驱动的幂等扫描。重排与稠密通道都直接在
+   int8 载荷上算余弦（dense.py）：scale 是正标量，余弦对它不变，无需反量化。
+   事实与知识的写入都在同一条 UPDATE 里写齐两列（`store_embedding`、
+   `store_knowledge_vector_pair`），不会出现「有原向量、无 SQ8」的半写状态。
 
 ## 六、联想扩散
 

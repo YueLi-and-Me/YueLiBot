@@ -14,7 +14,7 @@ import pytest
 from src.core.memory.store import EpisodeInput, FactInput, MemoryStore
 from src.core.memory.embed import cosine, _pack, _unpack
 from src.core.memory.knowledge import add_knowledge
-from src.core.memory.quantize import dequantize
+from src.core.memory.quantize import dequantize, quantize
 from src.core.memory.store import RecalledFact
 from src.core.services.maintenance.vector import VectorService
 
@@ -135,7 +135,7 @@ class TestVectorRecall:
             retention=1.0,
             score=1.0,
             lexical_relevance=0.5,
-            embedding=_make_vec([0.0, 1.0]),
+            embedding_q8=quantize(_make_vec([0.0, 1.0])),
         )
         semantic_first = RecalledFact(
             id=2,
@@ -144,7 +144,7 @@ class TestVectorRecall:
             retention=1.0,
             score=1.0,
             lexical_relevance=0.5,
-            embedding=_make_vec([1.0, 0.0]),
+            embedding_q8=quantize(_make_vec([1.0, 0.0])),
         )
 
         lexical = store.rank_recalled_facts([lexical_first, semantic_first], None, 2)

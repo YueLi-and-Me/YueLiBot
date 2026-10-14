@@ -68,6 +68,10 @@ mcp-types==2.3.0
     # via mcp
 mdurl==0.1.2
     # via markdown-it-py
+numpy==2.4.6 ; python_full_version < '3.12'
+    # via yueli
+numpy==2.5.1 ; python_full_version >= '3.12'
+    # via yueli
 opentelemetry-api==1.45.1
     # via mcp
 pillow==12.3.0

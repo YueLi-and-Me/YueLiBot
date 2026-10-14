@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
+from typing import (
+    AbstractSet, Any, Iterable, Iterator, Mapping, Optional, Sequence, TypeVar,
+)
 
 import json
 import sqlite3
@@ -18,6 +20,10 @@ from .decay import (
     FREEZE, DecayState, evaluate, freeze_due_at, half_life_for,
     relevance_from_bm25, reinforce, retention, score,
 )
+from .dense import (
+    cosine_scores, fused_relevance, q8_cosine, q8_matrix, query_unit_vector, top_k,
+)
+from .quantize import quantize
 from .similarity import exact_key, is_same_fact
 from .scope import (
     ORIGIN_DIRECT, ORIGIN_GROUP, ORIGIN_LEGACY, SCOPE_ALL, fact_visible_in_stream,
@@ -182,7 +188,8 @@ class RecalledFact:
     retention: float
     score: float
     lexical_relevance: float = field(default=0.0, repr=False, compare=False)
-    embedding: bytes | None = field(default=None, repr=False, compare=False)
+    # 行内 SQ8 向量（带格式头）；重排与稠密通道只读它，不读 float32 原向量列。
+    embedding_q8: bytes | None = field(default=None, repr=False, compare=False)
     half_life_hours: float = field(default=0.0, repr=False, compare=False)
 
 
@@ -195,6 +202,10 @@ class ScopedFact(RecalledFact):
     """
 
     person_id: int = 0
+
+
+# 重排保留候选的具体类型：传入 ScopedFact 就返回 ScopedFact，调用方仍可读 person_id。
+_FactT = TypeVar('_FactT', bound=RecalledFact)
 
 
 @dataclass
@@ -1435,7 +1446,8 @@ class MemoryStore:
         :return: 按混合相关度降序排列的事实列表；无有效查询词时返回空列表。
 
         :raises sqlite3.Error: FTS 查询、事实更新或事务提交失败。
-        :raises struct.error: 查询向量与事实向量维度不匹配时，向量分支捕获该错误并回退 BM25。
+        :raises ValueError: 查询向量非法、行内 SQ8 非法，或两者维度不一致。
+            向量空间登记在换模型时清空旧向量，正常运行不会出现，出现即须暴露。
 
         副作用：
             读取 FTS 和 facts 表；对最终命中的事实回补强度、更新时间、命中次数并提交事务；
@@ -1452,7 +1464,7 @@ class MemoryStore:
         rows = self._db.execute(
             '''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
                       f.half_life_hours, f.active, bm25(facts_fts) AS bm,
-                      f.embedding, f.origin_kind
+                      f.embedding_q8, f.origin_kind
                FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                WHERE facts_fts MATCH ? AND f.person_id = ? AND f.superseded_by IS NULL
                ORDER BY bm ASC LIMIT ?''',
@@ -1469,6 +1481,9 @@ class MemoryStore:
                 blocked += 1
         if blocked:
             self._emit_scope_blocked(stream_kind, blocked)
+        query_vector = (
+            query_unit_vector(query_embedding) if query_embedding is not None else None
+        )
         scored = []
         for r in visible_rows:
             ret = retention(r[3], r[4], r[5], now)
@@ -1478,20 +1493,10 @@ class MemoryStore:
             # 原因：
             # 1. BM25 对专名、数字和代码关键字的精确匹配不可由语义相似度完全替代。
             # 2. 留存度必须在 BM25/向量融合后统一施加，否则向量分支会绕过事实遗忘曲线。
-            # 当前处理：以 0.4/0.6 融合词面和语义相关度，再乘以留存度权重。
-            fact_embedding = r[8]
-            if query_embedding is not None and fact_embedding is not None:
-                try:
-                    from .embed import cosine
-                    # 查询向量按 float32 打包，每个分量占 4 字节；维度必须与解包结果一致。
-                    dim = len(query_embedding) // 4
-                    cos = cosine(query_embedding, fact_embedding, dim)
-                    # 余弦相似度范围为 [-1, 1]，映射到 [0, 1] 后与 BM25 使用同一分数域。
-                    vec_score = (cos + 1) / 2
-                    relevance = 0.4 * relevance + 0.6 * vec_score
-                except Exception:
-                    # 向量计算失败时保留 BM25 相关度，确保单条坏向量不阻断整批召回。
-                    pass
+            # 当前处理：以 0.4/0.6 融合词面和语义相关度（dense.fused_relevance），
+            # 再乘以留存度权重。语义一侧读行内 SQ8。
+            if query_vector is not None and r[8] is not None:
+                relevance = fused_relevance(relevance, q8_cosine(query_vector, r[8]))
             final_score = blend_score(relevance, ret)
             scored.append(RecalledFact(
                 id=r[0],
@@ -1500,7 +1505,7 @@ class MemoryStore:
                 retention=ret,
                 score=final_score,
                 lexical_relevance=relevance_from_bm25(r[7]),
-                embedding=r[8],
+                embedding_q8=r[8],
                 half_life_hours=r[5],
             ))
         scored.sort(key=lambda x: x.score, reverse=True)
@@ -1554,7 +1559,7 @@ class MemoryStore:
             ``direct`` 事实无声地出现在群聊提示词里。
         :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
         :param return_candidates: 是否返回截取前的候选池，供同一轮的向量重排
-            与多检索词并集合并；候选随 ``embedding`` 一并带回。
+            与多检索词并集合并；候选随 ``embedding_q8`` 一并带回。
         :param overrides: 检索调优评估重放的草稿覆盖表；线上召回不传，按已生效
             profile 打分。
         :param exclude_marked: 为真时排除带「已被纠正」标记的事实，取
@@ -1581,7 +1586,7 @@ class MemoryStore:
         rows = self._db.execute(
             f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
                        f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
-                       f.origin_kind, f.embedding
+                       f.origin_kind, f.embedding_q8
                 FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                 WHERE facts_fts MATCH ? AND f.person_id IN ({placeholders})
                   AND f.superseded_by IS NULL AND {_MARKED_FILTER_SQL}
@@ -1610,7 +1615,7 @@ class MemoryStore:
                 retention=ret,
                 score=blend_score(relevance, ret, overrides),
                 lexical_relevance=relevance,
-                embedding=r[9],
+                embedding_q8=r[9],
                 half_life_hours=r[5],
                 person_id=r[6],
             ))
@@ -1643,7 +1648,7 @@ class MemoryStore:
         :param stream_kind: 当前读取发生的会话类型；必填，漏传会让
             ``direct`` 事实无声地出现在群聊提示词里。
         :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
-        :param return_candidates: 是否返回截取前的候选池；候选随 ``embedding``
+        :param return_candidates: 是否返回截取前的候选池；候选随 ``embedding_q8``
             一并带回。
         :param exclude_marked: 为真时排除带「已被纠正」标记的事实，口径同
             :meth:`recall_facts_in_scope`。
@@ -1664,7 +1669,7 @@ class MemoryStore:
         rows = self._db.execute(
             f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
                        f.half_life_hours, f.person_id, bm25(facts_fts) AS bm,
-                       f.origin_kind, f.embedding
+                       f.origin_kind, f.embedding_q8
                 FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid
                 WHERE facts_fts MATCH ? AND f.superseded_by IS NULL
                   AND {_MARKED_FILTER_SQL}
@@ -1693,7 +1698,7 @@ class MemoryStore:
                 retention=ret,
                 score=blend_score(relevance, ret),
                 lexical_relevance=relevance,
-                embedding=r[9],
+                embedding_q8=r[9],
                 half_life_hours=r[5],
                 person_id=r[6],
             ))
@@ -1858,40 +1863,146 @@ class MemoryStore:
 
     def rank_recalled_facts(
         self,
-        candidates: list[RecalledFact],
+        candidates: Sequence[_FactT],
         query_embedding: bytes | None,
         limit: int,
         *,
         overrides: Mapping[str, Any] | None = None,
-    ) -> list[RecalledFact]:
+    ) -> list[_FactT]:
         """在已召回候选上附加向量相关度，不重新查询数据库。
 
-        :param candidates: 同一轮决策前通过 :meth:`recall_facts` 取得的候选池。
+        :param candidates: 同一轮取得的候选池：词面入口的 ``return_candidates``
+            结果，可再并上 :meth:`dense_fact_candidates` 的稠密通道候选。
         :param query_embedding: 查询文本的小端 float32 packed 向量；为 ``None`` 时保留词面排序。
         :param limit: 最多返回的事实数量。
         :param overrides: 检索调优评估重放的草稿覆盖表；线上重排不传，按已生效
             profile 打分。
-        :return: 按增强后分数降序截取的原候选对象列表。
-        :raises ValueError: ``limit`` 小于零。
+        :return: 按增强后分数降序截取的原候选对象列表；分数相同时保持候选池顺序。
+        :raises ValueError: ``limit`` 小于零；查询向量或某条候选的 SQ8 非法，或
+            两者维度不一致。
         副作用：不读写数据库，不修改传入候选对象。
         """
         if limit < 0:
             raise ValueError('事实召回上限不能小于零')
-        ranked: list[tuple[float, RecalledFact]] = []
+        query_vector = (
+            query_unit_vector(query_embedding) if query_embedding is not None else None
+        )
+        ranked: list[tuple[float, _FactT]] = []
         for fact in candidates:
             relevance = fact.lexical_relevance
-            if query_embedding is not None and fact.embedding is not None:
-                try:
-                    from .embed import cosine
-                    dim = len(query_embedding) // 4
-                    cosine_score = cosine(query_embedding, fact.embedding, dim)
-                    relevance = 0.4 * relevance + 0.6 * ((cosine_score + 1) / 2)
-                except Exception:
-                    # 与召回入口保持一致：单条坏向量只放弃该条语义融合。
-                    pass
+            # 行内没有 SQ8（新写入、向量尚未补算）的候选只取词面相关度。
+            if query_vector is not None and fact.embedding_q8 is not None:
+                relevance = fused_relevance(
+                    relevance, q8_cosine(query_vector, fact.embedding_q8),
+                )
             ranked.append((blend_score(relevance, fact.retention, overrides), fact))
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [fact for _, fact in ranked[:limit]]
+
+    def dense_fact_candidates(
+        self,
+        person_ids: Sequence[int] | None,
+        query: str,
+        query_embedding: bytes,
+        limit: int,
+        now: int | None = None,
+        *,
+        stream_kind: str,
+        private_in_group: bool = False,
+        exclude_marked: bool = False,
+        exclude_ids: AbstractSet[int] = frozenset(),
+        overrides: Mapping[str, Any] | None = None,
+    ) -> list[ScopedFact]:
+        """稠密通道：在与词面入口相同的范围内按 SQ8 余弦取事实候选。
+
+        词面入口只能召回与检索词共享字面的事实；本入口补上语义相近而用词
+        不同的那部分。产物与词面候选取并集后交给 :meth:`rank_recalled_facts`
+        统一融合排序，自身不做最终截断。
+
+        过滤口径与 :meth:`recall_facts_in_scope` / :meth:`recall_facts_across_persons`
+        一致：已被取代的事实不进入，``exclude_marked`` 为真时排除「已被纠正」
+        的事实，场合可见性逐条按 ``fact_visible_in_stream`` 判定。被可见性挡下的
+        条目不发 ``memory_fact_scope_blocked``：本入口扫描范围内全部事实，挡下数
+        反映的是库的构成而不是这次检索撞上了什么，计入同一账本会让它失去可比性。
+
+        稠密候选的词面相关度按同一检索词补算真实 BM25，词面不匹配的记 0；
+        一律记零会让它们在融合分上系统性地输给词面候选。
+
+        :param person_ids: 检索范围内的人物 ID；``None`` 表示不按人物过滤，口径同
+            :meth:`recall_facts_across_persons`，放行条件由调用方的会话门决定。
+            空序列返回空列表。
+        :param query: 与查询向量同源的检索文本，用于补算词面相关度。
+        :param query_embedding: 查询文本的小端 float32 packed 向量。
+        :param limit: 进提示词条数上限；本入口取 ``limit * 3`` 条，与词面入口的
+            候选规模对齐。
+        :param now: 可选当前 Unix 毫秒时间戳；省略时读取当前时钟。
+        :param stream_kind: 当前读取发生的会话类型。
+        :param private_in_group: ``conversation.private_facts_in_group`` 的当前值。
+        :param exclude_marked: 是否排除「已被纠正」的事实。
+        :param exclude_ids: 已在词面候选池中的事实 ID，不重复返回。
+        :param overrides: 检索调优评估重放的草稿覆盖表；线上不传。
+        :return: 按余弦降序的事实候选；``score`` 为词面阶段分，与词面入口同口径。
+        :raises ValueError: 查询向量或库内 SQ8 非法，或两者维度不一致。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 facts、facts_fts 与 memory_feedback_results，不写任何列、不提交事务。
+        性能：每次读取范围内全部带 SQ8 的事实行（含溢出页），真机 560 条约 25 ms，
+            随事实条数线性增长。
+        """
+        if person_ids is not None:
+            scope = tuple(dict.fromkeys(person_ids))
+            if not scope:
+                return []
+            person_sql = f'AND f.person_id IN ({",".join("?" for _ in scope)})'
+        else:
+            scope = ()
+            person_sql = ''
+        now = now if now is not None else current_time()
+        rows = self._db.execute(
+            f'''SELECT f.id, f.kind, f.content, f.strength, f.updated_at,
+                       f.half_life_hours, f.person_id, f.origin_kind, f.embedding_q8
+                FROM facts f
+                WHERE f.embedding_q8 IS NOT NULL AND f.superseded_by IS NULL
+                  {person_sql} AND {_MARKED_FILTER_SQL}''',
+            (*scope, int(exclude_marked)),
+        ).fetchall()
+        eligible = {
+            int(r[0]): r for r in rows
+            if int(r[0]) not in exclude_ids
+            and fact_visible_in_stream(r[7], stream_kind, private_in_group=private_in_group)
+        }
+        matrix = q8_matrix([(fact_id, r[8]) for fact_id, r in eligible.items()])
+        picked = top_k(
+            matrix, cosine_scores(matrix, query_unit_vector(query_embedding)), limit * 3,
+        )
+        if not picked:
+            return []
+        lexical: dict[int, float] = {}
+        match = match_query(query)
+        if match:
+            placeholders = ','.join('?' for _ in picked)
+            for row in self._db.execute(
+                f'''SELECT rowid, bm25(facts_fts) FROM facts_fts
+                    WHERE facts_fts MATCH ? AND rowid IN ({placeholders})''',
+                (match, *(fact_id for fact_id, _ in picked)),
+            ):
+                lexical[int(row[0])] = relevance_from_bm25(row[1])
+        candidates: list[ScopedFact] = []
+        for fact_id, _ in picked:
+            r = eligible[fact_id]
+            ret = retention(r[3], r[4], r[5], now)
+            relevance = lexical.get(fact_id, 0.0)
+            candidates.append(ScopedFact(
+                id=fact_id,
+                kind=r[1],
+                content=r[2],
+                retention=ret,
+                score=blend_score(relevance, ret, overrides),
+                lexical_relevance=relevance,
+                embedding_q8=r[8],
+                half_life_hours=r[5],
+                person_id=r[6],
+            ))
+        return candidates
 
     def reinforce_recalled_facts(
         self,
@@ -1929,17 +2040,26 @@ class MemoryStore:
         self._db.commit()
 
     def store_embedding(self, fact_id: int, embedding: bytes) -> None:
-        """为指定事实写入已打包的向量数据。
+        """为指定事实在同一条 UPDATE 里写入原向量与 SQ8。
+
+        召回只读 SQ8 列。两列分两次提交时，进程在中间退出会留下「有原向量、
+        无 SQ8」的行，这类行在下次启动补算之前不参与任何语义打分；与知识侧
+        ``store_knowledge_vector_pair`` 同样一次写齐。
 
         :param fact_id: ``facts`` 表中的事实 ID。
         :param embedding: 小端 float32 packed 向量字节串；维度由调用方保证与索引一致。
 
+        :raises ValueError: 原向量不能编码为合法 SQ8，数据库保持不变。
         :raises sqlite3.Error: 更新或提交失败。
 
         副作用：
-            更新 ``facts.embedding`` 并提交事务；不存在的 fact ID 不会新增记录。
+            更新 ``facts.embedding`` 与 ``facts.embedding_q8`` 并提交事务；不存在的
+            fact ID 不会新增记录。
         """
-        self._db.execute('UPDATE facts SET embedding = ? WHERE id = ?', (embedding, fact_id))
+        self._db.execute(
+            'UPDATE facts SET embedding = ?, embedding_q8 = ? WHERE id = ?',
+            (embedding, quantize(embedding), fact_id),
+        )
         self._db.commit()
 
     def facts_without_embedding(self, limit: int = 128) -> list[dict]:

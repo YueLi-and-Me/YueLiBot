@@ -24,6 +24,8 @@ logger = get_logger(__name__)
 
 _MAGIC = b'YQ8\x01'
 _HEADER = struct.Struct('<4sIf')
+# 格式头字节数（魔数 4 + 维度 4 + scale 4）；批量解码按它切出 int8 载荷。
+HEADER_BYTES = _HEADER.size
 _FLOAT32_BYTES = 4
 _INT8_MAX = 127
 DEFAULT_BATCH_SIZE = 256
@@ -92,6 +94,25 @@ def quantize(vector: bytes) -> bytes:
 def _decode_q8(blob: bytes) -> Tuple[int, float, Tuple[int, ...]]:
     """校验并解码 SQ8 头部与有符号载荷。"""
 
+    dimension = q8_header_dimension(blob)
+    _, _, scale = _HEADER.unpack_from(blob)
+    values = struct.unpack(f'<{dimension}b', blob[_HEADER.size:])
+    if any(value < -_INT8_MAX for value in values):
+        raise ValueError('SQ8 blob 包含对称量化范围外的 -128')
+    return dimension, scale, values
+
+
+def q8_header_dimension(blob: bytes) -> int:
+    """只校验 SQ8 格式头与载荷长度，返回维度，不逐分量解包。
+
+    供批量读取路径使用：载荷交给 numpy 按 int8 整块解释，逐分量的
+    ``-128`` 检查也由调用方在整块上一次完成，避免对上万条向量逐个 unpack。
+
+    :param blob: 带格式头的 SQ8 字节串。
+    :return: 格式头声明的向量维度。
+    :raises ValueError: 格式标识、维度、scale 或载荷长度不合法。
+    副作用：无。
+    """
     if len(blob) < _HEADER.size:
         raise ValueError('SQ8 blob 短于格式头')
     magic, dimension, scale = _HEADER.unpack_from(blob)
@@ -101,15 +122,11 @@ def _decode_q8(blob: bytes) -> Tuple[int, float, Tuple[int, ...]]:
         raise ValueError('SQ8 blob 的维度必须大于零')
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError('SQ8 blob 的 scale 必须是有限正数')
-    payload = blob[_HEADER.size:]
-    if len(payload) != dimension:
+    if len(blob) - _HEADER.size != dimension:
         raise ValueError(
-            f'SQ8 blob 载荷长度 {len(payload)} 与声明维度 {dimension} 不一致'
+            f'SQ8 blob 载荷长度 {len(blob) - _HEADER.size} 与声明维度 {dimension} 不一致'
         )
-    values = struct.unpack(f'<{dimension}b', payload)
-    if any(value < -_INT8_MAX for value in values):
-        raise ValueError('SQ8 blob 包含对称量化范围外的 -128')
-    return dimension, scale, values
+    return dimension
 
 
 def quantized_dimension(blob: bytes) -> int:
@@ -168,17 +185,6 @@ def pending_quantization_counts(db: sqlite3.Connection) -> Dict[str, int]:
     ).fetchone()[0]
     return {'facts': int(facts), 'knowledge': int(knowledge)}
 
-
-def store_fact_quantized(
-    db: sqlite3.Connection,
-    fact_id: int,
-    embedding: bytes,
-) -> None:
-    """由刚生成的原始事实向量同步写入 SQ8 列。"""
-
-    encoded = quantize(embedding)
-    db.execute('UPDATE facts SET embedding_q8 = ? WHERE id = ?', (encoded, fact_id))
-    db.commit()
 
 def store_knowledge_vector_pair(
     db: sqlite3.Connection,

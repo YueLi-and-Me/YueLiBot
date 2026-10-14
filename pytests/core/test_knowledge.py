@@ -21,6 +21,7 @@ from src.core.memory.knowledge import (
     search_knowledge,
     touch_knowledge,
 )
+from src.core.memory.quantize import store_knowledge_vector_pair
 from src.core.memory.similarity import exact_key
 from src.core.memory.store import MemoryStore
 
@@ -69,8 +70,8 @@ def test_search_returns_results_when_vectors_missing(db) -> None:
     assert hits[0].score > 0
 
 
-def test_search_tolerates_corrupt_embedding(db) -> None:
-    """单条坏向量不阻断整批召回：维度对不上时保留词面相关度。"""
+def test_search_ignores_raw_embedding_column(db) -> None:
+    """检索只读 SQ8：原 float32 列损坏（且无 SQ8）时照常走词面相关度。"""
     MemoryStore(db)
     ids = _seed(db, ['折射率匹配是光学迷彩的原理'])
     db.execute('UPDATE knowledge SET embedding = ? WHERE id = ?', (b'\x00', ids[0]))
@@ -86,10 +87,9 @@ def test_vector_fusion_can_overrule_lexical_order(db) -> None:
     MemoryStore(db)
     ids = _seed(db, ['迷彩迷彩迷彩，满屏都是迷彩', '迷彩涂层与光学折射原理'])
     query_embedding = _vec(1.0, 0.0, 0.0, 0.0)
-    # A 的向量与查询相反（余弦 -1），B 的向量与查询相同（余弦 1）。
-    db.execute('UPDATE knowledge SET embedding = ? WHERE id = ?', (_vec(-1.0, 0.0, 0.0, 0.0), ids[0]))
-    db.execute('UPDATE knowledge SET embedding = ? WHERE id = ?', (_vec(1.0, 0.0, 0.0, 0.0), ids[1]))
-    db.commit()
+    # A 的向量与查询相反（余弦 -1），B 的向量与查询相同（余弦 1）；按生产链路同写原向量与 SQ8。
+    store_knowledge_vector_pair(db, ids[0], _vec(-1.0, 0.0, 0.0, 0.0))
+    store_knowledge_vector_pair(db, ids[1], _vec(1.0, 0.0, 0.0, 0.0))
 
     lexical = search_knowledge(db, '迷彩', 5)
     fused = search_knowledge(db, '迷彩', 5, query_embedding=query_embedding)

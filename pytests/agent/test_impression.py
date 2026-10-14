@@ -16,6 +16,7 @@ from src.core.agent.impression import (
     IMPRESSION_TTL_MS,
     ConversationImpressions,
 )
+from src.core.memory.quantize import quantize
 from src.core.memory.store import FactInput, MemoryStore, ScopedFact
 from src.core.platform_io.registry import StreamRegistry
 
@@ -237,7 +238,7 @@ class TestMultiPersonRecall:
             (OWNER_PERSON_ID,), '咖啡', 6, NOW + 1, stream_kind='direct',
         )
 
-        assert hits[0].embedding == raw
+        assert hits[0].embedding_q8 == quantize(raw)
 
     def test_non_speaker_facts_within_limit(self, db):
         """★R-3（store 层）：在场者范围内非当前说话人的事实可被召回。"""

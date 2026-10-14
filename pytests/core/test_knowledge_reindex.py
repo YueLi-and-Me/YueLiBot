@@ -18,7 +18,6 @@ import pytest
 from src.core.memory.knowledge import (
     index_knowledge,
     knowledge_without_embedding,
-    store_knowledge_embedding,
 )
 from src.core.memory.similarity import exact_key
 from src.core.memory.store import MemoryStore

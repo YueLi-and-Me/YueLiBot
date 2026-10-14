@@ -213,6 +213,25 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_import_batch ON knowledge(import_batch_
 -- 与 facts_fts 同款：content='' 的外部内容表，rowid 必须由写入方显式对齐主键，
 -- 漏对齐会让检索结果指向错误的行。
 CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(tokens, content='', tokenize='unicode61');
+-- 知识向量修订号：任一行 SQ8 被写入、改写或随行删除时加一，键与初值由 SEED 写入。
+-- 稠密召回把整表 SQ8 常驻在进程内存（memory/dense.py），靠它判断是否需要重建。
+-- 由触发器维护而不是由写入函数通知，是因为维护脚本、另一进程的写入同样要被看见；
+-- 漏掉任何一条写入路径都会让检索在过期的向量上打分，且结果看起来完全正常。
+CREATE TRIGGER IF NOT EXISTS knowledge_q8_inserted AFTER INSERT ON knowledge
+WHEN NEW.embedding_q8 IS NOT NULL
+BEGIN
+  UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'knowledge_vector_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_q8_updated AFTER UPDATE OF embedding_q8 ON knowledge
+WHEN NEW.embedding_q8 IS NOT OLD.embedding_q8
+BEGIN
+  UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'knowledge_vector_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS knowledge_q8_deleted AFTER DELETE ON knowledge
+WHEN OLD.embedding_q8 IS NOT NULL
+BEGIN
+  UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'knowledge_vector_revision';
+END;
 
 CREATE TABLE IF NOT EXISTS knowledge_nodes (
   id         INTEGER PRIMARY KEY,
@@ -497,4 +516,7 @@ VALUES (1, 80, 50.0, CAST(strftime('%s','now') AS INTEGER) * 1000);
 
 INSERT OR IGNORE INTO persona (id, intimacy, tsundere, reliance, energy, updated_at)
 VALUES (1, 12, 5, 20, 80, CAST(strftime('%s','now') AS INTEGER) * 1000);
+
+-- 知识向量修订号的初值；之后只由 knowledge_q8_* 触发器递增，见 DDL 的知识一节。
+INSERT OR IGNORE INTO meta (key, value) VALUES ('knowledge_vector_revision', '0');
 """

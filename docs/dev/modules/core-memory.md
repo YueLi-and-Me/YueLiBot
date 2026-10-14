@@ -44,6 +44,10 @@ SQLite 长期记忆的读写、召回与维护：近期对话、情节摘要与�
 - `src/core/memory/quantize.py`
   float32 向量到对称 int8（SQ8）的量化与反量化，blob 自带维度与 scale、可独立
   解码；原始 float32 列保留便于校验回滚。含启动期后台回填入口。
+- `src/core/memory/dense.py`
+  SQ8 读侧：批量解码为 int8 矩阵、整块余弦打分与取前 k，以及词面与语义相关度
+  的融合公式；事实召回与知识检索的稠密通道、候选重排都用它。知识向量由
+  `KnowledgeVectorIndex` 常驻进程内存，按 meta 表中触发器维护的修订号失效重建。
 - `src/core/memory/vector_health.py`
   只读汇总事实与知识向量列的覆盖与格式健康状态，供启动期告警与主动自检取数；
   只执行 SELECT，不触发补算或修复。
@@ -51,7 +55,7 @@ SQLite 长期记忆的读写、召回与维护：近期对话、情节摘要与�
   知识层的索引维护与检索。knowledge 不是「Bot 的记忆」而是「Bot 知道的事」：
   无衰减、不参与遗忘曲线。写侧管全文索引补齐（外部内容表 rowid 必须与
   `knowledge.id` 显式对齐）与向量重算（待办集合就是 `embedding IS NULL`，天然
-  断点续跑）；检索侧提供全文搜索、关联概念与触达强化。
+  断点续跑）；检索侧提供 BM25 与 SQ8 稠密两路并集的混合检索、关联概念与触达强化。
 - `src/core/memory/association.py`
   三层记忆与知识之间的关联图：`memory_nodes` 把已有记录映射到统一节点，
   `memory_edges` 存无向关联边；召回时统一记忆图与知识概念图分别跑个性化
