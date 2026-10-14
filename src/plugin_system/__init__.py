@@ -28,8 +28,9 @@ from src.core.tooling.spec import (
 )
 
 from .adapter import AdapterPlugin
-from .config import PluginConfig
-from .context import HostView, PluginContext, PluginPaths
+from .config import PluginConfig, save_plugin_config, secret_fields
+from .context import HostView, PluginContext, PluginMcpAccess, PluginPaths
+from src.core.mcp.compat.types import McpContentItem, McpToolResult, McpUnavailableError
 from .capabilities import (
     ALL_CAPABILITIES,
     AdapterCapability,
@@ -71,13 +72,19 @@ __all__ = [
     'HostView',
     'InboundMessage',
     'ManifestError',
+    'McpContentItem',
+    'McpToolResult',
+    'McpUnavailableError',
     'PersonRef',
     'Plugin',
     'PluginConfig',
     'PluginContext',
     'PluginLoadError',
     'PluginManifest',
+    'PluginMcpAccess',
     'PluginPaths',
+    'save_plugin_config',
+    'secret_fields',
     'PluginRegistry',
     'PluginType',
     'StreamKind',

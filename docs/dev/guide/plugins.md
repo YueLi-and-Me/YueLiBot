@@ -202,3 +202,23 @@ greeting = "你好"
 可放行版本不符或缺少区间的第三方插件，各插件均会告警，不影响清单格式校验。
 该开关也放行 MCP 协议版本区间限制，但不放行 SDK 包版本限制。
 
+## 调用 MCP 工具
+
+插件只从 `src.plugin_system` 导入 `McpToolResult`、`McpContentItem`、
+`McpUnavailableError` 与 `PluginMcpAccess`，通过
+`await self.ctx.mcp.call_tool(服务名, 工具原名, 参数字典)` 调用。
+工具必须列在宿主的 MCP 配置中、已确认只读、服务已连接且尚有今日额度。
+`expose = false` 只限制她的可选项，不限制插件；两种调用共用同一计数。
+不可用时抛出带中文原因的 `McpUnavailableError`；工具内部或服务器请求失败时
+返回 `is_error=True`。结果 `items` 保留内容块，`text` 按顺序拼接全部文本，
+`structured` 提供原有结构化内容，插件自行选择是否按 JSON 解析。
+
+## 密钥字段与配置保存
+
+密钥必须在配置模型中显式标注，例如
+`api_key: str = Field('', json_schema_extra={'secret': True})`。
+管理页读取时置空并显示是否已设置；保存时空串沿用磁盘原值。
+普通字符串字段不凭名称猜测为密钥。`secret_fields(model)` 返回声明的密钥字段集合。
+宿主 `save_plugin_config(directory, model, values)` 按实际模型整份校验，任一非法字段
+拒绝整次保存并返回字段与原因；通过后按与配置生成相同的渲染器原子替换。
+

@@ -402,7 +402,7 @@ class ChatService(
         # 「宿主入口尚未注入」，而三条线的用例各自注入桩件，全绿。
         self._plugins = PluginRegistry(
             context_factory=lambda plugin_id, plugin_dir: PluginContext(
-                plugin_id, plugin_dir, data_dir, cfg,
+                plugin_id, plugin_dir, data_dir, cfg, self._mcp,
             ),
             force_compatibility=cfg.advanced.force_compatibility,
         )

@@ -33,12 +33,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
-
-import re
-import tomllib
-
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Type
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+import json
+import re
+import tempfile
+import tomllib
 
 from src.core.logging.logger import get_logger
 
@@ -311,10 +312,11 @@ def _append_missing_fields(
     return True
 
 
-def render_plugin_config(model: type[PluginConfig]) -> str:
+def render_plugin_config(model: Type[PluginConfig], values: Optional[Mapping[str, Any]] = None) -> str:
     """把配置模型渲染成带注释的 TOML 文本。
 
     :param model: 配置模型类。
+    :param values: 已整体校验的字段值；为 None 时渲染模型默认值。
     :return: 完整文件内容，字段顺序与模型声明一致。
     :raises TypeError: 某个字段的默认值不是 TOML 能表达的类型。
 
@@ -331,7 +333,8 @@ def render_plugin_config(model: type[PluginConfig]) -> str:
         description = (field.description or '').strip()
         if description:
             lines.append(f'# {description}')
-        lines.append(f'{name} = {_toml_value(field.get_default(call_default_factory=True))}')
+        value = field.get_default(call_default_factory=True) if values is None else values[name]
+        lines.append(f'{name} = {_toml_value(value)}')
     return '\n'.join(lines) + '\n'
 
 
@@ -348,12 +351,11 @@ def _toml_value(value: Any) -> str:
     if isinstance(value, (int, float)):
         return repr(value)
     if isinstance(value, str):
-        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
-        return f'"{escaped}"'
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, (list, tuple)):
         return '[' + ', '.join(_toml_value(item) for item in value) + ']'
     if isinstance(value, dict):
-        pairs = ', '.join(f'{key} = {_toml_value(item)}' for key, item in value.items())
+        pairs = ', '.join(f'{_toml_value(str(key))} = {_toml_value(item)}' for key, item in value.items())
         return '{' + pairs + '}'
     if isinstance(value, BaseModel):
         raise TypeError(
@@ -362,6 +364,53 @@ def _toml_value(value: Any) -> str:
         )
     raise TypeError(f'插件配置字段的默认值无法渲染成 TOML：{value!r}')
 
+
+def secret_fields(model: Type[PluginConfig]) -> FrozenSet[str]:
+    """返回配置模型显式标注 secret=True 的字段名，其他字段不凭名称推断。"""
+    return frozenset(name for name, info in model.model_fields.items()
+        if isinstance(info.json_schema_extra, dict) and info.json_schema_extra.get('secret') is True)
+
+
+def save_plugin_config(directory: Path, model: Type[PluginConfig], values: Dict[str, Any]) -> Dict[str, Any]:
+    """整体校验插件表单，保留留空的已有密钥，再用同一渲染器原子写回。
+
+    :param directory: 已发现插件自己的目录。
+    :param model: 插件实际声明的配置模型，不能按表单字段猜测类型。
+    :param values: 完整字段值；密钥字段显式提交空串时沿用磁盘原值。
+    :return: ok=True，或 ok=False 及按字段分组的 errors 与中文 detail。
+    :raises OSError: 文件操作失败；不按默认值继续运行。
+    """
+    path = plugin_config_path(directory)
+    original = tomllib.loads(path.read_text(encoding='utf-8'))[PLUGIN_SECTION] if path.is_file() else {}
+    candidate = dict(values)
+    secrets = secret_fields(model)
+    for name in secrets:
+        if name in candidate and candidate[name] == '' and name in original:
+            candidate[name] = original[name]
+    try:
+        validated = model.model_validate(candidate)
+    except ValidationError as exc:
+        errors = {'.'.join(map(str, e['loc'])) or '配置': e['msg'] for e in exc.errors(include_input=False)}
+        for name in secrets:
+            for secret in (original.get(name), candidate.get(name)):
+                if isinstance(secret, str) and secret:
+                    errors = {field: message.replace(secret, '[已隐藏]') for field, message in errors.items()}
+        return {'ok': False, 'errors': errors, 'detail': '；'.join(f'{field}：{message}' for field, message in errors.items())}
+    text = render_plugin_config(model, validated.model_dump())
+    # 现象：只逐字段修正会把非法保存变成部分成功。原因：读取器允许默认值恢复。
+    # 后果：保存必须先整份校验；回读 TOML 也通过之后才能替换原文件。
+    model.model_validate(tomllib.loads(text)[PLUGIN_SECTION])
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=directory, delete=False) as file:
+            temporary = Path(file.name)
+            file.write(text)
+        temporary.replace(path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+    return {'ok': True}
 
 __all__ = [
     'ENABLED_KEY',
@@ -372,4 +421,6 @@ __all__ = [
     'plugin_config_path',
     'read_enabled_flag',
     'render_plugin_config',
+    'save_plugin_config',
+    'secret_fields',
 ]
