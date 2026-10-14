@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Network,
   PackagePlus,
+  Plug,
   Quote,
   Settings,
   SlidersHorizontal,
@@ -69,6 +70,7 @@ export const NAV_GROUPS: Array<NavGroup> = [
     label: '配置',
     items: [
       { to: '/models', label: '模型与厂商', icon: Cpu },
+      { to: '/tools', label: '工具与 MCP', icon: Plug },
       { to: '/settings', label: '月璃设置', icon: Settings },
       { to: '/developer/commands', label: '开发者命令', icon: SquareTerminal },
     ],

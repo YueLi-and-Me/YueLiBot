@@ -51,6 +51,11 @@ def mount_webui(app: FastAPI) -> None:
             """返回月璃设置页共用的 SPA 入口文件。"""
             return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
 
+        @app.get('/tools', include_in_schema=False)
+        async def tools_page() -> FileResponse:
+            """返回工具与 MCP 管理页共用的 SPA 入口文件。"""
+            return FileResponse(index_path, headers={'Cache-Control': 'no-store'})
+
         @app.get('/developer/commands', include_in_schema=False)
         async def developer_commands_page() -> FileResponse:
             """返回开发者命令只读页共用的 SPA 入口文件。"""

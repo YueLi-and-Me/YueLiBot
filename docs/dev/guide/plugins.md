@@ -221,4 +221,3 @@ greeting = "你好"
 普通字符串字段不凭名称猜测为密钥。`secret_fields(model)` 返回声明的密钥字段集合。
 宿主 `save_plugin_config(directory, model, values)` 按实际模型整份校验，任一非法字段
 拒绝整次保存并返回字段与原因；通过后按与配置生成相同的渲染器原子替换。
-

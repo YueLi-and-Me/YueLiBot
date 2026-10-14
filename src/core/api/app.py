@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from .http import router as http_router
 from .model_config import router as model_config_router
 from .settings_config import router as settings_config_router
+from .tools_config import router as tools_config_router
 from .ws import router as ws_router
 
 from src.core.services.host.lifecycle import lifecycle
@@ -54,5 +55,6 @@ def create_app() -> FastAPI:
     app.include_router(http_router)
     app.include_router(model_config_router)
     app.include_router(settings_config_router)
+    app.include_router(tools_config_router)
     mount_webui(app)
     return app

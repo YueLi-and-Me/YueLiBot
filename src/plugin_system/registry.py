@@ -84,6 +84,8 @@ class PluginRegistry:
         self._context_factory = context_factory
         self._force_compatibility = force_compatibility
         self._statuses: Dict[Path, PluginStatus] = {}
+        # 管理页保留已导入插件的声明；on_load 失败后也可修正配置再重启。
+        self._discovered: Dict[Path, ToolPlugin] = {}
 
     def discover(self, roots: Sequence[Tuple[Path, bool]]) -> None:
         """按序扫描插件根目录，加载全部已启用的合法工具插件。
@@ -105,6 +107,10 @@ class PluginRegistry:
     def statuses(self) -> List[PluginStatus]:
         """返回目录级状态快照；被停用、版本拒绝及加载失败的目录也保留一条。"""
         return list(self._statuses.values())
+
+    def configuration_plugin(self, directory: Path) -> Optional[ToolPlugin]:
+        """返回已经导入的声明，不为管理页执行被停用或被版本拒绝的入口。"""
+        return self._discovered.get(directory)
 
     def _record_failure(self, directory: Path, reason: str, decision: str = '加载失败') -> None:
         """更新已扫描目录的失败原因，不改变其清单身份与来源。"""
@@ -372,6 +378,7 @@ class PluginRegistry:
             return
         # 第二阶段：配置文件尚不存在时按插件声明的模型生成它。这一步要拿到插件类，
         # 所以必须在导入之后——首次安装因此会执行一次入口模块，之后走不到这里。
+        self._discovered[directory] = plugin
         try:
             config = ensure_plugin_config(directory, type(plugin).config_model)
         except Exception as exc:

@@ -132,7 +132,7 @@ def ensure_plugin_config(
        实测一个残留键会把用户手填的代理与限额一起清零。
 
     写文件前不做备份，这是刻意的取舍：主配置备份是因为 ``config/`` 含明文密钥
-    且不在版本控制里；插件的 ``config.toml`` 只有插件自己的开关与参数，且这里
+    且不在版本控制里；插件的 ``config.toml`` 也可能含密钥，但这里
     只做追加式写入，不会丢已有内容，多一层备份目录反而多一处要清理的东西。
 
     :param directory: 插件目录。日志里的 ``plugin`` 取目录名——清单 id 要读
@@ -400,16 +400,52 @@ def save_plugin_config(directory: Path, model: Type[PluginConfig], values: Dict[
     # 现象：只逐字段修正会把非法保存变成部分成功。原因：读取器允许默认值恢复。
     # 后果：保存必须先整份校验；回读 TOML 也通过之后才能替换原文件。
     model.model_validate(tomllib.loads(text)[PLUGIN_SECTION])
-    directory.mkdir(parents=True, exist_ok=True)
-    temporary = None
+    _replace_plugin_config(path, text)
+    return {'ok': True}
+
+
+def _replace_plugin_config(path: Path, text: str) -> None:
+    """同目录原子替换插件配置，文件错误完整向保存调用者暴露。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Optional[Path] = None
     try:
-        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=directory, delete=False) as file:
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=path.parent, delete=False) as file:
             temporary = Path(file.name)
             file.write(text)
         temporary.replace(path)
     finally:
         if temporary is not None and temporary.exists():
             temporary.unlink()
+
+
+def save_plugin_enabled(directory: Path, enabled: bool) -> Dict[str, Any]:
+    """未导入插件时只改 enabled，完整保留未知字段、其他表和用户注释。"""
+    path = plugin_config_path(directory)
+    if not path.is_file():
+        return save_plugin_config(directory, PluginConfig, {'enabled': enabled})
+    text = path.read_text(encoding='utf-8')
+    original = tomllib.loads(text)
+    lines = text.splitlines(keepends=True)
+    header = next((index for index, line in enumerate(lines) if _PLUGIN_HEADER.match(line.strip())), None)
+    if header is None:
+        return {'ok': False, 'detail': '没有独立的 [plugin] 表头，请直接编辑文件中的 enabled'}
+    end = next((index for index in range(header + 1, len(lines)) if lines[index].lstrip().startswith('[')), len(lines))
+    literal = 'true' if enabled else 'false'
+    for index in range(header + 1, end):
+        match = re.match(r'^(\s*(?:enabled|"enabled"|\'enabled\')\s*=\s*)(true|false)(\s*(?:#.*)?)$', lines[index].rstrip('\r\n'))
+        if match:
+            newline = '\r\n' if lines[index].endswith('\r\n') else '\n'
+            lines[index] = match[1] + literal + match[3] + newline
+            break
+    else:
+        if 'enabled' in original.get(PLUGIN_SECTION, {}):
+            return {'ok': False, 'detail': 'enabled 不是可编辑的布尔行，请直接修正配置文件'}
+        lines.insert(header + 1, f'enabled = {literal}\n')
+    rendered = ''.join(lines)
+    expected = {**original, PLUGIN_SECTION: {**original[PLUGIN_SECTION], ENABLED_KEY: enabled}}
+    if tomllib.loads(rendered) != expected:
+        return {'ok': False, 'detail': '启用开关修改影响了其他配置，未保存'}
+    _replace_plugin_config(path, rendered)
     return {'ok': True}
 
 __all__ = [
@@ -422,5 +458,6 @@ __all__ = [
     'read_enabled_flag',
     'render_plugin_config',
     'save_plugin_config',
+    'save_plugin_enabled',
     'secret_fields',
 ]

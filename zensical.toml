@@ -71,6 +71,7 @@ nav = [
       { "面板总览" = "manual/webui/index.md" },
       { "会话观察" = "manual/webui/observe.md" },
       { "模型与厂商" = "manual/webui/models.md" },
+      { "工具与 MCP" = "manual/webui/tools.md" },
       { "人物与关系" = "manual/webui/persons.md" },
       { "黑话词表" = "manual/webui/jargon.md" },
       { "表达方式" = "manual/webui/expressions.md" },

@@ -561,6 +561,11 @@ class ChatService(
         self._promise_handler: Callable[[int, str], None] | None = None
         self._schedule: DayPlanService | None = None
 
+    @property
+    def plugin_registry(self) -> PluginRegistry:
+        """供管理接口查询插件声明与状态；配置保存不替换运行中的实例。"""
+        return self._plugins
+
     def apply_config(self, cfg: Config) -> None:
         """把本对象持有的配置引用切到重载后的新对象上。
 
