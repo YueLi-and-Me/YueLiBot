@@ -48,9 +48,9 @@ __pycache__/
 # 适配器的连接配置与插件同目录，但它带着协议端访问令牌和真实 QQ 号，
 # 和 /config/ 同属运行时配置，不能随插件源码一起入库。
 /adapters/*/config.toml
-# 插件配置由宿主按插件声明的模型生成，属于运行时产物；
-# 默认值的真相源是插件代码里的 config_model，不是这份文件。
-/plugins/*/config.toml
+# 第三方插件各自是独立仓库，由部署者克隆到 plugins/ 下；其配置由宿主按插件声明的
+# 模型生成并可能含密钥。整个目录属于部署产物，不随主程序入库。
+/plugins/
 /src/plugins/built_in/*/config.toml
 
 # 任何位置的 SQLite 文件都不入库。/data/ 已经挡住绝大多数，但迁移链测试之类的
