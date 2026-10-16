@@ -72,7 +72,7 @@ WHITELIST: Dict[str, ParamSpec] = {
     'bm25_weight': ParamSpec(float, 0.1, 5.0, 1.0, '词面相关度权重'),
     'retention_weight_floor': ParamSpec(float, 0.0, 1.0, 0.35, '留存度权重下限'),
     'ppr_alpha': ParamSpec(float, 0.1, 0.99, 0.85, 'PPR 回迁概率'),
-    'ppr_hops': ParamSpec(int, 1, 4, 2, 'PPR 跳数'),
+    'ppr_hops': ParamSpec(int, 0, 4, 0, '联想扩散跳数（0 为关闭）'),
     'pool_score_percentile': ParamSpec(float, 0.0, 0.9, 0.0, '候选池分数百分位'),
     'fact_recall_limit': ParamSpec(int, 1, 50, None, '进提示词的事实条数上限'),
     'recalled_episode_limit': ParamSpec(int, 0, 30, None, '情节召回条数'),

@@ -6,7 +6,7 @@ import pickle
 import sqlite3
 
 from src.core.db.schema import DDL
-from src.core.memory import association
+from src.core.memory import association, tuning
 
 
 _NOW = 1_800_000_000_000
@@ -120,6 +120,17 @@ def test_neighbours_keep_source_then_edge_id_order() -> None:
     assert [other for other, _, _ in association._neighbours(db, 9)] == [2, 3, 12, 10]
 
 
+def test_recall_hops_default_off_and_tunable(monkeypatch) -> None:
+    """回想默认不做联想扩散；检索调优把 ppr_hops 设成正数才打开，设 0 也合法。"""
+    monkeypatch.setattr(tuning, '_active_overrides', {})
+    assert association.recall_hops() == 0
+    assert tuning.validate_overrides({'ppr_hops': 0}) == {'ppr_hops': 0}
+
+    monkeypatch.setattr(tuning, '_active_overrides', tuning.validate_overrides({'ppr_hops': 2}))
+
+    assert association.recall_hops() == 2
+
+
 def test_hops_zero_is_byte_identical_to_legacy_spread() -> None:
     """★P-1：总开关关闭时不查询图，序列化结果也与旧实现相同。"""
     db = _db()
@@ -162,7 +173,7 @@ def test_ppr_timeout_falls_back_and_emits_trace(monkeypatch) -> None:
     _memory_node(db, 102, 'fact', 2)
     _memory_edge(db, 101, 102, 0.8)
     db.commit()
-    expected = association._legacy_spread(db, [('fact', 1, 1.0)], _NOW)
+    expected = association._legacy_spread(db, [('fact', 1, 1.0)], _NOW, hops=2)
     events = []
 
     def _timeout(*_args, **_kwargs):
@@ -171,7 +182,7 @@ def test_ppr_timeout_falls_back_and_emits_trace(monkeypatch) -> None:
     monkeypatch.setattr(association, 'personalized_pagerank', _timeout)
     monkeypatch.setattr(association.trace, 'emit', lambda kind, **fields: events.append((kind, fields)))
 
-    actual = association.spread(db, [('fact', 1, 1.0)], _NOW)
+    actual = association.spread(db, [('fact', 1, 1.0)], _NOW, hops=2)
 
     assert actual == expected
     assert events == [('memory_ppr_timeout', {'graph': 'memory'})]

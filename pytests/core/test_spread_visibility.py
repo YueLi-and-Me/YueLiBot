@@ -12,17 +12,20 @@
 4. 被挡条数进 trace：事实走 ``memory_fact_scope_blocked``，情节走
    ``memory_spread`` 的 ``blockedEpisodes`` 字段；
 5. ``knowledge`` 扩散命中不受影响；
-6. ``HOPS = 0`` 时观察文本与改造前逐字节相同；
+6. 联想关闭（回想的默认）时观察文本与改造前逐字节相同，也不记扩散事件；
 7. ``superseded_by`` 非空的事实被挡且不被加强，计入 ``blockedSuperseded``；
    同时踩中取代与场合两条判据时按取代归因；
 8. ``needs_rebuild = 1`` 的情节在屏蔽开关打开时被挡，计入 ``blockedRebuild``；
-   开关关闭时保持原行为。
+   开关关闭时保持原行为；
+9. 联想命中照常显示但不进 ``link_together``，只有直接命中之间建边。
 """
 
 from __future__ import annotations
 
+import pytest
+
 from src.core.agent.cognition import CognitiveRequest, RecallAction
-from src.core.memory import association
+from src.core.memory import association, tuning
 from src.core.memory.association import link_together, node_id
 from src.core.memory.knowledge import add_knowledge
 from src.core.memory.scope import ORIGIN_DIRECT, ORIGIN_GROUP
@@ -31,6 +34,12 @@ from src.core.platform_io.registry import StreamRegistry
 
 NOW = 1_800_000_000_000
 OWNER_PERSON_ID = 1
+
+
+@pytest.fixture(autouse=True)
+def _association_on(monkeypatch):
+    """这里测的是联想打开时的过滤规则，回想默认不扩散，须经检索调优打开。"""
+    monkeypatch.setattr(tuning, '_active_overrides', {'ppr_hops': association.HOPS})
 
 
 def _action(db, store: MemoryStore, *, exclude_rebuild: bool = False) -> RecallAction:
@@ -156,15 +165,15 @@ class TestBlockedHitsNotReinforced:
 
         result = await _action(db, store).execute(_request(group.id, 'group'))
 
-        # 对照组真的在起作用：可见情节被采用，它与种子的边被加强过。
+        # 对照组：可见情节照常显示，但联想命中不建边，它与种子的边也不变（★S-9）。
         assert '周末烧烤' in result.text
         episode_node = node_id(db, 'episode', visible_episode)
         elow, ehigh = sorted((seed_node, episode_node))
-        strengthened = db.execute(
+        untouched = db.execute(
             'SELECT updated_at FROM memory_edges WHERE source_id = ? AND target_id = ?',
             (elow, ehigh),
         ).fetchone()
-        assert strengthened[0] != NOW
+        assert untouched[0] == NOW
 
         after = db.execute(
             'SELECT strength, updated_at FROM memory_edges'
@@ -242,7 +251,7 @@ class TestBlockedAccounting:
 class TestSpreadKnowledgeUnfiltered:
     """★S-5：知识层全局，扩散命中不受影响。"""
 
-    async def test_knowledge_hit_still_adopted(self, db):
+    async def test_knowledge_hit_still_shown(self, db):
         store = MemoryStore(db)
         group, _direct = _streams(db)
         seed_id = _add_fact(db, store, '他喜欢手冲咖啡', ORIGIN_GROUP)
@@ -256,24 +265,57 @@ class TestSpreadKnowledgeUnfiltered:
         assert result.hit_count == 2
 
 
-class TestHopsZeroUnchanged:
-    """★S-6：扩散整层关闭时，观察文本与改造前逐字节相同。"""
+class TestSpreadHitsNotLinked:
+    """★S-9：联想命中照常显示，但只有直接命中之间建边，命中不和种子连线。"""
 
-    async def test_hops_zero_renders_seeds_only(self, db, monkeypatch):
+    async def test_spread_hit_gets_no_new_edges(self, db):
         store = MemoryStore(db)
-        group, direct = _streams(db)
+        group, _direct = _streams(db)
+        first = _add_fact(db, store, '他喜欢手冲咖啡', ORIGIN_GROUP)
+        second = _add_fact(db, store, '他早上只喝咖啡不吃早饭', ORIGIN_GROUP)
+        linked = _add_fact(db, store, '他周末在学大提琴', ORIGIN_GROUP)
+        link_together(db, [('fact', first), ('fact', linked)], NOW)
+        hit_node = node_id(db, 'fact', linked)
+        edges_before = db.execute(
+            'SELECT source_id, target_id, strength, updated_at FROM memory_edges'
+            ' WHERE source_id = ? OR target_id = ? ORDER BY id',
+            (hit_node, hit_node),
+        ).fetchall()
+
+        result = await _action(db, store).execute(_request(group.id, 'group'))
+
+        assert '大提琴' in result.text
+        edges_after = db.execute(
+            'SELECT source_id, target_id, strength, updated_at FROM memory_edges'
+            ' WHERE source_id = ? OR target_id = ? ORDER BY id',
+            (hit_node, hit_node),
+        ).fetchall()
+        assert edges_after == edges_before
+        seed_nodes = sorted((node_id(db, 'fact', first), node_id(db, 'fact', second)))
+        assert db.execute(
+            'SELECT COUNT(*) FROM memory_edges WHERE source_id = ? AND target_id = ?',
+            tuple(seed_nodes),
+        ).fetchone()[0] == 1
+
+
+class TestAssociationOffByDefault:
+    """★S-6：联想关闭（回想的默认）时，观察文本与改造前逐字节相同，也不记扩散事件。"""
+
+    async def test_default_renders_seeds_only(self, db, monkeypatch):
+        monkeypatch.setattr(tuning, '_active_overrides', {})
+        store = MemoryStore(db)
+        group, _direct = _streams(db)
         seed_id = _add_fact(db, store, '他喜欢手冲咖啡', ORIGIN_GROUP)
-        hidden_fact = _add_fact(db, store, '他私下在学大提琴', ORIGIN_DIRECT)
-        hidden_episode = _add_episode(store, direct.id, '私聊里聊过他的演唱会门票')
-        link_together(db, [('fact', seed_id), ('fact', hidden_fact)], NOW)
-        link_together(db, [('fact', seed_id), ('episode', hidden_episode)], NOW)
+        linked_fact = _add_fact(db, store, '他周末在学大提琴', ORIGIN_GROUP)
+        linked_episode = _add_episode(store, group.id, '群里聊过他的演唱会门票')
+        link_together(db, [('fact', seed_id), ('fact', linked_fact)], NOW)
+        link_together(db, [('fact', seed_id), ('episode', linked_episode)], NOW)
+        emitted: list[str] = []
+        monkeypatch.setattr(
+            'src.core.agent.cognition.trace.emit',
+            lambda kind, **fields: emitted.append(kind),
+        )
 
-        real_spread = association.spread
-
-        def spread_off(db_, seeds, now, *, activation=None):
-            return real_spread(db_, seeds, now, hops=0, activation=activation)
-
-        monkeypatch.setattr('src.core.agent.cognition.spread', spread_off)
         result = await _action(db, store).execute(_request(group.id, 'group'))
 
         assert result.text == (
@@ -281,6 +323,7 @@ class TestHopsZeroUnchanged:
             '- 你记得关于凌白：他喜欢手冲咖啡'
         )
         assert result.hit_count == 1
+        assert 'memory_spread' not in emitted
 
 
 class TestSupersededFactBlocked:

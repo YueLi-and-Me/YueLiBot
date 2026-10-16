@@ -299,6 +299,8 @@ class TestRecallTool:
         assert COFFEE_FACTS[0] in off.text
 
     async def test_spread_blocks_marked_fact_and_counts_it(self, db, monkeypatch):
+        # 回想默认不扩散，这里测的是联想打开时的过滤。
+        monkeypatch.setattr(tuning, '_active_overrides', {'ppr_hops': 2})
         store = MemoryStore(db)
         (seed,) = _add_facts(store, COFFEE_FACTS[:1], NOW, origin_kind=ORIGIN_DIRECT)
         (linked,) = _add_facts(store, ('他周末在星野公司加班',), NOW, origin_kind=ORIGIN_DIRECT)

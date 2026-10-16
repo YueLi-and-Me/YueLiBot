@@ -24,8 +24,10 @@ from .pagerank import PageRankTimeoutError, personalized_pagerank
 from .tuning import ppr_alpha as tuned_ppr_alpha
 from .tuning import ppr_hops as tuned_ppr_hops
 
-# 沿边扩散的最大跳数。
+# 沿边扩散的最大跳数；联想预览面板与旧扩散按它走。
 HOPS = 2
+# 回想时默认的扩散跳数，0 为不做联想；检索调优的 ppr_hops 可覆盖。
+RECALL_HOPS = 0
 # PPR 超时时，旧扩散回退算法使用的每跳权重衰减系数。
 HOP_DECAY = 0.5
 # 单次扩散返回的结果条数上限。
@@ -607,6 +609,11 @@ def _legacy_spread(
     return hits[:limit]
 
 
+def recall_hops() -> int:
+    """取回想时生效的扩散跳数；``0`` 表示不做联想扩散。"""
+    return tuned_ppr_hops(RECALL_HOPS)
+
+
 def spread(
     db: sqlite3.Connection,
     seeds: Sequence[Tuple[str, int, float]],
@@ -629,8 +636,8 @@ def spread(
     :param db: 当前库连接。
     :param seeds: ``(ref_kind, ref_id, 相关度)`` 序列，来自现有的 recall / inspect。
     :param now: 当前毫秒时间戳。
-    :param hops: 最多走几跳；``None`` 表示由检索调优的当前覆盖决定（未覆盖时取
-        模块常量 ``HOPS``）；``0`` 表示整层关闭，直接返回空列表。
+    :param hops: 最多走几跳；``None`` 表示取 :func:`recall_hops`（未覆盖时为
+        ``RECALL_HOPS``）；``0`` 表示整层关闭，直接返回空列表。
     :param limit: 结果条数上限。
     :param activation: 可选的短期激活表；省略时不加成。
     :return: 按融合分数降序的扩散命中，最多 ``limit`` 条。
@@ -638,7 +645,7 @@ def spread(
     副作用：只读，不建边也不加强——建边只发生在「被采用」之后，由调用方显式调用
         :func:`link_together`。
     """
-    hops = tuned_ppr_hops(HOPS) if hops is None else hops
+    hops = recall_hops() if hops is None else hops
     if hops < 1 or limit < 1 or not seeds:
         return []
     seed_nodes = _seed_memory_nodes(db, seeds)

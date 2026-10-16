@@ -28,7 +28,7 @@ import sqlite3
 from src.core.db.connection import run_in_thread
 from src.core.runtime.clock import now as current_time
 from src.core.memory.association import (
-    HOPS, ShortTermActivation, SpreadHit, link_together, node_id, spread,
+    ShortTermActivation, SpreadHit, link_together, node_id, recall_hops, spread,
 )
 from src.core.memory.dense import KnowledgeVectorIndex
 from src.core.memory.knowledge import search_knowledge, touch_knowledge
@@ -420,37 +420,38 @@ class RecallAction:
 
         # 第二步：从命中的这些出发沿边扩散，把未被查询但被关联出来的内容也纳入观察。
         # 与种子分开成段：种子是 Bot 记得的内容，扩散结果是关联引出的内容；
-        # 混在一起时模型会把联想当作确凿记忆复述。
+        # 混在一起时模型会把联想当作确凿记忆复述。跳数为 0 时整段不做。
         seeds = (
             [('fact', fact.id, fact.score) for fact in facts]
             + [('episode', episode.id, episode.score) for episode in episodes]
         )
         now = current_time()
-        spread_hits = spread(self._db, seeds, now, activation=self._activation)
-        # 扩散沿边跨场合，读取侧规则在这里补回：被挡下的节点既不渲染也不进
-        # adopted——进 adopted 会被 link_together 加强，每次拦截都会让这条
-        # 泄漏路径变得更强。
-        visible_hits, blocked = self._filter_spread_visible(
-            spread_hits, request.stream_id, request.stream_kind,
-        )
-        if blocked.scope_facts:
-            # 与三个读取入口同一条规则，记进同一个账本，四条通道的计数才可比较。
-            trace.emit(
-                'memory_fact_scope_blocked',
-                streamKind=request.stream_kind,
-                blocked=blocked.scope_facts,
+        hops = recall_hops()
+        visible_hits: list[SpreadHit] = []
+        blocked = _SpreadBlocked()
+        if hops:
+            spread_hits = spread(self._db, seeds, now, hops=hops, activation=self._activation)
+            # 扩散沿边跨场合，读取侧规则在这里补回，被挡下的节点不渲染。
+            visible_hits, blocked = self._filter_spread_visible(
+                spread_hits, request.stream_id, request.stream_kind,
             )
-        if visible_hits:
-            lines.append('顺带想起来的：')
-            for hit in visible_hits:
-                text = self._describe_node(hit, request.stream_id)
-                if text:
-                    lines.append(f'- {text}')
+            if blocked.scope_facts:
+                # 与三个读取入口同一条规则，记进同一个账本，四条通道的计数才可比较。
+                trace.emit(
+                    'memory_fact_scope_blocked',
+                    streamKind=request.stream_kind,
+                    blocked=blocked.scope_facts,
+                )
+            if visible_hits:
+                lines.append('顺带想起来的：')
+                for hit in visible_hits:
+                    text = self._describe_node(hit, request.stream_id)
+                    if text:
+                        lines.append(f'- {text}')
 
+        # 只在直接命中之间建边、点亮激活：联想带出的条目再和种子连线，常被带出的
+        # 节点会越连越多，最后每次都被带出来。
         adopted = [(kind, ref) for kind, ref, _ in seeds]
-        adopted += [(hit.ref_kind, hit.ref_id) for hit in visible_hits]
-        # 只有真正进了这段观察文本的才加强边——被检索到不等于被用到，
-        # 这个区分是边质量的全部来源。
         link_together(self._db, adopted, now)
         # node_id 会按需补建 memory_nodes 行，事务必须在这里收掉：adopted 少于两条时
         # link_together 直接返回，既不建节点也不提交，这批行没有别的收尾点。留着不提交
@@ -458,22 +459,24 @@ class RecallAction:
         with self._db:
             adopted_ids = [node_id(self._db, kind, ref) for kind, ref in adopted]
         self._activation.touch(adopted_ids, now)
-        trace.emit(
-            'memory_spread',
-            query=request.query,
-            seeds=len(seeds),
-            spread=len(visible_hits),
-            hops=HOPS,
-            # 五条判据分别计数，不合并成一个总数：合并之后真机上无法回答
-            # 「是谁挡的」。场合规则的事实数走 memory_fact_scope_blocked 账本
-            # （与三个读取入口同账本），其余四项是扩散通道独有的，只在这里出现。
-            blockedEpisodes=blocked.other_stream_episodes,
-            blockedSuperseded=blocked.superseded_facts,
-            blockedMarked=blocked.marked_facts,
-            blockedRebuild=blocked.pending_rebuild_episodes,
-            # 真机上靠它区分「跨人生效了但没命中」与「门没开」两种零命中。
-            crossPerson=request.cross_person,
-        )
+        # 只记真正跑过的扩散：联想面板据此统计「扩散跑过几次」。
+        if hops:
+            trace.emit(
+                'memory_spread',
+                query=request.query,
+                seeds=len(seeds),
+                spread=len(visible_hits),
+                hops=hops,
+                # 五条判据分别计数，不合并成一个总数：合并之后真机上无法回答
+                # 「是谁挡的」。场合规则的事实数走 memory_fact_scope_blocked 账本
+                # （与三个读取入口同账本），其余四项是扩散通道独有的，只在这里出现。
+                blockedEpisodes=blocked.other_stream_episodes,
+                blockedSuperseded=blocked.superseded_facts,
+                blockedMarked=blocked.marked_facts,
+                blockedRebuild=blocked.pending_rebuild_episodes,
+                # 真机上靠它区分「跨人生效了但没命中」与「门没开」两种零命中。
+                crossPerson=request.cross_person,
+            )
         return CognitiveObservation(
             text='\n'.join(lines),
             hit_count=len(facts) + len(episodes) + len(visible_hits),

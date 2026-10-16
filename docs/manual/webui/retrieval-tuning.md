@@ -15,7 +15,7 @@
 分两组：
 
 - 排序权重：词面相关度权重 `bm25_weight`、留存度权重下限 `retention_weight_floor`、
-  PPR 回迁概率 `ppr_alpha`、PPR 跳数 `ppr_hops`、候选池分数百分位
+  PPR 回迁概率 `ppr_alpha`、联想扩散跳数 `ppr_hops`（0 为关闭，回想默认不做联想）、候选池分数百分位
   `pool_score_percentile`。
 - 条数上限：进提示词的事实条数、情节召回条数、近期情节条数——显示「跟随月璃设置」
   的项表示当前值来自配置文件，评估时可以在可填范围内临时覆盖着试。
