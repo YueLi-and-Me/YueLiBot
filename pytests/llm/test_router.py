@@ -539,9 +539,9 @@ def test_inspect_never_leaks_keys() -> None:
 async def test_background_stream_prints_complete_model_call(monkeypatch) -> None:
     """没有用户回合承载时，路由收尾应把正文与推理交给独立控制台出口。"""
     import src.core.llm_models.router as router_module
-    from src.core.services.console.turn_panel import take_calls
+    from src.core.services.console.turn_panel import take_steps
 
-    take_calls()
+    take_steps()
     rendered = []
     monkeypatch.setattr(router_module, 'render_model_call', rendered.append)
     router = _router_with({'主力': _ReasoningClient('完整推理', '完整正文')})
@@ -555,7 +555,7 @@ async def test_background_stream_prints_complete_model_call(monkeypatch) -> None
 async def test_turn_stream_is_not_printed_twice(monkeypatch) -> None:
     """用户回合已接住调用时不走独立出口，正文只在轮末面板展示一次。"""
     import src.core.llm_models.router as router_module
-    from src.core.services.console.turn_panel import begin_turn, take_calls
+    from src.core.services.console.turn_panel import begin_turn, take_steps
 
     rendered = []
     monkeypatch.setattr(router_module, 'render_model_call', rendered.append)
@@ -563,7 +563,7 @@ async def test_turn_stream_is_not_printed_twice(monkeypatch) -> None:
     router = _router_with({'主力': _ReasoningClient('回合推理', '回合正文')})
 
     assert await _collect(router, require_text=True) == '回合正文'
-    calls = take_calls()
+    calls = take_steps()
     assert rendered == []
     assert len(calls) == 1
     assert calls[0].reasoning == '回合推理'

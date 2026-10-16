@@ -791,7 +791,8 @@ class ActionDecisionEvent:
     latency_ms: int = 0
     # ReAct 轮次序号，从 0 开始；单轮回合恒为 0，与本期之前的事件形状兼容。
     round_index: int = 0
-    # 认知动作的观察结果摘要，已按 OBSERVATION_EVENT_MAX_CHARS 截断后写入账本。
+    # 认知动作的观察结果摘要，已按 OBSERVATION_EVENT_MAX_CHARS 截断后写入账本；
+    # 完整结果见同轮 tool_execution 事件。
     observation: str = ''
     # 外部工具调用与动作决策互斥；仅工具轮填写，保持既有动作事件形状不变。
     tool_name: str = ''

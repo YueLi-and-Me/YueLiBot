@@ -135,6 +135,7 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
   promptId: '提示词模板',
   promptFactIds: '进提示词的事实编号',
   providerName: '模型服务',
+  query: '检索词',
   quoteMessageId: '引用消息',
   reason: '原因',
   reasonCodes: '决策理由',
@@ -202,7 +203,9 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   cached: '使用缓存',
   chat: '聊天',
   coding: '编写代码',
+  cognitive_step: '先查了一下',
   committed: '已决定执行',
+  consult: '查知识资料',
   contact: '联系人',
   delivery_failed: '投递失败',
   desktop: '桌面',
@@ -223,6 +226,7 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   group: '群聊',
   idle: '空闲',
   illegal_action: '动作不合法',
+  inspect: '翻更早的聊天',
   light: '轻度活动',
   long: '详细',
   manual: '人工',
@@ -241,6 +245,7 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   rate_limited: '触发频率限制',
   react: '发表情回应',
   reading: '阅读',
+  recall: '翻长期记忆',
   reply: '回复',
   shadow: '影子观察',
   silent: '保持沉默',
@@ -472,6 +477,29 @@ export function displayValue(value: unknown): string {
   return Object.entries(values)
     .map(([key, item]) => `${TRACE_FIELD_LABELS[key] ?? key}：${displayValue(item)}`)
     .join('，') || '无'
+}
+
+/**
+ * 把工具调用入参整理成单行可读文本。
+ *
+ * @param value 事件的 arguments 字段：模型给出的 JSON 文本或已解析对象。
+ * @returns 形如「检索词：龙族 设定」的文本；无入参时为空串，无法解析为 JSON 时原样返回。
+ * @remarks 参数值是模型写的检索词等正文，按原文展示，不走枚举翻译。
+ */
+export function toolArgumentsLabel(value: unknown): string {
+  let parsed: unknown = value
+  if (typeof value === 'string') {
+    const raw = value.trim()
+    if (!raw) return ''
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return raw
+    }
+  }
+  return Object.entries(record(parsed))
+    .map(([key, item]) => `${TRACE_FIELD_LABELS[key] ?? key}：${typeof item === 'string' ? item : JSON.stringify(item)}`)
+    .join(' · ')
 }
 
 /**

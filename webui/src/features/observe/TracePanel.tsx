@@ -21,6 +21,7 @@ import {
   optionalText,
   record,
   text,
+  toolArgumentsLabel,
   traceDetailItems,
   traceKindLabel,
   traceKindQueryValue,
@@ -409,12 +410,23 @@ const TurnCard = memo(function TurnCard({ turnId, entries, expanded, onShowTurn,
           )
         }
         if (entry.kind === 'tool_execution') {
+          const argumentsLabel = toolArgumentsLabel(entry.arguments)
+          const observationText = optionalText(entry.observation)
           return (
-            <div key={key} className="flex flex-wrap gap-1.5">
-              <Chip
-                label="工具"
-                value={`${text(entry.toolName)} · ${text(entry.eventStatus)} · ${displayValue(entry.durationMs)}ms`}
-              />
+            <div key={key} className="flex flex-col gap-1.5">
+              <div className="flex flex-wrap gap-1.5">
+                <Chip
+                  label="工具"
+                  value={`${displayValue(entry.toolName)} · ${displayValue(entry.eventStatus)} · ${displayValue(entry.durationMs)}ms`}
+                />
+                {argumentsLabel ? <Chip label="入参" value={argumentsLabel} /> : null}
+              </div>
+              {/* 工具结果是这一轮决策读到的全部材料，原样展示，不做摘要。 */}
+              {observationText ? (
+                <pre className="max-h-72 overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-xs whitespace-pre-wrap text-terminal-foreground">
+                  {observationText}
+                </pre>
+              ) : null}
             </div>
           )
         }

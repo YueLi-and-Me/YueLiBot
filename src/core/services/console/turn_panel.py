@@ -1,16 +1,18 @@
-"""按回合聚合各级模型调用，并渲染成分层的终端观测面板。
+"""按回合聚合各级模型调用与工具执行，并渲染成分层的终端观测面板。
 
-一个回合在多级 Agent 下会产生多次模型调用：决策一次、回复生成一次、认知检索
-各一次。控制台原来只看得到最后一条可见产物，出了问题分不清是哪一级——本模块
-把每次调用的模型、耗时、落盘记录、完整思考与完整产出收集起来，回合收尾时渲染
-成一个嵌套面板。模型响应不在展示层截断，控制台看到的内容与分阶段记录一致。
+一个回合在多级 Agent 下会产生多次模型调用：决策一次、回复生成一次，每次查询
+工具之后决策模型还要再调一次。本模块把每次调用的模型、耗时、落盘记录、完整
+思考与完整产出，连同两次决策之间工具返回的完整结果，按发生顺序收集起来，回合
+收尾时渲染成一个嵌套面板。模型响应与工具结果都不在展示层截断，控制台看到的
+内容与分阶段记录一致。
 
 收集走 ``ContextVar``：回合是一个 asyncio Task，模型路由在同一个 Task 树里执行，
 因此 ``ModelRouter`` 只管调用 ``note_model_call``，不需要知道自己属于哪个回合，
 并发的多个会话之间也不会互相混淆。
 
-对外暴露 ``begin_turn`` / ``note_model_call`` / ``take_calls`` 与 ``render_stage_panel``，
-被 ``src.core.llm_models.router``（写入）与 ``src.core.services.console.trace_console``
+对外暴露 ``begin_turn`` / ``note_model_call`` / ``note_tool_run`` / ``take_steps``
+与 ``render_step_panel``，被 ``src.core.llm_models.router`` 与
+``src.core.services.chat.service``（写入）、``src.core.services.console.trace_console``
 （渲染）使用。
 """
 
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 import json
 
@@ -27,6 +29,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from src.core.llm_models.openai import error_hint
+from src.core.logging.log_display import value_label
 
 
 @dataclass(frozen=True)
@@ -59,31 +62,63 @@ class ModelCall:
     error_kind: str = ''
 
 
-@dataclass
-class _TurnCallBuffer:
-    """保存当前回合仍可接收的模型调用。
+@dataclass(frozen=True)
+class ToolRun:
+    """一次查询类工具执行在面板上需要展示的事实。
 
-    后台任务会继承创建它时的 ``ContextVar``。回合面板取走调用后，把同一个对象
+    :ivar name: 工具名，内置认知动作为 ``recall`` / ``inspect`` / ``consult``，
+        外部只读工具为注册名。
+    :ivar argument: 入参文本：认知动作是检索词，外部工具是按键排序的 JSON。
+    :ivar observation: 回灌给决策模型的完整结果正文，含「没找到」与执行失败说明。
+    """
+
+    name: str
+    argument: str
+    observation: str
+
+
+# 回合面板按发生顺序收纳的一级：一次模型调用，或两次决策之间的一次工具执行。
+TurnStep = Union[ModelCall, ToolRun]
+
+
+@dataclass
+class _TurnStepBuffer:
+    """保存当前回合仍可接收的模型调用与工具执行。
+
+    后台任务会继承创建它时的 ``ContextVar``。回合面板取走内容后，把同一个对象
     标记为关闭，迟到的摘要、视觉或记忆任务就能识别自己已不属于该面板，改走独立
     控制台输出；只清空列表会让这些调用追加到一个再也没人读取的旧列表里。
     """
 
-    calls: List[ModelCall] = field(default_factory=list)
+    steps: List[TurnStep] = field(default_factory=list)
     accepting: bool = True
 
 
-# 当前回合已发生的模型调用。默认 None 表示「不在回合内」——主动消息、日程生成
-# 这类调用应独立展示，而不是被误算进某个用户回合。
-_calls: ContextVar[_TurnCallBuffer | None] = ContextVar('turn_model_calls', default=None)
+# 当前回合已发生的模型调用与工具执行。默认 None 表示「不在回合内」——主动消息、
+# 日程生成这类调用应独立展示，而不是被误算进某个用户回合。
+_steps: ContextVar[_TurnStepBuffer | None] = ContextVar('turn_steps', default=None)
 
 
 def begin_turn() -> None:
     """在当前回合的协程上下文里开启收集。
 
     副作用：把当前 ContextVar 指向一个新的开放缓冲；同一 Task 内后续的模型调用
-        都会记进去，其他 Task 不受影响。
+        与工具执行都会记进去，其他 Task 不受影响。
     """
-    _calls.set(_TurnCallBuffer())
+    _steps.set(_TurnStepBuffer())
+
+
+def _note_step(step: TurnStep) -> bool:
+    """把一级内容追加进当前回合缓冲。
+
+    :param step: 已完成的模型调用或工具执行。
+    :return: 已收入当前回合面板时为 ``True``；不在回合内或缓冲已关闭时为 ``False``。
+    """
+    buffer = _steps.get()
+    if buffer is None or not buffer.accepting:
+        return False
+    buffer.steps.append(step)
+    return True
 
 
 def note_model_call(call: ModelCall) -> bool:
@@ -96,33 +131,70 @@ def note_model_call(call: ModelCall) -> bool:
     :param call: 已完成调用的展示事实。
     :return: 已收入当前回合面板时为 ``True``；应独立展示时为 ``False``。
     """
-    buffer = _calls.get()
-    if buffer is None or not buffer.accepting:
-        return False
-    buffer.calls.append(call)
-    return True
+    return _note_step(call)
 
 
-def take_calls() -> List[ModelCall]:
-    """取出当前回合已收集的调用，并结束收集。
+def note_tool_run(run: ToolRun) -> bool:
+    """记录一次已执行的查询类工具，使其结果出现在两次决策调用之间。
+
+    :param run: 工具名、入参与完整结果。
+    :return: 已收入当前回合面板时为 ``True``；应独立展示时为 ``False``。
+    """
+    return _note_step(run)
+
+
+def take_steps() -> List[TurnStep]:
+    """取出当前回合已收集的模型调用与工具执行，并结束收集。
 
     取走之后把上下文标记回「不在回合内」，而不只是清空列表：回合收尾时派生的
     后台任务（摘要、场景观察）继承的是同一份上下文，只清列表的话它们的模型调用
     会继续追加进来，然后被下一轮的面板当成本轮调用显示出来。
 
-    :return: 按发生顺序排列的调用列表；不在回合内时为空列表。
-    副作用：清空收集器并解除回合标记，避免同一批调用被渲染两次。
+    :return: 按发生顺序排列的各级内容；不在回合内时为空列表。
+    副作用：清空收集器并解除回合标记，避免同一批内容被渲染两次。
     """
-    buffer = _calls.get()
-    _calls.set(None)
+    buffer = _steps.get()
+    _steps.set(None)
     if buffer is None:
         return []
     # 已经派生出去的子任务仍持有这个对象；先关闭，再复制和清空，确保迟到调用
     # 返回 False 并由路由层独立展示，而不是落入无人读取的旧列表。
     buffer.accepting = False
-    taken = list(buffer.calls)
-    buffer.calls.clear()
+    taken = list(buffer.steps)
+    buffer.steps.clear()
     return taken
+
+
+def render_step_panel(step: TurnStep) -> Panel:
+    """按类别把回合中的一级内容渲染成子面板。
+
+    :param step: 模型调用或工具执行。
+    :return: 对应的分级面板。
+    """
+    if isinstance(step, ToolRun):
+        return render_tool_panel(step)
+    return render_stage_panel(step)
+
+
+def render_tool_panel(run: ToolRun) -> Panel:
+    """把一次工具执行渲染成「入参 + 完整结果」面板。
+
+    :param run: 一次已执行的查询类工具。
+    :return: 标题含工具中文名与结果字数的面板；结果正文不截断。
+    """
+    label = value_label(run.name)
+    title = f'工具结果 · {label}' if label == run.name else f'工具结果 · {label}（{run.name}）'
+    body = run.observation.strip() or '（工具没有返回内容）'
+    blocks: List[RenderableType] = []
+    if run.argument.strip():
+        blocks.append(Text(f'入参：{run.argument.strip()}', style='bold yellow'))
+    blocks.append(Text(body, style='bright_white'))
+    return Panel(
+        Group(*blocks),
+        title=f'{title} · {len(run.observation)} 字',
+        border_style='bright_yellow',
+        padding=(0, 1),
+    )
 
 
 def render_stage_panel(call: ModelCall) -> Panel:
@@ -176,18 +248,19 @@ def render_stage_panel(call: ModelCall) -> Panel:
     )
 
 
-def render_timing_footer(calls: List[ModelCall]) -> Text:
-    """把各级耗时汇总成一行页脚。
+def render_timing_footer(steps: List[TurnStep]) -> Text:
+    """把各级模型调用的耗时汇总成一行页脚。
 
-    :param calls: 本回合的全部模型调用。
-    :return: 形如 ``决策 2.19 s | 回复生成 9.12 s`` 的单行文本；无调用时为空文本。
+    :param steps: 本回合的全部内容；工具执行不计耗时，跳过。
+    :return: 形如 ``决策 2.19 s | 回复生成 9.12 s`` 的单行文本；无模型调用时为空文本。
     """
-    if not calls:
-        return Text('')
     parts = [
-        f'{_TASK_LABELS.get(call.task, call.task)} {call.total_ms / 1000:.2f} s'
-        for call in calls
+        f'{_TASK_LABELS.get(step.task, step.task)} {step.total_ms / 1000:.2f} s'
+        for step in steps
+        if isinstance(step, ModelCall)
     ]
+    if not parts:
+        return Text('')
     return Text(' | '.join(parts), style='cyan')
 
 

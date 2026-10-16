@@ -269,6 +269,24 @@ async def test_overspent_budget_without_terminal_is_illegal() -> None:
     assert inspect.queries == ['乙']
 
 
+async def test_tool_execution_event_keeps_full_observation() -> None:
+    """工具执行事件保留完整结果；同轮行动决策事件里的合并副本才按摘要上限截断。"""
+    long_text = '设定' * 400 + '【结果末尾】'
+    consult = _FakeAction('consult', text=long_text)
+    await _run_tools(
+        [[('consult', '{"query": "龙族"}')], [_REPLY_CALL]],
+        rounds=2,
+        actions=[consult],
+    )
+
+    events = _tool_events()
+    assert [event['toolName'] for event in events] == ['consult']
+    assert events[0]['observation'] == long_text
+    decisions = list(reversed(event_store.search(kinds=['action_decision']).events))
+    cognitive = next(event for event in decisions if event['eventStatus'] == 'cognitive_step')
+    assert '【结果末尾】' not in cognitive['observation']
+
+
 async def test_tool_crash_propagates_with_failed_event() -> None:
     """内置认知工具的本机故障原样上抛，并先记一条 failed 工具事件。"""
     with pytest.raises(RuntimeError, match='数据库炸了'):

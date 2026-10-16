@@ -41,7 +41,8 @@ from src.core.platform_io.types import StreamKind
 # 预算，且每多一轮 ReAct 就再占一次；超出上限只截断观察，不截断 Bot 原本的历史。
 # 取值须容下一次 consult 的全部命中：5 条知识、每条至多 _KNOWLEDGE_ITEM_MAX_CHARS。
 OBSERVATION_MAX_CHARS = 3000
-# 写入行动事件账本的观察摘要上限；账本仅反映查询内容与命中情况。
+# action_decision 事件里合并观察的摘要上限（字符）。该字段是同一轮各工具结果的
+# 拼接副本，只用于看出查了什么、有无命中；每个工具的完整结果记在 tool_execution 事件里。
 OBSERVATION_EVENT_MAX_CHARS = 300
 # 单条记忆、情节与历史消息的展示上限。一条超长消息不应挤掉其余命中项。
 _ITEM_MAX_CHARS = 80

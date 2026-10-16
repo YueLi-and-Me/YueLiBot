@@ -1,16 +1,17 @@
 """把每轮对话合成一个嵌套彩色面板，并同步呈现到终端、Electron 控制台与 WebUI 日志面板。
 
-完整提示词仍由观察记录保存；模型返回则在这里把正文、推理和工具调用完整展示。属于用户
-回合的调用在轮末嵌套面板中呈现，视觉理解、摘要、记忆抽取、日程等回合外调用在完成时独立
-成框。渲染出的 rich 面板被捕获为带 ANSI 的字符串后一次写两处——``stdout``（本机终端与
-Electron 控制台）和 ``webui_logs``（WebUI 日志面板），因此三端呈现一致。终端能力判断复用
-``logging.logger_colors``：非彩色/非交互场景（如重定向到文件或测试）所有渲染函数保持无
-操作，避免把调试面板混入服务日志。
+完整提示词仍由观察记录保存；模型返回则在这里把正文、推理、工具调用与工具结果完整展示。
+属于用户回合的调用在轮末嵌套面板中呈现，视觉理解、摘要、记忆抽取、日程等回合外调用在
+完成时独立成框。渲染出的 rich 面板被捕获为带 ANSI 的字符串后一次写两处——``stdout``
+（本机终端、Electron 控制台与 systemd journal）和 ``webui_logs``（WebUI 日志面板）。
+WebUI 一侧始终带颜色；``stdout`` 是否带颜色由 ``logging.logger_colors`` 的全进程裁定决定，
+不着色时写入去掉 ANSI 的纯文本。是否渲染与是否着色无关：无头部署时 WebUI 就是控制台。
 """
 
 from __future__ import annotations
 
 from typing import Any
+import re
 import time
 
 from rich.console import Console, Group, RenderableType
@@ -22,10 +23,13 @@ from src.core.logging.logger import get_logger
 from src.core.logging.logger_colors import is_color_enabled
 from src.core.services.console.turn_panel import (
     ModelCall,
+    ToolRun,
     begin_turn as begin_turn_capture,
     render_stage_panel,
+    render_step_panel,
     render_timing_footer,
-    take_calls,
+    render_tool_panel,
+    take_steps,
 )
 from src.core.webui.logs import webui_logs
 
@@ -40,9 +44,8 @@ _PANEL_WIDTH = 100
 # 最终字符串仍只包含实际内容，不会补齐空行；它不是业务长度上限。
 _PANEL_LAYOUT_HEIGHT = 1_000_000
 
-# 是否渲染面板。import 期一次性判断：Electron 启动 Python 时注入 YUELI_FORCE_COLOR=1，
-# 故管道转发场景同样为真；重定向到文件或 pytest 下为假，渲染函数直接跳过。
-_render_enabled = is_color_enabled()
+# 捕获结果中的 ANSI 控制序列（CSI），用于向不着色的 stdout 写纯文本。
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
 # 捕获用 Console：force_terminal 让 rich 即便面对管道/捕获缓冲也输出 ANSI；truecolor 保证
 # 24 位色；固定 width 产出确定性排版。它只用于 capture()，不直接持有 stdout。
@@ -55,9 +58,9 @@ _render_enabled = is_color_enabled()
 _capture_console = Console(
     force_terminal=True,
     color_system="truecolor",
-    # 是否进入本渲染链已经由 ``is_color_enabled`` 统一裁定。Rich 若再次读取父进程
-    # 的 NO_COLOR，会覆盖 Electron 注入的 YUELI_FORCE_COLOR=1，出现面板生成成功却
-    # 没有 ANSI 色码的矛盾；这里禁止二次环境裁定。
+    # 捕获结果始终带色：WebUI 一侧恒定着色，stdout 一侧是否去色由 ``is_color_enabled``
+    # 统一裁定。Rich 若再次读取父进程的 NO_COLOR，会覆盖 Electron 注入的
+    # YUELI_FORCE_COLOR=1，出现面板生成成功却没有 ANSI 色码的矛盾；这里禁止二次环境裁定。
     no_color=False,
     width=_PANEL_WIDTH,
     height=_PANEL_LAYOUT_HEIGHT,
@@ -74,8 +77,17 @@ def _emit_console_block(renderable: RenderableType) -> None:
     :param renderable: 已组装好的面板或文本。
 
     副作用：
-        向标准输出写入带 ANSI 的多行文本，并把同一段文本发布到 ``webui_logs``。
-        用 capture() 而非直接 print，确保两处拿到的是同一份确定性 ANSI 输出。
+        向标准输出写入多行文本，并把同一段带 ANSI 的文本发布到 ``webui_logs``。
+        用 capture() 而非直接 print，确保两处拿到的是同一份确定性排版；全进程
+        裁定为不着色时，stdout 一侧去掉 ANSI 序列后再写。
+
+    渲染与否不得与着色裁定绑定。
+
+    - 现象：服务器上 systemd 托管时 stdout 不是 TTY，回合面板、行动决策行与回合外
+      模型调用面板在 journal 与 WebUI 日志面板里全部缺失，只剩门控等运行追踪框。
+    - 原因：此前以 ``is_color_enabled()`` 作为渲染开关，非 TTY 即整体跳过；而 WebUI
+      日志支路按设计独立于终端能力（见 ``logger.WebUiLogHandler``）。
+    - 后果：恢复该绑定会使无头部署下 WebUI 日志面板再次看不到模型输出与工具结果。
     """
 
     with _capture_console.capture() as capture:
@@ -83,7 +95,7 @@ def _emit_console_block(renderable: RenderableType) -> None:
         _capture_console.print(renderable, crop=False)
     text = capture.get()
     # stdout 保留结尾换行让相邻面板留白；WebUI 面板按整段发布，去掉尾换行避免多出空行。
-    print(text, end="", flush=True)
+    print(text if is_color_enabled() else _ANSI_SEQUENCE.sub('', text), end="", flush=True)
     webui_logs.publish(text.rstrip("\n"))
 
 
@@ -101,12 +113,25 @@ def render_model_call(call: ModelCall) -> None:
         失败只记录调试日志，不影响模型调用结果。
     """
 
-    if not _render_enabled:
-        return
     try:
         _emit_console_block(render_stage_panel(call))
     except Exception as exc:
         logger.debug('render_model_call_failed', task=call.task, error=str(exc))
+
+
+def render_tool_run(run: ToolRun) -> None:
+    """独立展示一次不属于活跃用户回合的工具执行结果。
+
+    :param run: 工具名、入参与完整结果。
+
+    副作用：
+        向三端写入工具结果面板；渲染失败只记录调试日志。
+    """
+
+    try:
+        _emit_console_block(render_tool_panel(run))
+    except Exception as exc:
+        logger.debug('render_tool_run_failed', tool=run.name, error=str(exc))
 
 
 def mark_turn_start(turn: int) -> None:
@@ -114,12 +139,10 @@ def mark_turn_start(turn: int) -> None:
 
     :param turn: 对话回合 ID。
 
-    副作用：非渲染场景不写入计时表，因为后续渲染也不会发生；渲染场景同时把
-        当前协程上下文标记为「回合内」，此后各级模型调用都会进本回合的面板。
+    副作用：写入计时表，并把当前协程上下文标记为「回合内」，此后各级模型调用
+        与工具执行都会进本回合的面板。计时记录由回合面板渲染时取走。
     """
 
-    if not _render_enabled:
-        return
     _starts[turn] = time.monotonic()
     begin_turn_capture()
 
@@ -233,29 +256,22 @@ def render_turn(
     副作用：
         向三端写入嵌套面板；面板渲染异常只记录调试日志，不影响聊天主流程。
     """
-    if not _render_enabled:
-        return
     try:
-        # 各级模型调用（决策 / 回复生成 / 认知检索）逐级成面板；拿不到时说明
-        # 本轮没经过路由层收集，退回只列模型名与上下文规模的旧摘要。
-        stage_calls = take_calls()
-        stage_panels: list[Any] = (
-            [render_stage_panel(call) for call in stage_calls]
-            if stage_calls
-            else [_request_panel(messages, model_name)]
-        )
+        # 各级模型调用（决策 / 回复生成）与其间的工具结果按发生顺序逐级成面板；
+        # 拿不到时说明本轮没经过路由层收集，退回只列模型名与上下文规模的旧摘要。
+        stage_steps = take_steps()
+        has_model_calls = any(isinstance(step, ModelCall) for step in stage_steps)
+        stage_panels: list[Any] = [render_step_panel(step) for step in stage_steps]
+        if not has_model_calls:
+            stage_panels.insert(0, _request_panel(messages, model_name))
         children: list[Any] = [
-            Text.assemble(
-                Text('收到消息  ', style='bold cyan'),
-                Text(f'[{source_label}] ', style='bold magenta'),
-                Text(f'{sender_label}：{user_text}', style='bold white'),
-            ),
+            _received_line(source_label, sender_label, user_text),
             *stage_panels,
         ]
         reply = _reply_text(reply_segments)
         # 分级面板里最后一级的「输出」已经是这句话；再挂一个「模型返回」会把
         # 同一内容在同一框内显示两遍。
-        if stage_calls:
+        if has_model_calls:
             pass
         elif reply:
             children.append(
@@ -280,20 +296,82 @@ def render_turn(
                     title='内部变化', border_style='yellow', padding=(0, 1),
                 )
             )
-        footer = render_timing_footer(stage_calls)
-        subtitle = (
-            f'{footer.plain} | 合计 {_elapsed_ms(turn)}'
-            if footer.plain else f'耗时 {_elapsed_ms(turn)}'
-        )
         _emit_console_block(Panel(
             Group(*children),
             title=f'第 {turn} 轮 · {source_label} · {sender_label}',
-            subtitle=subtitle,
+            subtitle=_turn_subtitle(turn, stage_steps),
             border_style='bright_cyan',
             padding=(0, 1),
         ))
     except Exception as exc:
         logger.debug('render_turn_failed', error=str(exc))
+
+
+def render_quiet_turn(
+    turn: int,
+    sender_label: str,
+    user_text: str,
+    *,
+    source_label: str,
+    interrupted: bool,
+) -> None:
+    """为未渲染回复面板与失败面板的回合输出面板，并结束本回合的收集。
+
+    沉默、等下文、戳一戳、贴表情、被新消息打断、空回复与门控拦截都不调用
+    :func:`render_turn`；这些回合里已经发生的决策思考、工具结果与会话印象等
+    模型调用若不在这里取走，会随回合结束一起丢失，回合缓冲也会一直保持开放，
+    使此后从该上下文派生的摘要与记忆抽取调用落进无人读取的列表。
+
+    :param turn: 对话回合 ID。
+    :param sender_label: 发送者展示名。
+    :param user_text: 本回合批次的用户文本。
+    :param source_label: 当前消息所在 stream 的可读来源标签。
+    :param interrupted: 回合是否因新消息被打断；决定标题后缀。
+
+    副作用：
+        取走并关闭本回合的收集缓冲，消费计时记录；已由回复面板或失败面板取走、
+        或本回合没有任何模型调用时不输出。渲染异常只记录调试日志。
+    """
+    stage_steps = take_steps()
+    if not stage_steps:
+        _starts.pop(turn, None)
+        return
+    try:
+        suffix = '被新消息打断' if interrupted else '未发言'
+        _emit_console_block(Panel(
+            Group(
+                _received_line(source_label, sender_label, user_text),
+                *(render_step_panel(step) for step in stage_steps),
+            ),
+            title=f'第 {turn} 轮 · {source_label} · {sender_label} · {suffix}',
+            subtitle=_turn_subtitle(turn, stage_steps),
+            border_style='yellow' if interrupted else 'bright_black',
+            padding=(0, 1),
+        ))
+    except Exception as exc:
+        logger.debug('render_quiet_turn_failed', error=str(exc))
+
+
+def _received_line(source_label: str, sender_label: str, user_text: str) -> Text:
+    """组装回合面板首行「收到消息 [来源] 发送者：正文」。"""
+    return Text.assemble(
+        Text('收到消息  ', style='bold cyan'),
+        Text(f'[{source_label}] ', style='bold magenta'),
+        Text(f'{sender_label}：{user_text}', style='bold white'),
+    )
+
+
+def _turn_subtitle(turn: int, stage_steps: list[Any]) -> str:
+    """组装回合面板页脚：各级模型耗时加回合合计耗时。
+
+    :param turn: 对话回合 ID。
+    :param stage_steps: 本回合已取走的各级内容。
+    :return: 页脚文本。
+    副作用：消费该回合的计时记录。
+    """
+    footer = render_timing_footer(stage_steps)
+    elapsed = _elapsed_ms(turn)
+    return f'{footer.plain} | 合计 {elapsed}' if footer.plain else f'耗时 {elapsed}'
 
 
 def render_observation(
@@ -313,8 +391,6 @@ def render_observation(
     副作用：
         向三端写入观察行；渲染异常只记录调试日志。
     """
-    if not _render_enabled:
-        return
     try:
         _emit_console_block(
             Text('旁听  ', style='bold magenta')
@@ -327,7 +403,8 @@ def render_observation(
         logger.debug('render_observation_failed', error=str(exc))
 
 
-# 控制台里观察结果只展示开头，完整正文在事件账本里。
+# 行动决策行里工具结果只展示开头（字符），作为回合进行中的实时进度；完整结果在轮末
+# 回合面板的「工具结果」子面板与事件账本的 tool_execution 事件里。
 _OBSERVATION_CONSOLE_CHARS = 60
 
 
@@ -352,14 +429,13 @@ def render_action_decision(
 ) -> None:
     """以单行渲染 Conversation Agent 的行动决策摘要。
 
-    该入口只做观察展示，不触碰事件账本与业务行为；非渲染场景自动跳过，
-    避免把决策行混入服务日志。
+    该入口只做观察展示，不触碰事件账本与业务行为。
 
     :param turn: 对话回合 ID。
     :param agent_scope: Agent 灰度路径标识，例如 shadow。
     :param event_status: action_decision 的事件状态。
     :param query: 认知动作的检索词；终局动作为空。
-    :param observation: 认知动作的观察结果摘要；终局动作为空。
+    :param observation: 认知动作的观察结果；单行只展示开头，终局动作为空。
     :param detail: 失败状态的人类可读原因；成功状态通常为空。
     :param action: 已提交决策的动作名；失败状态为空。
     :param reason_codes: 已提交决策的理由码。
@@ -368,8 +444,6 @@ def render_action_decision(
     副作用：
         向三端写入一行决策摘要；渲染异常只记录调试日志。
     """
-    if not _render_enabled:
-        return
     try:
         scope_label = '影子观察' if agent_scope == 'shadow' else value_label(agent_scope)
         parts: list[Any] = [
@@ -385,7 +459,7 @@ def render_action_decision(
             if target_message_ids:
                 summary += f"  目标消息：{'、'.join(str(target) for target in target_message_ids)}"
             if observation:
-                # 观察正文可能很长，控制台只展示开头。
+                # 观察正文可能很长，单行只展示开头，完整结果见轮末回合面板。
                 summary += f'  结果：{_clip_observation(observation)}'
             # 会产出可见内容的动作用绿色，其余（沉默、等待、认知轮）用黄色，
             # 便于在滚动日志中区分 Bot 是否发言。
@@ -425,21 +499,13 @@ def render_turn_error(
         向三端写入错误面板；渲染异常只记录调试日志。
     """
 
-    if not _render_enabled:
-        return
     try:
         # 失败轮同样要取走本回合的调用：一是失败面板要显示挂在哪一级、存档在哪，
         # 二是不取走的话这批调用会残留到下一轮面板里，显示成那一轮多调了模型。
-        stage_calls = take_calls()
-        children: list[Any] = [
-            Text.assemble(
-                Text('收到消息  ', style='bold cyan'),
-                Text(f'[{source_label}] ', style='bold magenta'),
-                Text(f'{sender_label}：{user_text}', style='bold white'),
-            ),
-        ]
-        if stage_calls:
-            children.extend(render_stage_panel(call) for call in stage_calls)
+        stage_steps = take_steps()
+        children: list[Any] = [_received_line(source_label, sender_label, user_text)]
+        if stage_steps:
+            children.extend(render_step_panel(step) for step in stage_steps)
         elif model_name.strip():
             children.append(_request_panel([], model_name, border_style='red'))
         children.append(Panel(

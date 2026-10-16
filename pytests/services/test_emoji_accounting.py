@@ -116,12 +116,6 @@ def spy_trace(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     return recorded
 
 
-@pytest.fixture
-def rendering(monkeypatch: pytest.MonkeyPatch) -> None:
-    """强制打开面板渲染；pytest 下默认关闭，否则渲染函数直接是空操作。"""
-    monkeypatch.setattr(console, '_render_enabled', True)
-
-
 async def test_record_use_miss_logs_warning(db: sqlite3.Connection, tmp_path: Path) -> None:
     """record_use 未命中行时必须留下带 send_ref 与哈希前缀的警告，不许静默。"""
     library = EmojiLibrary(db, tmp_path / 'emojis')
@@ -163,7 +157,7 @@ async def test_record_use_hit_emits_trace_event(
     assert row[0] == 1
 
 
-def test_selected_emoji_renders_in_turn_panel(rendering, capsys: pytest.CaptureFixture) -> None:
+def test_selected_emoji_renders_in_turn_panel(capsys: pytest.CaptureFixture) -> None:
     """命中情形的面板行：哈希前 8 位、目标情绪与库内标签都在轮末面板上。"""
     console.mark_turn_start(21)
     console.render_turn(
@@ -182,7 +176,7 @@ def test_selected_emoji_renders_in_turn_panel(rendering, capsys: pytest.CaptureF
     assert '表情包：723b3877 · 目标情绪 开心 · 标签 开心,可爱 · 候选 1 张' in out
 
 
-def test_missed_emoji_renders_in_turn_panel(rendering, capsys: pytest.CaptureFixture) -> None:
+def test_missed_emoji_renders_in_turn_panel(capsys: pytest.CaptureFixture) -> None:
     """落空情形的面板行：写明写了 <emoji> 但库里没命中，不让落空继续隐身。"""
     console.mark_turn_start(22)
     console.render_turn(

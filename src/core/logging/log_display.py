@@ -163,6 +163,8 @@ EVENT_LABELS: Dict[str, str] = {
     "provider_model_list_probe_failed": "模型列表探测失败",
     "render_action_decision_failed": "行动决策面板渲染失败",
     "render_observation_failed": "旁听消息渲染失败",
+    "render_quiet_turn_failed": "未发言轮次面板渲染失败",
+    "render_tool_run_failed": "工具结果面板渲染失败",
     "render_turn_error_failed": "失败轮次面板渲染失败",
     "render_turn_failed": "对话轮次面板渲染失败",
     "reply_gate": "回复门控判定",

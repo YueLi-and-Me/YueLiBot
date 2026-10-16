@@ -282,7 +282,8 @@ def _emit_tool_execution(
     :param round_index: 轮次序号。
     :param event_status: committed / failed；截断的调用走 discarded 专用函数。
     :param duration_ms: 执行耗时。
-    :param observation: 观察摘要，按账本上限截断。
+    :param observation: 工具返回的完整结果，不截断：各工具已自带结果上限，
+        这条事件是事后查看「查到了什么」的唯一完整记录。
     :param tool_kind: 工具类别；内置认知动作为 cognitive，外部只读工具为
         readonly。账本据此区分 Bot 查询记忆与读取会话内容。
     :param cross_person: 本回合事实检索是否放开了人物范围；逐条带上，
@@ -298,7 +299,7 @@ def _emit_tool_execution(
         arguments=call.get('arguments', ''),
         durationMs=duration_ms,
         eventStatus=event_status,
-        observation=_truncate(observation, OBSERVATION_EVENT_MAX_CHARS),
+        observation=observation,
         crossPerson=cross_person,
     )
 
@@ -1228,20 +1229,21 @@ class ConversationAgent:
                 f'{invocation.tool_name}，实际 {result.tool_name}'
             )
             raise _LocalToolExecutionError(error) from error
+        observation = (
+            result.observation
+            if result.success
+            else f'工具执行失败：{result.error_message}'
+        )
+        # 失败时同样落账回灌给模型的那段说明，账本上才看得出失败原因。
         _emit_tool_execution(
             dict(call),
             frame,
             round_index,
             event_status='committed' if result.success else 'failed',
             duration_ms=duration_ms,
-            observation=result.observation if result.success else '',
+            observation=observation,
             tool_kind='readonly',
             cross_person=tool_context.cross_person,
-        )
-        observation = (
-            result.observation
-            if result.success
-            else f'工具执行失败：{result.error_message}'
         )
         return invocation, observation
 

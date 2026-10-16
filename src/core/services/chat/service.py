@@ -42,7 +42,15 @@ from src.core.services.media.chat_video import (
     message_concerns_her,
 )
 from src.core.services.media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
-from src.core.services.console.trace_console import mark_turn_start, render_action_decision, render_turn, render_turn_error
+from src.core.services.console.trace_console import (
+    mark_turn_start,
+    render_action_decision,
+    render_quiet_turn,
+    render_tool_run,
+    render_turn,
+    render_turn_error,
+)
+from src.core.services.console.turn_panel import ToolRun, note_tool_run
 from src.core.services.maintenance.vector import VectorService
 
 from src.core.agent.character import pick_tone
@@ -1809,6 +1817,13 @@ class ChatService(
                 # 都只在这里退回批次一次。
                 if control.interrupted:
                     self._return_interrupted_batch(context, control, turn)
+                # 沉默、等待、戳一戳、贴表情、被打断与门控拦截都不渲染回复面板；此处将
+                # 已收集的决策与工具结果输出为面板并关闭收集。已渲染过面板时为空操作。
+                render_quiet_turn(
+                    turn, sender['senderLabel'], trimmed,
+                    source_label=source,
+                    interrupted=control.interrupted,
+                )
 
         task = asyncio.create_task(_run())
         inflight = _InflightTurn(task=task, cancel_event=cancel_event, control=control)
@@ -3347,6 +3362,9 @@ class ChatService(
             「Bot 沉默了十几秒然后说了句话」，中间查了什么完全不可见。一轮
             允许执行多个工具，因此按明细逐条渲染：只渲染最后一条会让同轮的
             前几次检索在控制台上无任何展示。
+
+            每条明细在两处呈现：行动决策单行即时给出进度与结果开头；完整结果
+            收入回合面板，排在发起该调用的决策与下一次决策之间。
             """
             for name, argument, observation in round_outcome.cognitive_steps:
                 render_action_decision(
@@ -3357,6 +3375,9 @@ class ChatService(
                     query=argument,
                     observation=observation,
                 )
+                run = ToolRun(name=name, argument=argument, observation=observation)
+                if not note_tool_run(run):
+                    render_tool_run(run)
 
         # 关闭 ReAct 时连范围都不算：那是一次真实的数据库查询，
         # 为一个永远不会被消费的字段付账没有意义。
