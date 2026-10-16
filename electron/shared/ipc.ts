@@ -55,6 +55,7 @@ export interface ObservabilityStream {
   platform: string
   kind: 'desktop' | 'direct' | 'group'
   externalId: string
+  /** 群聊为群名，私聊为对方账号昵称；尚未取得时为空串，由界面退回 externalId。 */
   displayName: string
 }
 

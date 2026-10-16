@@ -380,6 +380,9 @@ CREATE TABLE IF NOT EXISTS emoji (
   send_ref      TEXT    NOT NULL,
   emotion_tags  TEXT    NOT NULL,
   emotion_vec   BLOB,
+  -- 画面描述（角色、外观、物件、图上文字），供按内容查找表情包；空串表示尚未
+  -- 识别，由后台任务补写。
+  description   TEXT    NOT NULL DEFAULT '',
   sub_type      INTEGER NOT NULL DEFAULT 1,
   seen_count    INTEGER NOT NULL DEFAULT 1,
   use_count     INTEGER NOT NULL DEFAULT 0,

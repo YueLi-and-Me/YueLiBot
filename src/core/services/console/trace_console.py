@@ -195,16 +195,29 @@ def _side_effect_lines(side_effects: list[dict]) -> list[str]:
         elif effect.get('kind') == 'promise_stashed':
             lines.append(f"约定：{effect.get('subject', '')} → {effect.get('at')}")
         elif effect.get('kind') == 'emoji_selected':
-            lines.append(
-                f"表情包：{effect.get('hash', '')} · 目标情绪 {effect.get('emotion', '')}"
-                f" · 标签 {effect.get('tags', '')}"
-                f" · 候选 {effect.get('candidateCount', '未知')} 张"
-            )
+            # 按编号发送的是查表情包工具挑中的那一张，没有目标情绪与抽样候选。
+            if effect.get('stickerId'):
+                lines.append(
+                    f"表情包：{effect.get('hash', '')} · 按编号发送"
+                    f" · 标签 {effect.get('tags', '')}"
+                )
+            else:
+                lines.append(
+                    f"表情包：{effect.get('hash', '')} · 目标情绪 {effect.get('emotion', '')}"
+                    f" · 标签 {effect.get('tags', '')}"
+                    f" · 候选 {effect.get('candidateCount', '未知')} 张"
+                )
         elif effect.get('kind') == 'emoji_selection_missed':
-            lines.append(
-                f"表情包落空：目标情绪 {effect.get('emotion', '')}，"
-                "写了 <emoji> 但库里没命中"
-            )
+            if effect.get('stickerId'):
+                lines.append(
+                    f"表情包落空：编号 {effect.get('stickerId')} 不在库里，"
+                    "可能已被封禁或编号写错"
+                )
+            else:
+                lines.append(
+                    f"表情包落空：目标情绪 {effect.get('emotion', '')}，"
+                    "写了 <emoji> 但库里没命中"
+                )
     return lines
 
 

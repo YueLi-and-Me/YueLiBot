@@ -206,6 +206,7 @@ async def test_consume_events_stores_selected_side_effect(
         'kind': 'emoji_selected',
         'hash': _send_ref_content_hash(send_ref)[:8],
         'emotion': '开心',
+        'stickerId': '',
         'tags': '开心,可爱',
         'candidateCount': 1,
         'useCountBefore': 0,
@@ -235,6 +236,7 @@ async def test_consume_events_stores_missed_side_effect(
     assert sink.side_effects == [{
         'kind': 'emoji_selection_missed',
         'emotion': '量子涨落',
+        'stickerId': '',
     }]
 
 

@@ -1,7 +1,9 @@
 """持久化可发送表情包，并按情绪语义选择完整性可信的图片。
 
 表情包文件存放在运行数据目录中，文件名使用内容 SHA-256；数据库只保存
-可复用的本地 file:// 引用、情绪标签和可选文本向量。启动阶段必须调用
+可复用的本地 file:// 引用、情绪标签、画面描述和可选向量。选图有两条路：
+``select`` 按情绪语义抽样，``content_candidates`` 与 ``select_by_id`` 按画面内容
+检索并按编号取图（挑选由 ``sticker_search`` 的视觉模型完成）。启动阶段必须调用
 verify_integrity 重算全部文件哈希，任何缺失、越界或内容不一致都会阻止
 服务继续启动，避免把损坏文件静默交给平台发送。
 
@@ -39,6 +41,7 @@ from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
 from src.core.llm_models.embeddings import EmbedInput
 from src.core.config.schema import EmojiConfig
+from src.core.memory.tokenize import bigrams, words
 from src.core.observe import events as trace
 from src.core.prompts.registry import get_prompt
 
@@ -69,6 +72,13 @@ _EMBED_IMAGE_MAX_EDGE = 512
 _EMBED_JPEG_QUALITY = 90
 # 融合向量的输入配方标识，写入 vector_space.recipe；「/v1」为上述预处理规则的版本号。
 EMOJI_EMBED_RECIPE = 'image+tags/v1'
+
+# 表情包编号的长度（十六进制字符数）：取内容哈希前缀，模型在回复里写回它来指定
+# 发哪一张。8 位在千张量级的库里不会撞号，撞号时按未命中处理。
+STICKER_ID_LENGTH = 8
+_STICKER_ID_PATTERN = re.compile(rf'[0-9a-f]{{{STICKER_ID_LENGTH}}}')
+# 画面内容检索词的切分符：空白与中英文常见标点，每段作为一个独立的命中词。
+_CONTENT_TERM_SPLIT = re.compile(r'[\s,，、;；/|]+')
 
 # 管理页列表的排序口径。键是对外的排序名，值直接拼进 ORDER BY——全部为固定
 # 字面量，不含调用方数据，没有注入面；参数化做不到这件事（要变的是子句结构）。
@@ -199,6 +209,22 @@ class EmojiSelection:
     sub_type: int
     use_count: int = 0
     candidate_count: int = 0
+
+
+@dataclass(frozen=True)
+class StickerCandidate:
+    """按画面内容检索出的一张候选表情包。
+
+    :ivar content_hash: 内容哈希。
+    :ivar send_ref: 可直接读取文件的 ``file://`` 引用。
+    :ivar description: 画面描述；尚未识别时为空串。
+    :ivar emotion_tags: 情绪标签。
+    """
+
+    content_hash: str
+    send_ref: str
+    description: str
+    emotion_tags: str
 
 
 @dataclass(frozen=True)
@@ -1158,6 +1184,132 @@ class EmojiLibrary:
         # 元数据随返回值传递，避免并发会话覆盖共享的“最近一次候选数”。
         return replace(selected, candidate_count=len(candidates))
 
+    async def content_candidates(self, query: str, limit: int) -> list[StickerCandidate]:
+        """按画面内容取候选表情包，供视觉模型从中挑选。
+
+        排序分两级：画面描述与标签对检索词的覆盖分高的在前；覆盖分相同（包括都为 0）
+        时按检索词与画面向量的相似度排。描述里的角色名与图上文字是最直接的证据，
+        向量负责描述缺失或用词不同的情形。覆盖分的算法见 :func:`_term_coverage`。
+
+        :param query: 画面内容检索词，空白分隔的多个词各自计分后相加。
+        :param limit: 最多返回条数，必须大于 0。
+        :return: 未封禁的候选，按上述顺序排列；库为空时返回空列表。
+        :raises ValueError: 检索词为空或 limit 非正数。
+        副作用：有向量客户端时发起一次查询向量请求；失败时只按命中计数排序。
+        """
+        terms = [term.casefold() for term in dict.fromkeys(_CONTENT_TERM_SPLIT.split(query)) if term]
+        if not terms:
+            raise ValueError('表情包内容检索词不能为空')
+        if limit < 1:
+            raise ValueError('表情包候选数必须大于零')
+        query_vec = await self._embed_tags(query.strip())
+        rows = self._db.execute(
+            'SELECT hash, send_ref, description, emotion_tags, emotion_vec '
+            f'FROM emoji WHERE {_banned_predicate(banned_only=False)} '
+            # 排序稳定，同分时按入库先后，结果可复现。
+            'ORDER BY first_seen_at, hash'
+        ).fetchall()
+        dim = len(query_vec) // 4 if query_vec is not None else 0
+        pieces = [(term, _term_pieces(term)) for term in terms]
+        scored: List[Tuple[float, float, StickerCandidate]] = []
+        for content_hash, send_ref, description, tags, vector in rows:
+            haystack = f'{description} {tags}'.casefold()
+            hits = sum(_term_coverage(term, term_pieces, haystack) for term, term_pieces in pieces)
+            similarity = (
+                _cosine_similarity(query_vec, vector, dim)
+                if query_vec is not None and isinstance(vector, bytes) and len(vector) == len(query_vec)
+                else 0.0
+            )
+            scored.append((hits, similarity, StickerCandidate(
+                content_hash=str(content_hash),
+                send_ref=str(send_ref),
+                description=str(description),
+                emotion_tags=str(tags),
+            )))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [candidate for _hits, _similarity, candidate in scored[:limit]]
+
+    def select_by_id(self, sticker_id: str) -> EmojiSelection | None:
+        """按表情包编号取一张可发送的表情包。
+
+        编号来自按内容检索的结果，由模型在回复里原样写回；写错或该图已被封禁、
+        删除时返回 ``None``，由调用方记为落空，不改用其他图片。
+
+        :param sticker_id: 内容哈希前缀，见 :func:`sticker_id`。
+        :return: 命中结果；编号格式不符、未命中、命中多条或已封禁时为 ``None``。
+        :raises sqlite3.Error: 查询失败。
+        """
+        normalized = sticker_id.strip().lower()
+        if not _STICKER_ID_PATTERN.fullmatch(normalized):
+            return None
+        rows = self._db.execute(
+            'SELECT send_ref, sub_type, use_count FROM emoji '
+            f'WHERE hash LIKE ? AND {_banned_predicate(banned_only=False)}',
+            (f'{normalized}%',),
+        ).fetchall()
+        if len(rows) != 1:
+            if rows:
+                logger.warning('sticker_id_ambiguous', stickerId=normalized, matches=len(rows))
+            return None
+        send_ref, sub_type, use_count = rows[0]
+        return EmojiSelection(
+            send_ref=str(send_ref),
+            sub_type=_validate_emoji_sub_type(sub_type),
+            use_count=int(use_count),
+            candidate_count=1,
+        )
+
+    def pending_content(self, limit: int) -> list[tuple[str, str]]:
+        """取尚未生成画面描述的未封禁表情包。
+
+        :param limit: 最多返回条数，必须大于 0。
+        :return: ``(内容哈希, file:// 引用)`` 列表，按首次入库时间升序。
+        :raises ValueError: limit 非正数。
+        """
+        if limit < 1:
+            raise ValueError('待识别条数上限必须大于零')
+        return [
+            (str(content_hash), str(send_ref))
+            for content_hash, send_ref in self._db.execute(
+                'SELECT hash, send_ref FROM emoji '
+                f"WHERE description = '' AND {_banned_predicate(banned_only=False)} "
+                'ORDER BY first_seen_at, hash LIMIT ?',
+                (limit,),
+            ).fetchall()
+        ]
+
+    def read_file(self, send_ref: str) -> bytes:
+        """读取表情包目录内的文件字节。
+
+        :param send_ref: 库内记录的 ``file://`` 引用。
+        :return: 文件内容。
+        :raises ValueError: 引用越出表情包目录。
+        :raises OSError: 文件不存在或不可读。
+        """
+        path = _file_ref_path(send_ref).resolve(strict=True)
+        if not path.is_relative_to(self._directory):
+            raise ValueError('文件引用越出表情包目录')
+        return path.read_bytes()
+
+    def set_description(self, content_hash: str, description: str) -> bool:
+        """写入一张表情包的画面描述。
+
+        :param content_hash: 内容哈希。
+        :param description: 非空单行描述。
+        :return: 写入成功为 ``True``；该行已被删除时为 ``False``。
+        :raises ValueError: 哈希格式不合法或描述为空。
+        :raises sqlite3.Error: 写入失败。
+        """
+        text = description.strip()
+        if not text:
+            raise ValueError('表情包画面描述不能为空')
+        with self._db:
+            updated = self._db.execute(
+                'UPDATE emoji SET description = ? WHERE hash = ?',
+                (text, _normalize_hash(content_hash)),
+            ).rowcount
+        return updated == 1
+
     def verify_integrity(self) -> int:
         """在启动阶段逐项重算已登记表情包的 SHA-256，并巡检孤儿文件。
 
@@ -1299,6 +1451,40 @@ class EmojiLibrary:
         except Exception as exc:
             logger.warning('emoji_embedding_failed', error=str(exc))
             return None
+
+
+def sticker_id(content_hash: str) -> str:
+    """把内容哈希转成模型可见的表情包编号。
+
+    :param content_hash: SHA-256 十六进制字符串。
+    :return: 前 :data:`STICKER_ID_LENGTH` 位小写十六进制。
+    :raises ValueError: 哈希格式不合法。
+    """
+    return _normalize_hash(content_hash)[:STICKER_ID_LENGTH]
+
+
+def _term_pieces(term: str) -> frozenset[str]:
+    """把一个检索词拆成 jieba 词与 CJK 二字组，供整词不命中时按片段计分。"""
+    return frozenset(words(term) + bigrams(term))
+
+
+def _term_coverage(term: str, pieces: frozenset[str], haystack: str) -> float:
+    """计算一个检索词在画面描述与标签里的覆盖分，取值 0 至 1。
+
+    整词出现记 1；否则记其片段出现的比例。只按整词计数时，「粉发少女」对不上
+    「粉发粉眼动漫少女」、「敲键盘」对不上「在键盘上敲」，描述写法稍有不同就整
+    条落到向量排序里。
+
+    :param term: 已转小写的检索词。
+    :param pieces: :func:`_term_pieces` 的结果。
+    :param haystack: 已转小写的描述与标签拼接文本。
+    :return: 覆盖分；检索词拆不出片段且整词不出现时为 0。
+    """
+    if term in haystack:
+        return 1.0
+    if not pieces:
+        return 0.0
+    return sum(1 for piece in pieces if piece in haystack) / len(pieces)
 
 
 def preprocess_embedding_image(image_bytes: bytes) -> Tuple[bytes, str]:

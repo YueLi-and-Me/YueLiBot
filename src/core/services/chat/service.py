@@ -42,6 +42,7 @@ from src.core.services.media.chat_video import (
     message_concerns_her,
 )
 from src.core.services.media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
+from src.core.services.media.sticker_search import STICKER_SEARCH_SPEC, StickerSearch
 from src.core.services.console.trace_console import (
     mark_turn_start,
     render_action_decision,
@@ -249,6 +250,7 @@ class ChatService(
         image_describer: ChatImageDescriber | None = None,
         video_describer: ChatVideoDescriber | None = None,
         emoji_library: EmojiLibrary | None = None,
+        sticker_search: StickerSearch | None = None,
         action_policy: ActionPolicy | None = None,
         action_policies: Mapping[str, ActionPolicy] | None = None,
     ) -> None:
@@ -267,6 +269,7 @@ class ChatService(
         :param expression_provider: 可选的表达样本选择模型。
         :param image_describer: 可选的聊天图片描述服务；为 ``None`` 时图片保持占位符。
         :param video_describer: 可选的聊天视频理解服务；为 ``None`` 时视频保持占位符。
+        :param sticker_search: 可选的查表情包工具执行器；为 ``None`` 时不声明该工具。
         :param action_policy: 可选的回合内动作策略；省略时始终回复。
         :param action_policies: 按 stream kind 装配的动作策略；未配置类型使用默认策略。
 
@@ -418,6 +421,9 @@ class ChatService(
         for plugin in self._plugins.tool_plugins():
             for spec, executor in plugin.tools():
                 self._tool_registry.register_tool(spec, executor)
+        # 查表情包工具与插件工具同批登记，只在本轮能发表情包时声明给模型。
+        if sticker_search is not None:
+            self._tool_registry.register_tool(STICKER_SEARCH_SPEC, sticker_search)
         self._mcp.bind_registry(self._tool_registry)
         # 命令与工具同批注册：重名当场抛错终止启动，而不是静默丢一条命令。
         self._plugins.register_commands()
@@ -4113,21 +4119,29 @@ class ChatService(
                 and self._emoji_available(context)
                 and self._emoji_library is not None
             ):
-                selection = await self._emoji_library.select(event.emotion)
+                # 写了编号就按编号发查表情包工具找到的那一张，编号失效时记为落空，
+                # 不改按情绪检索：模型是在点名要那张图，换一张等于发错。
+                selection = (
+                    self._emoji_library.select_by_id(event.sticker_id)
+                    if event.sticker_id
+                    else await self._emoji_library.select(event.emotion)
+                )
                 if selection is not None:
-                    sink.emoji_items.append((
-                        event.emotion,
-                        selection.send_ref,
-                        selection.sub_type,
-                    ))
                     content_hash = _send_ref_content_hash(selection.send_ref)
                     # 面板行要能指认「选中了哪张」：哈希前 8 位定位记录，
                     # 请求词与库内标签并排，检索是否贴题一眼可判；候选数来自本次抽样。
                     tags = self._emoji_library.emotion_tags_for_hash(content_hash) or ''
+                    # 历史里按情绪记账；按编号发送的没有目标情绪，记该图的标签。
+                    sink.emoji_items.append((
+                        event.emotion or tags,
+                        selection.send_ref,
+                        selection.sub_type,
+                    ))
                     sink.side_effects.append({
                         'kind': 'emoji_selected',
                         'hash': content_hash[:8],
                         'emotion': event.emotion,
+                        'stickerId': event.sticker_id,
                         'tags': tags,
                         'candidateCount': selection.candidate_count,
                         'useCountBefore': selection.use_count,
@@ -4137,6 +4151,7 @@ class ChatService(
                         turnId=sink.turn,
                         streamId=context.stream.id,
                         emotion=event.emotion,
+                        stickerId=event.sticker_id,
                         hash=content_hash,
                         tags=tags,
                         candidateCount=selection.candidate_count,
@@ -4149,12 +4164,14 @@ class ChatService(
                     sink.side_effects.append({
                         'kind': 'emoji_selection_missed',
                         'emotion': event.emotion,
+                        'stickerId': event.sticker_id,
                     })
                     trace.emit(
                         'emoji_selection_missed',
                         turnId=sink.turn,
                         streamId=context.stream.id,
                         emotion=event.emotion,
+                        stickerId=event.sticker_id,
                     )
             self._handle_side_effects(
                 context, event, sink.now, sink.turn, sink.side_effects, sink.source_text,

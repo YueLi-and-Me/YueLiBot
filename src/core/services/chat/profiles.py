@@ -124,11 +124,11 @@ class PersonProfileMixin:
                     'kind': stream.kind,
                     'externalId': stream.external_id,
                     # displayName 不能省。前端契约把它声明成必填字符串，
-                    # streamLabel() 对群会话直接 .trim()；漏发这一项时 TypeScript
+                    # streamLabel() 直接 .trim()；漏发这一项时 TypeScript
                     # 查不出来（类型说有，运行时没有），页面在渲染人物详情时抛
                     # TypeError 整树卸载，表现为白屏——只要这个人在任何群里出现过
-                    # 就必现。群名为空是正常情况，前端自会退回 externalId。
-                    'displayName': stream.display_name,
+                    # 就必现。群名或对方昵称为空是正常情况，前端自会退回 externalId。
+                    'displayName': self._registry.stream_readable_name(stream),
                 }
                 for stream in self._registry.list_person_streams(person.id)
             ],

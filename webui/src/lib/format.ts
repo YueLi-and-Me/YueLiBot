@@ -220,6 +220,7 @@ const DISPLAY_VALUE_LABELS: Record<string, string> = {
   expire: '到期清理',
   failed: '失败',
   files: '浏览文件',
+  find_sticker: '查表情包',
   flush: '批量写入',
   gate_dropped: '门控拦截',
   gaming: '玩游戏',
@@ -427,14 +428,12 @@ export function elapsedLabel(ms: number): string {
  * 将观察 stream 转换为下拉框展示标签。
  *
  * @param stream 后端返回的观察 stream。
- * @returns 包含平台、会话类型、外部标识和内部 ID 的文本标签。
+ * @returns 包含平台、会话类型、群名或对方昵称（未知时为外部标识）和内部 ID 的文本标签。
  */
 export function streamLabel(stream: ObservabilityStream): string {
   if (stream.kind === 'desktop') return `桌面 · #${stream.id}`
   const kind = stream.kind === 'direct' ? '私聊' : '群聊'
-  const name = stream.kind === 'group'
-    ? stream.displayName.trim() || stream.externalId
-    : stream.externalId
+  const name = stream.displayName.trim() || stream.externalId
   return `${stream.platform.toUpperCase()} ${kind} · ${name} · #${stream.id}`
 }
 

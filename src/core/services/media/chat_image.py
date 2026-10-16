@@ -49,6 +49,12 @@ _BROWSER_USER_AGENT = (
     '(KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 )
 _QQ_IMAGE_HOST_SUFFIX = 'qpic.cn'
+# 视觉模型输出里成对出现的思考段；孤立的 think 标签由 _MODEL_MARKUP 删除。
+_THINK_BLOCK = re.compile(r'<think>.*?</think>', re.DOTALL)
+# 视觉模型输出里的控制符号：``<|...|>`` 形式的特殊记号与孤立的 think 标签。
+_MODEL_MARKUP = re.compile(r'<\|[^|>]*\|>|</?think>')
+# 表情包画面描述的长度上限（字符）：检索与面板展示用一行即可，超长截断。
+EMOJI_CONTENT_MAX_CHARS = 120
 
 
 class ImageDescriptionProvider(Protocol):
@@ -413,6 +419,36 @@ class ChatImageDescriber:
                 *(_describe_one(source, http) for source in sources)
             ))
 
+    def can_describe_emoji_content(self) -> bool:
+        """判断当前能否生成表情包画面描述：聊天图片识别开启、视觉模型可用。"""
+        return (
+            self._cfg.vision.chat_image_enabled
+            and self._provider is not None
+            and self._protocol_error is None
+        )
+
+    async def describe_emoji_content(
+        self,
+        image_bytes: bytes,
+        media_type: str,
+        digest: str,
+    ) -> str | None:
+        """为一张已入库的表情包生成画面描述，供按内容检索表情包。
+
+        与情绪标签分开生成：标签服务按情绪选图，描述写角色、外观、物件与图上文字，
+        服务对方点名要某张图的场景。
+
+        :param image_bytes: 表情包原始字节。
+        :param media_type: 图片 MIME 类型。
+        :param digest: 内容哈希，用作描述缓存键。
+        :return: 单行描述；聊天图片识别关闭、模型不可用或输出为空时返回 ``None``。
+        副作用：未命中缓存时调用一次视觉模型。
+        """
+        if not self.can_describe_emoji_content():
+            return None
+        raw = await self._describe_with_prompt(image_bytes, media_type, digest, 'emoji.content')
+        return _normalize_emoji_content(raw)
+
     async def _describe_uncached(
         self,
         digest: str,
@@ -597,12 +633,39 @@ def _guess_media_type(image_bytes: bytes) -> str:
     return 'image/jpeg'
 
 
+def strip_model_markup(raw: str) -> str:
+    """去掉视觉模型混进正文的思考段与控制符号。
+
+    - 现象：部分视觉模型把 ``<|end_of_box|>``、``</think>`` 等控制符号直接写在输出
+      末尾，生产库曾有 99 张表情包的标签带着这类后缀入库。
+    - 原因：标签只按分隔符切分、按长度过滤，``幽默<|end_of_box|>`` 不超长即被保留。
+    - 后果：带符号的标签进入向量输入与面板展示，检索词与标签不再对得上。
+    """
+    without_thinking = _THINK_BLOCK.sub('', raw)
+    return _MODEL_MARKUP.sub('', without_thinking)
+
+
+def _normalize_emoji_content(raw: str | None) -> str | None:
+    """把视觉模型的画面描述收成一行，去掉控制符号并按上限截断。
+
+    :param raw: 视觉模型原始输出；``None`` 表示调用失败。
+    :return: 单行描述；去掉符号后为空时返回 ``None``。模型回答「无法判断」时原样
+        保留，使该行不再被反复送去识别。
+    """
+    if raw is None:
+        return None
+    text = ' '.join(strip_model_markup(raw).split())
+    if not text:
+        return None
+    return text[:EMOJI_CONTENT_MAX_CHARS]
+
+
 def _normalize_emotion_tags(raw: str | None) -> str | None:
     """把视觉模型输出收窄为最多五个短情绪标签。"""
 
     if raw is None:
         return None
-    normalized = raw.strip()
+    normalized = strip_model_markup(raw).strip()
     if any(
         marker in normalized
         for marker in ('无法判断', '内容不清晰', '看不清', '不确定')

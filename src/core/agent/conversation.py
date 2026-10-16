@@ -1076,7 +1076,7 @@ class ConversationAgent:
                         if isinstance(event, TextEvent):
                             body_parts.append(event.value)
                         elif isinstance(event, EmojiEvent):
-                            emoji_emotions.append(event.emotion)
+                            emoji_emotions.append(event.label)
             if planned_head is not None:
                 # 决策流已在 aclosing 退出时关闭，这里才发起回复生成，两条流不重叠。
                 assert replyer_messages is not None
@@ -1118,7 +1118,7 @@ class ConversationAgent:
                 if isinstance(event, TextEvent):
                     body_parts.append(event.value)
                 elif isinstance(event, EmojiEvent):
-                    emoji_emotions.append(event.emotion)
+                    emoji_emotions.append(event.label)
             decision = head.to_decision(''.join(body_parts), tuple(emoji_emotions))
         except LlmError as exc:
             if exc.kind == 'aborted':
@@ -1351,7 +1351,7 @@ class ConversationAgent:
                 if isinstance(event, TextEvent):
                     staged_body_parts.append(event.value)
                 elif isinstance(event, EmojiEvent):
-                    staged_emoji_emotions.append(event.emotion)
+                    staged_emoji_emotions.append(event.label)
 
         assert self._replyer is not None
         async with aclosing(

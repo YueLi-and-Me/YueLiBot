@@ -86,10 +86,20 @@ class PromiseEvent:
 
 @dataclass
 class EmojiEvent:
-    """表示模型想用一张表情包表达目标情绪。"""
+    """表示模型想发一张表情包：按目标情绪检索，或按编号发查到的那一张。
+
+    :ivar emotion: 目标情绪；按编号发送时可以为空。
+    :ivar sticker_id: 查表情包工具给出的编号；非空时按编号发送，不再按情绪检索。
+    """
 
     type: str = 'emoji'
     emotion: str = ''
+    sticker_id: str = ''
+
+    @property
+    def label(self) -> str:
+        """记账用的非空标签：有目标情绪时取情绪，否则取「编号 xxx」。"""
+        return self.emotion or f'编号 {self.sticker_id}'
 
 
 @dataclass
@@ -379,12 +389,13 @@ class ResponseParser:
             return
 
         if name == 'emoji':
-            # 表情包是即时的可见产物意图，不进入文本状态机；缺少目标情绪时忽略。
+            # 表情包是即时的可见产物意图，不进入文本状态机；目标情绪与编号都缺时忽略。
             if closing:
                 return
             emotion = attrs.get('emotion', '').strip()
-            if emotion:
-                out.append(EmojiEvent(emotion=emotion))
+            sticker_id = attrs.get('id', '').strip()
+            if emotion or sticker_id:
+                out.append(EmojiEvent(emotion=emotion, sticker_id=sticker_id))
             return
 
         if name == 'decision':

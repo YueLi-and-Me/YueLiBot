@@ -76,3 +76,24 @@ def test_sole_identity_leaves_contacts_alone(db: sqlite3.Connection) -> None:
     registry.set_sole_identity(owner, 'qq', '333333', '333333')
 
     assert registry.find_person_by_identity('qq', '900000001').id == contact.id
+
+
+def test_stream_readable_name_uses_group_name_and_peer_nickname(db: sqlite3.Connection) -> None:
+    """群聊取群名、私聊取对方账号昵称；尚未取得时为空串，由界面退回外部号。"""
+    registry = StreamRegistry(db)
+    direct = registry.resolve_inbound(
+        platform="qq",
+        stream_kind="direct",
+        stream_external_id="10002",
+        sender_external_id="10002",
+        sender_nickname="雨后",
+        sender_group_card="",
+        first_seen_at=FIRST_SEEN_AT,
+    ).stream
+    named_group = registry.set_group_display_name("qq", "20001", "示例群")
+    unnamed_group = registry.get_or_create_stream("qq", "group", "20002")
+
+    assert registry.stream_readable_name(direct) == "雨后"
+    assert registry.stream_readable_name(named_group) == "示例群"
+    assert registry.stream_readable_name(unnamed_group) == ""
+    assert registry.stream_readable_name(registry.desktop_stream()) == ""

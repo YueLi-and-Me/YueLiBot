@@ -1453,12 +1453,14 @@ async def streams() -> dict:
     """列出只读观察面板可选择的全部 stream。
 
     :return: 包含每个 stream 的数据库 ID、平台、会话类型、外部 ID 与可读展示名
-        的字典；注册表未就绪时返回空列表。
+        的字典；展示名群聊为群名、私聊为对方昵称，未知时为空串。注册表未就绪时
+        返回空列表。
 
     副作用：
         仅读取注册表，不创建 stream 或修改业务数据。
     """
-    if app_state.registry is None:
+    registry = app_state.registry
+    if registry is None:
         return {'streams': []}
     return {
         'streams': [
@@ -1467,9 +1469,9 @@ async def streams() -> dict:
                 'platform': stream.platform,
                 'kind': stream.kind,
                 'externalId': stream.external_id,
-                'displayName': stream.display_name,
+                'displayName': registry.stream_readable_name(stream),
             }
-            for stream in app_state.registry.list_streams()
+            for stream in registry.list_streams()
         ]
     }
 

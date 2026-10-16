@@ -31,7 +31,7 @@ from src.core.logging.logger import get_logger
 
 logger = get_logger(__name__)
 
-CURRENT_VERSION = 35  # 当前 schema 版本：导入中心知识按现行切块规则重切
+CURRENT_VERSION = 36  # 当前 schema 版本：表情包画面描述列与标签清洗
 
 
 def load_migration_registry() -> Dict[int, MigrationFn]:
@@ -77,6 +77,7 @@ def load_migration_registry() -> Dict[int, MigrationFn]:
         v32_to_v33,
         v33_to_v34,
         v34_to_v35,
+        v35_to_v36,
     )
 
     return get_registry()

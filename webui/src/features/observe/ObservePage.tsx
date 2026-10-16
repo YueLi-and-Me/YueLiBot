@@ -52,14 +52,17 @@ const TABS: Array<{ value: ObserveTab; label: string }> = [
  * 计算会话流在列表里的标题与副标题。
  *
  * @param stream 后端返回的会话流。
- * @returns 标题取群名或昵称（缺省回落平台号），副标题为平台、类型与内部 ID。
+ * @returns 标题取群名或对方昵称（未知时回落平台号）；副标题为平台、类型、平台号与
+ *   内部 ID，标题已是平台号时不再重复。
  */
 function describeStream(stream: ObservabilityStream): { title: string; sub: string } {
   if (stream.kind === 'desktop') return { title: '桌面', sub: `#${stream.id}` }
   const kind = stream.kind === 'direct' ? '私聊' : '群聊'
+  const title = stream.displayName.trim() || stream.externalId
+  const externalId = title === stream.externalId ? '' : ` · ${stream.externalId}`
   return {
-    title: stream.displayName.trim() || stream.externalId,
-    sub: `${stream.platform.toUpperCase()} ${kind} · #${stream.id}`,
+    title,
+    sub: `${stream.platform.toUpperCase()} ${kind}${externalId} · #${stream.id}`,
   }
 }
 

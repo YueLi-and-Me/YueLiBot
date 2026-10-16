@@ -63,6 +63,8 @@ from src.core.services.media.chat_image import ChatImageDescriber
 from src.core.services.media.chat_video import ChatVideoDescriber
 from src.core.services.host.desktop_shell import build_desktop_shell_process
 from src.core.services.media.emoji import EMOJI_EMBED_RECIPE, EmojiLibrary, VisionEmojiContentFilter
+from src.core.services.media.emoji_content import EmojiContentIndexer
+from src.core.services.media.sticker_search import StickerSearch
 from src.core.prompts.registry import prompt_metadata
 
 
@@ -862,6 +864,19 @@ def main() -> None:
         vision_provider,
         emoji_tag_lookup=emoji_library.emotion_tags_for_hash,
     )
+    # 画面描述补写与查表情包都依赖视觉模型：补写每轮先确认识别可用，查表情包在视觉
+    # 任务未启用时不装配，工具也就不会声明给模型。
+    emoji_content_indexer = EmojiContentIndexer(emoji_library, image_describer)
+    sticker_search = (
+        StickerSearch(
+            emoji_library,
+            vision_provider,
+            temperature=cfg.generation.vision.temperature,
+            max_tokens=cfg.generation.vision.token_limit,
+        )
+        if vision_provider is not None
+        else None
+    )
     # 视频理解服务只在 video 路由有候选时装配；开关在每次调用时读当前配置，
     # 在 WebUI 里开关后不用重启就生效（改模型仍按现有流程重启）。
     video_describer = (
@@ -907,6 +922,7 @@ def main() -> None:
         image_describer=image_describer,
         video_describer=video_describer,
         emoji_library=emoji_library,
+        sticker_search=sticker_search,
     )
     app_state.chat.set_action_policy(
         'group',
@@ -1203,6 +1219,7 @@ def main() -> None:
 
     lifecycle.register('vector', vector_service.startup, vector_service.shutdown)
     lifecycle.register('emoji_vectors', emoji_library.startup, emoji_library.shutdown)
+    lifecycle.register('emoji_content', emoji_content_indexer.startup, emoji_content_indexer.shutdown)
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
     from src.core.services.maintenance.jargon_learn import JargonLearnService

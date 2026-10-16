@@ -254,7 +254,13 @@ class PlatformCapabilities:
                 raise ValueError('可用反应标识不能是空字符串')
 
     def tool_capabilities(self) -> FrozenSet[str]:
-        """返回可用于外部工具过滤的显式能力名集合。"""
+        """返回可用于外部工具过滤的显式能力名集合。
+
+        除插件按会话贡献的能力外，``emoji`` 为真时附带 ``emoji``：查表情包工具只在
+        本轮确实能发出表情包时声明，否则查到了也发不出去。
+        """
+        if self.emoji:
+            return self.plugin_capabilities | {'emoji'}
         return self.plugin_capabilities
 
 

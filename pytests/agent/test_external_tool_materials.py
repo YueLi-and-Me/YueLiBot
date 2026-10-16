@@ -218,9 +218,9 @@ def test_r1_cognitive_observation_matches_original_text(final_round: bool, long:
 @pytest.mark.parametrize(('length', 'emoji', 'digest'), [
     (None, False, 'ed5754c8db8c1e22de968912e9be751255d720b96b2a72775407c2d320d1a549'),
     ('brief', False, 'ed5754c8db8c1e22de968912e9be751255d720b96b2a72775407c2d320d1a549'),
-    ('brief', True, '46d6f0dd1eef5386397abb3f3a65360568a4828f35c11ebdb81ea93da3eda6b3'),
+    ('brief', True, 'c8eda30b3abe72d9ac23ea1e105ce3aa753e08ffd398fde0d4d5670d6efdf2de'),
     ('long', False, '46ef37f98887e76538b647b5594cbf86e2f4a129669914093ff5d74eb026f39d'),
-    ('long', True, 'be0c29d1f4b585ac9ebe04196422408c75bd1c27e1603616ab2fce040043206e'),
+    ('long', True, '811587c4fb53ea3658123718a2ddb59b7caa74c6201483012c9a4460d226d255'),
 ])
 def test_r2_no_materials_protocol_matches_original_bytes(length, emoji, digest) -> None:
     assert sha256(render_replyer_protocol('接着回应', length, emoji_enabled=emoji).encode()).hexdigest() == digest

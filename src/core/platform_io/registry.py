@@ -473,6 +473,26 @@ class StreamRegistry:
             raise ValueError(f"person {person_id} 在平台 {platform} 没有可用显示名")
         return row[0]
 
+    def stream_readable_name(self, stream: StreamRef) -> str:
+        """给出会话在管理面板中的可读名称：群聊取群名，私聊取对方的账号昵称。
+
+        私聊 stream 本身不存名称（``streams.display_name`` 只由群名刷新写入），
+        对方昵称在 identities 里按「平台 + 外部号」唯一定位；私聊 stream 的外部
+        标识即对方账号。
+
+        :param stream: 已解析的 stream 引用。
+        :return: 群名或对方昵称；桌面会话、尚未取得群名或对方没有身份记录时为空串，
+            由调用方退回外部标识。
+        :raises sqlite3.Error: 查询身份失败。
+        """
+        if stream.kind != 'direct':
+            return stream.display_name
+        row = self._db.execute(
+            'SELECT display_name FROM identities WHERE platform = ? AND external_id = ?',
+            (stream.platform, stream.external_id),
+        ).fetchone()
+        return row[0] if row is not None else ''
+
     def stream_display_name(self, person_id: int, stream_id: int) -> str:
         """读取指定会话内的显示名，并按群名片优先级回退到账号昵称。
 
