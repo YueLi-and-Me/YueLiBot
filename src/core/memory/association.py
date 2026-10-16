@@ -212,13 +212,20 @@ def _neighbours(db: sqlite3.Connection, node: int) -> List[Tuple[int, float, int
     :raises sqlite3.Error: 查询失败。
     副作用：只读。
     """
+    # 拆成两路各走一条索引：写成 OR 时规划器只用得上 active 前缀，等于逐次扫全表。
     rows = db.execute(
-        'SELECT source_id, target_id, strength, updated_at FROM memory_edges '
-        'WHERE active = 1 AND (source_id = ? OR target_id = ?)',
+        'SELECT source_id, target_id, strength, updated_at, id FROM memory_edges '
+        'WHERE active = 1 AND target_id = ? '
+        'UNION ALL '
+        'SELECT source_id, target_id, strength, updated_at, id FROM memory_edges '
+        'WHERE active = 1 AND source_id = ?',
         (node, node),
     ).fetchall()
+    # 在内存里排序而不写 ORDER BY：写了规划器会改走按序全扫来省排序。
+    # 按 (source_id, id) 排，邻居顺序与同分命中的先后不随查询计划变化。
+    rows.sort(key=lambda row: (row[0], row[4]))
     out: List[Tuple[int, float, int]] = []
-    for source, target, strength, updated_at in rows:
+    for source, target, strength, updated_at, _edge_id in rows:
         other = int(target) if int(source) == node else int(source)
         out.append((other, float(strength), int(updated_at)))
     return out
@@ -554,6 +561,7 @@ def _legacy_spread(
         return []
     seed_nodes = _seed_memory_nodes(db, seeds)
     best: Dict[int, Tuple[float, int]] = {}
+    retention_cache: Dict[int, Optional[float]] = {}
     frontier = dict(seed_nodes)
     for hop in range(1, hops + 1):
         following: Dict[int, float] = {}
@@ -561,7 +569,9 @@ def _legacy_spread(
             for other, strength, _updated in _neighbours(db, node):
                 if other in seed_nodes:
                     continue
-                keep = _node_retention(db, other, now)
+                if other not in retention_cache:
+                    retention_cache[other] = _node_retention(db, other, now)
+                keep = retention_cache[other]
                 if keep is None or keep < REVIVE:
                     continue
                 value = base * strength * HOP_DECAY * keep

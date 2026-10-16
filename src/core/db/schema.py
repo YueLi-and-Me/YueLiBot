@@ -333,6 +333,7 @@ CREATE TABLE IF NOT EXISTS memory_edges (
   UNIQUE(source_id, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(active, source_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(active, target_id);
 
 -- -------------------------------------------------------------- 人物画像缓存
 -- 派生缓存，不是第三份真相：确凿档逐条对应某条 fact，印象档能追溯到本地证据，

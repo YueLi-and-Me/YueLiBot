@@ -5,6 +5,7 @@ from __future__ import annotations
 import pickle
 import sqlite3
 
+from src.core.db.schema import DDL
 from src.core.memory import association
 
 
@@ -92,6 +93,31 @@ def _memory_edge(
            VALUES (?, ?, ?, ?, 1)''',
         (low, high, strength, _NOW),
     )
+
+
+def test_neighbours_query_seeks_both_edge_indexes() -> None:
+    """邻居查询两头都按节点定位索引，不退化成按 active 前缀逐次扫全表。"""
+    db = sqlite3.connect(':memory:')
+    db.executescript(DDL)
+    statements: list[str] = []
+    db.set_trace_callback(statements.append)
+    association._neighbours(db, 7)
+    db.set_trace_callback(None)
+
+    plan = [str(row[3]) for row in db.execute(f'EXPLAIN QUERY PLAN {statements[-1]}')]
+
+    assert any('target_id=?' in step for step in plan), plan
+    assert any('source_id=?' in step for step in plan), plan
+
+
+def test_neighbours_keep_source_then_edge_id_order() -> None:
+    """邻居按 (source_id, 边 ID) 排列，与改写前的扫描顺序一致。"""
+    db = _db()
+    for source, target in ((3, 9), (2, 9), (9, 12), (9, 10)):
+        _memory_edge(db, source, target, 0.5)
+    db.commit()
+
+    assert [other for other, _, _ in association._neighbours(db, 9)] == [2, 3, 12, 10]
 
 
 def test_hops_zero_is_byte_identical_to_legacy_spread() -> None:
