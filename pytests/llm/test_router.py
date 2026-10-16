@@ -485,7 +485,7 @@ def test_model_routers_exposes_all_declared_tasks() -> None:
     routers = ModelRouters(Config())
     expected = {
         'chat', 'planner', 'replyer', 'scene', 'memory', 'proactive', 'summary', 'schedule',
-        'vision', 'video', 'expression', 'tts', 'embedding', 'multimodal_embedding',
+        'vision', 'video', 'expression', 'tts', 'embedding', 'multimodal_embedding', 'rerank',
     }
 
     assert set(routers.inspect()) == expected

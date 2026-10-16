@@ -58,10 +58,10 @@ import {
 
 const TASK_NAMES = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'vision',
-  'video', 'expression', 'memory', 'tts', 'embedding', 'multimodal_embedding',
+  'video', 'expression', 'memory', 'tts', 'embedding', 'multimodal_embedding', 'rerank',
 ] as const
 // 生成参数（温度、token 上限）覆盖后端 GenerationConfig 里的每一档任务。
-// tts 与两个向量任务不在其中：语音合成与向量化没有温度和输出上限可言。
+// tts、两个向量任务与重排不在其中：它们没有温度和输出上限可言。
 const GENERATION_TASKS = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'expression', 'vision',
   'video', 'memory',
@@ -83,6 +83,7 @@ const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
   tts: '语音合成',
   embedding: '向量嵌入',
   multimodal_embedding: '多模态向量',
+  rerank: '重排',
 }
 
 /** 任务字段的业务用途说明，挂在任务按钮的悬停提示上。 */
@@ -101,6 +102,7 @@ const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
   tts: '把回复文本合成为语音的模型',
   embedding: '为长期记忆生成检索向量的嵌入模型',
   multimodal_embedding: '表情包图片与标签融合向量；留空只用 embedding 的标签文字向量',
+  rerank: '给回想与查知识的候选逐条打相关度分，不相关的不返回；留空不重排',
 }
 
 /** 选型建议的四类取向，决定徽标文字与配色。 */
@@ -177,6 +179,10 @@ const TASK_ADVICE: Record<(typeof TASK_NAMES)[number], TaskAdvice> = {
   multimodal_embedding: {
     kind: 'required',
     note: '仅接受百炼或方舟多模态向量协议。配置即用于表情包，与事实和知识向量独立；留空维持标签文字向量。',
+  },
+  rerank: {
+    kind: 'required',
+    note: '必须是重排模型，与对话、嵌入模型不通用。服务商地址写到 /v1 时自动补 /rerank；路径不同的服务商（如百炼的 /compatible-api/v1/reranks）在服务商里把完整地址填进 base_url。',
   },
   embedding: {
     kind: 'required',

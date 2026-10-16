@@ -59,6 +59,7 @@ const TASK_LABELS: Array<[keyof YueliConfig['model_tasks'], string, string]> = [
   ['tts', '语音合成', '协议由所属服务商决定：OpenAI 兼容或豆包语音。'],
   ['embedding', '向量记忆', '候选模型的模型 ID、接口协议与维度必须一致。'],
   ['multimodal_embedding', '多模态向量', '表情包图片与标签融合向量；留空只用 embedding 的标签文字向量。'],
+  ['rerank', '重排', '给回想与查知识的候选打相关度分；留空不重排。'],
 ]
 
 // DOM 构造工具。

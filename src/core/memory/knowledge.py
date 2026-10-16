@@ -8,9 +8,10 @@ knowledge 不是「Bot 的记忆」而是「Bot 知道的事」：没有衰减�
   对不齐会让检索结果指向错误的行，而且行数看起来完全正常）；
 - 向量重算：待办集合就是 ``embedding IS NULL``，无需游标表即可断点续跑。
 
-检索侧（``search_knowledge`` / ``related_concepts`` / ``touch_knowledge``）
-在同模块的检索一节；``search_knowledge`` 的稠密向量路依赖 ``dense.py`` 的
-SQ8 打分与常驻索引，由 ``agent/cognition.py`` 的 ``ConsultAction`` 调用。
+检索侧（``search_knowledge`` / ``knowledge_candidates`` / ``related_concepts`` /
+``touch_knowledge``）在同模块的检索一节；两个检索入口的稠密向量路依赖 ``dense.py``
+的 SQ8 打分与常驻索引，由 ``agent/cognition.py`` 的 ``ConsultAction`` 调用：未配置
+重排时用 ``search_knowledge``，配置了重排时用 ``knowledge_candidates`` 取整个候选池。
 """
 
 from __future__ import annotations
@@ -174,7 +175,38 @@ def search_knowledge(
 ) -> list[KnowledgeHit]:
     """按 BM25 与 SQ8 稠密向量两路取候选、融合打分检索知识。
 
-    两路各取 ``limit * 3`` 条候选后取并集：
+    两路各取 ``limit * 3`` 条候选，取并集后按融合分截取前 ``limit`` 条，候选池的
+    构成见 :func:`knowledge_candidates`。
+
+    :param db: 当前库连接。
+    :param query: 待检索的自然语言查询。
+    :param limit: 最多返回的条数；小于 1 时返回空列表。
+    :param query_embedding: 查询文本的小端 float32 packed 向量；``None`` 时只走词面路。
+    :param vector_index: 常驻的知识向量索引，含义同 :func:`knowledge_candidates`。
+    :return: 按相关度降序的命中列表。
+    :raises ValueError: 查询向量非法，或其维度与库内 SQ8 向量不一致。
+    :raises RuntimeError: meta 表缺少知识向量修订号。
+    :raises sqlite3.Error: 查询失败。
+    副作用：只读，不提交事务。
+    """
+    if limit < 1:
+        return []
+    return knowledge_candidates(
+        db, query, limit * 3, query_embedding=query_embedding, vector_index=vector_index,
+    )[:limit]
+
+
+def knowledge_candidates(
+    db: sqlite3.Connection,
+    query: str,
+    per_channel: int,
+    *,
+    query_embedding: bytes | None = None,
+    vector_index: KnowledgeVectorIndex | None = None,
+) -> list[KnowledgeHit]:
+    """取知识检索的整个候选池，按融合分降序、不截断。
+
+    两路各取 ``per_channel`` 条候选后取并集：
 
     1. 词面路：FTS5 按 BM25 取前若干条；
     2. 稠密路：查询向量与全部知识的 SQ8 向量算余弦取前若干条。用词不同、
@@ -189,24 +221,23 @@ def search_knowledge(
 
     :param db: 当前库连接。
     :param query: 待检索的自然语言查询。
-    :param limit: 最多返回的条数。
+    :param per_channel: 每一路取的候选条数；小于 1 时返回空列表。
     :param query_embedding: 查询文本的小端 float32 packed 向量；``None`` 时
         只走词面路，结果与引入稠密路之前一致。
     :param vector_index: 常驻的知识向量索引，长期存活的调用方（``ConsultAction``）
         应持有一个复用；省略时本次临时整表读取 SQ8，只适合脚本与用例。
-    :return: 按相关度降序的命中列表；查询既无有效词又无查询向量时返回空列表。
+    :return: 按融合分降序的全部候选；查询既无有效词又无查询向量时返回空列表。
     :raises ValueError: 查询向量非法，或其维度与库内 SQ8 向量不一致。
     :raises RuntimeError: meta 表缺少知识向量修订号。
     :raises sqlite3.Error: 查询失败。
     副作用：只读 knowledge_fts、knowledge 与 meta；不写任何列、不提交事务。
         命中计数由调用方在确认采用后经 :func:`touch_knowledge` 单独记录。
     """
-    if limit < 1:
+    if per_channel < 1:
         return []
     match = match_query(query)
     if not match and query_embedding is None:
         return []
-    candidate_limit = limit * 3
     lexical: dict[int, float] = {}
     contents: dict[int, str] = {}
     if match:
@@ -215,7 +246,7 @@ def search_knowledge(
                FROM knowledge_fts JOIN knowledge k ON k.id = knowledge_fts.rowid
                WHERE knowledge_fts MATCH ?
                ORDER BY bm ASC LIMIT ?''',
-            (match, candidate_limit),
+            (match, per_channel),
         ):
             lexical[int(row[0])] = relevance_from_bm25(row[2])
             contents[int(row[0])] = row[1]
@@ -225,7 +256,7 @@ def search_knowledge(
         matrix = index.matrix()
         scores = cosine_scores(matrix, query_unit_vector(query_embedding))
         dense_only = [
-            kid for kid, _ in top_k(matrix, scores, candidate_limit) if kid not in lexical
+            kid for kid, _ in top_k(matrix, scores, per_channel) if kid not in lexical
         ]
         if dense_only:
             placeholders = ','.join('?' * len(dense_only))
@@ -260,7 +291,7 @@ def search_knowledge(
             id=kid, content=contents[kid], score=relevance * retention_weight(1.0),
         ))
     scored.sort(key=lambda hit: hit.score, reverse=True)
-    return scored[:limit]
+    return scored
 
 
 def related_concepts(db: sqlite3.Connection, concept: str, limit: int) -> list[str]:

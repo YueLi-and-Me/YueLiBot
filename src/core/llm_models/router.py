@@ -874,6 +874,7 @@ class ModelRouters:
         self.tts = self._build('tts', routing.tts)
         self.embedding = self._build('embedding', routing.embedding)
         self.multimodal_embedding = self._build('multimodal_embedding', routing.multimodal_embedding)
+        self.rerank = self._build('rerank', routing.rerank)
         self._routers: Dict[str, ModelRouter] = {
             'chat': self.chat,
             'proactive': self.proactive,
@@ -889,6 +890,7 @@ class ModelRouters:
             'tts': self.tts,
             'embedding': self.embedding,
             'multimodal_embedding': self.multimodal_embedding,
+            'rerank': self.rerank,
         }
 
     def _build(self, task: str, routing: Any) -> ModelRouter:

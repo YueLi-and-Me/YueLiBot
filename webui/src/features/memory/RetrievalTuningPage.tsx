@@ -39,7 +39,7 @@ import { displayValue } from '@/lib/format'
 
 import { compareReports, NOISE_BAND, sameParams, type ReportComparison } from './tuning-compare'
 
-/** 参数行的展示顺序：打分组、PPR 组、池与 top-k 组。 */
+/** 参数行的展示顺序：打分组、PPR 组、池与 top-k 组、重排下限。 */
 const PARAM_ORDER = [
   'bm25_weight',
   'retention_weight_floor',
@@ -49,6 +49,7 @@ const PARAM_ORDER = [
   'fact_recall_limit',
   'recalled_episode_limit',
   'recent_episode_limit',
+  'rerank_min_score',
 ] as const
 
 /** 当前激活的编辑草稿：参数名到值；空值表示沿用现状。 */

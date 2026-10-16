@@ -14,14 +14,16 @@
 
 依赖：``src.core.memory.store``、``src.core.memory.knowledge`` 的只读检索接口与
 ``src.core.platform_io.types``；三个实现由 ``src.core.services.chat`` 包装成
-工具执行器绑定进注册表，不反向依赖聊天服务或模型层。
+工具执行器绑定进注册表，不反向依赖聊天服务或模型层。recall 与 consult 可选地
+接收一个重排回调（由聊天服务用 ``model_tasks.rerank`` 装配）：有它时先取一个更大的
+候选池，逐条打相关度分，分数不到检索调优 ``rerank_min_score`` 的不返回。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
-from typing import Awaitable, Callable, Protocol
+from typing import Awaitable, Callable, List, Protocol, Sequence
 
 import sqlite3
 
@@ -31,9 +33,12 @@ from src.core.memory.association import (
     ShortTermActivation, SpreadHit, link_together, node_id, recall_hops, spread,
 )
 from src.core.memory.dense import KnowledgeVectorIndex
-from src.core.memory.knowledge import search_knowledge, touch_knowledge
+from src.core.memory.knowledge import (
+    KnowledgeHit, knowledge_candidates, search_knowledge, touch_knowledge,
+)
 from src.core.memory.scope import fact_visible_in_stream
-from src.core.memory.store import MemoryStore, StoredMessage
+from src.core.memory.store import MemoryStore, RecalledEpisode, ScopedFact, StoredMessage
+from src.core.memory.tuning import rerank_min_score
 from src.core.observe import events as trace
 from src.core.platform_io.types import StreamKind
 
@@ -50,9 +55,21 @@ _ITEM_MAX_CHARS = 80
 # 截断时一块知识只露出开头一句，检索命中了也读不到内容。
 _KNOWLEDGE_ITEM_MAX_CHARS = 600
 
+# 配置了重排时的候选池规模，与离线评估重排效果时的候选池口径一致：
+# - 事实：词面与向量两路的入口各传 10（两个入口内部各取三倍）；
+# - 情节：取 8 条；
+# - 知识：词面与向量两路各取 10 条。
+# 候选池越大，重排一次的 token 与耗时越多（实测每次约 50 条、中位 0.6 秒）。
+_RERANK_FACT_LIMIT = 10
+_RERANK_EPISODE_LIMIT = 8
+_RERANK_KNOWLEDGE_PER_CHANNEL = 10
+
 # (人物 ID, stream ID) -> 该 stream 内的显示名。群聊历史正文不存储说话人前缀，
 # 渲染检索结果时必须实时查询，否则观察结果中会出现无归属的发言。
 SpeakerNamer = Callable[[int, int], str]
+
+# 检索词与候选文本列表进、等长相关度分数列表出的重排回调；失败时抛异常。
+RerankScores = Callable[[str, Sequence[str]], Awaitable[List[float]]]
 
 
 def _clip(text: str, limit: int) -> str:
@@ -187,6 +204,7 @@ class RecallAction:
         exclude_pending_rebuild: bool = False,
         exclude_marked: bool = False,
         embed_query: Callable[[str], Awaitable[bytes | None]] | None = None,
+        rerank: RerankScores | None = None,
     ) -> None:
         """保存记忆检索依赖与每类结果的条数上限。
 
@@ -209,12 +227,15 @@ class RecallAction:
         :param embed_query: 查询向量回调（``VectorService.embed_query`` 口径：服务
             禁用或失败时返回 ``None``）。有向量时事实检索并上稠密通道并按融合分
             重排；为 ``None`` 或回调返回 ``None`` 时只走词面。
+        :param rerank: 重排回调；为 ``None`` 时按融合分排序、不设相关度下限。
+            给了回调时候选池放宽到 ``_RERANK_*`` 的规模，按重排分数排序并过下限。
         :raises ValueError: 任一上限小于 1。
         """
         if fact_limit < 1 or episode_limit < 1:
             raise ValueError('记忆检索条数上限必须大于 0')
         self._store = store
         self._embed_query = embed_query
+        self._rerank = rerank
         self._speaker_name = speaker_name
         self._db = db
         self._fact_limit = fact_limit
@@ -362,24 +383,27 @@ class RecallAction:
             pending_rebuild_episodes=pending_rebuild_episodes,
         )
 
-    async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
-        """按检索词召回事实与情节并渲染为观察文本。
+    def _fact_pool(
+        self,
+        request: CognitiveRequest,
+        query_embedding: bytes | None,
+        limit: int,
+    ) -> list[ScopedFact]:
+        """取事实候选池：词面入口的候选并上稠密通道的候选，不排序、不截断。
 
         :param request: 已校验的认知动作请求。
-        :return: 含命中条目的观察；两类都为空时返回明确的「没想起来」。
-        :raises sqlite3.Error: 底层检索失败时原样上抛，由 Agent 记为失败状态。
-        副作用：只读记忆库；不回补事实强度，检索本身不应改写遗忘曲线。
-            装配了查询向量回调时发起一次 embedding 请求。
+        :param query_embedding: 查询向量；为 ``None`` 时只取词面候选。
+        :param limit: 传给两个入口的条数上限，入口内部各取其三倍作为候选。
+        :return: 去重后的事实候选。
+        :raises sqlite3.Error: 底层检索失败。
+        副作用：只读；有事实被可见性规则挡下时由入口发出事件。
         """
-        query_embedding = (
-            await self._embed_query(request.query) if self._embed_query is not None else None
-        )
         # 人物范围的门在会话层（非群聊 + owner 对话者），这里只忠实执行；
         # 可见性规则仍在读取入口逐条生效。None 表示跨人物检索。
         person_scope = None if request.cross_person else request.person_ids
         if person_scope is None:
             pool = self._store.recall_facts_across_persons(
-                request.query, limit=self._fact_limit,
+                request.query, limit=limit,
                 stream_kind=request.stream_kind,
                 private_in_group=self._private_in_group,
                 return_candidates=True,
@@ -387,7 +411,7 @@ class RecallAction:
             )
         else:
             pool = self._store.recall_facts_in_scope(
-                person_scope, request.query, limit=self._fact_limit,
+                person_scope, request.query, limit=limit,
                 stream_kind=request.stream_kind,
                 private_in_group=self._private_in_group,
                 return_candidates=True,
@@ -395,17 +419,85 @@ class RecallAction:
             )
         if query_embedding is not None:
             pool = [*pool, *self._store.dense_fact_candidates(
-                person_scope, request.query, query_embedding, self._fact_limit,
+                person_scope, request.query, query_embedding, limit,
                 stream_kind=request.stream_kind,
                 private_in_group=self._private_in_group,
                 exclude_marked=self._exclude_marked,
                 exclude_ids={fact.id for fact in pool},
             )]
-        # 无查询向量时融合退化为词面分，排序与词面入口直接截断的结果一致。
-        facts = self._store.rank_recalled_facts(pool, query_embedding, self._fact_limit)
-        episodes = self._store.recall_episodes(
-            request.stream_id, request.query, limit=self._episode_limit,
+        return pool
+
+    async def _reranked(
+        self,
+        request: CognitiveRequest,
+        query_embedding: bytes | None,
+        rerank: RerankScores,
+    ) -> tuple[list[ScopedFact], list[RecalledEpisode]]:
+        """放宽候选池，经重排打分后按下限过滤并截取条数上限。
+
+        事实与情节放进同一次重排请求，分数可以直接比较；返回的条目的 ``score``
+        换成重排分数，后续建边与扩散的种子权重沿用它。
+
+        :param request: 已校验的认知动作请求。
+        :param query_embedding: 查询向量；为 ``None`` 时事实只取词面候选。
+        :param rerank: 重排回调。
+        :return: ``(事实, 情节)``，各自按重排分数降序。
+        :raises Exception: 重排请求失败时原样上抛。
+        副作用：一次重排请求；写一条 ``recall_rerank`` 观察事件。
+        """
+        fact_pool = self._fact_pool(request, query_embedding, _RERANK_FACT_LIMIT)
+        episode_pool = self._store.recall_episodes(
+            request.stream_id, request.query, limit=_RERANK_EPISODE_LIMIT,
         )
+        scores = await rerank(
+            request.query,
+            [fact.content for fact in fact_pool] + [episode.summary for episode in episode_pool],
+        )
+        floor = rerank_min_score()
+        fact_scores, episode_scores = scores[:len(fact_pool)], scores[len(fact_pool):]
+        facts = sorted(
+            (replace(fact, score=score) for fact, score in zip(fact_pool, fact_scores) if score >= floor),
+            key=lambda fact: fact.score, reverse=True,
+        )[:self._fact_limit]
+        episodes = sorted(
+            (replace(episode, score=score)
+             for episode, score in zip(episode_pool, episode_scores) if score >= floor),
+            key=lambda episode: episode.score, reverse=True,
+        )[:self._episode_limit]
+        trace.emit(
+            'recall_rerank',
+            action=self.name,
+            query=request.query,
+            candidates=len(scores),
+            kept=len(facts) + len(episodes),
+            floor=floor,
+            topScore=round(max(scores), 3) if scores else None,
+        )
+        return facts, episodes
+
+    async def execute(self, request: CognitiveRequest) -> CognitiveObservation:
+        """按检索词召回事实与情节并渲染为观察文本。
+
+        :param request: 已校验的认知动作请求。
+        :return: 含命中条目的观察；两类都为空时返回明确的「没想起来」。
+        :raises sqlite3.Error: 底层检索失败时原样上抛，由 Agent 记为失败状态。
+        :raises Exception: 重排请求失败时原样上抛，不退回融合分排序。
+        副作用：只读记忆库；不回补事实强度，检索本身不应改写遗忘曲线。
+            装配了查询向量回调时发起一次 embedding 请求；装配了重排回调时发起
+            一次重排请求，并写一条 ``recall_rerank`` 观察事件。
+        """
+        query_embedding = (
+            await self._embed_query(request.query) if self._embed_query is not None else None
+        )
+        if self._rerank is None:
+            fact_pool = self._fact_pool(request, query_embedding, self._fact_limit)
+            # 无查询向量时融合退化为词面分，排序与词面入口直接截断的结果一致。
+            facts = self._store.rank_recalled_facts(fact_pool, query_embedding, self._fact_limit)
+            episodes = self._store.recall_episodes(
+                request.stream_id, request.query, limit=self._episode_limit,
+            )
+        else:
+            facts, episodes = await self._reranked(request, query_embedding, self._rerank)
         if not facts and not episodes:
             return CognitiveObservation(
                 text=f'你想了一下，没有想起任何和「{request.query}」有关的事。',
@@ -572,6 +664,7 @@ class ConsultAction:
         db: sqlite3.Connection,
         *,
         embed_query: Callable[[str], Awaitable[bytes | None]] | None = None,
+        rerank: RerankScores | None = None,
         limit: int = 5,
     ) -> None:
         """保存知识检索依赖与返回条数上限。
@@ -582,6 +675,7 @@ class ConsultAction:
             「Bot 的记忆」的衰减曲线，知识没有曲线。
         :param embed_query: 可选的查询向量回调（``VectorService.embed_query``
             口径：服务禁用或失败时返回 ``None``）；为 ``None`` 时只用 BM25。
+        :param rerank: 重排回调；为 ``None`` 时按融合分取前若干条、不设相关度下限。
         :param limit: 单次返回的知识条数上限，必须大于 0。
         :raises ValueError: 上限小于 1。
         """
@@ -589,6 +683,7 @@ class ConsultAction:
             raise ValueError('知识检索条数上限必须大于 0')
         self._db = db
         self._embed_query = embed_query
+        self._rerank = rerank
         self._limit = limit
         # 稠密通道要在全部知识向量上打分；索引随动作实例常驻，库内向量有变化时
         # 按修订号自行重建，见 memory/dense.py。
@@ -600,9 +695,11 @@ class ConsultAction:
         :param request: 已校验的认知动作请求。
         :return: 含命中条目的观察；无命中时返回明确的「没找到」。
         :raises sqlite3.Error: 底层检索失败时原样上抛，由 Agent 记为失败状态。
+        :raises Exception: 重排请求失败时原样上抛，不退回融合分排序。
         副作用：只读知识库；向量服务失败时退回 BM25（与 recall 的向量缺失口径
             一致）；库内知识向量有变化后的首次检索会重建常驻索引；对实际展示的
-            命中记 hit_count / last_hit_at 并提交事务。
+            命中记 hit_count / last_hit_at 并提交事务。装配了重排回调时发起一次
+            重排请求，并写一条 ``recall_rerank`` 观察事件。
         """
         query_embedding: bytes | None = None
         if self._embed_query is not None:
@@ -614,11 +711,14 @@ class ConsultAction:
         # 经线程池检索：稠密路要在两万余条向量上整块打分（热缓存约 0.1 秒），
         # 知识向量有变化后的首次检索还要重建常驻索引（0.6～2.4 秒），放在事件
         # 循环上会让所有会话一起卡住。数据库句柄按线程建连接，池线程可直接读。
-        hits = await run_in_thread(partial(
-            search_knowledge, self._db, request.query, self._limit,
-            query_embedding=query_embedding,
-            vector_index=self._vector_index,
-        ))
+        if self._rerank is None:
+            hits = await run_in_thread(partial(
+                search_knowledge, self._db, request.query, self._limit,
+                query_embedding=query_embedding,
+                vector_index=self._vector_index,
+            ))
+        else:
+            hits = await self._reranked(request, query_embedding, self._rerank)
         if not hits:
             return CognitiveObservation(
                 text=f'你查了查自己知道的东西，没有找到和「{request.query}」有关的知识。',
@@ -629,3 +729,43 @@ class ConsultAction:
             lines.append(f'- {_clip(hit.content, _KNOWLEDGE_ITEM_MAX_CHARS)}')
         touch_knowledge(self._db, [hit.id for hit in hits], current_time())
         return CognitiveObservation(text='\n'.join(lines), hit_count=len(hits))
+
+    async def _reranked(
+        self,
+        request: CognitiveRequest,
+        query_embedding: bytes | None,
+        rerank: RerankScores,
+    ) -> list[KnowledgeHit]:
+        """取整个候选池，经重排打分后按下限过滤并截取条数上限。
+
+        :param request: 已校验的认知动作请求。
+        :param query_embedding: 查询向量；为 ``None`` 时只取词面候选。
+        :param rerank: 重排回调。
+        :return: 按重排分数降序的命中，``score`` 换成重排分数。
+        :raises Exception: 重排请求失败时原样上抛。
+        副作用：一次重排请求；写一条 ``recall_rerank`` 观察事件。
+        """
+        pool = await run_in_thread(partial(
+            knowledge_candidates, self._db, request.query, _RERANK_KNOWLEDGE_PER_CHANNEL,
+            query_embedding=query_embedding,
+            vector_index=self._vector_index,
+        ))
+        # 与展示同一个截断长度：重排看到的就是模型将要读到的内容。
+        scores = await rerank(
+            request.query, [_clip(hit.content, _KNOWLEDGE_ITEM_MAX_CHARS) for hit in pool],
+        )
+        floor = rerank_min_score()
+        hits = sorted(
+            (replace(hit, score=score) for hit, score in zip(pool, scores) if score >= floor),
+            key=lambda hit: hit.score, reverse=True,
+        )[:self._limit]
+        trace.emit(
+            'recall_rerank',
+            action=self.name,
+            query=request.query,
+            candidates=len(scores),
+            kept=len(hits),
+            floor=floor,
+            topScore=round(max(scores), 3) if scores else None,
+        )
+        return hits

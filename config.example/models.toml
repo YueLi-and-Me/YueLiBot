@@ -87,6 +87,12 @@ selection_strategy = "sequential" # sequential 永远优先第一条；random �
 first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
 slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
 
+[model_tasks.rerank] # 重排：给回想与查知识的候选打相关度分，不相关的不返回；留空不重排，不继承其它任务。
+model_list = [] # 每行一个 models.toml 中的模型名称；列表顺序只在「顺序优先」策略下决定先后。
+selection_strategy = "sequential" # sequential 永远优先第一条；random 每次随机打乱；balance 在健康候选之间逐轮分摊请求。
+first_token_timeout_ms = 30000 # 候选切换窗口；窗口耗尽会直接切换下一个候选模型。
+slow_threshold_ms = 8000 # 只用于慢响应记账；必须小于首字超时，0 表示关闭。
+
 [generation.chat] # 聊天回复：普通聊天的采样参数。
 temperature = 0.85 # 采样温度；低温度更确定，高温度更有创造性。
 max_tokens = 0 # 最大输出 token 数；0 表示不额外限制，沿用厂商上限。

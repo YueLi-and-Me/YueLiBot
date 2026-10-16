@@ -117,11 +117,27 @@ extra_body = { enable_thinking = false }
 
 每个模型用 `api_format` 选择接口：`openai`（OpenAI 兼容，默认）、`responses`（OpenAI Responses）、
 `dashscope_multimodal`（百炼多模态向量）、`ark_multimodal`（方舟多模态向量）。对话任务支持前两种，
-语音仅支持 `openai`；向量任务支持 `openai` 和两种多模态向量协议。
+语音与重排仅支持 `openai`；向量任务支持 `openai` 和两种多模态向量协议。
 
 走 Responses 且开思考的模型，模型级 `max_tokens` 必须给思考留余量：`max_output_tokens` 包含思考 token。
 `extra_body` 应按所选协议的字段写，Responses 思考档位例如 `reasoning = { effort = "medium" }`。
 Responses 固定关闭服务端存储，不允许覆盖 `model`、`input`、`stream`、`previous_response_id` 或启用 `store`。
+
+### 重排
+
+`model_tasks.rerank` 在界面显示为「重排」，留空即不重排，不继承其它任务。配置后，回想（recall）与
+查知识（consult）先取一个更大的候选池，交给重排模型逐条打相关度分，按分数排序，分数低于
+「检索调参」里的重排相关度下限 `rerank_min_score`（默认 0.5）的不返回；一条都不剩时，月璃会说没想起来。
+留空时两个动作按词面与向量的融合分取前几条，不设下限。
+
+重排使用通用重排接口：请求体为 `model`、`query`、`documents`，响应为 `results` 里每条的 `index`
+与 `relevance_score`。服务商的 `base_url` 写到版本号（如 `https://api.siliconflow.cn/v1`）时自动补
+`/rerank`；路径写法不同的服务商，在服务商里把完整地址填进 `base_url`，以 `/rerank` 或 `/reranks`
+结尾的地址原样使用，例如百炼为 `https://dashscope.aliyuncs.com/compatible-api/v1/reranks`。
+这类服务商连接只给重排用，对话模型不要挂在上面。
+
+每次回想或查知识多一次请求。候选约 50 条时，一次约几千 token、耗时一秒以内。重排请求失败时，
+这次检索直接报失败，不会悄悄退回不设下限的排序。不同重排模型的分数刻度不一样，换模型后应重新确认下限。
 
 ### 表情包多模态向量
 

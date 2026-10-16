@@ -1493,6 +1493,11 @@
               "key": "multimodal_embedding",
               "label": "多模态向量",
               "description": "表情包图片与标签融合；留空仅使用 embedding 的标签文字向量，不继承其它任务。"
+            },
+            {
+              "key": "rerank",
+              "label": "重排",
+              "description": "给回想与查知识的候选打相关度分，不相关的不返回；留空不重排，不继承其它任务。"
             }
           ],
           "fields": [

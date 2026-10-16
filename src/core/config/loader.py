@@ -75,6 +75,7 @@ def _model_task_config(
         'tts': catalog.model_tasks.tts,
         'embedding': catalog.model_tasks.embedding,
         'multimodal_embedding': catalog.model_tasks.multimodal_embedding,
+        'rerank': catalog.model_tasks.rerank,
     }
     try:
         return tasks[task]
@@ -189,7 +190,7 @@ def _build_routing(
                 f'models.toml 的 model_tasks.{task}.model_list 引用了不存在的模型：{model_name}'
             ) from exc
         allowed_formats = (
-            {'openai'} if task == 'tts' else
+            {'openai'} if task in ('tts', 'rerank') else
             {'openai', 'dashscope_multimodal', 'ark_multimodal'} if task == 'embedding' else
             {'dashscope_multimodal', 'ark_multimodal'} if task == 'multimodal_embedding' else
             {'openai', 'responses'}
@@ -346,6 +347,7 @@ def _load_split_config(directory: Path) -> Config:
         tts=_build_routing('tts', models_document, models, providers, None),
         embedding=_build_routing('embedding', models_document, models, providers, None),
         multimodal_embedding=_build_routing('multimodal_embedding', models_document, models, providers, None),
+        rerank=_build_routing('rerank', models_document, models, providers, None),
     )
 
     features_tts = features_document.tts

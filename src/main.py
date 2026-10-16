@@ -28,6 +28,7 @@ from src.core.agent.action import PresenceActionPolicy, TurnPlanner
 from src.core.app_meta import APP_VERSION, OFFICIAL_GROUP
 from src.core.api.auth import token_manager
 from src.core.api.state import app_state
+from src.core.llm_models.rerank import rerank_with
 from src.core.llm_models.router import ModelRouters
 from src.core.memory.embed import EmbeddingClient, build_client
 from src.core.runtime.backend_runtime import create_backend_runtime, runtime_file_path
@@ -923,7 +924,10 @@ def main() -> None:
         video_describer=video_describer,
         emoji_library=emoji_library,
         sticker_search=sticker_search,
+        reranker=rerank_with(routers.rerank) if routers.rerank.ready else None,
     )
+    # 重排开关只由 model_tasks.rerank 有没有候选决定，启动时说清楚当前是哪种排序。
+    logger.info('cognitive_rerank', enabled=routers.rerank.ready)
     app_state.chat.set_action_policy(
         'group',
         TurnPlanner(PresenceActionPolicy(

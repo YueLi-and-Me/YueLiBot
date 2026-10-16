@@ -77,6 +77,10 @@ WHITELIST: Dict[str, ParamSpec] = {
     'fact_recall_limit': ParamSpec(int, 1, 50, None, '进提示词的事实条数上限'),
     'recalled_episode_limit': ParamSpec(int, 0, 30, None, '情节召回条数'),
     'recent_episode_limit': ParamSpec(int, 0, 30, None, '近期情节条数'),
+    # 只在配置了 model_tasks.rerank 时生效：回想与查知识的候选，重排分数不到它的不返回。
+    # 0.5 是 qwen3.7-text-rerank 在离线评估集上的取值，换重排模型后分数刻度可能不同。
+    # 留痕重放评估的是被动注入链路，不经过重排，评估结果不反映这一项。
+    'rerank_min_score': ParamSpec(float, 0.0, 1.0, 0.5, '重排相关度下限'),
 }
 
 
@@ -203,6 +207,12 @@ def ppr_hops(default_hops: int) -> int:
     """读取当前生效的 PPR 跳数；未覆盖时沿用调用方现状值。"""
 
     return int(_active_overrides.get('ppr_hops', default_hops))
+
+
+def rerank_min_score() -> float:
+    """读取当前生效的重排相关度下限；未覆盖时取白名单里的现状值。"""
+
+    return float(_active_overrides.get('rerank_min_score', WHITELIST['rerank_min_score'].legacy))
 
 
 def pool_percentile(overrides: Optional[Mapping[str, Any]] = None) -> float:

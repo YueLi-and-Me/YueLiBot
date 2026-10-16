@@ -71,6 +71,7 @@ from src.core.agent.cognition import (
     InspectAction,
     ConsultAction,
     RecallAction,
+    RerankScores,
 )
 from src.core.agent.conversation import AgentOutcome, ConversationAgent
 from src.core.agent.observer import SceneObserver, SceneSnapshot
@@ -251,6 +252,7 @@ class ChatService(
         video_describer: ChatVideoDescriber | None = None,
         emoji_library: EmojiLibrary | None = None,
         sticker_search: StickerSearch | None = None,
+        reranker: RerankScores | None = None,
         action_policy: ActionPolicy | None = None,
         action_policies: Mapping[str, ActionPolicy] | None = None,
     ) -> None:
@@ -270,6 +272,8 @@ class ChatService(
         :param image_describer: 可选的聊天图片描述服务；为 ``None`` 时图片保持占位符。
         :param video_describer: 可选的聊天视频理解服务；为 ``None`` 时视频保持占位符。
         :param sticker_search: 可选的查表情包工具执行器；为 ``None`` 时不声明该工具。
+        :param reranker: 可选的重排回调（``model_tasks.rerank`` 装配）；给了时 recall 与
+            consult 按重排分数排序并过相关度下限，为 ``None`` 时两者按融合分排序。
         :param action_policy: 可选的回合内动作策略；省略时始终回复。
         :param action_policies: 按 stream kind 装配的动作策略；未配置类型使用默认策略。
 
@@ -522,6 +526,7 @@ class ChatService(
                             and cfg.memory_feedback.hard_filter_enabled
                         ),
                         embed_query=self._embed_query,
+                        rerank=reranker,
                     )
                 ),
             )
@@ -534,7 +539,7 @@ class ChatService(
             self._tool_registry.bind_action_executor(
                 'consult',
                 CognitiveToolExecutor(
-                    ConsultAction(db, embed_query=self._embed_query)
+                    ConsultAction(db, embed_query=self._embed_query, rerank=reranker)
                 ),
             )
         self._desktop_context = self._registry.desktop_context()

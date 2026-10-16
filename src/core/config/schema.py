@@ -816,6 +816,7 @@ class ModelDefinitionConfig(BaseModel):
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     # 模型请求使用的接口协议：
     # - openai：OpenAI 兼容，按任务使用 /chat/completions、/embeddings 或 /audio/speech；
+    #   重排任务沿用这个取值，走通用重排协议（/rerank，见 llm_models/rerank.py）；
     # - responses：OpenAI Responses（/responses），仅用于对话类任务；
     # - dashscope_multimodal、ark_multimodal：百炼、方舟多模态向量，仅用于向量任务。
     # 任务与协议的合法组合由 loader 在加载期校验。
@@ -943,6 +944,10 @@ class ModelTaskConfig(BaseModel):
     # 表情包的图片与标签融合向量。留空时表情包使用 embedding 任务的标签文字向量；
     # 本任务不继承 chat，候选仅接受多模态向量协议。
     multimodal_embedding: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
+    # 重排：给回想与查知识的候选逐条打相关度分，分数不到检索调优的
+    # rerank_min_score 的不返回。留空即不重排，两个动作按原有融合分排序、不设下限；
+    # 不继承 chat，对话模型不提供重排接口。
+    rerank: TaskRoutingConfig = Field(default_factory=TaskRoutingConfig)
 
 
 class ModelCandidate(BaseModel):
@@ -1028,6 +1033,7 @@ class RoutingConfig(BaseModel):
     tts: TaskRouting = Field(default_factory=lambda: TaskRouting(task='tts'))
     embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='embedding'))
     multimodal_embedding: TaskRouting = Field(default_factory=lambda: TaskRouting(task='multimodal_embedding'))
+    rerank: TaskRouting = Field(default_factory=lambda: TaskRouting(task='rerank'))
 
 
 class ModelCatalog(BaseModel):

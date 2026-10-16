@@ -50,7 +50,7 @@ const SUPPORTED_VERSIONS = [
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
   'chat', 'proactive', 'summary', 'schedule', 'vision', 'video', 'expression',
-  'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding', 'multimodal_embedding',
+  'planner', 'replyer', 'scene', 'memory', 'tts', 'embedding', 'multimodal_embedding', 'rerank',
 ] as const
 
 /**
@@ -261,6 +261,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     tts: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     embedding: { model_list: ['qwen-embedding'], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
     multimodal_embedding: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
+    rerank: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
   },
   tts: {
     enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
@@ -2233,6 +2234,7 @@ const TASK_DESCRIPTIONS: Record<ModelTask, string> = {
   tts: '语音合成',
   embedding: '向量记忆召回',
   multimodal_embedding: '多模态向量；专用于表情包图片与标签融合，留空只用标签',
+  rerank: '重排；给回想与查知识的候选打相关度分，留空不重排',
 }
 
 /**
@@ -2773,7 +2775,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
     for (const name of routing.model_list) {
       const model = cfg.models.find((candidate) => candidate.name === name)
       if (!model) throw new Error(`${TASK_DESCRIPTIONS[task]}引用了不存在的模型：${name}`)
-      const allowed = task === 'tts' ? ['openai']
+      const allowed = task === 'tts' || task === 'rerank' ? ['openai']
         : task === 'embedding' ? ['openai', 'dashscope_multimodal', 'ark_multimodal']
           : task === 'multimodal_embedding' ? ['dashscope_multimodal', 'ark_multimodal']
             : ['openai', 'responses']
