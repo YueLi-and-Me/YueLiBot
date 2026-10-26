@@ -10,6 +10,15 @@ import { useCallback, useEffect, useState } from 'react'
 import { apiFetch, UnauthorizedError } from '@/lib/api'
 import { useAuth } from './use-auth'
 
+/** 一次调用最终候选的用量，单位 token；对应调用记录里的 usage 字段。 */
+export interface RecordUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cachedTokens: number
+  reasoningTokens: number
+}
+
 /** 记录摘要，对应后端 /prompt-records 响应数组元素。 */
 export interface PromptRecordSummary {
   task: string
@@ -25,6 +34,8 @@ export interface PromptRecordSummary {
   chunks: number | null
   textLength: number
   errorType: string | null
+  /** 服务商没返回用量、协议不按 token 计量或早于用量统计的旧记录为 null。 */
+  usage: RecordUsage | null
 }
 
 /** 单份记录的完整内容，对应后端 /prompt-records/{task}/{name} 响应。 */
@@ -36,6 +47,7 @@ export interface PromptRecordDetail {
   turnId?: number
   model?: { name?: string; provider?: string; candidate?: unknown }
   timing?: { firstTokenMs?: number | null; totalMs?: number }
+  usage?: RecordUsage | null
   request?: {
     messages?: { role?: string; content?: string }[]
     temperature?: number | null

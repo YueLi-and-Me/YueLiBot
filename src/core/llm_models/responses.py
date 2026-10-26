@@ -109,7 +109,11 @@ def classify_error(code: str, message: str) -> str:
 
 
 class ResponsesParser:
-    """保存单次 Responses 流的终止状态、正文存在性与完整工具调用。"""
+    """保存单次 Responses 流的终止状态、正文存在性、完整工具调用与用量。
+
+    :ivar usage: 完成事件里 ``response.usage`` 的原值，未标准化；流尚未完成或服务商
+        没给时为 ``None``。请求体不需要任何声明，服务商在完成事件里自带用量。
+    """
 
     def __init__(self) -> None:
         """创建未终止、无正文的空解析器。
@@ -118,6 +122,7 @@ class ResponsesParser:
         """
         self.terminated = False
         self.has_text = False
+        self.usage: Any = None
         self._calls: List[Dict[str, str]] = []
 
     def parse(self, line: str) -> Dict | str | None:
@@ -145,6 +150,9 @@ class ResponsesParser:
         if kind in ('response.failed', 'error') or (kind is None and ('code' in event or 'message' in event)):
             self.terminated = True
             source = event['response'] if kind == 'response.failed' else event
+            if kind == 'response.failed':
+                # 失败事件同样可能带着已结算的用量，先记下，由 provider 随异常交给路由层。
+                self.usage = source.get('usage') if isinstance(source, dict) else None
             code, message = _extract_status_error(source)
             raise LlmError(classify_error(code, message), f'模型返回错误：{code} {message}')
         if kind == 'response.output_text.delta':
@@ -161,6 +169,9 @@ class ResponsesParser:
             raise LlmError('blocked', f"模型拒绝请求：{event.get('delta', '')}")
         if kind in ('response.completed', 'response.incomplete'):
             self.terminated = True
+            # 完成事件本身不要求带 response 对象，缺了只当作没返回用量，不让解析失败。
+            response = event.get('response')
+            self.usage = response.get('usage') if isinstance(response, dict) else None
             if kind == 'response.incomplete':
                 reason = event['response'].get('incomplete_details', {}).get('reason')
                 if reason == 'content_filter':

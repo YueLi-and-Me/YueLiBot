@@ -10,14 +10,18 @@
 调用方把内置根目录排在前：同 id 冲突时先扫描到的生效，后者被忽略并记 warning。
 
 注册表是主体与工具插件之间的唯一界面：主体只调 ``discover`` / ``load_all`` /
-``unload_all`` / ``rewrite_inbound`` / ``observe_inbound`` /
+``unload_all`` / ``rewrite_inbound`` / ``observe_inbound`` / ``tools`` /
 ``stream_capabilities`` / ``register_commands``，不直接接触单个插件。隔离原则
 贯穿全表：第三方插件目录里混着一个坏插件时，整个 Bot 起不来是不可接受的，
 因此发现、加载、入站改写、入站观察、能力查询任何一步的单组件失败都只影响该
 组件自身。命令注册是例外：重名命令会让调用当场抛错而不是跳过，因为静默丢掉
 一条命令与「命令怎么没出现」的排障成本远高于启动失败一次。
 
-依赖 ``loader``、``tools`` 与 ``context``；被主体（聊天服务）在启动期驱动。
+插件代码的五类执行入口（生命周期钩子、入站改写、入站观察、命令、工具执行体）
+都经本表交给主体，本表在交出或调用前统一套上插件归属（见 ``attribution``），
+模型用量据此按来源拆分；主体调用这些执行体时不需要知道归属这回事。
+
+依赖 ``loader``、``tools``、``context`` 与 ``attribution``；被主体（聊天服务）在启动期驱动。
 """
 
 from __future__ import annotations
@@ -29,7 +33,15 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from src.core.commands.registry import register_command
 from src.core.logging.logger import get_logger
 from src.core.platform_io.types import InboundMessage
+from src.core.tooling.spec import ToolSpec
 
+from .attribution import (
+    AttributedToolExecutor,
+    PluginOrigin,
+    attributed_async,
+    attributed_callable,
+    attributed_tool,
+)
 from .context import PluginContext
 from .loader import MANIFEST_FILENAME, load_tool_plugin
 from .config import ensure_plugin_config, read_enabled_flag
@@ -86,6 +98,8 @@ class PluginRegistry:
         self._statuses: Dict[Path, PluginStatus] = {}
         # 管理页保留已导入插件的声明；on_load 失败后也可修正配置再重启。
         self._discovered: Dict[Path, ToolPlugin] = {}
+        # 插件 id → 是否来自第三方根目录，用于给执行体套归属。
+        self._third_party: Dict[str, bool] = {}
 
     def discover(self, roots: Sequence[Tuple[Path, bool]]) -> None:
         """按序扫描插件根目录，加载全部已启用的合法工具插件。
@@ -123,6 +137,35 @@ class PluginRegistry:
         """
         return tuple(self._plugins)
 
+    def origin_of(self, plugin: ToolPlugin) -> PluginOrigin:
+        """返回插件的归属身份，供包装它的执行体使用。
+
+        :param plugin: 已发现的工具插件。
+        :return: 插件 id 与是否第三方。
+        :raises KeyError: 插件不是经本表发现的。
+        副作用：无。
+        """
+        plugin_id = plugin.manifest.plugin_id
+        return PluginOrigin(plugin_id=plugin_id, third_party=self._third_party[plugin_id])
+
+    def tools(self) -> List[Tuple[ToolSpec, AttributedToolExecutor]]:
+        """收集全部插件的工具，执行器统一套上插件归属。
+
+        主体登记插件工具必须经本方法，而不是直接调各插件的 ``tools()``：插件可以
+        覆写 ``tools()`` 返回自定义执行器，只有在这里统一包装才能保证每个执行器
+        都带归属。
+
+        :return: ``(声明, 带归属的执行器)`` 列表，按插件发现顺序、插件内按工具名排序。
+        :raises ValueError: 插件内重复声明工具（由插件的收集方法抛出）。
+        副作用：调用各插件的工具收集方法，不执行任何工具。
+        """
+        collected: List[Tuple[ToolSpec, AttributedToolExecutor]] = []
+        for plugin in self._plugins:
+            origin = self.origin_of(plugin)
+            for spec, executor in plugin.tools():
+                collected.append((spec, attributed_tool(origin, executor)))
+        return collected
+
     async def load_all(self) -> None:
         """依次驱动各插件的 ``on_load``。
 
@@ -135,7 +178,7 @@ class PluginRegistry:
             if plugin in self._loaded:
                 continue
             try:
-                await plugin.on_load()
+                await attributed_async(self.origin_of(plugin), plugin.on_load)()
             except Exception as exc:
                 logger.error(
                     '工具插件加载失败，已从注册表移除',
@@ -158,7 +201,7 @@ class PluginRegistry:
         while self._loaded:
             plugin = self._loaded.pop()
             try:
-                await plugin.on_unload()
+                await attributed_async(self.origin_of(plugin), plugin.on_unload)()
             except Exception as exc:
                 logger.error(
                     '工具插件卸载失败',
@@ -185,8 +228,11 @@ class PluginRegistry:
         """
         entries: List[Tuple[int, str, Any]] = []
         for plugin in self._plugins:
+            origin = self.origin_of(plugin)
             for spec, handler in plugin.inbound_rewrites():
-                entries.append((spec.order, plugin.manifest.plugin_id, handler))
+                entries.append((
+                    spec.order, plugin.manifest.plugin_id, attributed_async(origin, handler),
+                ))
         entries.sort(key=lambda entry: (entry[0], entry[1]))
         for _order, plugin_id, handler in entries:
             try:
@@ -228,9 +274,10 @@ class PluginRegistry:
         :return: ``None``。
         """
         for plugin in self._plugins:
+            origin = self.origin_of(plugin)
             for handler in plugin.inbound_observers():
                 try:
-                    handler(stream_id, message_id, inbound)
+                    attributed_callable(origin, handler)(stream_id, message_id, inbound)
                 except Exception as exc:
                     logger.error(
                         '插件观察入站消息失败，已跳过该观察器本次调用',
@@ -252,12 +299,13 @@ class PluginRegistry:
         副作用：向进程内命令目录追加条目；重复调用同一批插件会因重名抛错。
         """
         for plugin in self._plugins:
+            origin = self.origin_of(plugin)
             for declaration, handler in plugin.commands():
                 register_command(
                     declaration.name,
                     declaration.pattern,
                     declaration.description,
-                )(handler)
+                )(attributed_callable(origin, handler))
 
     def stream_capabilities(self, stream_id: int) -> FrozenSet[str]:
         """合并全部工具插件为该会话贡献的能力。
@@ -399,6 +447,7 @@ class PluginRegistry:
             # 问题而不是插件缺陷，让它当场抛出，不按单插件失败隔离。
             plugin.bind_context(self._context_factory(manifest.plugin_id, directory))
         self._origins[manifest.plugin_id] = directory
+        self._third_party[manifest.plugin_id] = third_party
         self._plugins.append(plugin)
         self._statuses[directory] = replace(
             self._statuses[directory], tool_names=tuple(spec.name for spec, _executor in plugin.tools()),

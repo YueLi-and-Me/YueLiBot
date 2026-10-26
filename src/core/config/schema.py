@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Tuple
 
 import re
 
@@ -807,6 +807,71 @@ class ProviderCatalog(BaseModel):
     api_providers: List[ApiProviderConfig]
 
 
+# 分时段单价的时刻写法：24 小时制两位小时与两位分钟，不接受 24:00 与单位数小时。
+_CLOCK_PATTERN = re.compile(r'^([01]\d|2[0-3]):([0-5]\d)$')
+# 一天的分钟数，分时段单价把时刻换算成 [0, 1440) 内的分钟序号比较。
+MINUTES_PER_DAY = 24 * 60
+
+
+def parse_clock_minutes(text: str) -> int:
+    """把 ``HH:MM`` 时刻换算成当天的分钟序号。
+
+    :param text: 24 小时制时刻，如 ``"07:30"``。
+    :return: 0 到 1439 的分钟序号。
+    :raises ValueError: 文本不是两位小时、两位分钟的合法时刻。
+    副作用：无。
+    """
+    match = _CLOCK_PATTERN.match(text)
+    if match is None:
+        raise ValueError(f'{text!r} 不是合法的 HH:MM 时刻')
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+class PricePeriodConfig(BaseModel):
+    """一个模型在某个时段内整组替换的单价，用于服务商的峰谷价。
+
+    时刻按进程所在时区的本地时间解释，与作息、日程一致；区间含开始、不含结束，
+    结束早于开始表示跨午夜。格式、开始等于结束与时段重叠由所属模型的校验器
+    检查，这样报错能指出是哪个模型。
+
+    :ivar start: 时段开始，``HH:MM``，包含该时刻。
+    :ivar end: 时段结束，``HH:MM``，不包含该时刻。
+    :ivar price_in: 该时段的输入单价，元／百万 token。
+    :ivar price_out: 该时段的输出单价（含思考），元／百万 token。
+    :ivar cache_price_in: 该时段缓存命中部分的输入单价；``None`` 表示与该时段的
+        ``price_in`` 相同，0 表示缓存命中免费。
+    """
+
+    start: str
+    end: str
+    price_in: float = Field(ge=0.0)
+    price_out: float = Field(ge=0.0)
+    cache_price_in: float | None = Field(default=None, ge=0.0)
+
+    def segments(self) -> List[Tuple[int, int]]:
+        """把时段展开成不跨午夜的半开分钟区间。
+
+        :return: 一到两个 ``(开始分钟, 结束分钟)``；跨午夜的时段拆成到 1440 与从 0
+            开始的两段，结束为 0 的跨午夜时段只剩前一段。
+        :raises ValueError: 时刻格式不合法（加载期已校验，运行期不会出现）。
+        副作用：无。
+        """
+        start = parse_clock_minutes(self.start)
+        end = parse_clock_minutes(self.end)
+        if start < end:
+            return [(start, end)]
+        return [(start, MINUTES_PER_DAY)] + ([(0, end)] if end else [])
+
+    def covers(self, minute_of_day: int) -> bool:
+        """判断一天中的某一分钟是否落在本时段内。
+
+        :param minute_of_day: 0 到 1439 的本地分钟序号。
+        :return: 落在任一半开区间内时为 ``True``；开始时刻命中、结束时刻不命中。
+        副作用：无。
+        """
+        return any(start <= minute_of_day < end for start, end in self.segments())
+
+
 class ModelDefinitionConfig(BaseModel):
     """models.toml 中的具体模型，借助 api_provider 引用厂商连接。"""
 
@@ -830,10 +895,50 @@ class ModelDefinitionConfig(BaseModel):
     # 可选模型级温度与最大输出覆盖；留空时使用任务 generation 配置
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
-    # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示
+    # 单价，单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。
+    # price_out 按服务商口径包含思考 token。
     price_in: float = Field(default=0.0, ge=0.0)
     price_out: float = Field(default=0.0, ge=0.0)
+    # 缓存命中部分的输入单价，单位元/百万 token。TOML 里不写（None）表示与 price_in
+    # 相同、不打折；写 0 表示缓存命中免费。
+    cache_price_in: float | None = Field(default=None, ge=0.0)
+    # 按时段整组换价（峰谷价），写成 [[models.price_periods]]；空列表表示全天用基础单价。
+    price_periods: List[PricePeriodConfig] = Field(default_factory=list)
     embedding_dim: int = 0
+
+    @model_validator(mode='after')
+    def _validate_price_periods(self) -> 'ModelDefinitionConfig':
+        """校验分时段单价的时刻格式、空时段与时段重叠。
+
+        三种错误都在加载期报出并带上模型名：运行期才发现只会让费用按错误单价静默
+        累加，而小时汇总里存不下请求时刻，事后无法重算。
+
+        :return: 当前完成校验的模型定义。
+        :raises ValueError: 时刻不是 ``HH:MM``、开始等于结束或两个时段有重叠。
+        副作用：不修改字段。
+        """
+        spans: List[Tuple[int, int, int]] = []
+        for index, period in enumerate(self.price_periods):
+            label = f'模型 {self.name} 的 price_periods 第 {index + 1} 段'
+            for field_name, value in (('start', period.start), ('end', period.end)):
+                try:
+                    parse_clock_minutes(value)
+                except ValueError as exc:
+                    raise ValueError(f'{label}的 {field_name} {exc}') from exc
+            if period.start == period.end:
+                raise ValueError(f'{label}的开始与结束相同（{period.start}），时段长度不能为 0')
+            spans.extend((index, start, end) for start, end in period.segments())
+        for position, (index, start, end) in enumerate(spans):
+            for other_index, other_start, other_end in spans[position + 1:]:
+                if other_index != index and start < other_end and other_start < end:
+                    first = self.price_periods[index]
+                    second = self.price_periods[other_index]
+                    raise ValueError(
+                        f'模型 {self.name} 的 price_periods 第 {index + 1} 段'
+                        f'（{first.start}～{first.end}）与第 {other_index + 1} 段'
+                        f'（{second.start}～{second.end}）时间重叠'
+                    )
+        return self
 
     @model_validator(mode='before')
     @classmethod
@@ -980,6 +1085,12 @@ class ModelCandidate(BaseModel):
     client_type: Literal['openai', 'volcengine'] = 'openai'
     app_id: str = ''
     embedding_dim: int = 0
+    # 计费单价随候选交给路由层，语义同 ModelDefinitionConfig 的同名字段。路由在每次
+    # 尝试落账时按当时的单价算好费用；配置重载后新请求用新单价，已落账的不变。
+    price_in: float = 0.0
+    price_out: float = 0.0
+    cache_price_in: float | None = None
+    price_periods: List[PricePeriodConfig] = Field(default_factory=list)
     timeout_ms: int = Field(default=120_000, ge=1_000, le=3_600_000)
     max_retries: int = Field(default=0, ge=0, le=10)
     retry_interval_ms: int = Field(default=0, ge=0, le=60_000)

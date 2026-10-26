@@ -3,6 +3,10 @@
 配置将提供者连接、具体模型和任务候选列表分层关联；``ModelRouter`` 按选择策略
 执行候选调用，提供者连续失败时进入冷却并降低后续请求中的优先级。提供者内部
 重试仅处理同一候选的瞬时网络错误，候选路由负责在内部重试耗尽后切换到下一项。
+
+每个实际发出请求的候选尝试各记一笔用量（``usage.UsageAttempt``）：流式路径在
+``client.stream(...)`` 返回后立刻剥离 provider 交来的用量增量，非流式路径为每个
+候选设置用量收集器；尝试收尾处按结局（正常、失败、被打断）落账一次。
 """
 
 from __future__ import annotations
@@ -15,30 +19,40 @@ import random
 import re
 import time
 
-from src.core.runtime.clock import now as current_time
-from src.core.logging.logger import get_logger
-from src.core.config.schema import ModelCandidate
-from src.core.llm_models.openai import (
+from .openai import (
     LlmError,
     OpenAiChatProvider,
     error_hint,
     resolve_base_url,
 )
-from src.core.llm_models.protocol import (
+from .protocol import (
     ResponseValidator,
     ToolCallValidator,
     is_committing_chunk,
 )
-from src.core.llm_models.snapshot import (
+from .snapshot import (
     current_render_params,
     dump_exchange,
     record_attempt,
     record_internal_request,
     select_candidate,
 )
+from .usage import (
+    AttemptOutcome,
+    TokenUsage,
+    UsageAttempt,
+    UsageCollector,
+    collect_usage,
+    strip_usage,
+)
+
+from src.core.runtime.clock import now as current_time
+from src.core.logging.logger import get_logger
+from src.core.config.schema import ModelCandidate
 from src.core.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
 from src.core.services.console.trace_console import render_model_call
 from src.core.services.console.turn_panel import ModelCall, note_model_call
+from src.plugin_system.attribution import current_plugin_origin
 
 logger = get_logger(__name__)
 
@@ -123,6 +137,7 @@ class _ExchangeRecord:
         self._first_token_ms: int | None = None
         self._error_type = ''
         self._error = ''
+        self._usage: TokenUsage | None = None
 
     def select(self, model: str, provider: str) -> None:
         """记录本次实际选中的候选；候选切换时以最后一次为准。
@@ -133,7 +148,7 @@ class _ExchangeRecord:
 
         :param model: 选中的模型标识。
         :param provider: 选中的厂商名。
-        副作用：覆盖候选记录并清空已累积的文本、推理与工具调用。
+        副作用：覆盖候选记录并清空已累积的文本、推理、工具调用与用量。
         """
         self._model = model
         self._provider = provider
@@ -141,6 +156,15 @@ class _ExchangeRecord:
         self._reasoning.clear()
         self._tool_calls.clear()
         self._chunks = 0
+        self._usage = None
+
+    def record_usage(self, usage: TokenUsage | None) -> None:
+        """记下当前候选尝试收尾时的用量；候选切换后以最终候选为准。
+
+        :param usage: 服务商返回并已标准化的用量；没返回时为 ``None``。
+        副作用：覆盖已记录的用量。
+        """
+        self._usage = usage
 
     def first_token(self, elapsed_ms: int) -> None:
         """记录首字耗时；候选切换后以真正产出的那一次为准。
@@ -197,6 +221,7 @@ class _ExchangeRecord:
                 total_ms=int((time.monotonic() - self._started) * 1_000),
                 error_type=self._error_type,
                 error=self._error,
+                usage=self._usage.as_dict() if self._usage is not None else None,
             )
         except OSError as exc:
             # 落盘失败不能连带丢掉面板：写不进磁盘时，终端上那份现场就是唯一
@@ -221,6 +246,7 @@ class _ExchangeRecord:
             record_path=str(path) if path is not None else '',
             error=f'{self._error_type}：{self._error}' if self._error_type else '',
             error_kind=self._error_type,
+            usage=self._usage,
         )
         if not note_model_call(call):
             render_model_call(call)
@@ -566,6 +592,11 @@ class ModelRouter:
             # 是否已把不可重放的输出交给调用方。判据只认正文与工具调用：
             # reasoning 只进观测面板，此时切换候选不会造成重复台词或重复副作用。
             yielded = False
+            # 本次尝试的用量账在发起请求前创建，收尾统一在 finally 里落一次。结局
+            # 默认记为被打断：调用方提前关流（GeneratorExit）与任务取消都不经过下面
+            # 的 except 分支，只有正常返回与错误分支会改写它。
+            attempt: UsageAttempt | None = None
+            outcome: AttemptOutcome = 'interrupted'
             try:
                 client = self.client(candidate)
                 select_candidate(
@@ -589,12 +620,18 @@ class ModelRouter:
                     if candidate.max_tokens is not None
                     else max_tokens
                 )
-                chunks = client.stream(
-                    messages,
-                    effective_temperature,
-                    effective_max_tokens,
-                    signal,
-                    **options,
+                attempt = UsageAttempt(self.task, candidate, current_plugin_origin())
+                # 用量增量必须在首字判定、require_text 与结构化校验缓冲之前剥离，
+                # 原因见 strip_usage 的说明。
+                chunks = strip_usage(
+                    client.stream(
+                        messages,
+                        effective_temperature,
+                        effective_max_tokens,
+                        signal,
+                        **options,
+                    ),
+                    attempt,
                 )
                 # 候选切换、首字超时和上层提前结束都会离开本块；aclosing 保证
                 # 当前 provider 的 HTTP 流在继续尝试或返回前已经释放。
@@ -626,6 +663,7 @@ class ModelRouter:
                             # 非文本任务或兼容接口可能合法地返回空流，维持既有语义；
                             # 只有调用方显式要求正文时才把空流作为候选失败。
                             self._health.recover(candidate.provider)
+                            outcome = 'ok'
                             return
                         raise LlmError(
                             'format' if should_validate else 'model',
@@ -705,8 +743,15 @@ class ModelRouter:
                                 yielded = True
                             yield chunk
                     self._health.recover(candidate.provider)
+                    outcome = 'ok'
                     return
             except LlmError as exc:
+                # 结构化校验失败的候选已经生成完整段输出，服务商照样计费，用量照记、
+                # 结局为失败；用户打断单独记为被打断。
+                outcome = 'interrupted' if exc.kind == 'aborted' else 'failed'
+                # 终止事件以错误结束时 provider 把已结算的用量挂在异常上，见 openai.py。
+                if attempt is not None and exc.usage is not None:
+                    attempt.observe(exc.usage)
                 # 用户主动打断不属于服务商故障，不记录为失败，也不切换到其它候选。
                 if exc.kind != 'aborted':
                     record_attempt(
@@ -737,6 +782,13 @@ class ModelRouter:
                     reason=str(exc),
                     remaining=_remaining(order, index, blocked_scopes),
                 )
+            except Exception:
+                outcome = 'failed'
+                raise
+            finally:
+                if attempt is not None:
+                    exchange.record_usage(attempt.usage)
+                    attempt.settle(outcome)
 
         logger.error('model_all_failed', task=self.task, tried=len(order))
         raise last_error if last_error else self._no_candidate_error()
@@ -753,6 +805,8 @@ class ModelRouter:
 
         副作用：
             记录内部请求和每次候选尝试，更新共享健康状态，并可能发起多次模型请求。
+            每个候选尝试各落一笔用量：回调经 ``report_usage`` 上报过的按 token 计量，
+            没上报的（如语音合成）只计次数与耗时。
         """
         record_internal_request(
             task=self.task,
@@ -785,16 +839,23 @@ class ModelRouter:
                     reason='同族模型已出现确定性失败（内容策略拒绝或工具调用交白卷），重试必然同样失败',
                 )
                 continue
+            attempt = UsageAttempt(self.task, candidate, current_plugin_origin())
+            # 结局默认记为被打断：任务取消不经过 except Exception 分支。
+            outcome: AttemptOutcome = 'interrupted'
+            collector: UsageCollector | None = None
             try:
                 select_candidate(
                     model=candidate.name,
                     provider=candidate.provider,
                     kind=candidate.kind,
                 )
-                result = await call(candidate)
+                with collect_usage() as collector:
+                    result = await call(candidate)
                 self._health.recover(candidate.provider)
+                outcome = 'ok'
                 return result
             except Exception as exc:
+                outcome = 'failed'
                 last_error = exc
                 # 非流式路径接的是任意异常，不只是 LlmError：豆包语音这类私有协议
                 # 直接抛 RuntimeError，取 .kind 会在错误处理中触发属性异常，
@@ -824,6 +885,10 @@ class ModelRouter:
                     reason=str(exc),
                     remaining=_remaining(order, index, blocked_scopes),
                 )
+            finally:
+                if collector is not None and collector.usage is not None:
+                    attempt.observe(collector.usage)
+                attempt.settle(outcome, metered=collector is not None and collector.metered)
 
         logger.error('model_all_failed', task=self.task, tried=len(order))
         assert last_error is not None   # order 非空，循环至少跑过一次
@@ -909,6 +974,18 @@ class ModelRouters:
             routing.first_token_timeout_ms,
             routing.slow_threshold_ms,
         )
+
+    def all_candidates(self) -> List[ModelCandidate]:
+        """返回全部任务路由里出现过的候选，同名模型只取第一次出现的那条。
+
+        :return: 去重后的候选列表，供用量统计取当前单价。
+        副作用：只读取路由配置。
+        """
+        seen: Dict[str, ModelCandidate] = {}
+        for router in self._routers.values():
+            for candidate in router.candidates:
+                seen.setdefault(candidate.name, candidate)
+        return list(seen.values())
 
     def inspect(self) -> Dict[str, Any]:
         """生成所有任务路由的只读观测快照。

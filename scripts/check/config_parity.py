@@ -11,8 +11,9 @@
 
 排除口径与 config/upgrade.py 的 _SKIP_SECTIONS 一致：`inner` 是版本标记不是
 设置项；`api_providers` / `models` 的条目是用户数据，但**条目内的字段名**仍要
-对齐。`models[].temperature` / `max_tokens` 默认 None——TOML 表达不了 null，
-模板只在有值时写出，因此这两个字段允许缺席。
+对齐。`models[].temperature` / `max_tokens` / `cache_price_in` 默认 None——TOML 表达
+不了 null，模板只在有值时写出；`models[].price_periods` 默认空列表，写成
+`[[models.price_periods]]` 子表，空列表时一个子表也没有。这四个字段因此允许缺席。
 
 用法（在仓库根目录）：
     python scripts/check/config_parity.py     # 校验，漂移时退出码 1
@@ -55,9 +56,10 @@ from src.core.config.schema import (
 # 缺段可加载——这与「新增字段忘了进模板」是两回事，不豁免只会让这条检查永远红。
 SKIP_TOP_SECTIONS = frozenset({'inner', 'update_announce'})
 
-# 默认 None 的可写字段：TOML 没有 null，模板只在有值时写键，允许缺席。
+# 默认 None 的可写字段：TOML 没有 null，模板只在有值时写键，允许缺席。分时段单价
+# 是子表数组，空列表时写不出任何 [[models.price_periods]]，同样允许缺席。
 NULLABLE_TABLE_FIELDS: dict[str, frozenset[str]] = {
-    'models': frozenset({'temperature', 'max_tokens'}),
+    'models': frozenset({'temperature', 'max_tokens', 'cache_price_in', 'price_periods'}),
     # app_id 是豆包语音（volcengine）专属，模板只在该协议下写出：把它无条件塞进
     # 每个厂商块会让人要读的配置里出现一堆不相干的空字段，既有用例专门断言过这一点。
     'api_providers': frozenset({'app_id'}),

@@ -1,7 +1,7 @@
 """重排任务的线格式：把一组候选文本按与检索词的相关度逐条打分。
 
 通用重排协议为 ``POST {endpoint}``，请求体 ``{model, query, documents}``，响应体
-``results[].index`` 与 ``results[].relevance_score``。各厂商只有端点路径不同：
+``results[].index`` 与 ``results[].relevance_score``，用量在响应体顶层的 ``usage``。各厂商只有端点路径不同：
 厂商的 ``base_url`` 写到版本号（如 ``/v1``）时补 ``/rerank``；以 ``/rerank`` 或
 ``/reranks`` 结尾时视为完整端点、原样使用，用于路径写法不同的厂商。
 
@@ -22,6 +22,7 @@ import httpx
 
 from .openai import LlmError, OpenAiChatProvider, resolve_base_url
 from .router import ModelRouter
+from .usage import report_usage
 
 from src.core.config.schema import ModelCandidate
 
@@ -78,7 +79,8 @@ async def request_rerank(
     :param documents: 待打分的候选文本；为空时不发请求。
     :return: 与 ``documents`` 等长的分数，顺序与输入一致。
     :raises LlmError: ``extra_body`` 覆盖协议字段、HTTP 失败、网络错误或响应结构非法。
-    副作用：一次网络请求，并向观测链路写一条脱敏请求快照。
+    副作用：一次网络请求，向观测链路写一条脱敏请求快照，并把响应体里的 ``usage``
+        上报给当前候选尝试。
     """
     if not documents:
         return []
@@ -103,7 +105,10 @@ async def request_rerank(
         try:
             response = await client.post(url, headers=headers, json=body)
             await provider.check_response(response)
-            return _scores(response.json()['results'], len(documents))
+            data = response.json()
+            # 先上报用量再校验分数：结构不合格的响应服务商照样计费。
+            report_usage(data.get('usage') if isinstance(data, dict) else None, input_only=True)
+            return _scores(data['results'], len(documents))
         except httpx.TimeoutException as exc:
             raise LlmError('network', f'请求超时（{candidate.timeout_ms / 1000}s）') from exc
         except httpx.RequestError as exc:

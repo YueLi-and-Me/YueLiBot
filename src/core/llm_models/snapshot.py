@@ -363,6 +363,7 @@ def dump_exchange(
     total_ms: int,
     error_type: str = '',
     error: str = '',
+    usage: Dict[str, int] | None = None,
 ) -> Path | None:
     """把一次模型调用的请求与产出写成分阶段 JSON 记录。
 
@@ -382,6 +383,8 @@ def dump_exchange(
     :param total_ms: 从发起请求到本次调用收尾的总毫秒数。
     :param error_type: 失败类型；成功时为空串。
     :param error: 失败消息；成功时为空串。
+    :param usage: 最终选中候选的用量（``TokenUsage.as_dict`` 的结果）；服务商没返回
+        或协议不按 token 计量时为 ``None``，记录里写 ``null``。
     :return: 新建记录路径；未启用记录目录或上下文里没有请求时返回 ``None``。
     :raises OSError: 目录创建或文件写入失败。
 
@@ -413,6 +416,7 @@ def dump_exchange(
             'firstTokenMs': first_token_ms,
             'totalMs': total_ms,
         },
+        'usage': deepcopy(usage),
         'request': {
             'messages': internal_request.get('messages'),
             'temperature': internal_request.get('temperature'),

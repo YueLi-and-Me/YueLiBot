@@ -55,36 +55,16 @@ import {
   type RemoteModel,
   type TaskConfig,
 } from '@/hooks/use-model-config'
+import { TASK_LABELS, TASK_NAMES, taskLabel } from '@/lib/model-tasks'
+import type { PricePeriodConfig } from '../../../../electron/shared/ipc.ts'
+import { emptyPricePeriod, parseOptionalPrice, priceFormProblem } from './price-form'
 
-const TASK_NAMES = [
-  'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'vision',
-  'video', 'expression', 'memory', 'tts', 'embedding', 'multimodal_embedding', 'rerank',
-] as const
 // 生成参数（温度、token 上限）覆盖后端 GenerationConfig 里的每一档任务。
 // tts、两个向量任务与重排不在其中：它们没有温度和输出上限可言。
 const GENERATION_TASKS = [
   'chat', 'planner', 'replyer', 'scene', 'proactive', 'summary', 'schedule', 'expression', 'vision',
   'video', 'memory',
 ] as const
-
-/** 任务字段的中文名称，仅用于功能分配页展示；TOML 配置键名保持英文不变。 */
-const TASK_LABELS: Record<(typeof TASK_NAMES)[number], string> = {
-  chat: '日常对话',
-  planner: '行动决策',
-  replyer: '回复生成',
-  scene: '情景分析',
-  proactive: '主动搭话',
-  summary: '对话摘要',
-  schedule: '日程安排',
-  vision: '屏幕视觉',
-  video: '视频理解',
-  expression: '表达选择',
-  memory: '记忆抽取',
-  tts: '语音合成',
-  embedding: '向量嵌入',
-  multimodal_embedding: '多模态向量',
-  rerank: '重排',
-}
 
 /** 任务字段的业务用途说明，挂在任务按钮的悬停提示上。 */
 const TASK_DESCRIPTIONS: Record<(typeof TASK_NAMES)[number], string> = {
@@ -206,11 +186,6 @@ const ADVICE_TINTS: Record<AdviceKind, string> = {
   baseline: 'bg-muted text-muted-foreground',
 }
 
-/** 把任务英文键名转为中文展示名；未知键名原样返回，避免掩盖配置异常。 */
-function taskLabel(task: string): string {
-  return TASK_LABELS[task as (typeof TASK_NAMES)[number]] ?? task
-}
-
 /** 取任务用途说明；未知键名返回空串。 */
 function taskDescription(task: string): string {
   return TASK_DESCRIPTIONS[task as (typeof TASK_NAMES)[number]] ?? ''
@@ -287,9 +262,11 @@ function emptyModel(): ModelConfig {
     omni: false,
     temperature: null,
     max_tokens: null,
+    embedding_dim: 0,
     price_in: 0,
     price_out: 0,
-    embedding_dim: 0,
+    cache_price_in: null,
+    price_periods: [],
   }
 }
 
@@ -930,8 +907,20 @@ export function ModelConfigPage() {
                             <td className="px-3 py-2.5 text-center">
                               {model.temperature !== null ? model.temperature : <span className="text-muted-foreground">-</span>}
                             </td>
-                            <td className="px-3 py-2.5 text-right">¥{model.price_in}/M</td>
-                            <td className="px-3 py-2.5 text-right">¥{model.price_out}/M</td>
+                            <td className="px-3 py-2.5 text-right">
+                              ¥{model.price_in}/M
+                              {model.cache_price_in !== null ? (
+                                <span className="block text-[11px] whitespace-nowrap text-muted-foreground">缓存 ¥{model.cache_price_in}/M</span>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              ¥{model.price_out}/M
+                              {model.price_periods.length ? (
+                                <span className="block text-[11px] whitespace-nowrap text-primary-strong" title="设置了分时段价格：落在时段内的调用按该时段单价计费">
+                                  分时段 {model.price_periods.length} 段
+                                </span>
+                              ) : null}
+                            </td>
                             <td className="px-4 py-2.5 text-right">
                               <div className="flex justify-end gap-1.5">
                                 <Button size="sm" variant="secondary" className="h-8 w-8 p-0" onClick={() => openEditModelDialog(actualIndex)} title="编辑" aria-label={`编辑模型 ${model.name || actualIndex + 1}`}>
@@ -1364,6 +1353,81 @@ function ProviderDialog({
 
 
 /** 模型编辑弹窗：外壳为 Dialog 原语，内部集中维护模型标识、能力、生成参数与厂商请求参数。 */
+/**
+ * 分时段价格编辑区：每行一个时段，整组替换基础单价。
+ *
+ * @param props.periods 当前时段列表。
+ * @param props.onChange 时段列表变化回调，参数为新列表。
+ * @returns 带说明的时段表格与「添加时段」按钮。
+ * @remarks 时刻用原生 time 输入，取值恒为 24 小时制 HH:MM，与配置格式一致；
+ * 校验在表单提交时统一进行，编辑途中不打断输入。
+ */
+function PricePeriodsEditor({ periods, onChange }: {
+  periods: PricePeriodConfig[]
+  onChange: (periods: PricePeriodConfig[]) => void
+}) {
+  const update = (index: number, patch: Partial<PricePeriodConfig>) => {
+    onChange(periods.map((period, position) => (position === index ? { ...period, ...patch } : period)))
+  }
+  return (
+    <Field
+      label="分时段价格"
+      help="服务商按时段计价（峰谷价）时填写：时刻按本机时区，含开始、不含结束；结束早于开始表示跨午夜；不在任何时段时用上面的基础单价。"
+    >
+      <div className="flex flex-col gap-2">
+        {periods.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-left text-xs">
+              <thead className="text-muted-foreground">
+                <tr>
+                  <th className="py-1 pr-2 font-medium">开始</th>
+                  <th className="py-1 pr-2 font-medium">结束</th>
+                  <th className="py-1 pr-2 font-medium">输入 ¥/M</th>
+                  <th className="py-1 pr-2 font-medium">输出 ¥/M</th>
+                  <th className="py-1 pr-2 font-medium">缓存命中 ¥/M</th>
+                  <th className="py-1 font-medium" aria-label="操作" />
+                </tr>
+              </thead>
+              <tbody>
+                {periods.map((period, index) => (
+                  <tr key={index}>
+                    <td className="py-1 pr-2">
+                      <Input type="time" step={60} value={period.start} aria-label={`第 ${index + 1} 个时段开始`} onChange={(event) => update(index, { start: event.target.value })} />
+                    </td>
+                    <td className="py-1 pr-2">
+                      <Input type="time" step={60} value={period.end} aria-label={`第 ${index + 1} 个时段结束`} onChange={(event) => update(index, { end: event.target.value })} />
+                    </td>
+                    <td className="py-1 pr-2">
+                      <Input type="number" step="0.1" min={0} value={period.price_in} aria-label={`第 ${index + 1} 个时段输入价格`} onChange={(event) => update(index, { price_in: Number(event.target.value) })} />
+                    </td>
+                    <td className="py-1 pr-2">
+                      <Input type="number" step="0.1" min={0} value={period.price_out} aria-label={`第 ${index + 1} 个时段输出价格`} onChange={(event) => update(index, { price_out: Number(event.target.value) })} />
+                    </td>
+                    <td className="py-1 pr-2">
+                      <Input type="number" step="0.1" min={0} value={period.cache_price_in ?? ''} placeholder="同输入" aria-label={`第 ${index + 1} 个时段缓存命中价`} onChange={(event) => update(index, { cache_price_in: parseOptionalPrice(event.target.value) })} />
+                    </td>
+                    <td className="py-1 text-right">
+                      <Button type="button" size="sm" variant="ghost" className="h-8 w-8 p-0" title="删除时段" aria-label={`删除第 ${index + 1} 个时段`} onClick={() => onChange(periods.filter((_, position) => position !== index))}>
+                        <X className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">未设置分时段价格，全天按上面的基础单价计费。</p>
+        )}
+        <Button type="button" size="sm" variant="secondary" className="self-start" onClick={() => onChange([...periods, emptyPricePeriod()])}>
+          <Plus className="size-3.5" aria-hidden="true" />
+          添加时段
+        </Button>
+      </div>
+    </Field>
+  )
+}
+
 function ModelDialog({
   model,
   index,
@@ -1384,7 +1448,7 @@ function ModelDialog({
   onDelete: () => void
 }) {
   const [form, setForm] = useState<ModelConfig>(() => JSON.parse(JSON.stringify(model)) as ModelConfig)
-  const [errors, setErrors] = useState<{ name?: string; api_provider?: string; model_identifier?: string }>({})
+  const [errors, setErrors] = useState<{ name?: string; api_provider?: string; model_identifier?: string; prices?: string }>({})
   const [advanced, setAdvanced] = useState(false)
   const [identifierOpen, setIdentifierOpen] = useState(false)
   const [identifierSearch, setIdentifierSearch] = useState('')
@@ -1399,6 +1463,8 @@ function ModelDialog({
     if (!form.name.trim()) next.name = '请输入模型名称'
     if (!form.api_provider.trim()) next.api_provider = '请选择 API 提供商'
     if (!form.model_identifier.trim()) next.model_identifier = '请输入模型标识符'
+    const priceProblem = priceFormProblem(form)
+    if (priceProblem) next.prices = priceProblem
     setErrors(next)
     return Object.keys(next).length === 0
   }
@@ -1525,14 +1591,23 @@ function ModelDialog({
             </Field>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="输入价格 (¥/M token)" htmlFor="model-price-in">
-              <Input id="model-price-in" type="number" step="0.1" min={0} value={form.price_in} onChange={(event) => updateForm({ price_in: Number(event.target.value) })} placeholder="默认: 0" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Field label="输入价格 (¥/M token)" htmlFor="model-price-in" help="用于用量统计计算费用；0 表示未填写或免费。">
+              <Input id="model-price-in" type="number" step="0.1" min={0} value={form.price_in} onChange={(event) => updateForm({ price_in: Number(event.target.value) }, 'prices')} placeholder="默认: 0" />
             </Field>
-            <Field label="输出价格 (¥/M token)" htmlFor="model-price-out">
-              <Input id="model-price-out" type="number" step="0.1" min={0} value={form.price_out} onChange={(event) => updateForm({ price_out: Number(event.target.value) })} placeholder="默认: 0" />
+            <Field label="输出价格 (¥/M token)" htmlFor="model-price-out" help="含思考部分的输出 token。">
+              <Input id="model-price-out" type="number" step="0.1" min={0} value={form.price_out} onChange={(event) => updateForm({ price_out: Number(event.target.value) }, 'prices')} placeholder="默认: 0" />
+            </Field>
+            <Field label="缓存命中价 (¥/M token)" htmlFor="model-cache-price-in" help="输入中命中缓存部分的单价；留空表示与输入价格相同，填 0 表示缓存命中免费。">
+              <Input id="model-cache-price-in" type="number" step="0.1" min={0} value={form.cache_price_in ?? ''} onChange={(event) => updateForm({ cache_price_in: parseOptionalPrice(event.target.value) }, 'prices')} placeholder="同输入价格" />
             </Field>
           </div>
+
+          <PricePeriodsEditor
+            periods={form.price_periods}
+            onChange={(price_periods) => updateForm({ price_periods }, 'prices')}
+          />
+          {errors.prices ? <p role="alert" className="-mt-2 text-xs text-destructive">{errors.prices}</p> : null}
 
           <Button type="button" variant={advanced ? 'primary' : 'secondary'} size="sm" className="self-start" onClick={() => setAdvanced((value) => !value)}>
             高级设置

@@ -29,6 +29,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from src.core.llm_models.openai import error_hint
+from src.core.llm_models.usage import TokenUsage
 from src.core.logging.log_display import value_label
 
 
@@ -47,6 +48,7 @@ class ModelCall:
     :ivar record_path: 分阶段调用记录的落盘路径；未启用记录时为空串。
     :ivar error: 失败描述；成功时为空串。
     :ivar error_kind: 失败类别，用于翻成可照做的说明；成功时为空串。
+    :ivar usage: 最终候选的用量；服务商没返回或协议不按 token 计量时为 ``None``。
     """
 
     task: str
@@ -60,6 +62,7 @@ class ModelCall:
     record_path: str = ''
     error: str = ''
     error_kind: str = ''
+    usage: TokenUsage | None = None
 
 
 @dataclass(frozen=True)
@@ -305,12 +308,17 @@ _TASK_TINTS: Dict[str, str] = {
 
 
 def _headline(call: ModelCall) -> List[str]:
-    """组装面板头部的模型与耗时行。"""
+    """组装面板头部的模型、耗时与用量行。"""
     lines = [f'模型：{call.model}' + (f'（{call.provider}）' if call.provider else '')]
     first_token = (
         f'{call.first_token_ms / 1000:.2f} s' if call.first_token_ms is not None else '—'
     )
     lines.append(f'耗时：首字 {first_token} / 共 {call.total_ms / 1000:.2f} s')
+    # 用量只在服务商返回时展示；没返回的次数由用量统计页单独汇总，不在每个框里提示。
+    if call.usage is not None:
+        lines.append(
+            f'用量：输入 {call.usage.prompt_tokens:,} · 输出 {call.usage.completion_tokens:,}'
+        )
     return lines
 
 

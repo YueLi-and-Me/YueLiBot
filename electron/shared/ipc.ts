@@ -349,6 +349,24 @@ export interface ApiProviderConfig {
   retry_interval_ms: number
 }
 
+/**
+ * 一个模型在某个时段内整组替换的单价，用于服务商的峰谷价。
+ *
+ * 时刻按本机时区解释，含开始、不含结束；结束早于开始表示跨午夜。
+ */
+export interface PricePeriodConfig {
+  /** 时段开始，HH:MM */
+  start: string
+  /** 时段结束，HH:MM */
+  end: string
+  /** 该时段的输入单价，单位元/百万 token */
+  price_in: number
+  /** 该时段的输出单价（含思考），单位元/百万 token */
+  price_out: number
+  /** 该时段缓存命中部分的输入单价；null 表示与该时段 price_in 相同，0 表示免费 */
+  cache_price_in: number | null
+}
+
 /** models.toml 里的一个具体模型，只引用厂商名，不重复地址和密钥。 */
 export interface ModelDefinitionConfig {
   /** 配置内部模型名，必须唯一；任务的 model_list 写这个值 */
@@ -367,11 +385,16 @@ export interface ModelDefinitionConfig {
   temperature: number | null
   /** 可选模型级最大输出覆盖；留空（null）时使用任务 generation 配置 */
   max_tokens: number | null
-  /** 计费参考价，单位元/百万 token；仅用于 WebUI 展示 */
-  price_in: number
-  price_out: number
   /** 向量维度，仅 embedding 模型使用 */
   embedding_dim: number
+  /** 单价，单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费 */
+  price_in: number
+  /** 输出单价（含思考），单位元/百万 token */
+  price_out: number
+  /** 缓存命中部分的输入单价；null 表示与 price_in 相同，0 表示缓存命中免费 */
+  cache_price_in: number | null
+  /** 按时段整组换价，写成 [[models.price_periods]]；空数组表示全天用基础单价 */
+  price_periods: PricePeriodConfig[]
 }
 
 /** 一个任务的候选模型列表与挑选策略。列表顺序只在 sequential 策略下决定先后。 */

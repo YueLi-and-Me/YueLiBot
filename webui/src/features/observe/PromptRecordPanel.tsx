@@ -24,6 +24,7 @@ import {
 } from '@/components/ui'
 import { usePromptRecords } from '@/hooks/use-prompt-records'
 import type { PromptRecordSummary } from '@/hooks/use-prompt-records'
+import { formatTokens } from '@/features/usage/usage-format'
 
 /** 调用记录每页条数。 */
 const RECORDS_PAGE_SIZE = 10
@@ -136,6 +137,11 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
                   <span>首字 {seconds(summary.firstTokenMs)}</span>
                   <span>共 {seconds(summary.totalMs)}</span>
                   <span>{summary.textLength} 字</span>
+                  {summary.usage ? (
+                    <span>
+                      输入 {formatTokens(summary.usage.promptTokens)} · 输出 {formatTokens(summary.usage.completionTokens)}
+                    </span>
+                  ) : null}
                 </span>
               </button>
 
@@ -151,6 +157,13 @@ export function PromptRecordPanel({ enabled }: { enabled: boolean }) {
                         <Chip label="温度" value={String(detail.request?.temperature ?? '—')} />
                         <Chip label="上限" value={String(detail.request?.maxTokens ?? '—')} />
                         <Chip label="分片" value={String(detail.response?.chunks ?? 0)} />
+                        <Chip
+                          label="用量"
+                          value={detail.usage
+                            ? `输入 ${formatTokens(detail.usage.promptTokens)}（缓存 ${formatTokens(detail.usage.cachedTokens)}）`
+                              + ` · 输出 ${formatTokens(detail.usage.completionTokens)}（思考 ${formatTokens(detail.usage.reasoningTokens)}）`
+                            : '服务商未返回'}
+                        />
                       </div>
 
                       <div className="flex flex-col gap-2">

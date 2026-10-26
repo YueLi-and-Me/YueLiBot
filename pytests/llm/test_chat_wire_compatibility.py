@@ -27,7 +27,8 @@ async def test_chat_request_bytes_unchanged(monkeypatch):
     assert chunks == []
     assert requests[0].content == (
         b'{"model":"override","messages":[{"role":"user","content":"hello"}],'
-        b'"stream":true,"temperature":0.7,"max_tokens":80,"custom":true,'
+        b'"stream":true,"stream_options":{"include_usage":true},'
+        b'"temperature":0.7,"max_tokens":80,"custom":true,'
         b'"response_format":{"type":"json_object"},'
         b'"tools":[{"type":"function","function":{"name":"send"}}]}'
     )

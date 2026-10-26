@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List
 import json
@@ -39,8 +40,22 @@ _PROVIDER_FIELDS = (
 _MODEL_FIELDS = (
     'name', 'model_identifier', 'api_provider', 'extra_body',
     'api_format', 'reasoning_parse_mode', 'visual', 'omni', 'temperature', 'max_tokens',
-    'price_in', 'price_out', 'embedding_dim',
+    'embedding_dim', 'price_in', 'price_out', 'cache_price_in', 'price_periods',
 )
+# 价格段（price_in 起到该模型的最后一个 [[models.price_periods]] 止）的行尾注释。
+# Electron 写入器 electron/main/config.ts 的 PRICE_COMMENTS 与 settings_schema.json 的
+# 字段说明必须与这里逐字相同：三处写出的价格段因此逐字一致，用例对照两个写入器的输出。
+PRICE_COMMENTS: Dict[str, str] = {
+    'price_in': '输入单价，单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。',
+    'price_out': '输出单价（含思考），单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。',
+    'cache_price_in': '缓存命中部分的输入单价，单位元/百万 token；不写表示与 price_in 相同，0 表示缓存命中免费。',
+    'price_periods': '分时段单价：按本机时区，含开始、不含结束；结束早于开始表示跨午夜；不在任何时段时用上面的基础单价。',
+    'start': '时段开始，HH:MM，包含该时刻。',
+    'end': '时段结束，HH:MM，不包含该时刻；早于开始表示跨午夜。',
+    'period_price_in': '该时段的输入单价，单位元/百万 token。',
+    'period_price_out': '该时段的输出单价（含思考），单位元/百万 token。',
+    'period_cache_price_in': '该时段缓存命中部分的输入单价；不写表示与该时段 price_in 相同，0 表示免费。',
+}
 # 任务清单从配置模型派生，不在这里再抄一份。
 #
 # - 现象：新增 planner / replyer 两个模型槽后，WebUI 能选到它们，保存却不生效。
@@ -300,8 +315,33 @@ def _normalize_models(items: Any) -> List[Dict[str, Any]]:
             row['max_tokens'] = int(row['max_tokens'])
         row['price_in'] = float(row.get('price_in') or 0.0)
         row['price_out'] = float(row.get('price_out') or 0.0)
+        row['cache_price_in'] = _optional_price(row.get('cache_price_in'))
+        row['price_periods'] = [
+            {
+                'start': str(period.get('start') or '').strip(),
+                'end': str(period.get('end') or '').strip(),
+                'price_in': float(period.get('price_in') or 0.0),
+                'price_out': float(period.get('price_out') or 0.0),
+                'cache_price_in': _optional_price(period.get('cache_price_in')),
+            }
+            for period in row.get('price_periods') or []
+            if isinstance(period, dict)
+        ]
         result.append(row)
     return result
+
+
+def _optional_price(value: Any) -> float | None:
+    """把可留空的单价表单值规整为浮点数或 ``None``。
+
+    :param value: 表单值；``None`` 与空白字符串表示留空。
+    :return: 留空时为 ``None``，否则为浮点数。
+    :raises ValueError: 非空值不是数字。
+    副作用：无。
+    """
+    if value is None or str(value).strip() == '':
+        return None
+    return float(value)
 
 
 def _normalize_tasks(items: Any) -> Dict[str, Dict[str, Any]]:
@@ -367,7 +407,8 @@ def _default_model() -> Dict[str, Any]:
         'name': '', 'model_identifier': '', 'api_provider': '',
         'extra_body': {}, 'api_format': 'openai', 'reasoning_parse_mode': 'field', 'visual': False,
         'omni': False, 'temperature': None, 'max_tokens': None,
-        'price_in': 0.0, 'price_out': 0.0, 'embedding_dim': 0,
+        'embedding_dim': 0, 'price_in': 0.0, 'price_out': 0.0,
+        'cache_price_in': None, 'price_periods': [],
     }
 
 
@@ -494,11 +535,57 @@ def _dump_models(
                 f'max_tokens = {int(model["max_tokens"])}'
                 ' # 模型级覆盖；留空时使用任务 generation 配置。'
             )
-        lines.append(f'price_in = {_toml_value(float(model.get("price_in") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
-        lines.append(f'price_out = {_toml_value(float(model.get("price_out") or 0.0))} # 可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。')
         lines.append(f'embedding_dim = {int(model.get("embedding_dim", 0))} # 仅嵌入模型需要填写；同一任务下候选的模型 ID、接口协议与维度必须一致。')
+        # 价格段放在模型条目末尾：[[models.price_periods]] 子表之后不能再写本模型的键。
+        lines.extend(price_lines(model))
         lines.append('')
     return '\n'.join(lines)
+
+
+def toml_price(value: float) -> str:
+    """把单价写成定点小数，与 Electron 写入器的 ``tomlPrice`` 逐字同口径。
+
+    取最短往返的十进制数字，统一展开成不带指数的写法，整数值补 ``.0``：Python 的
+    ``repr`` 在小于 1e-4 时改用指数写法，JavaScript 的阈值是 1e-6，直接各用各的会让
+    两个写入器对同一单价写出不同文本。
+
+    :param value: 非负单价。
+    :return: TOML 浮点字面量，如 ``2.0``、``0.00005``。
+    副作用：无。
+    """
+    text = format(Decimal(repr(float(value))), 'f')
+    return text if '.' in text else f'{text}.0'
+
+
+def price_lines(model: Dict[str, Any]) -> List[str]:
+    """渲染一个模型的价格段：基础单价、缓存命中价与分时段单价子表。
+
+    与 Electron 写入器的 ``priceBlock`` 输出逐字一致；留空的缓存命中价不写键。
+
+    :param model: 已归一化的模型配置行。
+    :return: 价格段的 TOML 行，以 ``price_in`` 开头。
+    副作用：无。
+    """
+    lines = [
+        f'price_in = {toml_price(model["price_in"])} # {PRICE_COMMENTS["price_in"]}',
+        f'price_out = {toml_price(model["price_out"])} # {PRICE_COMMENTS["price_out"]}',
+    ]
+    if model.get('cache_price_in') is not None:
+        lines.append(
+            f'cache_price_in = {toml_price(model["cache_price_in"])} # {PRICE_COMMENTS["cache_price_in"]}'
+        )
+    for period in model.get('price_periods') or []:
+        lines.append(f'[[models.price_periods]] # {PRICE_COMMENTS["price_periods"]}')
+        lines.append(f'start = {_toml_value(period["start"])} # {PRICE_COMMENTS["start"]}')
+        lines.append(f'end = {_toml_value(period["end"])} # {PRICE_COMMENTS["end"]}')
+        lines.append(f'price_in = {toml_price(period["price_in"])} # {PRICE_COMMENTS["period_price_in"]}')
+        lines.append(f'price_out = {toml_price(period["price_out"])} # {PRICE_COMMENTS["period_price_out"]}')
+        if period.get('cache_price_in') is not None:
+            lines.append(
+                f'cache_price_in = {toml_price(period["cache_price_in"])}'
+                f' # {PRICE_COMMENTS["period_cache_price_in"]}'
+            )
+    return lines
 
 
 def _toml_value(value: Any) -> str:

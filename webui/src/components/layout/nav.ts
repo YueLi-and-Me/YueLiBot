@@ -7,6 +7,7 @@
  */
 import {
   BookMarked,
+  Coins,
   Cpu,
   ListChecks,
   MessageSquare,
@@ -46,7 +47,10 @@ const HOME_PATH = '/'
 export const NAV_GROUPS: Array<NavGroup> = [
   {
     label: '观察',
-    items: [{ to: HOME_PATH, label: '会话观察', icon: MessageSquare }],
+    items: [
+      { to: HOME_PATH, label: '会话观察', icon: MessageSquare },
+      { to: '/usage', label: '用量统计', icon: Coins },
+    ],
   },
   {
     label: '人与表达',

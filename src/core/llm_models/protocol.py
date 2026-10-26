@@ -63,6 +63,8 @@ class LlmProvider(Protocol):
         :param response_validator: 可选完整正文校验器；返回前校验，失败时抛出
             ``ValueError``。
         :return: 异步迭代器；每项通常包含 `text`、`reasoning` 或其他 provider 约定字段。
+            服务商返回了用量时，流结束前多产出一个只含 ``usage``（``TokenUsage``）的
+            增量，由路由层收走，不交给业务调用方。
         :raises Exception: 具体实现可抛出网络、鉴权、限流和取消异常。
         副作用：具体实现通常会发起模型网络请求。
         """

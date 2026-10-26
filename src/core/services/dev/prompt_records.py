@@ -154,4 +154,6 @@ def _summarize(path: Path) -> Dict[str, Any] | None:
         'chunks': response.get('chunks'),
         'textLength': len(response.get('text') or ''),
         'errorType': (error or {}).get('type') if error else None,
+        # 最终候选的用量；服务商没返回、协议不计量或早于用量统计的旧记录为 None。
+        'usage': payload.get('usage'),
     }

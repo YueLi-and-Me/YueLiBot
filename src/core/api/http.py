@@ -37,6 +37,8 @@ from src.core.runtime.clock import now as current_time
 from src.core.logging.console_layout import print_box
 from src.core.db.connection import get_db, run_in_thread
 from src.core.logging.logger import get_logger
+from src.core.llm_models.usage import usage_ledger
+from src.core.llm_models.usage_stats import model_prices, summarize_usage
 from src.core.commands import dispatch_developer_command, registered_commands
 from src.core.config.loader import get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
@@ -1396,6 +1398,34 @@ async def replay(body: ReplayBody) -> dict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get('/api/usage', dependencies=[Depends(_auth)])
+async def usage_summary(
+    start: int = Query(ge=0),
+    end: int = Query(gt=0),
+    tz_offset: int = Query(default=0, alias='tzOffset', ge=-14 * 60, le=14 * 60),
+) -> dict:
+    """返回一个时间范围内的模型用量统计，供 WebUI 用量统计页使用。
+
+    统计口径与报告文件、控制台汇总相同，都由 ``summarize_usage`` 算出。
+
+    :param start: 范围起点 Unix 毫秒。
+    :param end: 范围止点 Unix 毫秒，不含。
+    :param tz_offset: 东区为正的时区偏移分钟数，用于按天归并；取浏览器所在时区。
+    :return: 汇总字典，结构见 ``summarize_usage``。
+    :raises fastapi.HTTPException: 止点不晚于起点返回 400；账本未就绪返回 503。
+    副作用：只读，查询在线程池里执行。
+    """
+    if end <= start:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='统计范围的止点必须晚于起点')
+    if not usage_ledger.configured or app_state.routers is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='用量账本尚未就绪')
+    prices = model_prices(app_state.routers.all_candidates())
+    now = current_time()
+    return await run_in_thread(usage_ledger.read, lambda connection: summarize_usage(
+        connection, start_ms=start, end_ms=end, tz_offset_minutes=tz_offset, now_ms=now, prices=prices,
+    ))
 
 
 @router.get('/prompt-records', dependencies=[Depends(_auth)])

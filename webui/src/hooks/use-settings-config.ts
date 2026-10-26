@@ -14,8 +14,13 @@ export interface SettingsFieldSchema {
   key: string
   type: 'string' | 'password' | 'textarea' | 'integer' | 'number' | 'boolean'
     | 'enum' | 'multi_enum' | 'string_list' | 'string_map' | 'json' | 'date' | 'time'
+    | 'table_list'
   label: string
   help: string
+  /** 写盘照常保留、通用设置页不展示的字段（如模型的分时段价格，在模型页编辑）。 */
+  hidden?: boolean
+  /** `table_list` 字段的子表字段，写成 `[[父表.字段]]`。 */
+  fields?: SettingsFieldSchema[]
   required?: boolean
   nullable?: boolean
   min?: number

@@ -254,8 +254,8 @@ describe('API 轮询', () => {
     ]
     clearTaskCandidates(config)
     config.models = [
-      { name: '主力对话', model_identifier: 'deepseek-chat', api_provider: '主力', extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
-      { name: '备用对话', model_identifier: 'gpt-4o-mini', api_provider: '备用', extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0 },
+      { name: '主力对话', model_identifier: 'deepseek-chat', api_provider: '主力', extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [] },
+      { name: '备用对话', model_identifier: 'gpt-4o-mini', api_provider: '备用', extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field', embedding_dim: 0, visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [] },
     ]
     config.model_tasks.chat = {
       ...config.model_tasks.chat,
@@ -334,7 +334,7 @@ describe('API 轮询', () => {
     config.models.push({
       name: '没人用的模型', model_identifier: 'x', api_provider: '不存在的厂商',
       extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field', embedding_dim: 0,
-      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
     })
     writeConfigDirectory(directory, config)
 
@@ -377,7 +377,7 @@ describe('API 轮询', () => {
     config.models.push({
       name: 'tts', model_identifier: '', api_provider: config.api_providers[0]!.name,
       extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'none', embedding_dim: 0,
-      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
     })
     config.model_tasks.tts = {
       ...config.model_tasks.tts, model_list: ['tts'], selection_strategy: 'sequential',
@@ -578,7 +578,7 @@ describe('豆包语音 TTS', () => {
     config.models.push({
       name: 'tts', model_identifier: '', api_provider: '语音',
       extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'none', embedding_dim: 0,
-      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
     })
     config.model_tasks.tts = {
       ...config.model_tasks.tts, model_list: ['tts'], selection_strategy: 'sequential',

@@ -368,13 +368,14 @@ def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[s
     :param lines: 输出行缓冲，就地追加。
     :param fields: schema 声明的字段列表，顺序即写盘顺序。
     :param values: 该表当前的业务字段值；schema 未声明或值为 ``None`` 的
-        字段跳过不写。
+        字段跳过不写；``table_list`` 类型的字段是子表数组，由
+        :func:`_write_nested_tables` 在本表全部键之后另写。
     :return: 无返回值，通过 ``lines`` 带回结果。
     副作用：向 ``lines`` 追加配置行与注释行。
     """
     for field in fields:
         key = field.get('key', '')
-        if key not in values:
+        if key not in values or field.get('type') == 'table_list':
             continue
         value = values[key]
         if value is None:
@@ -386,6 +387,40 @@ def _write_fields(lines: List[str], fields: List[Dict[str, Any]], values: Dict[s
         else:
             lines.extend(_comment_lines(help_text))
             lines.append(line)
+
+
+def _write_nested_tables(
+    lines: List[str],
+    parent: str,
+    fields: List[Dict[str, Any]],
+    values: Dict[str, Any],
+) -> None:
+    """把条目内 ``table_list`` 类型的字段写成 ``[[父表.字段]]`` 子表数组。
+
+    子表必须写在父条目的全部键之后：TOML 一旦出现 ``[[models.price_periods]]``，
+    其后的键都属于该子表，再写父条目的键会落进错误的表。空列表不写任何子表，
+    读回时由模型默认值补成空列表。
+
+    :param lines: 输出行缓冲，就地追加。
+    :param parent: 父表数组名，如 ``models``。
+    :param fields: 父条目的 schema 字段列表。
+    :param values: 父条目当前的业务字段值。
+    :return: 无返回值，通过 ``lines`` 带回结果。
+    副作用：向 ``lines`` 追加子表表头与字段行。
+    """
+    for field in fields:
+        if field.get('type') != 'table_list':
+            continue
+        items = values.get(field.get('key', ''))
+        if not isinstance(items, list):
+            continue
+        help_text = str(field.get('help', '')).strip()
+        header = f'[[{parent}.{field["key"]}]]'
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f'{header} # {help_text}' if help_text else header)
+            _write_fields(lines, field.get('fields', []), item)
 
 
 def _section_header(key: str, label: str, description: str) -> List[str]:
@@ -528,6 +563,7 @@ def _write_documented_toml(
                 else:
                     lines.extend(_comment_lines(f'[[{key}]]：{entry_text}'))
                 _write_fields(lines, fields, item)
+                _write_nested_tables(lines, key, fields, item)
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 def save(directory: Path, values: Dict[str, Any]) -> Dict[str, Any]:

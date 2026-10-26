@@ -531,7 +531,7 @@ addModelButton.addEventListener('click', () => {
     name: uniqueName('模型', loadedConfig.models.map((m) => m.name)),
     model_identifier: '', api_provider: provider.name,
     extra_body: {}, api_format: 'openai', reasoning_parse_mode: 'field',
-    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
     embedding_dim: 0,
   })
   renderDynamicSections()

@@ -1740,12 +1740,19 @@
               "help": "留空继承任务 generation 配置；填写后覆盖对应任务的最大输出。"
             },
             {
+              "key": "embedding_dim",
+              "type": "integer",
+              "label": "Embedding 维度",
+              "min": 0,
+              "help": "仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。"
+            },
+            {
               "key": "price_in",
               "type": "number",
               "label": "输入价格（¥/M token）",
               "min": 0,
               "step": 0.1,
-              "help": "可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。"
+              "help": "输入单价，单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。"
             },
             {
               "key": "price_out",
@@ -1753,14 +1760,62 @@
               "label": "输出价格（¥/M token）",
               "min": 0,
               "step": 0.1,
-              "help": "可选计费参考价，单位元/百万 token；仅用于 WebUI 展示。"
+              "help": "输出单价（含思考），单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。"
             },
             {
-              "key": "embedding_dim",
-              "type": "integer",
-              "label": "Embedding 维度",
+              "key": "cache_price_in",
+              "type": "number",
+              "label": "缓存命中价（¥/M token）",
+              "nullable": true,
               "min": 0,
-              "help": "仅嵌入模型需要填写；同一任务下的候选向量模型必须维度一致。"
+              "step": 0.1,
+              "help": "缓存命中部分的输入单价，单位元/百万 token；不写表示与 price_in 相同，0 表示缓存命中免费。"
+            },
+            {
+              "key": "price_periods",
+              "type": "table_list",
+              "label": "分时段价格",
+              "hidden": true,
+              "help": "分时段单价：按本机时区，含开始、不含结束；结束早于开始表示跨午夜；不在任何时段时用上面的基础单价。",
+              "fields": [
+                {
+                  "key": "start",
+                  "type": "time",
+                  "label": "开始",
+                  "help": "时段开始，HH:MM，包含该时刻。"
+                },
+                {
+                  "key": "end",
+                  "type": "time",
+                  "label": "结束",
+                  "help": "时段结束，HH:MM，不包含该时刻；早于开始表示跨午夜。"
+                },
+                {
+                  "key": "price_in",
+                  "type": "number",
+                  "label": "输入价格（¥/M token）",
+                  "min": 0,
+                  "step": 0.1,
+                  "help": "该时段的输入单价，单位元/百万 token。"
+                },
+                {
+                  "key": "price_out",
+                  "type": "number",
+                  "label": "输出价格（¥/M token）",
+                  "min": 0,
+                  "step": 0.1,
+                  "help": "该时段的输出单价（含思考），单位元/百万 token。"
+                },
+                {
+                  "key": "cache_price_in",
+                  "type": "number",
+                  "label": "缓存命中价（¥/M token）",
+                  "nullable": true,
+                  "min": 0,
+                  "step": 0.1,
+                  "help": "该时段缓存命中部分的输入单价；不写表示与该时段 price_in 相同，0 表示免费。"
+                }
+              ]
             }
           ]
         }

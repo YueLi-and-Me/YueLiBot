@@ -6,6 +6,9 @@
 客户端负责鉴权参数组装、SSE 增量解析、HTTP 200 诊断正文识别、思考字段/标签
 分流和请求级重试；在已经向上游产生正文或工具调用后不重放请求，以避免重复输出
 和副作用，仅产生过 reasoning 的失败仍可重试。
+
+服务商在流末尾返回的用量经 ``usage.normalize_usage`` 标准化后，作为一个
+``{'usage': TokenUsage}`` 增量在流结束时产出，由路由层收走，调用方看不到它。
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import httpx
 
 from .protocol import ResponseValidator, is_committing_chunk
 from .snapshot import current_candidate, record_provider_request
+from .usage import TokenUsage, normalize_usage
 
 from src.core.logging.logger import get_logger
 
@@ -35,6 +39,8 @@ class LlmError(Exception):
     :ivar kind: 错误类别，例如 `auth`、`billing`、`quota`、`network`、`timeout`
         、`format`、`toolcall` 或 `aborted`。
     :ivar detail: 可选的原始错误详情，默认值为空字符串。
+    :ivar usage: 服务商在终止事件里已经结算、随本错误一起交给路由层的用量；
+        没有时为 ``None``。
     """
 
     def __init__(self, kind: str, message: str, detail: str = '') -> None:
@@ -48,6 +54,7 @@ class LlmError(Exception):
         super().__init__(message)
         self.kind = kind   # auth | billing | quota | model | network | timeout | blocked | format | toolcall | aborted | unknown
         self.detail = detail
+        self.usage: TokenUsage | None = None
 
 
 async def _next_or_abort(
@@ -736,6 +743,10 @@ class OpenAiChatProvider:
     ) -> Dict[str, Any]:
         """保留 Chat 请求字段的原始插入与覆盖顺序，不改变序列化结果。
 
+        ``stream_options.include_usage`` 一律带上：按 OpenAI 规范，流式请求不声明它时
+        服务商不会在流末尾发用量，用量统计就只剩「未返回」。它放在 extra_body 合并之前，
+        用户在 extra_body 里写了 ``stream_options`` 时以用户的为准。
+
         :param messages: OpenAI 兼容消息列表。
         :param temperature: 采样温度。
         :param max_tokens: 可选最大输出 token 数；``None`` 不下发该字段。
@@ -746,6 +757,7 @@ class OpenAiChatProvider:
         """
         body: dict[str, Any] = {
             'model': self.model, 'messages': messages, 'stream': True,
+            'stream_options': {'include_usage': True},
             'temperature': temperature,
             **self._extra_body,
         }
@@ -773,7 +785,8 @@ class OpenAiChatProvider:
         :param max_tokens: 可选最大输出 token 数。
         :param signal: 可选取消事件；设置后中断生成。
         :param response_format: 可选响应格式字段。
-        :return: 文本、推理或结束标记前的增量字典。
+        :return: 文本、推理或结束标记前的增量字典；流正常结束且服务商返回了可识别
+            的用量时，最后一个增量是 ``{'usage': TokenUsage}``。
         :raises LlmError: HTTP 状态错误、服务端错误、超时、网络错误或主动中断。
         副作用：记录脱敏请求快照并建立一次 HTTP 流式连接。
         :performance: 流式消费响应，不缓存完整模型输出。
@@ -796,6 +809,9 @@ class OpenAiChatProvider:
         )
         # 只在声明了工具时累积；没有工具的调用路径连一个空对象都不该多建。
         tool_calls = responses_parser if responses_parser is not None else (_ToolCallAccumulator() if tools else None)
+        # Chat 流里最后一次出现的用量原值。有的网关每块都带累计值，以最后一次为准；
+        # Responses 的用量由解析器从完成事件里取。
+        chat_usage: Any = None
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             try:
@@ -807,10 +823,21 @@ class OpenAiChatProvider:
                         if signal and signal.is_set():
                             raise LlmError('aborted', '生成已中断')
                         # SSE 解析器同时识别文本、推理字段和 [DONE] 标记。
-                        chunk = (
-                            responses_parser.parse(line) if responses_parser is not None
-                            else _parse_sse_line(line, self._reasoning_parse_mode)
-                        )
+                        if responses_parser is not None:
+                            try:
+                                chunk = responses_parser.parse(line)
+                            except LlmError as exc:
+                                # Responses 的终止事件以错误结束时，用量随异常交给路由层：
+                                # - 现象：思考耗尽输出上限、输出被内容策略截断或请求失败时，
+                                #   解析器直接抛错，流末尾的用量增量不会产出；
+                                # - 原因：这些终止事件里服务商已经结算并附上了 usage，
+                                #   解析器先记下用量再判定失败；
+                                # - 后果：不随异常交出，这类调用会照常计费却记为零 token，
+                                #   而思考耗尽恰恰是单次最贵的情形。
+                                exc.usage = normalize_usage(responses_parser.usage)
+                                raise
+                        else:
+                            chunk = _parse_sse_line(line, self._reasoning_parse_mode)
                         if chunk == 'done':
                             if tag_parser is not None:
                                 for parsed in tag_parser.flush():
@@ -821,7 +848,14 @@ class OpenAiChatProvider:
                                 drained = tool_calls.drain()
                                 if drained:
                                     yield {'tool_calls': drained}
+                            usage = normalize_usage(
+                                responses_parser.usage if responses_parser is not None else chat_usage
+                            )
+                            if usage is not None:
+                                yield {'usage': usage}
                             return
+                        if isinstance(chunk, dict) and 'usage' in chunk:
+                            chat_usage = chunk.pop('usage')
                         if chunk:
                             if tool_calls is not None and chunk.get('tool_call_deltas'):
                                 tool_calls.push(chunk['tool_call_deltas'])
@@ -847,6 +881,13 @@ class OpenAiChatProvider:
                         drained = tool_calls.drain()
                         if drained:
                             yield {'tool_calls': drained}
+                    # 没有 [DONE] 直接断开的 Chat 流同样交出已收到的用量；Responses 缺
+                    # 完成事件时 finish() 已经按断流抛错，走不到这里。
+                    usage = normalize_usage(
+                        responses_parser.usage if responses_parser is not None else chat_usage
+                    )
+                    if usage is not None:
+                        yield {'usage': usage}
             except httpx.TimeoutException:
                 raise LlmError('network', f'请求超时（{self._timeout}s）')
             except httpx.RequestError as exc:
@@ -913,7 +954,8 @@ def _parse_sse_line(
 
     :param line: 原始 SSE 文本行。
     :param reasoning_parse_mode: 推理字段解析模式，默认值为 `field`。
-    :return: 增量字典、字符串 `done` 或不可处理行对应的 `None`。
+    :return: 增量字典、字符串 `done` 或不可处理行对应的 `None`。携带用量时字典里
+        多一个 ``usage`` 键（原值，未标准化），可能单独出现。
     :raises LlmError: 负载包含模型服务端错误。
     副作用：不修改输入行或 provider 状态。
     """
@@ -933,9 +975,15 @@ def _parse_sse_line(
         code = j['error'].get('code', '') or j['error'].get('type', '')
         msg = j['error'].get('message', '未知')
         raise LlmError(_classify_code(str(code)), f'模型返回错误：{msg}')
-    delta = (j.get('choices') or [{}])[0].get('delta', {})
+    choice = (j.get('choices') or [{}])[0]
+    # 声明 include_usage 后，规范形状是末块 choices 为空、顶层带 usage；部分网关把
+    # 用量放在 choices[0] 里。中间块的 usage 为 null，按没有处理。
+    usage = j.get('usage')
+    if usage is None:
+        usage = choice.get('usage')
+    delta = choice.get('delta', {})
     if not delta:
-        return None
+        return {'usage': usage} if usage is not None else None
     text = delta.get('content')
     reasoning = None
     if reasoning_parse_mode == 'field':
@@ -946,7 +994,7 @@ def _parse_sse_line(
     # 这里只做原样透传，拼接交给 _stream_http，解析器保持无状态。
     tool_deltas = delta.get('tool_calls')
     if text is None and reasoning is None and not tool_deltas:
-        return None
+        return {'usage': usage} if usage is not None else None
     # 只输出实际存在的增量字段，避免下游将空字段当作有效正文。
     result: dict[str, Any] = {}
     if text is not None:
@@ -955,6 +1003,8 @@ def _parse_sse_line(
         result['reasoning'] = reasoning
     if tool_deltas:
         result['tool_call_deltas'] = tool_deltas
+    if usage is not None:
+        result['usage'] = usage
     return result
 
 

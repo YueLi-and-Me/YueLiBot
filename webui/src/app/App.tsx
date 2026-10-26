@@ -23,6 +23,9 @@ import { AuthProvider, useAuth } from '@/hooks/use-auth'
 const ObservePage = lazy(() =>
   import('@/features/observe/ObservePage').then((m) => ({ default: m.ObservePage })),
 )
+const UsagePage = lazy(() =>
+  import('@/features/usage/UsagePage').then((m) => ({ default: m.UsagePage })),
+)
 const ModelConfigPage = lazy(() =>
   import('@/features/models/ModelConfigPage').then((m) => ({ default: m.ModelConfigPage })),
 )
@@ -83,6 +86,7 @@ function AuthGate() {
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<ObservePage />} />
+        <Route path="usage" element={<UsagePage />} />
         <Route path="models" element={<ModelConfigPage />} />
         <Route path="tools" element={<ToolsConfigPage />} />
         <Route path="settings" element={<SettingsConfigPage />} />

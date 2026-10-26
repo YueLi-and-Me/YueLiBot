@@ -13,6 +13,8 @@ from src.core.db.connection import close_db, open_db
 from src.core.db.migrations.manager import run_migrations
 from src.core.api.auth import token_manager
 from src.core.config.bootstrap import render_example_configs
+from src.core.db.schema import DDL
+from src.core.llm_models.usage import usage_ledger
 from src.core.observe.events import reset_for_tests
 from src.core.observe.store import event_store
 
@@ -70,3 +72,32 @@ def set_yueli_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
     event_store.close()
     reset_for_tests()
+
+
+@pytest.fixture
+def usage_db(tmp_path: Path):
+    """把模型用量账本接到一个建好全部表的临时主库，用例结束后断开。
+
+    :return: 临时库路径；用例可往同一个库里写消息与会话，供汇总查询使用。
+    """
+    path = tmp_path / 'usage-memory.db'
+    connection = sqlite3.connect(path)
+    connection.executescript(DDL)
+    connection.close()
+    usage_ledger.configure(path)
+    yield path
+    usage_ledger.close()
+
+
+@pytest.fixture
+def usage_rows(usage_db: Path):
+    """返回读出用量小时表全部行的函数，行按小时、任务、模型排序。"""
+
+    def rows() -> list[dict]:
+        return usage_ledger.read(lambda connection: [
+            dict(row) for row in connection.execute(
+                'SELECT * FROM llm_usage_hourly ORDER BY hour_start, task, model, provider, stream_id, plugin_id'
+            )
+        ])
+
+    return rows

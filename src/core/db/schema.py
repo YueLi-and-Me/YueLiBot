@@ -21,11 +21,47 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_events_stream_seq ON pipeline_events(str
 CREATE INDEX IF NOT EXISTS idx_pipeline_events_turn ON pipeline_events(turn_id, seq);
 """
 
+# 模型用量按小时汇总，由 ``src.core.llm_models.usage`` 的独立连接写入、永久保留。
+# 纯新增表，按惯例只写 CREATE TABLE IF NOT EXISTS，不占迁移号。
+#
+# stream_id 与 plugin_id 是主键列，必须 NOT NULL 并带默认值：
+# - 现象：同一小时、同一任务与模型的调用每次都插入一行新记录，小时汇总失去意义，
+#   行数随调用次数线性增长。
+# - 原因：SQLite 的主键与唯一约束把每个 NULL 视为互不相同，含 NULL 的键永远不会
+#   触发 ON CONFLICT，累加语句退化为普通插入。
+# - 后果：不属于任何会话的调用记 0，主程序发起的调用记空串，写入方不得传 NULL。
+USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS llm_usage_hourly (
+  hour_start         INTEGER NOT NULL,            -- 该小时的起点，Unix 毫秒，按 UTC 整点对齐
+  task               TEXT    NOT NULL,            -- 模型任务名，如 planner、memory、embedding
+  model              TEXT    NOT NULL,            -- models.toml 里的模型名
+  provider           TEXT    NOT NULL,            -- providers.toml 里的厂商名
+  stream_id          INTEGER NOT NULL DEFAULT 0,  -- 所属会话；0 表示不属于任何会话
+  plugin_id          TEXT    NOT NULL DEFAULT '', -- 发起调用的插件；空串表示主程序
+  plugin_third_party INTEGER NOT NULL DEFAULT 0,  -- 1 表示第三方插件；主程序与内置插件为 0
+  calls              INTEGER NOT NULL DEFAULT 0,  -- 候选尝试次数（三种结局之和）
+  failed_calls       INTEGER NOT NULL DEFAULT 0,
+  interrupted_calls  INTEGER NOT NULL DEFAULT 0,
+  unreported_calls   INTEGER NOT NULL DEFAULT 0,  -- 正常结束、按 token 计量、但服务商没返回用量的次数
+  prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+  completion_tokens  INTEGER NOT NULL DEFAULT 0,  -- 含思考
+  total_tokens       INTEGER NOT NULL DEFAULT 0,
+  cached_tokens      INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
+  cost               REAL    NOT NULL DEFAULT 0,  -- 元，每次调用按当时生效的单价算好后累加
+  duration_ms_sum    INTEGER NOT NULL DEFAULT 0,  -- 各次尝试耗时之和，用于算平均
+  duration_ms_sq_sum INTEGER NOT NULL DEFAULT 0,  -- 各次耗时平方之和，用于算波动（标准差）
+  PRIMARY KEY (hour_start, task, model, provider, stream_id, plugin_id)
+);
+"""
+
 DDL = f"""
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 {EVENTS_DDL}
+
+{USAGE_DDL}
 
 -- 各消费方的向量空间登记（v33 加）；配方变更与换模型都需要清空对应旧向量。
 CREATE TABLE IF NOT EXISTS vector_space (

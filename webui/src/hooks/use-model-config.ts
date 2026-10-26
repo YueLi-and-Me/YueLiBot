@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { apiFetch, apiMutate, UnauthorizedError } from '@/lib/api'
+import type { PricePeriodConfig } from '../../../electron/shared/ipc.ts'
 import { useAuth } from './use-auth'
 
 /** 厂商连接配置，api_key 仅用于保存，读取时为空字符串。 */
@@ -40,9 +41,15 @@ export interface ModelConfig {
   omni: boolean
   temperature: number | null
   max_tokens: number | null
-  price_in: number
-  price_out: number
   embedding_dim: number
+  /** 输入单价，元/百万 token；用于用量统计计算费用，0 表示未填写或免费。 */
+  price_in: number
+  /** 输出单价（含思考），元/百万 token。 */
+  price_out: number
+  /** 缓存命中部分的输入单价；null 表示与 price_in 相同，0 表示缓存命中免费。 */
+  cache_price_in: number | null
+  /** 按时段整组换价；空数组表示全天用基础单价。 */
+  price_periods: PricePeriodConfig[]
 }
 
 /** 一个模型任务的路由配置。 */

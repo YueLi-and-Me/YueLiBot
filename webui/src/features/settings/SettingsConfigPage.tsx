@@ -80,6 +80,7 @@ function defaultValueForField(field: SettingsFieldSchema): unknown {
     case 'string_list': return []
     case 'string_map': return {}
     case 'json': return {}
+    case 'table_list': return []
     case 'date': return ''
     case 'time': return ''
     case 'password':
@@ -415,7 +416,8 @@ function TableListSection({ section, values, onChange, onAdd, onRemove }: {
             </Button>
           </div>
           <FieldRows>
-            {section.fields.map((field) => (
+            {/* 隐藏字段不展示也不改动，行内原值随保存原样写回。 */}
+            {section.fields.filter((field) => !field.hidden).map((field) => (
               <SettingsField
                 key={field.key}
                 field={field}

@@ -740,6 +740,10 @@ def main() -> None:
         retention_count=cfg.log.event_retention_count,
         retention_hours=cfg.log.event_retention_hours,
     )
+    # 模型用量账本与事件账本一样用独立连接写主库，必须在迁移之后配置：小时表由
+    # 迁移阶段的幂等建表创建，启动报告里才看得到「新建表」。
+    from src.core.llm_models.usage import usage_ledger
+    usage_ledger.configure(db_path)
     logger.info("db_ready", path=str(db_path))
 
     # 检索调优的生效 profile 必须在启动横幅里可见：参数何时被谁换过，
@@ -1038,10 +1042,12 @@ def main() -> None:
         """存储服务无启动动作；注册仅为挂接关闭钩子。"""
 
     async def _storage_shutdown() -> None:
-        """关闭观察账本与主数据库连接（两者均已实现幂等关闭）。"""
+        """关闭观察账本、用量账本与主数据库连接（三者均已实现幂等关闭）。"""
 
         from src.core.observe.store import close as close_event_store
         close_event_store()
+        from src.core.llm_models.usage import usage_ledger
+        usage_ledger.close()
         from src.core.db.connection import close_db
         close_db()
 
@@ -1184,6 +1190,11 @@ def main() -> None:
     from src.core.services.maintenance.edge_decay import EdgeDecayService
     edge_decay = EdgeDecayService(db)
     lifecycle.register('edge_decay', edge_decay.startup, edge_decay.shutdown)
+    # 用量报告每 15 分钟重写 data/reports/usage.html，有新调用时在控制台打印汇总框。
+    # 注册在 storage 之后，逆序关闭时先于账本关闭停下。
+    from src.core.services.maintenance.usage_report import UsageReportService
+    usage_report = UsageReportService(data_dir, routers)
+    lifecycle.register('usage_report', usage_report.startup, usage_report.shutdown)
 
     # 匿名统计默认开启，因此必须在控制台当面讲清楚传什么、怎么关——
     # 默认开启的功能埋在文档里不算说过。端点候选由 telemetry 模块自己解析：

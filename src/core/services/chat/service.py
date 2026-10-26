@@ -427,9 +427,8 @@ class ChatService(
             force_compatibility=cfg.advanced.force_compatibility,
         )
         self._plugins.discover(PLUGIN_ROOTS)
-        for plugin in self._plugins.tool_plugins():
-            for spec, executor in plugin.tools():
-                self._tool_registry.register_tool(spec, executor)
+        for spec, executor in self._plugins.tools():
+            self._tool_registry.register_tool(spec, executor)
         # 查表情包工具与插件工具同批登记，只在本轮能发表情包时声明给模型。
         if sticker_search is not None:
             self._tool_registry.register_tool(STICKER_SEARCH_SPEC, sticker_search)

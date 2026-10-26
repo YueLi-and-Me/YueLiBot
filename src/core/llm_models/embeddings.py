@@ -2,6 +2,8 @@
 
 EmbeddingClient 负责业务分批及 packed 编码；本层处理图片请求、响应校验和
 L2 归一化。任一响应项非法时整批抛出 LlmError，不把错位向量交给存储层。
+三种协议的响应体都在顶层带 ``usage``，每次请求拿到响应后经 ``report_usage`` 上报；
+方舟按条请求时一次尝试内的多次上报累加。
 """
 
 from dataclasses import dataclass
@@ -14,6 +16,7 @@ import math
 import httpx
 
 from .openai import LlmError, OpenAiChatProvider, resolve_base_url
+from .usage import report_usage
 
 from src.core.config.schema import ModelCandidate
 
@@ -161,12 +164,15 @@ async def request_embeddings(candidate: ModelCandidate, items: List[EmbedInput])
             :param body: 请求体；账本快照经 :func:`_snapshot` 脱敏。
             :return: 服务端响应的 JSON 对象。
             :raises LlmError: HTTP 状态或响应体不合法。
+            副作用：把响应体里的 ``usage`` 上报给当前候选尝试。
             """
             url = provider.request_url(path)
             provider.record_request(url, headers, _snapshot(body))
             response = await client.post(url, headers=headers, json=body)
             await provider.check_response(response)
-            return response.json()
+            data = response.json()
+            report_usage(data.get('usage') if isinstance(data, dict) else None, input_only=True)
+            return data
 
         try:
             if protocol == 'openai':

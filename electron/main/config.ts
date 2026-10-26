@@ -10,9 +10,10 @@ import { parse as parseDotenv } from 'dotenv'
 import * as TOML from 'smol-toml'
 
 import type {
-  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, SelectionStrategy,
+  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, PricePeriodConfig, SelectionStrategy,
   TaskRoutingConfig, YueliConfig,
 } from '../shared/ipc.ts'
+import { pricePeriodProblem } from '../shared/price-periods.ts'
 
 /**
  * 持久化配置是分层的：API 厂商 → 具体模型 → 任务引用。
@@ -132,7 +133,7 @@ function seedModel(
   return {
     name, model_identifier: identifier, api_provider: provider,
     extra_body: { ...NO_THINKING }, api_format: 'openai', reasoning_parse_mode: 'field',
-    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
     embedding_dim: 0,
     ...overrides,
   }
@@ -775,8 +776,12 @@ function parseModels(
     if (modelMaxTokens !== null && (!Number.isInteger(modelMaxTokens) || modelMaxTokens < 1)) {
       throw new Error(`${itemPath} 的 max_tokens 必须是正整数`)
     }
+    const name = stringAt(value, 'name', itemPath)
+    // 缓存命中价不写表示与 price_in 相同（null），写 0 表示缓存命中免费。
+    const cachePriceIn = optionalPriceAt(value, 'cache_price_in', itemPath)
+    const pricePeriods = parsePricePeriods(value, name, itemPath)
     return {
-      name: stringAt(value, 'name', itemPath),
+      name,
       model_identifier: stringAt(value, 'model_identifier', itemPath),
       api_provider: stringAt(value, 'api_provider', itemPath),
       extra_body: structuredClone(extraBody),
@@ -788,11 +793,64 @@ function parseModels(
       max_tokens: modelMaxTokens,
       price_in: numberAtOr(value, 'price_in', 0, itemPath),
       price_out: numberAtOr(value, 'price_out', 0, itemPath),
+      cache_price_in: cachePriceIn,
+      price_periods: pricePeriods,
       embedding_dim: numberAtOr(value, 'embedding_dim', 0, itemPath),
     }
   })
   assertUniqueNames(models, path, 'models')
   return { models, tasks, generation: parseGeneration(document, path) }
+}
+
+/**
+ * 读取可留空的非负单价；字段缺失时为 null。
+ *
+ * @param record 当前配置记录。
+ * @param key 字段名。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 单价；字段缺失时为 null。
+ * @throws Error 当字段不是数字或为负数时抛出。
+ */
+function optionalPriceAt(record: Record<string, unknown>, key: string, path: string): number | null {
+  if (record[key] === undefined) return null
+  const value = numberAt(record, key, path)
+  if (value < 0) throw new Error(`${path} 的 ${key} 不能为负数`)
+  return value
+}
+
+/**
+ * 读取模型的分时段单价子表数组 `[[models.price_periods]]`。
+ *
+ * @param record 模型配置记录。
+ * @param modelName 模型名，写进报错。
+ * @param path 用于错误信息的配置文件路径或字段路径。
+ * @returns 时段列表；字段缺失时为空数组。
+ * @throws Error 当子表结构、时刻格式不合法，开始等于结束或时段重叠时抛出；
+ *   时段规则与 Python 加载器一致，见 shared/price-periods.ts。
+ */
+function parsePricePeriods(
+  record: Record<string, unknown>, modelName: string, path: string,
+): PricePeriodConfig[] {
+  const raw = record.price_periods
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) throw new Error(`${path} 的 price_periods 必须写成 [[models.price_periods]] 表数组`)
+  const periods = raw.map<PricePeriodConfig>((entry, index) => {
+    const periodPath = `${path} 的 price_periods[${index}]`
+    if (!isRecord(entry)) throw new Error(`${periodPath} 必须是表`)
+    const priceIn = numberAt(entry, 'price_in', periodPath)
+    const priceOut = numberAt(entry, 'price_out', periodPath)
+    if (priceIn < 0 || priceOut < 0) throw new Error(`${periodPath} 的单价不能为负数`)
+    return {
+      start: stringAt(entry, 'start', periodPath),
+      end: stringAt(entry, 'end', periodPath),
+      price_in: priceIn,
+      price_out: priceOut,
+      cache_price_in: optionalPriceAt(entry, 'cache_price_in', periodPath),
+    }
+  })
+  const problem = pricePeriodProblem(modelName, periods)
+  if (problem) throw new Error(problem)
+  return periods
 }
 
 /**
@@ -1866,7 +1924,7 @@ function readLegacyConfig(path: string): YueliConfig {
     api_provider: chat.providerName,
     extra_body: {},
     api_format: 'openai', reasoning_parse_mode: 'field',
-    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+    visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
     embedding_dim: 0,
   })
   tasks.chat = { ...tasks.chat, model_list: ['chat'], selection_strategy: 'sequential' }
@@ -1880,7 +1938,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'vision', model_identifier: vision.model,
       api_provider: pushProvider(connection), extra_body: {},
       api_format: 'openai', reasoning_parse_mode: 'field',
-      visual: true, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: true, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
       embedding_dim: 0,
     })
     tasks.vision = { ...tasks.vision, model_list: ['vision'], selection_strategy: 'sequential' }
@@ -1892,7 +1950,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'tts', model_identifier: typeof tts.model === 'string' ? tts.model : '',
       api_provider: pushProvider(connection), extra_body: {},
       api_format: 'openai', reasoning_parse_mode: 'none',
-      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
       embedding_dim: 0,
     })
     tasks.tts = { ...tasks.tts, model_list: ['tts'], selection_strategy: 'sequential' }
@@ -1908,7 +1966,7 @@ function readLegacyConfig(path: string): YueliConfig {
       name: 'embedding', model_identifier: vector.embedding_model,
       api_provider: pushProvider(connection), extra_body: {},
       api_format: 'openai', reasoning_parse_mode: 'none',
-      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+      visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
       embedding_dim: typeof vector.embedding_dim === 'number' ? vector.embedding_dim : 1536,
     })
     tasks.embedding = {
@@ -2167,11 +2225,81 @@ visual = ${model.visual}
 # 全模态能力标记：只有 true 的模型才能进入 video 视频理解任务（同时看画面、听声音）
 omni = ${model.omni}
 ${modelOverrides}
-# 计费参考价，单位元/百万 token；仅用于展示
-price_in = ${model.price_in}
-price_out = ${model.price_out}
 # 向量维度，仅 embedding 模型使用；其它模型保持 0
-embedding_dim = ${model.embedding_dim}`
+embedding_dim = ${model.embedding_dim}
+${priceBlock(model)}`
+}
+
+/**
+ * 价格段的行尾注释；必须与 `src/core/config/model_webui.py` 的 `PRICE_COMMENTS` 及
+ * `settings_schema.json` 的字段说明逐字相同，用例对照两个写入器写出的价格段。
+ */
+const PRICE_COMMENTS = {
+  price_in: '输入单价，单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。',
+  price_out: '输出单价（含思考），单位元/百万 token；用于用量统计计算费用，0 表示未填写或免费。',
+  cache_price_in: '缓存命中部分的输入单价，单位元/百万 token；不写表示与 price_in 相同，0 表示缓存命中免费。',
+  price_periods: '分时段单价：按本机时区，含开始、不含结束；结束早于开始表示跨午夜；不在任何时段时用上面的基础单价。',
+  start: '时段开始，HH:MM，包含该时刻。',
+  end: '时段结束，HH:MM，不包含该时刻；早于开始表示跨午夜。',
+  period_price_in: '该时段的输入单价，单位元/百万 token。',
+  period_price_out: '该时段的输出单价（含思考），单位元/百万 token。',
+  period_cache_price_in: '该时段缓存命中部分的输入单价；不写表示与该时段 price_in 相同，0 表示免费。',
+} as const
+
+/**
+ * 把单价写成定点小数，与 Python 写入器的 `toml_price` 逐字同口径。
+ *
+ * 取 JavaScript 的最短往返数字，展开成不带指数的写法，整数值补 `.0`：
+ * JavaScript 在小于 1e-6 时改用指数写法，Python 的阈值是 1e-4，直接各用各的会让
+ * 两个写入器对同一单价写出不同文本。
+ *
+ * @param value 非负单价。
+ * @returns TOML 浮点字面量，如 `2.0`、`0.00005`。
+ */
+export function tomlPrice(value: number): string {
+  const raw = String(value)
+  const match = /^(\d+)(?:\.(\d+))?e([+-]\d+)$/.exec(raw)
+  let text = raw
+  if (match) {
+    const [, integer = '', fraction = '', exponentText = '0'] = match
+    const digits = integer + fraction
+    // 小数点在 digits 里的位置：原整数位数加上指数。
+    const point = integer.length + Number(exponentText)
+    if (point <= 0) text = `0.${'0'.repeat(-point)}${digits}`
+    else if (point >= digits.length) text = `${digits}${'0'.repeat(point - digits.length)}`
+    else text = `${digits.slice(0, point)}.${digits.slice(point)}`
+  }
+  return text.includes('.') ? text : `${text}.0`
+}
+
+/**
+ * 渲染一个模型的价格段：基础单价、缓存命中价与分时段单价子表。
+ *
+ * 子表必须放在模型条目末尾：TOML 一旦出现 `[[models.price_periods]]`，其后的键都
+ * 属于该子表。输出与 Python 写入器的 `price_lines` 逐字一致，留空的缓存命中价不写键。
+ *
+ * @param model 待写入的模型配置。
+ * @returns 以 `price_in` 开头的价格段文本，不带结尾换行。
+ */
+function priceBlock(model: ModelDefinitionConfig): string {
+  const lines = [
+    `price_in = ${tomlPrice(model.price_in)} # ${PRICE_COMMENTS.price_in}`,
+    `price_out = ${tomlPrice(model.price_out)} # ${PRICE_COMMENTS.price_out}`,
+  ]
+  if (model.cache_price_in !== null) {
+    lines.push(`cache_price_in = ${tomlPrice(model.cache_price_in)} # ${PRICE_COMMENTS.cache_price_in}`)
+  }
+  for (const period of model.price_periods) {
+    lines.push(`[[models.price_periods]] # ${PRICE_COMMENTS.price_periods}`)
+    lines.push(`start = ${tomlString(period.start)} # ${PRICE_COMMENTS.start}`)
+    lines.push(`end = ${tomlString(period.end)} # ${PRICE_COMMENTS.end}`)
+    lines.push(`price_in = ${tomlPrice(period.price_in)} # ${PRICE_COMMENTS.period_price_in}`)
+    lines.push(`price_out = ${tomlPrice(period.price_out)} # ${PRICE_COMMENTS.period_price_out}`)
+    if (period.cache_price_in !== null) {
+      lines.push(`cache_price_in = ${tomlPrice(period.cache_price_in)} # ${PRICE_COMMENTS.period_cache_price_in}`)
+    }
+  }
+  return lines.join('\n')
 }
 
 /**
@@ -3006,7 +3134,7 @@ export function tryPrefillFromLegacyEnv(envPath: string): Partial<YueliConfig> |
         api_provider: DEFAULT_PROVIDER.name,
         extra_body: extraBody,
         api_format: 'openai', reasoning_parse_mode: 'field',
-        visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0,
+        visual: false, omni: false, temperature: null, max_tokens: null, price_in: 0, price_out: 0, cache_price_in: null, price_periods: [],
         embedding_dim: 0,
       }] : [],
       model_tasks: {
