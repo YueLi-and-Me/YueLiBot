@@ -163,6 +163,40 @@ async def test_caller_closing_early_is_interrupted_and_settled_once(usage_rows) 
     assert (row['calls'], row['interrupted_calls'], row['failed_calls'], row['unreported_calls']) == (1, 1, 0, 0)
 
 
+_VALIDATED = [
+    ({'tool_call_validator': lambda calls: None},
+     {'tool_calls': [{'id': 'c1', 'name': 'reply', 'arguments': '{}'}]}),
+    ({'response_format': {'type': 'json_object'}}, {'text': '{"ok": true}'}),
+]
+
+
+@pytest.mark.parametrize('options,result', _VALIDATED)
+async def test_closing_after_a_validated_response_is_ok(usage_rows, options, result) -> None:
+    """缓冲校验的路径交付前已读完整条流：调用方拿到结果就关流，结局仍为正常。"""
+    client = _ScriptClient([result, {'usage': TokenUsage(500, 20, 520)}])
+    stream = _router((_candidate(), client)).stream([{'role': 'user', 'content': '在吗'}], **options)
+
+    assert await anext(stream) == result
+    await stream.aclose()
+
+    [row] = usage_rows()
+    assert (row['calls'], row['interrupted_calls'], row['failed_calls'], row['unreported_calls']) == (1, 0, 0, 0)
+    assert row['prompt_tokens'] == 500
+
+
+@pytest.mark.parametrize('options,result', _VALIDATED)
+async def test_validated_response_without_usage_is_unreported_even_if_closed_early(usage_rows, options, result) -> None:
+    """同一路径下服务商没返回用量：计入未返回，不被提前关流遮成中断。"""
+    client = _ScriptClient([result])
+    stream = _router((_candidate(), client)).stream([{'role': 'user', 'content': '在吗'}], **options)
+
+    assert await anext(stream) == result
+    await stream.aclose()
+
+    [row] = usage_rows()
+    assert (row['calls'], row['interrupted_calls'], row['unreported_calls']) == (1, 0, 1)
+
+
 async def test_skipped_candidates_are_not_recorded(usage_rows) -> None:
     """同族跳过规则跳过的候选没有发请求，不记账。"""
     router = _router(
