@@ -14,18 +14,17 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 from datetime import datetime
 from math import exp
+from typing import List
 
 import pytest
+import sqlite3
 
 from src.core.persona.state import (
     ENERGY_BASELINE,
     ENERGY_RATES,
     ENERGY_TAU,
-    TURN_ENERGY_COST,
     Persona,
     SettlementPiece,
 )
@@ -150,11 +149,25 @@ def test_conversation_does_not_swallow_rest(db: sqlite3.Connection) -> None:
 
     energy = _simulate(persona, person_id, start, 12, with_turns=True)
 
-    # 第一小时结算前已有 5 个回合各扣一份，第二小时结算前又多 6 个；
-    # 回合不推进游标，只扣自己那一份。
-    first = _regress(20.0 - TURN_ENERGY_COST * 5 + REST_ENERGY_PER_HOUR, 1.0)
-    second = _regress(first - TURN_ENERGY_COST * 6 + REST_ENERGY_PER_HOUR, 1.0)
-    assert energy == pytest.approx(second - TURN_ENERGY_COST)
+    # 在独立状态中只跑同一组回合，取得动态扣费；本用例检验时间积分顺序，
+    # 不把固定回合费率误当成契约。动态系数自身的预算边界由专门用例覆盖。
+    costs: List[float] = []
+    with sqlite3.connect(':memory:') as turns_db:
+        turns_db.row_factory = sqlite3.Row
+        db.backup(turns_db)
+        turns_db.execute("DELETE FROM meta WHERE key = 'persona_turn_energy_load'")
+        turns_db.commit()
+        turns_only = Persona(turns_db)
+        _reset(turns_db, person_id, 80.0, start)
+        for step in range(1, 13):
+            before = turns_only.get(person_id).energy
+            after = turns_only.apply_turn(person_id, start + step * TEN_MINUTES_MS, weight=1.0)
+            costs.append(before - after.energy)
+
+    # 第一小时结算前已有 5 个回合，第二小时结算前又多 6 个；最后一轮在结算后扣费。
+    first = _regress(20.0 - sum(costs[:5]) + REST_ENERGY_PER_HOUR, 1.0)
+    second = _regress(first - sum(costs[5:11]) + REST_ENERGY_PER_HOUR, 1.0)
+    assert energy == pytest.approx(second - costs[11])
 
 
 def test_turn_does_not_advance_settle_cursor(db: sqlite3.Connection) -> None:
