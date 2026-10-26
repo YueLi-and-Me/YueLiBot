@@ -550,6 +550,11 @@ def test_activity_prompt_uses_owner_interaction_and_sleep_tradeoff_rules() -> No
         prompt = module.build_activity_prompt(current, now, 0, context)
         assert '最近互动：他 30 分钟前还在跟你说话' in prompt
         assert '自身状态：精力 10，心情 50。此刻精力已经见底' in prompt
+        # 见底档必须点明 rest 不回精力、白天要小睡；旧句「该停下往回收了」在 2026-10-26
+        # 生产上让她从 12:47 到 16:32 连续选 rest 和「吃东西恢复」，精力到 0 也不睡。
+        assert 'rest 只是掉得慢一点，恢复不了精力' in prompt
+        assert '白天就小睡一会儿，夜里再正常睡' in prompt
+        assert '该停下往回收了' not in prompt
         assert '打算真的睡着用 sleep，只是闭眼缓一缓用 rest' in prompt
         assert '每条消息仍会把你叫来回应' in prompt
         # 规则 5 用旧句、规则 6 只留后半句，双向钉住。2026-09-12 曾把「困了就去睡」与

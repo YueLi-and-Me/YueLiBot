@@ -855,7 +855,13 @@ def describe_persona_for_activity(s: PersonaState, *, energy_enabled: bool = Tru
     if not energy_enabled:
         energy_guidance = ''
     elif tier is EnergyTier.SPENT:
-        energy_guidance = '此刻精力已经见底，继续消耗的任何选择都很勉强，该停下往回收了。'
+        # 见底时点明 rest 不回精力、白天要小睡。只写「该停下往回收了」时，模型会因
+        # 「上次睡够了」在白天反复选 rest 或编出「吃东西恢复」，精力贴着 0 也不睡；
+        # 只写「白天小睡也可以」又有约三分之二会在下午直接上床睡整夜。
+        energy_guidance = (
+            '此刻精力已经见底，继续消耗的任何选择都很勉强。rest 只是掉得慢一点，恢复不了精力；'
+            '要恢复只能 sleep：白天就小睡一会儿，夜里再正常睡，即使上次睡得够也一样。'
+        )
     elif tier is EnergyTier.TIRED:
         energy_guidance = '此刻精力偏低，适合省力气的做法，别再往上加消耗。'
     elif tier is EnergyTier.HIGH:
