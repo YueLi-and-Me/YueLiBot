@@ -492,6 +492,33 @@ def _overlay_dotted_sections(
     return overlaid
 
 
+def _drop_default_optional_sections(
+    document: Dict[str, Any],
+    schema: Dict[str, Any],
+    model: type[BaseModel],
+) -> Dict[str, Any]:
+    """去掉取值等于默认值的可选段，使保存设置不把它们带进从未手写过该段的配置。
+
+    ``omit_when_missing`` 段只对手写过该段的部署生效，全新安装的模板里没有它们；
+    模型校验却会给缺段补上默认值，照写的话任何一次保存都会把它们写进使用者的文件。
+    取值为默认值时不写盘与缺段等价，手写过非默认值的照常写回。
+
+    :param document: 校验后的写盘文档。
+    :param schema: 该文件的 schema 节点，可选段以它的 ``omit_when_missing`` 声明为准。
+    :param model: 该文件的顶层文档模型，用于取各段的默认值。
+    :return: 去掉默认值可选段后的新字典；其余段原样保留。
+    """
+    trimmed = dict(document)
+    for section in schema.get('sections', []):
+        key = section.get('key', '')
+        field = model.model_fields.get(key)
+        if not section.get('omit_when_missing') or key not in trimmed or field is None:
+            continue
+        if field.default_factory is not None and trimmed[key] == field.default_factory().model_dump():
+            del trimmed[key]
+    return trimmed
+
+
 def _write_documented_toml(
     path: Path,
     schema: Dict[str, Any],
@@ -517,8 +544,9 @@ def _write_documented_toml(
     for section in schema.get('sections', []):
         kind = section.get('kind', 'object')
         key = section.get('key', '')
-        # 首次安装的开发者命令段必须连空表头都不出现；常规配置段仍保持原先
-        # 的完整模板行为。模型校验后的保存文档含有该段，因此不会被省略。
+        # 可选段（开发者命令、发布公告）缺失时连空表头都不写：首次安装由 bootstrap
+        # 剔除，保存设置时取值为默认值的由 _drop_default_optional_sections 剔除；
+        # 常规配置段仍保持完整模板行为。
         if section.get('omit_when_missing') and not _section_values(document, key):
             continue
         label = section.get('label', key)
@@ -640,9 +668,13 @@ def save(directory: Path, values: Dict[str, Any]) -> Dict[str, Any]:
             )
             _write_documented_toml(
                 tmp / 'features.toml', file_schema('features.toml'),
-                _overlay_dotted_sections(
-                    features.model_dump(), values.get('features.toml', {}),
+                _drop_default_optional_sections(
+                    _overlay_dotted_sections(
+                        features.model_dump(), values.get('features.toml', {}),
+                        file_schema('features.toml'),
+                    ),
                     file_schema('features.toml'),
+                    FeatureDocument,
                 ),
                 CONFIG_VERSION,
             )

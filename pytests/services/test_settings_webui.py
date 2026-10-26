@@ -137,6 +137,40 @@ def test_save_keeps_newly_added_task_slots(config_copy: Path) -> None:
         assert after[slot]['selection_strategy'] == 'random', slot
 
 
+def _append_features(config_dir: Path, text: str) -> None:
+    """在 features.toml 末尾追加手写段，模拟维护者手工编辑过的配置。"""
+    path = config_dir / 'features.toml'
+    path.write_text(path.read_text(encoding='utf-8').rstrip('\n') + '\n\n' + text, encoding='utf-8')
+
+
+def test_save_keeps_handwritten_optional_sections(config_copy: Path) -> None:
+    """手写的发布公告与开发者命令段在设置页保存后原样保留。
+
+    2026-10-26 在设置页保存一次后 ``[update_announce]`` 整段消失：写盘只认 schema 列出的段，
+    schema 里当时只有 developer，此后重启发布公告不再启用，新版本的群公告没有发出。
+    """
+    _append_features(
+        config_copy,
+        '[developer]\nenabled = true\n\n[update_announce]\nenabled = true\ngroup = "123456"\n',
+    )
+    before = settings_webui.snapshot(config_copy)
+    assert settings_webui.save(config_copy, before['values'])['ok'] is True
+    disk = tomllib.loads((config_copy / 'features.toml').read_text(encoding='utf-8'))
+    assert disk['update_announce'] == {'enabled': True, 'group': '123456'}
+    assert disk['developer'] == {'enabled': True}
+    assert settings_webui.snapshot(config_copy)['values'] == before['values']
+
+
+def test_save_does_not_add_optional_sections_to_fresh_config(config_copy: Path) -> None:
+    """没手写过的可选段保存后仍不出现：取值等于默认值时不写盘，与全新安装的模板同口径。"""
+    text = (config_copy / 'features.toml').read_text(encoding='utf-8')
+    assert '[update_announce]' not in text and '[developer]' not in text
+    assert settings_webui.save(config_copy, settings_webui.snapshot(config_copy)['values'])['ok'] is True
+    text = (config_copy / 'features.toml').read_text(encoding='utf-8')
+    assert '[update_announce]' not in text
+    assert '[developer]' not in text
+
+
 def test_balance_strategy_is_exposed_and_round_trips(config_copy: Path) -> None:
     snapshot = settings_webui.snapshot(config_copy)
     models_schema = next(

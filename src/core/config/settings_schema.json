@@ -776,6 +776,28 @@
         },
         {
           "kind": "object",
+          "key": "update_announce",
+          "label": "发布公告",
+          "description": "发版后把该版本的更新内容推到指定群；只在本机显式开启时生效，设置页不显示该段。",
+          "hidden": true,
+          "omit_when_missing": true,
+          "fields": [
+            {
+              "key": "enabled",
+              "type": "boolean",
+              "label": "启用发布公告",
+              "help": "默认关闭；仅由维护者手工编辑 features.toml 后启用。"
+            },
+            {
+              "key": "group",
+              "type": "string",
+              "label": "公告目标群号",
+              "help": "数字 QQ 群号，该群还须在 QQ 适配器的群白名单里；留空表示不发任何群。"
+            }
+          ]
+        },
+        {
+          "kind": "object",
           "key": "memory_feedback",
           "label": "记忆反馈纠错",
           "description": "反馈纠错链路的开关与节拍；整条链路默认关闭，开启是显式动作。",
