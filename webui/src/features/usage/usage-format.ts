@@ -1,7 +1,7 @@
 /**
- * 用量统计页的数据形状与纯函数：时间范围、千分位、费用小数位、耗时、分组行。
+ * 用量统计页的数据形状与纯函数：时间范围、数字与费用格式、分组行、趋势图的取数与刻度。
  *
- * 数字格式规则与后端报告文件、控制台汇总（`src/core/services/maintenance/usage_report.py`）
+ * 费用格式与后端报告文件、控制台汇总（`src/core/services/maintenance/usage_report.py`）
  * 一致；时间范围的起止与 `src/core/llm_models/usage_stats.py` 的 `range_bounds` 一致，
  * 页面换算出起止后交给 `/api/usage`。不依赖 React，便于单测。
  */
@@ -152,15 +152,29 @@ export function formatCost(value: number): string {
 }
 
 /**
- * 平均耗时与波动。
+ * 大数缩写成 K、M、B，用于总览、分组表与纵轴刻度这类只需看量级的位置。
  *
- * @param average 平均耗时毫秒。
- * @param deviation 标准差毫秒。
- * @returns 如 `2.31 s ±0.42`；没有调用时为 `—`。
+ * @param value 非负数值。
+ * @returns 不足一千原样显示；千起用 K 保留一位小数，百万起用 M、十亿起用 B 保留两位小数，
+ * 都去掉末尾多余的 0，如 `950`、`12.3K`、`950K`、`1.36M`、`2M`。临界值按四舍五入后的结果
+ * 换单位，999,960 显示为 `1M` 而不是 `1000K`。
  */
-export function formatDuration(average: number | null, deviation: number | null): string {
-  if (average === null || deviation === null) return '—'
-  return `${(average / 1000).toFixed(2)} s ±${(deviation / 1000).toFixed(2)}`
+export function formatCompact(value: number): string {
+  if (value < 1_000) return formatTokens(value)
+  if (value < 999_950) return `${Number((value / 1e3).toFixed(1))}K`
+  if (value < 999_995_000) return `${Number((value / 1e6).toFixed(2))}M`
+  return `${Number((value / 1e9).toFixed(2))}B`
+}
+
+/**
+ * 平均耗时。
+ *
+ * @param milliseconds 平均耗时毫秒；没有调用时为 null。
+ * @returns 如 `2.31 s`；没有调用时为 `—`。
+ */
+export function formatSeconds(milliseconds: number | null): string {
+  if (milliseconds === null) return '—'
+  return `${(milliseconds / 1000).toFixed(2)} s`
 }
 
 /**
@@ -176,16 +190,25 @@ export function formatShare(part: number, total: number): string {
 }
 
 /**
- * 单价组的展示文本。
+ * 占比与趋势图的主度量：本范围产生过费用就看费用，否则看 token。
  *
- * @param price 当前单价；模型已不在配置中时为 null。
- * @returns 形如 `¥2 / ¥8 / 缓存 ¥0.5 · 另有 2 个时段价`。
+ * 没填单价的部署费用恒为 0，按费用算占比只会得到一列「—」，所以退回 token。
+ *
+ * @param summary 当前时间范围的汇总。
+ * @returns `cost` 或 `tokens`。
  */
-export function priceLabel(price: ModelPriceInfo | null | undefined): string {
-  if (!price) return '已不在当前配置中'
-  const cache = price.cachePriceIn === null ? '缓存同输入' : `缓存 ¥${price.cachePriceIn}`
-  const periods = price.periods ? ` · 另有 ${price.periods} 个时段价` : ''
-  return `¥${price.priceIn} / ¥${price.priceOut} / ${cache}${periods}`
+export function primaryMetric(summary: UsageSummary): 'cost' | 'tokens' {
+  return summary.overview.cost > 0 ? 'cost' : 'tokens'
+}
+
+/**
+ * 本范围用到的模型中，当前单价为 0（没填或免费）的个数。
+ *
+ * @param summary 当前时间范围的汇总。
+ * @returns 个数；已不在配置中的模型无处可填，不计入。
+ */
+export function unpricedModelCount(summary: UsageSummary): number {
+  return summary.groups.model.filter((group) => group.price?.unpriced).length
 }
 
 /** 分组表的一行。 */
@@ -193,14 +216,14 @@ export interface GroupRow extends UsageTotals {
   key: string
   /** 第一列的名称。 */
   name: string
-  /** 名称下的小字：任务键名、厂商或来源类型。 */
+  /** 名称后的弱色补充：模型的厂商、插件的内置或第三方；任务、会话与主程序为空串。 */
   detail: string
-  /** 模型分组的当前单价文本；其他分组为空串。 */
-  price: string
-  /** 单价需要提醒：为 0（没填或免费）或模型已不在配置中。 */
-  priceWarning: boolean
-  /** 费用占本范围总费用的比例文本。 */
-  share: string
+  /** 悬停名称时的说明：任务键名、模型配置键；没有可补充的内容时为空串。 */
+  hint: string
+  /** 费用显示为「未计价」：当前单价为 0 且这段时间没有记到费用；只出现在按模型分组。 */
+  unpriced: boolean
+  /** 占本范围合计的比例，0～1；口径由 primaryMetric 决定，合计为 0 时为 0。 */
+  share: number
 }
 
 /** 来源类型的中文名。 */
@@ -211,43 +234,91 @@ const SOURCE_KIND_LABELS: Record<NonNullable<UsageGroup['kind']>, string> = {
 }
 
 /**
- * 把后端的分组转成分组表的行：名称、说明、单价与占比。
+ * 把后端的分组转成分组表的行：名称、补充说明、计价状态与占比。
  *
  * @param kind 分组方式。
  * @param summary 当前时间范围的汇总。
  * @returns 与后端顺序一致（费用、token、次数从高到低）的行。
  */
 export function groupRows(kind: GroupKind, summary: UsageSummary): GroupRow[] {
-  const totalCost = summary.overview.cost
+  const metric = primaryMetric(summary)
+  const total = metric === 'cost' ? summary.overview.cost : summary.overview.totalTokens
   return summary.groups[kind].map((group) => {
     let name = group.label ?? group.key
     let detail = ''
-    let price = ''
-    let priceWarning = false
+    let hint = ''
+    let unpriced = false
     if (kind === 'source') {
       const sourceKind = group.kind ?? 'main'
       name = sourceKind === 'main' ? SOURCE_KIND_LABELS.main : group.key
-      // 插件行在 id 下注明内置还是第三方；主程序行不重复写一遍「主程序」。
+      // 插件行注明内置还是第三方；主程序行不重复写一遍「主程序」。
       detail = sourceKind === 'main' ? '' : SOURCE_KIND_LABELS[sourceKind]
     } else if (kind === 'task') {
       name = taskLabel(group.key)
-      detail = group.key
+      hint = group.key
     } else if (kind === 'model') {
       name = group.model ?? group.key
       detail = group.provider ?? ''
-      price = priceLabel(group.price)
-      priceWarning = !group.price || group.price.unpriced
+      hint = group.price ? '' : '已不在当前配置中'
+      // 费用在落账时按当时单价算好。当前单价为 0 而记到过费用，说明单价是后来清掉的，
+      // 照常显示记到的费用。
+      unpriced = Boolean(group.price?.unpriced) && group.cost === 0
     } else if (group.streamId === 0) {
       name = BACKGROUND_STREAM_LABEL
     }
-    return {
-      ...group,
-      key: group.key,
-      name,
-      detail,
-      price,
-      priceWarning,
-      share: formatShare(group.cost, totalCost),
-    }
+    const part = metric === 'cost' ? group.cost : group.totalTokens
+    return { ...group, key: group.key, name, detail, hint, unpriced, share: total ? part / total : 0 }
   })
+}
+
+/** 趋势图要画的一段序列。 */
+export interface TrendView {
+  /** 标题旁的窗口说明，如「今天 · 按小时」。 */
+  caption: string
+  /** 每根柱子代表的时长。 */
+  unit: 'hour' | 'day'
+  /** 按时间升序的点；「今天」补足到 24 个小时，尚未到来的小时数值为 0。 */
+  points: TrendPoint[]
+}
+
+/**
+ * 按所选时间范围从后端的两条趋势序列中取出要画的一段。
+ *
+ * 后端固定给近 48 小时与近 30 天两条序列，与范围无关；这里让趋势图跟着范围走，
+ * 避免两张图各画一根柱子。「本小时」只有一个桶，画成柱状图没有意义，与「今天」
+ * 同样画当天的 24 个小时。
+ *
+ * @param range 当前时间范围。
+ * @param summary 当前时间范围的汇总。
+ * @returns 要画的序列与窗口说明；「全部」的趋势只画近 30 天。
+ */
+export function trendView(range: RangeKey, summary: UsageSummary): TrendView {
+  const { hourly, daily } = summary.trend
+  if (range === 'hour' || range === 'today') {
+    const dayStart = rangeBounds('today', summary.generatedAt, summary.range.tzOffsetMinutes).start
+    const byStart = new Map(hourly.map((point) => [point.start, point]))
+    const points = Array.from({ length: 24 }, (_, index) => {
+      const start = dayStart + index * HOUR_MS
+      return byStart.get(start) ?? { start, tokens: 0, cost: 0 }
+    })
+    return { caption: '今天 · 按小时', unit: 'hour', points }
+  }
+  if (range === '7d') return { caption: '近 7 天 · 按天', unit: 'day', points: daily.slice(-7) }
+  return { caption: '近 30 天 · 按天', unit: 'day', points: daily }
+}
+
+/**
+ * 纵轴上限：把峰值向上取到 1、2、2.5、5 乘 10 的整数次幂。
+ *
+ * @param peak 序列峰值。
+ * @returns 不小于峰值的整齐数；峰值不大于 0 时为 1，使空图仍有刻度。
+ */
+export function niceCeiling(peak: number): number {
+  if (peak <= 0) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(peak))
+  for (const step of [1, 2, 2.5, 5]) {
+    // 浮点乘法可能让 step * magnitude 比数学值略小，留一点余量避免跳到下一档。
+    if (peak <= step * magnitude * (1 + 1e-9)) return step * magnitude
+  }
+  return 10 * magnitude
 }

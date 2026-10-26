@@ -93,6 +93,18 @@ def test_per_reply_average_and_zero_replies(usage_db: Path) -> None:
     assert summary['perReply']['calls'] == pytest.approx(2 / 3)
 
 
+def test_replies_before_the_ledger_started_are_not_counted(usage_db: Path) -> None:
+    """账本开始前的回复没有对应的用量，不进每条回复的平均。"""
+    usage_ledger.record(_record(EVENING_UTC + 10 * 60_000))
+    _add_messages(usage_db, [
+        ('assistant', '账本开始前一天', EVENING_UTC - DAY_MS, 5),
+        ('assistant', '账本开始后', EVENING_UTC + 20 * 60_000, 5),
+    ])
+    summary = _summary(*range_bounds('all', EVENING_UTC + HOUR_MS, EAST_8), EVENING_UTC + HOUR_MS)
+    assert summary['overview']['replies'] == 1
+    assert summary['perReply']['tokens'] == pytest.approx(120)
+
+
 def test_every_grouping_adds_up_to_the_overview(usage_db: Path) -> None:
     connection = sqlite3.connect(usage_db)
     connection.execute(

@@ -299,9 +299,14 @@ def summarize_usage(
     overview = _totals(connection.execute(
         f'SELECT {_SUMS} FROM llm_usage_hourly WHERE {_RANGE_FILTER}', (start_ms, end_ms),
     ).fetchone())
+    # 回复条数只数账本开始记账之后的。消息表的历史远早于账本，「近 30 天」「全部」若照数
+    # 全部回复，每条回复的平均会被没有用量记录的那些天摊薄（上线首日实测被摊到约十分之一）。
+    # 起点取首个小时桶的起点，首小时内记账前的几分钟会多数几条，量级可忽略。
+    first_hour = connection.execute('SELECT MIN(hour_start) FROM llm_usage_hourly').fetchone()[0]
+    replies_start = start_ms if first_hour is None else max(start_ms, int(first_hour))
     replies = int(connection.execute(
         "SELECT COUNT(*) FROM messages WHERE role = 'assistant' AND created_at >= ? AND created_at < ?",
-        (start_ms, end_ms),
+        (replies_start, end_ms),
     ).fetchone()[0])
     overview['replies'] = replies
     per_reply: Dict[str, float | None] = {

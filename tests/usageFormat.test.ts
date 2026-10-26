@@ -1,6 +1,6 @@
 /**
- * 用量统计页与模型表单的纯函数：千分位、费用小数位、0 号会话显示、时间范围换算、
- * 分时段价格校验，以及 Electron 写入器的单价写法。
+ * 用量统计页与模型表单的纯函数：千分位与 K/M 缩写、费用小数位、分组行的占比口径与计价
+ * 状态、趋势图取数与刻度、时间范围换算、分时段价格校验，以及 Electron 写入器的单价写法。
  */
 import { describe, expect, it } from 'vitest'
 
@@ -9,12 +9,17 @@ import { priceFormProblem, type PriceFields } from '../webui/src/features/models
 import {
   BACKGROUND_STREAM_LABEL,
   DAY_MS,
+  HOUR_MS,
+  formatCompact,
   formatCost,
-  formatDuration,
+  formatSeconds,
   formatShare,
   formatTokens,
   groupRows,
+  niceCeiling,
   rangeBounds,
+  trendView,
+  unpricedModelCount,
   type UsageGroup,
   type UsageSummary,
   type UsageTotals,
@@ -55,11 +60,36 @@ describe('数字格式', () => {
     expect(formatCost(1234.567)).toBe('¥1,234.57')
   })
 
+  it('大数缩写成 K、M、B，不足一千原样显示', () => {
+    expect(formatCompact(999)).toBe('999')
+    expect(formatCompact(1_000)).toBe('1K')
+    expect(formatCompact(12_345)).toBe('12.3K')
+    expect(formatCompact(950_000)).toBe('950K')
+    expect(formatCompact(1_361_000)).toBe('1.36M')
+    expect(formatCompact(2_000_000)).toBe('2M')
+    expect(formatCompact(1_234_567_890)).toBe('1.23B')
+  })
+
+  it('四舍五入后进位到下一个单位，不出现 1000K', () => {
+    expect(formatCompact(999_949)).toBe('999.9K')
+    expect(formatCompact(999_960)).toBe('1M')
+    expect(formatCompact(999_996_000)).toBe('1B')
+  })
+
   it('耗时与占比在没有数据时显示为空', () => {
-    expect(formatDuration(null, null)).toBe('—')
-    expect(formatDuration(2310, 420)).toBe('2.31 s ±0.42')
+    expect(formatSeconds(null)).toBe('—')
+    expect(formatSeconds(2310)).toBe('2.31 s')
     expect(formatShare(1, 0)).toBe('—')
     expect(formatShare(1, 8)).toBe('12.5%')
+  })
+
+  it('纵轴上限取到 1、2、2.5、5 乘 10 的幂', () => {
+    expect(niceCeiling(0)).toBe(1)
+    expect(niceCeiling(1_245_263)).toBe(2_000_000)
+    expect(niceCeiling(2_000_000)).toBe(2_000_000)
+    expect(niceCeiling(2_100_000)).toBe(2_500_000)
+    expect(niceCeiling(0.0123)).toBeCloseTo(0.02)
+    expect(niceCeiling(6)).toBe(10)
   })
 })
 
@@ -71,12 +101,21 @@ describe('分组行', () => {
     ]
     const rows = groupRows('stream', summaryWith({ stream: streams }, 0.8))
     expect(rows.map((row) => row.name)).toEqual([BACKGROUND_STREAM_LABEL, '群聊 · 月璃粉丝群'])
-    expect(rows.map((row) => row.share)).toEqual(['25.0%', '75.0%'])
+    expect(rows[0]?.share).toBeCloseTo(0.25)
+    expect(rows[1]?.share).toBeCloseTo(0.75)
+  })
+
+  it('没有费用时占比按 token 算，不再是一列「—」', () => {
+    const summary = summaryWith({
+      task: [{ ...ZERO, key: 'planner', totalTokens: 300 }, { ...ZERO, key: 'replyer', totalTokens: 100 }],
+    }, 0)
+    summary.overview.totalTokens = 400
+    expect(groupRows('task', summary).map((row) => row.share)).toEqual([0.75, 0.25])
   })
 
   it('任务用中文名，来源区分主程序、内置与第三方插件', () => {
     const tasks = groupRows('task', summaryWith({ task: [{ ...ZERO, key: 'planner' }] }, 0))
-    expect(tasks[0]).toMatchObject({ name: '行动决策', detail: 'planner' })
+    expect(tasks[0]).toMatchObject({ name: '行动决策', detail: '', hint: 'planner' })
     const sources = groupRows('source', summaryWith({
       source: [
         { ...ZERO, key: 'main', kind: 'main', label: '主程序' },
@@ -89,17 +128,56 @@ describe('分组行', () => {
     ])
   })
 
-  it('按模型时单价为 0 或已不在配置中的行要提醒', () => {
-    const rows = groupRows('model', summaryWith({
+  it('当前单价为 0 且没记到费用的模型显示为未计价，已不在配置中的不算', () => {
+    const unpriced = { priceIn: 0, priceOut: 0, cachePriceIn: null, periods: 0, unpriced: true }
+    const summary = summaryWith({
       model: [
         { ...ZERO, key: 'a@p', model: 'a', provider: 'p', price: { priceIn: 2, priceOut: 8, cachePriceIn: 0.5, periods: 2, unpriced: false } },
-        { ...ZERO, key: 'b@p', model: 'b', provider: 'p', price: { priceIn: 0, priceOut: 0, cachePriceIn: null, periods: 0, unpriced: true } },
+        { ...ZERO, key: 'b@p', model: 'b', provider: 'p', price: unpriced },
         { ...ZERO, key: 'c@p', model: 'c', provider: 'p', price: null },
+        // 单价是后来清掉的：照常显示当时记到的费用。
+        { ...ZERO, key: 'd@p', model: 'd', provider: 'p', price: unpriced, cost: 0.5 },
       ],
-    }, 0))
-    expect(rows.map((row) => row.priceWarning)).toEqual([false, true, true])
-    expect(rows[0]?.price).toBe('¥2 / ¥8 / 缓存 ¥0.5 · 另有 2 个时段价')
-    expect(rows[2]?.price).toBe('已不在当前配置中')
+    }, 0.5)
+    const rows = groupRows('model', summary)
+    expect(rows.map((row) => row.unpriced)).toEqual([false, true, false, false])
+    expect(rows.map((row) => row.detail)).toEqual(['p', 'p', 'p', 'p'])
+    expect(rows[2]?.hint).toBe('已不在当前配置中')
+    expect(unpricedModelCount(summary)).toBe(2)
+  })
+})
+
+describe('趋势图取数', () => {
+  // 2026-10-26 16:30 东八区 = 08:30 UTC；当天零点 = 前一天 16:00 UTC。
+  const now = Date.UTC(2026, 9, 26, 8, 30)
+  const midnight = Date.UTC(2026, 9, 25, 16, 0)
+  const hourly = Array.from({ length: 48 }, (_, index) => ({
+    start: now - (now % HOUR_MS) - (47 - index) * HOUR_MS, tokens: index, cost: 0,
+  }))
+  const daily = Array.from({ length: 30 }, (_, index) => ({ start: midnight - (29 - index) * DAY_MS, tokens: index, cost: 0 }))
+
+  /** 构造带两条趋势序列、生成于 now 的汇总。 */
+  function withTrend(): UsageSummary {
+    const summary = summaryWith({}, 0)
+    return { ...summary, generatedAt: now, trend: { hourly, daily } }
+  }
+
+  it('本小时与今天都画当天零点起的 24 个小时，还没到的小时补 0', () => {
+    for (const range of ['hour', 'today'] as const) {
+      const view = trendView(range, withTrend())
+      expect(view.unit).toBe('hour')
+      expect(view.points).toHaveLength(24)
+      expect(view.points[0]?.start).toBe(midnight)
+      // 16:00 是当天第 16 个小时，对应近 48 小时序列的最后一个点。
+      expect(view.points[16]?.tokens).toBe(47)
+      expect(view.points[23]).toEqual({ start: midnight + 23 * HOUR_MS, tokens: 0, cost: 0 })
+    }
+  })
+
+  it('近 7 天取最后 7 天，近 30 天与全部画 30 天', () => {
+    expect(trendView('7d', withTrend()).points.map((point) => point.tokens)).toEqual([23, 24, 25, 26, 27, 28, 29])
+    expect(trendView('30d', withTrend()).points).toHaveLength(30)
+    expect(trendView('all', withTrend())).toMatchObject({ unit: 'day', caption: '近 30 天 · 按天' })
   })
 })
 
