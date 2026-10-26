@@ -380,11 +380,15 @@ class DayPlanService:
 
         :param config: 重载后的日程配置。
         :return: ``None``。
-        副作用：重绑日程配置引用；已生成的当日计划不受影响。
+        副作用：重绑日程配置引用；已生成的当日计划不受影响。精力开关切换时结束当前
+            清醒或休息段并写入占位段，使下一段按新开关重新决策。
         """
 
+        energy_switched = config.energy_enabled != self._config.energy_enabled
         self._config = config
         self._timeline.set_energy_enabled(config.energy_enabled)
+        if energy_switched:
+            self._timeline.restart_for_energy_switch(current_time())
 
     @property
     def timeline(self) -> ActivityTimeline:

@@ -197,3 +197,78 @@ def test_energy_switch_reload_reaches_sleep_controller(db: sqlite3.Connection) -
     assert service.current_sleep(2 * HOUR_MS).asleep, '开关未传播，睡眠段被立即打断'
     assert timeline.current(2 * HOUR_MS).kind == 'sleep'
     timeline.assert_invariants()
+
+
+def _plan_service(db: sqlite3.Connection, *, energy_enabled: bool) -> DayPlanService:
+    return DayPlanService(
+        db=db, store=_Store(), persona_state=lambda: PersonaState(50, 10, 50, 0),
+        interaction_density=lambda _now: '', anniversary_at=lambda: 0,
+        last_interaction_at=lambda: None, generator=None,
+        character_name='测试角色', character_personality='按自己的节奏生活',
+        schedule_config=ScheduleConfig(energy_enabled=energy_enabled),
+    )
+
+
+def _insert_open_activity(db: sqlite3.Connection, kind: str, pace: int, started_at: int) -> int:
+    cursor = db.execute(
+        'INSERT INTO activities (kind, doing, mood, energy_pace, mood_pace, started_at, expected_until, source) '
+        "VALUES (?, '去厨房弄点零食', '精力见底，想吃东西恢复元气', ?, 0, ?, ?, 'decided')",
+        (kind, pace, started_at, started_at + 2 * HOUR_MS),
+    )
+    db.commit()
+    return int(cursor.lastrowid)
+
+
+@pytest.mark.parametrize(('before', 'after'), [(True, False), (False, True)])
+@pytest.mark.parametrize(('kind', 'pace'), [('awake', 0), ('rest', 2)])
+def test_energy_switch_reload_restarts_current_activity(
+    db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch,
+    before: bool, after: bool, kind: str, pace: int,
+) -> None:
+    """任一方向切换开关时，按旧开关写下的清醒／休息段立即结束，换成写入即到期的占位段。
+
+    从开到关时旧段的 doing／mood 会带着「精力见底」逐字注入回复；从关到开时，关闭期间
+    不许 sleep 的决策会一直挂到段末。两种都要求下一次读取当前活动时按新开关重新决策。
+    """
+
+    switch_at = 2 * HOUR_MS
+    monkeypatch.setattr('src.core.schedule.plan.current_time', lambda: switch_at)
+    service = _plan_service(db, energy_enabled=before)
+    old_id = _insert_open_activity(db, kind, pace, HOUR_MS)
+
+    service.apply_config(ScheduleConfig(energy_enabled=after))
+
+    ended_at = db.execute('SELECT ended_at FROM activities WHERE id = ?', (old_id,)).fetchone()[0]
+    assert ended_at == switch_at
+    current = service.timeline.current(switch_at)
+    assert current.id != old_id
+    assert (current.kind, current.doing) == ('awake', '刚停下来，还没决定接下来做什么')
+    assert current.started_at == current.expected_until == switch_at
+    service.timeline.assert_invariants()
+
+
+def test_energy_reload_without_switch_keeps_current_activity(db: sqlite3.Connection) -> None:
+    """开关未变的配置重载（包括每次保存其他设置）不能打断当前活动。"""
+
+    service = _plan_service(db, energy_enabled=False)
+    old_id = _insert_open_activity(db, 'awake', 0, HOUR_MS)
+
+    service.apply_config(ScheduleConfig(energy_enabled=False))
+
+    assert service.timeline.current(2 * HOUR_MS).id == old_id
+
+
+def test_energy_switch_leaves_sleep_to_sleep_controller(db: sqlite3.Connection) -> None:
+    """sleep 段由睡眠控制器经 note_woken 结束，开关切换的重置不得抢先改写它。"""
+
+    service = _plan_service(db, energy_enabled=True)
+    db.execute(
+        "INSERT INTO activities (kind, doing, mood, energy_pace, mood_pace, started_at, expected_until, source) "
+        "VALUES ('sleep', '睡着', '安静', 3, 0, ?, ?, 'decided')",
+        (HOUR_MS, 3 * HOUR_MS),
+    )
+    db.commit()
+
+    service.apply_config(ScheduleConfig(energy_enabled=False))
+
+    assert db.execute("SELECT COUNT(*) FROM activities WHERE kind = 'sleep' AND ended_at IS NULL").fetchone()[0] == 1

@@ -710,6 +710,32 @@ class ActivityTimeline:
         except Exception:
             logger.exception('外部唤醒写入活动时间线失败', now=now)
 
+    def restart_for_energy_switch(self, now: int) -> None:
+        """精力开关切换后结束当前清醒或休息段，换上写入即到期的中性占位段。
+
+        当前段是按切换前的开关决策的：从开到关时，它的 doing／mood 可能写着「精力见底」
+        「想吃东西恢复元气」并逐字注入回复；从关到开时，关闭期间不许 sleep 的决策会一直
+        挂到段末。占位段让下一次读取当前活动时按新开关重新决策。sleep 段不在这里处理：
+        关闭精力时由睡眠控制器经 :meth:`note_woken` 结束。
+
+        :param now: 开关切换的毫秒时间戳。
+        :return: ``None``。
+        副作用：在同一事务里结束当前段并写入占位段；写入失败只记录异常，不打断配置重载。
+        """
+
+        try:
+            current = self._open_activity()
+            if current is None or current.kind == 'sleep':
+                return
+            with self._db:
+                self._db.execute(
+                    'UPDATE activities SET ended_at = ? WHERE id = ?',
+                    (now, current.id),
+                )
+                self._insert_placeholder(now)
+        except Exception:
+            logger.exception('精力开关切换后重置当前活动失败', now=now)
+
     def decided_until(self, now: int) -> int:
         """返回活动时间线已经「定下来」的终点，供状态结算裁剪区间。
 
