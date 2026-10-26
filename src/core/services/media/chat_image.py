@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import aclosing
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Protocol, Sequence
 from urllib.parse import unquote, urlsplit
@@ -17,6 +18,7 @@ import asyncio
 import base64
 import hashlib
 import re
+import ssl
 
 import httpx
 
@@ -34,6 +36,8 @@ MIN_IMAGE_DESCRIPTION_DEADLINE_S = 8.0
 # 首字到达后只需生成一段短描述，额外留出收尾时间，同时继续约束挂起的响应流。
 IMAGE_DESCRIPTION_COMPLETION_GRACE_S = 5.0
 # 图片来源下载截止时间；来源不可达时保留占位符，不让后台任务永久挂起。
+# 它同时是 HTTP 客户端单次连接、读写的超时与整次下载的总截止：客户端超时只管
+# 单步，逐块慢慢返回的来源能把下载拖得远长于它。
 IMAGE_DOWNLOAD_TIMEOUT_S = 10.0
 # 聊天图片通常远小于屏幕截图，但仍设置上限防止异常文件占满内存。
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -55,6 +59,23 @@ _THINK_BLOCK = re.compile(r'<think>.*?</think>', re.DOTALL)
 _MODEL_MARKUP = re.compile(r'<\|[^|>]*\|>|</?think>')
 # 表情包画面描述的长度上限（字符）：检索与面板展示用一行即可，超长截断。
 EMOJI_CONTENT_MAX_CHARS = 120
+
+
+@lru_cache(maxsize=1)
+def shared_ssl_context() -> ssl.SSLContext:
+    """返回进程内共享的 TLS 上下文，供图片下载与视频读时长的 HTTP 客户端复用。
+
+    [WORKAROUND] httpx 每个客户端默认新建 TLS 上下文
+    - 现象：Windows 上每新建一个 ``httpx.AsyncClient`` 同步阻塞事件循环约 1 秒；
+      合并转发收到即识别时每张图片一个客户端，几十张图片会让整个进程停止响应几十秒。
+    - 原因：未传 ``verify`` 时 httpx 为每个客户端新建 ``SSLContext`` 并加载证书，
+      这一步是同步执行的。
+    - 后果：复用同一个上下文后新建客户端约 2 毫秒；改回每次新建会让 Windows 部署
+      在收到大的合并转发时失去响应。
+
+    :return: 按 httpx 默认校验规则创建的 ``ssl.SSLContext``，首次调用时创建。
+    """
+    return httpx.create_ssl_context()
 
 
 class ImageDescriptionProvider(Protocol):
@@ -326,7 +347,9 @@ class ChatImageDescriber:
 
         # 一条消息内的多张图共用同一个短超时客户端并发下载，避免描述与下载
         # 截止时间串行累加，也不把连接挂在进程级客户端上影响其它请求。
-        async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as http:
+        async with httpx.AsyncClient(
+            timeout=IMAGE_DOWNLOAD_TIMEOUT_S, verify=shared_ssl_context(),
+        ) as http:
             return list(await asyncio.gather(
                 *(_describe_one(source, http) for source in sources)
             ))
@@ -414,18 +437,39 @@ class ChatImageDescriber:
                 logger.warning('chat_emoji_source_failed', error=str(exc))
                 return None
 
-        async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as http:
+        async with httpx.AsyncClient(
+            timeout=IMAGE_DOWNLOAD_TIMEOUT_S, verify=shared_ssl_context(),
+        ) as http:
             return list(await asyncio.gather(
                 *(_describe_one(source, http) for source in sources)
             ))
 
-    def can_describe_emoji_content(self) -> bool:
-        """判断当前能否生成表情包画面描述：聊天图片识别开启、视觉模型可用。"""
+    def can_describe_images(self) -> bool:
+        """判断当前能否识别聊天图片：聊天图片识别开启、视觉模型可用且接口接受图片块。
+
+        :return: 三项同时满足时为 ``True``；任一不满足时 :meth:`describe_sources`
+            只会返回全 ``None``，调用方可据此提前说明原因，而不是逐张记失败。
+        """
         return (
             self._cfg.vision.chat_image_enabled
             and self._provider is not None
             and self._protocol_error is None
         )
+
+    def can_describe_emoji_content(self) -> bool:
+        """判断当前能否生成表情包画面描述：聊天图片识别开启、视觉模型可用。"""
+        return self.can_describe_images()
+
+    def max_source_wait_s(self) -> float:
+        """按来源识别一张普通图片最长要等多久：下载截止加识别截止。
+
+        识别截止在构造时按视觉路由的首字窗口定下，:meth:`apply_config` 只换配置
+        引用、不重算它，所以进程内这个值不变。同内容的在途任务比本次调用开始得早，
+        等它不会超过这个上界。
+
+        :return: 秒数。
+        """
+        return IMAGE_DOWNLOAD_TIMEOUT_S + self._description_deadline_s
 
     async def describe_emoji_content(
         self,
@@ -587,8 +631,9 @@ async def _read_image_source(
     :param http: 可复用的短超时 HTTP 客户端；为 ``None`` 且来源是 HTTP 时
         创建一个临时客户端。
     :return: 图片原始字节；无法读取或内容为空时返回 ``b''``。
-    :raises Exception: 网络失败、状态码错误或文件读取失败时向上传播，由调用方
-        决定按占位符处理；本函数不猜测内容。
+    :raises Exception: 网络失败、状态码错误、HTTP 下载超过
+        :data:`IMAGE_DOWNLOAD_TIMEOUT_S` 或文件读取失败时向上传播，由调用方决定
+        按占位符处理；本函数不猜测内容。
     副作用：HTTP 来源使用调用方提供的客户端，或按下载超时创建独立客户端。
     """
     if source.startswith('base64://'):
@@ -607,14 +652,23 @@ async def _read_image_source(
         # qpic.cn 裸请求会被防盗链拒绝并伪报链接过期；请求头仅在 QQ CDN 域名生效，
         # 不改变其他图片源的下载行为。
         headers = _image_download_headers(source)
-        if http is not None:
-            response = await http.get(source, headers=headers)
-            response.raise_for_status()
-            return response.content
-        async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT_S) as client:
-            response = await client.get(source, headers=headers)
-            response.raise_for_status()
-            return response.content
+        try:
+            # 整次下载受总截止约束，「单项最长等待」才是确定的上界：插件按它推算
+            # 工具执行超时，下载拖过它会让整次工具调用被执行层截断。
+            async with asyncio.timeout(IMAGE_DOWNLOAD_TIMEOUT_S):
+                if http is not None:
+                    response = await http.get(source, headers=headers)
+                    response.raise_for_status()
+                    return response.content
+                async with httpx.AsyncClient(
+                    timeout=IMAGE_DOWNLOAD_TIMEOUT_S, verify=shared_ssl_context(),
+                ) as client:
+                    response = await client.get(source, headers=headers)
+                    response.raise_for_status()
+                    return response.content
+        except TimeoutError as exc:
+            # 截止触发的 TimeoutError 不带消息，调用方的失败日志会只剩一个空串。
+            raise TimeoutError(f'图片下载超过 {IMAGE_DOWNLOAD_TIMEOUT_S:g} 秒') from exc
     return Path(source).read_bytes()
 
 

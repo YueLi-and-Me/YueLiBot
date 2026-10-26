@@ -183,6 +183,34 @@ def segment_to_text(
     return placeholders.get(segment_type, f'[非文本消息：{segment_type}]')
 
 
+def image_segment_source(segment: Segment) -> str:
+    """取单个图片段（含表情包）的下载来源。
+
+    顶层消息与合并转发里的图片共用这一处取法，两边对「来源是什么」的口径
+    因此不会各自演进后对不上。
+
+    :param segment: ``image`` 类型的 OneBot 消息段。
+    :return: ``data.url``，缺失时取 ``data.file``；两者都缺失时为空串。
+    :raises ValueError: 图片段缺少对象型 ``data`` 字段。
+    """
+    data = _segment_data(segment)
+    return _string_value(data.get('url')) or _string_value(data.get('file'))
+
+
+def video_segment_source(segment: Segment) -> VideoSource:
+    """取单个视频段的下载来源。
+
+    :param segment: ``video`` 类型的 OneBot 消息段。
+    :return: ``(url, file)`` 来源对；缺字段的一侧留空串。
+    :raises ValueError: 视频段缺少对象型 ``data`` 字段。
+    """
+    data = _segment_data(segment)
+    return VideoSource(
+        url=_string_value(data.get('url')),
+        file=_string_value(data.get('file')),
+    )
+
+
 def image_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
     """提取普通图片段的下载来源，顺序与正文中的 ``[图片]`` 占位符一致。
 
@@ -199,8 +227,7 @@ def image_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
             continue
         if is_emoji_image(segment):
             continue
-        data = _segment_data(segment)
-        sources.append(_string_value(data.get('url')) or _string_value(data.get('file')))
+        sources.append(image_segment_source(segment))
     return tuple(sources)
 
 
@@ -221,11 +248,7 @@ def video_sources(segments: Sequence[Segment]) -> tuple[VideoSource, ...]:
     for segment in segments:
         if segment.get('type') != 'video':
             continue
-        data = _segment_data(segment)
-        sources.append(VideoSource(
-            url=_string_value(data.get('url')),
-            file=_string_value(data.get('file')),
-        ))
+        sources.append(video_segment_source(segment))
     return tuple(sources)
 
 
@@ -243,8 +266,7 @@ def emoji_source_urls(segments: Sequence[Segment]) -> tuple[str, ...]:
     for segment in segments:
         if segment.get('type') != 'image' or not is_emoji_image(segment):
             continue
-        data = _segment_data(segment)
-        sources.append(_string_value(data.get('url')) or _string_value(data.get('file')))
+        sources.append(image_segment_source(segment))
     return tuple(sources)
 
 

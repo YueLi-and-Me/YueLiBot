@@ -40,6 +40,7 @@ from src.core.services.media.chat_video import (
     ChatVideoDescriber,
     merge_video_descriptions,
     message_concerns_her,
+    watches_video_on_arrival,
 )
 from src.core.services.media.emoji import EmojiBannedError, EmojiContentRejectedError, EmojiLibrary
 from src.core.services.media.sticker_search import STICKER_SEARCH_SPEC, StickerSearch
@@ -415,9 +416,13 @@ class ChatService(
         # on_load 之前）注入它。漏传不会报错，只会让插件在真正用到 ctx 的那一刻才炸
         # ——真机上就是这么暴露的：链接插件取 ctx.host.https_proxy 时抛
         # 「宿主入口尚未注入」，而三条线的用例各自注入桩件，全绿。
+        # 媒体识别入口与入站正文共用同一对图片 / 视频服务：缓存、在途去重与
+        # 热重载后的开关对插件和正文一致，插件不另起一套识别。
         self._plugins = PluginRegistry(
             context_factory=lambda plugin_id, plugin_dir: PluginContext(
                 plugin_id, plugin_dir, data_dir, cfg, self._mcp,
+                image_describer=self._image_describer,
+                video_describer=self._video_describer,
             ),
             force_compatibility=cfg.advanced.force_compatibility,
         )
@@ -1145,7 +1150,7 @@ class ChatService(
             return None
         if not self._cfg.vision.chat_video_enabled:
             return None
-        if self._cfg.vision.chat_video_scope == 'all' or concerns_her:
+        if watches_video_on_arrival(self._cfg.vision.chat_video_scope, concerns_her):
             task = asyncio.create_task(self._describe_video_message(
                 stream_id,
                 message_id,

@@ -173,6 +173,32 @@ async def test_read_image_source_sends_referer_for_qpic_cdn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_image_source_bounds_whole_download_by_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """逐块慢慢返回的来源：每块都没超过客户端的单步超时，整次下载仍在总截止处失败。
+
+    插件按「下载截止 + 识别截止」推算等待上界，下载必须真的在截止处结束。
+    """
+    monkeypatch.setattr('src.core.services.media.chat_image.IMAGE_DOWNLOAD_TIMEOUT_S', 0.05)
+
+    async def trickle() -> AsyncIterator[bytes]:
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            yield b'x'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=trickle())
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(TimeoutError, match='图片下载超过 0.05 秒'):
+            await _read_image_source('https://example.com/slow.png', client)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_read_image_source_decodes_percent_escaped_file_uri(tmp_path: Path) -> None:
     """Path.as_uri 生成的空间编码路径必须能被本地图片读取识别。"""
     directory = tmp_path / 'Tencent Files'

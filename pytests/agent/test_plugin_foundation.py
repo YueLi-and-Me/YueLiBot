@@ -167,7 +167,7 @@ def test_context_requires_injection_and_exposes_only_three_views(tmp_path: Path)
     plugin.bind_config(PluginConfig())
     plugin.bind_context(ctx)
     assert plugin.ctx is ctx
-    assert {name for name in dir(ctx) if not name.startswith('_')} == {'logger', 'paths', 'host', 'mcp'}
+    assert {name for name in dir(ctx) if not name.startswith('_')} == {'logger', 'paths', 'host', 'mcp', 'media'}
     assert ctx.paths == PluginPaths(tmp_path, data_dir)
     assert ctx.host == HostView(cfg.bot.name, cfg.advanced.https_proxy, data_dir)
     assert ctx.host.data_dir is ctx.paths.data_dir

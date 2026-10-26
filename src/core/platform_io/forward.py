@@ -3,6 +3,10 @@
 平台适配器负责把各自协议的转发结构还原为本模块的数据类，主体只保存已经
 完整解析的不可变树。模型侧不会直接看到整棵树，而是由只读工具按路径逐层
 展开；因此这里保留节点内文本和嵌套转发的原始顺序，不做扁平化。
+
+普通图片与视频单独成片段：``text`` 仍是正文里的占位（``[图片]`` / ``[视频]``），
+另带下载来源，主体侧可以按需识别。占位文本由适配器给出，主体不复制占位词表；
+不识别时直接展示 ``text``，与只有文本片段时的输出逐字相同。
 """
 
 from __future__ import annotations
@@ -11,32 +15,64 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Set, Tuple
 
 
-ForwardPartKind = Literal['text', 'forward']
+ForwardPartKind = Literal['text', 'forward', 'image', 'video']
+
+# 携带下载来源的媒体片段类型；读取工具按类型决定是否识别。
+FORWARD_MEDIA_KINDS: Tuple[ForwardPartKind, ...] = ('image', 'video')
 
 
 @dataclass(frozen=True)
 class ForwardMessagePart:
-    """一条转发节点中的有序内容片段。"""
+    """一条转发节点中的有序内容片段。
+
+    :ivar kind: 片段类型。
+    :ivar text: 文本原文；图片与视频片段为正文占位；嵌套转发为空串。
+    :ivar nested: 嵌套转发树，仅 ``forward`` 片段携带。
+    :ivar source: 下载来源，仅媒体片段携带。图片与顶层同口径取 ``data.url``，
+        缺失时取 ``data.file``；视频为会过期的多媒体直链 ``data.url``。
+    :ivar file: 视频段的 ``data.file``（``<内容 MD5>.mp4``），视频理解按它缓存与
+        去重；仅 ``video`` 片段携带，协议端未给出时为空串。
+    """
 
     kind: ForwardPartKind
     text: str = ''
     nested: ForwardMessageTree | None = None
+    source: str = ''
+    file: str = ''
 
     def __post_init__(self) -> None:
-        """保证文本与嵌套转发两种形态互斥且内容完整。"""
+        """保证各形态的字段互斥且内容完整。"""
         if self.kind == 'text':
             if not self.text:
                 raise ValueError('合并转发文本片段不能为空')
             if self.nested is not None:
                 raise ValueError('合并转发文本片段不能携带 nested')
+            self._reject_media_fields('文本')
             return
         if self.kind == 'forward':
             if self.nested is None:
                 raise ValueError('合并转发嵌套片段必须携带 nested')
             if self.text:
                 raise ValueError('合并转发嵌套片段不能携带 text')
+            self._reject_media_fields('嵌套')
+            return
+        if self.kind in FORWARD_MEDIA_KINDS:
+            label = '图片' if self.kind == 'image' else '视频'
+            if not self.text:
+                raise ValueError(f'合并转发{label}片段缺少占位文本')
+            if not self.source.strip():
+                raise ValueError(f'合并转发{label}片段缺少来源')
+            if self.nested is not None:
+                raise ValueError(f'合并转发{label}片段不能携带 nested')
+            if self.kind == 'image' and self.file:
+                raise ValueError('合并转发图片片段不能携带 file')
             return
         raise ValueError(f'不支持的合并转发片段类型：{self.kind}')
+
+    def _reject_media_fields(self, label: str) -> None:
+        """非媒体片段携带来源说明构造方把形态弄混了，当场拒绝。"""
+        if self.source or self.file:
+            raise ValueError(f'合并转发{label}片段不能携带 source 或 file')
 
     @classmethod
     def text_part(cls, text: str) -> ForwardMessagePart:
@@ -47,6 +83,27 @@ class ForwardMessagePart:
     def forward_part(cls, nested: ForwardMessageTree) -> ForwardMessagePart:
         """构造一个嵌套转发片段。"""
         return cls(kind='forward', nested=nested)
+
+    @classmethod
+    def image_part(cls, text: str, source: str) -> ForwardMessagePart:
+        """构造一个普通图片片段。
+
+        :param text: 正文占位，由适配器按自身词表给出。
+        :param source: 非空的图片来源。
+        :return: ``image`` 片段。
+        """
+        return cls(kind='image', text=text, source=source)
+
+    @classmethod
+    def video_part(cls, text: str, source: str, file: str) -> ForwardMessagePart:
+        """构造一个视频片段。
+
+        :param text: 正文占位，由适配器按自身词表给出。
+        :param source: 非空的视频直链。
+        :param file: 视频段的内容文件名；协议端未给出时传空串。
+        :return: ``video`` 片段。
+        """
+        return cls(kind='video', text=text, source=source, file=file)
 
 
 @dataclass(frozen=True)
@@ -84,6 +141,17 @@ def forward_tree_to_payload(tree: ForwardMessageTree) -> Dict[str, Any]:
         for part in node.parts:
             if part.kind == 'text':
                 parts.append({'kind': 'text', 'text': part.text})
+                continue
+            if part.kind == 'image':
+                parts.append({'kind': 'image', 'text': part.text, 'source': part.source})
+                continue
+            if part.kind == 'video':
+                parts.append({
+                    'kind': 'video',
+                    'text': part.text,
+                    'source': part.source,
+                    'file': part.file,
+                })
                 continue
             assert part.nested is not None
             parts.append({
@@ -148,7 +216,33 @@ def _part_from_payload(
         if not isinstance(nested, Mapping):
             raise ValueError(f'{label}缺少对象类型的 nested')
         return ForwardMessagePart.forward_part(forward_tree_from_payload(nested))
+    if kind == 'image':
+        _reject_unknown_keys(raw_part, {'kind', 'text', 'source'}, label)
+        return ForwardMessagePart.image_part(
+            _required_string(raw_part, 'text', label),
+            _required_string(raw_part, 'source', label),
+        )
+    if kind == 'video':
+        _reject_unknown_keys(raw_part, {'kind', 'text', 'source', 'file'}, label)
+        file = raw_part.get('file')
+        # file 必须显式出现：协议端没给时适配器发空串，字段缺失说明发送方
+        # 与本协议版本不一致，不能当成「没有文件名」悄悄接受。
+        if not isinstance(file, str):
+            raise ValueError(f'{label}缺少字符串类型的 file')
+        return ForwardMessagePart.video_part(
+            _required_string(raw_part, 'text', label),
+            _required_string(raw_part, 'source', label),
+            file,
+        )
     raise ValueError(f'{label}的 kind 不受支持：{kind}')
+
+
+def _required_string(raw_part: Mapping[str, Any], key: str, label: str) -> str:
+    """读取媒体片段里必须非空的字符串字段，错误定位到具体片段。"""
+    value = raw_part.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f'{label}缺少非空 {key}')
+    return value
 
 
 def _reject_unknown_keys(
@@ -163,6 +257,7 @@ def _reject_unknown_keys(
 
 
 __all__ = [
+    'FORWARD_MEDIA_KINDS',
     'ForwardMessagePart',
     'ForwardMessageTree',
     'ForwardNode',

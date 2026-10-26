@@ -26,6 +26,8 @@ from src.core.observe import events as trace
 from src.core.platform_io.types import VideoSource
 from src.core.prompts.registry import get_prompt, prompt_metadata
 
+from .chat_image import shared_ssl_context
+
 logger = get_logger(__name__)
 
 # 单个视频理解至少保留的总截止时间；实际值还必须覆盖 video 路由的首字窗口。
@@ -82,6 +84,21 @@ def message_concerns_her(
         or name_mentioned
         or replied_to_me
     )
+
+
+def watches_video_on_arrival(scope: str, concerns_her: bool) -> bool:
+    """「收到时就看」的唯一判定函数：入站正文与合并转发插件的视频范围都读它。
+
+    观看范围是 ``all``，或这条消息跟她有关（见 :func:`message_concerns_her`）。
+    入站正文在算「跟她有关」时还会叠加「紧跟 @ 她的上一条」的扩展，那一步依赖
+    聊天服务记录的发送者状态，由调用方算好后传入。
+
+    :param scope: ``vision.chat_video_scope`` 的当前值。
+    :param concerns_her: 这条消息是否跟她有关。
+    :return: 收到时就看为 ``True``。只表达范围，不检查开关与模型。
+    副作用：不读取任何外部状态。
+    """
+    return scope == 'all' or concerns_her
 
 
 def _format_too_long(seconds: float) -> str:
@@ -263,7 +280,9 @@ class ChatVideoDescriber:
         self._cfg = cfg
         self._provider = provider
         self._http_factory = http_factory or (
-            lambda: httpx.AsyncClient(timeout=VIDEO_DURATION_REQUEST_TIMEOUT_S)
+            lambda: httpx.AsyncClient(
+                timeout=VIDEO_DURATION_REQUEST_TIMEOUT_S, verify=shared_ssl_context(),
+            )
         )
         self._description_deadline_s = max(
             MIN_VIDEO_DESCRIPTION_DEADLINE_S,
@@ -283,6 +302,37 @@ class ChatVideoDescriber:
         副作用：只重新绑定配置引用。
         """
         self._cfg = cfg
+
+    def can_describe_videos(self) -> bool:
+        """判断当前能否理解聊天视频：聊天视频理解开启且 video 路由有模型。
+
+        :return: 两项同时满足时为 ``True``；否则 :meth:`describe_sources` 只会返回
+            全 ``None``。只读开关与模型，不读 ``chat_video_scope``：范围门控属于
+            入站时「要不要主动看」的判断，见 :meth:`watches_on_arrival`，由调用方
+            自己决定是否套用。
+        """
+        return self._cfg.vision.chat_video_enabled and self._provider is not None
+
+    def watches_on_arrival(self, concerns_her: bool) -> bool:
+        """按当前配置的观看范围判断一条消息里的视频是否收到时就看。
+
+        :param concerns_her: 这条消息是否跟她有关，由调用方按
+            :func:`message_concerns_her` 算好传入。
+        :return: 见 :func:`watches_video_on_arrival`；只表达范围，不检查开关与模型。
+        副作用：读取当前配置，热重载后即生效。
+        """
+        return watches_video_on_arrival(self._cfg.vision.chat_video_scope, concerns_her)
+
+    def max_source_wait_s(self) -> float:
+        """理解一个视频最长要等多久：读时长与模型调用都在同一个截止里。
+
+        截止在构造时按 video 路由的首字窗口定下，:meth:`apply_config` 只换配置引用、
+        不重算它，所以进程内这个值不变。同名视频的在途任务比本次调用开始得早，
+        等它不会超过这个上界。
+
+        :return: 秒数。
+        """
+        return self._description_deadline_s
 
     async def describe_sources(
         self,

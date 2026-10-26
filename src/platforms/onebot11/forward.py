@@ -8,6 +8,10 @@
 非法时该嵌套层降级为文本片段，不牵连整棵根树，段自身既无 ``content`` 又
 无 ``id``、或资源编号循环引用属结构错误，仍然上抛。
 
+每一层的普通图片与视频段都保留为带来源的媒体片段（取法与顶层消息相同），
+看不看由主体的读取工具按自身开关决定。本模块只搬运来源字符串，不调用
+``get_image`` 换本地路径、不下载、不读视频时长，原因见 :func:`_media_part`。
+
 [WORKAROUND] 协议端不内联嵌套转发正文
 - 现象：转发套转发时，顶层 ``get_forward_msg`` 结果里的内层 ``forward`` 段只有
   ``data.id``。按「缺 content 即报错」处理会丢弃整棵根树，正文只剩 ``[转发消息]``。
@@ -27,7 +31,12 @@ from src.core.platform_io.forward import (
     ForwardNode,
 )
 
-from .segments import segment_to_text
+from .segments import (
+    image_segment_source,
+    is_emoji_image,
+    segment_to_text,
+    video_segment_source,
+)
 from .xml_cards import is_chat_record_card_text
 
 
@@ -104,16 +113,20 @@ def forward_tree_preview(tree: ForwardMessageTree) -> str:
 
 
 def _preview_node_text(node: ForwardNode) -> str:
-    """把节点内有序片段压成单行文本：文本压平换行，聊天记录卡片与嵌套转发换短标记。"""
+    """把节点内有序片段压成单行文本：文本压平换行，聊天记录卡片与嵌套转发换短标记。
+
+    图片与视频片段原样输出它们的占位文本。预览会进入正文，主体按正文里
+    ``[图片]`` / ``[视频]`` 的出现顺序贴顶层描述；媒体片段若换成别的写法，
+    占位个数就与改动前不同，顶层描述会贴错位置。
+    """
     chunks: List[str] = []
     for part in node.parts:
-        if part.kind == 'text':
-            if is_chat_record_card_text(part.text):
-                chunks.append(FORWARD_PREVIEW_CHAT_RECORD_MARKER)
-            else:
-                chunks.append(' '.join(part.text.split()))
-        else:
+        if part.kind == 'forward':
             chunks.append(FORWARD_PREVIEW_NESTED_MARKER)
+        elif part.kind == 'text' and is_chat_record_card_text(part.text):
+            chunks.append(FORWARD_PREVIEW_CHAT_RECORD_MARKER)
+        else:
+            chunks.append(' '.join(part.text.split()))
     return ''.join(chunks)
 
 
@@ -175,6 +188,10 @@ async def parse_forward_content(
                 if not isinstance(data, Mapping):
                     raise ValueError('嵌套合并转发缺少对象类型的 data')
                 parts.append(await _parse_nested(data, resolve_nested, ancestor_ids))
+                continue
+            media = _media_part(segment)
+            if media is not None:
+                parts.append(media)
                 continue
             text = segment_to_text(segment)
             if text:
@@ -255,6 +272,39 @@ async def _parse_nested(
         )
         return ForwardMessagePart.text_part(FORWARD_LAYER_UNREADABLE_TEXT)
     return ForwardMessagePart.forward_part(tree)
+
+
+def _media_part(segment: Mapping[str, Any]) -> ForwardMessagePart | None:
+    """把普通图片段与视频段转成带来源的媒体片段。
+
+    占位文本仍由 :func:`segment_to_text` 给出，与顶层正文同一份词表；来源取法
+    与顶层的 ``image_source_urls`` / ``video_sources`` 共用同一个单段函数。
+
+    来源只搬运、不在这里换成本地路径，这是刻意的：
+    - 适配器不知道主体侧的识别开关是否打开，像顶层图片那样逐张调用
+      ``get_image``，开关关闭时这些协议端往返全是白花；
+    - 入站循环是串行的，大转发里几十张图逐张往返会拖住后面所有消息；
+    - 主体读取 QQ CDN 图片时自带防盗链请求头，直链在有效期内可以直接下载。
+    代价是来源时效：视频直链带一次性签名，过期后无法重取，读取得太晚时该项
+    按识别失败保留占位。
+
+    :param segment: 一个非 ``forward`` 的 OneBot 消息段。
+    :return: ``image`` / ``video`` 片段；表情包、其余段型或缺少来源的媒体段返回
+        ``None``，由调用方按文本占位处理——没有来源的媒体本就无从识别。
+    :raises ValueError: 媒体段缺少对象型 ``data``。
+    """
+    segment_type = segment.get('type')
+    if segment_type == 'image' and not is_emoji_image(segment):
+        source = image_segment_source(segment)
+        if not source:
+            return None
+        return ForwardMessagePart.image_part(segment_to_text(segment), source)
+    if segment_type == 'video':
+        video = video_segment_source(segment)
+        if not video.url:
+            return None
+        return ForwardMessagePart.video_part(segment_to_text(segment), video.url, video.file)
+    return None
 
 
 def _response_messages(response: Mapping[str, Any]) -> List[Any]:

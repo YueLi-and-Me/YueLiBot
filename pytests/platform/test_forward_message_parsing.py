@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pytest
 
@@ -107,10 +107,11 @@ async def test_parse_forward_response_preserves_mixed_content_order() -> None:
 
     assert tree.nodes[0].sender_name == '昵称'
     assert [part.kind for part in tree.nodes[0].parts] == [
-        'text', 'forward', 'text', 'text',
+        'text', 'forward', 'image', 'text',
     ]
     assert tree.nodes[0].parts[0].text == '转发前'
     assert tree.nodes[0].parts[2].text == '[图片]'
+    assert tree.nodes[0].parts[2].source == 'a.jpg'
     assert tree.nodes[0].parts[3].text == '转发后'
     nested = tree.nodes[0].parts[1].nested
     assert nested is not None
@@ -437,3 +438,210 @@ async def test_forward_node_requires_sender_identity(
 
     with pytest.raises(ValueError, match=message):
         await parse_forward_content(messages, _Resolver())
+
+
+def _image_segment(name: str) -> Dict[str, Any]:
+    """构造一个带直链的普通图片段。"""
+    return {
+        'type': 'image',
+        'data': {
+            'file': f'{name}.jpg',
+            'url': f'https://gchat.qpic.cn/{name}?rkey=r',
+            'sub_type': 0,
+        },
+    }
+
+
+def _video_segment(name: str) -> Dict[str, Any]:
+    """构造一个带直链与内容文件名的视频段。"""
+    return {
+        'type': 'video',
+        'data': {
+            'file': f'{name}.mp4',
+            'url': f'https://multimedia.nt.qq.com.cn/{name}?rkey=r',
+        },
+    }
+
+
+def _media_layer(level: int, nested: Dict[str, Any] | None) -> List[Dict[str, Any]]:
+    """构造一层同时含文本、图片、视频（以及可选嵌套段）的转发节点数组。"""
+    segments: List[Dict[str, Any]] = [
+        {'type': 'text', 'data': {'text': f'第{level}层'}},
+        _image_segment(f'img{level}'),
+        _video_segment(f'vid{level}'),
+    ]
+    if nested is not None:
+        segments.append(nested)
+    return [_message(f'用户{level}', segments)]
+
+
+def _media_parts(tree: ForwardMessageTree) -> List[ForwardMessagePart]:
+    """取一层里的媒体片段，保持原顺序。"""
+    return [
+        part
+        for node in tree.nodes
+        for part in node.parts
+        if part.kind in ('image', 'video')
+    ]
+
+
+def _assert_media_layer(tree: ForwardMessageTree, level: int) -> None:
+    """断言一层的图片与视频片段带着各自的占位与来源。"""
+    image, video = _media_parts(tree)
+    assert image == ForwardMessagePart.image_part(
+        '[图片]', f'https://gchat.qpic.cn/img{level}?rkey=r',
+    )
+    assert video == ForwardMessagePart.video_part(
+        '[视频]', f'https://multimedia.nt.qq.com.cn/vid{level}?rkey=r', f'vid{level}.mp4',
+    )
+
+
+async def test_inline_nested_layers_keep_image_and_video_sources() -> None:
+    """内联嵌套的每一层都保留图片与视频来源，层数不设上限。"""
+    messages = _media_layer(3, None)
+    for level in (2, 1):
+        messages = _media_layer(level, {'type': 'forward', 'data': {'content': messages}})
+    messages = _media_layer(0, {'type': 'forward', 'data': {'content': messages}})
+
+    tree = await parse_forward_content(messages, _Resolver())
+
+    current = tree
+    for level in range(4):
+        _assert_media_layer(current, level)
+        if level < 3:
+            current = _only_nested(current)
+
+
+async def test_nested_layers_fetched_by_id_keep_image_and_video_sources() -> None:
+    """按编号补取的嵌套层同样保留媒体来源，补取多层时每层都不丢。"""
+    resolver = _Resolver({
+        'level-1': {'data': {'messages': _media_layer(
+            1, {'type': 'forward', 'data': {'id': 'level-2'}},
+        )}},
+        'level-2': {'data': {'messages': _media_layer(
+            2, {'type': 'forward', 'data': {'id': 'level-3'}},
+        )}},
+        'level-3': {'data': {'messages': _media_layer(3, None)}},
+    })
+
+    tree = await parse_forward_content(
+        _media_layer(0, {'type': 'forward', 'data': {'id': 'level-1'}}),
+        resolver,
+    )
+
+    assert resolver.requested == ['level-1', 'level-2', 'level-3']
+    current = tree
+    for level in range(4):
+        _assert_media_layer(current, level)
+        if level < 3:
+            current = _only_nested(current)
+
+
+async def test_emoji_and_media_without_source_stay_text_placeholders() -> None:
+    """表情包保持现有文本占位；缺来源的图片与视频无从识别，也保持文本占位。"""
+    tree = await parse_forward_content([_message('用户', [
+        {'type': 'image', 'data': {'file': 'e.gif', 'url': 'https://gchat.qpic.cn/e', 'sub_type': 1}},
+        {'type': 'image', 'data': {'sub_type': 0}},
+        {'type': 'video', 'data': {'file': 'v.mp4'}},
+    ])], _Resolver())
+
+    assert tree.nodes[0].parts == (
+        ForwardMessagePart.text_part('[表情包]'),
+        ForwardMessagePart.text_part('[图片]'),
+        ForwardMessagePart.text_part('[视频]'),
+    )
+
+
+def test_preview_keeps_media_placeholder_count() -> None:
+    """媒体片段在单行预览里与改动前的文本占位逐字相同，[图片] / [视频] 个数不变。"""
+    def tree_of(parts: Tuple[ForwardMessagePart, ...]) -> ForwardMessageTree:
+        return ForwardMessageTree(nodes=(ForwardNode(sender_name='甲', parts=parts),))
+
+    with_media = tree_of((
+        ForwardMessagePart.text_part('看'),
+        ForwardMessagePart.image_part('[图片]', 'https://gchat.qpic.cn/a'),
+        ForwardMessagePart.video_part('[视频]', 'https://multimedia.nt.qq.com.cn/v', 'v.mp4'),
+        ForwardMessagePart.image_part('[图片]', 'https://gchat.qpic.cn/b'),
+    ))
+    as_text = tree_of((
+        ForwardMessagePart.text_part('看'),
+        ForwardMessagePart.text_part('[图片]'),
+        ForwardMessagePart.text_part('[视频]'),
+        ForwardMessagePart.text_part('[图片]'),
+    ))
+
+    preview = forward_tree_preview(with_media)
+
+    assert preview == forward_tree_preview(as_text)
+    assert preview == '[转发消息：甲：看[图片][视频][图片]｜共 1 条]'
+
+
+async def test_payload_round_trip_keeps_media_at_every_depth() -> None:
+    """跨 HTTP 边界序列化后，每一层的图片与视频来源都原样还原。"""
+    messages = _media_layer(2, None)
+    messages = _media_layer(1, {'type': 'forward', 'data': {'content': messages}})
+    original = await parse_forward_content(
+        _media_layer(0, {'type': 'forward', 'data': {'content': messages}}),
+        _Resolver(),
+    )
+
+    payload = forward_tree_to_payload(original)
+
+    assert payload['nodes'][0]['parts'][1] == {
+        'kind': 'image', 'text': '[图片]', 'source': 'https://gchat.qpic.cn/img0?rkey=r',
+    }
+    assert payload['nodes'][0]['parts'][2] == {
+        'kind': 'video',
+        'text': '[视频]',
+        'source': 'https://multimedia.nt.qq.com.cn/vid0?rkey=r',
+        'file': 'vid0.mp4',
+    }
+    assert forward_tree_from_payload(payload) == original
+
+
+@pytest.mark.parametrize(
+    'part, message',
+    [
+        (
+            {'kind': 'image', 'text': '[图片]', 'source': 'https://a', 'file': 'a.jpg'},
+            '未知字段：file',
+        ),
+        (
+            {'kind': 'image', 'text': '[图片]', 'source': 'https://a', 'nested': {}},
+            '未知字段：nested',
+        ),
+        ({'kind': 'image', 'text': '[图片]', 'source': ''}, '缺少非空 source'),
+        ({'kind': 'image', 'source': 'https://a'}, '缺少非空 text'),
+        (
+            {'kind': 'video', 'text': '[视频]', 'source': 'https://v', 'file': 'v.mp4', 'url': 'x'},
+            '未知字段：url',
+        ),
+        ({'kind': 'video', 'text': '[视频]', 'source': 'https://v'}, '缺少字符串类型的 file'),
+        ({'kind': 'video', 'text': '[视频]', 'source': ' ', 'file': ''}, '缺少非空 source'),
+        ({'kind': 'audio', 'text': '[语音]'}, 'kind 不受支持：audio'),
+    ],
+)
+def test_payload_rejects_malformed_media_parts(part: Dict[str, Any], message: str) -> None:
+    """媒体片段的载荷与文本片段同样严格：未知字段、缺字段、空来源一律拒绝。"""
+    payload = {'nodes': [{'senderName': '甲', 'parts': [part]}]}
+
+    with pytest.raises(ValueError, match=message):
+        forward_tree_from_payload(payload)
+
+
+def test_media_part_rejects_mixed_shapes() -> None:
+    """数据类本身拒绝把媒体字段塞进文本或嵌套片段，以及缺来源的媒体片段。"""
+    leaf = ForwardMessageTree(nodes=(
+        ForwardNode(sender_name='甲', parts=(ForwardMessagePart.text_part('正文'),)),
+    ))
+
+    with pytest.raises(ValueError, match='文本片段不能携带 source 或 file'):
+        ForwardMessagePart(kind='text', text='[图片]', source='https://a')
+    with pytest.raises(ValueError, match='嵌套片段不能携带 source 或 file'):
+        ForwardMessagePart(kind='forward', nested=leaf, file='v.mp4')
+    with pytest.raises(ValueError, match='图片片段缺少来源'):
+        ForwardMessagePart.image_part('[图片]', ' ')
+    with pytest.raises(ValueError, match='图片片段不能携带 file'):
+        ForwardMessagePart(kind='image', text='[图片]', source='https://a', file='a.jpg')
+    with pytest.raises(ValueError, match='视频片段不能携带 nested'):
+        ForwardMessagePart(kind='video', text='[视频]', source='https://v', nested=leaf)

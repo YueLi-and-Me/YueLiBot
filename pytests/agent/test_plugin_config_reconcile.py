@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import importlib.util
 import pytest
 import tomllib
 from pydantic import Field, model_validator
@@ -239,3 +240,33 @@ def test_嵌套配置模型给出可读错误(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match='暂不支持嵌套'):
         render_plugin_config(_WithNested)
+
+
+def test_合并转发插件旧配置补齐两个媒体开关且默认关闭(tmp_path: Path) -> None:
+    """引入识图、看视频开关之前生成的配置只有 enabled；升级后两项按 false 补进文件。
+
+    在临时目录里对账，不读写仓库里插件目录下的真实配置。
+    """
+    entry = (
+        Path(__file__).resolve().parents[2]
+        / 'src' / 'plugins' / 'built_in' / 'forward-message' / 'plugin.py'
+    )
+    spec = importlib.util.spec_from_file_location('yueli_forward_message_config', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    directory = tmp_path / 'forward-message'
+    directory.mkdir()
+    original = '[plugin]\nenabled = true\n'
+    path = _write_config(directory, original)
+
+    config = ensure_plugin_config(directory, module.ForwardMessageConfig)
+
+    assert config.read_images is False
+    assert config.read_videos is False
+    content = path.read_text(encoding='utf-8')
+    assert content.startswith(original)
+    assert tomllib.loads(content)['plugin'] == {
+        'enabled': True, 'read_images': False, 'read_videos': False,
+    }
+    assert '# 打开后，收到合并转发就在后台识别其中所有层的图片' in content
+    assert '# 打开后，转发里的视频按与普通聊天视频相同的观看范围' in content

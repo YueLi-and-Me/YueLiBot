@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from src.core.api.http import PlatformInboundBody
+from src.core.platform_io.forward import forward_tree_from_payload, forward_tree_to_payload
 from src.platforms.onebot11.backend import BackendClient
 from src.platforms.onebot11.config import (
     GroupAccessConfig,
@@ -389,3 +390,64 @@ def test_platform_inbound_model_rejects_broken_forward_tree() -> None:
             **base,
             'forwardMessages': [{'nodes': []}],
         })
+
+
+async def test_runner_carries_nested_media_sources_without_extra_actions() -> None:
+    """按编号补取的内层图片与视频随树提交，入站不为媒体多发任何协议端请求。
+
+    适配器不知道主体侧识别开关，也不该为每张转发图片调用 get_image：
+    动作序列里只能有逐层取转发内容的两次调用。
+    """
+    image = {
+        'type': 'image',
+        'data': {'file': 'in.jpg', 'url': 'https://gchat.qpic.cn/in?rkey=r', 'sub_type': 0},
+    }
+    video = {
+        'type': 'video',
+        'data': {'file': 'in.mp4', 'url': 'https://multimedia.nt.qq.com.cn/in?rkey=r'},
+    }
+    transport = _Transport(
+        _payload({'id': 'root'}),
+        _nested_root_response('inner'),
+        nested={'inner': {'data': {'messages': [{
+            'sender': {'nickname': '内层用户', 'card': ''},
+            'message': [{'type': 'text', 'data': {'text': '看这个'}}, image, video],
+        }]}}},
+    )
+    backend = _Backend()
+    runner = OneBot11Runner(
+        _document(),
+        backend_port=1,
+        token='backend-secret',
+        transport=transport,
+        backend=backend,
+    )
+
+    await runner._consume_protocol_events('13579', '月璃')
+
+    assert [action for action, _params in transport.actions] == [
+        'get_forward_msg', 'get_forward_msg',
+    ]
+    nested = backend.events[0].forward_messages[0].nodes[0].parts[0].nested
+    assert nested is not None
+    assert [part.kind for part in nested.nodes[0].parts] == ['text', 'image', 'video']
+    assert nested.nodes[0].parts[1].source == 'https://gchat.qpic.cn/in?rkey=r'
+    assert nested.nodes[0].parts[2].file == 'in.mp4'
+    body = PlatformInboundBody.model_validate({
+        'platform': 'qq',
+        'streamKind': 'group',
+        'streamExternalId': '86420',
+        'senderExternalId': '97531',
+        'senderNickname': '群友甲',
+        'senderGroupCard': '甲',
+        'botName': '月璃',
+        'text': backend.events[0].text,
+        'mentionedMe': False,
+        'externalMessageId': '5001',
+        'forwardMessages': [
+            forward_tree_to_payload(tree) for tree in backend.events[0].forward_messages
+        ],
+    })
+    assert forward_tree_from_payload(body.forward_messages[0]) == (
+        backend.events[0].forward_messages[0]
+    )

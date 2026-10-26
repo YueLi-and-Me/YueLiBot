@@ -64,7 +64,7 @@ owner 的 QQ 号不是猜出来的。适配器每次连上主体后调 `link_own
 
 两条 WS 通道共用一个鉴权端点（`src/core/api/ws.py:151`）：桌面端把 token 放在 `yueli-<token>` 子协议里（`electron/main/python/client.ts:283`），适配器走标准 Authorization 头（backend.py:129-136）；`client` 查询参数不在枚举内或鉴权失败都以 1008 关闭，accept 之前就拒绝（ws.py:164-176）。token 本身不落在任何配置里：主体启动时生成运行时凭据文件，适配器经 `--runtime-path` 读它（`src/platforms/onebot11/__main__.py:52-57`），所以重启主体即轮换凭据，旧适配器连接自然失效。
 
-代价是跨进程协议的每一跳都要严格校验。入站方向 `PlatformInboundBody` 用 `extra='forbid'`（`src/core/api/http.py:75-78`），合并转发树在进业务前逐棵严格还原、拒绝未知字段（`src/core/platform_io/forward.py:97` 与 `_reject_unknown_keys`，forward.py:154）；出站方向适配器对 `qq.send` / `qq.react` / `qq.poke` 报文逐字段校验（`src/platforms/onebot11/backend.py:481` 起的 `_parse_outbound` 等）。`turnId` 存在但类型不对也当场报错而不是按 0 放过（backend.py:461-478）：静默放过会让投递失败回传丢掉回合归属。
+代价是跨进程协议的每一跳都要严格校验。入站方向 `PlatformInboundBody` 用 `extra='forbid'`（`src/core/api/http.py:75-78`），合并转发树在进业务前逐棵严格还原、拒绝未知字段（`src/core/platform_io/forward.py:165` 与 `_reject_unknown_keys`，forward.py:248）；出站方向适配器对 `qq.send` / `qq.react` / `qq.poke` 报文逐字段校验（`src/platforms/onebot11/backend.py:481` 起的 `_parse_outbound` 等）。`turnId` 存在但类型不对也当场报错而不是按 0 放过（backend.py:461-478）：静默放过会让投递失败回传丢掉回合归属。
 
 投递的诚实性由两个方向合起来保证。主体的 `DeliveryReceipt` 只证明报文到了适配器；协议端真正执行失败时，适配器通过 `/platform/delivery/failed` 回报（backend.py:268，runner.py:1112），主体只落账不补偿重发（`src/core/api/http.py:966` 的说明：失败原因基本在平台侧，自动重发会把一次可见失败变成反复骚扰）。回报本身失败只记日志——一次局部失败不应升级成整条出站通道停摆（runner.py:1125-1131）。
 
