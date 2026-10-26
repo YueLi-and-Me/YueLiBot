@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-import sqlite3
-
 import pytest
+import sqlite3
 
 from src.core.awareness.sleep import SleepStateController
 from src.core.config.schema import Config
@@ -20,6 +19,7 @@ from src.core.persona.state import (
     Persona,
     PersonaState,
 )
+from src.core.persona.turn_energy import TURN_ENERGY_LOAD_KEY
 from src.core.platform_io.types import ConversationContext, IdentityRef
 from src.core.services.chat import ChatService
 from src.core.schedule.timeline import ActivityTimeline
@@ -61,6 +61,8 @@ def _restore_state(
         'UPDATE persona_self SET energy = ?, mood = ?, updated_at = ? WHERE id = 1',
         (state.energy, state.mood, state.updated_at),
     )
+    # 两组独立场景必须同时还原身体状态与近期聊天负载。
+    db.execute('DELETE FROM meta WHERE key = ?', (TURN_ENERGY_LOAD_KEY,))
     db.commit()
 
 

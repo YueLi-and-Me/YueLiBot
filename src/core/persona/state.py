@@ -3,18 +3,21 @@
 
 本模块使用 ``persona_bond`` 保存按人物隔离的亲密度，使用
 ``persona_self`` 保存主体共享的精力和心情，并通过 ``persona_snapshots`` 记录
-owner 的每日状态。``StreamRegistry`` 负责校验人物归属；关系等级由
+owner 的每日状态，近期共享聊天负载保存在 ``meta`` 中。``StreamRegistry`` 负责校验人物归属；关系等级由
 ``src.core.agent.relationship`` 计算，数据库连接由调用方创建并注入。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from math import exp
 from typing import Sequence
 
+import json
 import sqlite3
+
+from .turn_energy import TURN_ENERGY_COST, TURN_ENERGY_LOAD_KEY, TurnEnergyLoad
 
 from src.core.agent.relationship import relationship_tier
 from src.core.logging.logger import get_logger
@@ -141,8 +144,8 @@ MOOD_TAU = 6.0
 # 精力，rest 只是比平常清醒掉得慢。pace 取值范围由时间线的 _ENERGY_PACE_RANGES
 # 限定。
 # 标定依据：活动构成取 2026-09-13 19:29 至 09-17 15:17 的生产实测。该构成下
-# 收支净零所需睡眠约 7.94 小时/天，计入回合消耗后的稳态精力约 48；两个数字
-# 都带「精力回归仍在」的前提，是该构成下的对照值而不是上线目标。
+# 当时回合费率为 0.3，收支净零所需睡眠约 7.94 小时/天，计入回合消耗后的稳态
+# 精力约 48；这些是保留精力回归时的历史对照值，回合费率调整后不再代表当前收支。
 # 查表缺键直接抛 KeyError，不给默认值兜底；pace 越界由时间线入口限幅拦截。
 ENERGY_RATES: dict[tuple[str, int], float] = {
     ('sleep', 2): 4.0,
@@ -161,22 +164,20 @@ ENERGY_RATES: dict[tuple[str, int], float] = {
 # ENERGY_RATES 积分决定。
 ENERGY_FALLBACK_RATE = ENERGY_RATES[('awake', -1)]
 # 精力若只是纯收支累加，长期必然贴到 0 或 100 中的一端；有了回归力，稳态由
-# 基线决定，速率表随之解耦。实测构成下计入回合消耗的稳态精力约 48（标定依据
-# 见 ENERGY_RATES 上方注释）。连续熬夜仍然净亏，代价不会被抹平。
+# 基线决定，速率表随之解耦。旧回合费率下的实测构成与稳态对照值见 ENERGY_RATES
+# 上方注释。连续熬夜仍然净亏，代价不会被抹平。
 ENERGY_BASELINE = 65.0   # 精力基线：无外力时收敛到的值，取值 0~100
 ENERGY_TAU = 48.0        # 精力回归时间常数，单位小时；一天回归约 39%
 # mood 标签自报精力的放大系数。原值为 3：一次 energy=-1 在群聊里等于 -2.4，相当于
-# 十个对话回合，而模型给出的 -3 会一次扣掉近 1.2 小时清醒活动的量。
+# 当时十个对话回合，而模型给出的 -3 会一次扣掉近 1.2 小时清醒活动的量。
 # 标定依据（真机实证，不是估算）：2026-09-11 00:49 连续两次触发 energy=-1，当时
 # 活动时间线上是 awake pace=-1（doing 写的就是「盯着消息慢慢打字回过去」），系统
 # 已按 -6.0/h 在扣；两个标签又额外扣掉 -4.8，等于同一件事被记了两遍，而且在精力
-# 曲线上留下活动完全解释不了的陡坎。收到 1 之后一次典型触发约等于三四个回合，
-# 与「这一轮比平常累一些」的语义相称，也不再压过活动积分。
+# 曲线上留下活动完全解释不了的陡坎。收到 1 之后，权重 0.8 时一次 energy=-1
+# 只扣 0.8 点，保留事件影响而不过度放大；该系数与固定回合消耗分别标定。
 MOOD_ENERGY_SCALE = 1.0
-# 单个对话回合的精力消耗，群聊再乘 group_chat.persona_weight。
-# 说话是要花精力的——这条不取消；但 0.4 会让一晚五十个回合吃掉一整夜睡眠的六成，
-# 对一个以聊天为本职的角色过重，收到 0.3。
-TURN_ENERGY_COST = 0.3
+# 回合基础消耗由 turn_energy 定义，实际扣费随近期共享聊天负载动态缩放。
+# 保留 TURN_ENERGY_COST 的模块导出，供现有结算测试及调用方引用基础费率。
 
 
 def _clamp(key: str, v: float) -> float:
@@ -341,15 +342,22 @@ class Persona:
         )
         self._db.commit()
 
-    def _write(self, person_id: int, state: PersonaState) -> None:
+    def _write(
+        self,
+        person_id: int,
+        state: PersonaState,
+        *,
+        turn_load: TurnEnergyLoad | None = None,
+    ) -> None:
         """原子更新人物亲密度和主体精力、心情。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param state: 已完成范围限制、准备持久化的新状态。
+        :param turn_load: 回合结算产生的聊天负载；事件结算不传入。
 
         副作用：
-            在同一个事务里更新 ``persona_bond`` 与 ``persona_self``。
-            数据库约束或连接错误会直接向调用方传播，且两张表都不会留下改动。
+            在同一个事务里更新 ``persona_bond``、``persona_self`` 和可选的聊天负载。
+            数据库约束或连接错误会直接向调用方传播，关系、身体状态与负载都不会留下部分改动。
         """
 
         # 两条 UPDATE 必须同事务：第二条失败时第一条若留在库里，亲密度与精力就分属
@@ -368,6 +376,13 @@ class Persona:
                 'UPDATE persona_self SET energy = ?, mood = ? WHERE id = 1',
                 (state.energy, state.mood),
             )
+            if turn_load is not None:
+                # 负载与扣费一起提交：任一步失败都回滚，重启后也不能重置计费系数。
+                self._db.execute(
+                    'INSERT INTO meta (key, value) VALUES (?, ?) '
+                    'ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                    (TURN_ENERGY_LOAD_KEY, json.dumps(asdict(turn_load), allow_nan=False)),
+                )
 
     def settled_at(self) -> int:
         """返回全局精力与心情已经结算到的毫秒时刻。
@@ -549,34 +564,48 @@ class Persona:
         *,
         weight: float,
     ) -> PersonaState:
-        """应用一次对话回合的固定亲密度收益与精力消耗。
+        """应用一次对话回合的亲密度收益与随近期聊天量调整的精力消耗。
 
         :param person_id: ``persons.id`` 稳定主键。
         :param now: 可选的本次写入毫秒时间戳；省略时读取统一时钟。
         :param weight: 回合权重，仅限关键字且必填；同时缩放亲密度收益和精力消耗。
             不设默认值：漏传会让群聊按全速消耗全局精力且测试无感，故要求调用点显式打折。
 
+        近期负载按会话权重累积，采用 24 小时时间常数连续衰减。精力关闭期间仍记录
+        实际聊天量，避免重新开启后突然按冷启动费率计费；好感与事件增量不乘动态系数。
+
         :return: 应用变化并限制到 [0, 100] 后的新状态。
 
-        :raises ValueError: 人物不存在时由注册表抛出。
+        :raises ValueError: 人物不存在、权重越界、时间倒退或持久化负载损坏。
         :raises RuntimeError: 关系或主体精力记录缺失，或数据库写入失败。
 
         副作用：
-            更新两张状态表并提交事务。
+            更新两张状态表与 meta 中的共享聊天负载，并在同一事务中提交。
         """
 
         now = now if now is not None else current_time()
         state = self.get(person_id)
+        row = self._db.execute(
+            'SELECT value FROM meta WHERE key = ?', (TURN_ENERGY_LOAD_KEY,),
+        ).fetchone()
+        # 没有记录表示首次启用；已有记录损坏时直接抛错，不能静默重置聊天负载。
+        load = TurnEnergyLoad(0.0, now) if row is None else TurnEnergyLoad(**json.loads(row[0]))
+        turn_cost, next_load = load.charge(now, weight)
         next_state = PersonaState(
             intimacy=_clamp('intimacy', state.intimacy + 0.35 * weight),
             energy=(
-                _clamp('energy', state.energy - TURN_ENERGY_COST * weight)
+                _clamp('energy', state.energy - turn_cost)
                 if self._energy_enabled else state.energy
             ),
             mood=state.mood,
             updated_at=now,
         )
-        self._write(person_id, next_state)
+        self._write(person_id, next_state, turn_load=next_load)
+        logger.debug(
+            '回合精力结算', weight=weight, effective_turns=next_load.effective_turns,
+            energy_cost=turn_cost if self._energy_enabled else 0.0,
+            energy_before=state.energy, energy_after=next_state.energy,
+        )
         return next_state
 
     def apply_elapsed(
