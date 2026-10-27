@@ -39,6 +39,8 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "plugin_system.context": ("#87d7af", True),
     # 插件宿主
     "plugin_system.registry": ("#87d787", False),
+    "plugin_system.dependencies": ("#afd787", False),
+    "plugin_market.config": ("#ffd787", False),
     "plugin_system.manifest": ("#ffd787", False),
     "mcp.manager": ("#5fd7ff", True),
     "mcp.compat.sdk": ("#87d7ff", True),
@@ -152,6 +154,8 @@ MODULE_ALIASES: Dict[str, str] = {
     "plugin_system.adapter": "插件契约",
     "plugin_system.context": "插件",
     "plugin_system.registry": "插件注册表",
+    "plugin_system.dependencies": "插件依赖",
+    "plugin_market.config": "插件市场配置",
     "plugin_system.manifest": "插件版本",
     "mcp.manager": "MCP 管理",
     "mcp.compat.sdk": "MCP 连接",

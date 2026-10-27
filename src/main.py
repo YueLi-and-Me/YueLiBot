@@ -56,6 +56,9 @@ from src.core.config.schema import (
 )
 from src.core.config.upgrade import upgrade_config_directory
 from src.core.mcp.manager import McpManager
+from src.core.plugin_market.config import load_plugin_market_config
+from src.core.services.chat.constants import PLUGIN_ROOTS
+from src.plugin_system.dependencies import ensure_plugin_dependencies
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import current_render_params
 from src.core.observe import events as trace
@@ -909,6 +912,11 @@ def main() -> None:
     mcp = McpManager.from_directory(config_dir, data_dir=data_dir,
         proxy=cfg.advanced.https_proxy, force=cfg.advanced.force_compatibility)
     app_state.mcp = mcp
+    market_config = load_plugin_market_config(config_dir)
+    dependency_notes = ensure_plugin_dependencies(
+        PLUGIN_ROOTS, auto_install=market_config.dependencies.auto_install,
+        data_dir=data_dir, proxy=cfg.advanced.https_proxy,
+    )
     app_state.chat = ChatService(
         db=db,
         chat_provider=chat_provider,
@@ -918,6 +926,7 @@ def main() -> None:
         cfg=cfg,
         data_dir=data_dir,
         mcp=mcp,
+        dependency_notes=dependency_notes,
         broker=broker,
         expression_provider=routers.expression if routers.expression.ready else None,
         planner_provider=routers.planner if routers.planner.ready else None,

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from src.core.commands.registry import register_command
@@ -43,6 +44,7 @@ from .attribution import (
     attributed_tool,
 )
 from .context import PluginContext
+from .dependencies import unsatisfied
 from .loader import MANIFEST_FILENAME, load_tool_plugin
 from .config import ensure_plugin_config, read_enabled_flag
 from .manifest import PluginManifest, check_host_compatibility, load_manifest, report_host_compatibility
@@ -80,6 +82,7 @@ class PluginRegistry:
         self,
         context_factory: Optional[Callable[[str, Path], PluginContext]] = None,
         *, force_compatibility: bool = False,
+        dependency_notes: Mapping[Path, str] = MappingProxyType({}),
     ) -> None:
         """初始化空注册表。
 
@@ -87,6 +90,7 @@ class PluginRegistry:
             插件在 ``bind_config`` 之后、``on_load`` 之前得到自己的入口实例
             （日志器绑定插件 id，因此必须每插件一个）。缺省 ``None`` 表示本表
             不注入入口，供宿主接线尚未就位的装配路径使用。
+        :param dependency_notes: 启动依赖检查产生的说明，缺省为空；加载前仍重新检查版本。
         """
         self._plugins: List[ToolPlugin] = []
         # 插件 id → 来源目录，用于同 id 冲突时指出被保留者与后来者各自的位置。
@@ -95,6 +99,7 @@ class PluginRegistry:
         self._loaded: List[ToolPlugin] = []
         self._context_factory = context_factory
         self._force_compatibility = force_compatibility
+        self._dependency_notes = dependency_notes
         self._statuses: Dict[Path, PluginStatus] = {}
         # 管理页保留已导入插件的声明；on_load 失败后也可修正配置再重启。
         self._discovered: Dict[Path, ToolPlugin] = {}
@@ -340,6 +345,9 @@ class PluginRegistry:
             logger.error('插件根目录无法列举，已跳过', root=str(root), error=str(exc))
             return
         for directory in directories:
+            if directory.name.startswith('.'):
+                logger.debug('跳过隐藏插件目录', directory=str(directory))
+                continue
             self._discover_one(directory, third_party)
 
     def _log_disabled(self, plugin_id: str, directory: Path) -> None:
@@ -387,6 +395,17 @@ class PluginRegistry:
         # 因此入口写坏了的插件可以靠把 enabled 改成 false 彻底绕开，不必删目录。
         if read_enabled_flag(directory) is False:
             self._log_disabled(manifest.plugin_id, directory)
+            return
+        problems = unsatisfied(manifest.python_dependencies)
+        if problems:
+            reason = self._dependency_notes.get(directory)
+            if reason is None:
+                reason = '插件依赖缺失：' + '；'.join(
+                    f'{item.requirement}（已装 {item.installed if item.installed is not None else "未安装"}）'
+                    for item in problems
+                ) + '；见启动日志'
+            self._record_failure(directory, reason, '依赖缺失')
+            logger.error('插件依赖缺失，跳过加载', plugin=manifest.plugin_id, reason=reason)
             return
         if manifest.plugin_type != 'tool':
             # 适配器互斥且跑在独立进程，由进程入口按名字加载，刻意不并入扫目录

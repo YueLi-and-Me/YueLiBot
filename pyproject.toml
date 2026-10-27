@@ -17,6 +17,8 @@ dependencies = [
     "colorama>=0.4.6",
     "jieba>=0.42.1",
     "httpx>=0.27.0",
+    # 插件依赖的 PEP 508 解析与已安装版本检查，最低支持版本为 24。
+    "packaging>=24",
     # 两代 MCP 协议均由兼容层适配，启动时另行核对 SDK 版本区间。
     "mcp>=2.3,<3",
     # 记忆检索的稠密向量通道在全部 SQ8 向量上整块算余弦（memory/dense.py），

@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from types import MappingProxyType
 from typing import (
     Any,
     Callable,
@@ -240,6 +241,7 @@ class ChatService(
         *,
         cfg: Config,
         data_dir: Path = Path('data'),
+        dependency_notes: Mapping[Path, str] = MappingProxyType({}),
         mcp: McpManager | None = None,
         speak_audio: Callable[[str, int], Any] | None = None,
         vector: VectorService | None = None,
@@ -265,6 +267,7 @@ class ChatService(
         :param summary_provider: 摘要模型；可为 ``None``。
         :param push_event: 接收频道、载荷和 stream ID 的事件推送回调。
         :param cfg: 已校验的运行时配置。
+        :param dependency_notes: 启动时的插件依赖说明，原样传给注册表供管理页展示。
         :param mcp: 组合根提供的 MCP 管理器；独立构造时使用不连接服务的关闭态实例。
         :param speak_audio: 可选的同步或异步语音回调。
         :param vector: 可选向量服务；省略时创建禁用实例。
@@ -425,6 +428,7 @@ class ChatService(
                 video_describer=self._video_describer,
             ),
             force_compatibility=cfg.advanced.force_compatibility,
+            dependency_notes=dependency_notes,
         )
         self._plugins.discover(PLUGIN_ROOTS)
         for spec, executor in self._plugins.tools():
