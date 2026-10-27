@@ -705,6 +705,10 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         if body.poked_me
         else 0
     )
+    # 跟进窗口只对她最近一次生效回合回应过的人放行，与批次门控读同一份事实。
+    from_recent_partner = app_state.chat.is_recent_partner(
+        context.stream.id, context.person.id,
+    )
     gate_result = decide_disposition(GateRequest(
         stream_kind=context.stream.kind,
         mentioned_me=body.mentioned_me,
@@ -722,6 +726,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         # 入口与批次两个门控必须读同一份跟进事实，否则 reply_gate 审计事件报告的
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
         follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
+        from_recent_partner=from_recent_partner,
     ))
     plain_group_deferred = (
         context.stream.kind == 'group'
@@ -752,6 +757,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         repliesInWindow=reply_count,
         maxRepliesInWindow=group_chat.max_replies_in_window,
         naturalReplyElapsedMs=last_bot_reply_elapsed_ms,
+        fromRecentPartner=from_recent_partner,
         **gate_result.as_trace(),
     )
     if gate_result.disposition == 'drop' and not plain_group_deferred:

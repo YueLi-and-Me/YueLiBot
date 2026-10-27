@@ -92,16 +92,20 @@ class _Chat:
         self.name_mention_probability = 1.0
         self.inbound: List[Any] = []
         self.observed: List[Any] = []
-        # 入口门控读取的跟进事实；用例默认「没放弃过、话题已走远」，
-        # 需要验证跟进口径的用例自行改写这两个属性。
+        # 入口门控读取的跟进事实；用例默认「没放弃过、话题已走远、发送者不是她
+        # 最近回应过的人」，需要验证跟进口径的用例自行改写这三个属性。
         self.declined = False
         self.topic_hers = False
+        self.recent_partner = False
 
     def bot_names(self) -> tuple[str, ...]:
         return ('配置名称', '配置别名')
 
     def follow_up_declined(self, stream_id: int) -> bool:
         return self.declined
+
+    def is_recent_partner(self, stream_id: int, person_id: int) -> bool:
+        return self.recent_partner
 
     def topic_still_hers(self, stream_id: int, last_bot_reply_at: int) -> bool:
         return self.topic_hers
@@ -252,6 +256,7 @@ def test_gate_decision_carries_every_input_it_judged_on() -> None:
         replies_in_window=1,
         max_replies_in_window=3,
         last_bot_reply_elapsed_ms=0,
+        from_recent_partner=True,
     ))
 
     # 距上一条回复足够近，自然回应窗口与称呼两个注意力信号同时命中。

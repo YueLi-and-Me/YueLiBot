@@ -173,7 +173,7 @@ async def test_registered_tool_executes_and_observation_returns_to_next_round() 
             'id': 'call-reply',
             'name': 'reply',
             'arguments': (
-                '{"target": 101, "reasons": ["directly_addressed"], '
+                '{"mind": "测试想法", "target": 101, "reasons": ["directly_addressed"], '
                 '"length": "brief", "reference": "读完转发后回答"}'
             ),
         }]}],
@@ -252,7 +252,7 @@ def test_tool_definition_requires_capability_and_cognitive_budget() -> None:
 async def test_disabled_tool_calling_does_not_claim_tools_were_declared() -> None:
     """XML 决策模式没有下发工具时，审计事件不能声称模型看到了外部工具。"""
     planner = _ScriptedProvider([[
-        {'text': '<decision action="silent" reasons="others_conversation"/>'},
+        {'text': '<decision action="silent" mind="测试想法" reasons="others_conversation"/>'},
     ]])
     registry = build_builtin_action_registry()
     registry.register_tool(_tool_spec(), _RecordingExecutor())

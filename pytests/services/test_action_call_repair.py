@@ -148,7 +148,7 @@ async def _collect_events(events: List[ParseEvent], sink: List[ParseEvent]) -> N
 
 
 _VALID_REPLY = (
-    '{"target": 101, "reasons": ["directly_addressed"], "length": "brief", '
+    '{"mind": "测试想法", "target": 101, "reasons": ["directly_addressed"], "length": "brief", '
     '"reference": "对方在叫她，回应这条消息"}'
 )
 
@@ -219,7 +219,7 @@ async def test_persistent_fault_exhausts_repair_and_fails() -> None:
 async def test_xml_protocol_error_is_not_repaired() -> None:
     """XML 动作头路径的协议错误直接终局：只有一次模型调用。"""
     provider = _TextProvider([
-        ['<decision action="silent" reasons="not_a_real_code"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="not_a_real_code"/>'],
     ])
     agent = ConversationAgent(provider, temperature=0.7)
 
@@ -367,6 +367,7 @@ async def test_free_text_reason_repair_carries_the_available_values() -> None:
     planner = _ToolCallProvider([
         ('reply', json.dumps(
             {
+                'mind': '测试想法',
                 'target': 101,
                 'reasons': [prose],
                 'length': 'brief',
@@ -408,7 +409,7 @@ async def test_partial_missing_fields_are_repaired_without_candidate_switch() ->
     本用例随之变红。
     """
     planner = _ValidatingToolCallProvider([
-        ('reply', '{"target": 101, "reasons": ["directly_addressed"], "length": "brief"}'),
+        ('reply', '{"mind": "测试想法", "target": 101, "reasons": ["directly_addressed"], "length": "brief"}'),
         ('reply', _VALID_REPLY),
     ])
     replyer = _TextProvider([['<say emotion="normal">嗯，在呢。</say>']])

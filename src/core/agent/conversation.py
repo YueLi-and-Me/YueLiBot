@@ -80,6 +80,7 @@ from .parser import (
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.protocol import LlmProvider
 from src.core.observe import events as trace
+from src.core.runtime.clock import now as current_time
 from src.core.tooling.executor import ToolExecutor
 from src.core.tooling.registry import ToolRegistry
 from src.core.tooling.spec import ToolContext, ToolExecutionResult, ToolInvocation
@@ -349,6 +350,9 @@ class AgentOutcome:
         动作与外部只读工具同列其中，共用一份预算。
     :ivar tool_invocation: 本轮最后一次外部只读工具调用；没有外部工具时为 None，
         供调用方在缺少 decision 时仍能渲染该轮做了什么。
+    :ivar decided_at: 终局动作头通过校验的 Unix 毫秒时刻；这一轮没有终局动作头时
+        为 None。调用方据此把心理活动按时间放回聊天记录：它早于随后落库的回复，
+        晚于触发这一轮的消息。
     """
 
     decision: ConversationDecision | None
@@ -360,6 +364,7 @@ class AgentOutcome:
     cognitive_rounds_used: int = 0
     cognitive_steps: tuple[tuple[str, str, str], ...] = ()
     tool_invocation: ToolInvocation | None = None
+    decided_at: int | None = None
 
 
 def _parse_id_list(raw: str | None) -> tuple[int, ...]:
@@ -746,6 +751,8 @@ class ConversationAgent:
         # 工具模式下是否收到过正文。仅用于让缺失工具调用的失败原因区分「输出了
         # 台词」与「整条响应为空」，两者的纠错回灌措辞不同。
         prose_only = False
+        # 终局动作头通过校验的时刻；认知动作头不记，它们不是这一轮的结论。
+        decided_at: int | None = None
 
         async def release(events: list[ParseEvent]) -> None:
             """放出已通过动作头校验的事件；无回调时仅聚合到结果。
@@ -818,6 +825,7 @@ class ConversationAgent:
                 cognitive_rounds_used=cognitive_rounds_used,
                 cognitive_steps=tuple(steps),
                 tool_invocation=tool_invocation,
+                decided_at=decided_at,
             )
 
         try:
@@ -948,6 +956,8 @@ class ConversationAgent:
                             except IllegalActionError:
                                 call_fault = True
                                 raise
+                            if call_head.action not in COGNITIVE_ACTIONS:
+                                decided_at = current_time()
                             tool_started_at = time.monotonic()
                             try:
                                 settled = await self._settle_head(
@@ -1043,6 +1053,8 @@ class ConversationAgent:
                         if head is None:
                             if isinstance(event, DecisionEvent):
                                 head = self._parse_head(event, frame)
+                                if head.action not in COGNITIVE_ACTIONS:
+                                    decided_at = current_time()
                                 settled = await self._settle_head(
                                     head, frame, cognitive_scope,
                                 )
@@ -1411,6 +1423,12 @@ class ConversationAgent:
             reference=(
                 event.reference.strip()
                 if event.reference is not None and event.reference.strip()
+                else None
+            ),
+            # 空白与缺失同样按未提供处理，终局动作缺 mind 由 validate 判为协议错误。
+            mind=(
+                event.mind.strip()
+                if event.mind is not None and event.mind.strip()
                 else None
             ),
         )

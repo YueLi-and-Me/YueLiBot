@@ -75,13 +75,13 @@ def _agent(provider: Any) -> ConversationAgent:
 
 
 _REPLY_HEAD = (
-    '<decision action="reply" targets="101,102" quote="101" '
+    '<decision action="reply" mind="测试想法" targets="101,102" quote="101" '
     'reasons="direct_question,topic_continuation" length="brief"/>'
 )
 _REPLY_HEAD_NO_QUOTE = (
-    '<decision action="reply" targets="101" reasons="direct_question" length="brief"/>'
+    '<decision action="reply" mind="测试想法" targets="101" reasons="direct_question" length="brief"/>'
 )
-_SILENT_HEAD = '<decision action="silent" reasons="others_conversation,would_interrupt"/>'
+_SILENT_HEAD = '<decision action="silent" mind="测试想法" reasons="others_conversation,would_interrupt"/>'
 
 
 async def _collect_events(events: List[ParseEvent], sink: List[ParseEvent]) -> None:
@@ -156,7 +156,7 @@ async def test_reply_necessity_presence_penalty_reduces_over_reply() -> None:
 
 async def test_reply_releases_body_only_after_valid_head() -> None:
     provider = _ScriptedProvider([
-        '<decision action="reply" targets="101" quote="101" reasons="direct_question" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="101" quote="101" reasons="direct_question" length="brief"/>',
         '<say emotion="normal">在的</say>',
     ])
     collected: List[ParseEvent] = []
@@ -205,7 +205,7 @@ async def test_reply_releases_body_only_after_valid_head() -> None:
 
 async def test_head_split_across_chunks() -> None:
     provider = _ScriptedProvider([
-        '<decision action="reply" targets="10',
+        '<decision action="reply" mind="测试想法" targets="10',
         '1" reasons="direct_question" length="long"/>',
         '<say>好</say>',
     ])
@@ -249,7 +249,7 @@ async def test_silent_produces_only_head_and_no_body() -> None:
 async def test_silent_drops_trailing_body() -> None:
     """静默动作头之后的正文不得解析、不得流出。"""
     provider = _ScriptedProvider([
-        '<decision action="silent" reasons="low_relevance"/>',
+        '<decision action="silent" mind="测试想法" reasons="low_relevance"/>',
         '<say>不该出现</say>',
     ])
     collected: List[ParseEvent] = []
@@ -334,7 +334,7 @@ async def test_unknown_action_is_illegal() -> None:
 
 async def test_free_reason_code_is_illegal() -> None:
     provider = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="i_feel_like_it" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="101" reasons="i_feel_like_it" length="brief"/>',
         '<say>在</say>',
     ])
 
@@ -351,7 +351,7 @@ async def test_free_reason_code_is_illegal() -> None:
 
 async def test_target_outside_selectable_is_illegal() -> None:
     provider = _ScriptedProvider([
-        '<decision action="reply" targets="103" reasons="direct_question" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="103" reasons="direct_question" length="brief"/>',
         '<say>在</say>',
     ])
 
@@ -368,7 +368,7 @@ async def test_target_outside_selectable_is_illegal() -> None:
 
 async def test_quote_without_capability_is_illegal() -> None:
     provider = _ScriptedProvider([
-        '<decision action="reply" targets="101" quote="101" reasons="direct_question" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="101" quote="101" reasons="direct_question" length="brief"/>',
         '<say>在</say>',
     ])
 
@@ -385,7 +385,7 @@ async def test_quote_without_capability_is_illegal() -> None:
 
 async def test_reply_head_without_length_is_illegal() -> None:
     provider = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="direct_question"/>',
+        '<decision action="reply" mind="测试想法" targets="101" reasons="direct_question"/>',
         '<say>在</say>',
     ])
 
@@ -510,7 +510,7 @@ async def test_react_head_with_capability() -> None:
         capabilities=caps,
     )
     provider = _ScriptedProvider([
-        '<decision action="react" targets="101" reaction="128074" '
+        '<decision action="react" mind="测试想法" targets="101" reaction="128074" '
         'reasons="natural_reaction"/>',
     ])
     collected: List[ParseEvent] = []
@@ -547,9 +547,12 @@ async def test_action_protocol_template_renders_actions_and_targets() -> None:
     assert '不引用就不写 quote 属性' in text
     # 示例目标来自真实可选消息，reply 与 silent 都在动作空间内时两条都渲染。
     assert '# reply（回复）' in text
-    assert '<decision action="reply" targets="101"' in text
+    # 示例的动作头同样带上 mind，且排在目标之前。
+    assert '<decision action="reply" mind="' in text
+    assert 'targets="101" reasons="direct_question" length="brief"/>' in text
     assert '# silent（不回复）' in text
-    assert '<decision action="silent" reasons="others_conversation"/>' in text
+    assert '<decision action="silent" mind="' in text
+    assert 'reasons="others_conversation"/>' in text
     assert 'normal / happy / smile' in text
 
 
@@ -655,7 +658,7 @@ async def test_split_reply_takes_body_from_replyer_only() -> None:
     职责必须到动作头为止。
     """
     planner = _RecordingProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" '
         'length="brief" reference="他在吐槽引擎，接一句"/>',
         '<say>这句是决策模型写的，不许发出去</say>',
     ])
@@ -714,7 +717,7 @@ async def test_split_reply_switches_candidate_when_replyer_outputs_reasoning_onl
     ], health=health)
     replyer.client = lambda candidate: clients[candidate.name]   # type: ignore[method-assign]
     planner = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" '
         'length="brief" reference="接一句"/>',
     ])
     agent = ConversationAgent(planner, temperature=0.8, replyer=replyer)
@@ -736,7 +739,7 @@ async def test_split_reply_switches_candidate_when_replyer_outputs_reasoning_onl
 async def test_split_reply_rejects_plain_text_without_say() -> None:
     """回复生成的供应商诊断裸文本不能被隐式包装成月璃台词。"""
     planner = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" '
         'length="brief" reference="接一句"/>',
     ])
     replyer = _ScriptedProvider([
@@ -765,7 +768,7 @@ async def test_split_reply_rejects_plain_text_without_say() -> None:
 async def test_split_reply_discards_staged_events_after_trailing_plain_text() -> None:
     """回复后段违反协议时，前段台词和副作用也不能提前放出。"""
     planner = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" '
         'length="brief" reference="接一句"/>',
     ])
     replyer = _ScriptedProvider([
@@ -791,7 +794,7 @@ async def test_split_reply_discards_staged_events_after_trailing_plain_text() ->
 
 async def test_split_skips_replyer_for_silent() -> None:
     """沉默不产出可见产物，不该为它多付一次模型往返。"""
-    planner = _ScriptedProvider(['<decision action="silent" reasons="no_new_value"/>'])
+    planner = _ScriptedProvider(['<decision action="silent" mind="测试想法" reasons="no_new_value"/>'])
     replyer = _ScriptedProvider(['<say>不该被调用</say>'])
     agent = ConversationAgent(planner, temperature=0.8, replyer=replyer)
 
@@ -810,7 +813,7 @@ async def test_split_skips_replyer_for_silent() -> None:
 async def test_without_replyer_body_still_comes_from_single_call() -> None:
     """未注入回复生成模型时行为与拆分前逐字相同。"""
     planner = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" length="brief"/>',
         '<say>单次调用产出的正文</say>',
     ])
     agent = ConversationAgent(planner, temperature=0.8)
@@ -857,7 +860,7 @@ async def test_tool_calling_decision_drives_replyer() -> None:
     """工具调用产出决策、replyer 产出正文，两级各司其职。"""
     planner = _ToolProvider(
         'reply',
-        '{"target": "101", "reasons": ["direct_question"], "length": "brief", '
+        '{"mind": "测试想法", "target": "101", "reasons": ["direct_question"], "length": "brief", '
         '"reference": "他直接问了，答一句"}',
     )
     replyer = _ScriptedProvider(['<say>在的</say>'])
@@ -887,7 +890,7 @@ async def test_tool_calling_decision_drives_replyer() -> None:
 
 async def test_tool_calling_silent_needs_no_replyer() -> None:
     """选中沉默工具时不产出正文，也不调用回复生成模型。"""
-    planner = _ToolProvider('silent', '{"reasons": ["others_conversation"]}')
+    planner = _ToolProvider('silent', '{"mind": "测试想法", "reasons": ["others_conversation"]}')
     replyer = _ScriptedProvider(['<say>不该被调用</say>'])
     agent = ConversationAgent(
         planner, temperature=0.8, replyer=replyer, tool_calling=True,
@@ -906,7 +909,7 @@ async def test_tool_calling_react_needs_no_replyer() -> None:
     """表情回应已经是完整终局动作，不得再调用回复生成模型补正文。"""
     planner = _ToolProvider(
         'react',
-        '{"target": "101", "reaction": "吃瓜", "reasons": ["natural_reaction"]}',
+        '{"mind": "测试想法", "target": "101", "reaction": "吃瓜", "reasons": ["natural_reaction"]}',
     )
     replyer = _ScriptedProvider(['<say>不该被调用</say>'])
     agent = ConversationAgent(
@@ -934,7 +937,7 @@ async def test_tool_calling_rejects_illegal_arguments() -> None:
     """越界目标仍按 illegal_action 失败，硬边界不因换表达方式而放松。"""
     planner = _ToolProvider(
         'reply',
-        '{"target": 999, "reasons": ["direct_question"], "length": "brief", '
+        '{"mind": "测试想法", "target": 999, "reasons": ["direct_question"], "length": "brief", '
         '"reference": "x"}',
     )
     replyer = _ScriptedProvider(['<say>不该被调用</say>'])
@@ -954,7 +957,7 @@ async def test_tool_calling_rejects_illegal_arguments() -> None:
 async def test_tool_calling_rejects_xml_fallback() -> None:
     """工具模式只认工具调用，旧 XML 动作头不能成为隐式兼容路径。"""
     planner = _ScriptedProvider([
-        '<decision action="reply" targets="101" reasons="direct_question" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="direct_question" '
         'length="brief"/><say>不该被接受</say>',
     ])
     replyer = _ScriptedProvider(['<say>也不该被调用</say>'])
@@ -990,7 +993,7 @@ def test_tool_calling_requires_replyer() -> None:
 async def test_two_stages_use_their_own_sampling_params() -> None:
     """决策与表达各用各的采样参数：一级要判断稳定，一级要表达自然。"""
     planner = _RecordingParamsProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" '
         'length="brief" reference="接一句"/>',
     ])
     replyer = _RecordingParamsProvider(['<say>在的</say>'])
@@ -1015,7 +1018,7 @@ async def test_two_stages_use_their_own_sampling_params() -> None:
 async def test_replyer_params_default_to_decision_params() -> None:
     """没单独配时表达层沿用决策那一档，不会因为拆分就悄悄换了采样口径。"""
     planner = _RecordingParamsProvider([
-        '<decision action="reply" targets="101" reasons="can_add_value" '
+        '<decision action="reply" mind="测试想法" targets="101" reasons="can_add_value" '
         'length="brief" reference="接一句"/>',
     ])
     replyer = _RecordingParamsProvider(['<say>在的</say>'])

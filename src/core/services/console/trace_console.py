@@ -439,6 +439,7 @@ def render_action_decision(
     target_message_ids: tuple[int, ...] | list[int] = (),
     query: str = "",
     observation: str = "",
+    mind: str | None = None,
 ) -> None:
     """以单行渲染 Conversation Agent 的行动决策摘要。
 
@@ -453,6 +454,7 @@ def render_action_decision(
     :param action: 已提交决策的动作名；失败状态为空。
     :param reason_codes: 已提交决策的理由码。
     :param target_message_ids: 已提交决策的目标消息 ID。
+    :param mind: 终局动作的心理活动，全文展示不截断；认知动作与失败状态为 None。
 
     副作用：
         向三端写入一行决策摘要；渲染异常只记录调试日志。
@@ -471,6 +473,9 @@ def render_action_decision(
                 summary += f"  理由：{'、'.join(value_label(code) for code in reason_codes)}"
             if target_message_ids:
                 summary += f"  目标消息：{'、'.join(str(target) for target in target_message_ids)}"
+            if mind is not None:
+                # 心理活动只有一两句，全文展示，不像观察结果那样截断：截断后看不出她当时的判断。
+                summary += f'  心里：{mind}'
             if observation:
                 # 观察正文可能很长，单行只展示开头，完整结果见轮末回合面板。
                 summary += f'  结果：{_clip_observation(observation)}'

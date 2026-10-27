@@ -135,6 +135,7 @@ def test_natural_reply_window_signal_comes_from_recent_replies() -> None:
         replies_in_window=1,
         max_replies_in_window=3,
         last_bot_reply_elapsed_ms=NATURAL_REPLY_WINDOW_MS,
+        from_recent_partner=True,
     ))
 
     assert result.disposition == 'deliberate'
@@ -245,6 +246,7 @@ def test_ongoing_topic_catches_what_the_time_window_misses() -> None:
         max_replies_in_window=3,
         last_bot_reply_elapsed_ms=NATURAL_REPLY_WINDOW_MS * 3,
         current_topic_available=True,
+        from_recent_partner=True,
     ))
 
     assert result.disposition == 'deliberate'
@@ -257,6 +259,7 @@ def test_declined_follow_up_closes_ongoing_topic_too() -> None:
         last_bot_reply_elapsed_ms=0,
         current_topic_available=True,
         follow_up_declined=True,
+        from_recent_partner=True,
     ))
 
     assert result.disposition == 'drop'
@@ -270,10 +273,40 @@ def test_declined_follow_up_closes_natural_window() -> None:
         max_replies_in_window=3,
         last_bot_reply_elapsed_ms=0,
         follow_up_declined=True,
+        from_recent_partner=True,
     ))
 
     assert result.disposition == 'drop'
     assert result.reason_codes == ('attention_filtered',)
+
+
+def test_follow_up_windows_only_open_for_her_recent_partner() -> None:
+    """她刚说过话、话题也没走远，但发言的人不是她上一回合回应的人：两条跟进信号都不追加。
+
+    这条消息没有任何点名信号，因此落到无信号过滤；同样的输入换成她刚接过话的人，
+    两条跟进信号都命中。
+    """
+    facts = dict(last_bot_reply_elapsed_ms=0, current_topic_available=True)
+
+    stranger = decide_disposition(_request(**facts, from_recent_partner=False))
+    partner = decide_disposition(_request(**facts, from_recent_partner=True))
+
+    assert stranger.disposition == 'drop'
+    assert stranger.reason_codes == ('attention_filtered',)
+    assert partner.reason_codes == ('natural_reply_window', 'ongoing_topic')
+
+
+def test_non_partner_still_enters_on_a_direct_signal() -> None:
+    """点名信号不受跟进窗口收窄影响：不是她刚接过话的人叫了她名字照样进入。"""
+    result = decide_disposition(_request(
+        name_mentioned=True,
+        last_bot_reply_elapsed_ms=0,
+        current_topic_available=True,
+        from_recent_partner=False,
+    ))
+
+    assert result.disposition == 'deliberate'
+    assert result.reason_codes == ('name_mention',)
 
 
 def test_reply_count_alone_no_longer_closes_natural_window() -> None:
@@ -286,6 +319,7 @@ def test_reply_count_alone_no_longer_closes_natural_window() -> None:
         replies_in_window=2,
         max_replies_in_window=3,
         last_bot_reply_elapsed_ms=0,
+        from_recent_partner=True,
     ))
 
     assert result.disposition == 'deliberate'

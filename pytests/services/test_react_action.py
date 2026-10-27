@@ -97,7 +97,7 @@ def _action_events() -> List[dict]:
     return list(reversed(event_store.search(kinds=['action_decision']).events))
 
 
-_REACT = '<decision action="react" targets="1" reaction="赞" reasons="natural_reaction"/>'
+_REACT = '<decision action="react" mind="测试想法" targets="1" reaction="赞" reasons="natural_reaction"/>'
 
 
 class TestCapabilityGate:
@@ -211,7 +211,7 @@ class TestReactDelivery:
         await self._run_turn(
             db,
             _ScriptedProvider([[
-                '<decision action="react" targets="1" reaction="比心" '
+                '<decision action="react" mind="测试想法" targets="1" reaction="比心" '
                 'reasons="natural_reaction"/>'
             ]]),
             broker,

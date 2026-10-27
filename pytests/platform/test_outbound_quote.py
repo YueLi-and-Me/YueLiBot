@@ -229,7 +229,7 @@ def _group_context(registry: StreamRegistry, sender_external_id: str = '97531'):
 async def test_group_reply_quotes_target_once_others_have_spoken(db) -> None:
     """目标之后已经有人插话时，群聊回复挂上目标消息的平台编号。"""
     provider = _ScriptedProvider([[
-        '<decision action="reply" targets="{target}" reasons="natural_reaction" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="{target}" reasons="natural_reaction" length="brief"/>',
         '<say emotion="smile">接住了</say>',
     ]])
     broker = _RecordingBroker()
@@ -262,7 +262,7 @@ async def test_group_reply_quotes_target_once_others_have_spoken(db) -> None:
 async def test_group_reply_without_displacement_is_not_quoted(db) -> None:
     """目标就是本 stream 最新一条时不挂引用，避免在安静的群里刷引用框。"""
     provider = _ScriptedProvider([[
-        '<decision action="reply" targets="{target}" reasons="natural_reaction" length="brief"/>',
+        '<decision action="reply" mind="测试想法" targets="{target}" reasons="natural_reaction" length="brief"/>',
         '<say emotion="smile">接住了</say>',
     ]])
     broker = _RecordingBroker()

@@ -68,7 +68,7 @@ def _spec() -> ToolSpec:
 def _calls(*names: str, target: int = 101) -> Dict[str, Any]:
     """构造完整函数调用；回复目标取当前真实消息主键。"""
     arguments = {
-        'reply': {'target': target, 'reasons': ['directly_addressed'], 'length': 'brief', 'reference': '回应资料'},
+        'reply': {'mind': '测试想法', 'target': target, 'reasons': ['directly_addressed'], 'length': 'brief', 'reference': '回应资料'},
         'recall': {'query': '过去的事'},
         'read_material': {},
     }
@@ -215,12 +215,15 @@ def test_r1_cognitive_observation_matches_original_text(final_round: bool, long:
     assert _observation_messages(steps, final_round=final_round, flattened=True) == [{'role': 'user', 'content': expected}]
 
 
+# 摘要包含回复协议里那一行本轮心理活动（mind 固定为「测试想法」）；去掉这一行后
+# 与加入心理活动之前的字节一致。
 @pytest.mark.parametrize(('length', 'emoji', 'digest'), [
-    (None, False, 'ed5754c8db8c1e22de968912e9be751255d720b96b2a72775407c2d320d1a549'),
-    ('brief', False, 'ed5754c8db8c1e22de968912e9be751255d720b96b2a72775407c2d320d1a549'),
-    ('brief', True, 'c8eda30b3abe72d9ac23ea1e105ce3aa753e08ffd398fde0d4d5670d6efdf2de'),
-    ('long', False, '46ef37f98887e76538b647b5594cbf86e2f4a129669914093ff5d74eb026f39d'),
-    ('long', True, '811587c4fb53ea3658123718a2ddb59b7caa74c6201483012c9a4460d226d255'),
+    (None, False, '5f70e5e9700a836e72e3aa7e533bc723aa2415fa6367ee988e0e67248ef66f8d'),
+    ('brief', False, '5f70e5e9700a836e72e3aa7e533bc723aa2415fa6367ee988e0e67248ef66f8d'),
+    ('brief', True, '9c7fdcf44c67092a6b96076bcd7433766ccb5151b74d145b215451bfd9122ab1'),
+    ('long', False, '468942f56cc294bb21f17d324056cf297a2aed299a35937426c25a91d465aae5'),
+    ('long', True, 'b71efa4c06324389da7c8d2411c3aaea63395d1c289d1e7c8b560d30a3630432'),
 ])
 def test_r2_no_materials_protocol_matches_original_bytes(length, emoji, digest) -> None:
-    assert sha256(render_replyer_protocol('接着回应', length, emoji_enabled=emoji).encode()).hexdigest() == digest
+    rendered = render_replyer_protocol('接着回应', length, emoji_enabled=emoji, mind='测试想法')
+    assert sha256(rendered.encode()).hexdigest() == digest

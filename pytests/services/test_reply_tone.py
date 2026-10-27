@@ -34,6 +34,7 @@ class _Provider:
                 'id': 'reply-call',
                 'name': 'reply',
                 'arguments': json.dumps({
+                    'mind': '测试想法',
                     'target': self.target_id,
                     'reasons': ['direct_question'],
                     'length': 'brief',
@@ -104,7 +105,7 @@ async def test_each_reply_selects_tone_within_same_session(db, tone_rng: Mock, m
         planner.target_id = chat.memory.latest_message_id(context.stream.id)
         body = f'<say>第{index + 1}个回答</say><say>还有第{index + 1}点补充</say>'
         head = (
-            f'<decision action="reply" targets="{planner.target_id}" '
+            f'<decision action="reply" mind="测试想法" targets="{planner.target_id}" '
             'reasons="direct_question" length="brief" reference="自然接话"/>'
         )
         planner.response = body if mode == 'legacy' else head

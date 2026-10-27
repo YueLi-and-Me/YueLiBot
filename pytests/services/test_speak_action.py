@@ -78,7 +78,7 @@ def _events() -> List[dict]:
 
 
 _SPEAK = (
-    '<decision action="speak" reasons="remembered_something"/>'
+    '<decision action="speak" mind="测试想法" reasons="remembered_something"/>'
     '<say emotion="smile">刚想起来那家店今天不开</say>'
 )
 

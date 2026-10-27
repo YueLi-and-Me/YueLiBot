@@ -109,12 +109,12 @@ def _events() -> List[dict]:
     return list(reversed(event_store.search(kinds=['action_decision']).events))
 
 
-_WAIT = '<decision action="wait" reasons="unfinished_thought"/>'
+_WAIT = '<decision action="wait" mind="测试想法" reasons="unfinished_thought"/>'
 _REPLY = (
-    '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>'
+    '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>'
     '<say emotion="normal">说吧。</say>'
 )
-_POKE = '<decision action="poke" targets="1" reasons="relationship_impulse"/>'
+_POKE = '<decision action="poke" mind="测试想法" targets="1" reasons="relationship_impulse"/>'
 
 
 class TestWaitProtocol:

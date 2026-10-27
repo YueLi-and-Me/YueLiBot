@@ -62,12 +62,12 @@ class _CrossedProvider:
             await self.release_first.wait()
             yield {
                 'text': (
-                    '<decision action="reply" targets="1" reasons="can_add_value" length="brief"/>'
+                    '<decision action="reply" mind="测试想法" targets="1" reasons="can_add_value" length="brief"/>'
                     '<say>上一条回复正文</say>'
                 )
             }
             return
-        yield {'text': '<decision action="silent" reasons="duplicate_response"/>'}
+        yield {'text': '<decision action="silent" mind="测试想法" reasons="duplicate_response"/>'}
 
 
 class _FakeBroker:
@@ -124,7 +124,7 @@ async def test_shadow_records_decision_and_keeps_legacy_behavior(db) -> None:
     config.conversation_agent.mode = "shadow"
     provider = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>',
             '<say emotion="normal">Agent想说的话</say>',
         ],
         ['<say emotion="normal">旧管线回复</say>'],
@@ -161,7 +161,7 @@ async def test_shadow_prompt_replaces_say_first_protocol(db) -> None:
     config.conversation_agent.mode = "shadow"
     provider = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>',
             '<say emotion="normal">Agent想说的话</say>',
         ],
         ['<say emotion="normal">旧管线回复</say>'],
@@ -178,8 +178,10 @@ async def test_shadow_prompt_replaces_say_first_protocol(db) -> None:
     agent_system = agent_messages[0]['content']
     assert '# 输出格式' in agent_system
     assert '先决定「做什么」' in agent_system
-    assert '<decision action="reply" targets="1"' in agent_system
-    assert '<decision action="silent" reasons="others_conversation"/>' in agent_system
+    assert '<decision action="reply" mind="' in agent_system
+    assert 'targets="1" reasons="direct_question" length="brief"/>' in agent_system
+    assert '<decision action="silent" mind="' in agent_system
+    assert 'reasons="others_conversation"/>' in agent_system
     assert '只输出下列标签' not in agent_system
     # 示例之前的真实历史 assistant 必须纯文本化；few-shot 示例自身允许含 <say>。
     example_index = next(
@@ -208,7 +210,7 @@ async def test_protocol_lists_selectable_messages_with_original_text(db) -> None
     config.conversation_agent.mode = "enabled"
     provider = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="directly_addressed" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="directly_addressed" length="brief"/>',
             '<say emotion="normal">在的</say>',
         ],
     ])
@@ -243,7 +245,7 @@ async def test_desktop_stream_prompt_hides_the_silent_example(db) -> None:
     config.bot.name = "月璃"
     config.conversation_agent.mode = "enabled"
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="1" reasons="direct_question" length="brief"/>',
+        ['<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>',
          '<say emotion="normal">在的</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config)
@@ -269,7 +271,7 @@ async def test_user_started_direct_first_turn_must_reply_without_scene_gate(db) 
     config.conversation_agent.mode = "enabled"
     decision = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="directly_addressed" '
+            '<decision action="reply" mind="测试想法" targets="1" reasons="directly_addressed" '
             'length="brief"/>',
             '<say emotion="normal">嗯嗯，你说。</say>',
         ],
@@ -316,7 +318,7 @@ async def test_long_say_is_delivered_as_several_bubbles(db) -> None:
     broker = _FakeBroker()
     provider = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="directly_addressed" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="directly_addressed" length="brief"/>',
             '<say emotion="normal">不过某人不是连额度都没了吗，哪来的1314，梦里啥都有。</say>',
         ],
     ])
@@ -343,7 +345,7 @@ async def test_typing_config_drives_bubbles_and_delays(db) -> None:
     broker = _FakeBroker()
     provider = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="directly_addressed" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="directly_addressed" length="brief"/>',
             '<say emotion="normal">在呢在呢，你说你说，我听着呢。</say>',
         ],
     ])
@@ -366,7 +368,7 @@ async def test_action_protocol_states_how_to_write_each_length(db) -> None:
     config.bot.name = "月璃"
     config.conversation_agent.mode = "enabled"
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="1" reasons="directly_addressed" length="brief"/>',
+        ['<decision action="reply" mind="测试想法" targets="1" reasons="directly_addressed" length="brief"/>',
          '<say emotion="normal">在的</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
@@ -389,7 +391,7 @@ async def test_legacy_pipeline_history_keeps_no_message_id_labels(db) -> None:
     config.conversation_agent.mode = "shadow"
     provider = _ScriptedProvider([
         [
-            '<decision action="reply" targets="1" reasons="directly_addressed" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="directly_addressed" length="brief"/>',
             '<say emotion="normal">在的</say>',
         ],
         ['<say emotion="normal">旧管线回复</say>'],
@@ -416,7 +418,7 @@ async def test_enabled_prompt_also_uses_action_head_protocol(db) -> None:
     config = Config()
     config.conversation_agent.mode = "enabled"
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
+        ['<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config)
     context = chat.desktop_context
@@ -438,7 +440,7 @@ async def test_shadow_frequency_mode_observes_plain_group_batches(db) -> None:
     config.conversation_agent.trigger_mode = "frequency"
     config.conversation_agent.frequency_talk_value = 0.6
     provider = _ScriptedProvider([
-        ['<decision action="silent" reasons="others_conversation"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="others_conversation"/>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
@@ -479,7 +481,7 @@ async def test_shadow_reply_necessity_worthy_content_triggers_without_backlog(db
     config.conversation_agent.mode = "shadow"
     config.conversation_agent.trigger_mode = "reply_necessity"
     provider = _ScriptedProvider([
-        ['<decision action="silent" reasons="others_conversation"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="others_conversation"/>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
@@ -522,21 +524,30 @@ def test_asleep_drop_preserves_extended_pending(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    first = chat._batch_gate(context, "第一条普通消息", False, candidate_count=1)
+    first = chat._batch_gate(
+        context, "第一条普通消息", False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
     assert first.result.reason_codes == ('frequency_wait',)
     assert chat._extended_pending[context.stream.id] == 1
 
     chat.set_sleep_state_provider(
         lambda: SimpleNamespace(asleep=True, just_woke=False, resting=False, level='light')
     )
-    asleep_drop = chat._batch_gate(context, "第二条普通消息", False, candidate_count=1)
+    asleep_drop = chat._batch_gate(
+        context, "第二条普通消息", False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
     assert asleep_drop.result.reason_codes == ('light_sleep',)
     assert chat._extended_pending[context.stream.id] == 1
 
     chat.set_sleep_state_provider(
         lambda: SimpleNamespace(asleep=False, just_woke=False, resting=False, level='awake')
     )
-    third = chat._batch_gate(context, "第三条普通消息", False, candidate_count=1)
+    third = chat._batch_gate(
+        context, "第三条普通消息", False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
     assert third.result.reason_codes == ('frequency_budget',)
     assert context.stream.id not in chat._extended_pending
 
@@ -564,7 +575,7 @@ async def test_enabled_desktop_reply_commits_without_decision_tag_in_history(db)
     config = Config()
     config.conversation_agent.mode = "enabled"
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
+        ['<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config)
     context = chat.desktop_context
@@ -592,7 +603,7 @@ async def test_enabled_group_silent_writes_only_action_event(db) -> None:
     config = Config()
     config.bot.name = "月璃"
     config.conversation_agent.mode = "enabled"
-    provider = _ScriptedProvider([['<decision action="silent" reasons="others_conversation"/>']])
+    provider = _ScriptedProvider([['<decision action="silent" mind="测试想法" reasons="others_conversation"/>']])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
     await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
@@ -621,7 +632,7 @@ async def test_enabled_force_rejects_silent_as_protocol_error(db) -> None:
     config = Config()
     config.bot.name = "月璃"
     config.conversation_agent.mode = "enabled"
-    provider = _ScriptedProvider([['<decision action="silent" reasons="low_relevance"/>']])
+    provider = _ScriptedProvider([['<decision action="silent" mind="测试想法" reasons="low_relevance"/>']])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group_context(chat._registry)
     await chat.send(InboundMessage(text="@月璃 在吗", context=context, mentioned_me=True))
@@ -701,7 +712,7 @@ async def test_selected_streams_only_routes_listed_streams(db) -> None:
     config.conversation_agent.mode = "selected_streams"
     config.conversation_agent.selected_streams = ["86420"]
     provider = _ScriptedProvider([
-        ['<decision action="silent" reasons="attention_elsewhere"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="attention_elsewhere"/>'],
         ["<say>旧管线</say>"],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
@@ -738,8 +749,13 @@ def test_batch_gate_natural_window_uses_last_reply_age(db) -> None:
     chat.memory.append_message(
         context.stream.id, None, 'assistant', '<say>刚回复</say>', now - 30_000,
     )
+    # 跟进窗口只对她刚接过话的人放行：本用例的发送者就是她上一回合回应的人。
+    chat._note_recent_partners(context.stream.id, 'reply', [context.person.id])
 
-    fresh = chat._batch_gate(context, '普通群消息', False, candidate_count=1)
+    fresh = chat._batch_gate(
+        context, '普通群消息', False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
 
     assert fresh.result.disposition == 'deliberate'
     assert 'natural_reply_window' in fresh.result.reason_codes
@@ -750,7 +766,11 @@ def test_batch_gate_natural_window_uses_last_reply_age(db) -> None:
     chat.memory.append_message(
         context2.stream.id, None, 'assistant', '<say>更早回复</say>', now - 120_000,
     )
-    stale_time = chat._batch_gate(context2, '普通群消息', False, candidate_count=1)
+    chat._note_recent_partners(context2.stream.id, 'reply', [context2.person.id])
+    stale_time = chat._batch_gate(
+        context2, '普通群消息', False, candidate_count=1,
+        sender_person_ids=[context2.person.id],
+    )
 
     assert stale_time.result.reason_codes == ('ongoing_topic',)
 
@@ -759,7 +779,10 @@ def test_batch_gate_natural_window_uses_last_reply_age(db) -> None:
         chat.memory.append_message(
             context2.stream.id, 1, 'user', f'后续第{index}条', now - 110_000 + index,
         )
-    stale_both = chat._batch_gate(context2, '普通群消息', False, candidate_count=1)
+    stale_both = chat._batch_gate(
+        context2, '普通群消息', False, candidate_count=1,
+        sender_person_ids=[context2.person.id],
+    )
 
     assert stale_both.result.disposition == 'drop'
     assert stale_both.result.reason_codes == ('attention_filtered',)
@@ -779,17 +802,27 @@ def test_batch_gate_natural_window_closes_after_she_declines(db) -> None:
     chat.memory.append_message(
         context.stream.id, None, 'assistant', '<say>刚回复</say>', now - 30_000,
     )
+    chat._note_recent_partners(context.stream.id, 'reply', [context.person.id])
 
-    opened = chat._batch_gate(context, '普通群消息', False, candidate_count=1)
+    opened = chat._batch_gate(
+        context, '普通群消息', False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
     assert 'natural_reply_window' in opened.result.reason_codes
 
     chat._follow_up_declined.add(context.stream.id)
-    declined = chat._batch_gate(context, '普通群消息', False, candidate_count=1)
+    declined = chat._batch_gate(
+        context, '普通群消息', False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
     assert declined.result.disposition == 'drop'
     assert declined.result.reason_codes == ('attention_filtered',)
 
     chat._follow_up_declined.discard(context.stream.id)
-    reopened = chat._batch_gate(context, '普通群消息', False, candidate_count=1)
+    reopened = chat._batch_gate(
+        context, '普通群消息', False, candidate_count=1,
+        sender_person_ids=[context.person.id],
+    )
     assert 'natural_reply_window' in reopened.result.reason_codes
 
 
@@ -873,7 +906,7 @@ async def test_split_replyer_end_to_end(db) -> None:
     config.conversation_agent.split_replyer = True
     config.conversation_agent.tool_calling = False
     planner = _TwoStageProvider([
-        '<decision action="reply" targets="1" reasons="direct_question" '
+        '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" '
         'length="brief" reference="他问在不在，随口应一声"/>'
         '<say>决策模型写的正文，不许发出去</say>',
     ])
@@ -911,7 +944,7 @@ async def test_split_disabled_keeps_single_call(db) -> None:
     config.conversation_agent.mode = "enabled"
     config.conversation_agent.split_replyer = False
     planner = _TwoStageProvider([
-        '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>'
+        '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>'
         '<say>单次调用的正文</say>',
     ])
     replyer = _TwoStageProvider(['<say>不该被调用</say>'])
@@ -944,7 +977,7 @@ async def test_split_layers_persona_between_stages(db) -> None:
     config.conversation_agent.split_replyer = True
     config.conversation_agent.tool_calling = False
     planner = _TwoStageProvider([
-        '<decision action="reply" targets="1" reasons="direct_question" '
+        '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" '
         'length="brief" reference="随口应一声"/>',
     ])
     replyer = _TwoStageProvider(['<say>在的</say>'])
@@ -979,12 +1012,12 @@ async def test_engage_style_reaches_decision_stage_only(db, tool_calling: bool) 
     planner = (
         _ToolCallProvider(
             'reply',
-            '{"target": 1, "reasons": ["direct_question"], "length": "brief", '
+            '{"mind": "测试想法", "target": 1, "reasons": ["direct_question"], "length": "brief", '
             '"reference": "他直接问了，应一声"}',
         )
         if tool_calling
         else _TwoStageProvider([
-            '<decision action="reply" targets="1" reasons="direct_question" '
+            '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" '
             'length="brief" reference="随口应一声"/>',
         ])
     )
@@ -1052,7 +1085,7 @@ class _ForwardToolPlanner:
             'id': 'reply-after-forward',
             'name': 'reply',
             'arguments': (
-                f'{{"target": {self.message_id}, '
+                f'{{"mind": "测试想法", "target": {self.message_id}, '
                 '"reasons": ["direct_question"], "length": "brief", '
                 '"reference": "已经读完转发正文"}'
             ),
@@ -1083,7 +1116,7 @@ async def test_tool_calling_end_to_end(db) -> None:
     assert config.conversation_agent.tool_calling is True
     planner = _ToolCallProvider(
         'reply',
-        '{"target": 1, "reasons": ["direct_question"], "length": "brief", '
+        '{"mind": "测试想法", "target": 1, "reasons": ["direct_question"], "length": "brief", '
         '"reference": "他直接问了，应一声"}',
     )
     replyer = _TwoStageProvider(['<say>在的</say>'])
@@ -1198,7 +1231,7 @@ def test_tool_item_history_keeps_storage_order_and_bot_marker(db) -> None:
     config.conversation_agent.mode = 'enabled'
     config.conversation_agent.split_replyer = True
     config.conversation_agent.tool_calling = True
-    planner = _ToolCallProvider('silent', '{"reasons": ["others_conversation"]}')
+    planner = _ToolCallProvider('silent', '{"mind": "测试想法", "reasons": ["others_conversation"]}')
     replyer = _TwoStageProvider(['<say>不会调用</say>'])
     chat = ChatService(
         db, planner, None, None, _noop, cfg=config, broker=_FakeBroker(),
@@ -1259,7 +1292,7 @@ async def test_tool_calling_shadow_discards_generated_reply_body(db) -> None:
     legacy = _TwoStageProvider(['<say>旧管线回复</say>'])
     planner = _ToolCallProvider(
         'reply',
-        '{"target": 1, "reasons": ["direct_question"], "length": "brief", '
+        '{"mind": "测试想法", "target": 1, "reasons": ["direct_question"], "length": "brief", '
         '"reference": "影子模式也要形成完整规划"}',
     )
     replyer = _TwoStageProvider(['<say>不应落库的影子正文</say>'])
@@ -1328,7 +1361,7 @@ async def test_tool_calling_direct_follow_up_uses_item_stream(db) -> None:
         now - 1_000,
     )
     planner.arguments = (
-        f'{{"target": {target_id}, "reasons": ["topic_continuation"], '
+        f'{{"mind": "测试想法", "target": {target_id}, "reasons": ["topic_continuation"], '
         '"length": "brief", "reference": "上一段对话还没聊完"}'
     )
     target = next(
@@ -1374,7 +1407,7 @@ async def test_tool_calling_flattens_history_into_user_stream(db) -> None:
     config.conversation_agent.tool_calling = True
     planner = _ToolCallProvider(
         'reply',
-        '{"target": 3, "reasons": ["direct_question"], "length": "brief", '
+        '{"mind": "测试想法", "target": 3, "reasons": ["direct_question"], "length": "brief", '
         '"reference": "接着上一句"}',
     )
     replyer = _TwoStageProvider(['<say>好</say>'])
@@ -1386,6 +1419,8 @@ async def test_tool_calling_flattens_history_into_user_stream(db) -> None:
     # 先造一段「用户说话 → 她回过话」的历史，再让她面对新消息做决策。
     chat.memory.append_message(context.stream.id, context.person.id, 'user', '月璃你好')
     chat.memory.append_message(context.stream.id, None, 'assistant', '<say>你好呀</say>')
+    # 她上一回合回应的正是这个人，紧接着的话才会经跟进窗口进入。
+    chat._note_recent_partners(context.stream.id, 'reply', [context.person.id])
 
     await chat.send(InboundMessage(text="在干嘛", context=context))
     await chat._tick()
@@ -1416,7 +1451,10 @@ def test_batch_gate_reads_replied_to_me_fact(db) -> None:
     )
     context = _group_context(chat._registry)
 
-    gate = chat._batch_gate(context, "说得对", False, replied_to_me=True)
+    gate = chat._batch_gate(
+        context, "说得对", False, replied_to_me=True,
+        sender_person_ids=[context.person.id],
+    )
 
     assert gate.result.disposition == 'deliberate'
     assert gate.result.reason_codes == ('reply_to_bot',)
@@ -1429,7 +1467,7 @@ async def test_shadow_decision_audit_records_reply_to_bot(db) -> None:
     config.bot.name = "月璃"
     config.conversation_agent.mode = "shadow"
     provider = _ScriptedProvider([
-        ['<decision action="silent" reasons="others_conversation"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="others_conversation"/>'],
         ['<say>旧管线回复</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
@@ -1459,7 +1497,7 @@ async def test_batch_gate_reads_name_fact_not_quote_preview(db) -> None:
     config.bot.name = "月璃"
     config.conversation_agent.mode = "shadow"
     provider = _ScriptedProvider([
-        ['<decision action="silent" reasons="others_conversation"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="others_conversation"/>'],
         ['<say>旧管线回复</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())

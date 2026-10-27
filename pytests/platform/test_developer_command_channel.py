@@ -47,6 +47,10 @@ class _ChatSpy:
         del stream_id
         return False
 
+    def is_recent_partner(self, stream_id: int, person_id: int) -> bool:
+        del stream_id, person_id
+        return False
+
     def topic_still_hers(self, stream_id: int, last_bot_reply_at: int) -> bool:
         del stream_id, last_bot_reply_at
         return False

@@ -57,7 +57,7 @@ def test_emoji_protocol_uses_specific_free_text_in_all_prompt_paths() -> None:
     for prompt in (
         _build_prompt(emoji_enabled=True),
         render_action_protocol(['reply'], [(1, '消息')], False, emoji_enabled=True),
-        render_replyer_protocol('继续当前话题', 'brief', emoji_enabled=True),
+        render_replyer_protocol('继续当前话题', 'brief', emoji_enabled=True, mind='测试想法'),
     ):
         assert rule in prompt
     assert _emoji_protocol_rule(False) == '本轮不支持发送表情包，不要写 <emoji> 标签。'

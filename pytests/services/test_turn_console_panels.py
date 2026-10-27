@@ -66,7 +66,7 @@ async def test_reply_turn_panel_contains_tool_result(db: sqlite3.Connection, cap
     chat = _chat(db, [
         ['<decision action="recall" query="龙族"/>'],
         [
-            '<decision action="reply" targets="1" reasons="pending_thread" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="pending_thread" length="brief"/>',
             '<say emotion="smile">没查到。</say>',
         ],
     ])
@@ -85,7 +85,7 @@ async def test_silent_turn_still_renders_panel(db: sqlite3.Connection, capsys) -
     """查完决定沉默的回合不出回复面板，但查询结果要以「未发言」面板出现。"""
     chat = _chat(db, [
         ['<decision action="recall" query="龙族"/>'],
-        ['<decision action="silent" reasons="no_new_value"/>'],
+        ['<decision action="silent" mind="测试想法" reasons="no_new_value"/>'],
     ])
     context = chat._registry.resolve_inbound(
         platform='qq',

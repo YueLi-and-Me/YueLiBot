@@ -6,6 +6,8 @@
 由 ``ChatService`` 继承，依赖它的配置与会话状态属性。
 """
 
+from typing import Sequence
+
 from src.core.agent.conversation_gate import (
     GateRequest,
     GateResult,
@@ -35,6 +37,7 @@ class BatchGateMixin:
         pokes_in_window: int = 0,
         name_mentioned: bool = False,
         replied_to_me: bool = False,
+        sender_person_ids: Sequence[int],
     ) -> _BatchGate:
         """按本批合并事实重算三态门控；只读取确定性输入，不调用模型。
 
@@ -52,6 +55,8 @@ class BatchGateMixin:
         :param pokes_in_window: 本批戳一戳在入口信号窗口内的到达序号；无戳一戳时为 0。
         :param name_mentioned: 本批是否有消息在用户亲手写的文字里叫了她的名字/别名。
         :param replied_to_me: 本批是否包含「回复了她的消息」。
+        :param sender_person_ids: 本批消息的发送者。任一人是她最近一次生效回合回应过
+            的人，跟进窗口即对本批放行；与入口门控读同一份事实。
         :return: 门控结果与全部判定输入事实。
         """
         sleep = self.current_sleep()
@@ -87,6 +92,10 @@ class BatchGateMixin:
             pokes_in_window=pokes_in_window,
             reply_to_bot=replied_to_me,
             follow_up_declined=self.follow_up_declined(context.stream.id),
+            from_recent_partner=any(
+                self.is_recent_partner(context.stream.id, person_id)
+                for person_id in sender_person_ids
+            ),
         ))
         plain_group_drop = (
             context.stream.kind == 'group'

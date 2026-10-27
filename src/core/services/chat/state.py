@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Sequence, Tuple
+from typing import FrozenSet, List, Sequence, Tuple
 
 import asyncio
 
@@ -259,6 +259,10 @@ class _PreparedTurnContext:
     # 动作头的 targets 必须落在消息编号上，编号只有在历史里逐行可见时模型
     # 才能指认；旧管线不需要编号，因此两份历史分开保存而不是就地改写。
     agent_history: list[dict[str, str]]
+    # 决策层专用的历史变体：工具调用模式下在 agent_history 的消息行之间按时间插入
+    # 她此前各轮的心理活动行；传统角色交替模式插入会破坏角色交替，与 agent_history
+    # 相同。写正文那一环读 agent_history，不看这些行。
+    decision_history: list[dict[str, str]]
     # 本回合的黑话命中（词, 压缩后的含义）。查表带着 hits 写库与去重登记
     # 两类副作用，而组装好的上下文会被决策与回复两次渲染共用——查表放在
     # 组装期执行一次，结果作为不可变字段带下去，渲染期只读。
@@ -283,6 +287,19 @@ class _BatchGate:
     last_bot_reply_elapsed_ms: int | None = None
     # 本批是否包含「回复了她的消息」；决策层审计与相关性判定读这份快照。
     replied_to_me: bool = False
+
+
+@dataclass(frozen=True)
+class _RecentPartners:
+    """一个会话里她最近一次生效回合回应过的人，跟进窗口只对他们放行。
+
+    :ivar everyone: 最近一次生效回合是 speak：她对全群开口，谁接话都算在接她。
+    :ivar person_ids: reply / react / poke 的目标消息发送者；旧管线为本批发送者。
+        ``everyone`` 为真时不读。
+    """
+
+    everyone: bool
+    person_ids: FrozenSet[int] = frozenset()
 
 
 @dataclass(frozen=True)

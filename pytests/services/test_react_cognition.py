@@ -137,7 +137,7 @@ def _agent(provider: Any, registry: ToolRegistry | None = None) -> ConversationA
 
 _RECALL_HEAD = '<decision action="recall" query="上次的演出"/>'
 _REPLY = (
-    '<decision action="reply" targets="101" reasons="pending_thread" length="brief"/>'
+    '<decision action="reply" mind="测试想法" targets="101" reasons="pending_thread" length="brief"/>'
     '<say emotion="smile">想起来了，就那场。</say>'
 )
 _SCOPE = CognitiveScope(stream_id=3, person_ids=(11, 12))
@@ -296,7 +296,7 @@ async def test_tool_observation_is_folded_into_one_user_item() -> None:
         ('recall', '{"query": "上次的演出"}'),
         (
             'reply',
-            '{"target": 101, "reasons": ["pending_thread"], "length": "brief", '
+            '{"mind": "测试想法", "target": 101, "reasons": ["pending_thread"], "length": "brief", '
             '"reference": "查到上次演唱会后继续回答"}',
         ),
     ])
@@ -406,7 +406,7 @@ async def test_chat_service_wires_react_end_to_end(db) -> None:
     provider = _ChatProvider([
         ['<decision action="inspect" query="演出"/>'],
         [
-            '<decision action="reply" targets="1" reasons="pending_thread" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="pending_thread" length="brief"/>',
             '<say emotion="smile">想起来了。</say>',
         ],
     ])

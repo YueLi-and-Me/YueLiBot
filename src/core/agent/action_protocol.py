@@ -124,6 +124,11 @@ ALL_REASON_CODES: frozenset[str] = (
 # 候选过多会降低模型选择的速度与准确性。扩充时必须显式修改本表。
 REACTION_IDS: tuple[str, ...] = ('赞', '笑哭', '无奈', '爱心', '惊讶', '吃瓜')
 
+# 心理活动（mind）的长度上限，单位为字符，取值为正整数。提示词要求一两句、60 字
+# 以内；200 不是正常长度的上限，而是检测「模型把 mind 写成了一段分析」的阈值，
+# 超出即按协议错误处理，不截断。
+MIND_MAX_CHARS = 200
+
 # 非法取值进错误信息时的保留长度（字符）。取值本该是十余字符的标识符，超出即
 # 说明模型写的是自由文本；截断只影响错误信息展示，原值仍在请求存档中。
 _CODE_QUOTE_LIMIT = 24
@@ -185,6 +190,27 @@ def _validate_reason_codes(
             raise IllegalActionError(
                 f'reason_code {_quote_code(code)} 不能与动作 {action} 组合；{available}'
             )
+
+
+def _validate_mind(action: ConversationAction, mind: str | None) -> None:
+    """校验终局动作的心理活动：必须非空，且不超过 ``MIND_MAX_CHARS``。
+
+    XML 动作头与工具调用两条路径都经 ``DecisionHead.validate`` 走到这里，判据只有
+    这一份。缺失与超长都不截断、不补写，按协议错误交给调用方记 ``illegal_action``。
+
+    :param action: 已确认属于封闭动作集的当前动作。
+    :param mind: 模型给出的心理活动原文；未提供时为 None。
+    :raises IllegalActionError: 终局动作缺少 mind、mind 为空白或超过上限。
+    """
+    if action not in TERMINAL_ACTIONS:
+        return
+    if mind is None or not mind.strip():
+        raise IllegalActionError(f'{action} 动作必须填写非空 mind（这一轮心里的想法）')
+    if len(mind) > MIND_MAX_CHARS:
+        raise IllegalActionError(
+            f'mind 写了 {len(mind)} 字，超过 {MIND_MAX_CHARS} 字上限；'
+            '只写一两句心里的想法，不要写成一段分析'
+        )
 
 
 def _validate_cognitive_shape(
@@ -423,6 +449,9 @@ class ConversationDecision:
     reply: ReplyPayload | None = None
     query: str | None = None
     reaction: str | None = None
+    # 这一轮心里的想法，取自已通过校验的动作头，只用于审计与跨回合回看，不发出去。
+    # 认知动作没有心理活动，恒为 None。
+    mind: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、动作与负载不匹配。"""
@@ -524,6 +553,9 @@ class DecisionHead:
     # 审计，信息量不足以为独立回复生成调用提供上下文，因此保留此自由文本字段。
     # 该字段不是正文，不得作为正文输出。
     reference: str | None = None
+    # 这一轮心里的想法：谁在对谁说、她怎么看、打算怎么做。终局动作必填，由 validate
+    # 校验；它只给 Bot 自己在后续回合回看，不发出去，也不进入 messages 表。
+    mind: str | None = None
 
     def __post_init__(self) -> None:
         """拒绝形状矛盾：未知动作、自由 reason_code、篇幅与动作不匹配。"""
@@ -539,6 +571,10 @@ class DecisionHead:
             )
             if self.length is not None:
                 raise IllegalActionError(f'{self.action} 动作不能声明回复篇幅')
+            # 认知动作只是先查一下，这一轮还没有定下要做什么，心理活动属于终局动作。
+            # 工具调用路径由声明拒绝这个字段，这里让 XML 路径给出同一结论。
+            if self.mind is not None:
+                raise IllegalActionError(f'{self.action} 动作不能携带 mind')
             return
         if self.query is not None:
             raise IllegalActionError(f'{self.action} 动作不能携带 query')
@@ -594,7 +630,8 @@ class DecisionHead:
 
         :param frame: 本回合固定快照。
         :raises IllegalActionError: 目标越界、引用能力缺失、动作超出动作
-            空间或 FORCE 场景 silent。
+            空间、FORCE 场景 silent，或终局动作的 mind 缺失、为空白、超过
+            ``MIND_MAX_CHARS``。
         """
         _validate_frame_choice(
             self.action,
@@ -603,6 +640,7 @@ class DecisionHead:
             self.reaction,
             frame,
         )
+        _validate_mind(self.action, self.mind)
 
     def to_decision(
         self,
@@ -636,6 +674,7 @@ class DecisionHead:
                 quote_message_id=None,
                 reason_codes=self.reason_codes,
                 reply=None,
+                mind=self.mind,
             )
         if self.action in ('react', 'poke', 'wait'):
             if body_text.strip() or emoji_emotions:
@@ -647,6 +686,7 @@ class DecisionHead:
                 reason_codes=self.reason_codes,
                 reply=None,
                 reaction=self.reaction,
+                mind=self.mind,
             )
         if not body_text.strip() and not emoji_emotions:
             raise IllegalActionError(f'{self.action} 动作头之后没有可见正文或表情包')
@@ -660,6 +700,7 @@ class DecisionHead:
                 length=self.length or 'brief',
                 emoji_emotions=emoji_emotions,
             ),
+            mind=self.mind,
         )
 
 
@@ -821,6 +862,7 @@ class ActionDecisionEvent:
                 'targetMessageIds': list(self.decision.target_message_ids),
                 'quoteMessageId': self.decision.quote_message_id,
                 'reasonCodes': list(self.decision.reason_codes),
+                'mind': self.decision.mind,
                 **(
                     {'query': self.decision.query}
                     if self.decision.query is not None

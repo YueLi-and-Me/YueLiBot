@@ -8,8 +8,8 @@
 由 ``ChatService`` 继承，依赖它的 ``_memory`` / ``_persona`` / ``_models`` 等属性。
 """
 
-from datetime import datetime
-from typing import Any
+from datetime import date, datetime
+from typing import Any, List, Sequence
 
 import asyncio
 
@@ -42,6 +42,7 @@ from src.core.schedule.plan import asks_about_activity
 from src.core.services.maintenance.memory_feedback import register_prompt_entries
 
 from .helpers import _facts_for_prompt
+from .mind import MindEntry, render_mind_line
 from .state import _PreparedTurnContext, _RetrievalTrace
 
 logger = get_logger(__name__)
@@ -430,6 +431,20 @@ class ContextBuildMixin:
             label_message_ids=True,
             flatten=self._tool_calling,
         )
+        # 心理活动行只进工具模式的决策层：扁平历史里每行都是 user，插入不影响
+        # 角色结构；角色交替模式插入会破坏交替，那里照常写入记录但不渲染。
+        # 只取工作记忆时间跨度内的条目，更早的想法对应的消息已不在眼前。
+        decision_history = (
+            self._history_for_context(
+                context,
+                agent_wm,
+                label_message_ids=True,
+                flatten=True,
+                minds=self._minds_since(context.stream.id, agent_wm[0].created_at),
+            )
+            if self._tool_calling and agent_wm
+            else agent_history
+        )
         # 感知开关和 owner 归属分别控制“能否看见”和“是否允许应用用户关系状态”。
         activity = None
         if (context.stream.kind in self._perception_surfaces
@@ -473,6 +488,7 @@ class ContextBuildMixin:
             resumption=resumption,
             raw_history=raw_history,
             agent_history=agent_history,
+            decision_history=decision_history,
             jargon=jargon,
             shared_groups=self._shared_groups_for_prompt(context),
         )
@@ -580,8 +596,10 @@ class ContextBuildMixin:
             # 各自保留 item 边界，历史也不做角色合并。协议由
             # _render_agent_messages 放在整个序列末尾，确保它始终是最近的约束。
             system, context_items = build_itemized_system_prompt(**shared_context)
+            # 决策层读带心理活动行的变体；写正文那一环只拿这一轮的想法（在回复协议里），
+            # 不读历史里的心理活动行。
             history = fit_char_budget(
-                prepared.agent_history,
+                prepared.decision_history if decision_only else prepared.agent_history,
                 preserve_items=True,
             )
             if record_retrieval_trace:
@@ -676,6 +694,7 @@ class ContextBuildMixin:
         *,
         label_message_ids: bool = False,
         flatten: bool = False,
+        minds: Sequence[MindEntry] = (),
     ) -> list[dict]:
         """将记忆消息转换为模型历史，补充发言时刻，并在群聊中补充发送者显示名。
 
@@ -699,14 +718,47 @@ class ContextBuildMixin:
             「角色必须交替」约束带来的重排需求：重排可能使助手行位于开头而被
             ``normalize_history`` 丢弃；拍平后不存在开头 assistant 行，
             该问题不再出现。
+        :param minds: 按时间正序的心理活动记录，按 ``at`` 插在消息行之间，与消息
+            行共用同一套时间戳与跨天规则。只有扁平模式可以传入：角色交替模式下
+            插入一行 user 会破坏交替。与她自己的发言同一时刻时排在那句话之前。
 
         :return: 仅含 ``role`` 和 ``content`` 的模型消息列表；原始记忆对象不被修改。
 
         :raises RuntimeError: 群聊用户消息缺少发送者人物 ID。
+        :raises ValueError: 非扁平模式传入了心理活动记录。
         """
+        if minds and not flatten:
+            raise ValueError('心理活动行只能插入扁平历史')
         history: list[dict] = []
-        last_stamped_date = None
+        last_stamped_date: date | None = None
+        pending: List[MindEntry] = list(minds)
+
+        def stamp_for(at: int) -> str:
+            """按聊天记录口径格式化时间戳：同一天只写时分，跨天时带上月日。"""
+            nonlocal last_stamped_date
+            spoken_at = datetime.fromtimestamp(at / 1000)
+            if last_stamped_date == spoken_at.date():
+                return spoken_at.strftime('%H:%M')
+            last_stamped_date = spoken_at.date()
+            return spoken_at.strftime('%m-%d %H:%M')
+
+        def flush_minds(before: float, include_equal: bool) -> None:
+            """把早于给定时刻的心理活动先写进历史；同一时刻是否算「早于」由调用方决定。"""
+            while pending and (
+                pending[0].at < before or (include_equal and pending[0].at == before)
+            ):
+                entry = pending.pop(0)
+                history.append({
+                    'role': 'user',
+                    'content': render_mind_line(
+                        entry, stamp_for(entry.at), self._bot_display_name,
+                    ),
+                })
+
         for message in messages:
+            # 心理活动在动作头校验时记下，她的回复随后才落库，因此同一时刻排在她的
+            # 发言之前；别人的消息在同一时刻先到，想法是看过它之后才有的，排在其后。
+            flush_minds(message.created_at, include_equal=message.role == 'assistant')
             content = message.content
             role = message.role
             if flatten and message.role == 'assistant':
@@ -728,20 +780,16 @@ class ContextBuildMixin:
                 )
                 content = f'{name}: {content}'
             if message.role == 'user' or (flatten and message.role == 'assistant'):
-                spoken_at = datetime.fromtimestamp(message.created_at / 1000)
                 # 跨天才带日期：工作记忆可能横跨若干天，但同一天内逐行重复日期
                 # 只会挤占上下文；系统提示词已经给出「现在是几点」，Bot 据此就能算出
                 # 每条消息离现在多久、彼此间隔多长。
-                if last_stamped_date == spoken_at.date():
-                    stamp = spoken_at.strftime('%H:%M')
-                else:
-                    stamp = spoken_at.strftime('%m-%d %H:%M')
-                    last_stamped_date = spoken_at.date()
-                content = f'{stamp} {content}'
+                content = f'{stamp_for(message.created_at)} {content}'
             if label_message_ids:
                 if message.role == 'user':
                     content = f'[{message.message_id}] {content}'
                 elif message.role == 'assistant':
                     content = f'[我] {content}'
             history.append({'role': role, 'content': content})
+        # 晚于最后一条消息的想法（例如看完最后几条之后她选择了沉默）接在末尾。
+        flush_minds(float('inf'), include_equal=True)
         return history

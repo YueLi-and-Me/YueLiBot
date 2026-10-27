@@ -81,7 +81,7 @@ def _all_text(calls: List[list]) -> str:
 @pytest.mark.parametrize('kind', ['group', 'direct'])
 async def test_chat_prompt_omits_relationship_depth_and_acquaintance(db, kind) -> None:
     provider = _RecordingProvider([
-        '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>'
+        '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>'
         '<say emotion="normal">在呢</say>',
     ])
     broker = _RecordingBroker()

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
+from types import MappingProxyType
+from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .action_protocol import COGNITIVE_ACTIONS
 from .profile import InjectionProfile
@@ -725,8 +726,14 @@ def build_proactive_prompt(
 # 哪条消息，完整正文在历史里已经给过，这里超出上限即截断。
 SELECTABLE_PREVIEW_LIMIT = 40
 
+# 可选清单「没有任何附注」的默认值；只读映射，避免可变默认参数被调用方改写。
+_NO_SELECTABLE_NOTES: Mapping[int, str] = MappingProxyType({})
 
-def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
+
+def _render_selectable_messages(
+    items: List[Tuple[int, str]],
+    notes: Mapping[int, str],
+) -> str:
     """把本回合可选消息渲染为「编号 = 原文」的锚点清单。
 
     Agent 上下文的历史已逐行带 ``[编号]`` 前缀，本清单在此之上再框定范围：
@@ -735,6 +742,8 @@ def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
     只给历史则模型分不清哪几条是本回合可选的。
 
     :param items: ``(消息 ID, 展示原文)`` 序列，顺序即消息到达顺序。
+    :param notes: 消息 ID 到附注的映射，附注接在截断后的原文之后，不参与截断；
+        没有附注的消息不出现在映射里。
     :return: 每行一条、带两空格缩进的清单文本；空序列返回占位说明。
     """
     if not items:
@@ -745,7 +754,8 @@ def _render_selectable_messages(items: List[Tuple[int, str]]) -> str:
         single_line = ' '.join(preview.split())
         if len(single_line) > SELECTABLE_PREVIEW_LIMIT:
             single_line = f'{single_line[:SELECTABLE_PREVIEW_LIMIT]}…'
-        lines.append(f'  {message_id} = {single_line}')
+        # 附注是「这条在对谁说」这类确定事实，原文再长也必须完整保留，因此放在截断之后。
+        lines.append(f'  {message_id} = {single_line}{notes.get(message_id, "")}')
     return '\n'.join(lines)
 
 
@@ -808,6 +818,7 @@ def render_action_protocol(
     available_reactions: Sequence[str] = (),
     stream_kind: str = 'group',
     engage_style: str = '',
+    selectable_notes: Mapping[int, str] = _NO_SELECTABLE_NOTES,
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -830,6 +841,8 @@ def render_action_protocol(
         传空序列，此时该段完全不渲染。
     :param stream_kind: 会话类型；等待动作的收尾语义在群聊与私聊不同。
     :param engage_style: 使用者配置的接话方式；为空时整段不渲染。
+    :param selectable_notes: 可选消息的附注，按消息 ID 索引，接在清单原文之后；
+        没有附注的消息不出现在映射里。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
@@ -837,7 +850,7 @@ def render_action_protocol(
     actions_text = ' / '.join(sorted(available_actions))
     selectable = list(selectable_messages)
     ids = [message_id for message_id, _ in selectable]
-    selectable_text = _render_selectable_messages(selectable)
+    selectable_text = _render_selectable_messages(selectable, selectable_notes)
     # 不写「本平台不支持引用」：QQ 群聊的回复由投递层按需要自动挂引用，
     # 断言平台没有引用能力会让 Bot 在台词里说出与事实相反的话。这条规则只约束
     # 动作头里能不能出现 quote 属性。
@@ -852,14 +865,15 @@ def render_action_protocol(
     # silent 示例；可选消息为空时同理不能给出 targets="0" 这种必然非法的目标。
     reply_example = (
         '\n# reply（回复）\n'
-        f'<decision action="reply" targets="{str(ids[0])}" '
-        'reasons="direct_question" length="brief"/>\n'
+        '<decision action="reply" mind="他在问我有没有看到，是在跟我说，回一句让他接着讲" '
+        f'targets="{str(ids[0])}" reasons="direct_question" length="brief"/>\n'
         '<say emotion="normal">嗯嗯，我看到了。</say>'
         '<say emotion="smile">你继续说。</say>\n'
     ) if 'reply' in actions and ids else ''
     silent_example = (
         '\n# silent（不回复）\n'
-        '<decision action="silent" reasons="others_conversation"/>\n'
+        '<decision action="silent" mind="他们俩在聊自己的事，不是对我说的，先看着" '
+        'reasons="others_conversation"/>\n'
     ) if 'silent' in actions else ''
     return get_prompt('chat.action.protocol').render(
         available_actions=actions_text,
@@ -887,6 +901,7 @@ def render_tool_protocol(
     cognitive_rounds: int = 0,
     available_actions: Iterable[str] = (),
     engage_style: str = '',
+    selectable_notes: Mapping[int, str] = _NO_SELECTABLE_NOTES,
 ) -> str:
     """渲染工具调用模式下决策那一次的协议文本。
 
@@ -901,6 +916,8 @@ def render_tool_protocol(
     :param cognitive_rounds: 本回合的认知轮次预算，用于渲染检索说明。
     :param available_actions: 本轮动作集，决定要不要渲染检索说明。
     :param engage_style: 使用者配置的接话方式；为空时整段不渲染。
+    :param selectable_notes: 可选消息的附注，按消息 ID 索引，接在清单原文之后；
+        没有附注的消息不出现在映射里。
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
     """
@@ -913,7 +930,7 @@ def render_tool_protocol(
     )
     return get_prompt('chat.tool.protocol').render(
         turn_scope=_render_turn_scope(target_persons),
-        selectable_messages=_render_selectable_messages(selectable),
+        selectable_messages=_render_selectable_messages(selectable, selectable_notes),
         quote_rule=quote_rule,
         cognition_rule=_cognition_protocol_rule(
             frozenset(available_actions), ids, cognitive_rounds, tool_mode=True,
@@ -927,6 +944,7 @@ def render_replyer_protocol(
     length: str | None,
     emoji_enabled: bool = False,
     *,
+    mind: str,
     materials: Sequence[Tuple[str, str, str]] = (),
 ) -> str:
     """渲染回复生成那一次调用的协议文本。
@@ -935,18 +953,28 @@ def render_replyer_protocol(
     里的直接发言协议，因此回复生成模型看到的人格、历史、事实与决策那次完全
     相同，区别只在这一段。
 
+    写正文这一环只拿到这一轮的心理活动，不读历史里的心理活动行：那些行只渲染进
+    决策层，正文据此组织措辞即可，不需要回看此前每一轮的想法。
+
     :param reference: 决策层写的背景说明；为空时退回一句中性说明，不留空占位符：
         空白背景会使模型自行猜测开口原因。
     :param length: 决策层选定的篇幅；``None`` 时按 brief 处理，与单次调用路径
         ``to_decision`` 的默认口径一致。
     :param emoji_enabled: 本回合是否允许发表情包。
+    :param mind: 决策层这一轮的心理活动；发言动作头已校验其非空。
     :param materials: 本回合外部工具的（工具名、参数文本、观察原文）明细，
         含失败观察；原文不截断，长度由工具控制。空序列不改变原有提示词。
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
+    :raises ValueError: ``mind`` 为空白。
     """
+    thought = mind.strip()
+    if not thought:
+        raise ValueError('回复生成协议缺少这一轮的心理活动')
     return get_prompt('chat.replyer').render(
         reference=reference.strip() or '继续当前话题，不要开启新话题。',
+        # 句末句号去掉再接模板自己的句号，避免想法本身以句号结尾时出现两个句号。
+        mind=f'你此刻心里的想法：{thought.rstrip("。")}。这是想法，不要原样说出来。\n\n',
         materials=_render_replyer_materials(materials),
         length_rule=_replyer_length_rule(length),
         emotions=' / '.join(EXPRESSION_IDS),
@@ -1015,7 +1043,7 @@ def _speak_protocol_rule(actions: FrozenSet[str]) -> str:
         '',
         '如果清单中的消息你都不想回应，但确实有其他想说的内容，可以开启一个新话题——'
         '不回应任何人，是你自己想发言：',
-        '<decision action="speak" reasons="理由码"/>',
+        '<decision action="speak" mind="这一轮心里的想法" reasons="理由码"/>',
         '<say emotion="表情">你想说的话</say>',
         '- reasons 只能写：noticed_activity（看到他们在聊的话题想参与）/ '
         'remembered_something（想起一件相关的事）/ '
@@ -1053,7 +1081,7 @@ def _wait_protocol_rule(actions: FrozenSet[str], stream_kind: str) -> str:
         '',
         '一个意思常被拆成多条消息连续发送。刚到的消息很短、语义不完整、或明显还有后续时，'
         '先不表态，等后续消息合并进来后统一回应，比逐条回复更自然：',
-        '<decision action="wait" reasons="理由码"/>',
+        '<decision action="wait" mind="这一轮心里的想法" reasons="理由码"/>',
         '- reasons 只能写：unfinished_thought（对方的话没有说完）/ thread_developing（对话还在继续）',
         '- 不写 targets、length、quote，之后不要有任何正文',
         '- wait 与 silent 不同：silent 是放弃回应这批消息，wait 是在等待后续消息，'
@@ -1078,7 +1106,7 @@ def _poke_protocol_rule(
     lines = [
         '',
         '你还可以戳一戳某个人（QQ 的戳一戳，不发消息）：',
-        '<decision action="poke" targets="消息编号" reasons="理由码"/>',
+        '<decision action="poke" mind="这一轮心里的想法" targets="消息编号" reasons="理由码"/>',
         '- targets 只填一条，写你想戳的那个人发的消息；不写 length、不写 quote、之后不要有正文',
         '它会给对方发送一条提醒。有人戳了你时，可以戳回去回应，不必每次都发消息；'
         '其余时候只在确实需要提醒对方时使用，不要频繁使用',
@@ -1087,8 +1115,8 @@ def _poke_protocol_rule(
         lines.extend([
             '',
             '# 戳一戳的例子',
-            f'<decision action="poke" targets="{selectable_ids[0]}" '
-            'reasons="relationship_impulse"/>',
+            '<decision action="poke" mind="她戳了我一下，不用说话，戳回去就好" '
+            f'targets="{selectable_ids[0]}" reasons="relationship_impulse"/>',
         ])
     return '\n'.join(lines) + '\n'
 
@@ -1117,7 +1145,8 @@ def _react_protocol_rule(
         '',
         '除了发言和沉默，你还可以给某条消息添加一个表情回应——'
         '即在他人消息上添加一个表情，不发送新消息：',
-        f'<decision action="react" targets="消息编号" reaction="表情" reasons="理由码"/>',
+        '<decision action="react" mind="这一轮心里的想法" targets="消息编号" '
+        'reaction="表情" reasons="理由码"/>',
         f'- reaction 只能写：{" / ".join(available_reactions)}',
         '- targets 只填一条，写你在回应哪条消息；不写 length、不写 quote、之后不要有任何正文',
         '- 需要发言时正常使用 reply；表情回应适合「某条消息值得回应、但你不想开口」的情况',
@@ -1126,8 +1155,9 @@ def _react_protocol_rule(
         lines.extend([
             '',
             '# 表情回应的例子',
-            f'<decision action="react" targets="{selectable_ids[0]}" '
-            f'reaction="{available_reactions[0]}" reasons="natural_reaction"/>',
+            '<decision action="react" mind="他发的这个挺好笑，不用开口，贴个表情就行" '
+            f'targets="{selectable_ids[0]}" reaction="{available_reactions[0]}" '
+            'reasons="natural_reaction"/>',
         ])
     return '\n'.join(lines) + '\n'
 
@@ -1205,7 +1235,7 @@ def _cognition_protocol_rule(
         )
     lines.extend([
         '- query 必填，写你想查什么，用几个关键词即可；'
-        '这些动作都不写 targets、reasons、length、quote',
+        '这些动作都不写 mind、targets、reasons、length、quote',
         '- 查询结果会在下一轮提供给你，届时再决定是否回复以及回复内容；动作标签之后不要写任何正文',
         f'- 本回合你最多只能查询 {cognitive_rounds} 次，查完必须给出最终动作',
         '- 绝大多数时候都不需要查询，直接给出最终动作。只有两类情况值得查：'
@@ -1223,8 +1253,8 @@ def _cognition_protocol_rule(
             '# 先查再回的例子',
             f'<decision action="{available[0]}" query="对方刚才提到的那个概念"/>',
             '（收到检索结果之后，下一轮再写 '
-            f'<decision action="reply" targets="{selectable_ids[0]}" '
-            'reasons="pending_thread" length="brief"/> 和台词）',
+            '<decision action="reply" mind="查到了，她说的是上次那件事，接着回她" '
+            f'targets="{selectable_ids[0]}" reasons="pending_thread" length="brief"/> 和台词）',
         ])
     return '\n'.join(lines) + '\n'
 

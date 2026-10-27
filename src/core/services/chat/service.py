@@ -178,13 +178,14 @@ from .constants import (
 )
 
 
-from .agent_protocol import AgentProtocolMixin
+from .agent_protocol import RESPONDED_NOTE, AgentProtocolMixin
 from .background import BackgroundTaskMixin
 from .capabilities import PlatformCapabilityMixin
 from .context_build import ContextBuildMixin
 from .follow_up import DirectFollowUpMixin
 from .gating import BatchGateMixin
 from .group_observe import GroupObservationMixin
+from .mind import MindLogMixin
 from .outbound import OutboundDispatchMixin, _send_ref_content_hash
 from .profiles import PersonProfileMixin
 from .scene import SceneObservationMixin
@@ -202,6 +203,7 @@ from .state import (
     _DirectFollowUpState,
     _InflightTurn,
     _PreparedTurnContext,
+    _RecentPartners,
     _RoundResult,
     _SessionState,
     _TurnControl,
@@ -218,6 +220,7 @@ class ChatService(
     ContextBuildMixin,
     DirectFollowUpMixin,
     GroupObservationMixin,
+    MindLogMixin,
     OutboundDispatchMixin,
     PersonProfileMixin,
     PlatformCapabilityMixin,
@@ -384,6 +387,10 @@ class ChatService(
         # 已经放弃自然跟进的群 stream。Bot 在群聊里选择 silent 即加入，成功回复即移出；
         # 门控据此关闭自然回应窗口，让「说够了没有」由 Bot 自己的动作决定而不是回复计数。
         self._follow_up_declined: set[int] = set()
+        # stream_id -> 最近一次生效回合回应过的人。与 _follow_up_declined 一同决定跟进
+        # 窗口：窗口只对这些人放行。每次有生效的回应就整体替换；进程内状态，重启后
+        # 为空，未知时按「不是」处理，要重新被真信号或必要性评分叫出来。
+        self._recent_partners: Dict[int, _RecentPartners] = {}
         # 同一 stream 最近 60 秒的 poke 到达时间。只登记协议明确标记的 poked_me，
         # 普通消息与适配器合成正文都不能影响该计数；重启后清空符合短窗口语义。
         self._poke_arrivals: Dict[int, Deque[int]] = {}
@@ -1435,6 +1442,7 @@ class ChatService(
                 poked_me=inbound.poked_me, pokes_in_window=inbound.pokes_in_window,
                 name_mentioned=inbound.name_mentioned,
                 replied_to_me=inbound.replied_to_me,
+                sender_person_ids=[message.context.person.id for message in batch],
             )
             if sleep_gate.result.disposition == 'drop':
                 try:
@@ -1558,6 +1566,9 @@ class ChatService(
                     pokes_in_window=inbound.pokes_in_window,
                     name_mentioned=inbound.name_mentioned,
                     replied_to_me=inbound.replied_to_me,
+                    sender_person_ids=[
+                        message.context.person.id for message in materialized_batch
+                    ],
                 )
                 if batch_gate.result.reason_codes[0] in (
                     'deep_sleep',
@@ -1749,7 +1760,13 @@ class ChatService(
                 )
                 self._arm_direct_follow_up(context)
                 # Bot 刚开过口，对话仍在 Bot 这边：与 Agent 路径同口径重新敞开自然回应窗口。
+                # 旧管线回复的对象就是本批发送者，窗口只对他们放行。
                 self._follow_up_declined.discard(context.stream.id)
+                self._note_recent_partners(
+                    context.stream.id,
+                    'reply',
+                    (message.context.person.id for message in materialized_batch),
+                )
                 asyncio.create_task(self._maybe_summarize(context.stream.id))
                 asyncio.create_task(
                     self._maybe_extract_facts(context.stream.id, context.stream.kind)
@@ -2124,7 +2141,7 @@ class ChatService(
             decision = await self._decide_direct_follow_up(context, target, situation)
             if decision is None:
                 return False
-            turn, lines = decision
+            turn, lines, outcome = decision
             # 模型生成期间对方可能已经发出消息；send() 会移除同一个状态，且消息
             # 主键检查覆盖毫秒时间戳相同的极端情况，过期追问不能压在新消息前面。
             if state is not None and self._direct_follow_ups.get(stream_id) is not state:
@@ -2132,6 +2149,11 @@ class ChatService(
             if self.memory.has_user_messages_after(stream_id, target.message_id):
                 return False
             await self._speak_claimed_external(context, lines, turn=turn)
+            # 与定时追问同一口径：发出去之后才写心理活动并记下回应对象。
+            assert target.sender_person_id is not None
+            self._settle_effective_action(
+                context, turn, outcome, {target.message_id: target.sender_person_id},
+            )
             self._typing_nudges[stream_id] = nudges + 1
             if state is None:
                 # 重启前遗留会话没有定时状态；成功发出这一轮后，新助手消息自然成为
@@ -2194,8 +2216,13 @@ class ChatService(
                 return False
             if self.memory.has_user_messages_after(stream_id, state.target_user_message_id):
                 return False
-            turn, lines = decision
+            turn, lines, outcome = decision
             await self._speak_claimed_external(context, lines, turn=turn)
+            # 追问发出去之后才算生效，此时写心理活动并记下回应对象。
+            assert target.sender_person_id is not None
+            self._settle_effective_action(
+                context, turn, outcome, {target.message_id: target.sender_person_id},
+            )
             state.follow_up_message_at = self.memory.last_assistant_reply_at(stream_id)
             self._typing_nudges[stream_id] = self._typing_nudges.get(stream_id, 0) + 1
             logger.info(
@@ -2212,12 +2239,17 @@ class ChatService(
         context: ConversationContext,
         target: StoredMessage,
         situation: str,
-    ) -> tuple[int, list[dict]] | None:
+    ) -> tuple[int, list[dict], AgentOutcome] | None:
         """以完整会话情景运行一次仅含 ``reply / silent`` 的主动决策。
 
         这是用户私聊已经获得正常回复之后的主动唤醒：只有主动机会允许在
         ``reply / silent`` 间判断，且没有认知、等待或平台副作用动作。只有合法
         ``reply`` 才返回可投递分句；选择 ``silent`` 或协议失败都不产生用户可见内容。
+
+        选择 ``silent`` 即在这里落定并写心理活动；``reply`` 的心理活动要等追问真正
+        发出去之后由调用方写，因此连同 Agent 结果一起返回。
+
+        :return: ``(回合 ID, 可投递分句, Agent 结果)``；不追问或决策失败时为 None。
         """
         if self._conversation_agent is None or self._scene_observer is None:
             return None
@@ -2246,12 +2278,20 @@ class ChatService(
             capabilities=capabilities,
         )
         selectable_messages = [(target.message_id, strip_say_tags(target.content))]
+        # 追问的目标就是她已经正常回复过的那条，提醒与主路径同一份判据：只看心理
+        # 活动记录里生效过的回应，不因为这是追问就另写一句。
+        selectable_notes = (
+            {target.message_id: RESPONDED_NOTE}
+            if target.message_id in self._responded_message_ids(context.stream.id)
+            else {}
+        )
         protocol = (
             render_tool_protocol(
                 selectable_messages,
                 quote_supported=False,
                 available_actions=frame.available_actions,
                 engage_style=self._cfg.personality.engage_style,
+                selectable_notes=selectable_notes,
             )
             if self._tool_calling
             else render_action_protocol(
@@ -2259,6 +2299,7 @@ class ChatService(
                 selectable_messages,
                 quote_supported=False,
                 engage_style=self._cfg.personality.engage_style,
+                selectable_notes=selectable_notes,
             )
         )
         prepared = self._prepare_turn_context(
@@ -2365,10 +2406,13 @@ class ChatService(
             head: DecisionHead, materials: Sequence[Tuple[str, str, str]],
         ) -> List[Dict]:
             """为工具决策选中的主动回复组装表达层 item 流。"""
+            # 发言动作头已通过校验，mind 必然非空。
+            assert head.mind is not None
             replyer_protocol = render_replyer_protocol(
                 head.reference or '',
                 head.length,
                 emoji_enabled=False,
+                mind=head.mind,
                 materials=materials,
             )
             replyer_context = add_follow_up_context(
@@ -2420,12 +2464,17 @@ class ChatService(
                 action=outcome.decision.action,
                 reason_codes=outcome.decision.reason_codes,
                 target_message_ids=outcome.decision.target_message_ids,
+                mind=outcome.decision.mind,
             )
         if outcome.event_status == 'silent_by_choice':
             logger.info(
                 '私聊主动跟进决定沉默',
                 streamId=context.stream.id,
                 reasonCodes=list(outcome.decision.reason_codes) if outcome.decision else [],
+            )
+            assert target.sender_person_id is not None
+            self._settle_effective_action(
+                context, turn, outcome, {target.message_id: target.sender_person_id},
             )
             return None
         if outcome.event_status != 'committed' or outcome.decision is None:
@@ -2440,7 +2489,7 @@ class ChatService(
         if not lines:
             logger.warning('私聊主动跟进正文为空', streamId=context.stream.id)
             return None
-        return turn, lines
+        return turn, lines, outcome
 
     async def _observe_direct_scene(
         self,
@@ -3069,10 +3118,13 @@ class ChatService(
             head: DecisionHead, materials: Sequence[Tuple[str, str, str]],
         ) -> List[Dict]:
             """为工具模式的影子发言生成随后会被完整丢弃的合法正文。"""
+            # 发言动作头已通过校验，mind 必然非空。
+            assert head.mind is not None
             replyer_protocol = render_replyer_protocol(
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
+                mind=head.mind,
                 materials=materials,
             )
             replyer_context = self._render_prepared_context(
@@ -3126,6 +3178,7 @@ class ChatService(
             target_message_ids=(
                 decision.target_message_ids if decision is not None else ()
             ),
+            mind=decision.mind if decision is not None else None,
         )
 
     async def _run_conversation_turn(
@@ -3328,10 +3381,13 @@ class ChatService(
             """
             if control is not None:
                 control.phase = 'replying'
+            # 发言动作头已通过校验，mind 必然非空。
+            assert head.mind is not None
             replyer_protocol = render_replyer_protocol(
                 head.reference or '',
                 head.length,
                 emoji_enabled=frame.capabilities.emoji,
+                mind=head.mind,
                 materials=materials,
             )
             replyer_context = await self._enrich_prepared_context(
@@ -3463,7 +3519,10 @@ class ChatService(
                 action=outcome.decision.action,
                 reason_codes=outcome.decision.reason_codes,
                 target_message_ids=outcome.decision.target_message_ids,
+                mind=outcome.decision.mind,
             )
+        # 可选消息 ID 到发送者：心理活动记录目标消息是谁发的，回应对象也按它记。
+        senders = {message.message_id: message.context.person.id for message in batch}
         if outcome.event_status == 'silent_by_choice':
             assert outcome.decision is not None
             if context.stream.kind == 'group':
@@ -3471,6 +3530,7 @@ class ChatService(
                 # 重新回到攒批判断，直到真信号或 Bot 自己再次开口把窗口打开。
                 # wait 与 react 不置位：前者是「话还没说完」，后者仍是参与。
                 self._follow_up_declined.add(context.stream.id)
+            self._settle_effective_action(context, turn, outcome, senders)
             # silent 只写行动决策事件：不产生助手历史、TTS、事实或观察事件。
             self._mark_stage(
                 context, GATED,
@@ -3504,16 +3564,19 @@ class ChatService(
         assert outcome.decision is not None
         if outcome.decision.action == 'wait':
             self._hold_batch_for_wait(context, batch, turn, outcome)
+            self._settle_effective_action(context, turn, outcome, senders)
             return _RoundResult('paused')
         if outcome.decision.action == 'poke':
             await self._apply_poke(
                 context, batch, turn, outcome, frame, gate_inputs, batch_gate,
             )
+            self._settle_effective_action(context, turn, outcome, senders)
             return _RoundResult('acted')
         if outcome.decision.action == 'react':
             await self._apply_reaction(
                 context, turn, outcome, frame, gate_inputs, batch_gate,
             )
+            self._settle_effective_action(context, turn, outcome, senders)
             return _RoundResult('acted')
         # speak 与 reply 的产物形态完全相同（正文 + 可选表情包），区别只在有没有
         # 目标消息，因此共用下面这条持久化与投递路径；_quote_target 对空目标返回
@@ -3589,8 +3652,10 @@ class ChatService(
         )
         self._arm_direct_follow_up(context)
         # Bot 刚开过口，对话仍在 Bot 这边：重新敞开自然回应窗口，让紧接着说的话
-        # 不必再经过回复必要性评分就能进入 Bot 的视野。
+        # 不必再经过回复必要性评分就能进入 Bot 的视野。窗口只对她这次回应的人
+        # （speak 时为全场）放行，见 _settle_effective_action。
         self._follow_up_declined.discard(context.stream.id)
+        self._settle_effective_action(context, turn, outcome, senders)
         return _RoundResult('acted')
 
     def _hold_batch_for_wait(
@@ -4085,6 +4150,73 @@ class ChatService(
         :return: Bot 放弃过且此后没有再开口时返回 True。
         """
         return stream_id in self._follow_up_declined
+
+    def is_recent_partner(self, stream_id: int, person_id: int) -> bool:
+        """返回某人是否是她在这个会话最近一次生效回合回应过的人。
+
+        与 ``follow_up_declined`` 同一纪律：入口门控与批次门控都读这里，两处的
+        跟进窗口判定才是同一份事实。
+
+        :param stream_id: 目标 stream ID。
+        :param person_id: 待判定的人物 ID。
+        :return: 最近一次生效回合是 speak（对全群开口），或此人是那一回合回应的对象时
+            返回 True；本进程里这个会话还没有生效回合时返回 False。
+        """
+        partners = self._recent_partners.get(stream_id)
+        if partners is None:
+            return False
+        return partners.everyone or person_id in partners.person_ids
+
+    def _note_recent_partners(
+        self,
+        stream_id: int,
+        action: str,
+        person_ids: Iterable[int] = (),
+    ) -> None:
+        """在一次回应生效后整体替换「最近回应过的人」。
+
+        :param stream_id: 目标 stream ID。
+        :param action: 生效的终局动作；speak 记为全场，其余记为给定的人。
+        :param person_ids: reply / react / poke 的目标消息发送者，旧管线为本批发送者。
+        :raises ValueError: 非 speak 动作没有给出任何人。
+        副作用：更新进程内的 ``_recent_partners``。
+        """
+        if action == 'speak':
+            self._recent_partners[stream_id] = _RecentPartners(everyone=True)
+            return
+        ids = frozenset(person_ids)
+        if not ids:
+            raise ValueError(f'{action} 生效后没有可记录的回应对象')
+        self._recent_partners[stream_id] = _RecentPartners(everyone=False, person_ids=ids)
+
+    def _settle_effective_action(
+        self,
+        context: ConversationContext,
+        turn: int,
+        outcome: AgentOutcome,
+        senders: Mapping[int, int],
+    ) -> None:
+        """终局动作真正生效后，写心理活动并更新「最近回应过的人」。
+
+        silent 与 wait 不是回应，只写心理活动，不改动回应对象。
+
+        :param context: 当前会话上下文。
+        :param turn: 回合 ID。
+        :param outcome: 已生效的 Agent 结果。
+        :param senders: 本回合可选消息 ID 到发送者人物 ID 的映射。
+        :raises KeyError: 目标消息不在 ``senders`` 内。
+        副作用：写 meta 表的心理活动记录，更新进程内回应对象。
+        """
+        decision = outcome.decision
+        assert decision is not None
+        self._record_mind(context, turn, outcome, senders)
+        if decision.action in ('silent', 'wait'):
+            return
+        self._note_recent_partners(
+            context.stream.id,
+            decision.action,
+            (senders[target] for target in decision.target_message_ids),
+        )
 
     @property
     def at_mention_must_reply(self) -> bool:

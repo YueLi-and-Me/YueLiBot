@@ -140,6 +140,10 @@ class GateRequest:
     # 群聊里一旦选择 silent 即置真，一旦成功回复即置假。它是自然回应窗口的关闭条件，
     # 表示 Bot 已看过该轮且未回应这一事实，而非任何计数。
     follow_up_declined: bool = False
+    # 本批是否来自 Bot 最近一次生效回合回应过的人（speak 之后为全场任何人）。由调用方
+    # 按 Bot 的生效动作维护，按场面取批时批内任一发送者是即为真。跟进窗口只对这些人
+    # 放行；进程里还没有生效回合时为假。
+    from_recent_partner: bool = False
 
     def __post_init__(self) -> None:
         """拒绝负计数、零窗口上限与负回复间隔，防止频率比较被错误输入翻转。"""
@@ -282,7 +286,16 @@ def decide_disposition(request: GateRequest) -> GateResult:
     #   窗口关闭；成功回复表示对话仍在继续，窗口重新开启。窗口不无限自续：Bot 每次
     #   放弃后须重新被真信号或攒批唤醒；防轰炸的最终边界仍是
     #   max_replies_in_window 硬上限，不由本条件承担。
-    if not request.follow_up_declined:
+    #
+    # 窗口重新开启后曾对群里所有人放行：
+    # - 现象：2026-10-26 两个群里她回复 268 次，只有 56 次是被点名（@、叫名字、引用、
+    #   戳一戳）；187 次靠这两条跟进信号进入。这类且未点名的 206 次回应里，113 次的
+    #   对象不是她上一回合回应的人。
+    # - 原因：窗口只看「她刚说过话」，不看说话的人是不是在接她的话；她一开口，紧接着
+    #   发言的任何人都被抬进来，别人之间的对话因此常被当成在对她说。
+    # - 后果：两条跟进信号只对她最近一次生效回合回应过的人追加（speak 之后为全场）；
+    #   其他人要靠点名信号或必要性评分进入。点名信号、必要性评分与频率上限都不变。
+    if not request.follow_up_declined and request.from_recent_partner:
         if (
             request.last_bot_reply_elapsed_ms is not None
             and request.last_bot_reply_elapsed_ms <= NATURAL_REPLY_WINDOW_MS

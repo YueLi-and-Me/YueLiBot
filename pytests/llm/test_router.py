@@ -121,9 +121,9 @@ class _ToolCallClient(_FakeClient):
 
 
 # reply 动作的真实必填字段，与 tool_schema 的动作声明保持一致。
-_REPLY_REQUIRED = ['reasons', 'target', 'length', 'reference']
+_REPLY_REQUIRED = ['mind', 'reasons', 'target', 'length', 'reference']
 _REPLY_ARGS = (
-    '{"target": 101, "reasons": ["directly_addressed"], "length": "brief", '
+    '{"mind": "测试想法", "target": 101, "reasons": ["directly_addressed"], "length": "brief", '
     '"reference": "对方在叫她，回应这条消息"}'
 )
 

@@ -216,7 +216,7 @@ class _ConsultThenReplyProvider:
         else:
             yield {
                 'text': (
-                    '<decision action="reply" targets="101" reasons="direct_question"'
+                    '<decision action="reply" mind="测试想法" targets="101" reasons="direct_question"'
                     ' length="brief"/><say>查到了，是这样。</say>'
                 )
             }

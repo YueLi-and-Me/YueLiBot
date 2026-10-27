@@ -101,7 +101,7 @@ def test_tool_call_becomes_validated_head() -> None:
 
     head = decision_head_from_tool_call(
         'reply',
-        '{"target": 101, "reasons": ["can_add_value"], "length": "brief", '
+        '{"mind": "测试想法", "target": 101, "reasons": ["can_add_value"], "length": "brief", '
         '"reference": "他在吐槽引擎，接一句"}',
         frame,
     )
@@ -119,7 +119,7 @@ def test_tool_call_accepts_numeric_string_target() -> None:
 
     head = decision_head_from_tool_call(
         'reply',
-        '{"target": "102", "reasons": ["direct_question"], "length": "brief", '
+        '{"mind": "测试想法", "target": "102", "reasons": ["direct_question"], "length": "brief", '
         '"reference": "回他"}',
         frame,
     )
@@ -134,7 +134,7 @@ def test_out_of_range_target_is_rejected() -> None:
     with pytest.raises(IllegalActionError):
         decision_head_from_tool_call(
             'reply',
-            '{"target": 999, "reasons": ["can_add_value"], "length": "brief", '
+            '{"mind": "测试想法", "target": 999, "reasons": ["can_add_value"], "length": "brief", '
             '"reference": "x"}',
             frame,
         )
@@ -147,7 +147,7 @@ def test_cross_domain_reason_is_rejected() -> None:
     with pytest.raises(IllegalActionError):
         decision_head_from_tool_call(
             'reply',
-            '{"target": 101, "reasons": ["no_new_value"], "length": "brief", '
+            '{"mind": "测试想法", "target": 101, "reasons": ["no_new_value"], "length": "brief", '
             '"reference": "x"}',
             frame,
         )
@@ -158,7 +158,7 @@ def test_malformed_arguments_are_rejected() -> None:
     frame = _frame()
 
     with pytest.raises(IllegalActionError, match='不是合法 JSON'):
-        decision_head_from_tool_call('reply', '{"target": 101,', frame)
+        decision_head_from_tool_call('reply', '{"mind": "测试想法", "target": 101,', frame)
 
 
 def test_tool_call_rejects_legacy_targets_field_precisely() -> None:
@@ -168,7 +168,7 @@ def test_tool_call_rejects_legacy_targets_field_precisely() -> None:
     with pytest.raises(IllegalActionError, match='未知字段：targets'):
         decision_head_from_tool_call(
             'reply',
-            '{"targets": 101, "reasons": ["can_add_value"], "length": "brief", '
+            '{"mind": "测试想法", "targets": 101, "reasons": ["can_add_value"], "length": "brief", '
             '"reference": "旧字段"}',
             frame,
         )
@@ -183,7 +183,7 @@ def test_tool_call_rejects_missing_target_precisely() -> None:
     with pytest.raises(IllegalActionError, match='缺少必填字段：target'):
         decision_head_from_tool_call(
             'react',
-            '{"reasons": ["natural_reaction"], "reaction": "赞"}',
+            '{"mind": "测试想法", "reasons": ["natural_reaction"], "reaction": "赞"}',
             frame,
         )
 
@@ -195,7 +195,7 @@ def test_tool_call_rejects_target_array() -> None:
     with pytest.raises(IllegalActionError, match='target 必须是单个消息编号'):
         decision_head_from_tool_call(
             'reply',
-            '{"target": [101], "reasons": ["can_add_value"], "length": "brief", '
+            '{"mind": "测试想法", "target": [101], "reasons": ["can_add_value"], "length": "brief", '
             '"reference": "数组目标"}',
             frame,
         )
@@ -232,6 +232,7 @@ def test_free_text_reason_is_rejected_with_the_available_values() -> None:
             'reply',
             json.dumps(
                 {
+                    'mind': '测试想法',
                     'target': 101,
                     'reasons': [prose],
                     'length': 'brief',
@@ -256,7 +257,7 @@ def test_cross_domain_reason_names_the_target_action_values() -> None:
     with pytest.raises(IllegalActionError) as excinfo:
         decision_head_from_tool_call(
             'silent',
-            '{"reasons": ["directly_addressed"]}',
+            '{"mind": "测试想法", "reasons": ["directly_addressed"]}',
             frame,
         )
 

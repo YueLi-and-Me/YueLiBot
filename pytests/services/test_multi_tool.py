@@ -162,7 +162,7 @@ def _tool_events() -> list[dict]:
 
 _REPLY_CALL = (
     'reply',
-    '{"target": 101, "reasons": ["pending_thread"], "length": "brief", '
+    '{"mind": "测试想法", "target": 101, "reasons": ["pending_thread"], "length": "brief", '
     '"reference": "接着回答"}',
 )
 
@@ -231,7 +231,7 @@ async def test_terminal_action_truncates_later_calls() -> None:
     _, _, outcome = await _run_tools(
         [
             [
-                ('silent', '{"reasons": ["no_new_value"]}'),
+                ('silent', '{"mind": "测试想法", "reasons": ["no_new_value"]}'),
                 ('recall', '{"query": "不该执行"}'),
             ]
         ],

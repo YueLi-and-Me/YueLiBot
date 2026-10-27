@@ -265,13 +265,13 @@ async def test_star12_real_agent_receives_mcp_observation(tmp_path, monkeypatch)
     manager, registry = await manager_for(tmp_path, monkeypatch)
     planner = _Provider([
         {'tool_calls': [{'id': 'mcp-call', 'name': 'demo_echo', 'arguments': json.dumps({'query': '资料' * 3000})}]},
-        {'tool_calls': [{'id': 'reply-call', 'name': 'reply', 'arguments': json.dumps({'target': 101, 'reasons': ['directly_addressed'], 'length': 'brief', 'reference': '回应资料'})}]},
+        {'tool_calls': [{'id': 'reply-call', 'name': 'reply', 'arguments': json.dumps({'mind': '测试想法', 'target': 101, 'reasons': ['directly_addressed'], 'length': 'brief', 'reference': '回应资料'})}]},
     ])
     replyer = _Provider([{'text': '<say>读到了</say>'}])
     received = []
     async def replyer_messages(_head, materials):
         received.extend(materials)
-        return [{'role': 'user', 'content': render_replyer_protocol('回应资料', 'brief', materials=materials)}]
+        return [{'role': 'user', 'content': render_replyer_protocol('回应资料', 'brief', mind='测试想法', materials=materials)}]
     frame = frame_for(manager)
     gate = GateInputFacts(stream_kind='group', mentioned_me=True, name_mentioned=False, must_reply=True,
                          asleep=False, rate_limited=False, recent_bot_replies=0, candidate_message_ids=(101,), selectable_message_ids=(101,))

@@ -7,12 +7,41 @@
 由 ``ChatService`` 继承，依赖它的配置与提示词属性。
 """
 
+from typing import Dict, List
+
 from src.core.agent.action_protocol import DecisionFrame, GateInputFacts
 from src.core.agent.history import strip_say_tags
 from src.core.agent.prompt import render_action_protocol, render_tool_protocol
 from src.core.platform_io.types import ConversationContext
 
 from .state import _BatchGate, _BufferedMessage
+
+
+# 可选清单里「已经回应过」的提醒。只在心理活动记录显示她生效地回应过这条消息时出现。
+RESPONDED_NOTE = '（你已经回应过这条，对方没有新的要求就不要再回应一次）'
+
+
+def _addressee_note(message: _BufferedMessage) -> str:
+    """把一条消息入站时判定的点名事实写成括号附注。
+
+    只写确定事实，多项用「、」连接；四项都没有时明确写出「都没有」，而不是留空：
+    留空时模型分不清这是「确认都没有」还是「没有标注」。
+
+    :param message: 本批的一条消息。
+    :return: 例如「（@了你、叫了你的名字）」或「（没有引用你、没有 @ 你、也没有叫你）」。
+    """
+    facts: List[str] = []
+    if message.mentioned_me:
+        facts.append('@了你')
+    if message.replied_to_me:
+        facts.append('引用了你的消息')
+    if message.name_mentioned:
+        facts.append('叫了你的名字')
+    if message.poked_me:
+        facts.append('戳了你')
+    if not facts:
+        return '（没有引用你、没有 @ 你、也没有叫你）'
+    return f'（{"、".join(facts)}）'
 
 
 class AgentProtocolMixin:
@@ -62,6 +91,37 @@ class AgentProtocolMixin:
                 previews.append((message.message_id, message.text))
         return previews
 
+    def _selectable_message_notes(
+        self,
+        batch: list[_BufferedMessage],
+        context: ConversationContext,
+    ) -> Dict[int, str]:
+        """给本批可选消息标出「这条在对谁说」的确定事实与「已经回应过」的提醒。
+
+        「对谁说」只写入站时已经判定的四项事实（@、引用、叫名字、戳一戳），不做
+        任何推断：没引用、没 @ 的消息原本只能靠「排在她发言后面」去猜，这正是把
+        别人之间的对话当成对她说的来源。私聊里每条消息都是对她说的，不标这一项。
+
+        「已经回应过」取心理活动记录里生效过的回复、贴表情与戳一戳的目标。它只是
+        提醒，不从可选清单里拿掉这条消息，是否再回应仍由她自己决定。
+
+        :param batch: 本回合的批次消息，与可选清单同序。
+        :param context: 当前会话上下文。
+        :return: 消息 ID 到附注文本的映射；没有附注的消息不出现在映射里。
+        :raises KeyError: 心理活动记录的形状不对。
+        """
+        responded = self._responded_message_ids(context.stream.id)
+        notes: Dict[int, str] = {}
+        for message in batch:
+            parts: List[str] = []
+            if context.stream.kind == 'group':
+                parts.append(_addressee_note(message))
+            if message.message_id in responded:
+                parts.append(RESPONDED_NOTE)
+            if parts:
+                notes[message.message_id] = ''.join(parts)
+        return notes
+
     def _render_agent_protocol(
         self,
         frame: DecisionFrame,
@@ -93,6 +153,7 @@ class AgentProtocolMixin:
             if context.stream.kind == 'group' and batch
             else ()
         )
+        notes = self._selectable_message_notes(batch, context)
         if self._tool_calling:
             # 工具调用模式下动作空间由函数签名承载，提示词只留目标锚点与选择
             # 口径；两套输出协议同时出现会让模型在写 XML 与调工具之间摇摆。
@@ -103,6 +164,7 @@ class AgentProtocolMixin:
                 cognitive_rounds=self._cognitive_rounds,
                 available_actions=frame.available_actions,
                 engage_style=self._cfg.personality.engage_style,
+                selectable_notes=notes,
             )
         return render_action_protocol(
             sorted(frame.available_actions),
@@ -114,6 +176,7 @@ class AgentProtocolMixin:
             available_reactions=frame.capabilities.available_reactions,
             stream_kind=context.stream.kind,
             engage_style=self._cfg.personality.engage_style,
+            selectable_notes=notes,
         )
 
     def _render_agent_messages(
@@ -225,8 +288,9 @@ class AgentProtocolMixin:
                 {
                     'role': 'assistant',
                     'content': (
-                        f'<decision action="reply" targets="{targets[0]}" '
-                        'reasons="direct_question" length="brief"/>'
+                        '<decision action="reply" '
+                        'mind="她在问我忙不忙、要不要一起上号，是在问我，答应她" '
+                        f'targets="{targets[0]}" reasons="direct_question" length="brief"/>'
                         '<say emotion="normal">不忙，刚刷完视频。</say>'
                         '<say emotion="smile">上号叫我，我这就来。</say>'
                     ),
@@ -240,7 +304,11 @@ class AgentProtocolMixin:
                 },
                 {
                     'role': 'assistant',
-                    'content': '<decision action="silent" reasons="others_conversation"/>',
+                    'content': (
+                        '<decision action="silent" '
+                        'mind="他们在聊一个我不认识的人，不是对我说的，先看着" '
+                        'reasons="others_conversation"/>'
+                    ),
                 },
             ])
         return examples

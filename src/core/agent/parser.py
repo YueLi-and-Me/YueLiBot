@@ -119,6 +119,8 @@ class DecisionEvent:
     :ivar reaction: react 动作的表情回应标识原文；其他动作不携带，缺失时为 `None`。
     :ivar reference: 决策交给回复生成的背景说明原文；只有终局发言动作携带，
         缺失时为 `None`。
+    :ivar mind: 这一轮心里的想法原文；终局动作必填，是否缺失由 Agent 校验，
+        缺失时为 `None`。
     """
 
     type: str = 'decision'
@@ -130,6 +132,7 @@ class DecisionEvent:
     query: str | None = None
     reaction: str | None = None
     reference: str | None = None
+    mind: str | None = None
 
 
 ParseEvent = Union[
@@ -411,6 +414,7 @@ class ResponseParser:
                 query=attrs.get('query'),
                 reaction=attrs.get('reaction'),
                 reference=attrs.get('reference'),
+                mind=attrs.get('mind'),
             ))
             return
 

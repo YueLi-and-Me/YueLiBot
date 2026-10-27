@@ -87,7 +87,7 @@ def test_1_at_must_reply_action_set_has_no_silent() -> None:
 
 async def test_1_at_must_reply_force_rejects_silent_head(db) -> None:
     config = _enabled_config()
-    provider = _ScriptedProvider([['<decision action="silent" reasons="low_relevance"/>']])
+    provider = _ScriptedProvider([['<decision action="silent" mind="测试想法" reasons="low_relevance"/>']])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)
     await chat.send(InboundMessage(text="@月璃 在吗", context=context, mentioned_me=True))
@@ -118,7 +118,7 @@ async def test_2_name_mention_enters_deliberate_and_agent_may_stay_silent(db) ->
     assert result.disposition == "deliberate"
 
     config = _enabled_config()
-    provider = _ScriptedProvider([['<decision action="silent" reasons="attention_elsewhere"/>']])
+    provider = _ScriptedProvider([['<decision action="silent" mind="测试想法" reasons="attention_elsewhere"/>']])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)
     await chat.send(InboundMessage(text="月璃你好", context=context, name_mentioned=True))
@@ -209,7 +209,7 @@ async def test_5_drop_does_not_call_model_and_records_reason(db) -> None:
 async def test_6_deliberate_one_call_produces_decision_and_text(db) -> None:
     config = _enabled_config()
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
+        ['<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
     ])
     broker = _FakeBroker()
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
@@ -229,7 +229,7 @@ async def test_6_deliberate_one_call_produces_decision_and_text(db) -> None:
 # 7. silent 不产生用户消息 / TTS / facts / mood / promise 副作用，只写一条行动决策事件。
 async def test_7_silent_has_no_side_effects(db) -> None:
     config = _enabled_config()
-    provider = _ScriptedProvider([['<decision action="silent" reasons="others_conversation"/>']])
+    provider = _ScriptedProvider([['<decision action="silent" mind="测试想法" reasons="others_conversation"/>']])
     broker = _FakeBroker()
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
     context = _group(chat._registry)
@@ -268,7 +268,7 @@ def test_8_event_status_distinguishes_silence_from_failures() -> None:
 async def test_9_target_outside_selectable_is_illegal(db) -> None:
     config = _enabled_config()
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="103" reasons="direct_question" length="brief"/><say>在</say>'],
+        ['<decision action="reply" mind="测试想法" targets="103" reasons="direct_question" length="brief"/><say>在</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)
@@ -301,6 +301,7 @@ def test_10_quote_bounded_by_selectable_snapshot() -> None:
         quote_message_id=102,
         reason_codes=("direct_question",),
         length="brief",
+        mind="测试想法",
     )
     head.validate(frame)
     try:
@@ -338,7 +339,7 @@ async def test_12_body_is_held_until_head_is_valid(db) -> None:
     from src.core.agent.action_protocol import DecisionFrame, GateInputFacts
 
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="101" reasons="direct_question" length="brief"/><say>在</say>'],
+        ['<decision action="reply" mind="测试想法" targets="101" reasons="direct_question" length="brief"/><say>在</say>'],
     ])
     agent = ConversationAgent(provider, temperature=0.7)
     frame = DecisionFrame(
@@ -402,7 +403,7 @@ async def test_13_illegal_action_never_downgrades_to_plain_reply(db) -> None:
 async def test_14_action_decision_is_queryable_via_http(db) -> None:
     config = _enabled_config()
     provider = _ScriptedProvider([
-        ['<decision action="reply" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
+        ['<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/><say>在的</say>'],
     ])
     chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=_FakeBroker())
     context = _group(chat._registry)

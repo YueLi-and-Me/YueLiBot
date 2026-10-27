@@ -90,7 +90,7 @@ def _resolve(registry, *, kind: str = 'group', sender: str = '97531', card: str 
 
 def _reply(text: str, extra: str = '') -> str:
     return (
-        '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>'
+        '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>'
         f'{extra}<say emotion="normal">{text}</say>'
     )
 

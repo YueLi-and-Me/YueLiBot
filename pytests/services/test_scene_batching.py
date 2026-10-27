@@ -118,7 +118,7 @@ def _person(registry, sender: str, card: str, kind: str = 'group'):
 
 def _reply(text: str, extra: str = '') -> str:
     return (
-        '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>'
+        '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>'
         f'{extra}<say emotion="normal">{text}</say>'
     )
 
@@ -282,7 +282,7 @@ class TestInterrupt:
         config.conversation_agent.split_replyer = True
         config.conversation_agent.tool_calling = False
         planner = _Provider([[
-            '<decision action="reply" targets="1" reasons="direct_question" '
+            '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" '
             'length="brief" reference="回应一下"/>',
         ]])
         replyer = _Provider([[], ['<say>好的</say>']], hang_calls=(0,))
@@ -314,7 +314,7 @@ class TestInterrupt:
         不存在重复写入，因此这条保护只在单次调用路径上起作用。
         """
         provider = _Provider([[
-            '<decision action="reply" targets="1" reasons="direct_question" length="brief"/>'
+            '<decision action="reply" mind="测试想法" targets="1" reasons="direct_question" length="brief"/>'
             '<mood favor="1"/>',
             '<say emotion="normal">在呢</say>',
         ]])
@@ -454,7 +454,7 @@ class _BlockingImageDescriber:
         return [None] * len(sources)
 
 
-_WAIT = '<decision action="wait" reasons="unfinished_thought"/>'
+_WAIT = '<decision action="wait" mind="测试想法" reasons="unfinished_thought"/>'
 
 
 def _action_events() -> List[dict]:

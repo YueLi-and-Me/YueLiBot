@@ -39,14 +39,14 @@ class _DecisionProvider:
         self.calls.append(messages or [])
         action = self.actions.pop(0) if self.actions else 'reply'
         if action == 'silent':
-            yield {'text': '<decision action="silent" reasons="topic_closed"/>'}
+            yield {'text': '<decision action="silent" mind="测试想法" reasons="topic_closed"/>'}
             return
         system = str((messages or [{}])[0].get('content', ''))
-        match = re.search(r'<decision action="reply" targets="(\d+)"', system)
+        match = re.search(r'<decision action="reply" mind="[^"]*" targets="(\d+)"', system)
         assert match is not None
         yield {
             'text': (
-                f'<decision action="reply" targets="{match.group(1)}" '
+                f'<decision action="reply" mind="测试想法" targets="{match.group(1)}" '
                 'reasons="topic_continuation" length="brief"/>'
                 '<say emotion="pout">快说呀，我还等着呢。</say>'
             ),

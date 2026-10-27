@@ -58,6 +58,14 @@ _WAIT_DESCRIPTIONS: Dict[str, str] = {
     ),
 }
 
+# 终局动作的心理活动参数说明。动作头把它当作必填字段校验（DecisionHead.validate），
+# 这里只负责告诉模型写什么、写多长；长度要求与 MIND_MAX_CHARS 的关系见该常量注释。
+_MIND_DESCRIPTION = (
+    '这一轮你心里的想法，第一人称一两句，不超过 60 字：这几条是谁在对谁说、'
+    '你怎么看、打算怎么做。提到人用名字，不写编号和理由码。只有你自己看得到，'
+    '不会发出去。'
+)
+
 # 理由码按动作分域，与 _validate_reason_codes 同一套划分。react 与 poke
 # 都是「做出了回应」，与回复同域。
 _REASON_DOMAINS: Dict[str, frozenset[str]] = {
@@ -94,6 +102,15 @@ def _tool_for(action: str, frame: DecisionFrame) -> Dict[str, Any]:
     """
     properties: Dict[str, Any] = {}
     required: List[str] = []
+
+    if action not in COGNITIVE_ACTIONS:
+        # mind 放在 properties 的第一个：多数模型按声明顺序生成参数，先写想法再选
+        # 目标，目标才是想清楚之后的结论，而不是先选了目标再补一句理由。
+        properties['mind'] = {
+            'type': 'string',
+            'description': _MIND_DESCRIPTION,
+        }
+        required.append('mind')
 
     if action in COGNITIVE_ACTIONS:
         properties['query'] = {
@@ -230,6 +247,7 @@ def decision_head_from_tool_call(
         query=_optional_text(payload.get('query')),
         reaction=_optional_text(payload.get('reaction')),
         reference=_optional_text(payload.get('reference')),
+        mind=_optional_text(payload.get('mind')),
     )
     head.validate(frame)
     return head

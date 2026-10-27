@@ -224,7 +224,7 @@ async def test_desktop_recall_of_qq_only_person_resolves_display_name(
     provider = _ChatProvider([
         ['<decision action="recall" query="原神"/>'],
         [
-            '<decision action="reply" targets="1" reasons="pending_thread" length="brief"/>',
+            '<decision action="reply" mind="测试想法" targets="1" reasons="pending_thread" length="brief"/>',
             '<say emotion="smile">知道，他玩原神。</say>',
         ],
     ])
@@ -299,7 +299,7 @@ async def _run_tool_round(cross_person: bool) -> None:
             [('recall', '{"query": "原神"}')],
             [(
                 'reply',
-                '{"target": 101, "reasons": ["pending_thread"], "length": "brief", '
+                '{"mind": "测试想法", "target": 101, "reasons": ["pending_thread"], "length": "brief", '
                 '"reference": "接着回答"}',
             )],
         ]),

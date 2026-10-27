@@ -63,7 +63,7 @@ def harness(db):
         await chat.send(InboundMessage(text='月璃你看这个', context=context))
         target = chat.memory.latest_message_id(context.stream.id)
         provider.response = (
-            f'<decision action="reply" targets="{target}" reasons="direct_question" length="brief"/>'
+            f'<decision action="reply" mind="测试想法" targets="{target}" reasons="direct_question" length="brief"/>'
             + ''.join(f'<say emotion="smile">{line}</say>' for line in lines)
         )
         await chat._tick()
@@ -127,7 +127,7 @@ async def test_only_repeated_say_is_dropped(harness) -> None:
 
 
 def test_rendered_replyer_contains_whole_sentence_rule() -> None:
-    prompt = render_replyer_protocol('回应紧接着的新消息', 'brief')
+    prompt = render_replyer_protocol('回应紧接着的新消息', 'brief', mind='测试想法')
     assert '不要重复自己最近说过的话，同样的意思必须换一种说法' in prompt
     assert '整句复述' in prompt
     assert '句式或口头禅' in prompt
