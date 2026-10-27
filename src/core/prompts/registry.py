@@ -185,6 +185,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'selectable_messages',
         'quote_rule',
         'cognition_rule',
+        'engage_style',
     }),
     'chat.replyer': frozenset({
         'reference',
@@ -209,6 +210,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'poke_rule',
         'wait_rule',
         'speak_rule',
+        'engage_style',
     }),
     'image.description': frozenset(),
     'emoji.description': frozenset(),

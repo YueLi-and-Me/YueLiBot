@@ -102,6 +102,7 @@ class AgentProtocolMixin:
                 target_persons=target_persons,
                 cognitive_rounds=self._cognitive_rounds,
                 available_actions=frame.available_actions,
+                engage_style=self._cfg.personality.engage_style,
             )
         return render_action_protocol(
             sorted(frame.available_actions),
@@ -112,6 +113,7 @@ class AgentProtocolMixin:
             cognitive_rounds=self._cognitive_rounds,
             available_reactions=frame.capabilities.available_reactions,
             stream_kind=context.stream.kind,
+            engage_style=self._cfg.personality.engage_style,
         )
 
     def _render_agent_messages(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator, Dict, List
 
 import asyncio
+import pytest
 import time
 
 from src.core.agent.conversation_gate import ONGOING_TOPIC_MESSAGE_SPAN
@@ -964,6 +965,44 @@ async def test_split_layers_persona_between_stages(db) -> None:
     # 回复风格只给会说话的那一级。
     assert '说话要短' not in planner_system
     assert '说话要短' in replyer_system
+
+
+@pytest.mark.parametrize('tool_calling', [True, False])
+async def test_engage_style_reaches_decision_stage_only(db, tool_calling: bool) -> None:
+    """接话方式只进决策那一次调用，回复生成那一次看不到；两套决策协议都覆盖。"""
+    config = Config()
+    config.bot.name = "月璃"
+    config.personality.engage_style = "群里只回提到你的消息"
+    config.conversation_agent.mode = "enabled"
+    config.conversation_agent.split_replyer = True
+    config.conversation_agent.tool_calling = tool_calling
+    planner = (
+        _ToolCallProvider(
+            'reply',
+            '{"target": 1, "reasons": ["direct_question"], "length": "brief", '
+            '"reference": "他直接问了，应一声"}',
+        )
+        if tool_calling
+        else _TwoStageProvider([
+            '<decision action="reply" targets="1" reasons="direct_question" '
+            'length="brief" reference="随口应一声"/>',
+        ])
+    )
+    replyer = _TwoStageProvider(['<say>在的</say>'])
+    chat = ChatService(
+        db, planner, None, None, _noop, cfg=config, broker=_FakeBroker(),
+        planner_provider=planner, replyer_provider=replyer,
+    )
+    context = _group_context(chat._registry)
+
+    await chat.send(InboundMessage(text="月璃在吗", context=context, name_mentioned=True))
+    await chat._tick()
+    await chat._inflight[context.stream.id].task
+
+    planner_text = '\n'.join(item['content'] for item in planner.messages[0])
+    replyer_text = '\n'.join(item['content'] for item in replyer.messages[0])
+    assert '群里只回提到你的消息' in planner_text
+    assert '群里只回提到你的消息' not in replyer_text
 
 
 class _ToolCallProvider:

@@ -16,6 +16,7 @@ from src.core.agent.prompt import (
     build_system_prompt,
     render_action_protocol,
     render_replyer_protocol,
+    render_tool_protocol,
 )
 from src.core.agent.summarize import summarize
 from src.core.config.schema import Config
@@ -60,6 +61,20 @@ def test_emoji_protocol_uses_specific_free_text_in_all_prompt_paths() -> None:
     ):
         assert rule in prompt
     assert _emoji_protocol_rule(False) == '本轮不支持发送表情包，不要写 <emoji> 标签。'
+
+
+def test_engage_style_renders_before_decision_rules() -> None:
+    """接话方式进两套决策协议，排在通用选择规则之前；留空时不留任何痕迹。"""
+    style = '群里只回提到你的消息。'
+    tool_text = render_tool_protocol([(1, '消息')], False, engage_style=style)
+    action_text = render_action_protocol(['reply'], [(1, '消息')], False, engage_style=style)
+    assert tool_text.index(style) < tool_text.index('选择动作时：')
+    assert action_text.index(style) < action_text.index('<decision> 规则：')
+    for blank in ('', '  \n'):
+        assert '接话方式' not in render_tool_protocol([(1, '消息')], False, engage_style=blank)
+        assert '接话方式' not in render_action_protocol(
+            ['reply'], [(1, '消息')], False, engage_style=blank,
+        )
 
 
 class _SummaryProvider:

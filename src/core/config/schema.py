@@ -291,6 +291,9 @@ class PersonalityConfig(BaseModel):
     birthday: str
     personality: str
     reply_style: str
+    # 接话方式：什么时候开口、回应谁、哪些情况不接话。只进动作决策的协议段，
+    # 不进写正文的那次调用；缺键时为空，由升级器补进老配置。
+    engage_style: str = ''
     tone_probability: float = Field(ge=0.0, le=1.0)
     tone_variants: List[str]
 
@@ -309,8 +312,8 @@ class PersonalityConfig(BaseModel):
             return value
         migration_errors = (
             ('identity', 'personality.identity 已改名为 personality.personality，请把内容挪过去。'),
-            ('behavior', 'personality.behavior 已取消：接话方式并进 reply_style。'),
-            ('attention', 'personality.attention 已取消：接话方式并进 reply_style。'),
+            ('behavior', 'personality.behavior 已取消：接话方式改写在 personality.engage_style。'),
+            ('attention', 'personality.attention 已取消：接话方式改写在 personality.engage_style。'),
             ('boundaries', 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。'),
             ('expression_habits', 'personality.expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。'),
             ('proactive_expression_habits', 'personality.proactive_expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。'),
@@ -1281,6 +1284,7 @@ class Config(BaseModel):
         birthday='',
         personality='',
         reply_style='',
+        engage_style='',
         tone_probability=0.0,
         tone_variants=[],
     ))

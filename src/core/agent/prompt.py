@@ -779,6 +779,25 @@ def _render_turn_scope(target_persons: Sequence[str]) -> str:
     )
 
 
+def _engage_style_block(engage_style: str) -> str:
+    """渲染使用者配置的接话方式段落，放在通用选择规则之前。
+
+    接话方式只进决策协议：写正文的那次调用已经确定要开口，再读一遍「什么时候
+    不接话」只会干扰措辞。在要不要开口、回应谁这两件事上与通用规则冲突时以配置
+    为准，否则使用者写了也压不过固定口径；输出格式规则不在可覆盖之列。
+
+    :param engage_style: ``personality.engage_style`` 原文；空白视为未配置。
+    :return: 以空行结尾的段落文本；未配置时返回空字符串，模板中不留空行。
+    """
+    text = engage_style.strip()
+    if not text:
+        return ''
+    return (
+        '你的接话方式如下。在要不要开口、回应谁这两件事上，'
+        f'与下面的通用规则冲突时以这里为准：\n{text}\n\n'
+    )
+
+
 def render_action_protocol(
     available_actions: Iterable[str],
     selectable_messages: Iterable[Tuple[int, str]],
@@ -788,6 +807,7 @@ def render_action_protocol(
     cognitive_rounds: int = 0,
     available_reactions: Sequence[str] = (),
     stream_kind: str = 'group',
+    engage_style: str = '',
 ) -> str:
     """渲染 Conversation Agent 的动作头协议提示词块。
 
@@ -809,6 +829,7 @@ def render_action_protocol(
     :param available_reactions: 本平台真实可用的表情回应标识；react 不在动作集时
         传空序列，此时该段完全不渲染。
     :param stream_kind: 会话类型；等待动作的收尾语义在群聊与私聊不同。
+    :param engage_style: 使用者配置的接话方式；为空时整段不渲染。
 
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
@@ -855,6 +876,7 @@ def render_action_protocol(
         poke_rule=_poke_protocol_rule(actions, ids),
         wait_rule=_wait_protocol_rule(actions, stream_kind),
         speak_rule=_speak_protocol_rule(actions),
+        engage_style=_engage_style_block(engage_style),
     )
 
 
@@ -864,6 +886,7 @@ def render_tool_protocol(
     target_persons: Sequence[str] = (),
     cognitive_rounds: int = 0,
     available_actions: Iterable[str] = (),
+    engage_style: str = '',
 ) -> str:
     """渲染工具调用模式下决策那一次的协议文本。
 
@@ -877,6 +900,7 @@ def render_tool_protocol(
     :param target_persons: 本回合批次发送者的显示名，按出现顺序；私聊传空序列。
     :param cognitive_rounds: 本回合的认知轮次预算，用于渲染检索说明。
     :param available_actions: 本轮动作集，决定要不要渲染检索说明。
+    :param engage_style: 使用者配置的接话方式；为空时整段不渲染。
     :return: 已通过模板占位符严格校验的协议文本。
     :raises KeyError: 模板未加载时由注册表抛出。
     """
@@ -894,6 +918,7 @@ def render_tool_protocol(
         cognition_rule=_cognition_protocol_rule(
             frozenset(available_actions), ids, cognitive_rounds, tool_mode=True,
         ),
+        engage_style=_engage_style_block(engage_style),
     )
 
 

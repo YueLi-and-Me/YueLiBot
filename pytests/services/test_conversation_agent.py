@@ -621,6 +621,7 @@ async def test_action_protocol_template_placeholders_strict() -> None:
         "poke_rule",
         "wait_rule",
         "speak_rule",
+        "engage_style",
     }
 
 

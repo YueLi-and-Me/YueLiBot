@@ -269,6 +269,7 @@ def _bot_document() -> Dict[str, Any]:
             'birthday': '',
             'personality': '',
             'reply_style': '',
+            'engage_style': '',
             'tone_probability': 0.0,
             'tone_variants': [],
         },

@@ -436,6 +436,7 @@ export interface YueliConfig {
     birthday: string
     personality: string
     reply_style: string
+    engage_style: string
     tone_probability: number
     tone_variants: string[]
   }

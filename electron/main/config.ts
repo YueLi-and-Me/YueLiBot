@@ -162,6 +162,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     birthday: '',
     personality: '',
     reply_style: '',
+    engage_style: '',
     tone_probability: 0,
     tone_variants: [],
   },
@@ -1234,8 +1235,8 @@ function parseSchedule(
 
 const RETIRED_PERSONALITY_FIELDS: Record<string, string> = {
   identity: 'personality.identity 已改名为 personality.personality，请把内容挪过去。',
-  behavior: 'personality.behavior 已取消：接话方式并进 reply_style。',
-  attention: 'personality.attention 已取消：接话方式并进 reply_style。',
+  behavior: 'personality.behavior 已取消：接话方式改写在 personality.engage_style。',
+  attention: 'personality.attention 已取消：接话方式改写在 personality.engage_style。',
   boundaries: 'personality.boundaries 已取消：边界与事实纪律现在由固定提示词资源维护，不再可配。',
   expression_habits: 'personality.expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。',
   proactive_expression_habits: 'personality.proactive_expression_habits 已取消：表达方式改由 expressions 表学习提供，不再可配。',
@@ -1515,6 +1516,8 @@ function readSplitConfig(directory: string): YueliConfig {
       birthday,
       personality: stringAt(personality, 'personality', botPath),
       reply_style: stringAt(personality, 'reply_style', botPath),
+      // 后加的字段：Python 升级器会补进老配置，这里缺键时同样按未配置处理。
+      engage_style: stringAtOr(personality, 'engage_style', '', botPath),
       tone_probability: toneProbability,
       tone_variants: [...toneVariants] as string[],
     },
@@ -2489,6 +2492,8 @@ birthday = ${tomlString(cfg.personality.birthday)}
 personality = ${tomlMultiline(cfg.personality.personality, 'personality.personality')}
 # 句长、语气、排版和收尾习惯
 reply_style = ${tomlMultiline(cfg.personality.reply_style, 'personality.reply_style')}
+# 什么时候开口、回应谁、哪些情况不接话；只在决定要不要回复时使用
+engage_style = ${tomlMultiline(cfg.personality.engage_style, 'personality.engage_style')}
 # 新会话抽取临时语调的概率，范围 0~1；0 表示始终不抽取
 tone_probability = ${cfg.personality.tone_probability}
 # 候选的会话级语调，只在新会话开始时至多抽取一条

@@ -2251,12 +2251,14 @@ class ChatService(
                 selectable_messages,
                 quote_supported=False,
                 available_actions=frame.available_actions,
+                engage_style=self._cfg.personality.engage_style,
             )
             if self._tool_calling
             else render_action_protocol(
                 sorted(frame.available_actions),
                 selectable_messages,
                 quote_supported=False,
+                engage_style=self._cfg.personality.engage_style,
             )
         )
         prepared = self._prepare_turn_context(

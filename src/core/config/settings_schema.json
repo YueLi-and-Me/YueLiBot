@@ -152,7 +152,7 @@
           "kind": "object",
           "key": "personality",
           "label": "人设与说话方式",
-          "description": "Bot 的稳定人设、生日、回复风格和表达习惯候选。",
+          "description": "Bot 的稳定人设、生日、回复风格、接话方式和表达习惯候选。",
           "fields": [
             {
               "key": "birthday",
@@ -171,6 +171,12 @@
               "type": "textarea",
               "label": "说话方式",
               "help": "句长、语气、排版和收尾习惯。"
+            },
+            {
+              "key": "engage_style",
+              "type": "textarea",
+              "label": "接话方式",
+              "help": "什么时候开口、回应谁、哪些情况不接话；只在决定要不要回复时使用，不影响话怎么说。"
             },
             {
               "key": "tone_probability",
