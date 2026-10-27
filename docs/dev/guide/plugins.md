@@ -23,16 +23,33 @@ plugins/<插件名>/                  第三方插件，用户自行放置
 
 ```json
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "id": "example.hello-yueli",
   "plugin_type": "tool",
   "name": "Hello-YueLi",
   "version": "0.1.0",
-  "description": "一句话说明这个插件是干什么的"
+  "description": "一句话说明这个插件的功能",
+  "host_application": {
+    "min_version": "0.2.0",
+    "max_version": "0.2.5"
+  },
+  "author": { "name": "示例作者", "url": "https://example.org" },
+  "license": "MIT",
+  "urls": { "repository": "https://example.org/plugin" },
+  "python_dependencies": ["feedparser>=6.0"]
 }
 ```
 
-六个字段全部必填，少一个或者 `manifest_version` 不是 1 都会被拒绝加载。
+| 字段 | 要求 |
+| :--- | :--- |
+| `manifest_version` | 必填，固定为整数 `2`；新增依赖声明不改变清单版本 |
+| `id`、`plugin_type`、`name`、`version`、`description` | 必填；工具插件的 `plugin_type` 为 `tool` |
+| `host_application` | 第三方插件必填；`min_version` 与 `max_version` 两端均须提供，详见下文版本区间 |
+| `author` | 加载时可选，市场收录时必填；字符串或含 `name`、可选 `url` 的对象 |
+| `license` | 加载时可选，市场收录时必填；填写已确认的许可证标识 |
+| `urls` | 可选，键值均为非空字符串，例如仓库地址 |
+| `python_dependencies` | 可选，PEP 508 字符串数组，缺省为空；不接受 URL 依赖 |
+
 `id` 是全局唯一标识，两个根目录里撞名时靠它去重，启动日志也打印它。
 
 ### 三、`plugin.py` 里恰好一个 `ToolPlugin` 子类
@@ -82,6 +99,58 @@ class MyPlugin(ToolPlugin):
   `irreversible` 一律被注册表拒绝登记。
 - **参数来自模型输出，长度和类型都要自己兜住**。`observation` 会原样回灌进下一轮
   提示词，不设上限等于把提示词预算交给模型决定。
+
+## 声明 Python 依赖
+
+在清单 `python_dependencies` 中声明额外的 Python 库，例如：
+
+```json
+"python_dependencies": ["feedparser>=6.0", "some-package[extra]>=1.0; python_version >= '3.12'"]
+```
+
+每项必须符合 PEP 508，包名不能重复；大小写以及 `_`、`-` 的差异不构成不同包名。
+不接受 Git、文件或 HTTP URL 形式的依赖。月璃已经提供的库（例如 `httpx`）无需重复声明。
+带环境标记的项只有在标记满足时才参与检查，已安装版本满足要求时不会再次安装。
+
+月璃默认在启动、导入第三方插件之前检查依赖，并通过 uv 安装到当前月璃的 Python
+环境。安装时用当前环境全部已安装库的固定版本生成约束，禁止为了插件升级、降级或
+移除现有库。同一进程中的同一个库只能有一个版本；要求冲突时插件会显示「依赖缺失」，
+月璃与其他可加载插件继续运行。
+
+`uv sync` 可能清除不属于月璃依赖清单的额外库。升级月璃后再次启动时，会按插件清单
+自动补装；不要为了保留插件依赖修改月璃的 `pyproject.toml`、锁文件或 requirements。
+停用插件与点开头的目录不参与自动安装。
+
+若部署者希望先检查库再安装，可在 `config/plugin_market.toml` 设置：
+
+```toml
+[dependencies]
+auto_install = false
+```
+
+关闭后仍检查版本，但不会创建安装子进程。启动日志和「工具与 MCP」页会给出完整的
+手动命令，其中包含当前解释器和版本约束文件；复制该命令执行后重启。uv 不可用、下载失败
+或依赖冲突时，同样会给出原因与命令。不要直接删除约束以绕过冲突：改变月璃已有库的版本
+可能导致月璃启动失败。
+
+## 发布到插件市场
+
+插件仓库中保留 `_manifest.json`、`plugin.py` 和使用说明，运行时的 `config.toml`
+不得提交。只通过 `src.plugin_system` 门面导入宿主类型，不导入 `src.core` 等内部路径。
+收录时要求清单填写作者与许可证，版本支持区间两端齐全。
+
+创建 `vX.Y.Z` 或 `X.Y.Z` 形式的 Git Tag，清单 `version` 必须与去掉 `v` 后的 Tag
+完全一致。无需自行制作 Release 附件；索引流水线按固定 commit 打包并记录 SHA-256。
+已收录 Tag 不应改指向其他提交；需要修正时发布新版本。
+
+使用[登记 Issue 表单](https://github.com/YueLi-and-Me/plugin-index/issues/new?template=register.yml)
+提交插件 id、仓库地址、分类与说明。首次登记先进行确定性检查和机器人审核，再由维护者
+使用 `/approve` 批准一次。以后新版本通过确定性检查、机器人确认已审阅且无风险时自动收录；
+依赖新增或改动、包含二进制文件、结论不明确的版本转人工处理。确定性检查失败的版本不能
+靠人工批准绕过。
+
+审核不会执行插件源码，也不能保证插件或其依赖安全。插件与月璃同进程运行，拥有读取
+配置、模型密钥与数据库的权限。使用说明应明确外部服务、数据访问范围及必要配置。
 
 ## 生命周期
 
