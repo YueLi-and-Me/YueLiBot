@@ -13,6 +13,7 @@ from typing import Any
 
 import asyncio
 
+from src.core.agent.character import pick_tone
 from src.core.agent.expression import (
     ExpressionSample,
     fetch_expression_pool,
@@ -504,7 +505,8 @@ class ContextBuildMixin:
             影子决策设为 ``False``，避免它抢先冒充真实生产提示词。
         :return: 首项为 system 消息；传统模式后接裁剪历史，工具模式后接独立的
             运行时上下文 item 与裁剪历史。
-        副作用：读取配置和会话语调；反馈纠错链路开启时登记「事实进提示词」锚点，
+        副作用：读取配置，为本次正文生成抽取临时语调；仅决策时不抽取。
+            反馈纠错链路开启时登记「事实进提示词」锚点，
             其余情况不读写数据库、不调用模型。
         """
         selected_facts = (
@@ -532,6 +534,13 @@ class ContextBuildMixin:
                 prepared.context.stream.id,
                 prepared.now,
             )
+        # 临时语调只属于这次开口，不写入会话或回合上下文；未命中就不注入。
+        # 决策层不生成正文，不消耗抽取机会；同次生成的多个气泡共用这一份提示词。
+        personality = self._cfg.personality
+        tone = None if decision_only else pick_tone(
+            probability=personality.tone_probability,
+            variants=personality.tone_variants,
+        )
         shared_context = {
             'now': datetime.fromtimestamp(prepared.now / 1000),
             'facts': fact_items,
@@ -540,7 +549,7 @@ class ContextBuildMixin:
             'schedule': prepared.schedule,
             'expression_habits': expression_habits,
             'reply_length': reply_length,
-            'tone': self._session(prepared.context.stream.id).tone,
+            'tone': tone,
             'resumption': prepared.resumption,
             'platform_name': prepared.platform_bot_name,
             'scene': self._scene_for_prompt(prepared.context),
