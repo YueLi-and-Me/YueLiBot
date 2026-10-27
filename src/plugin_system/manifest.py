@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, FrozenSet, Literal, Mapping, Optional, Set, Tuple, Union
@@ -26,6 +28,12 @@ logger = get_logger(__name__)
 
 # 同一插件、同一兼容判定在一个进程内只提示一次，避免多条加载路径重复告警。
 _warned_compatibility: Set[Tuple[str, str]] = set()
+
+# 插件门面、清单或上下文最近一次不兼容变化所在的主程序版本，x.y.z 三段。
+# 当前版本高于插件声明的 max_version 时：上界不低于此版本的插件按兼容模式加载，
+# 低于此版本说明插件按旧门面编写，判为不兼容。只在门面出现不兼容变化的那次发版上调；
+# 不随普通发版改动，否则每次升级主程序都会让全部第三方插件失效、逼作者跟着发版。
+PLUGIN_INTERFACE_FLOOR = '0.2.0'
 
 
 @dataclass(frozen=True)
@@ -58,11 +66,12 @@ def check_host_compatibility(
         result = HostCompatibility('不兼容',
             f'插件 {manifest.name} 不支持当前版本 {APP_VERSION}（声明支持 {minimum}～{maximum or "不限"}），已跳过')
     elif maximum is not None and current > _version_tuple(maximum, 'max_version'):
-        if current[:2] == _version_tuple(maximum, 'max_version')[:2]:
+        if _version_tuple(maximum, 'max_version') >= _version_tuple(PLUGIN_INTERFACE_FLOOR, '插件接口下限'):
             return HostCompatibility('兼容模式',
                 f'插件 {manifest.name} 声明最高支持 {maximum}，当前 {APP_VERSION}，按兼容模式加载')
         result = HostCompatibility('不兼容',
-            f'插件 {manifest.name} 不支持当前版本 {APP_VERSION}（声明支持 {minimum or "不限"}～{maximum}），已跳过')
+            f'插件 {manifest.name} 按 {PLUGIN_INTERFACE_FLOOR} 之前的插件接口编写（声明支持 '
+            f'{minimum or "不限"}～{maximum}），与当前版本 {APP_VERSION} 不兼容，已跳过')
     else:
         return HostCompatibility('正常', '')
     if force:
@@ -124,6 +133,7 @@ class PluginManifest:
     :ivar author: 作者字符串或含 name、可选 url 的只读映射；未声明时为 None。
     :ivar license: SPDX 标识字符串；未声明时为 None，不内置许可证目录。
     :ivar urls: 可选 repository 地址的只读映射。
+    :ivar python_dependencies: 索引包的 PEP 508 声明；缺省为空，加载前检查当前环境。
     """
 
     plugin_id: str
@@ -138,6 +148,7 @@ class PluginManifest:
     author: Optional[Union[str, Mapping[str, str]]] = field(default=None, kw_only=True)
     license: Optional[str] = field(default=None, kw_only=True)
     urls: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}), kw_only=True)
+    python_dependencies: Tuple[str, ...] = field(default=(), kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -229,7 +240,7 @@ def _version_tuple(value: str, field_name: str) -> Tuple[int, int, int]:
     :param field_name: 错误信息中的字段路径。
     :return: (主版本, 次版本, 补丁版本)。
     :raises ManifestError: 不满足上述格式；不猜测 SemVer 或 PEP 440 后缀的顺序。
-    项目未声明 packaging 为运行依赖，因此不用开发环境偶然安装的包作版本判据。
+    宿主版本契约仅允许三段整数；依赖库使用的 PEP 440 语法不改变此契约。
     """
     if re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', value) is None:
         raise ManifestError(f'{field_name} 只支持 x.y.z 三段非负整数版本号，实际为 {value!r}')
@@ -295,6 +306,34 @@ def _parse_author(payload: Mapping[str, Any]) -> Optional[Union[str, Mapping[str
     return author
 
 
+def _parse_python_dependencies(payload: Mapping[str, Any]) -> Tuple[str, ...]:
+    """解析可选的索引包声明，保留原文供安装与错误提示使用。
+
+    :param payload: 清单映射；未声明依赖时返回空元组。
+    :return: 按声明顺序保存的 PEP 508 字符串。
+    :raises ManifestError: 非数组、空项、非法写法、URL 或规范化后的重复包名。
+    """
+    raw = payload.get('python_dependencies', [])
+    if not isinstance(raw, list):
+        raise ManifestError(f'python_dependencies 必须是数组，实际为 {raw!r}')
+    names: Set[str] = set()
+    for position, value in enumerate(raw):
+        location = f'python_dependencies[{position}]'
+        if not isinstance(value, str) or not value.strip():
+            raise ManifestError(f'{location} 必须是非空字符串，实际为 {value!r}')
+        try:
+            requirement = Requirement(value)
+        except InvalidRequirement as exc:
+            raise ManifestError(f'{location} 不是合法 PEP 508 依赖：{value!r}；{exc}') from exc
+        if requirement.url:
+            raise ManifestError(f'{location} 只接受索引上发布的包，不接受 URL 依赖：{value!r}')
+        name = canonicalize_name(requirement.name)
+        if name in names:
+            raise ManifestError(f'{location} 重复声明包名：{value!r}')
+        names.add(name)
+    return tuple(raw)
+
+
 def manifest_from_payload(payload: Mapping[str, Any]) -> PluginManifest:
     """把已解析的清单映射校验并转换为对应类型的清单对象。
 
@@ -323,6 +362,7 @@ def manifest_from_payload(payload: Mapping[str, Any]) -> PluginManifest:
         'author': _parse_author(payload),
         'license': _require_text(payload, 'license') if 'license' in payload else None,
         'urls': _optional_text_map(payload, 'urls'),
+        'python_dependencies': _parse_python_dependencies(payload),
     }
     if plugin_type != 'adapter':
         return PluginManifest(**common)

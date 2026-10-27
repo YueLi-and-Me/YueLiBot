@@ -73,6 +73,7 @@ nav = [
       { "用量统计" = "manual/webui/usage.md" },
       { "模型与厂商" = "manual/webui/models.md" },
       { "工具与 MCP" = "manual/webui/tools.md" },
+      { "插件市场" = "manual/webui/plugin-market.md" },
       { "人物与关系" = "manual/webui/persons.md" },
       { "黑话词表" = "manual/webui/jargon.md" },
       { "表达方式" = "manual/webui/expressions.md" },

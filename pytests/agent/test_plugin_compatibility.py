@@ -42,12 +42,22 @@ def test_missing_range_is_rejected_only_for_third_party(tmp_path: Path) -> None:
     assert status.reason == '插件 external 未声明支持的主程序版本区间（min_version 与 max_version 均必填），已跳过'
 
 
-@pytest.mark.parametrize('current,decision', [('0.2.3', '兼容模式'), ('0.3.0', '不兼容'), ('0.1.9', '不兼容')])
-def test_version_decision_and_warning_once(tmp_path: Path, monkeypatch, current: str, decision: str) -> None:
-    """补丁越界可加载且进程只告警一次，主次版本及低于下界必须拒绝。"""
+@pytest.mark.parametrize('current,bounds,decision', [
+    ('0.2.3', {'min_version': '0.2.0', 'max_version': '0.2.0'}, '兼容模式'),
+    ('0.3.0', {'min_version': '0.2.0', 'max_version': '0.2.0'}, '兼容模式'),
+    ('1.4.0', {'min_version': '0.2.0', 'max_version': '0.2.0'}, '兼容模式'),
+    ('0.3.0', {'min_version': '0.1.0', 'max_version': '0.1.9'}, '不兼容'),
+    ('0.1.9', {'min_version': '0.2.0', 'max_version': '0.2.0'}, '不兼容'),
+])
+def test_version_decision_and_warning_once(tmp_path: Path, monkeypatch, current: str,
+                                           bounds: Dict[str, str], decision: str) -> None:
+    """上界越过但不低于插件接口下限时可加载且进程只告警一次；上界低于下限或当前低于下界必须拒绝。"""
     from src.plugin_system.manifest import check_host_compatibility, load_manifest
     monkeypatch.setattr('src.plugin_system.manifest.APP_VERSION', current)
-    directory = write_plugin(tmp_path, 'versioned', {'min_version': '0.2.0', 'max_version': '0.2.0'})
+    monkeypatch.setattr('src.plugin_system.manifest.PLUGIN_INTERFACE_FLOOR', '0.2.0')
+    # 告警去重集合是进程级的，同一插件 id 的前一个兼容模式用例会吞掉本用例的告警。
+    monkeypatch.setattr('src.plugin_system.manifest._warned_compatibility', set())
+    directory = write_plugin(tmp_path, 'versioned', bounds)
     manifest = load_manifest(directory / '_manifest.json')
     assert check_host_compatibility(manifest, third_party=True, force=False).decision == decision
     log = Mock()
@@ -62,12 +72,13 @@ def test_version_decision_and_warning_once(tmp_path: Path, monkeypatch, current:
 
 @pytest.mark.parametrize('current,bounds', [
     ('0.2.3', {'min_version': '0.2.0'}),
-    ('0.3.0', {'min_version': '0.2.0', 'max_version': '0.2.0'}),
+    ('0.3.0', {'min_version': '0.1.0', 'max_version': '0.1.9'}),
     ('0.1.9', {'min_version': '0.2.0', 'max_version': '0.2.0'}),
 ])
 def test_force_compatibility_loads_rejected_plugins(tmp_path: Path, monkeypatch, current: str, bounds: Dict[str, str]) -> None:
     """强制兼容改变版本拒绝判定，并明确记录放行原因。"""
     monkeypatch.setattr('src.plugin_system.manifest.APP_VERSION', current)
+    monkeypatch.setattr('src.plugin_system.manifest.PLUGIN_INTERFACE_FLOOR', '0.2.0')
     write_plugin(tmp_path, 'forced_' + current.replace('.', '_'), bounds)
     registry = PluginRegistry(force_compatibility=True)
     registry.discover([(tmp_path, True)])

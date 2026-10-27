@@ -74,6 +74,8 @@ numpy==2.5.1 ; python_full_version >= '3.12'
     # via yueli
 opentelemetry-api==1.45.1
     # via mcp
+packaging==26.2
+    # via yueli
 pillow==12.3.0
     # via yueli
 pycparser==3.11 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'

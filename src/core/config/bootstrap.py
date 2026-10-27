@@ -35,6 +35,7 @@ from .adapter_selection import (
 )
 from .loader import CONFIG_VERSION
 from src.core.mcp.config import mcp_template
+from src.core.plugin_market.config import plugin_market_template
 from .schema import (
     ApiProviderConfig,
     BotDocument,
@@ -452,6 +453,11 @@ def bootstrap_config_directory(config_dir: Path) -> List[Path]:
         mcp_path.write_text(mcp_template(), encoding='utf-8')
         created.append(mcp_path)
 
+    market_path = config_dir / 'plugin_market.toml'
+    if not market_path.is_file():
+        market_path.write_text(plugin_market_template(), encoding='utf-8')
+        created.append(market_path)
+
     for path in created:
         logger.info('config_file_created', path=str(path))
     return created
@@ -478,6 +484,10 @@ def render_example_configs(dest: Path) -> List[Path]:
     """
     dest.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
+
+    market_path = dest / 'plugin_market.toml'
+    market_path.write_text(plugin_market_template(), encoding='utf-8')
+    written.append(market_path)
 
     selection = dest / ADAPTER_SELECTION_FILENAME
     selection.write_text(_adapter_selection_text(DEFAULT_ADAPTER_PLUGIN), encoding='utf-8')

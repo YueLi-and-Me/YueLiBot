@@ -6,7 +6,7 @@
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import AbstractSet, Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from pydantic import ValidationError
 import inspect
 import tempfile
@@ -16,6 +16,7 @@ from src.core.mcp.compat import McpServerInfo, McpTool
 from src.core.mcp.compat.types import redact
 from src.core.mcp.config import McpConfig, McpConfigError, McpDocument, load_provider_keys, render_mcp_config, validate_mcp_config
 from src.core.mcp.manager import McpServerStatus
+from src.core.plugin_market.receipt import read_receipt
 from src.plugin_system.config import PluginConfig, plugin_config_path, read_enabled_flag, save_plugin_config, save_plugin_enabled, secret_fields
 from src.plugin_system.registry import PluginRegistry
 
@@ -31,7 +32,7 @@ def _redact(value: Any, secrets: Sequence[str]) -> Any:
     return value
 
 
-def serialize_plugins(registry: PluginRegistry) -> Dict[str, Any]:
+def serialize_plugins(registry: PluginRegistry, *, market_ids: AbstractSet[str] = frozenset()) -> Dict[str, Any]:
     """从状态账本与已导入的配置模型生成插件响应，秘密字段的默认值也不返回。"""
     rows: List[Dict[str, Any]] = []
     secrets: List[str] = []
@@ -58,6 +59,7 @@ def serialize_plugins(registry: PluginRegistry) -> Dict[str, Any]:
             values[name] = ''
             schema['properties'][name].pop('default', None)
         author = manifest.author if manifest is not None else None
+        receipt = read_receipt(status.directory)
         tools = []
         if plugin is not None:
             visibility = inspect.getdoc(type(plugin).stream_capabilities) or ''
@@ -70,7 +72,9 @@ def serialize_plugins(registry: PluginRegistry) -> Dict[str, Any]:
             'source': status.source, 'min_version': status.host_application.get('min_version', ''),
             'max_version': status.host_application.get('max_version', ''), 'decision': status.decision,
             'reason': status.reason, 'tools': tools, 'config_schema': schema, 'values': values,
-            'secretSet': flags, 'configEditable': plugin is not None})
+            'secretSet': flags, 'configEditable': plugin is not None,
+            'managed': receipt is not None, 'installed_version': status.version,
+            'market_id_available': receipt is None and status.source == '第三方' and status.plugin_id in market_ids})
     return _redact({'plugins': rows}, secrets)
 
 

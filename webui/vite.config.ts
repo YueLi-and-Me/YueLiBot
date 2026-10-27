@@ -60,6 +60,7 @@ export default defineConfig({
       '/prompt-records': 'http://127.0.0.1:7999',
       '/models': 'http://127.0.0.1:7999',
       '/tools/': 'http://127.0.0.1:7999',
+      '/plugin-market/': 'http://127.0.0.1:7999',
       '/settings/config': 'http://127.0.0.1:7999',
       '/system/restart': 'http://127.0.0.1:7999',
       '/replay': 'http://127.0.0.1:7999',

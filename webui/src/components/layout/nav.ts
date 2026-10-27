@@ -19,6 +19,7 @@ import {
   SlidersHorizontal,
   SquareTerminal,
   Sticker,
+  Store,
   Users,
   type LucideIcon,
 } from 'lucide-react'
@@ -75,6 +76,7 @@ export const NAV_GROUPS: Array<NavGroup> = [
     items: [
       { to: '/models', label: '模型与厂商', icon: Cpu },
       { to: '/tools', label: '工具与 MCP', icon: Plug },
+      { to: '/plugins', label: '插件市场', icon: Store },
       { to: '/settings', label: '月璃设置', icon: Settings },
       { to: '/developer/commands', label: '开发者命令', icon: SquareTerminal },
     ],
