@@ -139,6 +139,13 @@ auto_install = false
 不得提交。只通过 `src.plugin_system` 门面导入宿主类型，不导入 `src.core` 等内部路径。
 收录时要求清单填写作者与许可证，版本支持区间两端齐全。
 
+检查、审核与打包只针对 `git archive` 实际打出的内容。测试等开发文件需要导入宿主内部
+模块时，在仓库根目录的 `.gitattributes` 中标记排除，它们就不随包发布，也不参与检查：
+
+```text
+tests/ export-ignore
+```
+
 创建 `vX.Y.Z` 或 `X.Y.Z` 形式的 Git Tag，清单 `version` 必须与去掉 `v` 后的 Tag
 完全一致。无需自行制作 Release 附件；索引流水线按固定 commit 打包并记录 SHA-256。
 已收录 Tag 不应改指向其他提交；需要修正时发布新版本。
