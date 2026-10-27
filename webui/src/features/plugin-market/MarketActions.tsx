@@ -3,7 +3,7 @@
  * 写入交给 usePluginMarket，重启交给 useRestart，后端失败原因原样展示。
  */
 import { Copy, Download, RotateCcw, Trash2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, ConfirmDialog, toast } from '@/components/ui'
 import type { usePluginMarket } from '@/hooks/use-plugin-market'
 import { useRestart } from '@/hooks/use-restart'
@@ -30,15 +30,25 @@ export function DependencyNote({ note }: { note: string }) {
  * @param version 目标版本，缺省时禁止下载类操作。
  * @param state 所属页面的市场请求状态。
  * @param unsaved 工具页是否有未保存草稿，默认 false；用于重启提示。
+ * @param requested 商店一键安装链接要求打开的确认框，默认不打开；只打开确认框，不直接执行。
+ * @param onRequestHandled 确认框已打开后的回调，用于清除请求，避免重复弹出。
  * @returns 操作按钮、确认框和仅属于当前插件的结果。
  */
-export function MarketActions({ plugin, version, state, unsaved = false }: {
+export function MarketActions({ plugin, version, state, unsaved = false, requested = null, onRequestHandled }: {
   plugin: Pick<MarketPlugin, 'id' | 'installed'> & Partial<Pick<MarketPlugin, 'source'>>
   version?: MarketVersion
   state: ReturnType<typeof usePluginMarket>
   unsaved?: boolean
+  requested?: MarketAction | null
+  onRequestHandled?: () => void
 }) {
   const [confirm, setConfirm] = useState<MarketAction | null>(null)
+  // 链接只能打开确认框：真正的写操作仍要用户在框里点确认，网页无法借链接直接装插件。
+  useEffect(() => {
+    if (requested === null) return
+    setConfirm(requested)
+    onRequestHandled?.()
+  }, [requested, onRequestHandled])
   const [restartOpen, setRestartOpen] = useState(false)
   const { restarting, restartBackend } = useRestart()
   const kind = plugin.installed.kind

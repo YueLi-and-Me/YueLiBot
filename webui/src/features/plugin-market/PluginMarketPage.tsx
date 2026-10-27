@@ -1,21 +1,24 @@
 /**
  * 插件市场工作台：左侧目录筛选，右侧版本选择与安装管理。
- * 复用布局组件与市场 hook，完整 README 只链接到独立商店。
+ * 复用布局组件与市场 hook，完整 README 只链接到独立商店；
+ * 商店的一键安装链接 `/plugins?install=<id>&version=<版本>` 在这里转成确认框。
  */
 import { ExternalLink, RefreshCw, RotateCcw, Search, Store } from 'lucide-react'
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 import { PageFrame } from '@/components/layout/PageFrame'
 import { Pane, PaneEmpty, PaneFooter, PaneHeader, PaneTitle, Panes, ScrollArea } from '@/components/layout/panes'
 import { Button, Chip, ConfirmDialog, ErrorText, Input, Loading, SectionHeading, cn } from '@/components/ui'
 import { usePluginMarket } from '@/hooks/use-plugin-market'
 import { useRestart } from '@/hooks/use-restart'
 import { MarketActions } from './MarketActions'
-import { filterPlugins, installable } from './view'
+import type { MarketAction } from './types'
+import { filterPlugins, installable, readInstallIntent, stripInstallParams } from './view'
 
 /**
  * 复用工具页的面板边缘与标题高度，目录状态由后端统一决定。
  * @returns 包含搜索、版本表和操作确认的市场工作台。
- * @remarks 首次挂载读取目录，只有显式操作才修改插件目录。
+ * @remarks 首次挂载读取目录，只有显式操作才修改插件目录；一键安装链接只选中插件并弹确认框。
  */
 export function PluginMarketPage() {
   const state = usePluginMarket()
@@ -24,8 +27,24 @@ export function PluginMarketPage() {
   const [selected, setSelected] = useState('')
   const [version, setVersion] = useState('')
   const [restartOpen, setRestartOpen] = useState(false)
+  const [requested, setRequested] = useState<{ id: string; action: MarketAction } | null>(null)
+  const [linkError, setLinkError] = useState('')
   const { restarting, restartBackend } = useRestart()
+  const location = useLocation()
+  const navigate = useNavigate()
   const snapshot = state.snapshot
+  const clearRequested = useCallback(() => setRequested(null), [])
+  useEffect(() => {
+    if (!snapshot) return
+    const intent = readInstallIntent(location.search, snapshot.plugins)
+    if (intent.kind === 'none') return
+    // 参数一经读取就从地址栏去掉，刷新页面不会再次弹框；能否处理都一样。
+    navigate({ pathname: location.pathname, search: stripInstallParams(location.search) }, { replace: true })
+    if (intent.kind === 'error') { setLinkError(intent.reason); return }
+    // 清空筛选，保证目标插件在列表里，确认框作用于它而不是筛选后的第一项。
+    setLinkError(''); setSearch(''); setTag(''); setSelected(intent.pluginId); setVersion(intent.version)
+    setRequested({ id: intent.pluginId, action: intent.action })
+  }, [snapshot, location.search, location.pathname, navigate])
   const plugins = filterPlugins(snapshot?.plugins ?? [], search, tag)
   const plugin = plugins.find(item => item.id === selected) ?? plugins[0]
   const selectedVersion = plugin?.versions.find(item => item.version === version) ?? plugin?.versions.find(installable) ?? plugin?.versions[0]
@@ -39,6 +58,7 @@ export function PluginMarketPage() {
     <Button size="sm" variant="secondary" disabled={restarting} onClick={() => setRestartOpen(true)}><RotateCcw className="size-4" />重启月璃</Button>
   </>}>
     {state.error ? <ErrorText>{state.error}</ErrorText> : null}
+    {linkError ? <p role="alert" className="text-[13px] text-warning">商店的安装链接没有执行：{linkError}</p> : null}
     {!snapshot ? <Loading>正在读取插件索引…</Loading> : <>
       <Panes>
         <Pane width="list" aria-label="插件市场列表">
@@ -96,7 +116,8 @@ export function PluginMarketPage() {
                 {selectedVersion?.python_dependencies.length ? <ul className="space-y-1 text-[13px]">{selectedVersion.python_dependencies.map(value => <li key={value} className="break-all font-mono">{value}</li>)}</ul> : <p className="text-[13px] text-muted-foreground">这个版本没有声明额外的 Python 库。</p>}
                 <p className="text-xs leading-relaxed text-subtle-foreground">{snapshot.auto_install ? '安装时会检查并补齐缺失的库，已安装库的版本保持不变。' : '自动安装已关闭。缺少依赖时会提供手动命令，补齐并重启后插件才能加载。'}</p>
               </section>
-              <section className="border-t border-border pt-5"><MarketActions key={plugin.id} plugin={plugin} version={selectedVersion} state={state} /></section>
+              <section className="border-t border-border pt-5"><MarketActions key={plugin.id} plugin={plugin} version={selectedVersion} state={state}
+                requested={requested?.id === plugin.id ? requested.action : null} onRequestHandled={clearRequested} /></section>
             </div> : <PaneEmpty>从左侧选择插件，查看说明与可用版本。</PaneEmpty>}
           </ScrollArea>
         </Pane>
