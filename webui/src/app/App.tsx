@@ -35,6 +35,9 @@ const SettingsConfigPage = lazy(() =>
 const ToolsConfigPage = lazy(() =>
   import('@/features/tools/ToolsConfigPage').then((m) => ({ default: m.ToolsConfigPage })),
 )
+const PluginMarketPage = lazy(() =>
+  import('@/features/plugin-market/PluginMarketPage').then((m) => ({ default: m.PluginMarketPage })),
+)
 const DeveloperCommandsPage = lazy(() =>
   import('@/features/developer/DeveloperCommandsPage').then((m) => ({ default: m.DeveloperCommandsPage })),
 )
@@ -89,6 +92,7 @@ function AuthGate() {
         <Route path="usage" element={<UsagePage />} />
         <Route path="models" element={<ModelConfigPage />} />
         <Route path="tools" element={<ToolsConfigPage />} />
+        <Route path="plugins" element={<PluginMarketPage />} />
         <Route path="settings" element={<SettingsConfigPage />} />
         <Route path="developer/commands" element={<DeveloperCommandsPage />} />
         <Route path="persons" element={<PersonsPage />} />

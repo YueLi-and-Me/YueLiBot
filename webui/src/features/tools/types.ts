@@ -23,6 +23,9 @@ export interface PluginEntry {
   values: Record<string, unknown>
   secretSet: Record<string, boolean>
   configEditable: boolean
+  managed: boolean
+  installed_version: string
+  market_id_available: boolean
 }
 export interface PluginsResponse { plugins: PluginEntry[] }
 export interface McpToolSettings {

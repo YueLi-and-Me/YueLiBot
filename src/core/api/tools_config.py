@@ -51,7 +51,11 @@ def _plugins() -> PluginRegistry:
 @router.get('/plugins', dependencies=[Depends(_auth)])
 async def plugins() -> Dict[str, Any]:
     """读取全部工具插件的清单、状态和已导入的配置声明。"""
-    return mcp_webui.serialize_plugins(_plugins())
+    market_ids = set()
+    if app_state.plugin_market is not None:
+        snapshot = await asyncio.to_thread(app_state.plugin_market.index.fetch)
+        market_ids = {item.plugin.id for item in snapshot.plugins}
+    return await asyncio.to_thread(mcp_webui.serialize_plugins, _plugins(), market_ids=market_ids)
 
 
 @router.put('/plugins/{plugin_id}/config', dependencies=[Depends(_auth), Depends(_require_loopback)])

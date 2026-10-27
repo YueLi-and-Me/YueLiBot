@@ -1,12 +1,16 @@
 /** 工具插件与 MCP 服务共用模型页的列表、详情和底部保存条组件。 */
 import { Plus, RefreshCw, RotateCcw, Save } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router'
 
 import { PageFrame } from '@/components/layout/PageFrame'
 import { Pane, PaneEmpty, PaneFooter, PaneHeader, PaneTitle, Panes, ScrollArea } from '@/components/layout/panes'
 import { Button, Chip, ConfirmDialog, ErrorText, Loading, SectionHeading, Toggle, cn, toast } from '@/components/ui'
 import { hasDraftChanges, useRestart } from '@/hooks/use-restart'
 import { useToolsConfig, type ToolsSnapshot } from '@/hooks/use-tools-config'
+import { usePluginMarket } from '@/hooks/use-plugin-market'
+import { DependencyNote, MarketActions } from '@/features/plugin-market/MarketActions'
+import { installable } from '@/features/plugin-market/view'
 
 import { McpDetail } from './McpDetail'
 import { SchemaForm } from './SchemaForm'
@@ -20,6 +24,7 @@ function newServer(name: string): McpServerSettings {
 
 export function ToolsConfigPage() {
   const state = useToolsConfig()
+  const market = usePluginMarket()
   const [draft, setDraft] = useState<ToolsSnapshot | null>(null)
   const [selected, setSelected] = useState<{ kind: 'plugin' | 'mcp'; key: string } | null>(null)
   const [errors, setErrors] = useState<Record<string, boolean>>({})
@@ -51,7 +56,10 @@ export function ToolsConfigPage() {
     // 选择按草稿位置保持稳定，改名不能让表单重挂载而丢失输入焦点。
   }
   const detailTitle = plugin?.name ?? server?.name ?? '请选择插件或 MCP 服务'
+  const marketPlugin = market.snapshot?.plugins.find(item => item.id === plugin?.id)
+  const updates = market.snapshot?.plugins.filter(item => item.installed.upgrade_to).length ?? 0
   return <PageFrame hint="查看工具插件与 MCP 服务，配置保存后重启后端生效。" actions={<>
+    {updates ? <Link to="/plugins" className="text-xs text-primary hover:underline">有 {updates} 个插件可升级</Link> : null}
     {draft ? <Toggle checked={draft.mcp.enabled} label="启用 MCP" onChange={checked => setDraft({ ...draft, mcp: { ...draft.mcp, enabled: checked } })} /> : null}
     <Button size="sm" variant="ghost" disabled={state.busy || changed || invalid} onClick={() => void state.load()} aria-label="刷新工具状态"><RefreshCw className="size-4" /></Button>
     <Button size="sm" variant="secondary" disabled={restarting} onClick={() => setRestartOpen(true)}><RotateCcw className="size-4" />重启月璃</Button>
@@ -97,7 +105,12 @@ export function ToolsConfigPage() {
                   <span>ID：<span className="font-mono">{plugin.id || '清单未解析'}</span></span><span>版本：{plugin.version || '—'}</span>
                   <span>作者：{plugin.author || '未声明'}</span><span>来源：{plugin.source}</span>
                   <span className="sm:col-span-2">支持主程序：{plugin.min_version || '未声明'} ～ {plugin.max_version || '未声明'}</span>
-                </div><Chip label="判定" value={plugin.decision} />{plugin.reason ? <p className="text-[13px] text-warning">{plugin.reason}</p> : null}
+                </div><div className="flex flex-wrap gap-2"><Chip label="判定" value={plugin.decision} />{plugin.source === '第三方' ? <Chip label="安装方式" value={plugin.managed ? '市场安装' : '手动安装'} /> : null}</div>
+                {plugin.reason ? <DependencyNote note={plugin.reason} /> : null}
+                {market.error ? <ErrorText>{market.error}</ErrorText> : null}
+                {plugin.source === '第三方' && (marketPlugin || plugin.managed) ? <MarketActions key={plugin.id} plugin={marketPlugin ?? {
+                  id: plugin.id, installed: { kind: '市场安装', version: plugin.installed_version, upgrade_to: null, market_id_available: false },
+                }} version={marketPlugin?.versions.find(installable)} state={market} unsaved={changed} /> : null}
               </section>
               <section className="space-y-4 border-t border-border pt-5"><SectionHeading tint="olive" title="提供的工具" />
                 {plugin.tools.map(tool => <div key={tool.name} className="space-y-1 text-[13px]">
