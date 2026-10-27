@@ -30,8 +30,8 @@ generation_retry_interval_minutes = 10 # 日程生成失败后再次尝试前等
 birthday = "" # 格式 YYYY-MM-DD；留空时不派生年龄与生日提示，也不能晚于今天。
 personality = "" # 稳定身份、经历、外表与性格；只从这份配置进入提示词。
 reply_style = "" # 句长、语气、排版和收尾习惯。
-tone_probability = 0.0 # 新会话抽取临时语调的概率；0 表示始终不抽取。
-tone_variants = [] # 候选的会话级语调，每行一条，只在新会话开始时至多抽取一条。
+tone_probability = 0.0 # 每次开口前抽取临时语调的概率；0 表示始终不抽取，未命中时使用常规说话方式。
+tone_variants = [] # 候选的临时语调，每行一条，每次开口独立抽取至多一条；同次回复的多个气泡共用。
 
 [conversation] # 对话与记忆：工作记忆窗口、摘要节奏和记忆召回数量。
 working_memory_messages = 24 # 每轮送进模型的最近消息条数，不含系统提示词。
@@ -39,7 +39,7 @@ summarize_trigger_messages = 60 # 未摘要消息达到此数量后触发一次�
 summarize_batch_messages = 48 # 每次摘要消化的最老消息条数；必须小于触发数量。
 fact_extract_trigger_messages = 36 # 累计多少条消息后回看一次并抽取长期事实；比摘要更密，因为事实的时效性更强。
 fact_extract_batch_messages = 24 # 每次抽取回看的最旧消息条数，必须小于触发消息数。
-session_gap_minutes = 120 # 超过此空闲时长视为新会话，并重新抽取临时语调。
+session_gap_minutes = 120 # 超过此空闲时长视为新会话，用于判断重逢间隔；临时语调按每次开口独立抽取。
 fact_recall_limit = 10 # 每轮最多召回的事实记忆数量；0 表示不召回事实。
 recalled_episode_limit = 10 # 按当前输入相关性召回的情节数量。
 recent_episode_limit = 5 # 无论相关性如何都补充的最近情节数量。

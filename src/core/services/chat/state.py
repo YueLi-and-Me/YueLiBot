@@ -127,10 +127,9 @@ class _UnwatchedVideo:
 
 @dataclass
 class _SessionState:
-    """一个 stream 内稳定的语气、会话 nonce 和单次重逢上下文。"""
+    """一个 stream 内的会话起点、会话 nonce 和单次重逢上下文。"""
 
     started_at: int | None = None
-    tone: str | None = None
     # 会话 nonce：每次新会话重摇，供测试观测「跨过静默间隔后会话真的重开了」。
     seed: int = 0
     resumption_gap_ms: int | None = None

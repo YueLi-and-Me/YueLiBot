@@ -198,25 +198,21 @@ async def test_messages_array_carries_full_alternating_history(db) -> None:
     assert any('<say>' in m['content'] for m in body if m['role'] == 'assistant')
 
 
-# ── 会话级人设稳定 ─────────────────────────────────────────────────────
+# ── 会话边界稳定 ───────────────────────────────────────────────────────
 
-async def test_tone_and_samples_stay_stable_within_one_session(db) -> None:
+async def test_session_stays_stable_across_replies(db) -> None:
     provider = _ScriptedProvider(['<say>嗯</say>'])
     chat = _chat(db, provider)
 
-    systems: List[str] = []
+    seeds: List[int] = []
     for text in ['第一句', '第二句', '第三句']:
         await _send_and_wait(chat, text)
-        systems.append(provider.seen[0]['content'])
+        seeds.append(chat._sessions[DESKTOP_STREAM_ID].seed)
 
-    state = chat._sessions[DESKTOP_STREAM_ID]
-    tone = state.tone
-    assert len({state.seed}) == 1
-    if tone:
-        assert all(tone in s for s in systems), '同一会话内语气不应逐轮跳变'
+    assert len(set(seeds)) == 1, '连续回复不应重开会话'
 
 
-async def test_new_session_after_long_gap_rerolls_persona(db) -> None:
+async def test_new_session_after_long_gap(db) -> None:
     provider = _ScriptedProvider(['<say>嗯</say>'])
     chat = _chat(db, provider)
 

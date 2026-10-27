@@ -1961,7 +1961,7 @@ class ChatService(
         *,
         read_history: bool = True,
     ) -> int | None:
-        """根据静默间隔刷新会话状态、临时语气和表达样本随机种子。
+        """根据静默间隔刷新会话起点、会话标识和重逢上下文。
 
         :param context: 当前消息的会话上下文。
         :param now: 当前 Unix 毫秒时间戳。
@@ -1973,7 +1973,7 @@ class ChatService(
             ``None``。
 
         副作用：
-            可能更新进程内会话的开始时间、语气、随机种子和重逢间隔；不写入数据库。
+            可能更新进程内会话的开始时间、随机标识和重逢间隔；不写入数据库。
         """
         stream_id = context.stream.id
         state = self._session(stream_id)
@@ -1983,11 +1983,6 @@ class ChatService(
                 or last is None
                 or (gap_ms is not None and gap_ms > self._session_gap_ms)):
             state.started_at = now
-            personality = self._cfg.personality
-            state.tone = pick_tone(
-                probability=personality.tone_probability,
-                variants=personality.tone_variants,
-            )
             state.seed = random.randrange(1 << 30)
         # owner 门控判断关系信号归属；group 门控判断静默间隔是否代表会话重逢，
         # 两者输入和业务语义不同，必须分别保留。
@@ -2775,7 +2770,11 @@ class ChatService(
             expression_habits=render_expression_habits(
                 await self._pick_expression_habits(context, situation, [], None)
             ),
-            tone=self._session(context.stream.id).tone,
+            # 主动搭话和普通回复一样，每次生成正文都重新抽取临时语调。
+            tone=pick_tone(
+                probability=self._cfg.personality.tone_probability,
+                variants=self._cfg.personality.tone_variants,
+            ),
             resumption=self._take_resumption(context.stream.id),
             render_params=render_params,
             **self._prompt_config_kwargs(context.relationship_signals_enabled),
