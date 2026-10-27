@@ -57,6 +57,9 @@ from src.core.config.schema import (
 from src.core.config.upgrade import upgrade_config_directory
 from src.core.mcp.manager import McpManager
 from src.core.plugin_market.config import load_plugin_market_config
+from src.core.plugin_market.index import IndexClient
+from src.core.plugin_market.operations import MarketOperations
+from src.core.plugin_market.updates import MarketUpdateNotifier
 from src.core.services.chat.constants import PLUGIN_ROOTS
 from src.plugin_system.dependencies import ensure_plugin_dependencies
 from src.core.llm_models.protocol import LlmProvider
@@ -939,6 +942,12 @@ def main() -> None:
         sticker_search=sticker_search,
         reranker=rerank_with(routers.rerank) if routers.rerank.ready else None,
     )
+    app_state.plugin_market = MarketOperations(
+        index=IndexClient(market_config.sources, proxy=cfg.advanced.https_proxy),
+        registry=app_state.chat.plugin_registry, plugins_dir=PROJECT_ROOT / 'plugins', data_dir=data_dir,
+        auto_install=market_config.dependencies.auto_install, force=cfg.advanced.force_compatibility,
+        proxy=cfg.advanced.https_proxy,
+    )
     # 重排开关只由 model_tasks.rerank 有没有候选决定，启动时说清楚当前是哪种排序。
     logger.info('cognitive_rerank', enabled=routers.rerank.ready)
     app_state.chat.set_action_policy(
@@ -1194,6 +1203,8 @@ def main() -> None:
     from src.core.services.maintenance.jargon_stats import JargonStatsService
     jargon_stats = JargonStatsService(db)
     lifecycle.register('jargon_stats', jargon_stats.startup, jargon_stats.shutdown)
+    market_updates = MarketUpdateNotifier(app_state.plugin_market)
+    lifecycle.register('plugin_market_updates', market_updates.startup, market_updates.shutdown)
     # 联想层的边衰减单独走低频任务，不挂回合路径：边没有 due_at 列，冻结判据是
     # 一次全表扫描，而它的时间尺度以月计（半衰期 720 小时，约 54 天才跌破阈值）。
     from src.core.services.maintenance.edge_decay import EdgeDecayService

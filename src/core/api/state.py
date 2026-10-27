@@ -26,6 +26,7 @@ class _AppState:
         """
         self.chat: Any = None          # ChatService
         self.mcp: Any = None           # McpManager（工具页读取运行状态）
+        self.plugin_market: Any = None # MarketOperations（索引缓存与插件目录操作）
         self.awareness: Any = None     # AwarenessService
         self.vector: Any = None        # VectorService（导入中心为新知识补向量）
         self.emoji_library: Any = None # EmojiLibrary（管理页读写与缩略图来源）

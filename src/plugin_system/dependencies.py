@@ -151,21 +151,26 @@ def _manual_constraints(path: Path) -> None:
     path.write_text('\n'.join(pin for pin in pins if PIN_PATTERN.fullmatch(pin)) + '\n', encoding='utf-8')
 
 
-def ensure_plugin_dependencies(roots: Sequence[Tuple[Path, bool]], *, auto_install: bool, data_dir: Path, proxy: str) -> Dict[Path, str]:
+def ensure_plugin_dependencies_locked(roots: Sequence[Tuple[Path, bool]], *, auto_install: bool, data_dir: Path, proxy: str, only: Optional[Path] = None) -> Dict[Path, str]:
     """按插件 id 逐一检查第三方插件，只返回仍缺依赖的目录及完整说明。
 
     :param roots: 插件根目录与第三方标记；忽略内置根、隐藏目录及已停用插件。
     :param auto_install: 是否允许补装；关闭时不创建任何子进程。
     :param data_dir: 宿主数据目录，约束写入 plugin-deps/constraints.txt。
     :param proxy: 子进程代理，空字符串表示继承环境。
+    :param only: 市场操作只检查本次处理的插件目录；启动预检省略时检查全部插件。
     :return: 尚未满足依赖的插件目录到说明的映射，说明含手动命令。
-    副作用：缺依赖时获取 INSTALL_LOCK；清单错误由注册表报告，安装错误不阻止其他插件。
+    调用方须已持有 INSTALL_LOCK；清单错误由注册表报告，安装错误不阻止其他插件。
     """
+    if not INSTALL_LOCK.locked():
+        raise RuntimeError('调用依赖安装前必须持有 INSTALL_LOCK')
     candidates = []
     for root, third_party in roots:
         if not third_party or not root.is_dir():
             continue
         for directory in root.iterdir():
+            if only is not None and directory.resolve() != only.resolve():
+                continue
             if not directory.is_dir() or directory.name.startswith('.'):
                 continue
             try:
@@ -181,40 +186,51 @@ def ensure_plugin_dependencies(roots: Sequence[Tuple[Path, bool]], *, auto_insta
     installed_count = 0
     constraints = (data_dir / 'plugin-deps/constraints.txt').resolve()
     for plugin_id, directory, requirements in sorted(candidates):
-        if not unsatisfied(requirements):
+        problems = unsatisfied(requirements)
+        if not problems:
             continue
-        with INSTALL_LOCK:
-            problems = unsatisfied(requirements)
-            if not problems:
-                continue
-            missing = [item.requirement for item in problems]
-            uv = find_uv()
-            reason = ''
-            try:
-                if not auto_install or uv is None:
-                    _manual_constraints(constraints)
-                    reason = '自动安装已关闭，需手动安装' if not auto_install else '未找到 uv，需手动安装'
-                else:
+        missing = [item.requirement for item in problems]
+        uv = find_uv()
+        reason = ''
+        try:
+            if not auto_install or uv is None:
+                _manual_constraints(constraints)
+                reason = '自动安装已关闭，需手动安装' if not auto_install else '未找到 uv，需手动安装'
+            else:
+                write_constraints(sys.executable, uv, constraints)
+                logger.info('开始补装插件依赖', plugin=plugin_id, packages=missing, result='开始')
+                result = install(missing, uv=uv, python=sys.executable, constraints=constraints, proxy=proxy)
+                if result.success:
+                    installed_count += len(missing)
                     write_constraints(sys.executable, uv, constraints)
-                    logger.info('开始补装插件依赖', plugin=plugin_id, packages=missing, result='开始')
-                    result = install(missing, uv=uv, python=sys.executable, constraints=constraints, proxy=proxy)
-                    if result.success:
-                        installed_count += len(missing)
-                        write_constraints(sys.executable, uv, constraints)
-                        logger.info('插件依赖补装成功', plugin=plugin_id, packages=missing, result='成功')
-                    else:
-                        reason = result.stderr
-                        if any(item.installed is not None for item in problems) or 'unsatisfiable' in reason.lower():
-                            reason += '\n去掉 --constraint 硬装会改动月璃自己用的库，可能导致月璃启动失败'
-            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                reason = str(exc)
-            remaining = unsatisfied(requirements)
-            if remaining:
-                detail = '；'.join(f'{p.requirement}（已装 {p.installed if p.installed is not None else "未安装"}）' for p in remaining)
-                command = manual_command([p.requirement for p in remaining], python=sys.executable, constraints=constraints)
-                notes[directory] = f'插件依赖缺失：{detail}\n{reason}\n{command}'
-                logger.error('自动安装已关闭需手动' if not auto_install else '插件依赖补装失败',
-                             plugin=plugin_id, packages=missing, result=notes[directory])
+                    logger.info('插件依赖补装成功', plugin=plugin_id, packages=missing, result='成功')
+                else:
+                    reason = result.stderr
+                    if any(item.installed is not None for item in problems) or 'unsatisfiable' in reason.lower():
+                        reason += '\n去掉 --constraint 硬装会改动月璃自己用的库，可能导致月璃启动失败'
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            reason = str(exc)
+        remaining = unsatisfied(requirements)
+        if remaining:
+            detail = '；'.join(f'{p.requirement}（已装 {p.installed if p.installed is not None else "未安装"}）' for p in remaining)
+            command = manual_command([p.requirement for p in remaining], python=sys.executable, constraints=constraints)
+            notes[directory] = f'插件依赖缺失：{detail}\n{reason}\n{command}'
+            logger.error('自动安装已关闭需手动' if not auto_install else '插件依赖补装失败',
+                         plugin=plugin_id, packages=missing, result=notes[directory])
     if candidates:
         logger.info('插件依赖检查完成', checked=len(candidates), installed=installed_count, missing=len(notes))
     return notes
+
+
+def ensure_plugin_dependencies(roots: Sequence[Tuple[Path, bool]], *, auto_install: bool, data_dir: Path, proxy: str) -> Dict[Path, str]:
+    """在共享互斥锁内检查第三方插件依赖，供同步启动入口调用。
+
+    :param roots: 根目录与第三方标记的有序序列。
+    :param auto_install: 是否允许安装，关闭时仅给出手动说明。
+    :param data_dir: 约束快照所在的宿主数据根目录。
+    :param proxy: 安装子进程代理，空值继承环境。
+    :return: 仍缺依赖的目录与完整说明。
+    副作用：串行化扫描与补装；市场已持锁时调用 ensure_plugin_dependencies_locked，避免死锁。
+    """
+    with INSTALL_LOCK:
+        return ensure_plugin_dependencies_locked(roots, auto_install=auto_install, data_dir=data_dir, proxy=proxy)
