@@ -65,7 +65,13 @@ class MarketOperations:
         self.force = force
         self.proxy = proxy
         self.staging = self.plugins_dir / '.staging'
-        self.backups = self.data_dir / 'plugin-backups'
+        # 备份必须与插件目录位于同一文件系统。
+        # - 现象：备份放在数据目录时，`--data-dir` 指向另一块盘或挂载点后，os.replace 报
+        #   EXDEV（Windows 为 WinError 17），升级、卸载与接管全部失败。
+        # - 原因：跨文件系统不能原子改名，只能复制后删除，中途失败会留下半个插件目录。
+        # - 后果：放回数据目录会让自定义数据目录的部署无法再用市场维护插件；点开头的目录
+        #   已被插件发现与 installed() 跳过，不会被当成插件加载。
+        self.backups = self.plugins_dir / '.backups'
 
     def _begin(self, plugin_id: str, action: str) -> None:
         """验证插件 id 并清理过期暂存项，必须在共享锁内调用。"""

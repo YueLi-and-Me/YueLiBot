@@ -7,6 +7,7 @@ from threading import Event, Thread
 from unittest.mock import Mock
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
+import errno
 import hashlib
 import json
 import stat
@@ -184,8 +185,12 @@ def test_receipt_tracks_only_distributed_files(tmp_path):
     assert receipt.modified_files(tmp_path) == ['new.py','plugin.py']
 
 
-def market(tmp_path):
-    """组装真实市场操作与内存 HTTP 索引，所有插件包由本用例生成。"""
+def market(tmp_path, plugins_dir=None, data_dir=None):
+    """组装真实市场操作与内存 HTTP 索引，所有插件包由本用例生成。
+
+    :param plugins_dir: 插件根目录，默认 ``tmp_path/plugins``。
+    :param data_dir: 宿主数据目录，默认 ``tmp_path/data``；与插件根目录可以互不包含。
+    """
     raw = index_payload()
     raw['plugins'][0]['versions'] = [version_record(f'{number}.0.0') for number in range(1,6)]
     for record in raw['plugins'][0]['versions']:
@@ -196,7 +201,8 @@ def market(tmp_path):
         return httpx.Response(200, content=archive(request.url.path.rsplit('/',1)[1][:-4]))
     index = module('index').IndexClient([MarketSource(name='测试', index_url='https://one.example/index.json')], transport=httpx.MockTransport(handler))
     registry = PluginRegistry()
-    return module('operations').MarketOperations(index=index, registry=registry, plugins_dir=tmp_path/'plugins', data_dir=tmp_path/'data', auto_install=False)
+    return module('operations').MarketOperations(index=index, registry=registry, plugins_dir=plugins_dir or tmp_path/'plugins',
+                                                  data_dir=data_dir or tmp_path/'data', auto_install=False)
 
 
 def test_install_receipt_and_existing_id(tmp_path):
@@ -222,7 +228,7 @@ def test_upgrade_preserves_config_and_refuses_modified_code(tmp_path):
     (target/'config.toml').write_text('[plugin]\nenabled = false\n', encoding='utf-8')
     ops.upgrade(plugin_id='test.market', version='2.0.0')
     assert (target/'config.toml').read_text(encoding='utf-8') == '[plugin]\nenabled = false\n'
-    backups = list((tmp_path/'data/plugin-backups').iterdir())
+    backups = list((tmp_path/'plugins/.backups').iterdir())
     assert len(backups) == 1 and (backups[0]/'config.toml').is_file()
     (target/'plugin.py').write_text('user modification', encoding='utf-8')
     with pytest.raises(ValueError, match='plugin.py'):
@@ -235,7 +241,7 @@ def test_upgrade_keeps_three_backups_and_restores_on_failure(tmp_path, monkeypat
     ops.install(source='测试', plugin_id='test.market', version='1.0.0')
     for version in ('2.0.0','3.0.0','4.0.0','5.0.0'):
         ops.upgrade(plugin_id='test.market', version=version)
-    assert len(list((tmp_path/'data/plugin-backups').iterdir())) == 3
+    assert len(list((tmp_path/'plugins/.backups').iterdir())) == 3
     target = tmp_path/'plugins/test.market'
     original = (target/'_manifest.json').read_bytes()
     operations = module('operations')
@@ -263,10 +269,32 @@ def test_takeover_and_uninstall_preserve_data(tmp_path):
     ops.takeover(plugin_id='test.market', version='2.0.0')
     assert (target/'.yueli-install.json').is_file()
     data = tmp_path/'data/own-data.txt'
+    data.parent.mkdir(parents=True, exist_ok=True)
     data.write_text('preserve', encoding='utf-8')
     assert ops.uninstall(plugin_id='test.market')['restart_required']
     assert not target.exists() and data.read_text(encoding='utf-8') == 'preserve'
-    assert any((backup/'config.toml').is_file() for backup in (tmp_path/'data/plugin-backups').iterdir())
+    assert any((backup/'config.toml').is_file() for backup in (tmp_path/'plugins/.backups').iterdir())
+
+
+def test_backups_stay_beside_plugins_across_filesystems(tmp_path, monkeypatch):
+    """数据目录在另一文件系统时升级与卸载仍成功，备份目录不被当作插件。"""
+    disk_a, disk_b = tmp_path/'disk-a', tmp_path/'disk-b'
+    ops = market(tmp_path, plugins_dir=disk_a/'plugins', data_dir=disk_b/'data')
+    operations = module('operations')
+    replace = operations.os.replace
+    def same_filesystem_only(source, destination):
+        if Path(source).is_relative_to(disk_a) != Path(destination).is_relative_to(disk_a):
+            raise OSError(errno.EXDEV, '模拟跨文件系统改名')
+        return replace(source, destination)
+    monkeypatch.setattr(operations.os, 'replace', same_filesystem_only)
+    ops.install(source='测试', plugin_id='test.market', version='1.0.0')
+    ops.upgrade(plugin_id='test.market', version='2.0.0')
+    ops.registry.discover([(disk_a/'plugins', True)])
+    assert {status.directory.name for status in ops.registry.statuses()} == {'test.market'}
+    assert set(ops.installed()) == {'test.market'}
+    ops.uninstall(plugin_id='test.market')
+    backups = sorted(path.name.split('-')[1] for path in (disk_a/'plugins/.backups').iterdir())
+    assert backups == ['1.0.0', '2.0.0'] and not (disk_b/'data/plugin-backups').exists()
 
 
 def test_operations_wait_for_shared_lock(tmp_path, monkeypatch):
