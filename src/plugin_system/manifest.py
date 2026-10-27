@@ -29,6 +29,12 @@ logger = get_logger(__name__)
 # 同一插件、同一兼容判定在一个进程内只提示一次，避免多条加载路径重复告警。
 _warned_compatibility: Set[Tuple[str, str]] = set()
 
+# 插件门面、清单或上下文最近一次不兼容变化所在的主程序版本，x.y.z 三段。
+# 当前版本高于插件声明的 max_version 时：上界不低于此版本的插件按兼容模式加载，
+# 低于此版本说明插件按旧门面编写，判为不兼容。只在门面出现不兼容变化的那次发版上调；
+# 不随普通发版改动，否则每次升级主程序都会让全部第三方插件失效、逼作者跟着发版。
+PLUGIN_INTERFACE_FLOOR = '0.2.0'
+
 
 @dataclass(frozen=True)
 class HostCompatibility:
@@ -60,11 +66,12 @@ def check_host_compatibility(
         result = HostCompatibility('不兼容',
             f'插件 {manifest.name} 不支持当前版本 {APP_VERSION}（声明支持 {minimum}～{maximum or "不限"}），已跳过')
     elif maximum is not None and current > _version_tuple(maximum, 'max_version'):
-        if current[:2] == _version_tuple(maximum, 'max_version')[:2]:
+        if _version_tuple(maximum, 'max_version') >= _version_tuple(PLUGIN_INTERFACE_FLOOR, '插件接口下限'):
             return HostCompatibility('兼容模式',
                 f'插件 {manifest.name} 声明最高支持 {maximum}，当前 {APP_VERSION}，按兼容模式加载')
         result = HostCompatibility('不兼容',
-            f'插件 {manifest.name} 不支持当前版本 {APP_VERSION}（声明支持 {minimum or "不限"}～{maximum}），已跳过')
+            f'插件 {manifest.name} 按 {PLUGIN_INTERFACE_FLOOR} 之前的插件接口编写（声明支持 '
+            f'{minimum or "不限"}～{maximum}），与当前版本 {APP_VERSION} 不兼容，已跳过')
     else:
         return HostCompatibility('正常', '')
     if force:
