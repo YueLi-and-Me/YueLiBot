@@ -50,6 +50,9 @@ EXPRESSION_COOLDOWN_MS = 6 * 60 * 60 * 1000
 # （任务书 T4 第 3 条），而渲染模板固定补一个「时」；渲染前去掉一个尾缀，避免
 # 拼出「当时时」。无尾缀的情境原样套模板，输出与契约逐字一致。
 _SITUATION_TIME_SUFFIXES = ('的时候', '时')
+# 旧条目（迁移存量）的 situation 常以句末标点收尾；渲染前与尾随空白一并去掉，
+# 否则模板会拼出「…的反应。时」。单位字符，取中英文常见句末标点。
+_SITUATION_TRAILING_PUNCTUATION = frozenset('。！？.!?…')
 
 
 def _linear_weights(counts: Sequence[int]) -> List[float]:
@@ -208,17 +211,32 @@ def fetch_expression_pool(
 
 
 def _trim_situation_time_suffix(situation: str) -> str:
-    """去掉 situation 结尾的时间尾缀，避免渲染模板再补「时」时出现「时时」。
+    """去掉 situation 结尾的句末标点、空白与时间尾缀，再套渲染模板。
 
-    :param situation: 学习侧给出的情境描述，可能以「时」或「的时候」收尾。
-    :return: 去掉一个结尾时间尾缀后的情境；无尾缀时原样返回。
+    旧条目（迁移存量）的 situation 多写成「…时的反应。」这类以句号收尾的描述，
+    新学习条目则按提示词要求以「…时」收尾；模板固定补一个「时」。因此按任务书
+    设计决定 6 的顺序处理：先去结尾的「。！？.!?…」与空白，再去一个「时」或
+    「的时候」；末尾若又露出标点再清一次。两种尾缀都不命中时原样返回。
+
+    :param situation: 学习侧或存量条目给出的情境描述。
+    :return: 适合直接拼进「当{situation}时」模板的情境文本。
     副作用：无。
     """
 
+    text = situation.strip()
+    while text and (
+        text[-1] in _SITUATION_TRAILING_PUNCTUATION or text[-1].isspace()
+    ):
+        text = text[:-1].rstrip()
     for suffix in _SITUATION_TIME_SUFFIXES:
-        if situation.endswith(suffix):
-            return situation[:-len(suffix)]
-    return situation
+        if text.endswith(suffix):
+            text = text[:-len(suffix)]
+            break
+    while text and (
+        text[-1] in _SITUATION_TRAILING_PUNCTUATION or text[-1].isspace()
+    ):
+        text = text[:-1].rstrip()
+    return text
 
 
 def render_expression_habits(samples: Sequence[ExpressionSample]) -> str:

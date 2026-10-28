@@ -193,6 +193,26 @@ def test_render_strips_time_suffix_before_appending() -> None:
     assert '时时' not in block
 
 
+def test_render_strips_sentence_punctuation_before_appending_time() -> None:
+    """★6：旧条目 situation 常以句末标点收尾；先去掉「。！？.!?…」与空白，再补模板的「时」。
+
+    否则「被对方可爱发言打动时的反应。」会渲染成「…反应。时」。
+    """
+
+    block = render_expression_habits([
+        ExpressionSample(id=1, situation='被对方可爱发言打动时的反应。', style='哈！'),
+        ExpressionSample(id=2, situation='被问周末怎么过时？', style='先反问回去'),
+        ExpressionSample(id=3, situation='对方讲了冷笑话的时候', style='配合笑一下'),
+    ])
+
+    assert '。时' not in block
+    assert '？时' not in block
+    lines = block.splitlines()
+    assert lines[1] == '- 当被对方可爱发言打动时的反应时，可以套用：哈！'
+    assert lines[2] == '- 当被问周末怎么过时，可以套用：先反问回去'
+    assert lines[3] == '- 当对方讲了冷笑话时，可以套用：配合笑一下'
+
+
 def test_render_empty_input_returns_empty_string() -> None:
     """没有选中条目时不注入该提示词块：空串而不是只有说明行。"""
 
