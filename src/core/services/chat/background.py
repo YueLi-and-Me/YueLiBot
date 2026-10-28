@@ -457,6 +457,8 @@ class BackgroundTaskMixin:
                     participants=participants,
                     bot_name=self._bot_display_name,
                     batch=collected,
+                    # 与黑话注入的保护名单同源：她的名字族不能进表达说法。
+                    protected_names=self._jargon_protected_names,
                     temperature=self._memory_temperature,
                     max_tokens=self._memory_max_tokens,
                 )

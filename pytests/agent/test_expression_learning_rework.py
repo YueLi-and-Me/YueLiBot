@@ -596,18 +596,26 @@ def test_validate_pairs_reports_each_reason_code() -> None:
 
     _, units = render_learning_corpus(
         (),
-        (_msg(1, 'user', '这破表格我填了一下午', PEER_A.person_id),),
+        (
+            _msg(1, 'user', '这破表格我填了一下午', PEER_A.person_id),
+            _msg(2, 'user', '行嘞', PEER_B.person_id),
+        ),
         PARTICIPANTS,
         BOT_NAME,
     )
+    # 单批上限之外的既有原因码；length 用例的 style 必须能通过「说法出自原话」
+    # 与名字判定，才能在 length 这一步被拦下。
+    long_style = '这破表格〈' + '因' * 80 + '〉我填了一下午'
     cases = [
         (_pair(1, '这破表格我填了一下午', reading=''), 'empty'),
         (_pair(1, '这破表格我填了一下午', situation=''), 'empty'),
         (_pair(1, '这破表格我填了一下午', style='使用'), 'empty'),
-        (_pair(1, '这破表格我填了一下午', situation='情' * 61), 'length'),
-        (_pair(1, '这破表格我填了一下午', style='句' * 81), 'length'),
-        (_pair(1, '这破表格我填了一下午', reading='说' * 201), 'length'),
-        (_pair(1, '这破表格我填了一下午', style=PROMPT_EXAMPLE_STYLES[1]), 'example'),
+        (_pair(1, '这破表格我填了一下午', situation='情' * 61,
+               style='这破表格〈手上的活〉'), 'length'),
+        (_pair(1, '这破表格我填了一下午', style=long_style), 'length'),
+        (_pair(1, '这破表格我填了一下午', reading='说' * 201,
+               style='这破表格〈手上的活〉'), 'length'),
+        (_pair(2, '行嘞', kind=KIND_FIXED, style='行嘞'), 'example'),
         (_pair(1, '这破表格我填了一下午', kind=KIND_ECHO), 'echo_kind'),
         (_pair(1, '这句话根本不在来源里'), 'quote'),
     ]
@@ -617,8 +625,8 @@ def test_validate_pairs_reports_each_reason_code() -> None:
         assert dropped == {expected: 1}, (pair, dropped)
 
 
-def test_validate_pairs_keeps_at_most_eight_pairs_per_batch() -> None:
-    """单批 8 条上限保留：超出部分按 limit 单独计数。"""
+def test_validate_pairs_keeps_at_most_three_pairs_per_batch() -> None:
+    """单批 3 条上限：超出部分按 limit 单独计数（补充任务把上限从 8 收到 3）。"""
 
     _, units = render_learning_corpus(
         (),
@@ -642,7 +650,8 @@ def test_drop_reason_labels_cover_every_contract_reason_code() -> None:
 
     assert set(DROP_REASON_LABELS) == {
         'self', 'quote', 'echo_kind', 'echo', 'echo_self',
-        'copy', 'empty', 'length', 'example', 'limit',
+        'copy', 'empty', 'fixed_mismatch', 'invented', 'name',
+        'length', 'example', 'limit',
     }
 
 
@@ -678,15 +687,21 @@ async def test_run_learning_reports_units_increased_and_dropped(
     _seed_expression(
         db,
         situation='旧情境',
-        style='旧句式',
+        style='这破表格〈手上的活〉',
         checked=1,
         learn_count=1,
     )
 
     async def fake_learn(*_args: Any, **_kwargs: Any) -> List[ExpressionPair]:
         return [
-            ExpressionPair(1, '这破表格我填了一下午', '在接对方的抱怨', KIND_STATEMENT, '旧情境', '旧句式'),
-            ExpressionPair(2, '那先歇一会儿', '她在劝对方先停下来', KIND_STATEMENT, '劝人休息时', '那先歇着'),
+            ExpressionPair(
+                1, '这破表格我填了一下午', '在接对方的抱怨', KIND_STATEMENT,
+                '旧情境', '这破表格〈手上的活〉',
+            ),
+            ExpressionPair(
+                2, '那先歇一会儿', '她在劝对方先停下来', KIND_STATEMENT,
+                '劝人休息时', '那先〈歇着〉',
+            ),
         ]
 
     emitted: List[Tuple[str, Dict[str, Any]]] = []

@@ -132,8 +132,9 @@ MAX_SITUATION_CHARS = 60
 MAX_STYLE_CHARS = 80
 MAX_READING_CHARS = 200
 MAX_QUOTE_CHARS = 80
-# 单批最多落库条数。提示词要求最多 5 条，硬上限放宽到 8 条，限制超量输出。
-MAX_PAIRS_PER_BATCH = 8
+# 单批最多落库条数。提示词要求一批通常 0～1 条、最多 3 条；硬上限与提示词
+# 一致，不做额外放宽——表达信号稀疏，超量输出多为把普通句子也当成说法。
+MAX_PAIRS_PER_BATCH = 3
 
 # 三种表达类型的取值，原样进提示词与校验，不落库为独立列。含义：说法=依赖具体
 # 人和事才成立的结构；固定说法=不指向任何人和物、原样说也成立的口头说法；
@@ -147,7 +148,7 @@ EXPRESSION_KINDS = (KIND_STATEMENT, KIND_FIXED, KIND_ECHO)
 # 校验时按 example 原因码拦截。这里与 expression.learn.md 的示例保持一致，
 # 修改提示词示例必须同步本常量。
 PROMPT_EXAMPLE_STYLES = (
-    '白准备〈准备的东西〉',
+    '你这哪是〈某样东西〉，你这是给〈某个地方〉守门',
     '行嘞',
 )
 
@@ -161,6 +162,9 @@ DROP_REASON_LABELS: Dict[str, str] = {
     'echo_self': '学她的说法',
     'copy': '整句照抄',
     'empty': '字段为空',
+    'fixed_mismatch': '固定说法不符',
+    'invented': '说法不出自原话',
+    'name': '含人名',
     'length': '超出长度',
     'example': '照搬示例',
     'limit': '超单批上限',
@@ -648,12 +652,87 @@ def _appears_in(units: Sequence[LearningUnit], quote: str, *, self_only: bool) -
     return False
 
 
+# 角色占位符：学习侧把「只在这次成立的人和物」写成〈…〉。校验据此判断「说法」
+# 是否由原话换出；只匹配成对的〈…〉，落单的「〈」会留在文字段里按原话校验。
+_ROLE_PATTERN = re.compile(r'〈[^〈〉]*〉')
+
+
+def _has_role_placeholder(style: str) -> bool:
+    """判断说法里是否至少有一个成对的〈角色〉占位。
+
+    :param style: 模型给出的说法文本（已剥前导词）。
+    :return: 至少有一个〈…〉时为 `True`。
+    副作用：无。
+    """
+
+    return _ROLE_PATTERN.search(style) is not None
+
+
+def _segments_outside_roles(style: str) -> List[str]:
+    """按〈角色〉切出说法剩下的文字段，返回去空白后的非空段（保持原顺序）。
+
+    :param style: 模型给出的说法文本（已剥前导词）。
+    :return: 角色占位之外的文字段列表；相邻占位之间可能产生空串，已剔除。
+    副作用：无。
+    """
+
+    return [segment.strip() for segment in _ROLE_PATTERN.split(style) if segment.strip()]
+
+
+def _contains_name(text: str, names: Sequence[str]) -> bool:
+    """判断文本里是否出现 @ 或名字集合中的任一名字（不区分大小写）。
+
+    :param text: 待检查的 style 或 situation。
+    :param names: 需要拦截的名字；由调用方保证已做过长度过滤（在场者只收两字
+        及以上），本函数不再判断长短。
+    :return: 命中 @ 或任一名字时为 `True`。
+    副作用：无。
+    """
+
+    if '@' in text:
+        return True
+    folded = text.casefold()
+    for name in names:
+        candidate = name.strip().casefold()
+        if candidate and candidate in folded:
+            return True
+    return False
+
+
+def _statement_follows_quote(style: str, quote: str) -> bool:
+    """判断「说法」是否由原话换出：去掉〈角色〉后的文字段按顺序都在原话里。
+
+    只比较去掉空白后的字符串；只含标点的段（例如两个角色占位之间的逗号）不
+    携带原话内容，跳过不判。顺序要求防止把原话里的几段文字前后调换后拼成新句。
+
+    :param style: 模型给出的说法文本（已剥前导词）。
+    :param quote: 已确认是来源单元原样片段的那段话。
+    :return: 每个非纯标点文字段都能按先后顺序在原话里找到时为 `True`。
+    副作用：无。
+    """
+
+    quote_normalized = _normalized(quote)
+    position = 0
+    for segment in _segments_outside_roles(style):
+        normalized = _normalized(segment)
+        if not normalized:
+            continue
+        if all(char in _TRIM_PUNCTUATION for char in normalized):
+            continue
+        found = quote_normalized.find(normalized, position)
+        if found < 0:
+            return False
+        position = found + len(normalized)
+    return True
+
+
 def validate_pairs(
     pairs: Sequence[ExpressionPair],
     *,
     units: Sequence[LearningUnit],
+    names: Sequence[str] = (),
 ) -> Tuple[List[ExpressionPair], Dict[str, int]]:
-    """按来源、复读与抄写规则校验候选，并按原因码统计拦截数。
+    """按来源、复读、抄写与「什么值得学」规则校验候选，并按原因码统计拦截数。
 
     规则按序判定，单条只记第一个命中的原因（原因码见 :data:`DROP_REASON_LABELS`）：
 
@@ -664,13 +743,22 @@ def validate_pairs(
     - `echo_self`：`kind = 固定说法` 且原话在她更早的单元里出现过。
     - `copy`：`kind = 说法` 且 `style` 与原话去空白、去首尾标点后相同。
     - `empty`：`reading`、`situation`、`style` 任一为空（style 已剥前缀）。
+    - `fixed_mismatch`：`kind = 固定说法`，但 style 与原话去空白、去首尾标点后
+      不同，或 style 带「〈」——固定说法只收原样口头说法，改写或换角色都说明
+      模型在借「固定说法」当放行通道。
+    - `invented`：`kind = 说法` 但 style 不带〈角色〉，或去掉〈角色〉后剩下的
+      文字段没有按先后顺序全部出现在原话里——后者覆盖「把另一句话写成说法」。
+    - `name`：style 或 situation 含「@」、含名字集合里的名字（她的名字/别名/
+      对主人的称呼，以及两位及以上的在场者显示名）。quote 是原话，不受此限。
     - `length`：`situation` 超过 60、`style` 超过 80、`reading` 超过 200
       或 `quote` 超过 80 字符（单位均为字符，含标点）。
     - `example`：`style` 与提示词示例里的说法相同（去空白后比较）。
-    - `limit`：超出单批 8 条上限（保留原有行为，单独计数）。
+    - `limit`：超出单批 :data:`MAX_PAIRS_PER_BATCH` 条上限。
 
     :param pairs: :func:`parse_learning` 校验过结构的候选列表。
     :param units: :func:`render_learning_corpus` 产出的全部单元（前文在前）。
+    :param names: 不得出现在 style/situation 里的名字；调用方负责把她的名字族
+        与两位及以上的在场者显示名合进来，单字名不传（避免误伤普通用字）。
     :return: `(可落库列表, 原因码计数)`；可落库列表保持原顺序，situation、
         style、reading、quote 已裁掉两端空白，style 已剥前导词；计数只含
         出现过至少一次的原因码。
@@ -719,6 +807,25 @@ def validate_pairs(
         situation = pair.situation.strip()
         if not reading or not situation or not style:
             drop('empty')
+            continue
+        # 固定说法只能原样引用原话：改写或带角色占位都说明不是「本来就是口头
+        # 说法」，而是普通句子借固定说法当放行通道。
+        if pair.kind == KIND_FIXED and (
+            '〈' in style
+            or _trimmed_punctuation(_normalized(style))
+            != _trimmed_punctuation(_normalized(quote))
+        ):
+            drop('fixed_mismatch')
+            continue
+        # 说法必须由原话换出：至少一个〈角色〉，且角色之外的文字按序出自原话。
+        if pair.kind == KIND_STATEMENT and (
+            not _has_role_placeholder(style)
+            or not _statement_follows_quote(style, quote)
+        ):
+            drop('invented')
+            continue
+        if _contains_name(style, names) or _contains_name(situation, names):
+            drop('name')
             continue
         if (
             len(situation) > MAX_SITUATION_CHARS
@@ -915,6 +1022,7 @@ async def run_learning(
     bot_name: str,
     trigger_messages: int = TRIGGER_MESSAGES,
     batch: Optional[LearningBatch] = None,
+    protected_names: Sequence[str] = (),
     temperature: float,
     max_tokens: Optional[int],
     now: Optional[int] = None,
@@ -935,6 +1043,9 @@ async def run_learning(
     :param trigger_messages: 游标之后累积多少条消息才触发一次学习（按全部消息计）。
     :param batch: 可选的现成批次；调用方已经判过触发条件时传入，跳过本函数内部
         的触发检查与切批。`None` 表示由本函数自行判断并切批。
+    :param protected_names: 不允许学进 style/situation 的名字族（Bot 主名、别名
+        与对主人的称呼），由调用方按 `cfg.bot` 传入；在场者显示名由本函数从
+        `participants` 里取两位及以上者合并进来，单字名不参与判定。
     :param temperature: 采样温度。
     :param max_tokens: 输出上限。
     :param now: 可选当前毫秒时间戳；省略时读取统一时钟。
@@ -983,7 +1094,17 @@ async def run_learning(
             trace.emit('expression_learn_failed', streamId=stream_id, cursor=cursor)
             return None
         pairs = parsed
-    accepted, dropped = validate_pairs(pairs, units=units)
+    # 名字保护：她的名字族由调用方按 cfg.bot 传入；在场者只收两位及以上的
+    # 显示名，单字名（如「青」）会误伤「青草」这类普通用字。
+    learning_names = [
+        *protected_names,
+        *(
+            person.display_name.strip()
+            for person in participants
+            if len(person.display_name.strip()) >= 2
+        ),
+    ]
+    accepted, dropped = validate_pairs(pairs, units=units, names=learning_names)
     learned, increased = persist_pairs(db, stream_id, accepted, now)
     advance_cursor(store, stream_id, batch.batch[-1].message_id)
     # 淘汰挂在学习之后同一次调用里，不另起后台任务。它清的是全表（各会话的过期
