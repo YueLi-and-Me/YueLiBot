@@ -57,7 +57,7 @@
 
 ## 稳定人设：提示词素材
 
-`bot.toml` `[personality]` 六个键仅从配置进入提示词：
+`bot.toml` `[personality]` 七个键仅从配置进入提示词：
 
 - `personality`：稳定身份、经历、外表与性格，置于身份块开头。
 - `birthday`：格式 YYYY-MM-DD；填写后派生年龄，生日当天追加当日提示。
@@ -66,8 +66,10 @@
   在这两件事上优先于内置的通用口径，写正文那一次调用看不到。
 - `tone_probability` 与 `tone_variants`：每次开口前按概率从候选中独立抽取至多一条
   临时语调，普通回复与主动搭话都适用；未命中时使用常规说话方式，不沿用上次结果。
-  同次回复拆出的多个气泡共用本次语调。新装配置预填两条候选、概率 0.1；缺键时概率按 0 处理。
-- 新装配置按月璃本人的设定预填 `personality`、`birthday`、`reply_style`、`engage_style` 与临时语调；
+  同次回复拆出的多个气泡共用本次语调。新装配置预填三条候选、概率 0.1；缺键时概率按 0 处理。
+- `regex_rules`：正则规则。她要回的那句话命中时，把一种接法放进写正文的提示词，接不接由她判断；
+  只进写正文那一次调用，决定动作那一次看不到。写法见 [Bot 与人格配置](../configuration/bot.md)。
+- 新装配置按月璃本人的设定预填 `personality`、`birthday`、`reply_style`、`engage_style`、临时语调与一条示例正则规则；
   对主人的称呼与关系不预填。
 - `bot` 段的 `user_nickname` 与 `relationship` 仅对主人注入，群聊中不可见。
 
