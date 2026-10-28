@@ -301,7 +301,7 @@ FIELD_LABELS: Dict[str, str] = {
     "date": "日期",
     "decisionSource": "决策来源",
     "decision": "最终决策",
-    "dropped": "丢弃数量",
+    "dropped": "拦截明细",
     "dest": "目标路径",
     "detail": "说明",
     "directory": "目录",
@@ -498,6 +498,8 @@ FIELD_LABELS: Dict[str, str] = {
     "emojiEmotions": "表情情绪",
     "expressionIntent": "表达意图",
     "learned": "新学数量",
+    "increased": "重复加数量",
+    "units": "单元数",
     "discarded": "丢弃数量",
     "eliminated": "淘汰数量",
     "messageCount": "消息条数",
@@ -505,6 +507,24 @@ FIELD_LABELS: Dict[str, str] = {
     "traced": "留痕回合数",
     "reconcileMismatched": "对不上留痕的回合数",
     "embeddingCalls": "查询向量调用次数",
+}
+
+
+# 表达学习 dropped 字段的子键是拦截原因码，展示名不能塞进 FIELD_LABELS：
+# echo / length / limit 三个原因码与既有字段名冲突（回执标识 / 回复篇幅 / 上限），
+# 直接覆盖会让其它事件的展示变错。因此只在 field 为 dropped 的字典里用本映射
+# 翻译子键，FIELD_LABELS 保持各字段原有含义。
+DROPPED_REASON_LABELS: Dict[str, str] = {
+    "self": "来源不合规",
+    "quote": "原话不在来源",
+    "echo_kind": "复读学舌",
+    "echo": "原样复读",
+    "echo_self": "学她的说法",
+    "copy": "整句照抄",
+    "empty": "字段为空",
+    "length": "超出长度",
+    "example": "照搬示例",
+    "limit": "超单批上限",
 }
 
 
@@ -667,6 +687,23 @@ def value_label(value: str) -> str:
     return VALUE_LABELS.get(value, value)
 
 
+def _dict_key_label(key: object, field: str | None) -> str:
+    """返回字典子键的展示名，表达学习的拦截原因码优先用专属映射。
+
+    :param key: 字典子键，常规字段名或拦截原因码。
+    :param field: 子键所属的字段名；值为「dropped」时按原因码翻译。
+    :return: 中文展示名；未知键保留原值。
+    副作用：无。
+    """
+
+    name = str(key)
+    if field == "dropped":
+        reason_label = DROPPED_REASON_LABELS.get(name)
+        if reason_label is not None:
+            return reason_label
+    return field_label(name)
+
+
 def display_value(value: Any, field: str | None = None) -> str:
     """将结构化字段值转换为紧凑中文文本。
 
@@ -687,13 +724,14 @@ def display_value(value: Any, field: str | None = None) -> str:
         return "、".join(display_value(item, field) for item in value) if value else "无"
     if isinstance(value, dict):
         return "，".join(
-            f"{field_label(str(key))}：{display_value(item, str(key))}"
+            f"{_dict_key_label(key, field)}：{display_value(item, str(key))}"
             for key, item in value.items()
         ) or "无"
     return str(value)
 
 
 __all__ = [
+    "DROPPED_REASON_LABELS",
     "EVENT_LABELS",
     "FIELD_LABELS",
     "VALUE_LABELS",
