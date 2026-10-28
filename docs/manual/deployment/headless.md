@@ -87,6 +87,8 @@ WantedBy=multi-user.target
 ```
 
 首次 `uv sync` 已创建项目解释器；服务直接使用它，不依赖服务账户的 PATH。
+自动安装插件依赖时，月璃会在运行用户的 `~/.local/bin` 找到官方安装脚本装的 uv；
+uv 装在别处时，在 `[Service]` 下加一行 `Environment=UV=<uv 的绝对路径>`。
 自定义配置或数据目录时，把对应启动参数追加到 `ExecStart`。
 运行用户也要能读取插件目录里的连接配置。
 

@@ -71,9 +71,24 @@ def unsatisfied(requirements: Sequence[str]) -> List[DependencyProblem]:
     return problems
 
 
+def _installer_directory() -> Path:
+    """返回 uv 官方安装脚本的默认安装目录，选择顺序与安装脚本一致。"""
+    if os.environ.get('XDG_BIN_HOME'):
+        return Path(os.environ['XDG_BIN_HOME'])
+    if os.environ.get('XDG_DATA_HOME'):
+        return Path(os.environ['XDG_DATA_HOME']).parent / 'bin'
+    return Path.home() / '.local' / 'bin'
+
+
 def find_uv() -> Optional[str]:
-    """优先使用 uv run 传入的可执行文件路径，其次查 PATH；不存在时返回 None。"""
-    return os.environ.get('UV') or shutil.which('uv')
+    """依次查 uv run 传入的路径、PATH 与官方安装脚本的默认目录；都不存在时返回 None。"""
+    found = os.environ.get('UV') or shutil.which('uv')
+    if found:
+        return found
+    # systemd 直接启动项目解释器时既没有 UV 变量，PATH 也不含用户目录；
+    # 只查前两处会让按安装文档部署的服务器无法自动安装插件依赖。
+    candidate = _installer_directory() / ('uv.exe' if os.name == 'nt' else 'uv')
+    return str(candidate) if candidate.is_file() else None
 
 
 def write_constraints(python: str, uv: str, path: Path) -> Path:

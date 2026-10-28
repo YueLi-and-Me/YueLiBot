@@ -66,6 +66,10 @@ plugins/.backups/<id>-<旧版本>-<YYYYmmdd-HHMMSS>/
 月璃环境。安装锁定环境中已存在的库版本；同一个库在一个进程里只能使用一个版本。
 升级月璃时 `uv sync` 可能移除额外库，下次启动会再次检查并补装。
 
+月璃依次在三处查找 uv：`uv run` 传入的环境变量 `UV`、PATH、uv 官方安装脚本的默认目录
+（`~/.local/bin`，Windows 为 `%USERPROFILE%\.local\bin`）。用 systemd 等方式直接启动
+项目解释器、且 uv 不在这三处时，在服务环境中设置 `UV=<uv 的绝对路径>`。
+
 如需自行检查后安装，在 `config/plugin_market.toml` 修改：
 
 ```toml

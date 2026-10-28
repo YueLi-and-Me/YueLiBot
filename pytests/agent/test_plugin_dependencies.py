@@ -130,7 +130,26 @@ def test_find_uv_and_missing_executable(tmp_path, monkeypatch):
     monkeypatch.delenv('UV')
     assert module.find_uv() == 'path-uv'
     monkeypatch.setattr(module.shutil, 'which', lambda _: None)
+    monkeypatch.delenv('XDG_BIN_HOME', raising=False)
+    monkeypatch.delenv('XDG_DATA_HOME', raising=False)
+    home = tmp_path / 'home'
+    monkeypatch.setattr(module.Path, 'home', lambda: home)
     assert module.find_uv() is None
+    name = 'uv.exe' if module.os.name == 'nt' else 'uv'
+    installed = home / '.local' / 'bin' / name
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(b'')
+    assert module.find_uv() == str(installed)
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'xdg' / 'share'))
+    assert module.find_uv() is None
+    (tmp_path / 'xdg' / 'bin').mkdir(parents=True)
+    (tmp_path / 'xdg' / 'bin' / name).write_bytes(b'')
+    assert module.find_uv() == str(tmp_path / 'xdg' / 'bin' / name)
+    monkeypatch.setenv('XDG_BIN_HOME', str(tmp_path / 'custom'))
+    assert module.find_uv() is None
+    monkeypatch.delenv('XDG_BIN_HOME')
+    monkeypatch.delenv('XDG_DATA_HOME')
+    installed.unlink()
     directory = plugin(tmp_path / 'plugins', 'missing', ['absent>=1'])
     monkeypatch.setattr(module, 'unsatisfied', lambda _: [module.DependencyProblem('absent>=1', None)])
     run = Mock(side_effect=AssertionError('禁止子进程'))
