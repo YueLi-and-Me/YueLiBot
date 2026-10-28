@@ -16,7 +16,7 @@ attrs==26.1.0
     # via
     #   jsonschema
     #   referencing
-certifi==2026.7.22
+certifi==2026.10.23
     # via
     #   httpcore
     #   httpx
@@ -76,7 +76,7 @@ opentelemetry-api==1.45.1
     # via mcp
 packaging==26.2
     # via yueli
-pillow==12.3.0
+pillow==13.0.0
     # via yueli
 pycparser==3.11 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'
     # via cffi
