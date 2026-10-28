@@ -106,6 +106,8 @@ def write_user_version(db: sqlite3.Connection, version: int) -> None:
         db.execute("PRAGMA user_version = 35")
     elif version == 36:
         db.execute("PRAGMA user_version = 36")
+    elif version == 37:
+        db.execute("PRAGMA user_version = 37")
     else:
         raise ValueError(f"未登记的 schema 版本号：{version}")
 
