@@ -261,3 +261,51 @@ def test_nested_section_switch_round_trips_through_save(config_copy: Path) -> No
     assert document['typing']['nudge']['enabled'] is True
     assert document['typing']['follow_up']['enabled'] is follow_up_before
     assert document['emoji']['cleanup']['enabled'] is cleanup_before
+
+
+def test_regex_rules_round_trip_through_save(config_copy: Path) -> None:
+    """★1：设置页新增、修改、删除正则规则都能落盘并原样读回。"""
+    snap = settings_webui.snapshot(config_copy)
+    personality = snap['values']['bot.toml']['personality']
+    personality['regex_rules'] = [
+        {'pattern': r'(?P<who>\S+)来了', 'reaction': '{who}来了就打个招呼', 'streams': ['10001']},
+        {'pattern': '晚安', 'reaction': '回一句〈晚安的变体〉', 'streams': []},
+    ]
+    assert settings_webui.save(config_copy, snap['values'])['ok'] is True
+    document = _disk_bot_document(config_copy)
+    assert document['personality']['regex_rules'] == personality['regex_rules']
+    # 子表写在人设段全部键之后，其余字段仍属于 [personality]。
+    assert document['personality']['tone_variants'] == personality['tone_variants']
+    assert settings_webui.snapshot(config_copy)['values']['bot.toml']['personality'] == personality
+
+    after = settings_webui.snapshot(config_copy)
+    after['values']['bot.toml']['personality']['regex_rules'] = []
+    assert settings_webui.save(config_copy, after['values'])['ok'] is True
+    document = _disk_bot_document(config_copy)
+    # 清空后仍写出空数组，升级器不会把它当成缺失的新字段再补一遍。
+    assert document['personality']['regex_rules'] == []
+    assert 'regex_rules = []' in (config_copy / 'bot.toml').read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize(('rule', 'reason'), [
+    ({'pattern': '(?P<n>未闭合', 'reaction': '{n}', 'streams': []}, '无法编译'),
+    ({'pattern': '喵' * 201, 'reaction': '回一句', 'streams': []}, '200'),
+    ({'pattern': r'(?P<who>\S+)来了', 'reaction': '{what}也来了', 'streams': []}, 'what'),
+])
+def test_save_rejects_bad_regex_rule_with_reason(
+    config_copy: Path, rule: dict, reason: str,
+) -> None:
+    """★1：保存时规则校验失败，返回第几条与原因，文件保持原样。"""
+    snap = settings_webui.snapshot(config_copy)
+    original = (config_copy / 'bot.toml').read_bytes()
+    snap['values']['bot.toml']['personality']['regex_rules'] = [
+        {'pattern': '晚安', 'reaction': '回一句', 'streams': []},
+        rule,
+    ]
+
+    result = settings_webui.save(config_copy, snap['values'])
+
+    assert result['ok'] is False
+    assert 'regex_rules 第 2 条' in result['detail']
+    assert reason in result['detail']
+    assert (config_copy / 'bot.toml').read_bytes() == original

@@ -178,6 +178,50 @@ describe('拆分配置', () => {
     expect(readFileSync(join(directory, 'features.toml'), 'utf-8')).toContain('capture_mode = "screen"')
   })
 
+  it('正则规则写成人设段末尾的子表数组并可无损读回', () => {
+    const root = makeTemporaryDirectory()
+    const directory = join(root, 'config')
+    const config = baseConfig()
+    config.personality.tone_variants = ['这次只用一两个字回。']
+    config.personality.regex_rules = [
+      { pattern: '^(?P<n>\\S{1,20})是这样的$', reaction: '{n}是这样的，〈某类人〉只要〈…〉', streams: [] },
+      { pattern: '晚安', reaction: '回一句"晚安"', streams: ['10001', '20002'] },
+    ]
+
+    writeConfigDirectory(directory, config)
+
+    expect(readConfigDirectory(directory)).toEqual(config)
+    const bot = readFileSync(join(directory, 'bot.toml'), 'utf-8')
+    expect(bot).toContain('[[personality.regex_rules]]')
+    // 子表之后才是下一个配置段，人设段的其余键没有落进子表。
+    expect(bot.indexOf('tone_variants')).toBeLessThan(bot.indexOf('[[personality.regex_rules]]'))
+    expect(bot.indexOf('[[personality.regex_rules]]')).toBeLessThan(bot.indexOf('[conversation]'))
+
+    config.personality.regex_rules = []
+    writeConfigDirectory(directory, config)
+
+    expect(readConfigDirectory(directory).personality.regex_rules).toEqual([])
+    expect(readFileSync(join(directory, 'bot.toml'), 'utf-8')).toContain('regex_rules = []')
+  })
+
+  it('缺 regex_rules 的旧配置按没有规则解析，字段写错时当场报错', () => {
+    const root = makeTemporaryDirectory()
+    const directory = join(root, 'config')
+    writeConfigDirectory(directory, baseConfig())
+    const botPath = join(directory, 'bot.toml')
+    const original = readFileSync(botPath, 'utf-8')
+    writeFileSync(botPath, original.replace(/^.*\nregex_rules = \[\]\n/m, ''))
+
+    expect(readFileSync(botPath, 'utf-8')).not.toContain('regex_rules')
+    expect(readConfigDirectory(directory).personality.regex_rules).toEqual([])
+
+    writeFileSync(
+      botPath,
+      original.replace('regex_rules = []', '[[personality.regex_rules]]\npattern = "晚安"\nreaction = "回一句"\nstreams = [10001]'),
+    )
+    expect(() => readConfigDirectory(directory)).toThrow('streams 必须是字符串数组')
+  })
+
   it('capture_mode 缺省时退回只截窗口，写错值当场报错', () => {
     const root = makeTemporaryDirectory()
     const directory = join(root, 'config')

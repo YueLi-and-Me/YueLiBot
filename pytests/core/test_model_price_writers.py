@@ -24,7 +24,7 @@ from src.core.config.model_webui import (
     _normalize_models,
     _normalize_tasks,
 )
-from src.core.config.schema import ModelCatalog, ModelDefinitionConfig
+from src.core.config.schema import CONFIG_VERSION, ModelCatalog, ModelDefinitionConfig
 from src.core.config.settings_webui import _write_documented_toml, file_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -144,13 +144,13 @@ def test_settings_writer_emits_price_period_tables(tmp_path: Path) -> None:
     """设置页写入器同样把分时段单价写成子表数组，读回与写入前等价。"""
     models = _normalize_models(MODELS)
     document = {
-        'inner': {'version': '1.6.0'},
+        'inner': {'version': CONFIG_VERSION},
         'model_tasks': _normalize_tasks({}),
         'generation': _normalize_generation({}),
         'models': models,
     }
     path = tmp_path / 'models.toml'
-    _write_documented_toml(path, file_schema('models.toml'), document, '1.6.0')
+    _write_documented_toml(path, file_schema('models.toml'), document, CONFIG_VERSION)
     text = path.read_text(encoding='utf-8')
     assert text.count('[[models.price_periods]]') == 2
     catalog = ModelCatalog.model_validate(tomllib.loads(text))
@@ -161,7 +161,7 @@ def test_settings_writer_emits_price_period_tables(tmp_path: Path) -> None:
 def test_legacy_models_without_new_fields_still_load() -> None:
     """不含 cache_price_in 与 price_periods 的老配置不需要改写就能加载。"""
     raw = tomllib.loads(
-        '[inner]\nversion = "1.6.0"\n\n[model_tasks.chat]\nmodel_list = []\n\n'
+        f'[inner]\nversion = "{CONFIG_VERSION}"\n\n[model_tasks.chat]\nmodel_list = []\n\n'
         '[[models]]\nname = "old"\napi_provider = "p"\nprice_in = 1.5\nprice_out = 3.0\n'
     )
     model = ModelCatalog.model_validate(raw).models[0]
