@@ -43,6 +43,7 @@ const KIND_OPTIONS = [
   { value: 'llm_error', label: '模型调用失败' },
   { value: 'expression_select', label: '表达方式选择' },
   { value: 'expression_learned', label: '表达方式学习完成' },
+  { value: 'regex_rule', label: '正则规则' },
   { value: 'jargon_hit', label: '黑话命中' },
   { value: 'jargon_mined', label: '黑话提取' },
   { value: 'jargon_inferred', label: '黑话推断' },

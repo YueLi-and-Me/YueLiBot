@@ -50,6 +50,7 @@ const TRACE_KIND_LABELS: Record<string, string> = {
   proactive_intent: '主动意图评估',
   promise_rejected_for_person: '约定人物归属不匹配',
   promise_stashed: '约定已登记',
+  regex_rule: '正则规则',
   reply_gate: '回复门控判定',
   sleep_transition: '睡眠状态变化',
   stage: '处理阶段变化',

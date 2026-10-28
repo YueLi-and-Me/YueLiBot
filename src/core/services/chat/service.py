@@ -491,6 +491,12 @@ class ChatService(
             if expression_provider is not None
             else None
         )
+        # 正则规则的冷却表：键为 (pattern, stream_id)，值为上次注入的毫秒时间。只在
+        # 进程内存里，重启清零——最坏是重启后同一条早用一次，为此建表不值得。规则被
+        # 删或改了 pattern 后旧条目留在表里无害，不清理。规则本身每回合从当前配置读，
+        # 热重载后立即生效。
+        self._regex_rule_cooldowns: Dict[Tuple[str, int], int] = {}
+        self._regex_rule_rng = random.Random()
         self.memory = MemoryStore(db)
         # 会话印象是事实检索的第二检索词；状态只在进程内，复用 memory 模型槽。
         self._impressions = ConversationImpressions(
@@ -2835,8 +2841,11 @@ class ChatService(
             )],
             schedule=schedule_desc,
             # 主动开口同样从 expressions 表挑贴合当前情境的说法；没有独立候选源。
+            # 主动开口没有要回应的那句话，正则规则不参与。
             expression_habits=render_expression_habits(
-                await self._pick_expression_habits(context, situation, [], None)
+                await self._pick_expression_habits(
+                    context, situation, [], None, now=current_time(),
+                )
             ),
             # 主动搭话和普通回复一样，每次生成正文都重新抽取临时语调。
             tone=pick_tone(

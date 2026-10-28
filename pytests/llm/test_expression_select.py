@@ -173,6 +173,7 @@ def _seed_expressions(db, stream_id: int, count: int = 10) -> None:
 def test_selection_failure_does_not_kill_the_reply(db) -> None:
     """表达样本挑选失败时只丢弃样本，不得阻断整轮回复。"""
     from src.core.config.schema import Config
+    from src.core.runtime.clock import now as current_time
     from src.core.services.chat import ChatService
 
     chat = ChatService(
@@ -186,5 +187,7 @@ def test_selection_failure_does_not_kill_the_reply(db) -> None:
     )
     context = chat.desktop_context
     _seed_expressions(db, context.stream.id)
-    picked = asyncio.run(chat._pick_expression_habits(context, '小璃说话！', [], None))
+    picked = asyncio.run(chat._pick_expression_habits(
+        context, '小璃说话！', [], None, now=current_time(),
+    ))
     assert picked == []
