@@ -3,7 +3,8 @@
  *
  * schema 是字段、中文说明、类型与约束的唯一映射来源，因此本页不写死具体配置项；
  * 支持 object、map（model_tasks/generation）和 table_list（厂商/模型目录）三类
- * 结构。保存时整包提交，后端完成启动级校验后原子写回五个 TOML 文件。
+ * 结构，object 段内的 table_list 字段（如人设段的正则规则）按子表逐条编辑。
+ * 保存时整包提交，后端完成启动级校验后原子写回五个 TOML 文件。
  *
  * 套用「设置表单」模板：左栏列出配置文件及当前文件的分区（点击滚动到对应分区），
  * 中栏为表单，字段一行一项、说明在左控件在右；底部保存条常驻，有未保存的修改时
@@ -218,6 +219,97 @@ function FieldRows({ children }: { children: ReactNode }) {
 }
 
 /**
+ * 配置段内的子表字段（如人设段的正则规则，写成 `[[父表.字段]]`）。
+ *
+ * 不套用 `SettingsField` 的 `<label>` 行：一个 label 里只能有一个可聚焦控件，子表的
+ * 每一条都有好几个输入框。说明占满整行，条目卡片与上下字段行左右对齐，卡片内的
+ * 字段沿用「说明在左、控件在右」的行布局。
+ */
+function TableListField({ field, value, onChange }: {
+  field: SettingsFieldSchema
+  value: unknown
+  onChange: (value: SettingsRecord[]) => void
+}) {
+  const rows = asRecordArray(value)
+  const fields = (field.fields ?? []).filter((item) => !item.hidden)
+  // 待确认删除的条目索引；null 表示确认弹窗处于关闭状态。
+  const [pendingRemove, setPendingRemove] = useState<number | null>(null)
+  const addRow = () => {
+    const row: SettingsRecord = {}
+    for (const item of field.fields ?? []) row[item.key] = defaultValueForField(item)
+    onChange([...rows, row])
+  }
+  const updateRow = (rowIndex: number, fieldKey: string, next: unknown) => {
+    onChange(rows.map((row, index) => (index === rowIndex ? { ...row, [fieldKey]: next } : row)))
+  }
+  return (
+    <div className="min-w-0 py-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <span className="min-w-0">
+          <span className="block text-[13px] font-medium text-foreground">{field.label}</span>
+          {field.help ? (
+            <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{field.help}</span>
+          ) : null}
+        </span>
+        <Button size="sm" variant="secondary" className="flex-none" onClick={addRow}>
+          <Plus className="size-3.5" aria-hidden="true" />
+          添加条目
+        </Button>
+      </div>
+      <div className="mt-3 flex flex-col gap-3">
+        {rows.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-[13px] text-muted-foreground">
+            暂无条目，点击「添加条目」创建。
+          </p>
+        ) : null}
+        {rows.map((row, rowIndex) => (
+          <div key={`${field.key}-${rowIndex}`} className="rounded-lg border border-border px-4">
+            <div className="flex items-center justify-between gap-3 border-b border-border-subtle py-2">
+              <h3 className="text-[13px] font-semibold">第 {rowIndex + 1} 条</h3>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:bg-destructive-soft hover:text-destructive"
+                onClick={() => setPendingRemove(rowIndex)}
+                title="删除条目"
+              >
+                <Trash2 className="size-3.5" aria-hidden="true" />
+                删除
+              </Button>
+            </div>
+            <FieldRows>
+              {fields.map((item) => (
+                <SettingsField
+                  key={item.key}
+                  field={item}
+                  value={row[item.key]}
+                  onChange={(next) => updateRow(rowIndex, item.key, next)}
+                />
+              ))}
+            </FieldRows>
+          </div>
+        ))}
+      </div>
+      <ConfirmDialog
+        open={pendingRemove !== null}
+        title="删除条目"
+        description={
+          pendingRemove !== null
+            ? `删除「${field.label}」第 ${pendingRemove + 1} 条？改动会在保存配置后写回文件。`
+            : undefined
+        }
+        confirmText="删除"
+        onConfirm={() => {
+          if (pendingRemove !== null) onChange(rows.filter((_, index) => index !== pendingRemove))
+          setPendingRemove(null)
+        }}
+        onCancel={() => setPendingRemove(null)}
+      />
+    </div>
+  )
+}
+
+/**
  * 计算分区在页面里的锚点 id，供左栏的分区导航滚动定位。
  *
  * @param sectionKey schema 中的分区键。
@@ -319,12 +411,21 @@ function ObjectSection({ section, values, onChange }: {
       <CardBody className="pt-0">
         <FieldRows>
           {section.fields.map((field) => (
-            <SettingsField
-              key={field.key}
-              field={field}
-              value={values[field.key]}
-              onChange={(value) => onChange(field.key, value)}
-            />
+            field.type === 'table_list' ? (
+              <TableListField
+                key={field.key}
+                field={field}
+                value={values[field.key]}
+                onChange={(value) => onChange(field.key, value)}
+              />
+            ) : (
+              <SettingsField
+                key={field.key}
+                field={field}
+                value={values[field.key]}
+                onChange={(value) => onChange(field.key, value)}
+              />
+            )
           ))}
         </FieldRows>
       </CardBody>
