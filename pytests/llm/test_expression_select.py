@@ -152,11 +152,16 @@ class _BrokenProvider:
 
 
 def _seed_expressions(db, stream_id: int, count: int = 10) -> None:
-    """给指定会话种 count 条表达方式，让候选池达到可选规模。"""
+    """给指定会话种 count 条已复核的表达方式，让候选池达到可选规模。
+
+    必须种成 ``checked = 1``：候选池以复核为放行闸门，未复核行根本不进池，
+    否则「选择失败不拖垮回复」这条用例会在取池阶段就返回空、验不到选择器。
+    """
 
     db.executemany(
-        'INSERT INTO expressions (situation, style, stream_id, use_count, source, created_at)'
-        ' VALUES (?, ?, ?, 1, ?, 0)',
+        'INSERT INTO expressions'
+        ' (situation, style, stream_id, learn_count, use_count, source, created_at, checked)'
+        ' VALUES (?, ?, ?, 1, 1, ?, 0, 1)',
         [
             (f'情境{i}', f'说法{i}', stream_id, '测试')
             for i in range(count)

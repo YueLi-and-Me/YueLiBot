@@ -3,7 +3,7 @@
 最近的对话：
 {{history}}
 
-对方刚说的这句：{{user_text}}
+{{response_context}}
 
 以下是可选的表达情境：
 {{options}}
