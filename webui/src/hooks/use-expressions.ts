@@ -23,9 +23,15 @@ export interface ExpressionEntry {
   situation: string
   /** 具体的表达文本。 */
   style: string
+  /** 学到的那段原话；迁移存量与旧版本学到的条目为空串。 */
+  quote: string
+  /** 原话的指代说明；旧条目为空串，审核页据此整行不展示。 */
+  reading: string
   streamId: number | null
   /** 累计被选中次数；含历史迁移带入的存量，不代表本部署用过。 */
   useCount: number
+  /** 被学到的次数：同一会话的情境与说法再次被学到时加一，与 useCount 无关。 */
+  learnCount: number
   source: string
   createdAt: number
   /** 最近一次被选中的毫秒时间戳；从未被选中为 null。 */

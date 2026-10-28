@@ -2419,6 +2419,17 @@ class ChatService(
                 mind=head.mind,
                 materials=materials,
             )
+            # 追问的目标是上一段对话里那条用户消息：能拿到发送者时把它作为
+            # 「这次要回应」的情境输入；拿不到人物 ID 时退回旧口径，不阻断追问。
+            responded = None
+            if target.sender_person_id is not None:
+                responded = (
+                    self._registry.stream_display_name(
+                        target.sender_person_id,
+                        context.stream.id,
+                    ),
+                    strip_say_tags(target.content),
+                )
             replyer_context = add_follow_up_context(
                 await self._enrich_prepared_context(
                     prepared,
@@ -2426,6 +2437,8 @@ class ChatService(
                     render_params,
                     reply_length=head.length,
                     protocol_text=replyer_protocol,
+                    responded_message=responded,
+                    reference=head.reference,
                 )
             )
             replyer_items = self._render_agent_messages(
@@ -3394,12 +3407,32 @@ class ChatService(
                 mind=head.mind,
                 materials=materials,
             )
+            # 动作头按消息 ID 指认回应对象；在本回合批次里找到那条消息，把
+            # 「回谁、回什么」作为情境输入交给表达选择。目标理论上一定在批次里
+            # （动作头已通过校验），找不到时退回旧口径而不阻断回复。
+            responded_message = None
+            if head.target_message_ids:
+                target_id = head.target_message_ids[0]
+                target_message = next(
+                    (message for message in batch if message.message_id == target_id),
+                    None,
+                )
+                if target_message is not None:
+                    responded_message = (
+                        self._registry.stream_display_name(
+                            target_message.context.person.id,
+                            context.stream.id,
+                        ),
+                        target_message.text,
+                    )
             replyer_context = await self._enrich_prepared_context(
                 prepared,
                 cancel_event,
                 render_params,
                 reply_length=head.length,
                 protocol_text=replyer_protocol,
+                responded_message=responded_message,
+                reference=head.reference,
             )
             messages = self._render_agent_messages(
                 frame,

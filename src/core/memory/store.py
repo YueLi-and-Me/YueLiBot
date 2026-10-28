@@ -1756,6 +1756,35 @@ class MemoryStore:
             for r in rows
         ]
 
+    def messages_before(self, stream_id: int, before_id: int, limit: int) -> list[StoredMessage]:
+        """按 ID 倒序取某条消息之前的一批消息，供表达学习回看前文。
+
+        与 :meth:`messages_after` 对称：同样按 ``stream_id`` 隔离、不受摘要归档状态
+        影响。返回结果已翻回 ID 正序，调用方可直接拼进语料而无需再反转。
+
+        :param stream_id: 目标 stream ID。
+        :param before_id: 终点消息 ID（不含）；批次首条之前的消息用它取回。
+        :param limit: 最多返回的消息条数。
+        :return: 按 ID 正序排列的 ``StoredMessage`` 列表；终点之前没有消息时为空列表。
+        :raises sqlite3.Error: 查询失败。
+        副作用：只读 messages 表，不写任何列。
+        """
+        rows = self._db.execute(
+            '''SELECT id, role, content, created_at, sender_person_id FROM messages
+               WHERE stream_id = ? AND id < ? ORDER BY id DESC LIMIT ?''',
+            (stream_id, before_id, limit),
+        ).fetchall()
+        return [
+            StoredMessage(
+                message_id=r[0],
+                role=r[1],
+                content=r[2],
+                created_at=r[3],
+                sender_person_id=r[4],
+            )
+            for r in reversed(rows)
+        ]
+
     def recent_speakers(
         self,
         stream_id: int,

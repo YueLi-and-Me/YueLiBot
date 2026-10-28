@@ -85,6 +85,7 @@ MODULE_COLORS: Dict[str, Tuple[str, bool]] = {
     "db.migrations.v33_to_v34": ("#ffd75f", False),
     "db.migrations.v34_to_v35": ("#ffd75f", False),
     "db.migrations.v35_to_v36": ("#ffd75f", False),
+    "db.migrations.v36_to_v37": ("#ffd75f", False),
     # 模型
     "llm_models.router": ("#00ffff", True),
     "llm_models.embeddings": ("#5fafff", False),
@@ -200,6 +201,7 @@ MODULE_ALIASES: Dict[str, str] = {
     "db.migrations.v33_to_v34": "迁移v33→v34",
     "db.migrations.v34_to_v35": "迁移v34→v35",
     "db.migrations.v35_to_v36": "迁移v35→v36",
+    "db.migrations.v36_to_v37": "迁移v36→v37",
     "llm_models.router": "模型路由",
     "llm_models.embeddings": "向量协议",
     "llm_models.responses": "Responses 协议",

@@ -14,9 +14,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 import sqlite3
 
 from src.core.agent.expression_learn import (
-    BATCH_MESSAGES as EXPRESSION_LEARN_BATCH,
     TRIGGER_MESSAGES as EXPRESSION_LEARN_TRIGGER,
     advance_cursor as advance_expression_learn_cursor,
+    collect_learning_batch,
     read_cursor as read_expression_learn_cursor,
     run_learning,
 )
@@ -405,52 +405,74 @@ class BackgroundTaskMixin:
             self._extracting.discard(stream_id)
 
     async def _maybe_learn_expressions(self, stream_id: int) -> None:
-        """在待学习消息达到阈值时后台学习表达方式，并顺路执行淘汰。
+        """在积压消息达到阈值时后台学习表达方式，并顺路执行淘汰。
 
         与 :meth:`_maybe_extract_facts` 同一条纪律：独立模型任务（复用 memory 槽）、
         回合之后执行、同一会话同时只允许一个在飞、失败只丢该批且不影响已完成的
         对话。游标独立（``expression_learn_cursor``），与事实抽取、摘要队列互不
         消费对方输入。
 
+        一次调用内连续处理多批：迁移会把游标回拨 14 天，积压可达几百条，逐回合
+        只处理一批会让回填拖很久。循环在积压不足触发阈值、某批失败或任务被取消
+        时停止；失败处理与单批形态一致（连续失败到上限才把游标推过该批）。
+        等待模型响应期间取消时 CancelledError 直接向上传播，不被这里的
+        except Exception 吞掉。
+
         :param stream_id: 待检查的会话 ID。
         :return: 无返回值。
-        副作用：可能发起一次模型请求、写入并淘汰 expressions 行、推进学习游标。
+        副作用：可能发起多次模型请求、写入并淘汰 expressions 行、推进学习游标。
         """
 
         if stream_id in self._learning_expressions or self._memory_provider is None:
             return
         self._learning_expressions.add(stream_id)
-        # 失败处理要读这一批的首尾 ID，取批本身也可能抛错，因此先给一个空批。
+        # 失败处理要读这一批的首尾 ID，取批本身也可能抛错，因此先给一个空批；
+        # 每轮开始都重置，避免下一轮取批失败时把上一轮已处理完的批次当成失败批
+        # 重推游标（那会让游标倒退）。
         batch: List[StoredMessage] = []
         try:
-            # 先按同一口径取出这一批，用它的发言人解析在场者（名单只用于把对话
-            # 渲染成带名字的行）；run_learning 内部会再读一次同样的批次。
-            cursor = read_expression_learn_cursor(self.memory, stream_id)
-            if self.memory.message_count_after(stream_id, cursor) < EXPRESSION_LEARN_TRIGGER:
-                return
-            batch = self.memory.messages_after(stream_id, cursor, EXPRESSION_LEARN_BATCH)
-            participants = self._extraction_participants(batch)
-            report = await run_learning(
-                self.memory,
-                self._memory_provider,
-                self._db,
-                stream_id=stream_id,
-                participants=participants,
-                bot_name=self._bot_display_name,
-                temperature=self._memory_temperature,
-                max_tokens=self._memory_max_tokens,
-            )
-            if report is None:
-                self._skip_stuck_batch(
-                    self._expression_failures,
-                    'expression_learn',
-                    stream_id,
-                    batch,
-                    '模型未返回合法的表达学习 JSON',
-                    advance_expression_learn_cursor,
+            while True:
+                batch = []
+                # 先按同一口径取出这一批，用它的发言人解析在场者（名单只用于把
+                # 对话渲染成带名字的行）；run_learning 内部不再重复切批。
+                cursor = read_expression_learn_cursor(self.memory, stream_id)
+                if self.memory.message_count_after(stream_id, cursor) < EXPRESSION_LEARN_TRIGGER:
+                    break
+                collected = collect_learning_batch(self.memory, stream_id, cursor)
+                if collected is None:
+                    # 游标之后没有群友消息：没有可学的来源，游标不能前进；保持
+                    # 现状退出，等新消息到来再判，不按失败计数。
+                    break
+                # 在场者要覆盖前文与批次：前文里的群友同样会进语料，名单不全只
+                # 影响名字渲染（找不到时按「某人」），不阻断学习。
+                batch = list(collected.batch)
+                participants = self._extraction_participants(
+                    [*collected.lead, *collected.batch],
                 )
-                return
-            self._expression_failures.clear(stream_id)
+                report = await run_learning(
+                    self.memory,
+                    self._memory_provider,
+                    self._db,
+                    stream_id=stream_id,
+                    participants=participants,
+                    bot_name=self._bot_display_name,
+                    batch=collected,
+                    # 与黑话注入的保护名单同源：她的名字族不能进表达说法。
+                    protected_names=self._jargon_protected_names,
+                    temperature=self._memory_temperature,
+                    max_tokens=self._memory_max_tokens,
+                )
+                if report is None:
+                    self._skip_stuck_batch(
+                        self._expression_failures,
+                        'expression_learn',
+                        stream_id,
+                        batch,
+                        '模型未返回合法的表达学习 JSON',
+                        advance_expression_learn_cursor,
+                    )
+                    break
+                self._expression_failures.clear(stream_id)
         except Exception as exc:
             # 学习是旁路设施：任何失败都不该回滚已完成的回合。游标只在整批成功时
             # 推进，这一批下次会重跑；与事实抽取同一条纪律，连续失败到上限就跳过

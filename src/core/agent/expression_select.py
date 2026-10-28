@@ -6,6 +6,10 @@
 选择提示词只向模型列出候选的情境描述，模型返回命中的情境编号；说法示例
 （style）不进选择提示词，是选中之后才拼进注入文本的载荷。若将 style 一并提供
 给选择模型，模型会偏向表述的表面质量，偏离情境匹配的目标。
+
+回应对象与决策背景只描述「这句话在接谁、为什么接」的情境对接关系，同样不携带
+style：它们帮模型判断当前情境的指向，不提供可模仿的说法。取不到回应对象时退回
+「对方刚说的这句」，与没有这两项输入的旧口径一致。
 """
 
 from __future__ import annotations
@@ -40,11 +44,40 @@ def _history_text(history: Sequence[dict[str, str]]) -> str:
     return json.dumps(list(history), ensure_ascii=False)
 
 
+def _response_context(
+    responded: tuple[str, str] | None,
+    reference: str | None,
+    user_text: str,
+) -> str:
+    """组装选择提示词里「这句话要回应什么」的那一段。
+
+    :param responded: 被回应的消息，形如 (发送者显示名, 消息正文)；没有明确
+        回应对象时为 ``None``。
+    :param reference: 决策给出的回复背景说明；没有时为 ``None`` 或空串。
+    :param user_text: 当前用户消息；两项输入都缺失时用它保持旧提示词口径。
+    :return: 两项都没有时为「对方刚说的这句：{user_text}」；否则按给出项以换行
+        拼接「这次要回应：{名字}：{正文}」与「回复背景：{说明}」。
+    副作用：无。
+    """
+
+    if not responded and not reference:
+        return f'对方刚说的这句：{user_text}'
+    parts: List[str] = []
+    if responded:
+        parts.append(f'这次要回应：{responded[0]}：{responded[1]}')
+    if reference:
+        parts.append(f'回复背景：{reference}')
+    return '\n'.join(parts)
+
+
 def build_selection_prompt(
     candidates: Sequence[ExpressionSample],
     user_text: str,
     history: Sequence[dict[str, str]],
     limit: int,
+    *,
+    responded: tuple[str, str] | None = None,
+    reference: str | None = None,
 ) -> str:
     """组装受限表达选择提示词，候选以从 1 开始的编号情境列出。
 
@@ -52,6 +85,9 @@ def build_selection_prompt(
     :param user_text: 当前用户消息，用于模型判断语境匹配度。
     :param history: 最近对话历史；每项应包含 ``role`` 和 ``content`` 字段。
     :param limit: 模型最多可以返回的候选数量；由调用方负责传入有效上限。
+    :param responded: 可选，被回应的消息 (发送者显示名, 消息正文)；只用于描述
+        情境对接关系，不携带 style。
+    :param reference: 可选，决策给出的回复背景；同样只描述情境。
 
     :return: 包含对话上下文、编号情境和输出上限约束的完整提示词。
 
@@ -60,7 +96,7 @@ def build_selection_prompt(
     """
     return get_prompt('expression.select').render(
         history=_history_text(history),
-        user_text=user_text,
+        response_context=_response_context(responded, reference, user_text),
         options=_options_text(candidates),
         limit=str(limit),
     )
@@ -149,6 +185,8 @@ class ExpressionSelector:
         candidates: Sequence[ExpressionSample],
         limit: int = 4,
         signal: asyncio.Event | None = None,
+        responded: tuple[str, str] | None = None,
+        reference: str | None = None,
     ) -> List[ExpressionSample]:
         """请求模型从候选池中选择不超过上限的表达样本。
 
@@ -157,6 +195,9 @@ class ExpressionSelector:
         :param candidates: 本轮候选池；不能为空，由调用方在候选不足时跳过本轮选择。
         :param limit: 最多允许返回的候选数量，默认值为 4。
         :param signal: 可选取消事件；触发后由 provider 终止流式请求。
+        :param responded: 可选，被回应的消息 (发送者显示名, 消息正文)；没有明确
+            回应对象时为 ``None``。
+        :param reference: 可选，决策给出的回复背景说明；没有时为 ``None`` 或空串。
         :return: 按模型选择顺序排列的候选表达样本列表。
         :raises ValueError: 候选为空，或模型输出不是限定 JSON、编号越界、重复或超过 `limit`。
         :raises Exception: provider 的网络、鉴权或流式读取错误向调用方传播。
@@ -166,11 +207,15 @@ class ExpressionSelector:
         if not candidates:
             raise ValueError('表达选择候选不能为空')
         # 提示词只携带候选情境的编号，避免模型重新生成表达文本破坏候选约束。
-        prompt = build_selection_prompt(candidates, user_text, history, limit)
+        response_context = _response_context(responded, reference, user_text)
+        prompt = build_selection_prompt(
+            candidates, user_text, history, limit,
+            responded=responded, reference=reference,
+        )
         render_params = {
             'expression.select': {
                 'history': _history_text(history),
-                'user_text': user_text,
+                'response_context': response_context,
                 'options': _options_text(candidates),
                 'limit': str(limit),
             },

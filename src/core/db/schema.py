@@ -338,10 +338,19 @@ CREATE TABLE IF NOT EXISTS expressions (
   use_count  INTEGER NOT NULL DEFAULT 0,
   source     TEXT    NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
-  -- checked 预留给「只用人工确认过的表达」的质量闸门；当前全部置 0，读取不按它过滤。
+  -- 审核闸门：只有 1（人工确认）进候选池；新学到的一律 0 待审，-1 为人工驳回。
   checked    INTEGER NOT NULL DEFAULT 0,
   -- 最近一次真正进提示词的时间，与 use_count 的回写同处发生；从未被选中为 NULL。
   last_used_at INTEGER,
+  -- v37 学习侧三列。learn_count 是该表达被学到的次数（单位次，≥1）：新学到的行记 1，
+  -- 同一 (situation, style, stream_id) 再次被学到时 +1。它是抽样权重的来源（见
+  -- agent/expression.py），与只记本机被选中次数的 use_count 语义不同，不能混用。
+  learn_count INTEGER NOT NULL DEFAULT 1,
+  -- reading 是那段原话在对话里指代谁、指什么事的说明（指代说明），长度上限 200 字符，
+  -- 与学习侧校验口径一致（见 agent/expression_learn.py）。
+  reading     TEXT    NOT NULL DEFAULT '',
+  -- quote 是从来源消息里原样摘出的那段话，长度上限 80 字符；审核页原样展示。
+  quote       TEXT    NOT NULL DEFAULT '',
   UNIQUE(situation, style, stream_id)
 );
 

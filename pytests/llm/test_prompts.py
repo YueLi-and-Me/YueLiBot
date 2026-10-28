@@ -340,16 +340,18 @@ def test_persona_state_does_not_force_repetitive_care() -> None:
 
 
 def test_expression_render_uses_situation_style_template() -> None:
-    """注入形态：每条选中样本渲染为「当“情境”时，可以用“说法”来表达。」。"""
+    """注入形态：每条选中样本渲染为「- 当{情境}时，可以套用：{说法}」。"""
     samples = [
-        ExpressionSample(id=1, situation='对方在抱怨具体麻烦时', style='先接住那件麻烦'),
-        ExpressionSample(id=2, situation='对方开玩笑时', style='顺着继续接'),
+        ExpressionSample(id=1, situation='对方抱怨具体麻烦', style='先接住那件麻烦'),
+        ExpressionSample(id=2, situation='对方开玩笑', style='顺着继续接'),
     ]
     block = render_expression_habits(samples)
 
     assert '【表达习惯参考，请视情况自然的使用】' in block
-    assert '当“对方在抱怨具体麻烦时”时，可以用“先接住那件麻烦”来表达。' in block
+    assert '- 当对方抱怨具体麻烦时，可以套用：先接住那件麻烦' in block
     assert block.count('- ') == len(samples)
+    # 旧条目没有〈角色〉占位，不追加换算说明行。
+    assert '〈〉里换成这次对话里对应的人和事' not in block
     assert render_expression_habits([]) == ''
 
 

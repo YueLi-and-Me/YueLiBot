@@ -88,6 +88,9 @@ class ContextBuildMixin:
         query: str,
         history: list[dict[str, str]],
         signal: asyncio.Event | None,
+        *,
+        responded: tuple[str, str] | None = None,
+        reference: str | None = None,
     ) -> list[ExpressionSample]:
         """为当前回复从 expressions 表选择表达样本。
 
@@ -95,6 +98,9 @@ class ContextBuildMixin:
         :param query: 当前用户文本或主动情境。
         :param history: 已组装的对话历史。
         :param signal: 可选的取消信号。
+        :param responded: 可选，被回应的消息 (发送者显示名, 消息正文)；只用于
+            描述情境对接关系，不携带 style。
+        :param reference: 可选，决策给出的回复背景；同样只描述情境。
 
         :return: 选择出的表达样本；选择器未配置、候选池为空、输入错误或
             非中断模型错误时返回空列表。
@@ -104,16 +110,22 @@ class ContextBuildMixin:
         if self._expression_selector is None:
             trace.emit('expression_select', source='disabled', count=0)
             return []
-        # 候选池按会话按轮现取；不足一池（含从未积累过表达方式的会话）时
-        # 本轮不选，不调用模型。
-        pool, total = fetch_expression_pool(self._db, context.stream.id)
+        # 取池判定冷却与回写 last_used_at 必须共用同一个时钟值：各取一次 now
+        # 会让回写值略晚于判定时用的时间，冷却窗口边界处多差几毫秒。
+        used_at = current_time()
+        # 候选池按会话按轮现取；不足一池（含从未积累过表达方式的会话）或
+        # 全部条目都在冷却时本轮不选，不调用模型。
+        pool, total = fetch_expression_pool(self._db, context.stream.id, now=used_at)
         if not pool:
             trace.emit('expression_select', source='disabled', count=0, pool=0, total=total)
             return []
         self._mark_stage(context, EXPRESSION)
         try:
             # 只把最近历史传给选择器，避免表达习惯选择占用完整上下文预算。
-            picked = await self._expression_selector.select(query, history[-8:], pool, signal=signal)
+            picked = await self._expression_selector.select(
+                query, history[-8:], pool, signal=signal,
+                responded=responded, reference=reference,
+            )
         except LlmError as exc:
             if exc.kind == 'aborted':
                 raise
@@ -127,7 +139,6 @@ class ContextBuildMixin:
         # 选中即进提示词：渲染结果随本轮系统提示词一并发出，因此在这里回写
         # 使用次数与最近使用时间；未选中的行两列都不动。
         if picked:
-            used_at = current_time()
             self._db.executemany(
                 'UPDATE expressions SET use_count = use_count + 1, last_used_at = ?'
                 ' WHERE id = ?',
@@ -140,7 +151,7 @@ class ContextBuildMixin:
             count=len(picked),
             pool=len(pool),
             total=total,
-            habits=[f'当“{sample.situation}”时，可以用“{sample.style}”来表达。'
+            habits=[f'当{sample.situation}时，可以套用：{sample.style}'
                     for sample in picked],
         )
         return picked
@@ -638,6 +649,9 @@ class ContextBuildMixin:
         render_params: dict[str, dict[str, str]],
         reply_length: str | None,
         protocol_text: str | None = None,
+        *,
+        responded_message: tuple[str, str] | None = None,
+        reference: str | None = None,
     ) -> list[dict]:
         """确认回复后，在既有上下文上附加向量与表达模型增强。
 
@@ -647,6 +661,9 @@ class ContextBuildMixin:
         :param reply_length: 规划器选出的回复篇幅。
         :param protocol_text: 可选的 Agent 动作协议文本；透传给系统提示词
             渲染，使动作头先于正文成为唯一输出协议。
+        :param responded_message: 可选，被回应的消息 (发送者显示名, 消息正文)；
+            原样传给表达选择器，只描述情境对接关系。
+        :param reference: 可选，决策给出的回复背景；原样传给表达选择器。
         :return: 使用增强后事实排序和表达习惯渲染的最终模型消息。
         副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID。
         """
@@ -676,6 +693,8 @@ class ContextBuildMixin:
                 prepared.query,
                 prepared.raw_history,
                 signal,
+                responded=responded_message,
+                reference=reference,
             )
         )
         return self._render_prepared_context(

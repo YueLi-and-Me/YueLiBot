@@ -161,7 +161,7 @@ TEMPLATE_PLACEHOLDERS: Dict[str, FrozenSet[str]] = {
         'density',
         'sleep_rule',
     }),
-    'expression.select': frozenset({'history', 'user_text', 'options', 'limit'}),
+    'expression.select': frozenset({'history', 'response_context', 'options', 'limit'}),
     'vision.glance': frozenset({'app_hint'}),
     'scene.observe': frozenset({'history', 'atmospheres', 'topic_limit'}),
     'memory.extract': frozenset({'bot_name'}),

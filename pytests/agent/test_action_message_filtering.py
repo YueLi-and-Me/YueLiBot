@@ -1,4 +1,8 @@
-"""助手自身表达与动作伪消息不污染表达学习。"""
+"""助手自身表达与动作伪消息在表达学习语料里的边界。
+
+她的真实发言现在保留在语料里作为上下文（标「她自己」），动作伪消息仍然整条
+跳过；整批只有她发言时没有群友来源，不发起模型请求。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from src.core.memory.store import (
 
 STREAM_ID = 1
 NOW = 1_800_000_000_000
+BOT_NAME = '月璃'
 
 
 class _StubProvider:
@@ -37,9 +42,8 @@ async def _run_learning(store: MemoryStore, provider: _StubProvider, db: Any) ->
         db,
         stream_id=STREAM_ID,
         participants=(),
-        bot_name='月璃',
+        bot_name=BOT_NAME,
         trigger_messages=1,
-        batch_messages=10,
         temperature=0.1,
         max_tokens=128,
         now=NOW,
@@ -74,7 +78,7 @@ async def test_action_only_batch_does_not_call_expression_model(db: Any) -> None
 
 @pytest.mark.asyncio
 async def test_assistant_speech_only_batch_does_not_call_expression_model(db: Any) -> None:
-    """整批只有月璃真实发言时也不调用学习模型，避免自我模仿闭环。"""
+    """整批只有她的真实发言时也不调用学习模型：没有群友来源，无可学内容。"""
 
     store = MemoryStore(db)
     provider = _StubProvider()
@@ -82,7 +86,7 @@ async def test_assistant_speech_only_batch_does_not_call_expression_model(db: An
         STREAM_ID,
         None,
         'assistant',
-        '这是一段足够长的月璃回复，但无论内容多有辨识度，都不能成为表达学习语料。',
+        '这是一段足够长的她的回复，但无论内容多有辨识度，都不能成为表达学习的来源。',
         NOW,
     )
 
@@ -93,9 +97,9 @@ async def test_assistant_speech_only_batch_does_not_call_expression_model(db: An
 
 @pytest.mark.asyncio
 async def test_real_speech_keeps_action_out_of_expression_dialogue(db: Any) -> None:
-    """群友开口会触发学习，但月璃台词与动作历史都不进入模型对白。
+    """群友开口会触发学习；她的真实发言进语料并标「她自己」，动作伪消息仍不出现。
 
-    这条边界由代码过滤保证，不能只依赖提示词要求模型自行忽略月璃的说法。
+    她的发言只作上下文：模型能看到群友在接哪句话，但候选来源会被来源校验拦住。
     """
 
     store = MemoryStore(db)
@@ -110,7 +114,7 @@ async def test_real_speech_keeps_action_out_of_expression_dialogue(db: Any) -> N
     )
     action = format_assistant_reaction_action(8203, '无奈')
     store.append_message(STREAM_ID, 1, 'user', other_speech, NOW)
-    store.append_message(STREAM_ID, None, 'assistant', real_speech, NOW + 1)
+    store.append_message(STREAM_ID, None, 'assistant', f'<say>{real_speech}</say>', NOW + 1)
     store.append_message(STREAM_ID, None, 'assistant', action, NOW + 2)
 
     await _run_learning(store, provider, db)
@@ -118,13 +122,14 @@ async def test_real_speech_keeps_action_out_of_expression_dialogue(db: Any) -> N
     assert len(provider.requests) == 1
     dialogue = provider.requests[0][-1]['content']
     assert other_speech in dialogue
-    assert real_speech not in dialogue
+    assert real_speech in dialogue
+    assert f'{BOT_NAME}（她自己）：' in dialogue
+    assert '<say>' not in dialogue
     assert action not in dialogue
-    assert '月璃：' not in dialogue
 
 
 def test_fact_dialogue_omits_assistant_action_messages(db: Any) -> None:
-    """事实抽取只看到真正说出口的内容，不把平台动作当对白。"""
+    """事实抽取只看到真正说出口的内容，不把平台动作当对白（口径不受表达学习影响）。"""
 
     store = MemoryStore(db)
     action = format_assistant_poke_action('小明')
@@ -134,7 +139,7 @@ def test_fact_dialogue_omits_assistant_action_messages(db: Any) -> None:
     dialogue = render_dialogue(
         store.messages_after(STREAM_ID, 0, 10),
         (),
-        '月璃',
+        BOT_NAME,
     )
 
     assert dialogue == '月璃：我记得这件事。'

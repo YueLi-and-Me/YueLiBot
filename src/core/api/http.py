@@ -1697,9 +1697,11 @@ def _list_expression_rows(
     :param order: 排序口径，键取自 :data:`_EXPRESSION_ORDER_CLAUSES`。
     :param limit: 页大小。
     :param offset: 偏移量。
-    :return: ``(表达字典列表, 总数)``；每行含 ``useCount`` 累计次数、
-        ``lastUsedAt`` 最近一次被选中的毫秒时间戳（从未被选中时为 ``None``）
-        与 ``checked`` 复核状态。
+    :return: ``(表达字典列表, 总数)``；每行含 ``useCount`` 累计被选中次数、
+        ``lastUsedAt`` 最近一次被选中的毫秒时间戳（从未被选中时为 ``None``）、
+        ``learnCount`` 被学到的次数、``quote`` 学到的原话、``reading`` 指代说明，
+        以及 ``checked`` 复核状态。``quote`` 与 ``reading`` 对迁移存量与
+        旧版本学到的条目为空串，由审核页自行决定不展示。
     :raises KeyError: 排序名不在 :data:`_EXPRESSION_ORDER_CLAUSES` 内；路由层的
         Literal 校验挡在前面，走到这里说明两处取值集合已经失配。
     :raises sqlite3.Error: 查询失败时抛出，由路由层转换。
@@ -1713,8 +1715,8 @@ def _list_expression_rows(
         filters,
     ).fetchone()[0])
     rows = db.execute(
-        f'''SELECT id, situation, style, stream_id, use_count, source,
-                   created_at, last_used_at, checked
+        f'''SELECT id, situation, style, reading, quote, stream_id, use_count,
+                   learn_count, source, created_at, last_used_at, checked
             FROM expressions
             WHERE (? IS NULL OR stream_id = ?) AND (? IS NULL OR checked = ?)
             ORDER BY {order_clause}
@@ -1726,8 +1728,11 @@ def _list_expression_rows(
             'id': row['id'],
             'situation': row['situation'],
             'style': row['style'],
+            'reading': row['reading'],
+            'quote': row['quote'],
             'streamId': row['stream_id'],
             'useCount': row['use_count'],
+            'learnCount': row['learn_count'],
             'source': row['source'],
             'createdAt': row['created_at'],
             'lastUsedAt': row['last_used_at'],

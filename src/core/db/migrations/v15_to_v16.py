@@ -51,16 +51,42 @@ _EXPECTED_V16 = [
 ]
 
 
+def _matches_history(
+    actual: list[tuple[str, str, int, str | None, int]],
+    expected: list[tuple[str, str, int, str | None, int]],
+) -> bool:
+    """判断实际列结构是否以某个历史权威结构开头。
+
+    :param actual: PRAGMA 读出的当前列结构，按定义顺序。
+    :param expected: 目标历史版本的权威列结构。
+    :return: 实际结构前 len(expected) 列的列序、类型、约束与默认值全部一致时返回
+        True；实际结构比 expected 短时返回 False。
+    副作用：无。
+    """
+
+    return actual[:len(expected)] == expected
+
+
 def _migration_needed(db: sqlite3.Connection) -> bool:
-    """校验版本入口的表结构，并判断是否需要执行两条 ALTER。"""
+    """校验版本入口的表结构，并判断是否需要执行两条 ALTER。
+
+    [关键] 用前缀比较而不是整表相等。
+
+    - 现象：链尾 DDL 建出的库里 expressions 已带后续版本追加的列，链条从旧入口补跑
+      时这里会因「多出列」判结构不符，把正常库拦成迁移损坏。
+    - 原因：版本入口可能在当前 DDL 建好后回退 ``user_version`` 得到（迁移演练与
+      测试构造都是这条路径），此时列结构天然是「历史权威结构 + 后续版本的列」；
+      整表相等只对恰好停在 v16 的历史库成立。
+    - 后果：每给 expressions 加一列都要回头改这条旧迁移，链尾 DDL 与历史断言互相
+      锁死，迁移演练无法从旧版本号验证加列逻辑。
+    """
 
     actual = _table_shape(db)
-    if actual == _EXPECTED_V15:
-        return True
-    # 当前 DDL 可能已幂等补齐两列，但旧版本号尚未推进；只有列序、约束和默认值
-    # 全部等于 v16 权威结构时，才允许跳过 ALTER 直接接管版本号。
-    if actual == _EXPECTED_V16:
+    # 必须先比 v16：v16 结构以 v15 为前缀，先比 v15 会把 v16 形状的库误判成需要补列。
+    if _matches_history(actual, _EXPECTED_V16):
         return False
+    if _matches_history(actual, _EXPECTED_V15):
+        return True
     raise RuntimeError(f'v15 数据库的表达方式表结构不符合预期：expressions={actual}')
 
 
@@ -91,7 +117,7 @@ def migrate(db: sqlite3.Connection) -> None:
             'ALTER TABLE expressions ADD COLUMN last_used_at INTEGER'
         )
 
-    if _table_shape(db) != _EXPECTED_V16:
+    if not _matches_history(_table_shape(db), _EXPECTED_V16):
         raise RuntimeError('v16 迁移自检失败：expressions 结构未到达权威形态')
 
     after = db.execute(
