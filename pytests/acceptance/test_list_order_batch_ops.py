@@ -148,6 +148,36 @@ def test_expression_order_and_batch_checked(db: sqlite3.Connection) -> None:
     assert rejected['total'] == 3
 
 
+def test_expression_rows_expose_learning_provenance(db: sqlite3.Connection) -> None:
+    """表达列表返回学习侧三字段：原话、指代说明与被学到次数。
+
+    审核页要靠这三项判断「学得对不对」；迁移存量与旧版本学到的行没有原话与指代
+    说明，字段必须是空串而不是缺键，learn_count 必须是 1 而不是 None。
+    """
+    db.execute(
+        "INSERT INTO expressions (situation, style, reading, quote, stream_id,"
+        " use_count, learn_count, source, created_at, checked)"
+        " VALUES ('朋友抱怨赖床时', '用「被闹钟绑架」接话', '把赖床说成闹钟看守，是夸张',"
+        " '我的闹钟更是／堪比门神', NULL, 2, 3, '测试', 2_000, 1)"
+    )
+    db.execute(
+        "INSERT INTO expressions (situation, style, stream_id, use_count, source,"
+        " created_at, checked) VALUES ('旧情境', '旧说法', NULL, 1, '迁移存量', 1_000, 1)"
+    )
+    db.commit()
+    client = _client()
+
+    entries = client.get('/api/expressions').json()['entries']
+    assert [entry['style'] for entry in entries] == ['用「被闹钟绑架」接话', '旧说法']
+    provenanced, legacy = entries
+    assert provenanced['reading'] == '把赖床说成闹钟看守，是夸张'
+    assert provenanced['quote'] == '我的闹钟更是／堪比门神'
+    assert provenanced['learnCount'] == 3
+    # 存量行没有原话与指代说明：字段在但为空串，前端据此整行不渲染。
+    assert legacy['quote'] == ''
+    assert legacy['reading'] == ''
+    assert legacy['learnCount'] == 1
+
 def test_emoji_order_and_batch_actions(
     db: sqlite3.Connection,
     tmp_path: Path,

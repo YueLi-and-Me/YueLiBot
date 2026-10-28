@@ -4,12 +4,17 @@
  * 「在用」与「在学」是两件事，页面必须分开表述，否则读者只能从 useCount
  * 猜——而那个数含历史迁移带入的存量，猜不出来：
  * - 在用：已接入回复生成（候选池加权抽样 → 选择模型挑一条 → 注入提示词），
- *   选中会回写 use_count 与 last_used_at。行内「本机用过」徽标只在
- *   last_used_at 非空时出现，它是本部署真实用过的唯一证据。
+ *   选中会回写 use_count 与 last_used_at。行内「用过 N 次」是 use_count，
+ *   「本机用过」徽标只在 last_used_at 非空时出现，它是本部署真实用过的唯一证据。
  * - 在学：回合收尾处的后台任务从真实对话里学新说法（source 为「本机学习」），
- *   并按确定性规则淘汰其中从未被选中且过了保留期的条目。
+ *   同一情境与说法再次被学到时 learn_count 加一，对应行内「学到 N 次」；
+ *   「入库」是首次学到的时刻。学过不等于用过，两个计数各自增长。
  *   **自动淘汰只碰本机学来的行**，迁移存量一条都不自动删——存量里有整个会话
  *   的行从未被本机选中过，自动清理会让该会话候选池归零、表达选择停摆。
+ *
+ * 情境之下还展示学习批次里的原话（quote）与指代说明（reading）：它们解释这条
+ * 说法是从哪句话、哪种指代关系里学来的，是人工复核判「学得对不对」的主要依据。
+ * 迁移存量与旧版本学到的条目两项为空，此时整行不渲染，不为空字段留占位。
  *
  * 三种动作各管一件事，不要混用；每种都同时有行内与批量两条路径，语义一致：
  * - 确认（checked=1）：永不自动淘汰，用于锁住特别贴的说法；
@@ -127,7 +132,8 @@ function ExpressionRow({
           「{entry.style}」
         </span>
         <Chip label="用过" value={`${entry.useCount} 次`} />
-        <Chip label="学到" value={dateTime(entry.createdAt)} />
+        <Chip label="学到" value={`${entry.learnCount} 次`} />
+        <Chip label="入库" value={dateTime(entry.createdAt)} />
         {entry.lastUsedAt !== null ? (
           <Chip label="本机用过" value={dateTime(entry.lastUsedAt)} />
         ) : null}
@@ -160,7 +166,22 @@ function ExpressionRow({
           删除
         </Button>
       </div>
+      {/* 原话与指代行沿用情境行的 pl-7 缩进与字号：行首勾选框占 16px、行内
+          gap-x-3 占 12px，合计正好 28px（pl-7），四条文字左缘因此对齐同一列。
+          两项均为空的旧条目整行不渲染，不留空段落。 */}
       <p className="pl-7 text-[13px] leading-relaxed text-muted-foreground">{entry.situation}</p>
+      {entry.quote ? (
+        <p className="pl-7 text-[13px] leading-relaxed">
+          <span className="text-subtle-foreground">原话：</span>
+          {entry.quote}
+        </p>
+      ) : null}
+      {entry.reading ? (
+        <p className="pl-7 text-[13px] leading-relaxed text-muted-foreground">
+          <span className="text-subtle-foreground">指代：</span>
+          {entry.reading}
+        </p>
+      ) : null}
     </li>
   )
 }
@@ -291,7 +312,7 @@ export function ExpressionsPage() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
-    <PageFrame hint="她说话时可选的说法与情境，默认后学到的排在最前。">
+    <PageFrame hint="她说话时可选的说法与情境，默认后学到的排在最前；原话与指代说明来自学习批次。">
       <Toolbar>
         {/* 两个按钮表达四种口径：点已激活的按钮翻方向，箭头写在激活项的文案里。 */}
         <SegmentedTabs
