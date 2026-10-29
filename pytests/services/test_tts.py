@@ -10,18 +10,18 @@
 
 from __future__ import annotations
 
-import base64
-import json
-import sqlite3
 from typing import Any, AsyncIterator, List, Tuple
 
+import base64
+import json
 import pytest
+import sqlite3
 
 from src.core.config.schema import CONFIG_VERSION, Config, ModelCandidate
 from src.core.llm_models.router import ModelRouter
 from src.core.memory.store import MemoryStore
-from src.core.services.media import tts as tts_module
 from src.core.services.chat import ChatService, InboundMessage
+from src.core.services.media import tts as tts_module
 from src.core.services.media.tts import TtsService
 
 
@@ -121,7 +121,7 @@ async def test_volcengine_request_shape(fake_http) -> None:
 
     sent = fake_http.captured
     assert sent['url'] == 'https://openspeech.bytedance.com/api/v1/tts'
-    # Authorization 头使用 Bearer 与令牌之间的单个空格，避免服务端返回 401。
+    # 此协议要求 Bearer 与令牌之间使用分号，避免服务端返回 401。
     assert sent['headers']['Authorization'] == 'Bearer;my-access-token'
 
     body = sent['json']
@@ -174,6 +174,51 @@ async def test_openai_path_unchanged(fake_http) -> None:
     assert sent['headers']['Authorization'] == 'Bearer sk-test'
     assert sent['json']['model'] == 'tts-1'
     assert sent['json']['input'] == '你好'
+
+
+@pytest.mark.parametrize('as_json', [True, False])
+async def test_openai_error_preserves_provider_reason_and_redacts_credential(fake_http, as_json: bool) -> None:
+    """服务商拒绝合成时，错误应带到调用方，同时隐藏被回显的凭据。"""
+    token = 'fixture-tts-access-token'
+    response = _FakeResponse({'error': {'message': 'Reference not found', 'token': token}}, status=400)
+    if not as_json:
+        response.text = f'Reference not found; credential={token}'
+    fake_http.response = response
+    candidate = ModelCandidate(
+        name='tts', provider='语音', base_url='https://api.example.com/v1', api_key=token,
+        identifier='tts-model',
+    )
+    service = TtsService(_volc_cfg(), _noop_push, ModelRouter('tts', [candidate]))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await service.synthesize('测试')
+
+    detail = str(excinfo.value)
+    assert 'TTS HTTP 400' in detail
+    assert 'Reference not found' in detail
+    assert token not in detail
+    assert '[已隐藏凭据]' in detail
+    assert service.inspect()['cache']['files'] == 0
+
+
+async def test_openai_error_redacts_before_truncating_response(fake_http) -> None:
+    """大响应截断不能保留横跨边界的密钥前缀。"""
+    token = 'fixture-secret-crossing-response-boundary'
+    response = _FakeResponse(None, status=503)
+    response.text = 'x' * 1010 + token + 'y' * 100
+    fake_http.response = response
+    candidate = ModelCandidate(
+        name='tts', provider='语音', base_url='https://api.example.com/v1', api_key=token,
+        identifier='tts-model',
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await TtsService(_volc_cfg(), _noop_push, ModelRouter('tts', [candidate])).synthesize('测试')
+
+    detail = str(excinfo.value)
+    assert 'fixture-secret' not in detail
+    assert '响应已截断' in detail
+    assert len(detail) < 1100
 
 
 async def test_falls_back_to_next_candidate_when_provider_fails(fake_http) -> None:
