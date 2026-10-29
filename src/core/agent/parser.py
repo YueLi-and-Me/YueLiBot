@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Union
+
+import re
 
 # ─────────────────────────────────────────────────────────────────────
 # 事件类型定义
@@ -32,6 +33,8 @@ class SayEvent:
     type: str = 'say'
     emotion: str | None = None
     gesture: str | None = None
+    # 每条台词独立选择发送方式；默认文字，语音是否可用由会话出口校验。
+    delivery: Literal['text', 'voice'] = 'text'
 
 
 @dataclass
@@ -350,6 +353,11 @@ class ResponseParser:
                 ev.emotion = attrs['emotion']
             if 'gesture' in attrs:
                 ev.gesture = attrs['gesture']
+            if 'delivery' in attrs:
+                delivery = attrs['delivery']
+                if delivery not in ('text', 'voice'):
+                    raise ResponseProtocolError('say 的 delivery 只能是 text 或 voice')
+                ev.delivery = delivery
             out.append(ev)
             self._say_open = True
             self._state = 'outside' if self_closing else 'say'

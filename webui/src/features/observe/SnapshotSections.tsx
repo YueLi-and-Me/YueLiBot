@@ -327,7 +327,8 @@ function VoiceSection({ payload }: { payload: ObservabilityPayload }) {
           </>
         ) : null}
         <MetricList>
-          <Metric label="运行状态" value={voice.enabled === true ? '已启用' : '未启用'} />
+          <Metric label="桌面语音播放" value={voice.enabled === true ? '已启用' : '未启用'} />
+          <Metric label="QQ 语音发送" value={voice.qqEnabled === true ? '已启用' : '未启用'} />
           <Metric label="服务配置" value={voice.configured === true ? '已配置' : '未配置'} />
           <Metric label="模型 / 音色" value={`${text(voice.model)} / ${text(voice.voice)}`} />
           <Metric label="缓存命中 / 未命中" value={`${fixed(voice.cacheHits)} / ${fixed(voice.cacheMisses)}`} />

@@ -4,13 +4,13 @@ TOML 配置加载 + bot.relationship/user_nickname 确实传进 prompt 的回归
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
+import tempfile
 
 from src.core.agent.prompt import build_system_prompt
-from src.core.config.loader import load_config, reset_config
+from src.core.config.loader import load_config, read_config, reset_config
 from src.core.config.schema import CONFIG_VERSION, Config
 from src.core.services.chat import ChatService
 
@@ -190,9 +190,57 @@ https_proxy = ""
 def test_load_config_defaults_when_sections_missing():
     cfg = load_config(_write_config_dir())
     assert cfg.tts.enabled is False
+    assert cfg.tts.qq_enabled is False
     assert cfg.vision.ready is False
     assert cfg.vector.enabled is False
     assert cfg.conversation == Config().conversation
+
+
+@pytest.mark.parametrize('desktop,qq', [(False, True), (True, False), (True, True), (False, False)])
+def test_tts_switches_are_independent(desktop: bool, qq: bool) -> None:
+    directory = _write_config_dir(features=f'''
+[inner]
+version = "{CONFIG_VERSION}"
+[tts]
+enabled = {str(desktop).lower()}
+qq_enabled = {str(qq).lower()}
+voice = "test-voice"
+[vision]
+enabled = false
+[vector]
+enabled = false
+[advanced]
+log_level = "INFO"
+https_proxy = ""
+''')
+    cfg = read_config(directory)
+    assert cfg.tts.enabled is desktop
+    assert cfg.tts.qq_enabled is qq
+
+
+@pytest.mark.parametrize('missing', ['voice', 'model'])
+def test_qq_tts_rejects_incomplete_configuration(missing: str) -> None:
+    voice = '' if missing == 'voice' else 'test-voice'
+    directory = _write_config_dir(features=f'''
+[inner]
+version = "{CONFIG_VERSION}"
+[tts]
+enabled = false
+qq_enabled = true
+voice = "{voice}"
+[vision]
+enabled = false
+[vector]
+enabled = false
+[advanced]
+log_level = "INFO"
+https_proxy = ""
+''')
+    if missing == 'model':
+        models = directory / 'models.toml'
+        models.write_text(models.read_text(encoding='utf-8').replace('model_list = ["tts"]', 'model_list = []'), encoding='utf-8')
+    with pytest.raises(ValueError, match='^features.toml.*(voice|model_tasks.tts)'):
+        read_config(directory)
 
 
 def test_load_config_exits_on_type_error():

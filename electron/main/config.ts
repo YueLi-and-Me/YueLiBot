@@ -266,7 +266,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     rerank: { model_list: [], selection_strategy: 'sequential', first_token_timeout_ms: 30_000, slow_threshold_ms: 8_000 },
   },
   tts: {
-    enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
+    enabled: false, qq_enabled: false, voice: '', format: 'mp3', speed: 0.95, cluster: 'volcano_tts',
   },
   vision: {
     enabled: false, chat_image_enabled: false,
@@ -1532,6 +1532,8 @@ function readSplitConfig(directory: string): YueliConfig {
     model_tasks: tasks,
     tts: {
       enabled: booleanAt(tts, 'enabled', featuresPath),
+      qq_enabled: tts.qq_enabled === undefined
+        ? DEFAULT_CONFIG.tts.qq_enabled : booleanAt(tts, 'qq_enabled', featuresPath),
       voice: stringAt(tts, 'voice', featuresPath),
       format: ttsFormat as YueliConfig['tts']['format'],
       speed: numberAt(tts, 'speed', featuresPath),
@@ -2626,8 +2628,10 @@ function serializeFeatures(cfg: YueliConfig): string {
 version = ${tomlString(CONFIG_VERSION)}
 
 [tts]
-# 是否启用语音合成；关闭时保持纯文字回复
+# 是否启用桌面语音播放，与 QQ 语音发送独立控制
 enabled = ${tomlValue(cfg.tts.enabled)}
+# 允许月璃在 QQ 按聊天情境选择语音；切换后需要重启
+qq_enabled = ${tomlValue(cfg.tts.qq_enabled)}
 # 厂商提供的音色 ID；不是显示名称。豆包语音这里填 voice_type
 voice = ${tomlValue(cfg.tts.voice)}
 # 返回音频格式：mp3 / wav / opus
@@ -2930,7 +2934,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
 
   // 已启用功能必须存在候选模型，否则配置表面启用但运行时永远不会执行。
   for (const [enabled, task] of [
-    [cfg.tts.enabled, 'tts'],
+    [cfg.tts.enabled || cfg.tts.qq_enabled, 'tts'],
     [cfg.vision.enabled, 'vision'],
     [cfg.vision.chat_video_enabled, 'video'],
     [cfg.vector.enabled, 'embedding'],
@@ -2940,7 +2944,7 @@ export function assertConfigConsistent(cfg: YueliConfig): void {
       throw new Error(`启用了${TASK_DESCRIPTIONS[task]}，就要给它至少一个候选模型`)
     }
   }
-  if (cfg.tts.enabled && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
+  if ((cfg.tts.enabled || cfg.tts.qq_enabled) && !cfg.tts.voice.trim()) throw new Error('启用语音合成就要填音色')
 
   // 同维不同模型也不可比较；允许同一模型跨厂商备份，禁止跨空间混用。
   for (const task of ['embedding', 'multimodal_embedding'] as const) {

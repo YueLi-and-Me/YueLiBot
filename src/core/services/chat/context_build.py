@@ -607,6 +607,8 @@ class ContextBuildMixin:
             # 各自保留 item 边界，历史也不做角色合并。协议由
             # _render_agent_messages 放在整个序列末尾，确保它始终是最近的约束。
             system, context_items = build_itemized_system_prompt(**shared_context)
+            if not decision_only:
+                system += '\n\n' + self._voice_protocol(prepared.context)
             # 决策层读带心理活动行的变体；写正文那一环只拿这一轮的想法（在回复协议里），
             # 不读历史里的心理活动行。
             history = fit_char_budget(
@@ -629,6 +631,8 @@ class ContextBuildMixin:
             emoji_enabled=emoji_enabled,
             **shared_context,
         )
+        if not decision_only:
+            system += '\n\n' + self._voice_protocol(prepared.context)
         # Agent 路径读带 [编号] 前缀的历史变体，动作头的 targets 才有可指认的
         # 锚点；旧管线仍读不带编号的原始历史，可见行为完全不受影响。
         source_history = (
