@@ -11,13 +11,12 @@ from typing import Any, Callable, Dict
 
 import asyncio
 import base64
+import httpx
 import uuid
 
-import httpx
-
-from src.core.logging.logger import get_logger
 from src.core.config.schema import ModelCandidate
 from src.core.llm_models.router import ModelRouter
+from src.core.logging.logger import get_logger
 from src.core.platform_io.voice import MAX_VOICE_BYTES
 
 logger = get_logger(__name__)
@@ -204,7 +203,14 @@ class TtsService:
                 },
             )
             if not resp.is_success:
-                raise RuntimeError(f'TTS HTTP {resp.status_code}')
+                # 保留服务端拒绝原因，避免音色不存在等配置错误只显示笼统的 HTTP 400。
+                # 先隐藏可能被响应回显的凭据，再限制长度，防止截断后残留密钥片段。
+                detail = resp.text
+                if candidate.api_key:
+                    detail = detail.replace(candidate.api_key, '[已隐藏凭据]')
+                if len(detail) > 1024:
+                    detail = detail[:1024] + '…（响应已截断）'
+                raise RuntimeError(f'TTS HTTP {resp.status_code}：{detail}')
             data = resp.content
             if not data:
                 # 空响应不能进入缓存或播放器，否则失败会表现为静默而非可诊断错误。
