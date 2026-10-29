@@ -366,7 +366,7 @@ def _load_split_config(directory: Path) -> Config:
     }
     # 已启用功能必须至少绑定一个候选模型；否则配置表面有效，但运行时无法执行该功能。
     for enabled, task in (
-        (features_tts.enabled, 'tts'),
+        (features_tts.enabled or features_tts.qq_enabled, 'tts'),
         (features_vision.enabled, 'vision'),
         (features_vision.chat_image_enabled, 'vision'),
         (features_vision.chat_video_enabled, 'video'),
@@ -377,7 +377,7 @@ def _load_split_config(directory: Path) -> Config:
                 f'features.toml 里启用了该功能，但 models.toml 的 '
                 f'model_tasks.{task}.model_list 是空的'
             )
-    if features_tts.enabled and not features_tts.voice.strip():
+    if (features_tts.enabled or features_tts.qq_enabled) and not features_tts.voice.strip():
         raise ValueError('features.toml 里启用了 tts，但没有填 voice（音色 ID）')
     _validate_vector_space(routing.embedding)
     _validate_vector_space(routing.multimodal_embedding)
@@ -490,6 +490,7 @@ def reset_config() -> None:
 RESTART_REQUIRED_PREFIXES: Tuple[str, ...] = (
     'routing',                    # 厂商/模型/任务路由：模型客户端与熔断状态一次装配
     'tts.enabled',                # TtsService 只在启动时创建；voice/speed/format 动态读
+    'tts.qq_enabled',             # QQ 合成回调同样在启动时装配
     'vision.enabled',             # 视觉链路启动装配（关→开必须重启；开→关动态读）
     'vision.fullscreen_silent',   # 视觉采集链路启动形态
     'vision.capture_mode',        # 同上

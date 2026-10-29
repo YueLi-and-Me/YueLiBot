@@ -179,7 +179,7 @@ def test_manifest_passes_contract_validation() -> None:
     assert manifest.config_section == 'napcat'
     assert manifest.protocol == 'onebot11'
     assert manifest.static_capabilities == frozenset({
-        'send_message', 'quote_reply', 'reaction',
+        'send_message', 'send_record', 'quote_reply', 'reaction',
         'forward_message', 'group_history', 'member_info',
     })
     assert manifest.probed_capabilities == frozenset({'poke'})

@@ -91,6 +91,8 @@ def _extract_lines(raw: str) -> list[dict] | None:
     for e in [*parser.push(raw), *parser.flush()]:
         if isinstance(e, SayEvent):
             cur = {'text': '', **({'emotion': e.emotion} if e.emotion else {})}
+            if e.delivery == 'voice':
+                cur['delivery'] = 'voice'
         elif isinstance(e, TextEvent) and cur is not None:
             cur['text'] += e.value
         elif isinstance(e, SayEndEvent) and cur is not None:
@@ -105,6 +107,8 @@ def _collect_outbound_segment(
     segments: list[str],
     current: list[str] | None,
     typing: TypingConfig,
+    *,
+    voice: bool = False,
 ) -> list[str] | None:
     """按解析器识别的 ``say`` 边界收集外部平台正文。
 
@@ -112,6 +116,7 @@ def _collect_outbound_segment(
     :param segments: 已完成的分句列表，会被原地追加。
     :param current: 当前尚未结束的分句片段列表。
     :param typing: 打字节奏配置，决定一条台词切成几条气泡。
+    :param voice: 语音保留完整台词和标点，不做文字气泡切分。
 
     :return: 更新后的当前分句片段；收到 ``SayEndEvent`` 后返回 ``None``。
 
@@ -130,7 +135,12 @@ def _collect_outbound_segment(
         if current is not None:
             # 在这里切分而不是在投递侧：平台出站、助手历史和控制台渲染共用这份
             # segments，切分前置才能保证三者看到的气泡完全一致。
-            segments.extend(split_into_bubbles(''.join(current), typing))
+            text = ''.join(current).strip()
+            if voice:
+                if text:
+                    segments.append(text)
+            else:
+                segments.extend(split_into_bubbles(text, typing))
         return None
     return current
 

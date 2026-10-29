@@ -8,18 +8,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Literal, Mapping
-
-import json
-
+from typing import Any, AsyncIterator, Dict, List, Literal, Mapping, Tuple
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 from websockets.protocol import State
 
 import httpx
+import json
 
 from src.core.logging.logger import get_logger
 from src.core.platform_io.forward import forward_tree_to_payload
+from src.core.platform_io.voice import MAX_VOICE_FRAME_BYTES, validate_voice_data
 
 from .events import QqInboundEvent
 
@@ -50,6 +49,8 @@ class BackendOutbound:
     # 主体发起本次投递的回合编号，只在投递失败回传时原样带回，使失败能落到发起
     # 它的那一轮上。0 表示主体没有回合上下文。
     turn_id: int = 0
+    # 每项对应一条台词；非空时替换为语音段，空串保留文字。
+    voice_data: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,7 +136,9 @@ class BackendClient:
             base_url=self._base_url,
         )
         try:
-            self._ws = await connect(self._ws_url, additional_headers=headers)
+            self._ws = await connect(
+                self._ws_url, additional_headers=headers, max_size=MAX_VOICE_FRAME_BYTES,
+            )
         except Exception:
             await self.close()
             raise
@@ -529,6 +532,10 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
     segments = [item.strip() for item in raw_segments]
     if not all(segments):
         raise ValueError('主体 qq.send 的 segments 不能包含空字符串')
+    raw_voice_data = body.get('voiceData', [])
+    if not isinstance(raw_voice_data, list):
+        raise ValueError('主体 qq.send 的 voiceData 必须是字符串数组')
+    validate_voice_data(raw_voice_data, len(segments))
     raw_emoji_refs = body.get('emojiRefs', [])
     if not isinstance(raw_emoji_refs, list) or not all(
         isinstance(item, str) for item in raw_emoji_refs
@@ -578,6 +585,7 @@ def _parse_outbound(payload: Mapping[str, Any]) -> BackendOutbound:
         stream_kind=stream_kind,
         stream_external_id=stream_external_id.strip(),
         segments=segments,
+        voice_data=tuple(raw_voice_data),
         emoji_refs=emoji_refs,
         emoji_sub_types=emoji_sub_types,
         image_refs=image_refs,

@@ -16,6 +16,8 @@ from typing import FrozenSet, Iterable, Literal
 # 让「协议端支持什么」这件事只有一处判据。
 AdapterCapability = Literal[
     'send_message',
+    'send_record',
+    'transcribe_record',
     'quote_reply',
     'reaction',
     'poke',
@@ -28,6 +30,8 @@ AdapterCapability = Literal[
 # 表现为该能力永远不可用，而现场看不出是拼写问题还是协议端不支持。
 ALL_CAPABILITIES: FrozenSet[AdapterCapability] = frozenset({
     'send_message',
+    'send_record',
+    'transcribe_record',
     'quote_reply',
     'reaction',
     'poke',

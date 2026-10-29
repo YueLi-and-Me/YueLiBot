@@ -21,6 +21,26 @@ from .constants import EMOJI_MAX_PER_REPLY_WINDOW
 
 class PlatformCapabilityMixin:
 
+    def _voice_available(self, context: ConversationContext) -> bool:
+        """QQ 语音开关、合成回调及协议端发送能力都就绪时才开放语音台词。"""
+        return (
+            context.stream.platform == 'qq'
+            and self._cfg.tts.qq_enabled
+            and self._synthesize_audio is not None
+            and self._backend_supports(context, 'send_record')
+        )
+
+    def _voice_protocol(self, context: ConversationContext) -> str:
+        """按当前出口给出逐条选择方式的约束，不将选择保存在会话状态里。"""
+        if not self._voice_available(context):
+            return '当前出口只允许文字台词，不得使用 delivery="voice"，也不要声称已发送语音。'
+        return (
+            '你可以根据聊天情境逐条选择文字或语音；用户明确要求语音时优先用语音。'
+            '文字仍用 <say>台词</say>，语音用 <say delivery="voice">台词</say>。'
+            '每条语音保持简短，只写要念出的自然台词；链接、代码和长清单用文字。'
+            '同一轮可混合文字与语音，不要将相同台词重复发送两遍。'
+        )
+
     def record_poke_arrival(self, stream_id: int, arrived_at: int) -> int:
         """登记一次 poke 到达并返回当前信号窗口内的次数。
 

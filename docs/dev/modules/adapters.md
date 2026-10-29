@@ -17,7 +17,7 @@ NapCat 与 SnowLuma 是用户需要自行安装的外部组件，本仓库只提
 
 - `adapters/yueli-napcat-adapter/_manifest.json`
   插件清单。声明 id `yueli.napcat-adapter`、协议 `onebot11`、配置段 `napcat`；
-  能力分两栏：`static` 静态声明六项（发送、引用回复、回应、转发、群历史、
+  能力分两栏：`static` 静态声明七项（发送、语音发送、引用回复、回应、转发、群历史、
   成员信息），`probed` 声明 `poke` 一项待连接后实测。
 - `adapters/yueli-napcat-adapter/plugin.py`
   `NapCatAdapterPlugin`。读配置、组装并驱动 `OneBot11Runner`、连接后实测
@@ -26,13 +26,19 @@ NapCat 与 SnowLuma 是用户需要自行安装的外部组件，本仓库只提
   私有 action `nc_get_packet_status`，任何失败形态（拒绝、超时、断连、未知
   action）一律按不可用处理，不重试、不兜底。
 - `adapters/yueli-snowluma-adapter/_manifest.json`
-  插件清单。id `yueli.snowluma-adapter`、配置段 `snowluma`；七项能力全部静态
+  插件清单。id `yueli.snowluma-adapter`、配置段 `snowluma`；九项能力全部静态
   声明，`probed` 为空。
 - `adapters/yueli-snowluma-adapter/plugin.py`
   `SnowlumaAdapterPlugin`。只做身份与配置装配，协议逻辑全部复用协议核心。
   SnowLuma 不依赖可选封包组件，不存在「能力随客户端构建失效」的动态来源，
   因此全部能力静态声明、无待探测项；投递失败由协议核心既有的失败回传链路落账，
   插件不自检。
+
+语音能力分别由 `send_record`（发送音频）和 `transcribe_record`（原生语音转文字）
+表示。共用运行器只按能力选择操作，不按适配器名称分支。
+入站转写在名单过滤之后调用 `get_record_text`，严格读取 `data.text`；失败状态和
+原因可见，不尝试其他接口。QQ 出站的 `voiceData` 与 `segments` 逐项对齐：空串
+发文字，非空 base64 音频转换为 `record` 段。音频字节跨进程传递，不依赖共享路径。
 
 ## 插件与宿主的协议
 

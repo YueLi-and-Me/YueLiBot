@@ -136,9 +136,20 @@
         <section class="panel-card">
           <header class="section-heading">
             <h2>语音合成</h2>
-            <label class="toggle"><input type="checkbox" name="tts.enabled" /> 启用</label>
           </header>
-          <div class="section-body toggle-body" data-toggle-target="tts.enabled">
+          <div class="section-body">
+            <label class="field checkbox-field">
+              <input type="checkbox" name="tts.enabled" />
+              <span>启用桌面语音播放</span>
+            </label>
+            <label class="field checkbox-field">
+              <input type="checkbox" name="tts.qq_enabled" />
+              <span>启用 QQ 语音发送</span>
+            </label>
+            <p class="hint">
+              两个开关独立控制，共用模型与音色。开启 QQ 语音后，月璃会按聊天情境选择发送方式，
+              用户要求时可以用语音回答。更改开关后需要保存并重启。
+            </p>
             <p class="hint">
               地址和密钥在上面的「API 服务商」里配，这里只填音色。豆包语音要把服务商的协议选成
               「豆包语音」，音色填 voice_type。

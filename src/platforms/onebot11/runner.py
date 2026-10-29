@@ -53,6 +53,7 @@ from .transport import (
     ProtocolAuthenticationError,
     ProtocolHandshakeError,
 )
+from .voice import transcribe_inbound
 
 
 logger = get_logger(__name__)
@@ -107,6 +108,7 @@ class OneBot11Runner:
         self._adapter_id = adapter_id
         self._capability_probe = capability_probe
         self._connected_once = False
+        self._capabilities: Set[str] = set()
         # (群号, QQ 号) -> 显示名；私聊用空群号。群名片按群独立，不能跨群复用。
         self._display_names: Dict[tuple[str, str], str] = {}
         # 被引用消息 ID -> 已渲染的引用摘要，避免同一条消息被反复引用时重复查询。
@@ -149,9 +151,11 @@ class OneBot11Runner:
                     _check_self_qq_matches(self._config.napcat.self_qq, self_id)
                     await self._backend.connect()
                     await self._backend.link_owner_identity(self._config.owner.qq)
+                    self._capabilities.clear()
                     if self._capability_probe is not None:
                         try:
                             capabilities = sorted(await self._capability_probe())
+                            self._capabilities.update(capabilities)
                             await self._backend.report_capabilities(
                                 adapter_id=self._adapter_id,
                                 capabilities=capabilities,
@@ -1071,6 +1075,7 @@ class OneBot11Runner:
             quoted_ids = quoted_message_ids(raw_segments)
             if quoted_ids:
                 replied_to_me = await self._replied_message_is_mine(quoted_ids[0], self_id)
+            mention_names = await self._resolve_mention_names(payload, raw_segments, self_id)
             event = parse_inbound_event(
                 payload,
                 self_id,
@@ -1078,12 +1083,18 @@ class OneBot11Runner:
                 self._config.owner.qq,
                 self._config.private,
                 self._config.group,
-                await self._resolve_mention_names(payload, raw_segments, self_id),
+                mention_names,
                 quote_previews,
                 replied_to_me=replied_to_me,
             )
             if event is None:
                 continue
+            event = await transcribe_inbound(
+                self._transport, event, raw_segments,
+                supported='transcribe_record' in self._capabilities,
+                mention_names={**mention_names, self_id: self_name},
+                quote_previews=quote_previews,
+            )
             if not event.text.strip():
                 logger.info('忽略空 QQ 消息', messageId=event.external_message_id)
                 continue
@@ -1147,6 +1158,7 @@ class OneBot11Runner:
                     outbound.emoji_sub_types,
                     outbound.quote_external_message_id,
                     outbound.image_refs,
+                    outbound.voice_data,
                 )
                 target = _qq_number(outbound.stream_external_id, target_label)
                 delays = _batch_delays_seconds(outbound)

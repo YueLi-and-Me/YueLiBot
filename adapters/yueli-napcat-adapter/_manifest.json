@@ -10,6 +10,7 @@
   "capabilities": {
     "static": [
       "send_message",
+      "send_record",
       "quote_reply",
       "reaction",
       "forward_message",
