@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import RLock
 from typing import Callable, Dict, List, Tuple
 
 import sys
@@ -35,7 +36,12 @@ from src.core.llm_models.responses import extra_body_conflict
 
 _config: Config | None = None
 _config_dir: Path | None = None
+_reload_lock = RLock()
 logger = get_logger(__name__)
+
+
+class ConfigApplicationError(RuntimeError):
+    """配置已读入，但至少一个运行服务应用失败，不能报告重载成功。"""
 
 
 # 版本号定义在 schema 里，这里只导入：两处各写一份必然漂移。
@@ -481,40 +487,37 @@ def reset_config() -> None:
 
 # ---------------------------------------------------------------- 配置热重载
 # 三类字段（见任务包四交付报告的逐字段结论）：
-# 1. 能热重载——只在使用点读取、没有拷贝残留，重载换掉持有方引用即生效；
-# 2. 必须重启——进程启动时就决定形态（模型客户端、日志管道、可选服务装配）；
-# 3. 需要改代码才能热重载——被拷进实例属性（chat.py:408 一类），本包不动。
+# 1. 能热重载——使用点直接读取，或持有方通过 apply_config 同步更新缓存；
+# 2. 必须重启——进程启动时决定的媒体、向量、日志管道与可选服务装配；
+# 3. 暂未支持——仍有独立持有方而未接入配置通知，必须明确标注不生效。
 # 下面前缀表只登记第 2、3 类；不在表里的即第 1 类。前缀匹配按点分段做，
 # 避免 'log' 误命中 'logging' 这类同前缀字段名。
 # 第 2 类：必须重启。
 RESTART_REQUIRED_PREFIXES: Tuple[str, ...] = (
-    'routing',                    # 厂商/模型/任务路由：模型客户端与熔断状态一次装配
+    # 文字任务路由可原位更新；这些任务还关联启动时创建的媒体、向量与重排服务。
+    'routing.vision',
+    'routing.video',
+    'routing.tts',
+    'routing.embedding',
+    'routing.multimodal_embedding',
+    'routing.rerank',
     'tts.enabled',                # TtsService 只在启动时创建；voice/speed/format 动态读
     'tts.qq_enabled',             # QQ 合成回调同样在启动时装配
     'vision.enabled',             # 视觉链路启动装配（关→开必须重启；开→关动态读）
     'vision.fullscreen_silent',   # 视觉采集链路启动形态
     'vision.capture_mode',        # 同上
+    'generation.vision',          # 表情包审查与查找工具仍持有独立的采样参数
     'vector.enabled',             # VectorService 启动装配
     'memory_feedback',            # MemoryFeedbackService 启动装配；关闭时根本不建服务
     'log',                        # 日志管道、快照与事件保留策略启动定型
+    'desktop_pet',                # 桌面外壳子进程及其启动参数
+    'telemetry',                  # 遥测服务启动装配
+    'update_announce',            # 发布公告服务启动装配
+    'advanced',                   # 插件依赖、代理与兼容策略启动装配
+    'emoji',                      # 表情包库及内容审查、向量索引服务启动装配
 )
-# 第 3 类：被拷进实例属性，须改代码才能热重载。
-DEFERRED_PREFIXES: Tuple[str, ...] = (
-    'conversation',               # chat.py __init__ 全段拷贝
-    'conversation_agent',         # 同上
-    'perception',                 # surfaces 拷成 frozenset
-    'generation.chat',            # 采样参数拷进实例属性
-    'generation.planner',
-    'generation.replyer',
-    'generation.proactive',
-    'bot.name',                   # 名字与别名另有拷贝路径（提及检测、摘要人格）
-    'bot.aliases',
-    'group_chat.scene_refresh_messages',
-    'group_chat.self_started_topics',
-    'group_chat.at_mention_must_reply',
-    'group_chat.name_mention_probability',
-    'group_chat.persona_weight',
-)
+# 第 3 类保留为空：聊天、采样、名字与感知范围的缓存现已由各持有方同步更新。
+DEFERRED_PREFIXES: Tuple[str, ...] = ()
 
 # 订阅回调列表：第 1 类字段的持有方在重载成功后拿到新配置。这个项目用不上
 # 观察者框架，一个模块级列表加一个注册函数就是全部机制。
@@ -594,10 +597,16 @@ def reload_config() -> Tuple[Config, List[str]]:
     :raises RuntimeError: 尚未成功调用过 :func:`load_config`。
 
     副作用：
-        校验通过后替换模块级配置单例并逐一调用订阅回调（单个回调失败只记
-        ``config_reload_listener_failed`` 日志，不阻断其余回调、不回滚配置——
-        配置本体已完整应用，个别持有方失联是要暴露的缺陷，不是要隐藏的状态）。
+        校验通过后替换模块级配置单例并逐一调用订阅回调。单个回调失败不阻断其余
+        回调，但最终抛出 ConfigApplicationError，明确报告服务应用未完成。
+        自动监测与手动接口共用重载锁，避免并发更新时先后顺序颠倒。
     """
+    with _reload_lock:
+        return _reload_config_locked()
+
+
+def _reload_config_locked() -> Tuple[Config, List[str]]:
+    """在重载锁内读取、比较并通知全部持有方；应用失败时保留完整故障信息。"""
     global _config
     if _config is None or _config_dir is None:
         raise RuntimeError('配置未初始化，请先调用 load_config(path)')
@@ -611,10 +620,14 @@ def reload_config() -> Tuple[Config, List[str]]:
     ]
     summary = [_annotate_change(path) for path in changed]
     _config = fresh
-    logger.info('config_reloaded', changedFields=summary if summary else ['（无字段变化）'])
-    for listener in list(_reload_listeners):
+    failed: List[str] = []
+    for index, listener in enumerate(list(_reload_listeners), start=1):
         try:
             listener(previous, fresh)
         except Exception:
+            failed.append(f'第 {index} 个配置订阅服务')
             logger.exception('config_reload_listener_failed')
+    if failed:
+        raise ConfigApplicationError('配置已读取，但以下运行服务应用失败：' + '、'.join(failed))
+    logger.info('config_reloaded', changedFields=summary if summary else ['（无字段变化）'])
     return fresh, summary

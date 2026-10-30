@@ -672,7 +672,7 @@ export function SettingsConfigPage() {
 
   return (
     <PageFrame
-      hint="直接编辑五份配置文件；字段说明来自 settings_schema.json，保存后重启后端生效。"
+      hint="保存后自动应用支持热重载的设置；涉及启动装配或适配器的变更仍需重启，具体项目见控制台。"
       actions={
         <>
           <Button variant="secondary" onClick={state.reload} disabled={state.busy}>

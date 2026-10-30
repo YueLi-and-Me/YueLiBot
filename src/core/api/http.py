@@ -40,7 +40,7 @@ from src.core.logging.logger import get_logger
 from src.core.llm_models.usage import usage_ledger
 from src.core.llm_models.usage_stats import model_prices, summarize_usage
 from src.core.commands import dispatch_developer_command, registered_commands
-from src.core.config.loader import get_config, reload_config
+from src.core.config.loader import ConfigApplicationError, get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
 from src.core.memory import tuning
 from src.core.memory import import_center
@@ -709,6 +709,9 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     from_recent_partner = app_state.chat.is_recent_partner(
         context.stream.id, context.person.id,
     )
+    regex_rule_matched = (
+        not body.poked_me and app_state.chat.regex_rule_matches(context, body.text)
+    )
     gate_result = decide_disposition(GateRequest(
         stream_kind=context.stream.kind,
         mentioned_me=body.mentioned_me,
@@ -727,6 +730,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
         follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
         from_recent_partner=from_recent_partner,
+        regex_rule_matched=regex_rule_matched,
     ))
     plain_group_deferred = (
         context.stream.kind == 'group'
@@ -751,6 +755,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         sleepLevel=sleep.level,
         mentionedMe=body.mentioned_me,
         nameMentioned=name_mentioned,
+        regexRuleMatched=regex_rule_matched,
         pokedMe=body.poked_me,
         pokesInWindow=pokes_in_window,
         replyToBot=body.replied_to_me,
@@ -800,6 +805,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 candidate_message_ids=(message_id,),
                 selectable_message_ids=(),
                 reply_to_bot=body.replied_to_me,
+                regex_rule_matched=regex_rule_matched,
             ),
             gate_disposition=gate_result.disposition,
             gate_reason_codes=gate_result.reason_codes,
@@ -3647,6 +3653,12 @@ async def system_config_reload() -> dict:
     """
     try:
         _, summary = await asyncio.to_thread(reload_config)
+    except ConfigApplicationError as exc:
+        logger.exception('config_reload_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'配置重载未完整生效：{exc}；请检查日志并修正应用失败的服务。',
+        ) from exc
     except Exception as exc:
         logger.exception('config_reload_failed')
         print_box('配置热重载失败', [

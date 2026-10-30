@@ -249,7 +249,7 @@ def save(directory: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
         models_path.write_bytes(old_models)
         (directory / 'features.toml').write_bytes(old_features)
         return {'ok': False, 'detail': f'完整配置校验失败：{exc}'}
-    return {'ok': True, 'detail': '已保存，重启后端后生效'}
+    return {'ok': True, 'detail': '已保存，文字模型配置将在约 2 秒内自动应用；媒体与向量任务仍需重启'}
 
 
 def _normalize_providers(items: Any, existing: Dict[str, Any]) -> List[Dict[str, Any]]:

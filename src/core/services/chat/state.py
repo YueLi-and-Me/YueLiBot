@@ -291,6 +291,8 @@ class _BatchGate:
     last_bot_reply_elapsed_ms: int | None = None
     # 本批是否包含「回复了她的消息」；决策层审计与相关性判定读这份快照。
     replied_to_me: bool = False
+    # 逐条消息匹配正则后汇总的事实；不受反应提示冷却或决策结果影响。
+    regex_rule_matched: bool = False
 
 
 @dataclass(frozen=True)

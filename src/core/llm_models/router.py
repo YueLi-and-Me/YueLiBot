@@ -48,7 +48,7 @@ from .usage import (
 
 from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
-from src.core.config.schema import ModelCandidate
+from src.core.config.schema import Config, ModelCandidate, TaskRouting
 from src.core.observe.events import current_stage_id, current_stream_id, current_turn_id, emit
 from src.core.services.console.trace_console import render_model_call
 from src.core.services.console.turn_panel import ModelCall, note_model_call
@@ -352,6 +352,28 @@ class ModelRouter:
         # 并发请求不会读到同一个游标值。
         self._balance_cursor = 0
         self._clients: Dict[str, OpenAiChatProvider] = {}
+        self._client_state = (self._candidates, self._clients)
+
+    def apply_config(self, routing: TaskRouting) -> None:
+        """更新后续调用使用的候选、策略与超时，不替换被业务服务持有的路由对象。
+
+        :param routing: 已通过完整配置校验的任务路由。
+        副作用：路由变化时清空客户端缓存；在途请求继续持有其原客户端与候选。
+        """
+        if (
+            self._candidates == routing.candidates
+            and self._strategy == routing.strategy
+            and self._first_token_timeout_ms == routing.first_token_timeout_ms
+            and self._slow_threshold_ms == routing.slow_threshold_ms
+        ):
+            return
+        self._candidates = list(routing.candidates)
+        self._strategy = routing.strategy
+        self._first_token_timeout_ms = routing.first_token_timeout_ms
+        self._slow_threshold_ms = routing.slow_threshold_ms
+        self._balance_cursor = 0
+        self._clients = {}
+        self._client_state = (self._candidates, self._clients)
 
     @property
     def ready(self) -> bool:
@@ -424,7 +446,11 @@ class ModelRouter:
         副作用：
             首次访问某候选时创建并缓存客户端；不在此方法中建立网络连接。
         """
-        client = self._clients.get(candidate.name)
+        # 缓存与候选作为同一份快照读取。旧请求在重载后才走到这里时，仍可构造旧
+        # 客户端，但不能把同名旧模型写进新缓存，污染下一轮的模型选择。
+        candidates, clients = self._client_state
+        cacheable = candidate in candidates
+        client = clients.get(candidate.name) if cacheable else None
         if client is None:
             client = OpenAiChatProvider(
                 base_url=resolve_base_url(candidate.kind, candidate.base_url),
@@ -441,7 +467,8 @@ class ModelRouter:
                 max_retries=candidate.max_retries,
                 retry_interval_ms=candidate.retry_interval_ms,
             )
-            self._clients[candidate.name] = client
+            if cacheable:
+                clients[candidate.name] = client
         return client
 
     def _no_candidate_error(self) -> LlmError:
@@ -981,6 +1008,25 @@ class ModelRouters:
             routing.first_token_timeout_ms,
             routing.slow_threshold_ms,
         )
+
+    def apply_config(self, config: Config) -> None:
+        """热更新文字任务路由；媒体、向量和重排任务仍由各自的启动装配管理。
+
+        :param config: 完整校验后的运行时配置。
+        副作用：文字任务后续请求使用新候选和连接参数，保留路由对象及在途请求。
+        """
+        for router, routing in (
+            (self.chat, config.routing.chat),
+            (self.proactive, config.routing.proactive),
+            (self.summary, config.routing.summary),
+            (self.schedule, config.routing.schedule),
+            (self.expression, config.routing.expression),
+            (self.planner, config.routing.planner),
+            (self.replyer, config.routing.replyer),
+            (self.scene, config.routing.scene),
+            (self.memory, config.routing.memory),
+        ):
+            router.apply_config(routing)
 
     def all_candidates(self) -> List[ModelCandidate]:
         """返回全部任务路由里出现过的候选，同名模型只取第一次出现的那条。

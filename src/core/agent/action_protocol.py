@@ -786,6 +786,7 @@ class GateInputFacts:
     reply_to_bot: bool = False
     current_topic_available: bool = False
     pending_thread_available: bool = False
+    regex_rule_matched: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """转换为 trace 使用的驼峰字段字典。"""
@@ -802,6 +803,7 @@ class GateInputFacts:
             'replyToBot': self.reply_to_bot,
             'currentTopicAvailable': self.current_topic_available,
             'pendingThreadAvailable': self.pending_thread_available,
+            'regexRuleMatched': self.regex_rule_matched,
         }
 
 

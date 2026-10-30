@@ -34,7 +34,7 @@ from src.core.agent.fact_extract import Participant
 from src.core.agent.summarize import summarize
 from src.core.runtime.clock import now as current_time
 from src.core.logging.logger import get_logger
-from src.core.config.schema import MemoryFeedbackConfig
+from src.core.config.schema import Config, MemoryFeedbackConfig
 from src.core.llm_models.protocol import LlmProvider
 from src.core.llm_models.snapshot import bind_render_params
 from src.core.memory.store import UNSUMMARIZED_KIND, FactInput, MemoryStore
@@ -235,6 +235,15 @@ class MemoryFeedbackService:
         self._summary_max_tokens = summary_max_tokens
         self._stop = asyncio.Event()
         self._tasks: List[asyncio.Task[None]] = []
+
+    def configure_generation(self, cfg: Config) -> None:
+        """热更新既有反馈服务的名字、人设及采样参数，不改变启动装配或轮询间隔。"""
+        self._bot_name = cfg.bot.name
+        self._bot_personality = cfg.personality.personality
+        self._judge_temperature = cfg.generation.memory.temperature
+        self._judge_max_tokens = cfg.generation.memory.token_limit
+        self._summary_temperature = cfg.generation.summary.temperature
+        self._summary_max_tokens = cfg.generation.summary.token_limit
 
     async def startup(self) -> None:
         """创建两个轮询任务后立即返回；循环本身不阻塞启动序列。

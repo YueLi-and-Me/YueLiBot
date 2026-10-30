@@ -19,9 +19,10 @@
 
 from __future__ import annotations
 
+from typing import Sequence, Set
+
 import asyncio
 import sqlite3
-from typing import Sequence, Set
 
 from src.core.agent.jargon_mine import (
     advance_cursor,
@@ -32,6 +33,7 @@ from src.core.agent.jargon_mine import (
     lock_name_collisions,
     select_inference_targets,
 )
+from src.core.config.schema import Config
 from src.core.logging.logger import get_logger
 from src.core.llm_models.protocol import LlmProvider
 from src.core.memory.store import MemoryStore
@@ -94,6 +96,13 @@ class JargonLearnService:
         # 本进程内解析失败被拉黑的词条 id 集合；重启清零，模型输出有随机性，
         # 换一次采样往往就解析成功了。
         self._poisoned: Set[int] = set()
+
+    def apply_config(self, cfg: Config) -> None:
+        """热更新后续学习的采样参数和名字守卫，保留语料游标、任务与失败记录。"""
+        self._temperature = cfg.generation.memory.temperature
+        self._max_tokens = cfg.generation.memory.token_limit
+        self._bot_name = cfg.bot.name
+        self._bot_names = (cfg.bot.name, *cfg.bot.aliases, cfg.bot.user_nickname)
 
     async def startup(self) -> None:
         """启动后台轮询任务并立即返回。

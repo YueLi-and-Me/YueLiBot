@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 import random
 
 from src.core.agent.expression import EXPRESSION_COOLDOWN_MS
-from src.core.agent.regex_rule import match_regex_rules
+from src.core.agent.regex_rule import has_matching_regex_rule, match_regex_rules
 from src.core.config.schema import RegexRuleConfig
 
 # 固定的「当前时间」毫秒时间戳；冷却系数全部相对它计算。
@@ -224,3 +224,15 @@ class TestOneAtATime:
             (1, 'cooldown'), (2, 'injected'),
         ]
         assert result.reaction == '乙'
+
+
+def test_attention_match_uses_the_same_stream_scope_and_cleaned_text() -> None:
+    """入口候选与正文注入共用会话范围、清洗、500 字符限制。"""
+    rule = RegexRuleConfig(pattern='^猫是这样的$', reaction='接一句', streams=['10001'])
+
+    assert has_matching_regex_rule([rule], '[表情包：猫] 猫是这样的', '10001')
+    assert not has_matching_regex_rule([rule], '猫是这样的', '20002')
+    assert not has_matching_regex_rule([rule], '普通消息', '10001')
+    assert not has_matching_regex_rule(
+        [RegexRuleConfig(pattern='晚安', reaction='接一句')], '嗯' * 500 + '晚安', '10001',
+    )

@@ -197,6 +197,7 @@ const TRACE_FIELD_LABELS: Record<string, string> = {
 const DISPLAY_VALUE_LABELS: Record<string, string> = {
   assistant: '机器人',
   attention_filtered: '未进入注意范围',
+  regex_rule_match: '正则规则命中',
   auto: '系统自动',
   away: '暂时离开',
   backfill: '历史补全',

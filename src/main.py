@@ -51,10 +51,12 @@ from src.core.config.schema import (
     BotDocument,
     Config,
     FeatureDocument,
+    GenerationTaskConfig,
     ModelCatalog,
     ProviderCatalog,
 )
 from src.core.config.upgrade import upgrade_config_directory
+from src.core.config.watcher import ConfigWatcher
 from src.core.mcp.manager import McpManager
 from src.core.plugin_market.config import load_plugin_market_config
 from src.core.plugin_market.index import IndexClient
@@ -123,6 +125,11 @@ class _LLMGenerator:
         self._max_tokens = max_tokens
         self._prompt_id = prompt_id
         self._template_id = template_id
+
+    def apply_config(self, generation: GenerationTaskConfig) -> None:
+        """更新后续日程或活动生成的采样参数，不打断在途请求。"""
+        self._temperature = generation.temperature
+        self._max_tokens = generation.token_limit
 
     async def generate(
         self,
@@ -1002,6 +1009,8 @@ def main() -> None:
 
     # 日程服务是可选依赖；活动时间线即使没有日程模型也保持可读。
     schedule = None
+    schedule_generator: _LLMGenerator | None = None
+    activity_generator: _LLMGenerator | None = None
     try:
         from src.core.schedule.plan import DayPlanService
 
@@ -1259,6 +1268,7 @@ def main() -> None:
     # 黑话学习走自己的游标旁路积累证据与推断词条，不进回合路径；挨着
     # jargon_stats 注册，两者共同构成黑话的「用」与「学」两侧。
     from src.core.services.maintenance.jargon_learn import JargonLearnService
+    jargon_learn: JargonLearnService | None = None
     if routers.memory.ready:
         jargon_learn = JargonLearnService(
             db,
@@ -1276,6 +1286,7 @@ def main() -> None:
         logger.warning('jargon_learn_disabled', reason='memory 模型路由不可用')
     # 反馈纠错整条链路默认关闭；开启时才装配服务。判定走 memory 路由，
     # 情节重建重摘要走 summary 路由，路由不可用时对应循环空转而不是报错。
+    memory_feedback = None
     if cfg.memory_feedback.enabled:
         from src.core.services.maintenance.memory_feedback import MemoryFeedbackService
         memory_feedback = MemoryFeedbackService(
@@ -1307,25 +1318,47 @@ def main() -> None:
     # 每个持有方各自提供 apply_config，本回调只负责按装配关系逐个调用；
     # 各自持有的下级对象（聊天的图片描述器、传感器的视觉服务）由持有方级联，
     # 这里不再向下伸手。
-    def _on_config_reloaded(previous: object, fresh: object) -> None:
+    def _on_config_reloaded(previous: Config, fresh: Config) -> None:
         """把装配期创建的服务切到新配置对象上。
 
         :param previous: 旧配置（回调签名要求，本回调不使用）。
         :param fresh: 重载后的新配置。
         副作用：原地重绑各持有方的配置引用，不重建任何服务。
         """
+        routers.apply_config(fresh)
         app_state.group_chat_config = fresh.group_chat
         app_state.developer_config = fresh.developer
         app_state.chat.apply_config(fresh)
+        # 旧管线的在场概率策略同样缓存了参数，必须与 Agent 门控一并更新。
+        app_state.chat.set_action_policy('group', TurnPlanner(PresenceActionPolicy(
+            base_probability=fresh.group_chat.name_mention_probability,
+            decay_strength=fresh.group_chat.presence_decay_strength,
+            window_minutes=fresh.group_chat.reply_window_minutes,
+            assistant_reply_count_since=app_state.chat.memory.assistant_reply_count_since,
+            message_count_since=app_state.chat.memory.message_count_since,
+        )))
         if app_state.tts is not None:
             app_state.tts.apply_config(fresh)
         app_state.awareness.apply_config(fresh)
         if schedule is not None:
             schedule.apply_config(fresh.schedule)
+            schedule.configure_character(fresh.bot.name, fresh.personality.personality)
+        if schedule_generator is not None:
+            schedule_generator.apply_config(fresh.generation.schedule)
+        if activity_generator is not None:
+            activity_generator.apply_config(fresh.generation.schedule)
+        if jargon_learn is not None:
+            jargon_learn.apply_config(fresh)
+        if memory_feedback is not None:
+            memory_feedback.configure_generation(fresh)
         sensor.apply_config(fresh)
 
     from src.core.config.loader import add_config_reload_listener
     add_config_reload_listener(_on_config_reloaded)
+
+    # 最后启动、最先停止：持有方都已装配，关闭时先等待在途重载再收走服务。
+    config_watcher = ConfigWatcher(config_dir)
+    lifecycle.register('config_watch', config_watcher.startup, config_watcher.shutdown)
 
     logger.info("backend_starting", port=port)
 

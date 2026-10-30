@@ -372,6 +372,11 @@ class DayPlanService:
             )
             self._timeline.set_decider(decision.decide)
 
+    def configure_character(self, name: str, personality: str) -> None:
+        """热更新后续方向生成使用的名字与人设，已经生成的当日方向不重写。"""
+        self._character_name = name
+        self._character_personality = personality
+
     def apply_config(self, config: ScheduleConfig) -> None:
         """把本对象持有的配置引用切到重载后的新对象上。
 

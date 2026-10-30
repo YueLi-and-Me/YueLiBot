@@ -109,6 +109,19 @@ class ToolRegistry:
             raise ValueError(f'认知动作 {name} 已绑定执行器，不允许重复绑定')
         self._action_executors[name] = executor
 
+    def configure_action_executor(self, action: ConversationAction, executor: ToolExecutor) -> None:
+        """热配置已登记认知动作的执行器，允许替换旧实例但不能新增动作声明。
+
+        :param action: 已登记的认知动作，终局动作禁止设置执行器。
+        :param executor: 使用最新配置构造的执行器；在途调用保留原实例。
+        :raises ValueError: 动作未登记或不属于认知动作。
+        副作用：后续工具调用使用新执行器。
+        """
+        name = str(action).strip()
+        if name not in self._action_names or action not in COGNITIVE_ACTIONS:
+            raise ValueError(f'动作 {name} 未登记为认知动作，无法配置执行器')
+        self._action_executors[name] = executor
+
     def register_tool(self, spec: ToolSpec, executor: ToolExecutor) -> None:
         """登记一条外部工具。
 
