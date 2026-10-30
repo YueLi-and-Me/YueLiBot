@@ -277,6 +277,6 @@ def render_expression_habits(
         lines.append(f'- {reaction}')
     # 〈角色〉是学习侧把「这次成立的人和物」抽象成占位符的写法；不提示换算，
     # 模型会把〈提出设想的人〉原样说进回复里。规则的〈〉同理，两者共用一行说明。
-    if any('〈' in sample.style for sample in samples) or (reaction is not None and '〈' in reaction):
+    if any('〈' in line for line in lines):
         lines.append('〈〉里换成这次对话里对应的人和事；只借说法的结构，不要照搬原话。')
     return '\n'.join(lines)

@@ -182,6 +182,14 @@ class TestRenderBlock:
     def test_rule_without_angle_brackets_has_no_note(self) -> None:
         assert render_expression_habits([], reaction='晚安') == f'{_HEADER}\n- 晚安'
 
+    def test_angle_note_covers_placeholders_in_expression_situation(self) -> None:
+        samples = [ExpressionSample(id=1, situation='〈谁〉逞强时', style='又开始了')]
+
+        block = render_expression_habits(samples, reaction='晚安')
+
+        assert block.count(_ANGLE_NOTE) == 1
+        assert block.endswith(_ANGLE_NOTE)
+
     def test_expression_only_is_unchanged(self) -> None:
         samples = [ExpressionSample(id=1, situation='有人逞强时', style='〈逞强的人〉又开始了')]
 

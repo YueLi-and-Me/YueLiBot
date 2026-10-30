@@ -81,7 +81,8 @@ def _cooldown_factor(last_injected_at: Optional[int], now: int) -> float:
 def _fill_reaction(reaction: str, match: re.Match[str]) -> str:
     """把反应提示里的 ``{名字}`` 换成命名组实际捕获到的文字。
 
-    只认 :data:`REACTION_GROUP_REFERENCE` 的写法，其他花括号与〈〉原样保留。
+    只在完整的〈〉段外识别 :data:`REACTION_GROUP_REFERENCE`，其他花括号与
+    〈〉内的整段文字原样保留，交给模型按对话现编。
     引用的组名在加载期已校验为该正则的命名组；组没有参与这次匹配时换成空串，
     与 ``re.Match.expand`` 对未参与匹配的组的处理一致。
 
@@ -94,7 +95,12 @@ def _fill_reaction(reaction: str, match: re.Match[str]) -> str:
     def capture(reference: re.Match[str]) -> str:
         return match.group(reference.group(1)) or ''
 
-    return REACTION_GROUP_REFERENCE.sub(capture, reaction)
+    # 〈〉内可能也写有 {名字}；这部分由模型现编，不能提前替换为捕获内容。
+    parts = re.split(r'(〈[^〉]*〉)', reaction)
+    return ''.join(
+        part if index % 2 else REACTION_GROUP_REFERENCE.sub(capture, part)
+        for index, part in enumerate(parts)
+    )
 
 
 def match_regex_rules(

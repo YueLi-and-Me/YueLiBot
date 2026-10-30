@@ -101,6 +101,16 @@ class TestReaction:
 
         assert _match([rule], '大家晚安').reaction == '回一句〈晚安的变体〉，别多说'
 
+    def test_named_references_inside_angle_brackets_stay_verbatim(self) -> None:
+        rule = RegexRuleConfig(
+            pattern=r'(?P<who>\S+)来了',
+            reaction='{who}来了，〈围绕{who}现编一句〉，再向{who}打招呼',
+        )
+
+        assert _match([rule], '小雨来了').reaction == (
+            '小雨来了，〈围绕{who}现编一句〉，再向小雨打招呼'
+        )
+
 
 class TestStreams:
     """★5：生效会话按会话外部 ID 比对，留空表示全部会话。"""
