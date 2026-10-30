@@ -33,6 +33,42 @@ def _candidate(name: str, provider: str) -> ModelCandidate:
     )
 
 
+def test_hot_reload_keeps_router_reference_and_replaces_same_name_client() -> None:
+    """服务持有的路由不变；同名模型改连接后不复用旧客户端，在途旧候选不污染新缓存。"""
+    old = _candidate('main', 'old-provider')
+    initial = Config()
+    initial.routing.chat.candidates = [old]
+    routers = ModelRouters(initial)
+    held_router = routers.chat
+    old_client = held_router.client(old)
+    new = _candidate('main', 'new-provider')
+    fresh = initial.model_copy(deep=True)
+    fresh.routing.chat.candidates = [new]
+
+    routers.apply_config(fresh)
+    new_client = held_router.client(new)
+
+    assert routers.chat is held_router
+    assert held_router.candidates == [new]
+    assert new_client is not old_client
+    assert held_router.client(old) is not new_client
+    assert held_router.client(new) is new_client
+
+
+def test_unrelated_hot_reload_preserves_model_client_cache() -> None:
+    config = Config()
+    candidate = _candidate('main', 'provider')
+    config.routing.chat.candidates = [candidate]
+    routers = ModelRouters(config)
+    client = routers.chat.client(candidate)
+    fresh = config.model_copy(deep=True)
+    fresh.personality.reply_style = '改用简短回复'
+
+    routers.apply_config(fresh)
+
+    assert routers.chat.client(candidate) is client
+
+
 class _FakeClient:
     """替掉真实 HTTP 客户端：要么按脚本吐字，要么按脚本抛错。"""
 

@@ -11,6 +11,7 @@ from typing import Any, Dict, FrozenSet
 
 
 EVENT_LABELS: Dict[str, str] = {
+    "config_watch_started": "配置自动监测已启动",
     "assistant_reply_recorded": "助手回复已关联消息",
     "reply_say_blocked": "重复台词已拦截",
     "trace": "运行追踪",

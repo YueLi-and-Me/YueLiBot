@@ -117,6 +117,16 @@ class ConversationImpressions:
         self._states: dict[int, _StreamImpression] = {}
         self._locks: dict[int, asyncio.Lock] = {}
 
+    def configure_window(self, window_messages: int) -> None:
+        """热更新历史窗口并清除按旧窗口生成的缓存，保留正在使用的会话锁。
+
+        :param window_messages: 经配置模型校验的工作记忆消息条数。
+        副作用：窗口变化时使旧印象缓存失效；不取消在途模型调用。
+        """
+        if self._window != window_messages:
+            self._window = window_messages
+            self._states.clear()
+
     async def current(
         self,
         stream_id: int,

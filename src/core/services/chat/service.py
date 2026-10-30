@@ -295,6 +295,11 @@ class ChatService(
         self._chat_provider = chat_provider
         self._proactive_provider = proactive_provider
         self._summary_provider = summary_provider
+        self._planner_provider = planner_provider
+        self._replyer_provider = replyer_provider
+        self._expression_provider = expression_provider
+        self._scene_provider = scene_provider if scene_provider is not None else summary_provider
+        self._reranker = reranker
         self._push_event = push_event
         self._speak_audio = speak_audio
         # QQ 等待合成完成后才投递，不能复用仅负责桌面后台播放的回调。
@@ -614,20 +619,120 @@ class ChatService(
     def apply_config(self, cfg: Config) -> None:
         """把本对象持有的配置引用切到重载后的新对象上。
 
-        配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
-        下次读到的就是新值。图片描述器由本服务持有，这里一并换掉，
-        调用方不必知道它的存在。
+        更新配置引用与启动时缓存的聊天参数；对话状态、缓冲、冷却和在途回合保留。
+        无状态的决策、表达选择与情景分析器按新参数重建，下一回合使用新配置。
+        图片与视频描述器由本服务持有，这里一并通知，调用方不向下伸手。
 
         ``schedule.energy_enabled`` 是这条规则的例外，见下方注释。
 
         :param cfg: 重载后的运行时配置。
         :return: ``None``。
-        副作用：重绑自身与图片描述器的配置引用；不重建任何对象。精力开关发生变化时
+        副作用：更新运行参数与无状态执行器，保留会话状态。精力开关发生变化时
             会写 ``meta.energy_disabled_at`` 或按关闭时长更新 ``persona_self``；本方法
             由配置重载在工作线程里同步调用，因此该写入不在事件循环线程上。
         """
 
+        conversation = cfg.conversation
+        generation = cfg.generation
+        agent = cfg.conversation_agent
         self._cfg = cfg
+        self._bot_display_name = cfg.bot.name
+        self._bot_names = (cfg.bot.name, *cfg.bot.aliases)
+        self._jargon_protected_names = (cfg.bot.name, *cfg.bot.aliases, cfg.bot.user_nickname)
+        self._summary_personality = cfg.personality.personality
+        self._working_memory_messages = conversation.working_memory_messages
+        self._summarize_trigger_messages = conversation.summarize_trigger_messages
+        self._summarize_batch_messages = conversation.summarize_batch_messages
+        self._fact_extract_trigger = conversation.fact_extract_trigger_messages
+        self._fact_extract_batch = conversation.fact_extract_batch_messages
+        self._session_gap_ms = conversation.session_gap_minutes * 60_000
+        self._fact_recall_limit = conversation.fact_recall_limit
+        self._private_facts_in_group = conversation.private_facts_in_group
+        self._recalled_episode_limit = conversation.recalled_episode_limit
+        self._recent_episode_limit = conversation.recent_episode_limit
+        self._episode_context_limit = conversation.episode_context_limit
+        self._chat_temperature = generation.chat.temperature
+        self._chat_max_tokens = generation.chat.token_limit
+        self._planner_temperature = generation.planner.temperature
+        self._planner_max_tokens = generation.planner.token_limit
+        self._replyer_temperature = generation.replyer.temperature
+        self._replyer_max_tokens = generation.replyer.token_limit
+        self._proactive_temperature = generation.proactive.temperature
+        self._proactive_max_tokens = generation.proactive.token_limit
+        self._summary_temperature = generation.summary.temperature
+        self._summary_max_tokens = generation.summary.token_limit
+        self._memory_temperature = generation.memory.temperature
+        self._memory_max_tokens = generation.memory.token_limit
+        self._conversation_mode = agent.mode
+        self._conversation_selected_streams = frozenset(agent.selected_streams)
+        self._trigger_mode = agent.trigger_mode
+        self._frequency_talk_value = agent.frequency_talk_value
+        self._reply_necessity_threshold = agent.reply_necessity_threshold
+        self._cognitive_rounds = agent.max_cognitive_rounds
+        self._scene_refresh_messages = cfg.group_chat.scene_refresh_messages
+        self._speak_enabled = cfg.group_chat.self_started_topics
+        self._at_mention_must_reply = cfg.group_chat.at_mention_must_reply
+        self._name_mention_probability = cfg.group_chat.name_mention_probability
+        self._group_persona_weight = cfg.group_chat.persona_weight
+        self._perception_surfaces = frozenset(cfg.perception.surfaces)
+        self._split_replyer = (
+            agent.split_replyer
+            and self._planner_provider is not None
+            and self._replyer_provider is not None
+        )
+        self._tool_calling = agent.tool_calling and self._split_replyer
+        decision_provider = self._planner_provider if self._split_replyer else self._chat_provider
+        self._conversation_agent = (
+            ConversationAgent(
+                decision_provider,
+                temperature=self._planner_temperature if self._split_replyer else self._chat_temperature,
+                max_tokens=self._planner_max_tokens if self._split_replyer else self._chat_max_tokens,
+                replyer=self._replyer_provider if self._split_replyer else None,
+                replyer_temperature=self._replyer_temperature,
+                replyer_max_tokens=self._replyer_max_tokens,
+                tool_calling=self._tool_calling,
+                tool_registry=self._tool_registry,
+            )
+            if decision_provider is not None and agent.mode != 'off' else None
+        )
+        self._expression_selector = (
+            ExpressionSelector(
+                self._expression_provider,
+                temperature=generation.expression.temperature,
+                max_tokens=generation.expression.token_limit,
+            )
+            if self._expression_provider is not None else None
+        )
+        self._scene_observer = (
+            SceneObserver(
+                self._scene_provider,
+                temperature=generation.scene.temperature,
+                max_tokens=generation.scene.token_limit,
+            )
+            if self._scene_provider is not None else None
+        )
+        self._impressions.configure_window(conversation.working_memory_messages)
+        # 认知动作执行器不持有回合状态，重绑使新预算和事实作用域同时生效；动作
+        # 是否对模型可见仍由每轮认知预算控制，因此可以从零预算直接热开启。
+        self._tool_registry.configure_action_executor(
+            'recall', CognitiveToolExecutor(RecallAction(
+                self.memory, self._registry.stream_display_name_or_any, self._db,
+                private_in_group=self._private_facts_in_group,
+                exclude_pending_rebuild=(
+                    cfg.memory_feedback.enabled and cfg.memory_feedback.episode_query_block_enabled
+                ),
+                exclude_marked=cfg.memory_feedback.enabled and cfg.memory_feedback.hard_filter_enabled,
+                embed_query=self._embed_query, rerank=self._reranker,
+            )),
+        )
+        self._tool_registry.configure_action_executor(
+            'inspect', CognitiveToolExecutor(InspectAction(self.memory, self._registry.stream_display_name)),
+        )
+        self._tool_registry.configure_action_executor(
+            'consult', CognitiveToolExecutor(ConsultAction(
+                self._db, embed_query=self._embed_query, rerank=self._reranker,
+            )),
+        )
         if self._image_describer is not None:
             self._image_describer.apply_config(cfg)
         if self._video_describer is not None:

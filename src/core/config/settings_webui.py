@@ -747,4 +747,4 @@ def save(directory: Path, values: Dict[str, Any]) -> Dict[str, Any]:
         return {'ok': False, 'detail': f'完整配置校验失败：{exc}'}
 
     logger.info('settings_config_saved', files=replaced)
-    return {'ok': True, 'detail': '已保存，重启后端后生效'}
+    return {'ok': True, 'detail': '已保存，支持热重载的设置将在约 2 秒内自动应用；需重启的项目见控制台'}

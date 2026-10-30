@@ -2,7 +2,7 @@
  * 模型与厂商工作台页面。
  *
  * 左侧厂商列表负责过滤，右侧表格维护模型；「功能分配」页给每个任务按优先级
- * 指定候选模型。配置写入 providers.toml / models.toml，保存后重启后端生效。
+ * 指定候选模型。文字模型配置保存后自动应用，媒体与向量任务仍按启动装配生效。
  */
 import {
   Check,
@@ -561,7 +561,7 @@ export function ModelConfigPage() {
 
   return (
     <PageFrame
-      hint="模型设置负责厂商与模型表；功能分配负责每个任务的候选模型。保存后重启后端生效。"
+      hint="文字模型与任务候选保存后自动应用；媒体、向量和重排任务的变更仍需重启。"
       actions={
         <>
           <Button variant="secondary" onClick={state.reload} disabled={state.busy}>
@@ -1099,7 +1099,7 @@ export function ModelConfigPage() {
           {hasDraftChanges(draft, state.snapshot) ? (
             <span className="size-1.5 rounded-full bg-tint-amber" aria-hidden="true" />
           ) : null}
-          {hasDraftChanges(draft, state.snapshot) ? '有未保存的修改，保存后重启后端生效' : '与已保存的配置一致'}
+          {hasDraftChanges(draft, state.snapshot) ? '有未保存的修改，保存后自动应用文字模型配置' : '与已保存的配置一致'}
         </span>
         <Button className="ml-auto" onClick={saveDraft} disabled={state.busy}>
           <Save className="size-4" aria-hidden="true" />

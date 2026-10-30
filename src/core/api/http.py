@@ -40,7 +40,7 @@ from src.core.logging.logger import get_logger
 from src.core.llm_models.usage import usage_ledger
 from src.core.llm_models.usage_stats import model_prices, summarize_usage
 from src.core.commands import dispatch_developer_command, registered_commands
-from src.core.config.loader import get_config, reload_config
+from src.core.config.loader import ConfigApplicationError, get_config, reload_config
 from src.core.memory.association import EDGE_HALF_LIFE_HOURS, HOPS, SPREAD_LIMIT, spread
 from src.core.memory import tuning
 from src.core.memory import import_center
@@ -3653,6 +3653,12 @@ async def system_config_reload() -> dict:
     """
     try:
         _, summary = await asyncio.to_thread(reload_config)
+    except ConfigApplicationError as exc:
+        logger.exception('config_reload_failed')
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'配置重载未完整生效：{exc}；请检查日志并修正应用失败的服务。',
+        ) from exc
     except Exception as exc:
         logger.exception('config_reload_failed')
         print_box('配置热重载失败', [
