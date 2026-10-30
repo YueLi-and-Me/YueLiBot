@@ -403,6 +403,10 @@ describe('API 轮询', () => {
     ttsWithoutCandidate.tts.enabled = true
     expect(() => assertConfigConsistent(ttsWithoutCandidate)).toThrow(/候选模型/)
 
+    const qqTtsWithoutCandidate = buildRotatingConfig()
+    qqTtsWithoutCandidate.tts.qq_enabled = true
+    expect(() => assertConfigConsistent(qqTtsWithoutCandidate)).toThrow(/候选模型/)
+
     const mixedDims = buildRotatingConfig()
     mixedDims.models[0]!.embedding_dim = 1536
     mixedDims.models[1]!.embedding_dim = 1024
@@ -632,25 +636,49 @@ describe('豆包语音 TTS', () => {
     return config
   }
 
-  it('保存后不再把 client_type 和 app_id 抹回 openai', () => {
-    // 覆盖非 openai 的 client_type，确保设置窗口保存任意字段都不会丢失已有 app_id，
-    // 否则 TTS 会回退到错误协议并在运行时失败。
+  it.each([[false, false], [false, true], [true, false], [true, true]])(
+    '桌面开关 %s、QQ 开关 %s 保存后保留独立状态及厂商协议', (desktopEnabled, qqEnabled) => {
+      // 覆盖非 openai 的 client_type，确保设置窗口保存任意字段都不会丢失已有 app_id，
+      // 否则 TTS 会回退到错误协议并在运行时失败。
+      const root = makeTemporaryDirectory()
+      const directory = join(root, 'config')
+      const config = buildVolcengineConfig()
+      config.tts.enabled = desktopEnabled
+      config.tts.qq_enabled = qqEnabled
+
+      writeConfigDirectory(directory, config)
+      const readBack = readConfigDirectory(directory)
+
+      const ttsProvider = readBack.api_providers.find((provider) => provider.name === '语音')!
+      expect(ttsProvider.client_type).toBe('volcengine')
+      expect(ttsProvider.app_id).toBe('my-app-id')
+      expect(readBack.tts.cluster).toBe('volcano_tts')
+      expect(readBack).toEqual(config)
+
+      // 再存一次也不能漂移——设置窗口每次保存都会整份重写
+      writeConfigDirectory(directory, readBack)
+      expect(readConfigDirectory(directory)).toEqual(config)
+    },
+  )
+
+  it('旧配置默认关闭 QQ 语音，但显式无效值不能被当成关闭', () => {
     const root = makeTemporaryDirectory()
     const directory = join(root, 'config')
+    writeConfigDirectory(directory, buildVolcengineConfig())
+    const featuresPath = join(directory, 'features.toml')
+    const original = readFileSync(featuresPath, 'utf-8')
+    writeFileSync(featuresPath, original.replace('qq_enabled = false', ''), 'utf-8')
+    expect(readConfigDirectory(directory).tts.qq_enabled).toBe(false)
+    writeFileSync(featuresPath, original.replace('qq_enabled = false', 'qq_enabled = "true"'), 'utf-8')
+    expect(() => readConfigDirectory(directory)).toThrow(/qq_enabled/)
+  })
+
+  it('只开 QQ 语音也必须填写音色', () => {
     const config = buildVolcengineConfig()
-
-    writeConfigDirectory(directory, config)
-    const readBack = readConfigDirectory(directory)
-
-    const ttsProvider = readBack.api_providers.find((provider) => provider.name === '语音')!
-    expect(ttsProvider.client_type).toBe('volcengine')
-    expect(ttsProvider.app_id).toBe('my-app-id')
-    expect(readBack.tts.cluster).toBe('volcano_tts')
-    expect(readBack).toEqual(config)
-
-    // 再存一次也不能漂移——设置窗口每次保存都会整份重写
-    writeConfigDirectory(directory, readBack)
-    expect(readConfigDirectory(directory)).toEqual(config)
+    config.tts.enabled = false
+    config.tts.qq_enabled = true
+    config.tts.voice = ''
+    expect(() => assertConfigConsistent(config)).toThrow(/音色/)
   })
 
   it('providers.toml 里出现 volcengine 时不再拒绝启动', () => {

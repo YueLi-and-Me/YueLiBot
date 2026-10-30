@@ -32,6 +32,7 @@ from .xml_cards import render_xml_card
 
 from src.core.agent.action_protocol import REACTION_IDS
 from src.core.platform_io.types import VideoSource
+from src.core.platform_io.voice import validate_voice_data
 
 if TYPE_CHECKING:
     from .transport import ActionError
@@ -570,27 +571,29 @@ def outbound_message_batches(
     emoji_sub_types: Sequence[int],
     quote_message_id: str = '',
     image_refs: Sequence[str] = (),
+    voice_data: Sequence[str] = (),
 ) -> list[list[Dict[str, Any]]]:
-    """把每条文字、每张表情包和每张图片拆成独立的 OneBot 消息段数组。
+    """按台词顺序发送文字或语音，再将表情包和图片拆成独立消息段数组。
 
     先完整校验全部字段并读取、编码全部图片，再返回“每条文字各一条、每张表情包
     各一条、每张图片各一条”的发送批次，避免文字已经发出后才发现图片不可读、
     超限或表情包元数据不一致。独立 action 会让 QQ 为
     每条文字和图片分别创建消息气泡，这正是 Bot 的分句在聊天窗口里表现为多条消息的原因。
 
-    引用只加在第一个批次上：整轮回复在 QQ 里是连续的多条气泡，逐条都挂引用会
-    避免聊天窗口被引用框占满，首条点明在回谁就够了。
+    引用只加在第一个批次上：整轮回复连续投递，逐条引用会占满聊天窗口。
 
     :param text_segments: 已按打字习惯切分的气泡文本。
     :param emoji_refs: 已通过启动哈希校验的本地表情包引用。
     :param emoji_sub_types: 与表情包引用逐项对齐的 OneBot 表情包子类型。
     :param quote_message_id: 第一个批次要引用的平台消息编号；空字符串表示不引用。
     :param image_refs: 普通图片的本地路径，不带 ``sub_type``。
+    :param voice_data: 与台词逐项对齐的 base64 音频；空串保留该条文字。
     :return: 按文字、表情包、图片原始顺序排列的非空消息段数组。
     :raises ValueError: 消息为空、字段数量不一致或图片字段不合法。
     :raises ActionError: 任一图片准备失败，此时不返回任何发送批次。
     """
 
+    validate_voice_data(voice_data, len(text_segments))
     segments = outbound_message_segments(
         text_segments,
         emoji_refs,
@@ -598,6 +601,9 @@ def outbound_message_batches(
         image_refs,
     )
     batches = [[segment] for segment in segments]
+    for index, encoded in enumerate(voice_data):
+        if encoded:
+            batches[index] = [{'type': 'record', 'data': {'file': f'base64://{encoded}'}}]
     if quote_message_id and batches:
         batches[0].insert(0, reply_segment(quote_message_id))
     return batches

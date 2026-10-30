@@ -9,6 +9,7 @@
 由 ``ChatService`` 继承，依赖它的 ``_broker`` / ``_memory`` / ``_persona`` 等属性。
 """
 
+from base64 import b64encode
 from difflib import SequenceMatcher
 from html import escape
 from typing import List, Tuple
@@ -20,6 +21,7 @@ from src.core.agent.parser import (
     MoodEvent,
     ParseEvent,
     PromiseEvent,
+    ResponseProtocolError,
     SayEndEvent,
     SayEvent,
     TextEvent,
@@ -30,6 +32,7 @@ from src.core.observe import events as trace
 from src.core.observe.stages import DISPATCHING, GATED
 from src.core.observe.store import event_store
 from src.core.persona.state import EventDelta
+from src.core.platform_io.driver import DeliveryError
 from src.core.platform_io.types import ConversationContext, OutboundMessage
 
 from .helpers import _extract_lines
@@ -125,6 +128,8 @@ class OutboundDispatchMixin:
             sink.interrupted = True
             return []
         if isinstance(event, SayEvent):
+            if event.delivery == 'voice' and not self._voice_available(sink.context):
+                raise ResponseProtocolError('当前会话未启用语音发送或缺少发送能力')
             sink.pending_say = [event]
             return []
         if isinstance(event, TextEvent):
@@ -143,8 +148,11 @@ class OutboundDispatchMixin:
             for name, value in (('emotion', head.emotion), ('gesture', head.gesture))
             if value is not None
         )
+        if head.delivery == 'voice':
+            attrs += ' delivery="voice"'
         sink.say_markup.append(f'<say{attrs}>{text}</say>')
         sink.say_texts.append(text)
+        sink.say_voices.append(head.delivery == 'voice')
         return [*pending, event]
 
     def _record_assistant_reply(self, context: ConversationContext, turn: int, markup: str) -> None:
@@ -330,6 +338,8 @@ class OutboundDispatchMixin:
         segments: list[str],
         emoji_items: list[tuple[str, str, int]],
         quote_external_message_id: str | None = None,
+        voice_segments: List[bool] | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         """将非桌面整轮回复交给平台 broker。
 
@@ -339,6 +349,8 @@ class OutboundDispatchMixin:
         :param emoji_items: 已按目标情绪命中的可发送表情包引用。
         :param quote_external_message_id: 第一条气泡要引用的平台消息编号；
             ``None`` 表示不引用。
+        :param voice_segments: 与台词对齐的语音选择；缺省表示全部为文字。
+        :param cancel_event: 回合取消信号；合成完成后仍需检查，避免中断后补发语音。
 
         副作用：
             可能调用平台驱动并写入投递观察事件；空列表只记录警告并返回。
@@ -359,6 +371,31 @@ class OutboundDispatchMixin:
             return
         # Broker 负责平台驱动选择和失败归一化；图片引用由 QQ 驱动透传给适配器。
         emoji_refs = tuple(reference for _emotion, reference, _sub_type in emoji_items)
+        voice_data: List[str] = []
+        if voice_segments is not None:
+            if len(voice_segments) != len(segments):
+                raise ValueError('语音选择必须与回复台词逐项对齐')
+            if any(voice_segments):
+                if not self._voice_available(context):
+                    raise DeliveryError('当前会话的 QQ 语音发送不可用')
+                assert self._synthesize_audio is not None
+                # 全部合成成功后才提交整轮，避免前半句已经发出才发现后半句合成失败。
+                for text, use_voice in zip(segments, voice_segments, strict=True):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise asyncio.CancelledError()
+                    if not use_voice:
+                        voice_data.append('')
+                        continue
+                    try:
+                        data = await self._synthesize_audio(text)
+                        if not data:
+                            raise ValueError('语音合成返回空音频')
+                        voice_data.append(b64encode(data).decode('ascii'))
+                    except Exception as exc:
+                        logger.error('QQ 语音合成失败', streamId=context.stream.id, turnId=turn, error=str(exc))
+                        raise DeliveryError(f'QQ 语音合成失败：{exc}') from exc
+        if cancel_event is not None and cancel_event.is_set():
+            raise asyncio.CancelledError()
         receipt = await self._broker.dispatch(OutboundMessage(
             stream=context.stream,
             segments=segments,
@@ -367,6 +404,7 @@ class OutboundDispatchMixin:
             batch_delays_ms=self._batch_delays_ms(segments, len(emoji_items)),
             quote_external_message_id=quote_external_message_id,
             turn_id=turn,
+            voice_data=tuple(voice_data),
         ))
         # 只有拿到投递回执（发送成功）才回写使用记录；发送失败不动两列，
         # 淘汰判据不允许把「没发出去」记成「用过」。引用刚被 select 选中却又

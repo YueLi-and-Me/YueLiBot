@@ -568,6 +568,8 @@ export interface YueliConfig {
   }
   tts: {
     enabled: boolean; voice: string
+    /** QQ 语音发送独立于桌面播放开关。 */
+    qq_enabled: boolean
     format: 'mp3' | 'wav' | 'opus'; speed: number
     /** 仅 volcengine：集群名，默认 volcano_tts */
     cluster: string

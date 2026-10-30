@@ -1,22 +1,23 @@
-"""将文本转换为音频并通过事件通道推送给桌面客户端。
+"""合成桌面和 QQ 共用的音频，并为桌面推送播放事件。
 
 服务从 ``ModelRouter`` 取得 TTS 候选，支持 OpenAI 兼容协议和单独的厂商协议，
-对相同音色与文本使用进程内缓存。连续失败达到 ``GIVE_UP_AFTER`` 后停止接受
-新的合成任务，以避免错误配置导致每轮重复等待；音频数据只在内存中处理。
+按音色、格式、语速和文本缓存音频。桌面连续失败达到 ``GIVE_UP_AFTER`` 后停止
+接受后台播放任务；QQ 调用可等待的 ``synthesize``，失败直接交给投递链路。
 """
 
 from __future__ import annotations
 
+from typing import Any, Callable, Dict
+
 import asyncio
 import base64
-import uuid
-from typing import Any, Callable
-
 import httpx
+import uuid
 
-from src.core.logging.logger import get_logger
 from src.core.config.schema import ModelCandidate
 from src.core.llm_models.router import ModelRouter
+from src.core.logging.logger import get_logger
+from src.core.platform_io.voice import MAX_VOICE_BYTES
 
 logger = get_logger(__name__)
 
@@ -40,14 +41,13 @@ class TtsService:
         self._failures = 0
         self._cache_hits = 0
         self._cache_misses = 0
-        self._cache: dict[str, bytes] = {}
+        self._cache: Dict[str, bytes] = {}
 
     def apply_config(self, cfg: Any) -> None:
         """把本对象持有的配置引用切到重载后的新对象上。
 
         配置热重载不重建服务，只把各持有方的引用换掉；引用一换，所有读取点
-        下次读到的就是新值。熔断计数与音频缓存跨重载保留：它们记录的是运行期
-        健康状况，不是配置。
+        下次读到的就是新值。熔断计数跨重载保留，音频缓存清空，以免复用旧参数产物。
 
         :param cfg: 重载后的运行时配置。
         :return: ``None``。
@@ -55,6 +55,8 @@ class TtsService:
         """
 
         self._cfg = cfg
+        # 热更新音色、语速或格式后不复用旧字节，避免音频格式与报文元数据不一致。
+        self._cache.clear()
 
     @property
     def enabled(self) -> bool:
@@ -102,27 +104,49 @@ class TtsService:
             合成失败只记录日志，不向后台 task 调度方抛出。
         """
 
-        # 缓存键不包含具体候选模型，避免路由切换后为相同音色和文本重复合成。
-        cache_key = f'{self._cfg.tts.voice}:{text}'
-        if cache_key in self._cache:
-            self._cache_hits += 1
-            data = self._cache[cache_key]
-        else:
-            self._cache_misses += 1
-            try:
-                data = await self._synth(text)
-                self._cache[cache_key] = data
-                self._failures = 0
-            except Exception as exc:
-                self._failures += 1
-                logger.warning('tts_failed', error=str(exc), failures=self._failures)
-                return
+        try:
+            data = await self.synthesize(text)
+            self._failures = 0
+        except Exception as exc:
+            self._failures += 1
+            logger.warning('tts_failed', error=str(exc), failures=self._failures)
+            return
 
         b64 = base64.b64encode(data).decode('ascii')
         await self._push_event('voice.play', {
             'turnId': turn_id, 'kind': 'audio',
             'format': self._cfg.tts.format, 'data': b64,
         })
+
+    async def synthesize(self, text: str) -> bytes:
+        """返回完整音频供 QQ 投递或桌面播放；空文本、未启用、超限及厂商错误直接抛出。
+
+        :param text: 一条完整台词，去除首尾空白后必须非空。
+        :return: 不超过 5 MiB 的音频字节；只缓存成功结果，不发送平台消息。
+        """
+        if not (self._cfg.tts.enabled or self._cfg.tts.qq_enabled) or not self._router.ready:
+            raise RuntimeError('语音合成未启用或未配置模型')
+        text = text.strip()
+        if not text:
+            raise ValueError('语音合成文本不能为空')
+        if not self._cfg.tts.voice.strip():
+            raise ValueError('语音合成缺少音色 ID')
+        cfg = self._cfg.tts
+        cache_key = repr((cfg.voice, cfg.format, cfg.speed, cfg.cluster, text))
+        if cache_key in self._cache:
+            self._cache_hits += 1
+            return self._cache[cache_key]
+        self._cache_misses += 1
+        data = await self._synth(text)
+        if not data:
+            raise RuntimeError('语音合成返回空音频')
+        if len(data) > MAX_VOICE_BYTES:
+            raise ValueError('语音合成结果超过 5 MiB')
+        # 有界缓存避免长期运行积累全部历史音频；超限前按插入顺序淘汰。
+        while self._cache and sum(len(item) for item in self._cache.values()) + len(data) > 32 * 1024 * 1024:
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[cache_key] = data
+        return data
 
     async def _synth(self, text: str) -> bytes:
         """通过模型路由器选择候选并生成音频。
@@ -179,11 +203,18 @@ class TtsService:
                 },
             )
             if not resp.is_success:
-                raise RuntimeError(f'TTS HTTP {resp.status_code}')
+                # 保留服务端拒绝原因，避免音色不存在等配置错误只显示笼统的 HTTP 400。
+                # 先隐藏可能被响应回显的凭据，再限制长度，防止截断后残留密钥片段。
+                detail = resp.text
+                if candidate.api_key:
+                    detail = detail.replace(candidate.api_key, '[已隐藏凭据]')
+                if len(detail) > 1024:
+                    detail = detail[:1024] + '…（响应已截断）'
+                raise RuntimeError(f'TTS HTTP {resp.status_code}：{detail}')
             data = resp.content
             if not data:
                 # 空响应不能进入缓存或播放器，否则失败会表现为静默而非可诊断错误。
-                raise RuntimeError('TTS returned empty audio')
+                raise RuntimeError('语音合成返回空音频')
             return data
 
     async def _synth_volcengine(self, candidate: ModelCandidate, text: str) -> bytes:
@@ -235,7 +266,7 @@ class TtsService:
         encoded = body.get('data')
         if not encoded:
             raise RuntimeError(f'豆包语音未返回音频，原始响应键：{sorted(body)}')
-        return base64.b64decode(encoded)
+        return base64.b64decode(encoded, validate=True)
 
     def inspect(self) -> dict:
         """返回 TTS 配置、失败计数、缓存规模和路由状态。
@@ -245,7 +276,8 @@ class TtsService:
 
         return {
             'enabled': self.enabled,
-            'configured': self._cfg.tts.enabled and self._router.ready,
+            'configured': (self._cfg.tts.enabled or self._cfg.tts.qq_enabled) and self._router.ready,
+            'qqEnabled': self._cfg.tts.qq_enabled and self._router.ready,
             'model': self._router.model,
             'voice': self._cfg.tts.voice,
             'format': self._cfg.tts.format,

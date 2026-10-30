@@ -635,8 +635,9 @@ class GenerationConfig(BaseModel):
 class TtsConfig(BaseModel):
     """语音合成的功能参数。地址、密钥、协议都在它的候选模型里，不在这里。"""
 
-    # 不开就是纯文字，其余功能不受影响
+    # 桌面播放与 QQ 发送独立启用，共用下面的音色和模型路由。
     enabled: bool = False
+    qq_enabled: bool = False
     voice: str = ''
     format: Literal['mp3', 'wav', 'opus'] = 'mp3'
     # 陪伴场景略慢一点更自然，太快像播报

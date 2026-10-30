@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import List, Literal, Tuple
 
 from .forward import ForwardMessageTree
+from .voice import validate_voice_data
 
 
 PersonKind = Literal['contact', 'owner']
@@ -161,10 +162,13 @@ class OutboundMessage:
     # 发起本次投递的回合编号，随出站报文传给适配器，仅在投递失败时被原样回传，
     # 使失败能落到发起它的那一轮上。0 表示调用方没有回合上下文（如后台补发）。
     turn_id: int = 0
+    # 与 segments 对齐；空串发文字，非空项发对应语音，不重复发送台词。
+    voice_data: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """校验表情包引用与协议子类型对齐，以及停顿覆盖全部发送批次。"""
 
+        validate_voice_data(self.voice_data, len(self.segments))
         if len(self.emoji_refs) != len(self.emoji_sub_types):
             raise ValueError('出站表情包引用与 sub_type 数量必须一致')
         if self.batch_delays_ms and (

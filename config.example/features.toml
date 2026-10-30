@@ -4,7 +4,8 @@
 version = "1.7.0"
 
 [tts] # 语音合成：TTS 功能开关与音色；服务地址和密钥在 providers.toml 中维护。
-enabled = false # 关闭时保持纯文字回复。
+enabled = false # 将桌面回复合成为语音并播放，与 QQ 语音发送独立控制。
+qq_enabled = false # 允许月璃按聊天情境逐条选择文字或语音，用户要求时可用语音回复。共用 TTS 模型与音色；切换后需要重启。
 voice = "" # 厂商提供的音色 ID；不是显示名称。豆包语音这里填 voice_type。
 format = "mp3" # 返回音频格式：mp3 / wav / opus。
 speed = 0.95 # 语速倍率；陪伴场景建议略低于 1。

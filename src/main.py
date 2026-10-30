@@ -987,11 +987,12 @@ def main() -> None:
         )
 
     # TTS 只在配置启用且至少有一个可用候选时装配，避免创建永远失败的后台任务。
-    if cfg.tts.enabled and routers.tts.ready:
+    if (cfg.tts.enabled or cfg.tts.qq_enabled) and routers.tts.ready:
         from src.core.services.media.tts import TtsService
         tts = TtsService(cfg, _push_event, routers.tts)
         app_state.chat._speak_audio = tts.speak
         app_state.chat._cancel_audio = tts.cancel
+        app_state.chat._synthesize_audio = tts.synthesize
         app_state.tts = tts
         logger.info("tts_ready", voice=cfg.tts.voice,
                     candidates=len(routers.tts.candidates))

@@ -15,6 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import (
     Any,
+    Awaitable,
     Callable,
     Deque,
     Dict,
@@ -91,6 +92,7 @@ from src.core.agent.parser import (
     EmojiEvent,
     ParseEvent,
     ResponseParser,
+    ResponseProtocolError,
     SayEndEvent,
     SayEvent,
     TextEvent,
@@ -295,6 +297,8 @@ class ChatService(
         self._summary_provider = summary_provider
         self._push_event = push_event
         self._speak_audio = speak_audio
+        # QQ 等待合成完成后才投递，不能复用仅负责桌面后台播放的回调。
+        self._synthesize_audio: Callable[[str], Awaitable[bytes]] | None = None
         self._broker = broker
         self._image_describer = image_describer
         self._video_describer = video_describer
@@ -1764,6 +1768,8 @@ class ChatService(
                         turn,
                         sink.segments,
                         sink.emoji_items,
+                        voice_segments=sink.voice_segments,
+                        cancel_event=sink.cancel_event,
                     )
                 self._mark_stage(
                     context, REPLIED, f'{len(assistant_raw)} 字', turn_id=turn,
@@ -2599,6 +2605,8 @@ class ChatService(
         """
         if not lines:
             raise ValueError('主动分句不能为空')
+        if any(line.get('delivery') == 'voice' for line in lines) and not self._voice_available(context):
+            raise ResponseProtocolError('当前出口不允许主动发送语音')
         stream_id = context.stream.id
         if self._stream_claims.get(stream_id) != 'proactive':
             raise RuntimeError('主动投放前必须取得 stream 占用权')
@@ -2620,7 +2628,8 @@ class ChatService(
             asyncio.create_task(self._emit_parse_event(context, turn, TextEvent(value=line['text'])))
             asyncio.create_task(self._emit_parse_event(context, turn, SayEndEvent()))
             self._dispatch_speech(context, line['text'], turn)
-            texts.append(f'<say>{line["text"]}</say>')
+            delivery = ' delivery="voice"' if line.get('delivery') == 'voice' else ''
+            texts.append(f'<say{delivery}>{line["text"]}</say>')
         asyncio.create_task(self._emit(context.stream.id, 'chat.done', {'turnId': turn, 'kind': 'done'}))
         # 记忆保存带有 <say> 边界，后续摘要和回放可以区分主动分句而不依赖前端事件。
         self._record_assistant_reply(context, turn, ''.join(texts))
@@ -2645,6 +2654,7 @@ class ChatService(
             turn,
             [line['text'] for line in lines],
             [],
+            voice_segments=[line.get('delivery') == 'voice' for line in lines],
         )
         return self.speak_claimed(context, lines, turn=turn)
 
@@ -2857,6 +2867,7 @@ class ChatService(
             **self._prompt_config_kwargs(context.relationship_signals_enabled),
         )
         system = build_proactive_prompt(base_prompt, situation, render_params)
+        system += '\n\n' + self._voice_protocol(context)
         raw = ''
         try:
             messages = [
@@ -3646,7 +3657,10 @@ class ChatService(
                 return _RoundResult('paused')
         # 历史只落可见正文：动作头不进入记忆，读历史时不会污染后续提示词。
         visible_markup = (
-            ''.join(f'<say>{text}</say>' for text in sink.say_texts)
+            ''.join(
+                ('<say delivery="voice">' if voice else '<say>') + text + '</say>'
+                for text, voice in zip(sink.say_texts, sink.say_voices, strict=True)
+            )
             + _emoji_history_markup(sink.emoji_items)
         )
         if visible_markup:
@@ -3676,6 +3690,8 @@ class ChatService(
                     sink.segments,
                     sink.emoji_items,
                     self._quote_target(context, outcome.decision.target_message_ids),
+                    voice_segments=sink.voice_segments,
+                    cancel_event=sink.cancel_event,
                 )
             except Exception as exc:
                 # 投递失败与决策分离：追加一条 delivery_failed 行动事件再上抛。
@@ -4367,9 +4383,14 @@ class ChatService(
             if context.stream.platform == 'desktop':
                 self._track_speech(context, event, sink.turn)
                 await self._emit_parse_event(context, sink.turn, event)
+            if isinstance(event, SayEvent):
+                sink.current_say_voice = event.delivery == 'voice'
+            before_count = len(sink.segments)
             sink.segment = _collect_outbound_segment(
                 event, sink.segments, sink.segment, self._cfg.typing,
+                voice=sink.current_say_voice,
             )
+            sink.voice_segments.extend([sink.current_say_voice] * (len(sink.segments) - before_count))
 
     async def _emit(self, stream_id: int, channel: str, payload: Any) -> None:
         """向客户端推送事件并隔离推送层异常。
