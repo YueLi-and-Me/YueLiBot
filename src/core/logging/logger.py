@@ -478,6 +478,8 @@ _TRACE_VISIBLE_FIELDS: Dict[str, tuple[str, ...]] = {
     'promise_stashed': ('turnId', 'subject', 'at'),
     # 选中的说法正文留在事件账本，控制台只看「从多少候选里选了几条、谁选的」。
     'expression_select': ('turnId', 'source', 'count', 'pool', 'total', 'errorType', 'error'),
+    # 事件本身不带消息正文，只有第几条规则与去向。
+    'regex_rule': ('turnId', 'rule', 'result'),
 }
 
 _TRACE_HASH_FIELDS = frozenset({'hash', 'promptHash', 'contentHash', 'fingerprint'})

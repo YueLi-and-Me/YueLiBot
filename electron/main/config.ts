@@ -10,8 +10,8 @@ import { parse as parseDotenv } from 'dotenv'
 import * as TOML from 'smol-toml'
 
 import type {
-  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, PricePeriodConfig, SelectionStrategy,
-  TaskRoutingConfig, YueliConfig,
+  ApiProviderConfig, AuthType, ClientType, ModelDefinitionConfig, PricePeriodConfig, RegexRuleConfig,
+  SelectionStrategy, TaskRoutingConfig, YueliConfig,
 } from '../shared/ipc.ts'
 import { pricePeriodProblem } from '../shared/price-periods.ts'
 
@@ -39,14 +39,15 @@ import { pricePeriodProblem } from '../shared/price-periods.ts'
  * 1.6.0 将睡眠许可改为精力系统开关，旧值随配置重写迁移；
  * 1.5.0 新增 [memory_feedback] 段：反馈纠错链路，15 项默认全关；
  * 旧文件按 1.4.0 解析后重写即补齐该段及默认值。
+ * 1.7.0 新增 personality.regex_rules 正则规则，缺键按没有规则解析，重写即补齐空数组。
  *
  * [developer] 段（开发者命令通道）有意不 bump 版本号：整段可选、缺失即关闭，
  * 且初始配置生成时会显式剔除它，用户文件里永远不出现，没有内容需要迁移。
  * 详细理由见 src/core/config/schema.py 的 InnerConfig 注释。
  */
-export const CONFIG_VERSION = '1.6.0'
+export const CONFIG_VERSION = '1.7.0'
 const SUPPORTED_VERSIONS = [
-  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0',
+  '1.0.0', '1.1.0', '1.2.0', '1.3.0', '1.4.0', '1.5.0', '1.6.0', '1.7.0',
 ] as const
 const CONFIG_FILES = ['providers.toml', 'models.toml', 'bot.toml', 'features.toml'] as const
 export const MODEL_TASKS = [
@@ -165,6 +166,7 @@ export const DEFAULT_CONFIG: YueliConfig = {
     engage_style: '',
     tone_probability: 0,
     tone_variants: [],
+    regex_rules: [],
   },
   conversation: {
     working_memory_messages: 40,
@@ -1272,6 +1274,38 @@ function pruneRetiredPersonalityFields(
 }
 
 /**
+ * 读取人设段的正则规则子表数组 `[[personality.regex_rules]]`。
+ *
+ * 只核对字段类型：正则按 Python `re` 语法写（如 `(?P<n>…)`），JavaScript 的 RegExp
+ * 解释不了，编译、长度与命名组引用一律交给 Python 加载器校验，两边不各写一份口径。
+ *
+ * @param personality 人设配置记录。
+ * @param path 用于错误信息的配置文件路径。
+ * @returns 规则列表；字段缺失（1.7.0 之前的配置）时为空数组。
+ * @throws Error 当字段不是表数组，或条目的 pattern、reaction 不是字符串、streams 不是字符串数组时抛出。
+ */
+function parseRegexRules(personality: Record<string, unknown>, path: string): RegexRuleConfig[] {
+  const raw = personality.regex_rules
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) {
+    throw new Error(`${path} 的 personality.regex_rules 必须写成 [[personality.regex_rules]] 表数组`)
+  }
+  return raw.map<RegexRuleConfig>((entry, index) => {
+    const rulePath = `${path} 的 personality.regex_rules[${index}]`
+    if (!isRecord(entry)) throw new Error(`${rulePath} 必须是表`)
+    const streams = entry.streams ?? []
+    if (!Array.isArray(streams) || !streams.every((value) => typeof value === 'string')) {
+      throw new Error(`${rulePath} 的 streams 必须是字符串数组`)
+    }
+    return {
+      pattern: stringAt(entry, 'pattern', rulePath),
+      reaction: stringAt(entry, 'reaction', rulePath),
+      streams: [...streams] as string[],
+    }
+  })
+}
+
+/**
  * 校验生日为空或为不晚于当前日期的真实日历日期。
  *
  * @param value 生日文本；空字符串表示未配置，非空值必须为 `YYYY-MM-DD`。
@@ -1477,6 +1511,7 @@ function readSplitConfig(directory: string): YueliConfig {
   }
   const birthday = stringAt(personality, 'birthday', botPath)
   assertBirthday(birthday, `${botPath} 的 personality.birthday`)
+  const regexRules = parseRegexRules(personality, botPath)
 
   // features.toml 的任务开关必须与模型路由分开读取，避免旧配置迁移时互相覆盖。
   const { document: features } = parseToml(featuresPath)
@@ -1520,6 +1555,7 @@ function readSplitConfig(directory: string): YueliConfig {
       engage_style: stringAtOr(personality, 'engage_style', '', botPath),
       tone_probability: toneProbability,
       tone_variants: [...toneVariants] as string[],
+      regex_rules: regexRules,
     },
     conversation,
     conversation_agent: conversationAgent,
@@ -2431,6 +2467,30 @@ ${cfg.models.map(modelBlock).join('\n\n')}
 }
 
 /**
+ * 渲染人设段末尾的正则规则。
+ *
+ * 子表必须放在 `[personality]` 全部键之后：TOML 一旦出现 `[[personality.regex_rules]]`，
+ * 其后的键都属于该子表。没有规则时写空数组而不是一个子表也不写——缺键会被 Python
+ * 升级器当成新字段，每次启动都再补一遍。
+ *
+ * @param rules 待写入的正则规则。
+ * @returns 不带结尾换行的 TOML 文本。
+ */
+function regexRulesBlock(rules: RegexRuleConfig[]): string {
+  if (rules.length === 0) {
+    return `# 正则规则：她要回的那句话命中正则时，把一种接法放进写正文的提示词；空数组表示没有规则
+regex_rules = []`
+  }
+  return rules.map((rule) => `[[personality.regex_rules]]
+# 匹配她要回的那句话的正则表达式（Python re 语法）
+pattern = ${tomlString(rule.pattern)}
+# 命中后给她看的句式；{名字} 换成命名组捕获的文字，〈〉由她按当下对话现编
+reaction = ${tomlString(rule.reaction)}
+# 生效会话 ID；留空表示所有会话
+streams = ${tomlStringArray(rule.streams)}`).join('\n\n')
+}
+
+/**
  * 将 Bot 身份、人格、群聊、日程和会话配置序列化为 `bot.toml`。
  *
  * @param cfg 完整运行时配置；使用其中的 Bot、群聊、日程、人格和会话字段。
@@ -2502,6 +2562,7 @@ tone_probability = ${cfg.personality.tone_probability}
 tone_variants = [
 ${tones}
 ]
+${regexRulesBlock(cfg.personality.regex_rules)}
 
 [conversation]
 # 每轮送进模型的最近消息条数，不含系统提示词

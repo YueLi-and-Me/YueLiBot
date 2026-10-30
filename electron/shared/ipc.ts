@@ -367,6 +367,21 @@ export interface PricePeriodConfig {
   cache_price_in: number | null
 }
 
+/**
+ * 一条正则规则：她要回的那句话命中时，把一种接法放进写正文的提示词。
+ *
+ * 正则按 Python `re` 语法写，编译、长度与命名组引用由 Python 加载器校验；
+ * Electron 只核对字段类型，不用 JavaScript 的 RegExp 解释它。
+ */
+export interface RegexRuleConfig {
+  /** 匹配她要回的那句话的正则表达式 */
+  pattern: string
+  /** 命中后给她看的句式；`{名字}` 引用命名组，〈〉由她现编 */
+  reaction: string
+  /** 生效会话的外部 ID；空数组表示所有会话 */
+  streams: string[]
+}
+
 /** models.toml 里的一个具体模型，只引用厂商名，不重复地址和密钥。 */
 export interface ModelDefinitionConfig {
   /** 配置内部模型名，必须唯一；任务的 model_list 写这个值 */
@@ -439,6 +454,8 @@ export interface YueliConfig {
     engage_style: string
     tone_probability: number
     tone_variants: string[]
+    /** 正则规则，写成 [[personality.regex_rules]]；空数组表示没有规则 */
+    regex_rules: RegexRuleConfig[]
   }
   conversation: {
     working_memory_messages: number

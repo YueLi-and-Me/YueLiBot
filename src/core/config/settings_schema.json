@@ -152,7 +152,7 @@
           "kind": "object",
           "key": "personality",
           "label": "人设与说话方式",
-          "description": "Bot 的稳定人设、生日、回复风格、接话方式和表达习惯候选。",
+          "description": "Bot 的稳定人设、生日、回复风格、接话方式、表达习惯候选和正则规则。",
           "fields": [
             {
               "key": "birthday",
@@ -192,6 +192,34 @@
               "type": "string_list",
               "label": "临时说话方式候选",
               "help": "候选的临时语调，每行一条，每次开口独立抽取至多一条；同次回复的多个气泡共用。"
+            },
+            {
+              "key": "regex_rules",
+              "type": "table_list",
+              "label": "正则规则",
+              "help": "匹配的是她这次要回的那句话（去掉表情包、图片等占位后的前 500 字）；命中时把反应提示当作一种接法放进写正文的提示词，接不接由她判断。一次最多用一条，同一会话里刚用过的规则 6 小时内越近越少用。",
+              "fields": [
+                {
+                  "key": "pattern",
+                  "type": "string",
+                  "label": "正则表达式",
+                  "required": true,
+                  "help": "Python 正则语法，不超过 200 个字符；要在反应提示里引用的部分用 (?P<n>…) 起名，组名只用英文字母、数字和下划线。"
+                },
+                {
+                  "key": "reaction",
+                  "type": "textarea",
+                  "label": "反应提示",
+                  "required": true,
+                  "help": "命中后给她看的句式，不会直接发出去，不超过 500 个字符；{n} 换成命名组 n 捕获到的文字，〈〉里的部分由她按当下对话现编。"
+                },
+                {
+                  "key": "streams",
+                  "type": "string_list",
+                  "label": "生效会话 ID",
+                  "help": "每行一个会话 ID，与「指定会话 ID」同一写法；留空表示所有会话都生效。"
+                }
+              ]
             }
           ]
         },

@@ -85,6 +85,7 @@ EVENT_LABELS: Dict[str, str] = {
     "emit_failed": "事件发送失败",
     "expression_select": "表达方式选择",
     "expression_select_failed": "表达方式选择失败",
+    "regex_rule": "正则规则",
     "foreground": "前台活动变化",
     "image_description": "图片理解",
     "video_description": "视频理解",
@@ -438,6 +439,8 @@ FIELD_LABELS: Dict[str, str] = {
     "repliesInWindow": "窗口内回复数",
     "result": "结果",
     "retryCount": "重试次数",
+    # 正则规则在 personality.regex_rules 里的序号，从 1 起。
+    "rule": "规则序号",
     # ReAct 回环里这是第几次认知往返；0 表示直接给出终局动作，没有先去检索。
     "roundIndex": "认知回合",
     "scene": "场景变化",
@@ -588,6 +591,10 @@ VALUE_LABELS: Dict[str, str] = {
     "silent": "保持沉默",
     "silent_by_choice": "主动选择沉默",
     "skipped": "已跳过",
+    # 正则规则 regex_rule 事件的三种结果。
+    "injected": "已注入",
+    "cooldown": "冷却中跳过",
+    "outvoted": "多条命中时落选",
     "stash": "暂存",
     "system": "系统",
     "timeout": "超时",

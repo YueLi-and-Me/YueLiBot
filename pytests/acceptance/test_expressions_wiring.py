@@ -33,6 +33,7 @@ from scripts.maintain.fix_expression_style_prefix import fix as fix_style_prefix
 from src.core.agent.expression import fetch_expression_pool
 from src.core.api.http import _delete_expressions
 from src.core.observe.store import search_events
+from src.core.runtime.clock import now as current_time
 
 # 直接调用 ``fetch_expression_pool`` 时使用的固定毫秒时钟。这些用例种的候选行
 # ``last_used_at`` 全为 NULL（冷却系数恒为 1），该值只用于满足新签名，不参与选择。
@@ -283,7 +284,7 @@ def test_empty_pool_emits_disabled_without_calling_model(db) -> None:
     chat = _chat(db, provider)
     context = chat.desktop_context
 
-    picked = asyncio.run(chat._pick_expression_habits(context, '在吗', [], None))
+    picked = asyncio.run(chat._pick_expression_habits(context, '在吗', [], None, now=current_time()))
 
     assert picked == []
     assert provider.calls == [], '候选池为空时不许调用模型'
@@ -299,7 +300,9 @@ def test_no_provider_keeps_legacy_disabled_event(db) -> None:
     """没有表达模型槽时维持旧形态：disabled，没有 pool/total 可报。"""
 
     chat = _chat(db, None)
-    picked = asyncio.run(chat._pick_expression_habits(chat.desktop_context, '在吗', [], None))
+    picked = asyncio.run(chat._pick_expression_habits(
+        chat.desktop_context, '在吗', [], None, now=current_time(),
+    ))
 
     assert picked == []
     events = _expression_select_events()
@@ -317,7 +320,7 @@ def test_nonempty_pool_emits_model_source_with_pool_and_total(db) -> None:
         db, context.stream.id, [(f'情境{i}', f'说法{i}', 1, 0) for i in range(15)],
     )
 
-    picked = asyncio.run(chat._pick_expression_habits(context, '在吗', [], None))
+    picked = asyncio.run(chat._pick_expression_habits(context, '在吗', [], None, now=current_time()))
 
     assert len(picked) == 2
     assert len(provider.calls) == 1
@@ -352,6 +355,7 @@ def test_responded_message_and_reference_enter_selection_prompt(db) -> None:
 
     picked = asyncio.run(chat._pick_expression_habits(
         context, '在吗', [], None,
+        now=current_time(),
         responded=('小明', '你桌面都有什么'),
         reference='他刚分享完桌面截图，想听她对桌面的评价',
     ))
@@ -374,7 +378,7 @@ def test_only_selected_rows_get_use_count_and_last_used_at(db) -> None:
         db, context.stream.id, [(f'情境{i}', f'说法{i}', 1, 1) for i in range(15)],
     )
 
-    picked = asyncio.run(chat._pick_expression_habits(context, '在吗', [], None))
+    picked = asyncio.run(chat._pick_expression_habits(context, '在吗', [], None, now=current_time()))
     assert len(picked) == 1
 
     changed = db.execute(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
+
 import random
 import sqlite3
 
@@ -239,14 +240,21 @@ def _trim_situation_time_suffix(situation: str) -> str:
     return text
 
 
-def render_expression_habits(samples: Sequence[ExpressionSample]) -> str:
-    """把选择器挑中的表达样本渲染为提示词中的注入文本块。
+def render_expression_habits(
+    samples: Sequence[ExpressionSample],
+    *,
+    reaction: Optional[str] = None,
+) -> str:
+    """把选择器挑中的表达样本与命中的正则规则渲染为提示词中的同一块注入文本。
 
-    :param samples: 已选中的表达样本序列；空序列表示本轮不注入该提示词块。
+    :param samples: 已选中的表达样本序列；空序列表示本轮没有表达样本。
+    :param reaction: 本回合命中并注入的正则规则反应提示（已替换命名组）；
+        ``None`` 表示没有规则注入。
 
-    :return: 说明行加「- 当{situation}时，可以套用：{style}」的项目列表；选中
-        条目里至少一条 style 带「〈角色〉」占位时，末尾追加一行换算说明。输入
-        为空时返回空字符串。旧条目没有〈角色〉，原样渲染。
+    :return: 有样本时为说明行加「- 当{situation}时，可以套用：{style}」的项目
+        列表；有规则时再接「【对方这句话的一种接法…】」与「- {reaction}」两行。
+        整块里只要有「〈」，末尾追加一行换算说明，且只出现一次。两者都没有时返回
+        空字符串。旧条目没有〈角色〉，原样渲染。
 
     学习侧要求 situation 以「…时 / …的时候」收尾，而模板固定补一个「时」，因此
     渲染前去掉一个结尾的「时 / 的时候」，避免出现「当时时」；无尾缀时输出与模板
@@ -255,17 +263,20 @@ def render_expression_habits(samples: Sequence[ExpressionSample]) -> str:
     :raises TypeError: 样本字段不是可格式化文本时由字符串格式化操作触发。
     """
 
-    if not samples:
-        return ''
-    lines = [
-        '【表达习惯参考，请视情况自然的使用】',
-        *[
+    lines: List[str] = []
+    if samples:
+        lines.append('【表达习惯参考，请视情况自然的使用】')
+        lines.extend(
             f'- 当{_trim_situation_time_suffix(sample.situation)}时，可以套用：{sample.style}'
             for sample in samples
-        ],
-    ]
+        )
+    # 规则只是对方那句话的一种接法：写明接不接由她判断，不写「优先参考」这类
+    # 强制措辞，否则每次命中都会被硬套。
+    if reaction is not None:
+        lines.append('【对方这句话的一种接法，接不接由你判断，不合适就当没看到】')
+        lines.append(f'- {reaction}')
     # 〈角色〉是学习侧把「这次成立的人和物」抽象成占位符的写法；不提示换算，
-    # 模型会把〈提出设想的人〉原样说进回复里。
-    if any('〈' in sample.style for sample in samples):
+    # 模型会把〈提出设想的人〉原样说进回复里。规则的〈〉同理，两者共用一行说明。
+    if any('〈' in line for line in lines):
         lines.append('〈〉里换成这次对话里对应的人和事；只借说法的结构，不要照搬原话。')
     return '\n'.join(lines)

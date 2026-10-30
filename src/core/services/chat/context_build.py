@@ -29,6 +29,7 @@ from src.core.agent.history import (
 from src.core.agent.jargon import lookup_jargon
 from src.core.agent.profile import profiles_for_injection
 from src.core.agent.prompt import build_itemized_system_prompt, build_system_prompt
+from src.core.agent.regex_rule import match_regex_rules
 from src.core.llm_models.openai import LlmError
 from src.core.llm_models.snapshot import dump as dump_llm_request
 from src.core.logging.logger import get_logger
@@ -89,6 +90,7 @@ class ContextBuildMixin:
         history: list[dict[str, str]],
         signal: asyncio.Event | None,
         *,
+        now: int,
         responded: tuple[str, str] | None = None,
         reference: str | None = None,
     ) -> list[ExpressionSample]:
@@ -98,6 +100,8 @@ class ContextBuildMixin:
         :param query: 当前用户文本或主动情境。
         :param history: 已组装的对话历史。
         :param signal: 可选的取消信号。
+        :param now: 本次渲染的毫秒时钟值；取池判定冷却与回写 ``last_used_at``
+            都用它，写正文时正则规则回写冷却表也用同一个值。
         :param responded: 可选，被回应的消息 (发送者显示名, 消息正文)；只用于
             描述情境对接关系，不携带 style。
         :param reference: 可选，决策给出的回复背景；同样只描述情境。
@@ -110,12 +114,11 @@ class ContextBuildMixin:
         if self._expression_selector is None:
             trace.emit('expression_select', source='disabled', count=0)
             return []
-        # 取池判定冷却与回写 last_used_at 必须共用同一个时钟值：各取一次 now
+        # 取池判定冷却与回写 last_used_at 必须共用同一个时钟值 now：各取一次
         # 会让回写值略晚于判定时用的时间，冷却窗口边界处多差几毫秒。
-        used_at = current_time()
         # 候选池按会话按轮现取；不足一池（含从未积累过表达方式的会话）或
         # 全部条目都在冷却时本轮不选，不调用模型。
-        pool, total = fetch_expression_pool(self._db, context.stream.id, now=used_at)
+        pool, total = fetch_expression_pool(self._db, context.stream.id, now=now)
         if not pool:
             trace.emit('expression_select', source='disabled', count=0, pool=0, total=total)
             return []
@@ -142,7 +145,7 @@ class ContextBuildMixin:
             self._db.executemany(
                 'UPDATE expressions SET use_count = use_count + 1, last_used_at = ?'
                 ' WHERE id = ?',
-                [(used_at, sample.id) for sample in picked],
+                [(now, sample.id) for sample in picked],
             )
             self._db.commit()
         trace.emit(
@@ -155,6 +158,45 @@ class ContextBuildMixin:
                     for sample in picked],
         )
         return picked
+
+    def _pick_regex_reaction(
+        self,
+        context: ConversationContext,
+        responded: tuple[str, str] | None,
+        now: int,
+    ) -> str | None:
+        """用她要回的那句话匹配正则规则，挑出这次要注入的接法。
+
+        只服务写正文的那次渲染：决策层看不到规则，要不要开口照旧由决策层判断。
+        规则每回合从当前配置读，热重载后立即生效。
+
+        :param context: 当前会话上下文；规则的生效会话按 ``stream.external_id`` 比对，
+            冷却按 ``stream.id`` 各算。
+        :param responded: 被回应的消息 (发送者显示名, 消息正文)；没有回应对象
+            （主动开口、旧管线、合并调用）时为 ``None``，此时不匹配、不发事件。
+        :param now: 本次渲染的毫秒时钟值，与表达方式回写 ``last_used_at`` 同一个值。
+        :return: 替换后的反应提示；没有回应对象、没有命中或命中的都在冷却时为 ``None``。
+        副作用：注入时把 ``(pattern, stream_id)`` 的冷却时间写成 ``now``；每条命中规则
+            发一个 ``regex_rule`` 事件，事件里不放消息正文。
+        """
+        if responded is None:
+            return None
+        stream = context.stream
+        result = match_regex_rules(
+            self._cfg.personality.regex_rules,
+            responded[1],
+            stream_external_id=stream.external_id,
+            stream_id=stream.id,
+            now=now,
+            cooldowns=self._regex_rule_cooldowns,
+            rng=self._regex_rule_rng,
+        )
+        for outcome in result.outcomes:
+            # 渲染进提示词才算用过：结果随本次系统提示词一并发出，因此在这里回写。
+            if outcome.result == 'injected':
+                self._regex_rule_cooldowns[(outcome.pattern, stream.id)] = now
+            trace.emit('regex_rule', streamId=stream.id, rule=outcome.rule, result=outcome.result)
+        return result.reaction
 
     def _expression_selection_failed(
         self,
@@ -666,10 +708,11 @@ class ContextBuildMixin:
         :param protocol_text: 可选的 Agent 动作协议文本；透传给系统提示词
             渲染，使动作头先于正文成为唯一输出协议。
         :param responded_message: 可选，被回应的消息 (发送者显示名, 消息正文)；
-            原样传给表达选择器，只描述情境对接关系。
+            原样传给表达选择器，只描述情境对接关系；其正文同时用来匹配正则规则。
         :param reference: 可选，决策给出的回复背景；原样传给表达选择器。
         :return: 使用增强后事实排序和表达习惯渲染的最终模型消息。
-        副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID。
+        副作用：调用向量与表达模型，并强化最终实际用于回复的事实 ID；正则规则
+            注入时回写冷却表并发 ``regex_rule`` 事件。
         """
         query_embedding = await self._vector.embed_query(prepared.query)
         limit = int(tuned_value('fact_recall_limit', self._fact_recall_limit))
@@ -691,15 +734,21 @@ class ContextBuildMixin:
             ))
         facts = self.memory.rank_recalled_facts(candidates, query_embedding, limit)
         self.memory.reinforce_recalled_facts(facts, prepared.now)
+        # 表达方式回写 last_used_at 与正则规则回写冷却表共用这一个时钟值。
+        used_at = current_time()
+        samples = await self._pick_expression_habits(
+            prepared.context,
+            prepared.query,
+            prepared.raw_history,
+            signal,
+            now=used_at,
+            responded=responded_message,
+            reference=reference,
+        )
+        # 正则规则拼在表达方式那块后面，进同一个 expression_habits 参数。
         expression_habits = render_expression_habits(
-            await self._pick_expression_habits(
-                prepared.context,
-                prepared.query,
-                prepared.raw_history,
-                signal,
-                responded=responded_message,
-                reference=reference,
-            )
+            samples,
+            reaction=self._pick_regex_reaction(prepared.context, responded_message, used_at),
         )
         return self._render_prepared_context(
             prepared,

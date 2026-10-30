@@ -395,14 +395,15 @@ def _write_nested_tables(
     fields: List[Dict[str, Any]],
     values: Dict[str, Any],
 ) -> None:
-    """把条目内 ``table_list`` 类型的字段写成 ``[[父表.字段]]`` 子表数组。
+    """把条目或配置段内 ``table_list`` 类型的字段写成 ``[[父表.字段]]`` 子表数组。
 
     子表必须写在父条目的全部键之后：TOML 一旦出现 ``[[models.price_periods]]``，
     其后的键都属于该子表，再写父条目的键会落进错误的表。空列表不写任何子表，
-    读回时由模型默认值补成空列表。
+    读回时由模型默认值补成空列表；普通配置段的空列表另由
+    :func:`_write_empty_table_lists` 写成 ``键 = []``。
 
     :param lines: 输出行缓冲，就地追加。
-    :param parent: 父表数组名，如 ``models``。
+    :param parent: 父表名，如表数组 ``models`` 或配置段 ``personality``。
     :param fields: 父条目的 schema 字段列表。
     :param values: 父条目当前的业务字段值。
     :return: 无返回值，通过 ``lines`` 带回结果。
@@ -421,6 +422,34 @@ def _write_nested_tables(
                 continue
             lines.append(f'{header} # {help_text}' if help_text else header)
             _write_fields(lines, field.get('fields', []), item)
+
+
+def _write_empty_table_lists(
+    lines: List[str],
+    fields: List[Dict[str, Any]],
+    values: Dict[str, Any],
+) -> None:
+    """把普通配置段里为空的 ``table_list`` 字段写成 ``键 = []``。
+
+    普通配置段的字段由升级器逐个对账（``upgrade._diff_section``）：空列表若一个
+    子表也不写，文件里就没有这个键，下次启动会被当成新增字段再补一遍，控制台
+    每次都报一次「配置变更」。条目内的子表（如 ``models.price_periods``）不走这里：
+    升级器把条目当叶子，不对账条目内的字段。
+
+    必须在任何 ``[[父表.字段]]`` 之前调用：子表一旦出现，其后的键都属于该子表。
+
+    :param lines: 输出行缓冲，就地追加。
+    :param fields: 该段的 schema 字段列表。
+    :param values: 该段当前的业务字段值。
+    :return: 无返回值，通过 ``lines`` 带回结果。
+    副作用：向 ``lines`` 追加空数组行。
+    """
+    for field in fields:
+        if field.get('type') != 'table_list' or values.get(field.get('key', '')) != []:
+            continue
+        help_text = str(field.get('help', '')).strip()
+        line = f'{field["key"]} = []'
+        lines.append(f'{line} # {help_text}' if help_text else line)
 
 
 def _section_header(key: str, label: str, description: str) -> List[str]:
@@ -554,7 +583,11 @@ def _write_documented_toml(
         fields = section.get('fields', [])
         if kind == 'object':
             lines.extend(_section_header(key, label, description))
-            _write_fields(lines, fields, _section_values(document, key))
+            values = _section_values(document, key)
+            _write_fields(lines, fields, values)
+            # 段内的子表数组（如 personality.regex_rules）写在本段全部键之后。
+            _write_empty_table_lists(lines, fields, values)
+            _write_nested_tables(lines, key, fields, values)
             lines.append('')
         elif kind == 'map':
             entries = section.get('entries', [])

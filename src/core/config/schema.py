@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 # 配置格式版本的唯一定义处。loader 从这里导入，不再各写一份——两处必须始终
 # 相等却分开写，改一个漏一个不会报错，只会让校验口径和写入口径悄悄分家。
-CONFIG_VERSION = '1.6.0'
+CONFIG_VERSION = '1.7.0'
 
 
 class InnerConfig(BaseModel):
@@ -38,6 +38,7 @@ class InnerConfig(BaseModel):
     # 1.4.0 新增 conversation.private_facts_in_group，控制私聊来源事实能否进群聊。
     # 1.6.0 将 schedule.sleep_enabled 改为 energy_enabled，关闭时冻结精力。
     # 1.5.0 新增 [memory_feedback] 段：反馈纠错链路，15 项默认全关。
+    # 1.7.0 新增 personality.regex_rules：对方那句话命中正则时给她一种接法，默认没有规则。
     #
     # [developer] 段（开发者命令通道）**有意不 bump 版本号**：它整段可选、缺失即关闭，
     # 而且 bootstrap 生成初始配置时会显式剔除它——用户文件里永远不会出现这一段，
@@ -51,7 +52,7 @@ class InnerConfig(BaseModel):
     # 时必须同步修改这里与 electron/main/config.ts 并 bump 版本：Python 对账虽然
     # 能按当前模型删掉不认识的字段，版本号才是 Electron 重写路径与「这份文件已
     # 按新结构解释过」的共同判据，不 bump 会让整份重写路径不触发。
-    version: Literal['1.6.0'] = CONFIG_VERSION
+    version: Literal['1.7.0'] = CONFIG_VERSION
 
 
 class BotConfig(BaseModel):
@@ -285,6 +286,32 @@ class ScheduleConfig(BaseModel):
         return normalized
 
 
+# 正则规则的长度上限。正则由管理员自己填，标准库 re 没有超时，灾难性回溯只靠
+# 长度上限压住；反应提示会原样进写正文的提示词，过长会挤占提示词预算。
+REGEX_RULE_PATTERN_MAX_CHARS = 200
+REGEX_RULE_REACTION_MAX_CHARS = 500
+# 反应提示里引用命名组的写法：只认 {名字}，名字为英文字母、数字与下划线且不以
+# 数字开头。不用 str.format：反应提示里的其他花括号要原样保留。
+REACTION_GROUP_REFERENCE = re.compile(r'\{([A-Za-z_][A-Za-z0-9_]*)\}')
+
+
+class RegexRuleConfig(BaseModel):
+    """一条正则规则：对方那句话命中时，给她看一种接法。
+
+    字段之间的校验（能否编译、长度、命名组引用）放在 :class:`PersonalityConfig`
+    上逐条做，这样报错能指明是第几条。
+
+    :ivar pattern: 用 ``re.search`` 匹配她要回的那句话的正则表达式。
+    :ivar reaction: 命中后进写正文提示词的句式提示，不会直接当消息发出去；
+        ``{名字}`` 换成命名组捕获到的文字，〈〉由她按当下对话现编。
+    :ivar streams: 生效会话的外部 ID；留空表示所有会话都生效。
+    """
+
+    pattern: str
+    reaction: str
+    streams: List[str] = Field(default_factory=list)
+
+
 class PersonalityConfig(BaseModel):
     """用户可以在 bot.toml 完整改写的人设与说话风格。"""
 
@@ -296,6 +323,9 @@ class PersonalityConfig(BaseModel):
     engage_style: str = ''
     tone_probability: float = Field(ge=0.0, le=1.0)
     tone_variants: List[str]
+    # 正则规则：她要回的那句话命中时，把一种接法放进写正文的提示词。只进写正文，
+    # 决策层看不到；老配置缺这一项时等于没有规则，由升级器补进老配置。
+    regex_rules: List[RegexRuleConfig] = Field(default_factory=list)
 
     @model_validator(mode='before')
     @classmethod
@@ -359,6 +389,52 @@ class PersonalityConfig(BaseModel):
         if any(not variant for variant in normalized):
             raise ValueError('personality 的文本列表不能包含空字符串')
         return normalized
+
+    @model_validator(mode='after')
+    def _validate_regex_rules(self) -> 'PersonalityConfig':
+        """逐条校验正则规则，并规范化反应提示与生效会话。
+
+        加载与 WebUI 保存都经过这里，报错写明第几条、什么问题：WebUI 保存失败时
+        页面直接显示这段文字。正则本身不去空白，空白在正则里是有意义的字符。
+
+        :return: 当前完成校验的模型实例。
+        :raises ValueError: 正则为空、超长或无法编译；反应提示为空、超长或引用了
+            正则里没有的命名组；生效会话含空字符串。
+        副作用：把每条规则的 ``reaction`` 与 ``streams`` 条目去除首尾空白。
+        """
+        for index, rule in enumerate(self.regex_rules):
+            label = f'personality.regex_rules 第 {index + 1} 条'
+            if not rule.pattern.strip():
+                raise ValueError(f'{label}的 pattern 不能为空')
+            if len(rule.pattern) > REGEX_RULE_PATTERN_MAX_CHARS:
+                raise ValueError(
+                    f'{label}的 pattern 有 {len(rule.pattern)} 个字符，'
+                    f'不能超过 {REGEX_RULE_PATTERN_MAX_CHARS} 个'
+                )
+            try:
+                compiled = re.compile(rule.pattern)
+            except (OverflowError, re.error) as exc:
+                raise ValueError(f'{label}的 pattern 无法编译：{exc}') from exc
+            rule.reaction = rule.reaction.strip()
+            if not rule.reaction:
+                raise ValueError(f'{label}的 reaction 不能为空')
+            if len(rule.reaction) > REGEX_RULE_REACTION_MAX_CHARS:
+                raise ValueError(
+                    f'{label}的 reaction 有 {len(rule.reaction)} 个字符，'
+                    f'不能超过 {REGEX_RULE_REACTION_MAX_CHARS} 个'
+                )
+            unknown = sorted(
+                set(REACTION_GROUP_REFERENCE.findall(rule.reaction)) - set(compiled.groupindex)
+            )
+            if unknown:
+                raise ValueError(
+                    f'{label}的 reaction 引用了 pattern 里没有的命名组：'
+                    + '、'.join(f'{{{name}}}' for name in unknown)
+                )
+            rule.streams = [stream.strip() for stream in rule.streams]
+            if any(not stream for stream in rule.streams):
+                raise ValueError(f'{label}的 streams 不能包含空字符串')
+        return self
 
 
 class ConversationConfig(BaseModel):
