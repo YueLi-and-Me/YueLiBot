@@ -413,7 +413,7 @@ class PersonalityConfig(BaseModel):
                 )
             try:
                 compiled = re.compile(rule.pattern)
-            except re.error as exc:
+            except (OverflowError, re.error) as exc:
                 raise ValueError(f'{label}的 pattern 无法编译：{exc}') from exc
             rule.reaction = rule.reaction.strip()
             if not rule.reaction:

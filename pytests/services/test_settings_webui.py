@@ -289,6 +289,7 @@ def test_regex_rules_round_trip_through_save(config_copy: Path) -> None:
 
 @pytest.mark.parametrize(('rule', 'reason'), [
     ({'pattern': '(?P<n>未闭合', 'reaction': '{n}', 'streams': []}, '无法编译'),
+    ({'pattern': 'a{4294967296}', 'reaction': '回一句', 'streams': []}, '无法编译'),
     ({'pattern': '喵' * 201, 'reaction': '回一句', 'streams': []}, '200'),
     ({'pattern': r'(?P<who>\S+)来了', 'reaction': '{what}也来了', 'streams': []}, 'what'),
 ])

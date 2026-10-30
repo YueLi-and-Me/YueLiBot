@@ -96,6 +96,16 @@ class TestValidation:
         assert 'regex_rules 第 1 条' in message
         assert '200' in message
 
+    def test_overflowing_repeat_names_rule_and_compile_reason(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            PersonalityConfig.model_validate(_personality(regex_rules=[
+                _rule(), _rule('a{4294967296}'),
+            ]))
+
+        message = str(caught.value)
+        assert 'regex_rules 第 2 条' in message
+        assert '无法编译' in message
+
     def test_pattern_at_length_limit_is_accepted(self) -> None:
         config = PersonalityConfig.model_validate(_personality(regex_rules=[_rule('喵' * 200)]))
 
