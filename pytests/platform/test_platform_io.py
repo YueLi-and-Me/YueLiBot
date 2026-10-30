@@ -6,16 +6,17 @@
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from typing import Any, List
+
+import json
 
 import pytest
 
 from src.core.config.schema import GroupChatConfig
 from src.core.platform_io.broker import PlatformBroker
 from src.core.platform_io.driver import DeliveryError, PlatformDriver
-from src.core.platform_io.types import DeliveryReceipt, OutboundMessage, StreamRef
+from src.core.platform_io.types import ConversationContext, DeliveryReceipt, OutboundMessage, StreamRef
 
 class _Driver(PlatformDriver):
     platform = 'qq'
@@ -100,6 +101,11 @@ class _Chat:
 
     def bot_names(self) -> tuple[str, ...]:
         return ('配置名称', '配置别名')
+
+    def regex_rule_matches(self, context: ConversationContext, text: str) -> bool:
+        """本组平台契约用例没有正则规则，普通聊天沿原有门控判定。"""
+        del context, text
+        return False
 
     def follow_up_declined(self, stream_id: int) -> bool:
         return self.declined

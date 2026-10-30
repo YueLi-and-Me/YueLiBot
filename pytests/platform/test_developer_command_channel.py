@@ -23,7 +23,7 @@ from src.core.memory.store import MemoryStore
 from src.core.observe.store import event_store
 from src.core.platform_io.registry import StreamRegistry
 from src.core.platform_io.driver import DeliveryError
-from src.core.platform_io.types import DeliveryReceipt, OutboundMessage
+from src.core.platform_io.types import ConversationContext, DeliveryReceipt, OutboundMessage
 from src.core.services.chat import ChatService, _DirectFollowUpState
 
 
@@ -39,6 +39,11 @@ class _ChatSpy:
 
     def bot_names(self) -> Tuple[str, ...]:
         return ('月璃',)
+
+    def regex_rule_matches(self, context: ConversationContext, text: str) -> bool:
+        """本组命令通道用例没有正则规则，普通聊天沿原有门控判定。"""
+        del context, text
+        return False
 
     def current_sleep(self) -> SimpleNamespace:
         return SimpleNamespace(asleep=False, level='awake')
