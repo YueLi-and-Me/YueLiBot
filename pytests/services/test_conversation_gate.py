@@ -86,6 +86,27 @@ def test_name_mention_enters_deliberate_without_forced_reply() -> None:
     assert 'name_mention' in result.reason_codes
 
 
+def test_regex_match_enters_deliberate_without_addressing_bot() -> None:
+    """正则命中只增加候选机会，仍允许 Agent 选择沉默。"""
+    result = decide_disposition(_request(regex_rule_matched=True))
+
+    assert result.disposition == 'deliberate'
+    assert result.reason_codes == ('regex_rule_match',)
+
+
+@pytest.mark.parametrize(('overrides', 'reason'), [
+    ({'sleep_level': 'deep'}, 'deep_sleep'),
+    ({'sleep_level': 'light'}, 'light_sleep'),
+    ({'replies_in_window': 3}, 'rate_limited'),
+    ({'is_self_message': True}, 'self_message'),
+])
+def test_regex_match_preserves_hard_gate_boundaries(overrides: dict, reason: str) -> None:
+    result = decide_disposition(_request(regex_rule_matched=True, **overrides))
+
+    assert result.disposition == 'drop'
+    assert result.reason_codes == (reason,)
+
+
 def test_asleep_group_is_dropped() -> None:
     """群聊休眠时 DROP，不调用模型。"""
     result = decide_disposition(_request(sleep_level='light'))

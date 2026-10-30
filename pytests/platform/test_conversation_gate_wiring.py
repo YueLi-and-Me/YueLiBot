@@ -17,7 +17,7 @@ from src.core.api.http import (
 )
 from src.core.api.state import app_state
 from src.core.runtime.clock import now as current_time
-from src.core.config.schema import Config
+from src.core.config.schema import Config, RegexRuleConfig
 from src.core.observe.store import event_store
 from src.core.platform_io.registry import StreamRegistry
 from src.core.services.chat import ChatService
@@ -154,6 +154,35 @@ async def test_name_mention_enters_deliberate_and_buffers(db: sqlite3.Connection
     gates = event_store.search(kinds=["reply_gate"]).events
     assert gates[-1]['disposition'] == 'deliberate'
     assert gates[-1]['reasonCodes'] == ['name_mention']
+
+
+async def test_regex_match_enters_deliberate_without_name_or_at(db: sqlite3.Connection) -> None:
+    """普通群消息命中后在入口放行；候选检测不注入反应提示、不消耗冷却。"""
+    config = Config()
+    config.conversation_agent.mode = 'enabled'
+    config.personality.regex_rules = [RegexRuleConfig(pattern='^猫是这样的$', reaction='接一句')]
+    chat, prev_chat, prev_registry, prev_register, prev_group_chat = _install(
+        db, config, _NoopProvider(),
+    )
+    try:
+        response = await platform_inbound(_body('[表情包：猫] 猫是这样的'))
+    finally:
+        app_state.chat = prev_chat
+        app_state.registry = prev_registry
+        app_state.register_platform_stream = prev_register
+        app_state.group_chat_config = prev_group_chat
+
+    payload = json.loads(response.body)
+    assert payload['accepted'] is True
+    assert payload['reason'] == 'regex_rule_match'
+    assert len(chat._buffers) == 1
+    assert chat._regex_rule_cooldowns == {}
+    assert event_store.search(kinds=['regex_rule']).events == []
+    gate = event_store.search(kinds=['reply_gate']).events[-1]
+    assert gate['disposition'] == 'deliberate'
+    assert gate['regexRuleMatched'] is True
+    assert gate['mentionedMe'] is False
+    assert gate['nameMentioned'] is False
 
 
 async def test_poke_skips_synthetic_name_and_over_limit_arrival_drops(

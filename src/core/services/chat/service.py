@@ -1456,6 +1456,10 @@ class ChatService(
                 poked_me=inbound.poked_me, pokes_in_window=inbound.pokes_in_window,
                 name_mentioned=inbound.name_mentioned,
                 replied_to_me=inbound.replied_to_me,
+                regex_rule_matched=any(
+                    not message.poked_me and self.regex_rule_matches(message.context, message.text)
+                    for message in batch
+                ),
                 sender_person_ids=[message.context.person.id for message in batch],
             )
             if sleep_gate.result.disposition == 'drop':
@@ -1580,6 +1584,12 @@ class ChatService(
                     pokes_in_window=inbound.pokes_in_window,
                     name_mentioned=inbound.name_mentioned,
                     replied_to_me=inbound.replied_to_me,
+                    # 按单条正文匹配：拼接批次会让 ^/$ 锚点失效，也会漏掉后续消息。
+                    regex_rule_matched=any(
+                        not message.poked_me
+                        and self.regex_rule_matches(message.context, message.text)
+                        for message in materialized_batch
+                    ),
                     sender_person_ids=[
                         message.context.person.id for message in materialized_batch
                     ],

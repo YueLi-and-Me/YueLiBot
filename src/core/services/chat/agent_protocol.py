@@ -63,6 +63,7 @@ class AgentProtocolMixin:
             candidate_message_ids=frame.selectable_message_ids,
             selectable_message_ids=frame.selectable_message_ids,
             reply_to_bot=batch_gate.replied_to_me,
+            regex_rule_matched=batch_gate.regex_rule_matched,
         )
 
     def _selectable_message_previews(

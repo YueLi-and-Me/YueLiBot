@@ -10,7 +10,7 @@ import time
 
 from src.core.agent.conversation_gate import ONGOING_TOPIC_MESSAGE_SPAN
 from src.core.runtime.clock import now as current_time
-from src.core.config.schema import Config
+from src.core.config.schema import Config, RegexRuleConfig
 from src.core.observe.store import event_store
 from src.core.platform_io.forward import (
     ForwardMessagePart,
@@ -1520,3 +1520,38 @@ async def test_batch_gate_reads_name_fact_not_quote_preview(db) -> None:
     assert shadow_events[0]["inputs"]["nameMentioned"] is False
     assert shadow_events[0]["inputs"]["replyToBot"] is True
     assert "name_mention" not in shadow_events[0]["gate"]["reasonCodes"]
+
+
+@pytest.mark.parametrize('trigger_mode', ['signal', 'frequency', 'reply_necessity'])
+async def test_regex_candidate_reaches_decision_and_can_stay_silent(db, trigger_mode: str) -> None:
+    """逐条匹配批次中的任意消息，绕过普通触发筛选，但不强制模型开口。"""
+    config = Config()
+    config.conversation_agent.mode = 'enabled'
+    config.conversation_agent.trigger_mode = trigger_mode
+    config.personality.regex_rules = [
+        RegexRuleConfig(pattern='^猫是这样的$', reaction='只在正文里出现的规则提示'),
+    ]
+    provider = _ScriptedProvider([
+        ['<decision action="silent" mind="测试想法" reasons="others_conversation"/>'],
+    ])
+    broker = _FakeBroker()
+    chat = ChatService(db, provider, None, None, _noop, cfg=config, broker=broker)
+    context = _group_context(chat._registry)
+    # 即使反应提示尚在冷却中，命中本身仍然可以进入是否开口的决策。
+    cooldown_key = ('^猫是这样的$', context.stream.id)
+    chat._regex_rule_cooldowns[cooldown_key] = current_time()
+    before = dict(chat._regex_rule_cooldowns)
+    await chat.send(InboundMessage(text='猫是这样的', context=context))
+    await chat.send(InboundMessage(text='随后是另一条普通消息', context=context))
+    await chat._tick()
+    await chat._inflight[context.stream.id].task
+
+    assert provider.calls == 1
+    event = _action_events()[0]
+    assert event['gate']['reasonCodes'] == ['regex_rule_match']
+    assert event['inputs']['regexRuleMatched'] is True
+    assert event['eventStatus'] == 'silent_by_choice'
+    assert broker.dispatched == []
+    assert chat._regex_rule_cooldowns == before
+    assert event_store.search(kinds=['regex_rule']).events == []
+    assert all('只在正文里出现的规则提示' not in str(messages) for messages in provider.messages)

@@ -62,6 +62,7 @@ DELIBERATE_GATE_CODES: frozenset[str] = frozenset({
     'recognizable_target',     # 批次含可识别目标
     'frequency_budget',        # 频率预算已攒够，进入一次候选
     'reply_necessity',         # 回复必要性评分达到阈值
+    'regex_rule_match',        # 普通群消息命中管理员配置的正则规则
 })
 
 # Bot 上一条回复后的自然跟进窗口。只在这一短时限内允许把普通群消息抬入
@@ -144,6 +145,8 @@ class GateRequest:
     # 按 Bot 的生效动作维护，按场面取批时批内任一发送者是即为真。跟进窗口只对这些人
     # 放行；进程里还没有生效回合时为假。
     from_recent_partner: bool = False
+    # 正则命中只产生候选机会，不算直接点名，也不绕过睡眠或回复频率上限。
+    regex_rule_matched: bool = False
 
     def __post_init__(self) -> None:
         """拒绝负计数、零窗口上限与负回复间隔，防止频率比较被错误输入翻转。"""
@@ -264,6 +267,8 @@ def decide_disposition(request: GateRequest) -> GateResult:
     #   频率边界没有放宽。
     if not codes and request.replies_in_window >= request.max_replies_in_window:
         return GateResult('drop', ('rate_limited',))
+    if request.regex_rule_matched:
+        codes.append('regex_rule_match')
     if request.pending_thread_available:
         codes.append('pending_thread')
     if request.is_clear_question:

@@ -610,6 +610,7 @@ VALUE_LABELS: Dict[str, str] = {
     "frequency_wait": "发言频率未攒够",
     "low_necessity": "回复必要性不足",
     "reply_necessity": "回复必要性达线",
+    "regex_rule_match": "正则规则命中",
     "bot_sleeping": "机器人正在睡觉",
     "direct_question": "明确提问",
     "directly_addressed": "直接叫到机器人",

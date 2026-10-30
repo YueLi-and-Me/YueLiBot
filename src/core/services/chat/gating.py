@@ -18,6 +18,7 @@ from src.core.agent.reply_necessity import (
     frequency_trigger_threshold,
     score_reply_necessity,
 )
+from src.core.agent.regex_rule import has_matching_regex_rule
 from src.core.platform_io.types import ConversationContext
 from src.core.runtime.clock import now as current_time
 
@@ -25,6 +26,20 @@ from .state import _BatchGate
 
 
 class BatchGateMixin:
+
+    def regex_rule_matches(self, context: ConversationContext, text: str) -> bool:
+        """检查群聊消息是否命中生效规则，只在已启用行动决策的范围内产生候选。
+
+        :param context: 消息所属会话；会话范围同时服从行动核心灰度配置与规则 streams。
+        :param text: 单条消息正文，不能传入多条消息拼接后的批次文本。
+        :return: 可交给行动核心考虑、且至少命中一条规则时为真。
+        副作用：无；不注入提示、不发使用事件、不消耗冷却。
+        """
+        if context.stream.kind != 'group' or not self.extended_trigger_enabled(context):
+            return False
+        return has_matching_regex_rule(
+            self._cfg.personality.regex_rules, text, context.stream.external_id,
+        )
 
     def _batch_gate(
         self,
@@ -37,6 +52,7 @@ class BatchGateMixin:
         pokes_in_window: int = 0,
         name_mentioned: bool = False,
         replied_to_me: bool = False,
+        regex_rule_matched: bool = False,
         sender_person_ids: Sequence[int],
     ) -> _BatchGate:
         """按本批合并事实重算三态门控；只读取确定性输入，不调用模型。
@@ -55,6 +71,7 @@ class BatchGateMixin:
         :param pokes_in_window: 本批戳一戳在入口信号窗口内的到达序号；无戳一戳时为 0。
         :param name_mentioned: 本批是否有消息在用户亲手写的文字里叫了她的名字/别名。
         :param replied_to_me: 本批是否包含「回复了她的消息」。
+        :param regex_rule_matched: 本批至少一条消息命中生效正则；逐条匹配后取任一为真。
         :param sender_person_ids: 本批消息的发送者。任一人是她最近一次生效回合回应过
             的人，跟进窗口即对本批放行；与入口门控读同一份事实。
         :return: 门控结果与全部判定输入事实。
@@ -96,6 +113,7 @@ class BatchGateMixin:
                 self.is_recent_partner(context.stream.id, person_id)
                 for person_id in sender_person_ids
             ),
+            regex_rule_matched=regex_rule_matched,
         ))
         plain_group_drop = (
             context.stream.kind == 'group'
@@ -124,6 +142,7 @@ class BatchGateMixin:
             mentioned_me=mentioned_me,
             last_bot_reply_elapsed_ms=last_bot_reply_elapsed_ms,
             replied_to_me=replied_to_me,
+            regex_rule_matched=regex_rule_matched,
         )
 
     def _extended_group_gate(

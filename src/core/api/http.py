@@ -709,6 +709,9 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
     from_recent_partner = app_state.chat.is_recent_partner(
         context.stream.id, context.person.id,
     )
+    regex_rule_matched = (
+        not body.poked_me and app_state.chat.regex_rule_matches(context, body.text)
+    )
     gate_result = decide_disposition(GateRequest(
         stream_kind=context.stream.kind,
         mentioned_me=body.mentioned_me,
@@ -727,6 +730,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         # 门控态会与真正生效的批次判定不一致，现场无法据事件还原真实路径。
         follow_up_declined=app_state.chat.follow_up_declined(context.stream.id),
         from_recent_partner=from_recent_partner,
+        regex_rule_matched=regex_rule_matched,
     ))
     plain_group_deferred = (
         context.stream.kind == 'group'
@@ -751,6 +755,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
         sleepLevel=sleep.level,
         mentionedMe=body.mentioned_me,
         nameMentioned=name_mentioned,
+        regexRuleMatched=regex_rule_matched,
         pokedMe=body.poked_me,
         pokesInWindow=pokes_in_window,
         replyToBot=body.replied_to_me,
@@ -800,6 +805,7 @@ async def platform_inbound(body: PlatformInboundBody) -> JSONResponse:
                 candidate_message_ids=(message_id,),
                 selectable_message_ids=(),
                 reply_to_bot=body.replied_to_me,
+                regex_rule_matched=regex_rule_matched,
             ),
             gate_disposition=gate_result.disposition,
             gate_reason_codes=gate_result.reason_codes,

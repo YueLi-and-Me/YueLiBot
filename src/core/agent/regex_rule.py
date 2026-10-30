@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Literal, Optional, Sequence, Tuple
 
 import random
 import re
@@ -61,6 +61,37 @@ class RuleMatch:
 
     reaction: Optional[str]
     outcomes: List[RuleOutcome]
+
+
+def _matching_rules(
+    rules: Sequence[RegexRuleConfig],
+    text: str,
+    stream_external_id: str,
+) -> Iterator[Tuple[int, RegexRuleConfig, re.Match[str]]]:
+    """按会话范围清洗并匹配单条消息，供候选入口与正文注入共用。"""
+    subject = strip_machine_spans(text).strip()[:REGEX_RULE_TEXT_LIMIT]
+    for index, rule in enumerate(rules, start=1):
+        if rule.streams and stream_external_id not in rule.streams:
+            continue
+        match = re.search(rule.pattern, subject)
+        if match is not None:
+            yield index, rule, match
+
+
+def has_matching_regex_rule(
+    rules: Sequence[RegexRuleConfig],
+    text: str,
+    stream_external_id: str,
+) -> bool:
+    """判断单条消息是否命中当前会话的任意规则，不抽随机、不读写冷却。
+
+    :param rules: 当前配置中的规则列表。
+    :param text: 入站消息正文；使用与正文注入相同的占位清洗和长度限制。
+    :param stream_external_id: 当前会话的外部 ID。
+    :return: 至少命中一条生效规则时为真，仅供门控增加决策机会。
+    副作用：无；决定回复后才抽选反应提示并记录冷却。
+    """
+    return any(True for _ in _matching_rules(rules, text, stream_external_id))
 
 
 def _cooldown_factor(last_injected_at: Optional[int], now: int) -> float:
@@ -129,14 +160,8 @@ def match_regex_rules(
     副作用：读取随机源状态；不修改 ``cooldowns``。
     """
 
-    subject = strip_machine_spans(text).strip()[:REGEX_RULE_TEXT_LIMIT]
     hits: List[Tuple[int, RegexRuleConfig, re.Match[str], float]] = []
-    for index, rule in enumerate(rules, start=1):
-        if rule.streams and stream_external_id not in rule.streams:
-            continue
-        match = re.search(rule.pattern, subject)
-        if match is None:
-            continue
+    for index, rule, match in _matching_rules(rules, text, stream_external_id):
         factor = _cooldown_factor(cooldowns.get((rule.pattern, stream_id)), now)
         hits.append((index, rule, match, factor))
     if not hits:
