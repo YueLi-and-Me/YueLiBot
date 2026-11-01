@@ -244,8 +244,12 @@ async function handleStats(request, env) {
   const online = await env.DB.prepare(
     'SELECT COUNT(*) AS n FROM installs WHERE last_seen > ?',
   ).bind(aliveSince).first('n')
+  // 注册时 last_seen 已写入、app_version 仍是默认空串，首个心跳到达前（或注册后进程就退出了）
+  // 这条安装会以空版本计入在线数。客户端把空版本名视为契约违反、整份 /stats 拒收，
+  // 因此空串在这里改记为「未知」，各版本计数之和仍等于 online。
   const versionRows = await env.DB.prepare(
-    'SELECT app_version AS version, COUNT(*) AS count FROM installs WHERE last_seen > ? GROUP BY app_version ORDER BY count DESC',
+    "SELECT CASE WHEN app_version = '' THEN '未知' ELSE app_version END AS version, COUNT(*) AS count "
+    + 'FROM installs WHERE last_seen > ? GROUP BY 1 ORDER BY count DESC',
   ).bind(aliveSince).all()
 
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
