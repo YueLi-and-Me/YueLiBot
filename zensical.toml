@@ -119,6 +119,8 @@ nav = [
     ] },
     { "出站图片验收" = "dev/outbound-image-acceptance.md" },
   ] },
+  # 插件商店是独立站点（plugins.yuelibot.org），放进顶层标签页，读者不用先进手册才找得到它。
+  { "插件商店" = "https://plugins.yuelibot.org/" },
 ]
 
 [project.theme]
