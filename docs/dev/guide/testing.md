@@ -62,3 +62,24 @@ SELFTEST-DIARY     日记窗口渲染，兼验生产多入口
 ```
 
 中文结果会写进 `YUELI_SELFTEST_OUT` 指定的 UTF-8 文件——Windows 控制台按本地代码页解码，中文在管道里就已经坏掉，事后无法还原。
+
+## 文档站
+
+这套文档发布在 <https://docs.yuelibot.org/>，
+由 `.github/workflows/docs.yml` 在 main 分支上构建后推送到 Cloudflare Workers 静态资源。
+站点配置在仓库根的 `zensical.toml`，域名与路由在 `wrangler.toml`，产物目录 `site/` 不入库。
+
+本地预览与校验不需要安装全局依赖：
+
+```bash
+uvx zensical@0.0.60 serve                    # 起本地服务，改 Markdown 即时刷新
+uvx zensical@0.0.60 build --clean --strict   # CI 用的严格构建，断链与失效锚点会直接失败
+```
+
+注意事项：
+
+- 导航在 `zensical.toml` 的 `nav` 中显式声明。新增页面时，文档首页的目录表要同步修改。
+- 指向 `docs/` 之外的文件（配置模板、脚本、协议正文）一律写 GitHub 绝对链接。
+  `docs_dir` 之外的文件不会进入站点产物，仓库内相对路径在站上必然是死链，严格构建会拦下。
+- 样式与动画在 `docs/stylesheets/extra.css`，图标与立绘在 `docs/images/`。装饰性动效
+  一律包在 `prefers-reduced-motion` 里，改样式时不要破坏这条。
