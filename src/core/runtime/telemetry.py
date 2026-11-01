@@ -229,17 +229,17 @@ class TelemetryService:
         退回 :data:`HEARTBEAT_INTERVAL_S`。重试次数不受限制，只放大等待，网络恢复后
         最迟两分钟就能接回来。
 
-        首次上报失败后必须先缩短间隔：常规的 600 秒节拍意味着只开机跑几分钟的安装，
-        整段使用期都不会出现在统计里，而这正是「新装机统计不到」的主要形态。
+        启动后立刻上报一次，之后才进入节拍；首次上报失败后同样先缩短间隔。常规的
+        600 秒节拍若放在首轮之前，只开机跑几分钟的安装整段使用期都不会出现在统计里，
+        而这正是「新装机统计不到」的主要形态。
         """
         wait_s = HEARTBEAT_INTERVAL_S
         while not self._stop.is_set():
+            wait_s = HEARTBEAT_INTERVAL_S if await self._beat_once() else next_retry_interval(wait_s)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=wait_s)
-                continue
             except asyncio.TimeoutError:
                 pass
-            wait_s = HEARTBEAT_INTERVAL_S if await self._beat_once() else next_retry_interval(wait_s)
 
     async def _beat_once(self) -> bool:
         """走一轮「必要时注册 + 心跳」，按候选顺序逐个端点尝试。
@@ -304,8 +304,10 @@ class TelemetryService:
         :param endpoint: 服务端根地址，不带尾斜杠。
         :return: 新的 UUID；注册失败时为 ``None``。
         """
+        # 注册就带上三项载荷：注册成功而紧随其后的心跳失败（或进程随即退出）时，
+        # 服务端那条在线安装也已有版本号，不会以空版本混进版本分布。
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S) as client:
-            response = await client.post(f'{endpoint}/register', json={})
+            response = await client.post(f'{endpoint}/register', json=payload())
             response.raise_for_status()
             uuid = response.json().get('uuid')
         if not isinstance(uuid, str) or not uuid.strip():

@@ -113,11 +113,26 @@ function json(body, status = 200) {
  */
 async function handleRegister(request, env) {
   if (rateLimited(request)) return json({ error: 'rate_limited' }, 429)
+  // 新客户端注册时就带上与心跳相同的三项载荷；老客户端发空对象，三项落为空串，
+  // 由 /stats 记作「未知」，直到首个心跳覆盖。正文损坏同样不拒绝注册。
+  let body = {}
+  try {
+    body = await request.json()
+  } catch {
+    body = {}
+  }
   const uuid = crypto.randomUUID()
   const now = Date.now()
   await env.DB.prepare(
-    'INSERT INTO installs (uuid, first_seen, last_seen) VALUES (?, ?, ?)',
-  ).bind(uuid, now, now).run()
+    'INSERT INTO installs (uuid, first_seen, last_seen, app_version, os_type, python_version) VALUES (?, ?, ?, ?, ?, ?)',
+  ).bind(
+    uuid,
+    now,
+    now,
+    sanitize(body?.app_version),
+    sanitize(body?.os_type),
+    sanitize(body?.python_version),
+  ).run()
   return json({ uuid })
 }
 

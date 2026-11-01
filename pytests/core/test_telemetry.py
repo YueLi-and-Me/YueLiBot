@@ -114,6 +114,60 @@ def test_失败后重试间隔先压缩再放大() -> None:
 
 
 @pytest.mark.asyncio
+async def test_启动后立刻上报一次(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """首轮上报不能先等一个常规节拍：只开几分钟就关掉的新装机会整段不进统计。"""
+    service = telemetry.TelemetryService(tmp_path, enabled=True, endpoint='https://例子')
+    beats: list[int] = []
+
+    async def _fake_beat(self: Any) -> bool:
+        beats.append(1)
+        return True
+
+    monkeypatch.setattr(telemetry.TelemetryService, '_beat_once', _fake_beat)
+
+    await service.startup()
+    await asyncio.sleep(0.05)
+    await service.shutdown()
+
+    assert beats == [1]
+
+
+@pytest.mark.asyncio
+async def test_注册时带上三项载荷(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """注册请求就带版本：注册成功而首个心跳失败时，服务端也不会留下空版本的在线安装。"""
+    sent: list[Any] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {'uuid': 'u-1'}
+
+    class _Client:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> '_Client':
+            return self
+
+        async def __aexit__(self, *_exc: Any) -> None:
+            return None
+
+        async def post(self, url: str, json: Any = None, **_kwargs: Any) -> _Response:
+            sent.append((url, json))
+            return _Response()
+
+    monkeypatch.setattr(telemetry.httpx, 'AsyncClient', _Client)
+    service = telemetry.TelemetryService(tmp_path, enabled=True, endpoint='https://例子')
+
+    assert await service._register('https://例子') == 'u-1'
+    assert sent == [('https://例子/register', telemetry.payload())]
+
+
+@pytest.mark.asyncio
 async def test_首选端点失败时改用兜底端点(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """主备两个地址是这条链路在国内可用的前提，顺序与短路行为都要钉住。"""
     service = telemetry.TelemetryService(tmp_path, enabled=True, endpoint=('https://首选', 'https://兜底'))

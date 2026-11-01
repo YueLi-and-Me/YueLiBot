@@ -103,7 +103,7 @@ npx wrangler deploy
 
 | 方法 | 路径 | 鉴权 | 说明 |
 | :--- | :--- | :--- | :--- |
-| POST | `/register` | 无 | 下发 UUID。不读请求体。同一机房每小时 10 次，超出返回 429 |
+| POST | `/register` | 无 | 下发 UUID，请求体可带与心跳相同的三个字段并一并写入（老客户端发空对象）。同一机房每小时 10 次，超出返回 429 |
 | POST | `/heartbeat` | `Client-UUID` 头 | 刷新 `last_seen` 与三个字段。成功 204，未知 UUID 403 |
 | GET | `/stats?days=30` | `Authorization: Bearer <STATS_TOKEN>` | 聚合读取，失败一律 401 |
 | GET | `/update/latest` | 无 | 已发布的最新版本号，公开信息（tag 本就挂在公开仓库上） |
