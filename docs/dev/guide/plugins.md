@@ -135,6 +135,7 @@ auto_install = false
 
 ## 发布到插件市场
 
+收录后的插件出现在[插件商店](https://plugins.yuelibot.org/)和管理面板的插件市场里。
 插件仓库中保留 `_manifest.json`、`plugin.py` 和使用说明，运行时的 `config.toml`
 不得提交。只通过 `src.plugin_system` 门面导入宿主类型，不导入 `src.core` 等内部路径。
 收录时要求清单填写作者与许可证，版本支持区间两端齐全。

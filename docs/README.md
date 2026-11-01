@@ -93,6 +93,7 @@
 | [面板总览](manual/webui/index.md) | 怎么进、各页做什么、监听范围与鉴权 |
 | [会话观察](manual/webui/observe.md) | 阶段板、事件账本、提示词工作台、实时日志 |
 | [模型与厂商](manual/webui/models.md) | 厂商与模型目录、任务候选与采样参数 |
+| [插件市场](manual/webui/plugin-market.md) | 在面板里浏览、安装插件；也可以先去[插件商店](https://plugins.yuelibot.org/)看看有哪些 |
 | [人物与关系](manual/webui/persons.md) | 她记住的人、关系状态与事实 |
 | [黑话词表](manual/webui/jargon.md) | 学到的群内说法与命中情况 |
 | [表达方式](manual/webui/expressions.md) | 学到的说话方式与被选用次数 |
